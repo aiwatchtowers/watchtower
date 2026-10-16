@@ -792,13 +792,13 @@ separation of boards.
 
 ## PROJ-10 — a branch switch from the header never loses work, never runs unconfirmed, never pops the install dialog
 
-**Status:** Enforced (Go and Desktop; the rule lives in Go; owner approved 2026-10-03; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #569)
+**Status:** Enforced (Go and Desktop; the rule lives in Go; owner approved 2026-10-03; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #569; amended 2026-10-16 for fetching origin and checking out a remote-only branch, owner approved 2026-10-12, ask #175, board #563)
 
 **Observable:** Branch switching from the Workbench header never loses work,
 never switches without the owner's confirmation, and never runs git where it
 could pop the developer-tools install dialog. The branch button and popover
 never run git in the Desktop: every branch read and write is `watchtower
-workbench git status|branches|switch|create --workbench N --json`
+workbench git status|branches|switch|create|fetch|checkout --workbench N --json`
 (`cmd/workbench_git.go`, `internal/workbenchgit`). Known exception outside the
 branch UI: the code viewer's FILES git marks (`CodeFilesCenter.refreshGit` →
 `GitStatusSnapshot.read`, WatchtowerCore) run `git status` from the Desktop.
@@ -854,13 +854,64 @@ rule, not the marks reader's.
   envelope names the entry and its sha, and the Desktop shows the
   `git stash apply <sha>` that brings it back.
 
+Since 2026-10-16 (board #563, owner approved 2026-10-12, ask #175):
+- **Fetch moves only origin's refs and never asks for anything.** `workbench
+  git fetch` runs `git fetch --prune --no-recurse-submodules
+  --no-auto-maintenance --upload-pack=git-upload-pack origin` — the
+  remote-tracking refs of origin only (a branch deleted there is pruned, so
+  a local branch tracking it reads `upstream_gone`); the work tree, the
+  index, the stash and every local branch stay as they are, and no pull,
+  merge or push ever runs. It is bounded at 20 s (`timed_out`) and killed
+  with its whole process group (git's ssh or remote-http child included). No
+  prompt or dialog can come from it: `GIT_TERMINAL_PROMPT=0`,
+  `GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10`, empty
+  `GIT_ASKPASS`/`SSH_ASKPASS` with `SSH_ASKPASS_REQUIRE=never` (an empty
+  `GIT_ASKPASS` outranks `core.askPass`), and `-c credential.helper=`, which
+  clears every credential helper — the folder's and the owner's global ones
+  (osxkeychain and gh read the Keychain, which can raise a system dialog). It
+  also runs nothing the folder's config names: the background read's `-c`
+  set (no fsmonitor, no hooks), git's own upload-pack (a path remote's
+  `remote.origin.uploadpack` would run here, and `-c` cannot override it),
+  no proxy command (`GIT_PROXY_COMMAND=`), and only the plain transports
+  (`GIT_ALLOW_PROTOCOL=file:git:http:https:ssh` — no `ext::` or remote
+  helper). A custom `core.sshCommand` is therefore not used by this fetch
+  (`~/.ssh/config` still is). A remote that needs a password, a locked key or
+  a host-key confirmation fails with git's words in `error`; the Desktop
+  shows a quiet "Couldn't fetch origin: …" in the popover and the branch list
+  keeps working on the local refs. A repository without an origin remote
+  answers `no_remote` and runs no fetch. The `--folder` rule below applies.
+- **The Desktop fetches rarely and one at a time.** Opening the popover
+  fetches in the background only when the last try for that repository (its
+  common dir, shared by its worktrees) started over 5 minutes ago — a failed
+  try counts, so an offline Mac does not retry on every open; the Fetch
+  button fetches at once. A fetch never starts while one runs for the same
+  repository, and the view model, not the popover, owns it: closing the
+  popover never cancels a fetch half way. The list shows at once and is read
+  again after a successful fetch.
+- **A remote-only branch is checked out behind every rule above.**
+  `workbench git branches` lists `remote_only` — origin's branches no local
+  branch is named after or tracks (origin/HEAD is not a branch) — and
+  `workbench git checkout --branch B` makes the local branch B tracking
+  `origin/B` and switches to it with `git switch --no-guess
+  --no-overwrite-ignore --track=direct -c B refs/remotes/origin/B`. Guards,
+  in order: status readable → an exact remote-only name (option-like names
+  never match; a local branch of that name is refused as `exists`) → no
+  operation in progress and no unmerged paths → the owner's confirmations
+  (`uncommitted_changes` without `--stash`, `agent_running` without
+  `--confirm-agent`); a missing confirmation writes nothing, not even the
+  branch. The stash, its nonce-tagged message, its restore by sha after a
+  failed switch and the no-force rule are the switch's; checkout fetches
+  nothing (the remote-tracking ref is the last fetch's). The Desktop sends it
+  through the switch's flow: the code viewer's edits saved first, a first
+  call without a confirmation flag, the dialog's flags resent as `checkout`.
+
 Since 2026-10-12 (board #565/#569, owner approved 2026-10-12, ask #188): the
 branch button and popover work on the worktree of the session the page shows
 — the workbench folder when the page holds no session or the session's place
 is the main folder, unknown, stale, outside the repository or removed.
 `workbench git status|branches|switch|create` take `--folder F` (the Desktop
 passes it for a worktree root only, so the main folder's argv is unchanged;
-the `fetch` of board #563 takes the same rule when it lands). Go first lists
+since board #563 `fetch` and `checkout` take the same rule). Go first lists
 the repository's worktrees with git run in the workbench folder and accepts F
 only when it is the workbench folder, inside it, or inside a listed worktree
 (the longest match wins; paths compare case-insensitively on macOS); anything
@@ -920,6 +971,7 @@ attributed to Watchtower.
   `testProj10_AnEditorThatDoesNotAnswerHoldsTheSwitch`, `testProj10_AnEditorThatTimesOutHoldsTheSwitch`
 - `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
 - Board #565, the session's worktree (2026-10-12, ask #188): `internal/workbenchgit/folder_test.go::TestProj10_FolderOutsideTheWorktreesIsRefusedBeforeGit`; `internal/workbenchgit/switch_test.go::TestProj10_GuardsRunInTheSessionsWorktree` (two worktrees of one repo: a dirty worktree refuses without `--stash` while the main folder is clean; a branch checked out in the main folder is refused there); `cmd/workbench_git_test.go::TestProj10_FolderFlagEnvelopeAndRefusal`; `WatchtowerDesktop/Tests/WorkbenchesViewModelGitTests.swift` — `testProj10_TheBranchMenuFollowsTheSessionsWorktree`, `testProj10_ASessionInAnotherWorktreeIsNotReportedAnUnknownOneIs`, `testProj10_ASwitchInAWorktreeSavesThatWorktreesEdits`; supporting: `internal/workbenchgit/folder_test.go` (`TestResolveFolderScopes`, `TestResolveFolderUnreadableRequestedIsUnresolved`, `TestResolveFolderGitFailureIsAnError`, `TestResolveFolderIgnoresCaseOnMacOS`), `cmd/workbench_git_test.go` (`TestWorkbenchGitStatusWithoutFolderIsUnchanged`, `TestWorkbenchGit_FolderUnreadable`, `TestWorkbenchGit_FolderListingFailure`); every existing `TestProj10_*`/`testProj10_*` above unchanged
+- Board #563, fetch and remote-only checkout (2026-10-16, ask #175): `internal/workbenchgit/checkout_test.go` — `TestProj10_CheckoutMakesALocalTrackingBranch`, `TestProj10_CheckoutRefusesDirtyWithoutStash`, `TestProj10_CheckoutStashesWhatTheOwnerConfirmed`, `TestProj10_CheckoutRefusesALocalOrUnknownName`, `TestProj10_CheckoutOperationInProgressIsRefused`, `TestProj10_FailedCheckoutRestoresTheStash`, `TestProj10_CheckoutNeverForcesOrFetches`; `cmd/workbench_git_test.go::TestProj10_FetchAndCheckOutARemoteOnlyBranch`; `WatchtowerDesktop/Tests/WorkbenchesViewModelGitFetchTests.swift` — `testProj10_ACheckOutWaitsForTheOwnerAndResendsWhatTheyConfirmed`, `testProj10_ARefusedCheckOutSaysWhy`; supporting: `internal/workbenchgit/fetch_test.go` (`TestFetch_UpdatesTheCountersAndNeverTheWorkTree`, `TestFetch_NoOriginRunsNoFetch`, `TestFetch_OutsideARepositoryRunsNoGit`, `TestFetch_UnreachableRemoteRunsNoFolderCommand`, `TestFetch_AuthenticationRunsNoHelperOrPrompt`, `TestFetch_PathRemoteRunsNoFolderUploadPack`, `TestFetch_TimeoutIsReported`), `internal/gitbin/run_test.go` (`TestExecFetch_NoPromptEnvironment`, `TestExecFetch_KillsTheProcessGroup`), `WatchtowerDesktop/Tests/WorkbenchesViewModelGitFetchTests.swift` (the background fetch, its rarity, one fetch per repository outliving the popover, the quiet failure note), `WatchtowerDesktop/Tests/Core/WorkbenchFetchTests.swift`; every existing `TestProj10_*`/`testProj10_*` and `TestProj07_*` unchanged
 
 **Locked since:** 2026-10-03 (proposed 2026-10-02)
 
@@ -2089,6 +2141,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
+- 2026-10-16 (board #563; **owner approved 2026-10-12, ask #175**): **PROJ-10 amended** — appended, nothing weakened. The branch popover fetches origin (`workbench git fetch`: `git fetch --prune origin`, 20 s, its process group killed at the deadline; no credential helper, askpass, ssh prompt, proxy command, folder upload-pack or non-plain transport can run, so no dialog ever) in the background when the last try is over 5 minutes old and from a Fetch button, one fetch at a time per repository, held by the view model; a failure is a quiet note and the list keeps working on local refs. A "Remote only" section lists origin's branches with no local copy, and **Check out** (`workbench git checkout`) makes a local tracking branch and switches to it behind the switch's guards and confirmations (no Pull button: that would write the work tree). New guards listed under PROJ-10; every existing `TestProj10_*`/`testProj10_*` and `TestProj07_*` unchanged.
 - 2026-10-16 (board #411, Desktop New Task): note only — **no contract, guard test or status changed**. The Desktop board creates targets too (header **New Task**, under the current scope; card menu **New Sub-task…**): `WorkbenchBoardViewModel.createTarget` runs `watchtower workbench target add`, the phone's owner writer, so the creation is recorded as `owner` (PROJ-06), Go does the PROJ-09 parent check and the PROJ-05 rollup, and the new target plus every parent whose status moved are reported through `onOwnerWrite` so the owner is never notified about their own change.
 - 2026-10-16 (Automations P5 part 1, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §13): **PROJ-02 strengthened** — deleting a workbench also removes its automation rows (`automations`, `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`) and the owner asks its automations filed; guard `TestProj02_DeleteRemovesAutomationRows`; the recipe files under `.watchtower/automations/` stay (owner's repo files). **PROJ-12/PROJ-13:** an automation's ask never reaches a session (see the entry above; guard `TestAutomationAsks_InvisibleToSessionReaders`); the Desktop-side guard that the terminal delivery excludes it follows in part 2. **PROJ-11 note, no text changed:** a session an automation's `session()` starts is an ordinary workbench session (same hooks, states, report and cleanup); for the run, "stopped" means the process ending, reported by the Desktop through `automations session-ended` (R-P5-3). No guard relaxed.
 - 2026-10-16 (Automations P5 Task 6, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §5, D6/D7): **PROJ-12 and PROJ-13 strengthened — no contract text weakened, no guard changed.** A workbench automation's `ask()` files an `owner_asks` row with `session_id` NULL and `automation_run_id` set (migration `00122`); its run waits for the answer itself and marks it `delivered`. Every session-side reader leaves such a row out (`a.automation_run_id IS NULL`): the brief's "Answered asks for you" and its other-sessions count (`AnsweredAsksForBrief`), `list_asks` (`OwnerAskFilter.ExcludeAutomation`), `get_ask`, `withdraw_ask` and ask_owner's `previous_ask_id` (all through `askInWorkbench`: "no ask with id N"), the series hint (`RecentOpenQuestionAsk`) and the withdrawn-title check (`LastWithdrawnByTitle`) — so PROJ-12's "an ask with no session … the session's next `workbench brief` lists it" never applies to an automation's ask, and no session's `get_ask` can deliver it. The owner-facing readers keep it (the Waiting-for-you stack, `CountOpenOwnerAsks` — the 30-ask cap stays per workbench —, badges, `workbench asks --json`, the daily briefing). **PROJ-13:** the Stop and `PreToolUse` ask guards read no `owner_asks` row (they classify the message and read the session row and presence), so they cannot see an automation's ask; text unchanged. The Desktop's terminal delivery of an automation ask is excluded in the Swift phase (Task 12). Guards: `internal/db/owner_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`, `internal/tools/workbench_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`; every existing PROJ-12/PROJ-13 guard green unmodified.
