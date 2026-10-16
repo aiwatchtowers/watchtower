@@ -256,3 +256,16 @@ func TestIntegrateWorkbenchRemove_ReportsAFailedLeftoversCheck(t *testing.T) {
 	assert.Contains(t, out.String(), "Could not check what is left installed:")
 	assert.NotContains(t, out.String(), "Nothing left installed.")
 }
+
+// A kept (edited or foreign) old skill names tools that no longer exist: the
+// report line says so and asks for its deletion once its edits are carried
+// over. Swift twin: WorkbenchesViewModelResyncTests' kept line.
+func TestPrintLegacyMigration_KeptSkillSaysItsToolsAreGone(t *testing.T) {
+	for _, state := range []devpack.State{devpack.StateDrifted, devpack.StateForeign} {
+		var out bytes.Buffer
+		printLegacyMigration(&out, devpack.WorkbenchInstallReport{LegacySkill: devpack.SkillStatus{State: state}})
+		assert.Equal(t, "  legacy   Your own copy of the old watchtower-project skill was kept — it names tools that no longer exist, "+
+			"so delete .claude/skills/watchtower-project once its edits are carried over; until then Claude Code sees both skills.\n",
+			out.String(), state)
+	}
+}

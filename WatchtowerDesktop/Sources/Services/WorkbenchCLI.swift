@@ -300,9 +300,9 @@ struct WorkbenchResynced: Decodable, Equatable {
         switch legacySkill {
         case "removed": lines.append(Line(text: "Removed the old \(oldName) skill", problem: false))
         case "drifted", "foreign":
-            lines.append(Line(text: "Your own copy of the old \(oldName) skill was kept — delete "
-                              + ".claude/skills/\(oldName) yourself once you no longer need it; "
-                              + "until then Claude Code sees both skills.", problem: true))
+            lines.append(Line(text: "Your own copy of the old \(oldName) skill was kept — it names tools "
+                              + "that no longer exist, so delete .claude/skills/\(oldName) once its edits "
+                              + "are carried over; until then Claude Code sees both skills.", problem: true))
         default: break
         }
         if legacyHooksReplaced {

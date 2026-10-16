@@ -323,9 +323,10 @@ func printLegacyMigration(w io.Writer, rep devpack.WorkbenchInstallReport) {
 }
 
 // legacySkillKeptNote is the report line for an old skill a resync kept:
-// edited by the owner, or not ours at all (PROJ-04).
-var legacySkillKeptNote = "Your own copy of the old " + devpack.LegacySkillName + " skill was kept — delete .claude/skills/" +
-	devpack.LegacySkillName + " yourself once you no longer need it; until then Claude Code sees both skills."
+// edited by the owner, or not ours at all (PROJ-04). It names tools that no
+// longer exist, so the owner is told to carry the edits over and delete it.
+var legacySkillKeptNote = "Your own copy of the old " + devpack.LegacySkillName + " skill was kept — it names tools that no longer exist, " +
+	"so delete .claude/skills/" + devpack.LegacySkillName + " once its edits are carried over; until then Claude Code sees both skills."
 
 // singleFileLayoutNote is the one line for a core skill the owner edited
 // before the v10 split (spec 2026-10-15 §4.3): kept, with no preset beside it.
