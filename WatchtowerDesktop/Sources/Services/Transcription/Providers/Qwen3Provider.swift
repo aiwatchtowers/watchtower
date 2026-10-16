@@ -88,24 +88,39 @@ struct Qwen3Provider: TranscriptionProvider {
 /// (same single-use invariant as `WhisperKitEngine`; the Qwen3 model is
 /// documented upstream as not thread-safe, which this usage respects).
 final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
-    private let model: Qwen3ASRModel
-    private let detectors = SpeechDetectorSlot()
-    init(model: Qwen3ASRModel) { self.model = model }
+    /// One window's decode with the forced language, or nil to auto-detect
+    /// (production: the loaded model; tests: a fake).
+    typealias Decode = (_ window: [Float], _ language: String?) throws -> String
 
-    private func windower(config: TranscriptionConfig) -> Qwen3Windower {
-        let model = self.model
-        let forced = config.forcedLanguage
+    private let decode: Decode
+    private let detectors: SpeechDetectorSlot
+
+    convenience init(model: Qwen3ASRModel) {
         // `transcribe` strips any auto-detected "language XX" prefix internally
         // (see the package's `generateText`), so with no forced language the
         // model auto-detects per window and no tag reaches the text.
-        return Qwen3Windower(config: config, speechDetector: detectors.detector(for: config)) { window in
+        self.init { window, language in
             // Silence-snapped windows vary in shape, so MLX's buffer cache
             // almost never reuses them and grows without bound across a long
             // recording (measured: 3.9→8.2 GB over 32 windows of a 10-min
             // clip). Clearing per window keeps the whole run near the
             // single-window peak; the realloc cost is noise next to decode.
             defer { MLX.Memory.clearCache() }
-            return model.transcribe(audio: window, sampleRate: 16_000, language: forced)
+            return model.transcribe(audio: window, sampleRate: 16_000, language: language)
+        }
+    }
+
+    /// `speechDetector` replaces the lazily created Silero one (tests).
+    init(speechDetector: SpeechDetector? = nil, decode: @escaping Decode) {
+        detectors = SpeechDetectorSlot(detector: speechDetector)
+        self.decode = decode
+    }
+
+    private func windower(config: TranscriptionConfig) -> Qwen3Windower {
+        let decode = self.decode
+        let forced = config.forcedLanguage
+        return Qwen3Windower(config: config, speechDetector: detectors.detector(for: config)) { window in
+            try decode(window, forced)
         }
     }
 
