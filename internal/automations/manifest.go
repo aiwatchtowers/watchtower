@@ -442,8 +442,15 @@ func (m *Manifest) AdmitsWrite(t *tools.Tool) bool {
 	if t.Access != tools.AccessWrite || t.AlwaysAsk || !t.VisibleOn(tools.AutomationSurface) {
 		return false
 	}
+	return m.AdmitsTool(t) || m.admitsAsOutput(t)
+}
+
+// admitsAsOutput reports whether t is the tool behind a declared output
+// shortcut whose gate is outputs alone (outputs:[target] → create_target)
+// and is on the automation surface.
+func (m *Manifest) admitsAsOutput(t *tools.Tool) bool {
 	kind, isOutput := outputTools[t.Name]
-	return m.AdmitsTool(t) || (isOutput && !outputNeedsCapability[kind] && slices.Contains(m.outputs, kind))
+	return isOutput && t.VisibleOn(tools.AutomationSurface) && !outputNeedsCapability[kind] && slices.Contains(m.outputs, kind)
 }
 
 func (m *Manifest) has(normalised string) bool {

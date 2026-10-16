@@ -43,6 +43,7 @@ func ListTools(ctx context.Context, spec ServerSpec) ([]db.ExternalTool, error) 
 	client := mcp.NewClient(&mcp.Implementation{Name: "watchtower", Version: "1"}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		stopStdioServer(transport) // a server that started but failed the handshake
 		return nil, withStderr(fmt.Errorf("connecting to the server: %w", err), stderr)
 	}
 	// Close stops a stdio server; its error only says how the server went
@@ -135,6 +136,16 @@ func lookPathIn(name, path string) string {
 func killProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}
+
+// stopStdioServer stops a stdio transport's process group when Connect
+// failed after the server started (a garbled handshake, an early exit):
+// no session exists to close it, and a wrapper's children would outlive
+// the call. Best effort; a non-stdio transport has nothing to stop.
+func stopStdioServer(t mcp.Transport) {
+	if ct, ok := t.(*mcp.CommandTransport); ok {
+		killProcessGroup(ct.Command)
 	}
 }
 

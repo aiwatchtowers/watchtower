@@ -25,16 +25,11 @@ func wireAutomations(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen 
 // newDaemonAutomations builds the daemon's scheduler and executor: the
 // indexer over the personal folder <WorkspaceDir>/automations (D8, inside the
 // workspace data dir — never a TCC-protected folder), the executor on
-// buildAutomationRegistry and the daemon's generator, both logging to the
+// automationBackends with the daemon's generator, both logging to the
 // daemon logger. A run the scheduler queues wakes the executor.
 func newDaemonAutomations(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) (*automations.Scheduler, *automations.Executor) {
 	clock := automations.RealClock{}
-	exec := automations.NewExecutor(database, automations.Backends{
-		DB:        database,
-		Generator: gen,
-		Registry:  buildAutomationRegistry(cfg, database),
-		Clock:     clock,
-	}, automations.ExecutorOptions{Logger: logger})
+	exec := automations.NewExecutor(database, automationBackends(cfg, database, gen), automations.ExecutorOptions{Logger: logger})
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), clock)
 	sched := automations.NewScheduler(database, ix, clock, exec.Wake)
 	sched.SetLogger(logger)

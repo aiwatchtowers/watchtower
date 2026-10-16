@@ -3,6 +3,7 @@ package agentloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,4 +229,194 @@ func TestLoop_ReadCallCarriesTheBinding(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, reg.readBindings, 1)
 	assert.Equal(t, int64(12), reg.readBindings[0].ConversationID)
+}
+
+// usageResp attaches token usage to a scripted response.
+func usageResp(r oaResponse, in, out int) oaResponse {
+	r.Usage = &oaUsage{PromptTokens: in, CompletionTokens: out, TotalTokens: in + out}
+	return r
+}
+
+// requestRecorder replies like scriptedServer and keeps every decoded request.
+func requestRecorder(t *testing.T, responses ...oaResponse) (*httptest.Server, *[]oaRequest) {
+	t.Helper()
+	var reqs []oaRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req oaRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		i := min(len(reqs), len(responses)-1)
+		reqs = append(reqs, req)
+		_ = json.NewEncoder(w).Encode(responses[i])
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &reqs
+}
+
+// Options.Tools narrows what the model is offered to the allowlist ∩ the
+// surface's tools; nil keeps every surface tool.
+func TestAgentLoop_AdvertisesOnlyAllowedTools(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{
+		"list_targets":  tools.NewListTargets(),
+		"get_target":    {Name: "get_target", Access: tools.AccessRead},
+		"create_target": tools.NewCreateTarget(),
+	}}
+	srv, reqs := requestRecorder(t, finalResp("done"))
+	c := NewClientWithOptions("m", srv.URL, nil, tools.Binding{Surface: "main"},
+		Options{Tools: []string{"list_targets", "create_target", "not_registered"}})
+	c.reg = reg
+
+	_, _, err := c.run(context.Background(), "", "go", nil)
+	require.NoError(t, err)
+	require.Len(t, *reqs, 1)
+	var names []string
+	for _, tl := range (*reqs)[0].Tools {
+		names = append(names, tl.Function.Name)
+	}
+	assert.ElementsMatch(t, []string{"list_targets", "create_target"}, names)
+
+	all := clientWith(reg, srv.URL).buildTools()
+	assert.Len(t, all, 3, "nil Options.Tools offers every surface tool")
+}
+
+// A call naming a tool outside Options.Tools is refused before the registry
+// is consulted, and the Gate's error refuses an offered call; neither reaches
+// the registry, and both come back to the model as error results.
+func TestAgentLoop_GateRefusesUnofferedAndOutOfScope(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{
+		"list_jira_issues": {Name: "list_jira_issues", Access: tools.AccessRead},
+		"create_target":    tools.NewCreateTarget(),
+	}}
+	srv, reqs := requestRecorder(t,
+		toolCallResp("create_target", `{"text":"x","reason":"y"}`),
+		toolCallResp("list_jira_issues", `{"project":"OPS"}`),
+		finalResp("done"))
+	var gated []string
+	c := NewClientWithOptions("m", srv.URL, nil, tools.Binding{Surface: "main"}, Options{
+		Tools: []string{"list_jira_issues"},
+		Gate: func(_ context.Context, tl *tools.Tool, args json.RawMessage) (json.RawMessage, error) {
+			gated = append(gated, tl.Name)
+			if strings.Contains(string(args), "OPS") {
+				return nil, errors.New("permission denied: needs jira:read@OPS")
+			}
+			return args, nil
+		},
+	})
+	c.reg = reg
+
+	text, _, err := c.run(context.Background(), "", "go", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "done", text)
+	assert.Empty(t, reg.proposed, "an unoffered write never reaches Propose")
+	assert.Empty(t, reg.reads, "an out-of-scope read never reaches CallRead")
+	assert.Equal(t, []string{"list_jira_issues"}, gated, "the gate runs only for offered tools")
+
+	require.Len(t, *reqs, 3)
+	toolResult := func(req oaRequest) string {
+		last := req.Messages[len(req.Messages)-1]
+		require.Equal(t, "tool", last.Role)
+		return last.Content
+	}
+	assert.Contains(t, toolResult((*reqs)[1]), `"error":"tool create_target is not offered`)
+	assert.Contains(t, toolResult((*reqs)[2]), `"error":"permission denied: needs jira:read@OPS"`)
+}
+
+// A Gate may rewrite the arguments it admits (a clamped limit): the registry
+// receives the gate's args.
+func TestAgentLoop_GateArgsAreDispatched(t *testing.T) {
+	reg := &argReg{fakeReg: fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}}
+	srv, _ := scriptedServer(t, toolCallResp("list_targets", `{"limit":500}`), finalResp("done"))
+	c := NewClientWithOptions("m", srv.URL, nil, tools.Binding{Surface: "main"}, Options{
+		Gate: func(context.Context, *tools.Tool, json.RawMessage) (json.RawMessage, error) {
+			return json.RawMessage(`{"limit":50}`), nil
+		},
+	})
+	c.reg = reg
+
+	_, _, err := c.run(context.Background(), "", "go", nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{`{"limit":50}`}, reg.args)
+}
+
+type argReg struct {
+	fakeReg
+	args []string
+}
+
+func (a *argReg) CallRead(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (any, error) {
+	a.args = append(a.args, string(args))
+	return a.fakeReg.CallRead(ctx, name, args, b)
+}
+
+// Options.MaxIterations replaces the default cap: 12 → the 13th model call
+// never happens.
+func TestAgentLoop_MaxIterationsOption(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
+	srv, calls := scriptedServer(t, toolCallResp("list_targets", `{}`)) // always a tool call
+	c := NewClientWithOptions("m", srv.URL, nil, tools.Binding{Surface: "main"}, Options{MaxIterations: 12})
+	c.reg = reg
+
+	_, _, err := c.run(context.Background(), "", "loop", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 12, *calls)
+
+	assert.Equal(t, defaultMaxIterations, NewClientWithOptions("m", "", nil, tools.Binding{}, Options{}).maxIter,
+		"0 keeps the default cap")
+}
+
+// BeforeModelCall runs before every model call and its error stops the loop
+// (returned as is); AfterModelCall receives each response's usage.
+func TestAgentLoop_ModelCallHooks(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
+	srv, calls := scriptedServer(t,
+		usageResp(toolCallResp("list_targets", `{}`), 100, 10),
+		usageResp(toolCallResp("list_targets", `{}`), 200, 20),
+		finalResp("never reached"))
+	budgetErr := errors.New("budget exhausted")
+	before := 0
+	var after [][2]int
+	c := NewClientWithOptions("m", srv.URL, nil, tools.Binding{Surface: "main"}, Options{
+		BeforeModelCall: func() error {
+			before++
+			if before == 3 {
+				return budgetErr
+			}
+			return nil
+		},
+		AfterModelCall: func(in, out int) { after = append(after, [2]int{in, out}) },
+	})
+	c.reg = reg
+
+	_, _, err := c.run(context.Background(), "", "go", nil)
+	require.ErrorIs(t, err, budgetErr)
+	assert.Equal(t, 3, before)
+	assert.Equal(t, 2, *calls, "the refused third call never reaches the model")
+	assert.Equal(t, [][2]int{{100, 10}, {200, 20}}, after)
+}
+
+// Options.ResultCheck sees every tool result before the model does; its
+// error replaces the result (an automation's 256 KiB ResultTooLarge).
+func TestAgentLoop_ResultCheckRefusesResult(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()},
+		readData: map[string]string{"text": strings.Repeat("x", 64)}}
+	srv, reqs := requestRecorder(t, toolCallResp("list_targets", `{}`), finalResp("done"))
+	var checked []string
+	c := NewClientWithOptions("m", srv.URL, nil, tools.Binding{Surface: "main"}, Options{
+		ResultCheck: func(result []byte) error {
+			checked = append(checked, string(result))
+			if len(result) > 32 {
+				return errors.New("ResultTooLarge: the result is too large")
+			}
+			return nil
+		},
+	})
+	c.reg = reg
+
+	text, _, err := c.run(context.Background(), "", "go", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "done", text)
+	require.Len(t, checked, 1)
+	assert.Contains(t, checked[0], strings.Repeat("x", 64), "the check sees the encoded result")
+	require.Len(t, *reqs, 2)
+	last := (*reqs)[1].Messages[len((*reqs)[1].Messages)-1]
+	assert.Equal(t, `{"error":"ResultTooLarge: the result is too large"}`, last.Content)
 }

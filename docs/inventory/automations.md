@@ -63,6 +63,7 @@ switch, a default, a lenient scope match) would let a recipe do what the
 owner never read.
 
 **Test guards:**
+- P6 (`mcp()`, `agent()`): `cmd/automations_backends_test.go` — `TestMCP_OnlyQC02AllowedTools` (a tool outside QC-02's allowed list of an enabled, listed connection never reaches the server); `internal/automations/sdk_mcp_test.go` — `TestMCPModule_ManifestFirst` (the manifest check precedes any backend call); `internal/automations/agent_toolset_test.go` — `TestAgent_ToolSetIsIntersection` (the effective set is the manifest's grants intersected with the run's tool surface); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_GatesEachCallByManifest`; `internal/agentloop/loop_test.go` — `TestAgentLoop_GateRefusesUnofferedAndOutOfScope`
 - `internal/automations/sdk_test.go` — `TestAuto01_DeniedCallThrowsAndWritesDeniedStep` (the fake registry records zero calls), `TestLLM_StrongNeedsStrongPermission`, `TestOutput_GateAndBodyLimit`
 - `internal/automations/sandbox_test.go` — `TestSandbox_DeniedCallWritesDeniedStep`
 - `internal/automations/manifest_test.go` — `TestManifest_ScopeMatching`, `TestManifest_JiraScopeFromRealArgs`, `TestManifest_EmailScopeMatchesLabelOrAddress`, `TestManifest_UnscopedSourceReadsNeedStar`, `TestManifest_D23ToolScopes`, `TestManifest_KnowledgeToolsOnlyByToolEntry`, `TestManifest_ToolNotOnAutomationSurfaceDenied`, `TestManifest_ScopeOfErrorIsADeniedNotAPanic`, `TestManifest_LLMStrongImpliesLight`, `TestManifest_OutputGate`, `TestManifest_AllowOutputToolSlackNeedsWriteScope`, `TestManifest_AdmitsWrite`
@@ -271,6 +272,7 @@ the script outside it.
 **Test guards:**
 - `internal/automations/sandbox_test.go` — `TestAuto07_NoRequireFsNetTimers`, `TestRecipe_AsyncScriptRefused`, `TestSandbox_PreParseRefusesAsync`
 - `internal/automations/sandbox_hardening_test.go` — `TestAuto07_NoCodeFromStrings`, `TestSandbox_WrapperBreakoutRefused`, `TestSandbox_SDKResultsArePlainJSValues`
+- P6: `cmd/automations_agent_test.go` — `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` (an `agent()` CLI child gets only PATH, HOME, LANG, USER and the run marker, plus a scrubbed `CODEX_HOME` on codex; no token, secret or Quick Connection reaches it); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_RefusesWithoutMatchingMarkerOrRunningRun`
 
 **Locked since:** 2026-10-14
 
@@ -301,6 +303,7 @@ model quota.
 - `internal/automations/sandbox_hardening_test.go` — `TestSandbox_CatastrophicRegexEndsWithinDeadline`, `TestSandbox_StuckNativeIsAbandonedAfterGrace`
 - `internal/automations/executor_test.go` — `TestAuto08_InterruptOnBudget`, `TestAuto08_CatchAllLoopStillEndsOnBudget`, `TestAuto08_NoDailyCapAcrossRuns`, `TestAuto08_RestartMarksInterrupted`, `TestBudget_EstimatesTokensWhenUsageMissing`, `TestWaiter_PauseTimeoutExpires`, `TestExecutor_DaemonStopMidRunEndsInterrupted`, `TestExecutor_AbandonedRunDisablesAutomation`, `TestExecutor_SweepsStaleDryRuns`, `TestExecutor_StartSparesLiveCLIDryRun`
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_BudgetBound`
+- P6 (`agent()`): `internal/automations/sdk_agent_test.go` — `TestAgent_BudgetCarvedFromRun`, `TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded` (a spent carved minutes deadline throws a catchable `BudgetExceeded`; the run's own deadline stays uncatchable), `TestAgent_ResultUsageDebitedOnce`; `cmd/automations_agent_test.go` — `TestAgent_RunBudgetCrossedInterruptsRun`, `TestAgent_LocalBudgetSpentThrowsCatchable`, `TestAgent_IterationsCapped12`, `TestAgent_CLIUsageDebitedOrEstimated`, `TestAgent_CancelKillsCLIChild` (the whole process group dies); `internal/ai/client_child_test.go` — `TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace` (`ai.GroupKillGrace` = 1 s, inside the 2 s `AbandonGrace`)
 - `internal/db/automation_runs_test.go` — `TestAuto08_RestartMarksInterrupted`, `TestAuto08_RestartSparesLiveDryRun`, `TestRunEnd_ClosesOpenSteps`
 
 **Locked since:** 2026-10-14
@@ -380,6 +383,7 @@ script did; a call missing from it is an action nobody can audit.
 - `internal/automations/sdk_test.go` — `TestAuto11_EveryCallHasOneStep`, `TestLog_Capped`, `TestLog_CapHoldsAgainstNestedGetterLogs`
 - `internal/automations/sandbox_hardening_test.go` — `TestEnvCall_EncodingFailureReclosesStepAsError`
 - `internal/db/automation_runs_test.go` — `TestSteps_SeqIsDenseAndOrdered`
+- P6: `internal/automations/sdk_mcp_test.go` — `TestMCPModule_OneStepPerCall` (an `mcp()` call is one step, denied or not); `agent()` is one step too — the inner tool calls of its loop are summarised in that step's result, not journaled apart (`internal/automations/sdk_agent_test.go` `TestAgent_RequestStepAndActions`)
 
 **Locked since:** 2026-10-14
 
@@ -404,6 +408,7 @@ would make checking as dangerous as running.
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_P2KindsDryRun` (P2: `output.briefing`/`target`/`slack` in a dry run commit nothing and propose nothing)
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
+- P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a dry run, QC-02 reads only); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
 - P5 adds the session/shell guard (plan `2026-10-14-automations-p5.md`) and flips that half.
 
 **Locked since:** 2026-10-14
@@ -430,6 +435,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-16 (Automations P6 part 1, board #753; spec §5, §6.5, §14.7): **`mcp()` and `agent()` land (runtime B, the claude CLI and the codex CLI); the templates and the gallery CLI follow in the second P6 part.** No status flips (AUTO-01/07/08/11/12 were Enforced since P1) and no guard relaxed; guards added to AUTO-01/07/08/11/12 as listed there. `agent()` is one journal step: its inner tool calls are summarised in that step (AUTO-11 counts SDK calls). Behaviours recorded with their tests: the `--surface automation` server's `get_action` shows only the bound run's own rows (`TestGetAction_ScopedToAutomationRun`); `internalmcp.WithResultCheck` applies the 256 KiB `ResultTooLarge` refusal on that server and runtime B applies `CheckAgentResult` per tool result (`TestChatMode_ResultCheckReplacesResult`, `TestAgentLoop_ResultCheckRefusesResult`, `TestCheckAgentResult_RefusesOverLimit`); a codex child runs in a per-run temporary `CODEX_HOME` (`TestAgent_CodexChildBoundToRun`); an empty `ai.provider` runs `agent()` through the claude CLI (`TestAutomationBackends_WireMCPAndAgent`); a carved minutes deadline throws a catchable `BudgetExceeded`.
 - 2026-10-15 (Automations P2 Task 9, board #814): **AUTO-02 (write side) and AUTO-03 flip from Planned to Enforced.** AUTO-02 names `output.target`/`output.slack` (shortcuts through `Registry.Propose`) and the P2 workbench write gate (until P5); AUTO-03 records the grant table (migration 00117 — 00114–00116 are unrelated main migrations), the `automations auto` refusal order and the dormant `AutomationAgent` branch (P6); AUTO-01 records D28 (ask #315: `output.slack` needs `outputs: [slack]` and `slack:write@<account>`; an unscoped `tool:send_slack_message` counts as `slack:write@*`), which changed the `TestManifest_AdmitsWrite` case formerly named "outputs slack" (admitted) to "outputs slack alone admits no grant (D28)" (refused) (a narrowing). AUTO-04/12 gain the P2 output and dry-run guards. P1's interim `TestTool_WriteNotAvailableInP1` stays retired (entry below). No guard relaxed.
 - 2026-10-15 (Automations P2 Task 5): AUTO-02's P1 guard `TestTool_WriteNotAvailableInP1` is retired as planned (P2 plan Task 5, Step 3): it pinned P1's interim "writes arrive in a later phase" branch, not a contract. `tool()` writes now go through `Registry.Propose` on the `automation` surface (`ToolWriteModule`); the write-side guard `TestAuto02_ToolWriteGoesThroughPropose` replaces it. AUTO-12 gains `TestAuto12_DryRunWriteNeverReachesRegistry` (a dry-run write, `{wait:true}` included, returns `{status:"dry_run"}` and writes no `agent_actions` row). The status flips of AUTO-02/AUTO-03 stay with Task 9.
 - 2026-10-15 (**owner decision, ask #294**; spec §20.3 D26, amending D5): strengthening, no guard relaxed. AUTO-06's `approval_hash` now also binds the trigger (without a button's cosmetic label; `confirm` counts), the `missed` policy, the budget (tokens and minutes) and `concurrency`, so a schedule or budget edit needs the owner's confirmation again. `TestApprovalHash_GoldenCanonicalBytes` gets new canonical bytes and hex (computed outside Go); guards `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`, `TestApprovalHash_ButtonLabelIsCosmetic` added. Upgrade effect: every recipe is re-hashed once, so every recipe confirmed before this change is unconfirmed until the owner confirms it again.
