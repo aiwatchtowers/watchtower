@@ -71,6 +71,7 @@ func resultText(raw json.RawMessage) string {
 type subagentMeta struct {
 	ToolUseID string `json:"toolUseId"`
 	Finished  bool   `json:"finished"`
+	Shape     string `json:"requestShape"`
 }
 
 // ResolveSubagents fills AgentID and Status of the subagent markers from
@@ -106,6 +107,9 @@ func ResolveSubagents(sessionDir string, entries []Entry) []Entry {
 			continue
 		}
 		m, ok := metas[ref.ToolUseID]
+		if ok && m.Shape == "background" {
+			ref.ParentReport = "" // the parent's result is only a launch notice
+		}
 		switch {
 		case !ok:
 			ref.Status = StatusUnknown

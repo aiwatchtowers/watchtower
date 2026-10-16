@@ -128,9 +128,7 @@ func (st *state) handle(raw []byte) {
 		if rec.IsMeta || rec.IsCompact || rec.IsSidechain != st.sidechain {
 			return
 		}
-		if !st.sidechain {
-			st.recordParentReport(rec)
-		}
+		st.recordParentReport(rec)
 		if st.sidechain {
 			// only the first plain-string record is the task
 			var task string

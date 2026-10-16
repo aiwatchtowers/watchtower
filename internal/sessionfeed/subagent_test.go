@@ -113,3 +113,36 @@ func TestSubagent_ParentReportRecordedOnMarker(t *testing.T) {
 	require.Len(t, res.Entries, 1)
 	assert.Equal(t, "P", res.Entries[0].Subagent.ParentReport)
 }
+
+func TestSubagent_NestedParentReport(t *testing.T) {
+	p := writeFeed(t, join(
+		sideRec(userStr("u1", "task")),
+		sideRec(assistantRec("a1", "m1", agentCall("toolu_n", "Plan", "nested"))),
+		sideRec(userBlocks("u2", map[string]any{"type": "tool_result", "tool_use_id": "toolu_n", "content": "NR"})),
+	))
+	res, err := ParseSubagent(p, "")
+	require.NoError(t, err)
+	require.Len(t, res.Entries, 2)
+	assert.Equal(t, "NR", res.Entries[1].Subagent.ParentReport)
+	// the nested subagent's own file falls back to that report
+	nested := writeFeed(t, sideRec(userStr("u1", "nested task")))
+	res, err = ParseSubagent(nested, res.Entries[1].Subagent.ParentReport)
+	require.NoError(t, err)
+	assert.Equal(t, "NR", res.Entries[len(res.Entries)-1].Text)
+}
+
+func TestSubagent_BackgroundDropsParentReport(t *testing.T) {
+	dir := t.TempDir()
+	writeSub(t, dir, "aa", `{"toolUseId":"toolu_1","requestShape":"background","finished":true}`, "")
+	writeSub(t, dir, "bb", `{"toolUseId":"toolu_2","finished":true}`, "")
+	mk := func(id string) Entry {
+		return Entry{ID: id, Kind: KindSubagent, Subagent: &SubagentRef{ToolUseID: id, ParentReport: "launched"}}
+	}
+	out := ResolveSubagents(dir, []Entry{mk("toolu_1"), mk("toolu_2")})
+	assert.Empty(t, out[0].Subagent.ParentReport)
+	assert.Equal(t, "launched", out[1].Subagent.ParentReport)
+	p := writeFeed(t, sideRec(userStr("u1", "task")))
+	res, err := ParseSubagent(p, out[0].Subagent.ParentReport)
+	require.NoError(t, err)
+	assert.Len(t, res.Entries, 1) // no report entry
+}
