@@ -143,7 +143,7 @@ func readPid(path string) int {
 
 func waitPid(t *testing.T, path string) int {
 	t.Helper()
-	require.Eventually(t, func() bool { return readPid(path) > 0 }, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return readPid(path) > 0 }, 20*time.Second, 20*time.Millisecond)
 	return readPid(path)
 }
 
@@ -185,7 +185,9 @@ func TestCLIAgent_ProcessGroupKilledOnCancel(t *testing.T) {
 }
 
 func TestCLIAgent_ProcessGroupKilledOnDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// The deadline must outlast the stub's start-up under full-suite load so
+	// the pid file exists before it fires; the kill still comes from the deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	requireGroupGone(t, runGroupStub(t, ctx, nil, true))
 }

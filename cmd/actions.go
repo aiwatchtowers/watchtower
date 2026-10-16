@@ -363,7 +363,8 @@ var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX",
 // `automations save --confirm-hash` and `automations dry-run` of a recipe
 // that is not confirmed yet (spec 2026-10-14 §14.3, D16); `automations
 // enable` and `automations delete` (D24, ask #293); `automations auto …
-// on` (spec §6.4, P2). The Desktop's buttons are the path. Reject and the read verbs stay open.
+// on` (spec §6.4, P2); `automations session-launched` and `session-ended`
+// (P5). The Desktop's buttons are the path. Reject and the read verbs stay open.
 func refuseUnderAgent(verb string) error {
 	for _, name := range agentEnvMarkers {
 		if os.Getenv(name) != "" {

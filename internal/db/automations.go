@@ -450,14 +450,27 @@ func (db *DB) AutomationScopeGeneration(scope string, projectID int64) (string, 
 	return fmt.Sprintf("%d/%d/%s", count, maxID, maxUpdated), nil
 }
 
-// DeleteAutomation deletes automation id with its runs, steps, state and
-// outputs (FK cascade); ErrAutomationNotFound when there is none.
+// deleteRunAsksSQL deletes the asks of automation ?'s runs. Every path that
+// deletes runs executes it first, in the same transaction: the run's FK would
+// otherwise null automation_run_id and leave the ask looking like an
+// external terminal's, which session-side readers then see.
+const deleteRunAsksSQL = `DELETE FROM owner_asks WHERE automation_run_id IN (
+	SELECT id FROM automation_runs WHERE automation_id = ?)`
+
+// DeleteAutomation deletes automation id with its runs' asks and, by FK
+// cascade, its runs, steps, state and outputs; ErrAutomationNotFound when
+// there is none.
 func (db *DB) DeleteAutomation(id int64) error {
-	res, err := db.Exec(`DELETE FROM automations WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("deleting automation %d: %w", id, err)
-	}
-	return requireAutomationRow(res, id)
+	return db.WithTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(deleteRunAsksSQL, id); err != nil {
+			return fmt.Errorf("deleting the asks of automation %d: %w", id, err)
+		}
+		res, err := tx.Exec(`DELETE FROM automations WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("deleting automation %d: %w", id, err)
+		}
+		return requireAutomationRow(res, id)
+	})
 }
 
 func requireAutomationRow(res sql.Result, id int64) error {

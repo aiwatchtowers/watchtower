@@ -399,6 +399,7 @@ func (w *writeFixture) runRowDump(t *testing.T, id int64) string {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer func() { _ = rows.Close() }()
 		cols, err := rows.Columns()
 		if err != nil {
 			t.Fatal(err)
@@ -417,7 +418,6 @@ func (w *writeFixture) runRowDump(t *testing.T, id int64) string {
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		_ = rows.Close()
 	}
 	return out.String()
 }
@@ -482,7 +482,7 @@ func TestToolWrite_UnknownOptionIsValidationError(t *testing.T) {
 
 // TestToolWrite_ReceiptAndErrorMapping: an inline apply that failed is a
 // failed result and step; a registry ValidationError is a ValidationError,
-// a workbench automation's write (until P5) NotAvailable, any other registry
+// a write of a run that no longer exists NotAvailable, any other registry
 // failure a ToolError, and nothing is retried.
 func TestToolWrite_ReceiptAndErrorMapping(t *testing.T) {
 	cases := []struct {
@@ -496,8 +496,8 @@ func TestToolWrite_ReceiptAndErrorMapping(t *testing.T) {
 			want: `{"error":"boom","id":9,"status":"failed"}`, step: automations.StepFailed},
 		{name: "validation", err: &tools.ValidationError{Msg: "text is required"},
 			want: "ValidationError|text is required", step: automations.StepError},
-		{name: "workbench automation", err: fmt.Errorf("%w: workbench 3's automation cannot write yet", tools.ErrWorkbenchAutomationWrite),
-			want: "NotAvailable|create_target: workbench automations get writes in a later phase: workbench 3's automation cannot write yet",
+		{name: "run gone", err: fmt.Errorf("automation run 3: %w", tools.ErrAutomationRunGone),
+			want: "NotAvailable|create_target: automation run 3: the automation run no longer exists",
 			step: automations.StepError},
 		{name: "other", err: tools.ErrNotWritable,
 			want: "ToolError|create_target: tool is not a write tool", step: automations.StepError},

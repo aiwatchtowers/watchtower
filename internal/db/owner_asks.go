@@ -37,6 +37,8 @@ type OwnerAsk struct {
 	Origin          string // agent | chat; '' on insert = agent
 	ChatAskedAt     string // origin chat only: when it was asked in the terminal (agent_state_at format)
 	WithdrawnAt     string // when it was withdrawn (created_at's format); '' while not, or withdrawn before 00107
+	// AutomationRunID is the automation run the ask belongs to (00122); NULL = not an automation's.
+	AutomationRunID sql.NullInt64
 }
 
 // OwnerAskFilter selects the asks of one workbench.
@@ -47,6 +49,9 @@ type OwnerAskFilter struct {
 	SessionID int64
 	// Limit caps the rows; 0 = no cap.
 	Limit int
+	// ExcludeAutomation leaves automation runs' asks out (a session-side
+	// reader: list_asks).
+	ExcludeAutomation bool
 }
 
 // Withdrawn reasons (owner_asks.withdrawn_reason).
@@ -67,7 +72,7 @@ const (
 	ownerAskHead = `a.id, a.project_id, a.session_id, a.target_id, a.kind, a.title, a.summary, a.changes,
 	a.payload, a.doc_path, `
 	ownerAskTail = `, a.previous_ask_id, a.status, a.withdrawn_reason, a.answer, a.created_at,
-	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at`
+	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at, a.automation_run_id`
 	ownerAskCols = ownerAskHead + `a.doc_snapshot` + ownerAskTail
 	// ownerAskListCols leaves doc_snapshot out: it holds up to 2 MiB a row.
 	ownerAskListCols = ownerAskHead + `''` + ownerAskTail
@@ -77,11 +82,16 @@ const (
 // the ask's session is the given one, none, or a row that is gone.
 const answeredForSessionPredicate = `(a.session_id = ? OR a.session_id IS NULL OR s.id IS NULL)`
 
+// notAutomationAsk (over alias a) keeps the asks no automation run filed:
+// every session-side reader applies it, so an automation's ask never reaches
+// a session (its run waits for the answer itself).
+const notAutomationAsk = `a.automation_run_id IS NULL`
+
 func scanOwnerAsk(row interface{ Scan(...any) error }) (*OwnerAsk, error) {
 	var a OwnerAsk
 	if err := row.Scan(&a.ID, &a.WorkbenchID, &a.SessionID, &a.TargetID, &a.Kind, &a.Title, &a.Summary, &a.Changes,
 		&a.Payload, &a.DocPath, &a.DocSnapshot, &a.PreviousAskID, &a.Status, &a.WithdrawnReason, &a.Answer,
-		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt); err != nil {
+		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt, &a.AutomationRunID); err != nil {
 		return nil, err
 	}
 	return &a, nil
@@ -136,10 +146,10 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 	}
 	res, err := tx.Exec(`INSERT INTO owner_asks
 		(project_id, session_id, target_id, kind, title, summary, changes, payload, doc_path, doc_snapshot, previous_ask_id,
-		 level, origin, chat_asked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 level, origin, chat_asked_at, automation_run_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.WorkbenchID, a.SessionID, a.TargetID, a.Kind, a.Title, a.Summary, a.Changes, a.Payload,
-		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt)
+		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt, a.AutomationRunID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("inserting ask: %w", err)
 	}
@@ -195,12 +205,13 @@ const askNowSQL = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 // LastWithdrawnByTitle returns workbench workbenchID's ask of kind the agent
 // withdrew (withdrawn_reason agent) most recently, at or after since, whose
 // asks.NormalizeTitle equals normTitle; nil when there is none. Another kind
-// never matches: a revision must keep the kind. An ask
+// never matches: a revision must keep the kind, nor does an automation's ask. An ask
 // withdrawn before migration 00107 has no withdrawn_at and never matches.
 // DocSnapshot is left empty.
 func (db *DB) LastWithdrawnByTitle(workbenchID int64, kind, normTitle string, since time.Time) (*OwnerAsk, error) {
 	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
 		WHERE a.project_id = ? AND a.kind = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.withdrawn_at >= ?
+		AND `+notAutomationAsk+`
 		ORDER BY a.withdrawn_at DESC, a.id DESC`, workbenchID, kind, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
 	if err != nil {
 		return nil, err
@@ -215,12 +226,14 @@ func (db *DB) LastWithdrawnByTitle(workbenchID int64, kind, normTitle string, si
 
 // RecentOpenQuestionAsk returns session sessionID's newest open question ask
 // filed at or after since, other than excludeID (0 = none: the ask the new
-// one supersedes), for ask_owner's series hint; nil when there is none. Call
+// one supersedes), for ask_owner's series hint; nil when there is none (an
+// automation's ask never counts). Call
 // it before filing the new ask, which would otherwise find itself.
 // DocSnapshot is left empty.
 func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID int64) (*OwnerAsk, error) {
 	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
 		WHERE a.session_id = ? AND a.status = 'open' AND a.kind = 'question' AND a.created_at >= ? AND a.id != ?
+		AND `+notAutomationAsk+`
 		ORDER BY a.id DESC LIMIT 1`, sessionID, since.UTC().Format(askCreatedAtLayout), excludeID)
 	if err != nil || len(list) == 0 {
 		return nil, err
@@ -261,6 +274,9 @@ func (db *DB) ListOwnerAsks(workbenchID int64, f OwnerAskFilter) ([]OwnerAsk, er
 	if f.SessionID != 0 {
 		q += ` AND a.session_id = ?`
 		args = append(args, f.SessionID)
+	}
+	if f.ExcludeAutomation {
+		q += ` AND ` + notAutomationAsk
 	}
 	q += ` ORDER BY CASE a.status WHEN 'answered' THEN 0 WHEN 'open' THEN 1 ELSE 2 END, a.id DESC`
 	if f.Limit > 0 {
@@ -336,10 +352,11 @@ func (db *DB) MarkOwnerAskDelivered(workbenchID, id int64) (bool, error) {
 // AnsweredAsksForBrief returns workbench workbenchID's answered asks for the
 // brief of session sessionID (0 = no session): those of that session, of no
 // session or of a session row that is gone, oldest answer first; others counts
-// the answered asks of the workbench's other sessions. DocSnapshot is left empty.
+// the answered asks of the workbench's other sessions. An automation's ask is
+// in neither. DocSnapshot is left empty.
 func (db *DB) AnsweredAsksForBrief(workbenchID, sessionID int64) (list []OwnerAsk, others int, err error) {
 	const from = ` FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
-		WHERE a.project_id = ? AND a.status = 'answered' AND `
+		WHERE a.project_id = ? AND a.status = 'answered' AND ` + notAutomationAsk + ` AND `
 	list, err = db.queryOwnerAsks(`SELECT `+ownerAskListCols+from+answeredForSessionPredicate+
 		` ORDER BY a.answered_at, a.id`, workbenchID, sessionID)
 	if err != nil {
@@ -350,4 +367,33 @@ func (db *DB) AnsweredAsksForBrief(workbenchID, sessionID int64) (list []OwnerAs
 		return nil, 0, fmt.Errorf("counting other sessions' answered asks: %w", err)
 	}
 	return list, others, nil
+}
+
+// endedRunAskSQL (over alias a) selects the open asks whose automation run
+// has ended.
+const endedRunAskSQL = `a.status = 'open' AND a.automation_run_id IN (
+	SELECT id FROM automation_runs WHERE status NOT IN ('queued','running','waiting'))`
+
+// WithdrawAsksOfEndedAutomationRuns withdraws (WithdrawnByAgent) every open
+// ask whose automation run has ended — a daemon restart, or a cancel racing
+// the ask's insert, leaves one no run waits for — and returns how many. The
+// executor calls it on every poll, so it checks read-only first.
+func (db *DB) WithdrawAsksOfEndedAutomationRuns() (int, error) {
+	var found bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM owner_asks a WHERE ` + endedRunAskSQL + `)`).Scan(&found); err != nil {
+		return 0, fmt.Errorf("finding asks of ended automation runs: %w", err)
+	}
+	if !found {
+		return 0, nil
+	}
+	res, err := db.Exec(`UPDATE owner_asks AS a SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = `+askNowSQL+`
+		WHERE `+endedRunAskSQL, WithdrawnByAgent)
+	if err != nil {
+		return 0, fmt.Errorf("withdrawing asks of ended automation runs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("withdrawing asks of ended automation runs: %w", err)
+	}
+	return int(n), nil
 }
