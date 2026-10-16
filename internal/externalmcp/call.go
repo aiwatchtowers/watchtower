@@ -31,6 +31,7 @@ func CallTool(ctx context.Context, spec ServerSpec, tool string, args json.RawMe
 	client := mcp.NewClient(&mcp.Implementation{Name: "watchtower", Version: "1"}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		stopStdioServer(transport) // a server that started but failed the handshake
 		return nil, withStderr(ctxOr(ctx, fmt.Errorf("connecting to the server: %w", err)), stderr)
 	}
 	defer func() { _ = session.Close() }()

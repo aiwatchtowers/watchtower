@@ -82,6 +82,45 @@ func TestCallTool_ContextDeadlineStopsServer(t *testing.T) {
 		5*time.Second, 20*time.Millisecond, "server process group must be gone")
 }
 
+// A stdio server that starts but fails the handshake is still stopped as a
+// group: its grandchild does not outlive CallTool or ListTools.
+func TestCallTool_FailedHandshakeStopsServerGroup(t *testing.T) {
+	for name, call := range map[string]func(context.Context, ServerSpec) error{
+		"CallTool": func(ctx context.Context, spec ServerSpec) error {
+			_, err := CallTool(ctx, spec, "get_thing", nil)
+			return err
+		},
+		"ListTools": func(ctx context.Context, spec ServerSpec) error {
+			_, err := ListTools(ctx, spec)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			exe, err := os.Executable()
+			require.NoError(t, err)
+			spec := ServerSpec{Kind: "stdio", Command: exe, Env: map[string]string{fakeStdioServerEnv: "garble", "WT_FAKE_PIDFILE": pidFile}}
+			var pid int
+			t.Cleanup(func() {
+				if pid > 0 {
+					_ = syscall.Kill(-pid, syscall.SIGKILL)
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			require.Error(t, call(ctx, spec))
+			require.NoError(t, ctx.Err(), "the handshake failed, the context did not end")
+
+			raw, rerr := os.ReadFile(pidFile)
+			require.NoError(t, rerr, "the server must have started")
+			pid, rerr = strconv.Atoi(string(raw))
+			require.NoError(t, rerr)
+			assert.Eventually(t, func() bool { return syscall.Kill(-pid, 0) != nil },
+				2*time.Second, 20*time.Millisecond, "the server's process group must be gone")
+		})
+	}
+}
+
 func TestCallTool_HTTPHeaders(t *testing.T) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "1"}, nil)
 	server.AddTool(&mcp.Tool{Name: "get_thing", InputSchema: map[string]any{"type": "object"}},

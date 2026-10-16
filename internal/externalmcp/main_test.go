@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"testing"
 
@@ -13,13 +14,24 @@ import (
 // fakeStdioServerEnv makes the test binary act as a stdio MCP server (one
 // tool, "list_things") instead of running the tests — TestListTools_Stdio
 // starts it as a connection's command; "fail" makes it die at startup with a
-// message on stderr.
+// message on stderr; "garble" starts a grandchild in its process group,
+// writes its own pid to WT_FAKE_PIDFILE, answers initialize with junk and
+// exits, leaving the grandchild behind.
 const fakeStdioServerEnv = "WT_EXTERNALMCP_FAKE_STDIO_SERVER"
 
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeStdioServerEnv) == "fail" {
 		fmt.Fprintln(os.Stderr, "fake server: missing API key")
 		os.Exit(1)
+	}
+	if os.Getenv(fakeStdioServerEnv) == "garble" {
+		child := exec.Command("sleep", "60")
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		_ = os.WriteFile(os.Getenv("WT_FAKE_PIDFILE"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+		fmt.Println("not a JSON-RPC message")
+		os.Exit(0)
 	}
 	if os.Getenv(fakeStdioServerEnv) == "1" {
 		server := mcp.NewServer(&mcp.Implementation{Name: "fake-stdio", Version: "1"}, nil)
