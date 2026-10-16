@@ -228,7 +228,7 @@ must be able to undo the whole feature for a folder in one step.
 
 ## PROJ-03 — the Desktop never writes a workbench document behind anyone's back
 
-**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone with attached documents; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #568; amended 2026-10-16 — Watchtower writes automation recipes in `.watchtower/automations/` only on the owner's Save or Approve, owner approved in ask #272)
+**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone with attached documents; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #568; amended 2026-10-16 — Watchtower writes automation recipes in `.watchtower/automations/` only on the owner's Save or Approve, owner approved in ask #272; amended 2026-10-16 — and on the owner's template install, owner approved in ask #188 (2026-10-16, install-template))
 
 **Observable:** The Desktop writes files of the workbench folder only through
 the code viewer — the owner's own actions there: the Files pane editor's saves
@@ -304,6 +304,20 @@ file; the write is atomic (`fsutil.WriteFileAtomic`); no other path of the
 folder is written, no workbench MCP tool writes a recipe, and the daemon never
 writes the folder.
 
+**Amended 2026-10-16 (Automations P5/P6 templates, board #753; owner approved
+in ask #188 (2026-10-16, install-template) — not the 2026-10-12 ask #188 of
+board #565/#568, a colliding number):** the owner's template install is one
+more explicit owner action that writes automation recipes:
+`automations install-template <name> --workbench N` (and the Desktop
+gallery's install, which calls it) writes recipe files only under
+`<folder>/.watchtower/automations/`, refuses a slug that is already taken (a
+file in the folder or an index row of the workbench, a removed one included)
+before anything is written and so never overwrites a file, writes each file
+atomically (`fsutil.WriteFileAtomic`), refuses a recipe folder with a symlink
+in its existing path (`automations.RefuseLinkedRecipeDir`), and installs every
+recipe unconfirmed and disabled. A failed install removes only the files that
+call wrote. No other path of the folder is written.
+
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
 the terminal and the Desktop — would race and lose either the agent's or
 the owner's edits. The 2026-10-02 amendment keeps that promise for the
@@ -320,6 +334,7 @@ owner fix a line by hand.
 - Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/workbench_docs.go internal/tools/workbench_asks.go`
 (expected: no match).
 - Automation recipes (2026-10-16, ask #272): `internal/automations/authoring/save_workbench_test.go::TestSaveAutomation_WorkbenchWritesIntoItsFolder` (an approved save writes only `.watchtower/automations/<slug>.md`, nothing at propose), `cmd/automations_test.go::TestAutomationsCLI_SavePathOutsideWorkbenchAutomationsRefused` (`save --path` anywhere else in the folder is refused, nothing written); supporting: `TestSaveAutomation_WorkbenchUnknownRefused`, `TestSaveAutomation_WorkbenchSymlinkedRecipeDirRefused` (same file as the first), `cmd/automations_test.go::TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad`, `internal/automations/authoring/save_test.go::TestSaveAutomation_RefusesWhenFileChangedSincePropose`
+- Template install (2026-10-16, ask #188 (2026-10-16, install-template)) — in `cmd/automations_templates_test.go`: `TestInstallTemplate_WorkbenchScopeRules`, `TestInstallTemplate_RefusesExistingSlug`, `TestInstallTemplate_RefusesLinkedWorkbenchDir`, `TestInstallTemplate_InstalledUnconfirmedAndDisabled`, `TestInstallTemplate_FailedWriteRollsBack`, `TestInstallTemplate_FailedRescanRollsBack`
 
 **Locked since:** 2026-09-29
 
@@ -2050,6 +2065,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
+- 2026-10-16 (Automations P6 templates, board #753; **PROJ-03 amended, owner approved in ask #188 (2026-10-16, install-template)** — a different ask from the 2026-10-12 ask #188 of board #565/#568): `automations install-template <name> --workbench N`, and the Desktop gallery install that calls it, count as an explicit owner write of automation recipes: only under `<folder>/.watchtower/automations/`, a taken slug refused, never an overwrite, atomic writes, a symlinked path component refused, every recipe installed unconfirmed and disabled. Amendment text in PROJ-03 next to the ask #272 one (kept as it was); the existing `TestInstallTemplate_*` guards are listed under PROJ-03; no code or guard changed.
 - 2026-10-16 (Automations P5 Task 8, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §14.6, D17; **PROJ-03 amended, owner approved in ask #272**): P3's ruling R-P3-5 is lifted — `save_automation` takes `workbench_id`: Normalize resolves the workbench through `Backends().Workbench` (an unknown one, or a recipe folder with a symlink in its existing path, is refused with no row) and pins `path = <folder>/.watchtower/automations/<slug>.md` (canonical) and scope `workbench:<id>`; Execute, in the owner's `actions apply` process after Approve, re-checks the path, the symlink rule and the pinned content hash, writes atomically (creating `.watchtower/automations/` 0755), rescans that folder and confirms. `automations save --path` already wrote only that folder's `<slug>.md` of a known workbench (P1); the shared symlink check moved to `automations.RefuseLinkedRecipeDir`. The amendment text is in PROJ-03; new guards `TestSaveAutomation_WorkbenchWritesIntoItsFolder`, `TestAutomationsCLI_SavePathOutsideWorkbenchAutomationsRefused`; every existing PROJ-03 guard (`TestProj03_AskOwnerNeverWritesTheFolder`, the code viewer's `testProj03*`) unchanged. The Desktop form's workbench rows become editable in Task 12.
 - 2026-10-16 (Automations P5 part 1, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §13): **PROJ-02 strengthened** — deleting a workbench also removes its automation rows (`automations`, `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`) and the owner asks its automations filed; guard `TestProj02_DeleteRemovesAutomationRows`; the recipe files under `.watchtower/automations/` stay (owner's repo files). **PROJ-12/PROJ-13:** an automation's ask never reaches a session (see the entry above; guard `TestAutomationAsks_InvisibleToSessionReaders`); the Desktop-side guard that the terminal delivery excludes it follows in part 2. **PROJ-11 note, no text changed:** a session an automation's `session()` starts is an ordinary workbench session (same hooks, states, report and cleanup); for the run, "stopped" means the process ending, reported by the Desktop through `automations session-ended` (R-P5-3). No guard relaxed.
 - 2026-10-16 (Automations P5 Task 6, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §5, D6/D7): **PROJ-12 and PROJ-13 strengthened — no contract text weakened, no guard changed.** A workbench automation's `ask()` files an `owner_asks` row with `session_id` NULL and `automation_run_id` set (migration `00122`); its run waits for the answer itself and marks it `delivered`. Every session-side reader leaves such a row out (`a.automation_run_id IS NULL`): the brief's "Answered asks for you" and its other-sessions count (`AnsweredAsksForBrief`), `list_asks` (`OwnerAskFilter.ExcludeAutomation`), `get_ask`, `withdraw_ask` and ask_owner's `previous_ask_id` (all through `askInWorkbench`: "no ask with id N"), the series hint (`RecentOpenQuestionAsk`) and the withdrawn-title check (`LastWithdrawnByTitle`) — so PROJ-12's "an ask with no session … the session's next `workbench brief` lists it" never applies to an automation's ask, and no session's `get_ask` can deliver it. The owner-facing readers keep it (the Waiting-for-you stack, `CountOpenOwnerAsks` — the 30-ask cap stays per workbench —, badges, `workbench asks --json`, the daily briefing). **PROJ-13:** the Stop and `PreToolUse` ask guards read no `owner_asks` row (they classify the message and read the session row and presence), so they cannot see an automation's ask; text unchanged. The Desktop's terminal delivery of an automation ask is excluded in the Swift phase (Task 12). Guards: `internal/db/owner_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`, `internal/tools/workbench_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`; every existing PROJ-12/PROJ-13 guard green unmodified.
