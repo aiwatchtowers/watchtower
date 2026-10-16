@@ -27,15 +27,14 @@ A list of services (Slack, Google, Email, Calendar, Jira, Quick Connections) wit
   - **Day Plan**: **Generate at hour**, **Working hours:**, **Max timeblocks**, and **Backlog min** / **Backlog max** (saved, but not used by the plan today). See [Day plan](../features/day-plan.md).
   - **Ideas**: **Mining interval (hours)**, 1–48. See [Ideas and decisions](../features/ideas-and-decisions.md).
 - Notifications:
-  - **Notification Types**.
-  - **Meeting Reminders**: minutes before, 0–60. The "still recording" alert ignores the toggle and the minutes; only **Quiet Hours** silence it.
-  - **Quiet Hours**: one on/off switch, no hours. It holds back only some notices; see [Known issues](../troubleshooting/known-issues.md).
-  - **Test**.
+  - One **Notifications** section holds every switch: **Pause notifications**, **Decision notifications**, **Briefing notifications**, **Workbench notifications**, **Claude plan limits**, **Notify about unknown voices** and **Meeting reminders** with **Remind before meeting** (0–60 minutes; 0 is **Off**).
+  - **Pause notifications** (off by default) silences every notice, including the "still recording" alert, which no other switch affects. When you turn it off, new decisions and briefings, plan-limit warnings and reminders for meetings still ahead are sent; an update is announced on a later check; the rest are dropped.
+  - **Send Test Notification** works even while paused.
 - **Automations** off hides the tab and **Run Automation…**, and the daemon runs no recipe. See [Automations](../features/automations.md).
 
 ## Meetings
 
-- Four groups: **Engine** (engine, model, **Dictation model**, language set), **Recording** (**Auto-record on join**, **Live transcription**, **Preload model before meetings**, **Mic auto-gain (experimental)**), **Speakers** (**Speaker roles**, **Voice recognition**, **Notify about unknown voices**) and **Advanced**. See [Meeting recording](../features/meeting-recording.md) and [Voice dictation](../features/voice-dictation.md).
+- Four groups: **Engine** (engine, model, **Dictation model**, language set), **Recording** (**Auto-record on join**, **Live transcription**, **Preload model before meetings**, **Mic auto-gain (experimental)**), **Speakers** (**Speaker roles**, **Voice recognition**) and **Advanced**. See [Meeting recording](../features/meeting-recording.md) and [Voice dictation](../features/voice-dictation.md).
 
 ## System
 

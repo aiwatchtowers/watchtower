@@ -39,7 +39,7 @@ Attendees are matched to Slack people by email. An attendee with no Slack match 
 
 Before each meeting a notification fires, 5 minutes ahead by default. When the event has a conference link it carries **Join** and **Join + Record**. While the app is open, a banner at the top of the window shows the same countdown with **Join** and **Record**.
 
-If a recording linked to an event is still running 2 minutes after the event ends, a "Meeting ended — still recording" notification with **Stop recording** appears and repeats every 10 minutes. It ignores the reminder switch and is silenced only by Quiet Hours (an on/off switch, not a time range).
+If a recording linked to an event is still running 2 minutes after the event ends, a "Meeting ended — still recording" notification with **Stop recording** appears and repeats every 10 minutes. It ignores the reminder switch and the minutes, and only **Pause notifications** silences it. Pre-meeting reminders are held while paused and sent again if the meeting is still ahead when you turn it off.
 
 ## Using it
 
@@ -49,7 +49,7 @@ If a recording linked to an event is still running 2 minutes after the event end
 4. Click **Join** to open the meeting link. If **Auto-record on join** is on (the default, under **Settings → Meetings**) and nothing is recording, Join also starts a recording linked to the event.
 5. Click **Record** for the event itself, or **Record** in the list header for a meeting that has no event.
 
-To change reminders, go to **Settings → Features → Meeting Reminders**: **Meeting reminders** and **Remind before meeting** (0 to 60 minutes; 0 is **Off**).
+To change reminders, go to **Settings → Features → Notifications**: **Meeting reminders** and **Remind before meeting** (0 to 60 minutes; 0 is **Off**).
 
 ### What the prep contains
 

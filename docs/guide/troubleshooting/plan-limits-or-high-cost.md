@@ -22,7 +22,7 @@ Your Claude plan limit belongs to your Claude account, so Watchtower's backgroun
 5. Reduce parallel calls with **Workers** under **Settings → System → AI** (default 5).
 6. **Sign-in expired:** use Claude Code once so it refreshes its sign-in; the numbers return within 5 minutes, or press **Refresh** on the tab.
 7. **Rate limit in the chat:** wait a moment and press **Retry**.
-8. Notifications about limits are the **Claude plan limits** switch in **Settings → Features → Notification Types**.
+8. Notifications about limits are the **Claude plan limits** switch in **Settings → Features → Notifications**.
 
 ## How to check
 

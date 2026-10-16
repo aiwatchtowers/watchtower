@@ -82,7 +82,7 @@ It refreshes every 30 seconds while on screen, and when the session's state chan
 
 ### Get notified
 
-While Watchtower is in the background, a running session that stops, needs approval, hits an error or finishes sends one notice. A session waiting on an ask sends none of its own, because the ask already did. **Agents working** sends nothing. **Settings → Features → Notification Types → Workbench notifications** turns this on and off; it is on by default.
+While Watchtower is in the background, a running session that stops, needs approval, hits an error or finishes sends one notice. A session waiting on an ask sends none of its own, because the ask already did. **Agents working** sends nothing. **Settings → Features → Notifications → Workbench notifications** turns this on and off; it is on by default.
 
 ## When it's empty or wrong
 

@@ -67,7 +67,7 @@ When a voice is unknown, a notification says "N voices to label". Open the **Voi
 - **Review**: the list of known voices, spot-checks of recent automatic labels (**Correct** or **Wrong**), and **Export…** / **Import…** of a password-protected `.wtvoices` file. It holds only voice numbers, never audio or text.
 - **Train**: label many meetings at once; similar voices are grouped into one card.
 
-An imported voice only suggests a name until you confirm it. Turn the whole feature off with **Voice recognition** in **Settings → Meetings**; **Notify about unknown voices** only mutes the notification.
+An imported voice only suggests a name until you confirm it. Turn the whole feature off with **Voice recognition** in **Settings → Meetings**; **Notify about unknown voices** in **Settings → Features → Notifications** only mutes the notification.
 
 ## When it's empty or wrong
 

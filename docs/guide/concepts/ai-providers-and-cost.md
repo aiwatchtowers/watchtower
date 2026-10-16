@@ -54,7 +54,7 @@ Watchtower reads the numbers every 5 minutes with Claude Code's existing sign-in
 It never refreshes that sign-in, so if Claude Code's token has expired the tab shows the last numbers marked stale until you use Claude Code again. The source is an undocumented endpoint and can change. Codex and API-key accounts have no plan numbers.
 
 - The menu bar shows `5h N% · 7d M%`; a `⚠︎` prefix marks a warning. **Show in the menu bar** on this tab hides it.
-- Notifications fire once per limit per window, when the 5-hour or weekly limit is projected to be hit before it resets, and when any limit reaches 90%. The switch is **Claude plan limits** in **Settings → Features → Notification Types**.
+- Notifications fire once per limit per window, when the 5-hour or weekly limit is projected to be hit before it resets, and when any limit reaches 90%. The switch is **Claude plan limits** in **Settings → Features → Notifications**.
 - **Refresh** polls once now.
 - When a limit is projected to be hit, history backfill pauses ("Loading history paused — Claude plan limit"). Nothing else is held back.
 - The feature is **Claude plan limits** in Settings → Features; off stops the polling.
