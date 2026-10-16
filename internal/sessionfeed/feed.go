@@ -44,7 +44,8 @@ func (c Cursor) String() string { return c.Conv + ":" + strconv.FormatInt(c.Offs
 type AskLookup func(id int64) (title, answerText string, ok bool)
 
 // Feed is the result of Build. Subagents lists every subagent marker of all
-// conversations read so far with fresh status, even those before the cursor.
+// conversations given, with fresh status from the sidecar meta files, even
+// those before the cursor. Skipped and Unknown count only what this call read.
 type Feed struct {
 	Entries   []Entry
 	Subagents []Entry
@@ -54,9 +55,10 @@ type Feed struct {
 }
 
 // Build assembles the chat of the conversations in ledger order. With after,
-// conversations before after.Conv are not emitted and that one starts at
-// after.Offset; entries that changed since (a streamed message that grew)
-// are re-emitted with their original ID, callers upsert by ID.
+// conversations before after.Conv are not read, that one is read from
+// after.Offset and later ones from 0. An entry whose record lies after the
+// cursor is emitted with its original ID (a streamed message that grew);
+// callers upsert by ID.
 func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 	feed := &Feed{Unknown: map[string]int{}}
 	if after != nil {
@@ -70,49 +72,57 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 			}
 		}
 	}
-	read := false // an earlier conversation was readable
+	subIdx := map[string]int{} // marker id -> index in feed.Subagents
+	addSubagents := func(es []Entry, parsed bool) {
+		for _, e := range es {
+			if e.Kind != KindSubagent {
+				continue
+			}
+			if i, ok := subIdx[e.ID]; ok {
+				if parsed {
+					feed.Subagents[i] = e
+				}
+				continue
+			}
+			subIdx[e.ID] = len(feed.Subagents)
+			feed.Subagents = append(feed.Subagents, e)
+		}
+	}
+	read := false // an earlier conversation counts as read
 	for i, c := range convs {
-		full, err := parseFile(c, -1)
+		sessionDir := strings.TrimSuffix(c.Path, ".jsonl")
+		if afterIdx >= 0 && i < afterIdx {
+			addSubagents(metaMarkers(sessionDir, c.AgentSessionID), false)
+			read = true
+			continue
+		}
+		start := int64(0)
+		if i == afterIdx {
+			start = after.Offset
+		}
+		res, err := parseFile(c, start)
 		if err != nil {
 			return nil, err
 		}
-		if full == nil {
+		if res == nil {
+			addSubagents(metaMarkers(sessionDir, c.AgentSessionID), false)
 			continue
 		}
-		ResolveSubagents(strings.TrimSuffix(c.Path, ".jsonl"), full.Entries)
-		for _, e := range full.Entries {
-			if e.Kind == KindSubagent {
-				feed.Subagents = append(feed.Subagents, e)
-			}
-		}
-		start := int64(0)
-		switch {
-		case afterIdx >= 0 && i < afterIdx:
-			read = true
-			continue
-		case afterIdx >= 0 && i == afterIdx:
-			start = after.Offset
-		}
-		emit := full.Entries
-		if start > 0 {
-			prefix, err := parseFile(c, start)
-			if err != nil {
-				return nil, err
-			}
-			emit = changedSince(full.Entries, prefix.Entries)
-		}
+		ResolveSubagents(sessionDir, res.Entries)
+		addSubagents(res.Entries, true)
+		addSubagents(metaMarkers(sessionDir, c.AgentSessionID), false)
 		if read && start == 0 {
 			sep := Entry{ID: c.AgentSessionID + ":sep", Kind: KindSeparator, Conversation: c.AgentSessionID}
-			if len(full.Entries) > 0 {
-				sep.At = full.Entries[0].At
+			if len(res.Entries) > 0 {
+				sep.At = res.Entries[0].At
 			}
 			feed.Entries = append(feed.Entries, sep)
 		}
 		read = true
-		feed.Entries = append(feed.Entries, emit...)
-		feed.Cursor = Cursor{Conv: c.AgentSessionID, Offset: full.Offset}
-		feed.Skipped += full.Skipped
-		for k, n := range full.Unknown {
+		feed.Entries = append(feed.Entries, res.Entries...)
+		feed.Cursor = Cursor{Conv: c.AgentSessionID, Offset: res.Offset}
+		feed.Skipped += res.Skipped
+		for k, n := range res.Unknown {
 			feed.Unknown[k] += n
 		}
 	}
@@ -130,9 +140,9 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 	return feed, nil
 }
 
-// parseFile parses a conversation's transcript, up to limit bytes when
-// limit >= 0. A missing or non-regular file yields nil, not an error.
-func parseFile(c Conversation, limit int64) (*Result, error) {
+// parseFile parses a conversation's transcript from byte offset start. A
+// missing or non-regular file yields nil, not an error.
+func parseFile(c Conversation, start int64) (*Result, error) {
 	fi, err := os.Lstat(c.Path)
 	if errors.Is(err, os.ErrNotExist) || (err == nil && !fi.Mode().IsRegular()) {
 		return nil, nil
@@ -148,27 +158,10 @@ func parseFile(c Conversation, limit int64) (*Result, error) {
 		return nil, fmt.Errorf("transcript %s: %w", filepath.Base(c.Path), err)
 	}
 	defer func() { _ = f.Close() }()
-	var r io.Reader = f
-	if limit >= 0 {
-		r = io.LimitReader(f, limit)
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("transcript %s: %w", filepath.Base(c.Path), err)
 	}
-	return Parse(r, 0, c.AgentSessionID)
-}
-
-// changedSince keeps the entries that are new or whose text differs from the
-// same-ID entry parsed from the part the caller already has.
-func changedSince(full, prefix []Entry) []Entry {
-	seen := make(map[string]string, len(prefix))
-	for _, e := range prefix {
-		seen[e.ID] = e.Text
-	}
-	var out []Entry
-	for _, e := range full {
-		if text, ok := seen[e.ID]; !ok || text != e.Text {
-			out = append(out, e)
-		}
-	}
-	return out
+	return Parse(f, start, c.AgentSessionID)
 }
 
 // Locate finds the main transcript of agentSessionID under the Claude

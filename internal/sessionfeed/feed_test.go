@@ -137,3 +137,37 @@ func TestLocate_FindsInCandidateDirs(t *testing.T) {
 	_, ok = Locate(proj, []string{"/w/app"}, "z") // a subagent id is not a session
 	assert.False(t, ok)
 }
+
+func TestBuild_AfterCursorReadsOnlyTail(t *testing.T) {
+	dir := t.TempDir()
+	head := userStr("u1", "one")
+	b := writeConv(t, dir, "B", head+userStr("u2", "two"))
+	cur := Cursor{Conv: "B", Offset: int64(len(head))}
+	// the bytes before the cursor and the whole earlier conversation are unreadable
+	require.NoError(t, os.WriteFile(b.Path, []byte(repeat("x", len(head))+userStr("u2", "two")), 0o600))
+	a := Conversation{AgentSessionID: "A", Path: filepath.Join(dir, "A.jsonl")}
+	require.NoError(t, os.WriteFile(a.Path, []byte("not json\n"), 0o600))
+	f, err := Build([]Conversation{a, b}, &cur, nil)
+	require.NoError(t, err)
+	require.Len(t, f.Entries, 1)
+	assert.Equal(t, "two", f.Entries[0].Text)
+	assert.Zero(t, f.Skipped)
+	assert.Empty(t, f.Unknown)
+}
+
+func TestBuild_SubagentsFromMetaOnly(t *testing.T) {
+	dir := t.TempDir()
+	head := join(userStr("u1", "go"), assistantRec("a1", "m1", agentCall("tu1", "Explore", "look")))
+	a := writeConv(t, dir, "A", repeat("x", len(head))+userStr("u2", "later")) // head is garbage: never parsed
+	writeSub(t, filepath.Join(dir, "A"), "ag1",
+		`{"toolUseId":"tu1","finished":false,"agentType":"Explore","description":"look"}`, "")
+	f, err := Build([]Conversation{a}, &Cursor{Conv: "A", Offset: int64(len(head))}, nil)
+	require.NoError(t, err)
+	require.Len(t, f.Subagents, 1)
+	ref := f.Subagents[0].Subagent
+	assert.Equal(t, "tu1", f.Subagents[0].ID)
+	assert.Equal(t, StatusRunning, ref.Status)
+	assert.Equal(t, "ag1", ref.AgentID)
+	assert.Equal(t, "Explore", ref.Type)
+	assert.Equal(t, "look", ref.Description)
+}

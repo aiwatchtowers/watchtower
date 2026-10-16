@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -69,38 +70,53 @@ func resultText(raw json.RawMessage) string {
 }
 
 type subagentMeta struct {
-	ToolUseID string `json:"toolUseId"`
-	Finished  bool   `json:"finished"`
-	Shape     string `json:"requestShape"`
+	ToolUseID   string `json:"toolUseId"`
+	Finished    bool   `json:"finished"`
+	Shape       string `json:"requestShape"`
+	AgentType   string `json:"agentType"`
+	Description string `json:"description"`
+	agentID     string
+}
+
+// readMetas reads <sessionDir>/subagents/agent-*.meta.json by toolUseId, in
+// file-name order. Symlinks are never read.
+func readMetas(sessionDir string) (map[string]subagentMeta, []string) {
+	metas := map[string]subagentMeta{}
+	var order []string
+	dir := filepath.Join(sessionDir, "subagents")
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() {
+		return metas, nil
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "agent-*.meta.json"))
+	sort.Strings(files)
+	for _, f := range files {
+		fi, err := os.Lstat(f)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var m subagentMeta
+		if json.Unmarshal(raw, &m) != nil || m.ToolUseID == "" {
+			continue
+		}
+		m.agentID = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "agent-"), ".meta.json")
+		if _, dup := metas[m.ToolUseID]; !dup {
+			order = append(order, m.ToolUseID)
+		}
+		metas[m.ToolUseID] = m
+	}
+	return metas, order
 }
 
 // ResolveSubagents fills AgentID and Status of the subagent markers from
 // <sessionDir>/subagents/agent-<id>.meta.json, matched by toolUseId. Without a
 // meta file the status is "unknown". Symlinks are never read.
 func ResolveSubagents(sessionDir string, entries []Entry) []Entry {
-	metas := map[string]subagentMeta{}
-	agents := map[string]string{}
-	dir := filepath.Join(sessionDir, "subagents")
-	if fi, err := os.Lstat(dir); err == nil && fi.IsDir() {
-		files, _ := filepath.Glob(filepath.Join(dir, "agent-*.meta.json"))
-		for _, f := range files {
-			fi, err := os.Lstat(f)
-			if err != nil || !fi.Mode().IsRegular() {
-				continue
-			}
-			raw, err := os.ReadFile(f)
-			if err != nil {
-				continue
-			}
-			var m subagentMeta
-			if json.Unmarshal(raw, &m) != nil || m.ToolUseID == "" {
-				continue
-			}
-			base := filepath.Base(f)
-			metas[m.ToolUseID] = m
-			agents[m.ToolUseID] = strings.TrimSuffix(strings.TrimPrefix(base, "agent-"), ".meta.json")
-		}
-	}
+	metas, _ := readMetas(sessionDir)
 	for i := range entries {
 		ref := entries[i].Subagent
 		if entries[i].Kind != KindSubagent || ref == nil {
@@ -114,12 +130,32 @@ func ResolveSubagents(sessionDir string, entries []Entry) []Entry {
 		case !ok:
 			ref.Status = StatusUnknown
 		case m.Finished:
-			ref.AgentID, ref.Status = agents[ref.ToolUseID], StatusFinished
+			ref.AgentID, ref.Status = m.agentID, StatusFinished
 		default:
-			ref.AgentID, ref.Status = agents[ref.ToolUseID], StatusRunning
+			ref.AgentID, ref.Status = m.agentID, StatusRunning
 		}
 	}
 	return entries
+}
+
+// metaMarkers builds marker entries from the sidecar meta files alone.
+func metaMarkers(sessionDir, conv string) []Entry {
+	metas, order := readMetas(sessionDir)
+	var out []Entry
+	for _, id := range order {
+		m := metas[id]
+		typ := m.AgentType
+		if typ == "" {
+			typ = "general-purpose"
+		}
+		out = append(out, Entry{ID: id, Kind: KindSubagent, Conversation: conv, Subagent: &SubagentRef{
+			ToolUseID: id, AgentID: m.agentID, Type: typ, Description: m.Description, Status: StatusRunning,
+		}})
+		if m.Finished {
+			out[len(out)-1].Subagent.Status = StatusFinished
+		}
+	}
+	return out
 }
 
 // ParseSubagent reads a subagent transcript file into its own feed: the task
