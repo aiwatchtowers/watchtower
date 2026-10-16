@@ -12,7 +12,7 @@ The background sync pulls issues from the boards you selected every 15 minutes (
 
 - **Blockers** lists two kinds of issue. *Blocked* means the status name contains "block" and the issue is not done. *Stale* means it is in progress and its status category has not changed for more than 7 days.
 - **Workload** has one row per Jira assignee matched to a Slack user, by email first and then by a close name match, even when they have nothing open.
-- **Workload** signals: **Overload** when someone has more than 2 late issues, more than 3 blocked or more than 15 open. **Watch** above 0 late, above 1 blocked or above 10 open. **Low** when they have none open.
+- **Workload** signals: **Overload** when someone has more than 2 late issues, more than 3 blocked or more than 15 open. **Watch** above 0 late, above 1 blocked or above 10 open. **Low** when they have nothing open (the command-line dashboard also requires fewer than 5 Slack messages).
 - **Releases** shows fix versions that are not released and not archived, with an **At Risk** badge when more than 30% of the issues are blocked, or less than 7 days remain and under 80% is done.
 - **Project Map** gives each epic a status of **On Track**, **At Risk** or **Behind**, from its velocity over recent weeks against its due date.
 
@@ -20,7 +20,7 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 
 ### Linear
 
-`watchtower linear add` signs in with Linear, `watchtower linear teams` and `select` pick the teams, and the daemon then syncs them every 15 minutes (`linear.sync_interval_mins`) once the connection is made (`linear add`, `select` and `enable` switch `linear.enabled` on for you). The first pass loads every open issue and everything updated in the last 90 days. The data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it yet. The one place Linear counts today is knowing who you are: a connected Linear workspace can identify you for the briefing and the day plan.
+`watchtower linear add` signs in with Linear, `watchtower linear teams` and `select` pick the teams, and the daemon then syncs them every 15 minutes (`linear.sync_interval_mins`) once the connection is made (`linear add`, and signing in again, switch `linear.enabled` on for you). The first pass loads every open issue and everything updated in the last 90 days. The data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it yet. The one place Linear counts today is knowing who you are: a connected Linear workspace can identify you for the briefing and the day plan.
 
 ## Using it
 
