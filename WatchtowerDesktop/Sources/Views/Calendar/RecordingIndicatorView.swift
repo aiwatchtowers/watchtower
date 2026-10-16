@@ -181,9 +181,8 @@ struct RecordingIndicatorView: View {
             } label: {
                 Label("Stop", systemImage: "stop.fill")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.destructivePrimary)
             .controlSize(.small)
-            .tint(.red)
         }
         // Ideal width, never compressed: a squeezed capsule blanked the Stop
         // label and pushed the button out past the capsule's (and the
@@ -217,7 +216,7 @@ struct RecordingIndicatorView: View {
                 Button { expanded = false } label: { Image(systemName: "chevron.down") }
                     .buttonStyle(.plain).controlSize(.small)
                 Button { stop(center) } label: { Label("Stop", systemImage: "stop.fill") }
-                    .buttonStyle(.borderedProminent).controlSize(.small).tint(.red)
+                    .buttonStyle(.destructivePrimary).controlSize(.small)
             }
             Divider()
             liveTranscriptBody(center)
