@@ -66,4 +66,40 @@ final class ReviewEnvelopeDecodingTests: XCTestCase {
         XCTAssertNil(send.comments)
         XCTAssertNil(send.line)
     }
+
+    func testLensesAndRoundDeepFieldsDecode() throws {
+        let env = try decode("""
+            {"ok":true,"round":{"id":7,"status":"open","mode":"deep","folder_root":"/tmp/acme","base_sha":"b","base_label":"main",
+            "tree_sha":"t","prev_round_id":0,"prev_tree_sha":"","prev_tree_lost":false,
+            "phase":"chapters","chapter_key":"dir:cmd","active_seconds":42},
+            "lenses":[{"id":"tests","name":"Tests","builtin":true,"items":[{"key":"0123456789abcdef","text":"Covered?"}]}],
+            "lens_notes":["line 3: skipped"]}
+            """)
+        XCTAssertEqual(env.round?.phase, "chapters")
+        XCTAssertEqual(env.round?.chapterKey, "dir:cmd")
+        XCTAssertEqual(env.round?.activeSeconds, 42)
+        XCTAssertEqual(env.lenses?.first?.id, "tests")
+        XCTAssertEqual(env.lenses?.first?.builtin, true)
+        XCTAssertEqual(env.lenses?.first?.items, [.init(key: "0123456789abcdef", text: "Covered?")])
+        XCTAssertEqual(env.lensNotes, ["line 3: skipped"])
+    }
+
+    func testRoundWithoutDeepKeysDefaults() throws {
+        let env = try decode("""
+            {"ok":true,"round":{"id":7,"status":"open","mode":"quick","folder_root":"/tmp/acme","base_sha":"b","base_label":"main",
+            "tree_sha":"t","prev_round_id":0,"prev_tree_sha":"","prev_tree_lost":false}}
+            """)
+        XCTAssertEqual(env.round?.phase, "")
+        XCTAssertEqual(env.round?.chapterKey, "")
+        XCTAssertEqual(env.round?.activeSeconds, 0)
+        XCTAssertNil(env.lenses)
+        XCTAssertNil(env.lensNotes)
+    }
+
+    func testReviewPhaseStoredDefaultsToMeaning() {
+        XCTAssertEqual(ReviewPhase(stored: ""), .meaning)
+        XCTAssertEqual(ReviewPhase(stored: "x"), .meaning)
+        XCTAssertEqual(ReviewPhase(stored: "wrapup"), .wrapup)
+        XCTAssertEqual(ReviewPhase(stored: "chapters"), .chapters)
+    }
 }

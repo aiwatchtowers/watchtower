@@ -1,7 +1,8 @@
-# Diff reviewer — guided review of a session's changes (2026-10-16, Plan 1 of 3)
+# Diff reviewer — guided review of a session's changes (2026-10-16, Plans 1–2 of 3)
 
 Board #328. Spec: `docs/superpowers/specs/2026-10-16-workbench-diff-reviewer-design.md`.
-Plan 1: `docs/superpowers/plans/2026-10-16-diff-reviewer-p1-core.md`. Contracts:
+Plan 1: `docs/superpowers/plans/2026-10-16-diff-reviewer-p1-core.md`.
+Plan 2 (Deep mode): `docs/superpowers/plans/2026-10-16-diff-reviewer-p2-deep.md`. Contracts:
 `docs/inventory/review.md` (REVIEW-01/03/04/05; REVIEW-02 Undo is reserved for Plan 3)
 and the PROJ-12 amendment in `docs/inventory/workbench.md`.
 
@@ -88,6 +89,65 @@ Viewed, comment counts, collapsed files) and a Monaco diff page (`diff.html`) in
 side-by-side or inline mode; selecting lines offers **Comment**. It opens from the
 session row menu **Review Changes**; one model per session.
 
+## What Plan 2 ships (Deep mode)
+
+**Lenses (`internal/reviewdiff/lenses.go`, `lenses.md`).** Built-in review lenses, in
+order: `correctness`, `tests`, `security`, `simplicity`, `house_rules` (no built-in
+questions). A lens id is its name lowercased, every run of non `[a-z0-9]` characters
+replaced by `_` and trimmed; comments store the id in `review_comments.lens`, and
+`intent` is the Wrap-up lens. The workbench folder may extend them with
+`.watchtower/review.md` (the **workbench folder**, `projects.folder_path`, not the
+session worktree; only read, never written). Grammar: `## <name>` names a lens (a
+built-in is matched case-insensitively and extended; any other name is added after the
+built-ins in file order), `- <question>` is a question, blank lines are ignored, any
+other line (text before the first heading too) is skipped and reported as
+`line N: not a "## lens" heading or a "- question"`. A leading UTF-8 BOM is ignored. An
+item key is the first 16 hex characters of sha256 of the trimmed question; a duplicate
+question in one lens is kept once. Read rules: the file is read only when `.watchtower`
+is a real directory (lstat) and `review.md` a regular file opened
+`O_NOFOLLOW|O_NONBLOCK` and re-checked with fstat (same inode); over 65,536 bytes it is
+not read. Any refusal gives the built-in lenses plus one note; a missing file is no note.
+`workbench review context` returns `lenses` and `lens_notes` next to the items (the
+Desktop shows the notes; Refresh re-reads the file).
+
+**Checks (migration 00124 `review_checks`).** One row per
+`(round_id, chapter_key, lens, item_key)` with `state` in `checked` (a checklist
+question ticked), `commented` (turned into a comment), and the Wrap-up marks `done`,
+`partial`, `not_done`. Unticking deletes the row; rows cascade with the round. Checks of
+a chapter that no longer exists stay in the table.
+
+**Round state.** `review_rounds` carries `phase` (`meaning`, `chapters`, `wrapup`; `''`
+reads as `meaning`), `chapter_key` and `active_seconds`, returned in the round JSON of
+`review start`/`review diff`. `mode` (`quick|deep`) is now set by the Desktop, and a new
+round inherits the previous sent round's mode (Go, at create). Swift writes `mode`,
+`phase`, `chapter_key` and `active_seconds` only with `WHERE id = ? AND status = 'open'`;
+on a sent round the state is read-only (moving on screen is not saved). Reopening the
+app lands on the same phase and chapter.
+
+**Mechanical chapters (`ReviewChapters.swift`, no model).** The changed files are
+grouped by directory; a test file sits next to its one subject and comes first in the
+chapter; a chapter is capped at 400 changed lines (additions + deletions) and a larger
+directory is split into parts; generated and lock files (collapsed) go last. A chapter
+is done when all its files are Viewed.
+
+**Pace (`ReviewPace.swift`).** Active review time counts only while the window is key and
+the owner interacted within 120 s; one tick gap never counts more than 15 s. It is
+persisted to `active_seconds` about every 30 s (open rounds only). At 3,600 active
+seconds the header shows a break hint.
+
+**Phases and views (`ReviewChangesModel`, `// MARK: - Deep`; `Views/Workbench/Review/`).**
+Quick/Deep switch and a phase strip in the header. *Meaning*: the intent card (linked
+targets with their intent and plan task) and the design comments. *Chapters*: the chapter
+list, the per-chapter checklist (all lenses, ticking, **Comment** on a question turns it
+into a design comment and marks it `commented`), the Monaco diff. *Wrap-up*: comments
+grouped by chapter plus a General group, and the intent checklist — one item per linked
+target (`target:<id>`); Done / Partly / Not done are `done` / `partial` / `not_done`
+checks; Partly and Not done add a comment under the `intent` lens (`ReviewWrapUp`), and
+re-marking an item replaces its earlier intent draft.
+
+**Agent side.** `get_review` prints a comment's lens as a tag after its location, e.g.
+`[tests]` or `[intent]`.
+
 ## Flow
 
 1. Row menu **Review Changes** → `review start` snapshots the tree and opens the round.
@@ -104,8 +164,8 @@ session row menu **Review Changes**; one model per session.
 
 - Generated and vendored files are collapsed by name pattern only; `linguist-generated`
   attributes are not read.
-- Quick mode only (the `mode` column accepts `deep`, nothing sets it).
+- Deep mode uses mechanical chapters and all lenses on every chapter until Plan 3's overview; intent items are linked targets only (no free-form intent).
 - A repository with a local `filter.lfs.*` is snapshotted with raw content (filters are
   blanked, REVIEW-05), so LFS files show their pointer or raw bytes.
 - No Undo and no lessons yet (Plan 3, REVIEW-02); no PR source (the `source` column
-  accepts `pr`, Plan 2).
+  accepts `pr`).

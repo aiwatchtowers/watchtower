@@ -13,6 +13,8 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var script: [String: [String]] = [:]
     private var served: [String: Int] = [:]
     private var seen: [[String]] = []
+    /// The round's `active_seconds` as the DB held it when a `send` was served.
+    private(set) var activeSecondsAtSend: Int?
     private let db: DatabasePool
     private let projectID: Int64
     private let sessionID: Int64
@@ -68,6 +70,10 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
             if !wait { c.resume() }
         }
         if sub == "start" { try seedRound(answer) }
+        if sub == "send", let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
+            let seen = try await db.read { try Int.fetchOne($0, sql: "SELECT active_seconds FROM review_rounds WHERE id = ?", arguments: [id]) }
+            lock.withLock { activeSecondsAtSend = seen }
+        }
         if sub == "send", answer.contains(#""sent":true"#), let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
             try markSent(id)
         }
@@ -639,5 +645,213 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(resolved, .resolved)
         XCTAssertThrowsError(try h.model.resolve(id: id))
         XCTAssertNotNil(h.model.lastError)
+    }
+
+    // MARK: - Deep mode
+
+    private func deepStartJSON(status: String = "open") -> String {
+        """
+        {"ok":true,"round":{"id":7,"status":"\(status)","mode":"deep","phase":"chapters","chapter_key":"dir:cmd","active_seconds":90,
+         "folder_root":"/r","base_sha":"b","base_label":"main","tree_sha":"t7","prev_round_id":0,"prev_tree_sha":"","prev_tree_lost":false}}
+        """
+    }
+
+    private func deepContextJSON() -> String {
+        let lens = #"{"id":"correctness","name":"Correctness","builtin":true,"items":[{"key":"k1","text":"Edge cases?"}]}"#
+        return #"{"ok":true,"items":[{"target_id":5,"text":"Ship it","intent":""}],"lenses":[\#(lens)],"lens_notes":["note"]}"#
+    }
+
+    private func openDeep(_ h: Harness, paths: [String] = ["cmd/x.go", "pkg/y.go"]) async {
+        h.cli.script(["start": deepStartJSON(), "context": deepContextJSON(), "diff": diffJSON(paths)])
+        await h.model.open()
+    }
+
+    func testOpenRestoresDeepState() async throws {
+        let h = try harness()
+        await openDeep(h)
+        XCTAssertEqual(h.model.mode, .deep)
+        XCTAssertEqual(h.model.phase, .chapters)
+        XCTAssertEqual(h.model.currentChapterKey, "dir:cmd")
+        XCTAssertEqual(h.model.pace.activeSeconds, 90)
+        XCTAssertEqual(h.model.lenses.map(\.id), ["correctness"])
+        XCTAssertEqual(h.model.lensNotes, ["note"])
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertEqual(h.model.intentItems.map(\.key), ["target:5"])
+    }
+
+    func testModeAndPhasePersistOnOpenRound() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        try h.model.setMode(.deep)
+        try h.model.setPhase(.wrapup)
+        let row = try await h.db.read { try Row.fetchOne($0, sql: "SELECT mode, phase FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(row?["mode"] as String?, "deep")
+        XCTAssertEqual(row?["phase"] as String?, "wrapup")
+
+        let sent = try harness()
+        sent.cli.script(["start": deepStartJSON(status: "sent"), "context": deepContextJSON(), "diff": diffJSON(["cmd/x.go"])])
+        await sent.model.open()
+        try await sent.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent', mode = 'quick', phase = ''") }
+        XCTAssertThrowsError(try sent.model.setMode(.quick)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        XCTAssertThrowsError(try sent.model.setPhase(.meaning)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        XCTAssertEqual(ReviewChangesModel.ModelError.roundClosed.errorDescription, "This round was already sent, so it cannot change.")
+        let after = try await sent.db.read { try Row.fetchOne($0, sql: "SELECT mode, phase FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(after?["mode"] as String?, "quick")
+        XCTAssertEqual(after?["phase"] as String?, "")
+        XCTAssertEqual(sent.model.mode, .deep)
+    }
+
+    func testRefreshDropsVanishedChapter() async throws {
+        let h = try harness()
+        h.cli.script(["start": startJSON(id: 7, prev: 0), "context": #"{"ok":true,"items":[]}"#])
+        h.cli.script("diff", [diffJSON(["old/a.go", "new/b.go"]), diffJSON(["new/b.go"])])
+        await h.model.open()
+        try await h.model.selectChapter("dir:old")
+        try h.model.setCheck(chapterKey: "dir:old", lens: "correctness", itemKey: "k1", checked: true)
+        XCTAssertEqual(h.model.currentChapterKey, "dir:old")
+        await h.model.refresh()
+        XCTAssertEqual(h.model.currentChapterKey, "dir:new")
+        let rows = try await h.db.read { try ReviewQueries.checks($0, roundID: 7) }
+        XCTAssertEqual(rows.map(\.chapterKey), ["dir:old"])
+        for chapter in h.model.chapters { XCTAssertTrue(h.model.checks(forChapter: chapter.key).isEmpty) }
+    }
+
+    func testSetCheckTicksAndUnticks() async throws {
+        let h = try harness()
+        await openDeep(h)
+        try h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        XCTAssertEqual(h.model.checks(forChapter: "dir:cmd").map(\.state), [.checked])
+        try h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: false)
+        XCTAssertTrue(h.model.checks.isEmpty)
+    }
+
+    func testCommentOnCheckWritesLensCommentAndMarksCheck() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let item = try XCTUnwrap(h.model.lenses.first?.items.first)
+        try h.model.commentOnCheck(chapterKey: "dir:cmd", lens: "correctness", item: item, body: "What about nil?")
+        let rows = try await h.comments()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertNil(rows[0].path)
+        XCTAssertEqual(rows[0].lens, "correctness")
+        XCTAssertEqual(rows[0].body, "What about nil?")
+        XCTAssertEqual(rows[0].status, .draft)
+        XCTAssertEqual(h.model.checks(forChapter: "dir:cmd").map(\.state), [.commented])
+        XCTAssertEqual(h.model.comments, rows)
+    }
+
+    func testMarkIntentNotDoneAddsIntentComment() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let item = try XCTUnwrap(h.model.intentItems.first)
+        try h.model.markIntent(item, state: .notDone, note: "missing")
+        try h.model.markIntent(ReviewIntentItem(key: "target:6", text: "Other"), state: .partial, note: "")
+        let rows = try await h.comments()
+        XCTAssertEqual(rows.map(\.lens), ["intent", "intent"])
+        XCTAssertEqual(rows[0].body, ReviewWrapUp.intentCommentBody(partial: false, item: item, note: "missing"))
+        XCTAssertTrue(rows[1].body.hasPrefix("Partly done"))
+        XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.state), [.notDone, .partial])
+        XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.lens), ["intent", "intent"])
+    }
+
+    func testMarkIntentDoneAddsNoComment() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let item = try XCTUnwrap(h.model.intentItems.first)
+        try h.model.markIntent(item, state: .done, note: "")
+        let rows = try await h.comments()
+        XCTAssertTrue(rows.isEmpty)
+        XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.state), [.done])
+    }
+
+    func testRemarkingIntentReplacesItsDraft() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let item = try XCTUnwrap(h.model.intentItems.first)
+        try h.model.markIntent(item, state: .notDone, note: "missing")
+        try h.model.markIntent(item, state: .partial, note: "half")
+        let rows = try await h.comments().filter { $0.lens == "intent" && $0.status == .draft }
+        XCTAssertEqual(rows.map(\.body), [ReviewWrapUp.intentCommentBody(partial: true, item: item, note: "half")])
+    }
+
+    func testMarkingDoneRemovesTheIntentDraft() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let item = try XCTUnwrap(h.model.intentItems.first)
+        try h.model.markIntent(item, state: .notDone, note: "")
+        try h.model.markIntent(item, state: .done, note: "")
+        let rows = try await h.comments()
+        XCTAssertTrue(rows.isEmpty)
+        XCTAssertEqual(h.model.comments, rows)
+    }
+
+    func testSetModeThrowsWhenTheRowWasSentBehindTheModel() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent'") }
+        XCTAssertThrowsError(try h.model.setMode(.deep)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        let mode = try await h.db.read { try String.fetchOne($0, sql: "SELECT mode FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(mode, "quick")
+        XCTAssertEqual(h.model.round?.status, "sent")
+        XCTAssertEqual(h.model.mode, .quick)
+    }
+
+    func testOpenResetsBreakHintDismissed() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        h.model.breakHintDismissed = true
+        await h.model.open()
+        XCTAssertFalse(h.model.breakHintDismissed)
+    }
+
+    private func activeSeconds(_ h: Harness) async throws -> Int? {
+        try await h.db.read { try Int.fetchOne($0, sql: "SELECT active_seconds FROM review_rounds WHERE id = 7") }
+    }
+
+    func testActiveTimePersistsEvery30Seconds() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        // open() noted an interaction at real now; the fixed t0 below replaces it, and the first tick only sets the baseline.
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        h.model.noteInteraction(at: t0)
+        h.model.tick(at: t0, isKey: true)
+        for step in stride(from: 10, through: 29, by: 10) {
+            h.model.noteInteraction(at: t0.addingTimeInterval(Double(step)))
+            h.model.tick(at: t0.addingTimeInterval(Double(step)), isKey: true)
+        }
+        h.model.noteInteraction(at: t0.addingTimeInterval(29))
+        h.model.tick(at: t0.addingTimeInterval(29), isKey: true)
+        XCTAssertEqual(h.model.pace.activeSeconds, 29)
+        let early = try await activeSeconds(h)
+        XCTAssertEqual(early, 0)
+        h.model.noteInteraction(at: t0.addingTimeInterval(30))
+        h.model.tick(at: t0.addingTimeInterval(30), isKey: true)
+        let at30 = try await activeSeconds(h)
+        XCTAssertEqual(at30, 30)
+        h.model.noteInteraction(at: t0.addingTimeInterval(41))
+        h.model.tick(at: t0.addingTimeInterval(41), isKey: true)
+        h.model.flushState()
+        let at41 = try await activeSeconds(h)
+        XCTAssertEqual(at41, 41)
+    }
+
+    func testSendFlushesState() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["send": #"{"ok":true,"sent":false}"#])
+        await h.model.open()
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        h.model.noteInteraction(at: t0)
+        h.model.tick(at: t0, isKey: true)
+        h.model.noteInteraction(at: t0.addingTimeInterval(12))
+        h.model.tick(at: t0.addingTimeInterval(12), isKey: true)
+        let before = try await activeSeconds(h)
+        XCTAssertEqual(before, 0)
+        await h.model.send()
+        XCTAssertEqual(h.cli.activeSecondsAtSend, 12)
     }
 }

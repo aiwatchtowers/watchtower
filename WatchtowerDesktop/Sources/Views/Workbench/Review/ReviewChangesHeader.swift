@@ -32,6 +32,19 @@ struct ReviewChangesHeader: View {
                         .fixedSize()
                     }
                 }
+                Picker("Mode", selection: Binding(
+                    get: { model.mode },
+                    set: { try? model.setMode($0) } // a failure lands in lastError
+                )) {
+                    Text("Quick").tag(ReviewChangesModel.Mode.quick)
+                    Text("Deep").tag(ReviewChangesModel.Mode.deep)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(model.round?.status != "open")
+                .help("Quick: files and a diff. Deep: meaning, chapters with checklists, wrap-up")
+                if model.mode == .deep { Text(Self.progressLine(model)).foregroundStyle(.secondary) }
                 Spacer(minLength: 4)
                 Toggle("Inline", isOn: $inline)
                     .toggleStyle(.checkbox)
@@ -39,7 +52,7 @@ struct ReviewChangesHeader: View {
                 Button("Refresh", action: refresh)
                     .disabled(model.load != .ready || model.sending || model.refreshing)
                 Button("Send review (\(model.draftCount))") { Task { await model.send() } }
-                    .disabled(!canSend)
+                    .disabled(!Self.canSend(model))
                     .help("Send the drafts (and the comments carried from the last round) to the agent")
             }
             .font(.callout)
@@ -50,12 +63,25 @@ struct ReviewChangesHeader: View {
         }
     }
 
-    private var canSend: Bool {
+    static func canSend(_ model: ReviewChangesModel) -> Bool {
         let carried = model.comments.contains { $0.status == .carried }
         return model.load == .ready && !model.sending && !model.refreshing && (model.draftCount > 0 || carried)
     }
 
+    /// `<viewed>/<total> lines · <done>/<count> chapters · <h:mm> active`.
+    static func progressLine(_ model: ReviewChangesModel) -> String {
+        let p = model.progress
+        let seconds = model.pace.activeSeconds
+        let time = String(format: "%d:%02d", seconds / 3600, seconds % 3600 / 60)
+        return "\(p.viewedLines)/\(p.totalLines) lines · \(p.chaptersDone)/\(p.chapterCount) chapters · \(time) active"
+    }
+
     @ViewBuilder private var banners: some View {
+        if model.mode == .deep, model.pace.breakHintDue, !model.breakHintDismissed {
+            ReviewBanner(text: "You have reviewed for an hour — a short break helps you catch more.") {
+                model.breakHintDismissed = true
+            }
+        }
         if model.previousTreeLost, let round = model.round {
             ReviewBanner(text: "Round \(round.prevRoundId)'s snapshot is gone — showing all changes")
         }
