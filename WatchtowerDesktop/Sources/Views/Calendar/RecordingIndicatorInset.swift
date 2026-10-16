@@ -99,9 +99,9 @@ enum RecordingIndicatorCorner: String, CaseIterable {
     }
 
     /// How far the meeting banner (always top-centre) moves down: below the
-    /// reserved band when the stack sits in a top corner.
-    func bannerDrop(reservedInset: CGFloat) -> CGFloat {
-        isTop ? reservedInset : 0
+    /// whole stack, expanded panel included, when it sits in a top corner.
+    func bannerDrop(occupiedHeight: CGFloat) -> CGFloat {
+        isTop ? occupiedHeight : 0
     }
 
     /// The corner a drag released at `point` leaves the stack in; with no

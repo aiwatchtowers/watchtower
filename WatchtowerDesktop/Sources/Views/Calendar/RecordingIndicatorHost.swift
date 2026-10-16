@@ -25,7 +25,7 @@ struct RecordingIndicatorHost<Content: View>: View {
             }
             .overlay(alignment: .top) {
                 UpcomingMeetingBannerView()
-                    .padding(.top, corner.bannerDrop(reservedInset: layout.reservedInset))
+                    .padding(.top, corner.bannerDrop(occupiedHeight: layout.occupiedHeight))
             }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
             .coordinateSpace(.named(RecordingIndicatorCorner.coordinateSpace))

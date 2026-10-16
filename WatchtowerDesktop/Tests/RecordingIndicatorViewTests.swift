@@ -327,15 +327,16 @@ final class RecordingIndicatorViewTests: XCTestCase {
 
     /// The extract pill (always bottom-trailing) clears the whole stack,
     /// expanded panel included, only when they share the corner; the meeting
-    /// banner (always top) drops below the reserved band only when the stack
-    /// sits in a top corner. An empty stack moves neither.
+    /// banner (always top) clears the whole stack the same way, only when it
+    /// sits in a top corner — also with the panel expanded, when the
+    /// reserved band is 0. An empty stack moves neither.
     func testNeighboursStepAsideOnlyInTheSharedEdge() {
         for corner in RecordingIndicatorCorner.allCases {
             for (reserved, occupied) in [(CGFloat(0), CGFloat(0)), (56, 56), (0, 340)] {
                 XCTAssertEqual(corner.extractPillLift(occupiedHeight: occupied),
                                corner == .bottomTrailing ? occupied : 0, "\(corner) occupied \(occupied)")
-                XCTAssertEqual(corner.bannerDrop(reservedInset: reserved),
-                               corner.isTop ? reserved : 0, "\(corner) reserved \(reserved)")
+                XCTAssertEqual(corner.bannerDrop(occupiedHeight: occupied),
+                               corner.isTop ? occupied : 0, "\(corner) reserved \(reserved) occupied \(occupied)")
             }
         }
     }
@@ -351,6 +352,16 @@ final class RecordingIndicatorViewTests: XCTestCase {
 
     /// A release snaps to the nearest corner; before the window has been
     /// measured the stack stays where it is.
+    /// Verify finding (round 2): in a top corner with the live panel open
+    /// the band reserves nothing, yet the banner still drops below the panel.
+    func testBannerClearsTheExpandedPanelInATopCorner() {
+        let expanded = RecordingIndicatorInset.occupiedHeight(stackHeight: 310)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 310, expandedPanelShown: true), 0)
+        XCTAssertEqual(RecordingIndicatorCorner.topLeading.bannerDrop(occupiedHeight: expanded), expanded)
+        XCTAssertEqual(RecordingIndicatorCorner.topTrailing.bannerDrop(occupiedHeight: expanded), expanded)
+        XCTAssertEqual(RecordingIndicatorCorner.bottomLeading.bannerDrop(occupiedHeight: expanded), 0)
+    }
+
     func testReleaseKeepsTheCornerUntilTheWindowIsMeasured() {
         let topRight = CGPoint(x: 900, y: 50)
         for corner in RecordingIndicatorCorner.allCases {
