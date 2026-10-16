@@ -6,32 +6,34 @@ import ViewInspector
 @MainActor
 final class NotificationSettingsViewTests: XCTestCase {
 
-    /// Все три заголовка секций видны в дефолтном состоянии.
+    /// One Notifications section holds every switch; Test sits below it.
     func testSectionHeadersRendered() throws {
         let view = NotificationSettings()
         let inspected = try view.inspect()
 
-        XCTAssertNoThrow(try inspected.find(text: "Notification Types"))
-        XCTAssertNoThrow(try inspected.find(text: "Quiet Hours"))
+        XCTAssertNoThrow(try inspected.find(text: "Notifications"))
         XCTAssertNoThrow(try inspected.find(text: "Test"))
+        XCTAssertThrowsError(try inspected.find(text: "Notification Types"))
+        XCTAssertThrowsError(try inspected.find(text: "Quiet Hours"))
     }
 
-    /// Все три тогла присутствуют по своим лейблам.
+    /// Every notification switch by its label, unknown voices included (#290).
     func testAllTogglesRendered() throws {
         let view = NotificationSettings()
         let inspected = try view.inspect()
 
-        XCTAssertNoThrow(try inspected.find(text: "Decision notifications"))
-        XCTAssertNoThrow(try inspected.find(text: "Daily summary notifications"))
-        XCTAssertNoThrow(try inspected.find(text: "Enable quiet hours"))
+        for label in ["Pause notifications", "Decision notifications", "Briefing notifications",
+                      "Workbench notifications", "Claude plan limits", "Notify about unknown voices",
+                      "Meeting reminders"] {
+            XCTAssertNoThrow(try inspected.find(text: label), label)
+        }
     }
 
-    /// Секция Meeting Reminders: тогл и степпер минут присутствуют.
+    /// Meeting reminders: the toggle and the minutes stepper.
     func testMeetingRemindersSectionRendered() throws {
         let view = NotificationSettings()
         let inspected = try view.inspect()
 
-        XCTAssertNoThrow(try inspected.find(text: "Meeting Reminders"))
         XCTAssertNoThrow(try inspected.find(text: "Meeting reminders"))
         XCTAssertNoThrow(try inspected.find(text: "Remind before meeting"))
     }
