@@ -12,7 +12,7 @@
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/reviewdiff/` + `internal/db/review_rounds.go` + `internal/db/migrations/00119_*.sql` + `cmd/workbench_review.go` + `cmd/workbench_review_context.go` + `internal/tools/workbench_review.go` + `internal/gitbin/run.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/ReviewModels.swift,Database/Queries/ReviewQueries.swift,Services/Review/}` + `WatchtowerDesktop/Sources/ViewModels/ReviewChangesModel.swift`
+**Module:** `internal/reviewdiff/` + `internal/db/review_rounds.go` + `internal/db/migrations/00121_*.sql` + `cmd/workbench_review.go` + `cmd/workbench_review_context.go` + `internal/tools/workbench_review.go` + `internal/gitbin/run.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/ReviewModels.swift,Database/Queries/ReviewQueries.swift,Services/Review/}` + `WatchtowerDesktop/Sources/ViewModels/ReviewChangesModel.swift`
 **Last full audit:** 2026-10-16 (created)
 **Owner approval:** spec review ask #179 (2026-10-16), board #328; spec `docs/superpowers/specs/2026-10-16-workbench-diff-reviewer-design.md` §13.
 

@@ -39,7 +39,7 @@ comments and keeps the Viewed mark of every file whose content is unchanged.
   folder's `filter.*` drivers (REVIEW-05).
 
 **Go, storage and CLI.**
-- Migration 00119: `review_rounds` (status `open|sent|delivered`, one open round per
+- Migration 00121: `review_rounds` (status `open|sent|delivered`, one open round per
   session by a partial unique index), `review_comments` (status
   `draft|sent|carried|resolved|outdated`, anchored by path, side, lines and a quote with
   prefix/suffix), `review_viewed`. `internal/db/review_rounds.go` owns create, tree

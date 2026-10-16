@@ -150,7 +150,7 @@ func normalizeHost(host string) string {
 // name back.
 var accountLabelTables = map[string]bool{
 	"slack_accounts": true, "jira_accounts": true, "google_accounts": true,
-	"email_accounts": true, "calendar_accounts": true,
+	"email_accounts": true, "calendar_accounts": true, "linear_accounts": true,
 }
 
 // fillAccountLabel gives row id of table the automatic label built from base
@@ -214,7 +214,7 @@ func eachLabelRow(q interface {
 }
 
 func notRemoved(table string) string {
-	if table == "slack_accounts" || table == "jira_accounts" {
+	if table == "slack_accounts" || table == "jira_accounts" || table == "linear_accounts" {
 		return ` AND status != 'removed'`
 	}
 	return ""

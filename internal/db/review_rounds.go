@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Diff reviewer rounds (migration 00119, spec
+// Diff reviewer rounds (migration 00121, spec
 // 2026-10-16-workbench-diff-reviewer-design.md §5, §10). Go writes rounds and
 // the send transition; drafts and Viewed marks are the Desktop's.
 

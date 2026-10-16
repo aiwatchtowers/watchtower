@@ -14,7 +14,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     private static let known = Owner(
         id: "1:U1", source: .slack, slackUserID: "1:U1", email: "", jiraAccountID: "", displayName: "Me"
     )
-    private static let message = "Connect Slack, Google or Jira so Watchtower knows who you are"
+    private static let message = "Connect Slack, Google, Jira or Linear so Watchtower knows who you are"
 
     // MARK: - NoOwnerEmptyState
 

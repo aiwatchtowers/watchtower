@@ -1651,6 +1651,14 @@ Entry format:
 - rule-gap (candidate, Swift dim 6): *sibling surfaces that render the same status (menu bar label, tray, tab, notices) share one "is live" predicate. Gating one surface on `state` and another on non-nil is the tell.*
 - outcome: TBD
 
+## 2026-10-16 — feature/linear-integration (round 1) — verdict: changes-needed
+
+- contested: issue moved from a selected Linear team to an unselected one: upserting by UUID only helps if some selected team's filter still returns the issue; with a per-team `team.id eq` filter the row freezes under the old team/key and stays in `tracker_issues`, which has no team-selection filter. LINEAR-04's guard serves the "moved" node back under the OLD team's query, which the real API never does [6/7]
+- false-positive: none dismissed outright; F5 (Revoke treats HTTP 400 as success) downgraded to nit: it only decides whether a warning prints, and the token file is deleted either way [4]
+- miss: the moved-to-unselected-team staleness was caught only by codex; the prosecutor checked the UUID upsert and stopped there [6]
+- weak-dimension: 7 — a fake GraphQL server that ignores the request filter can't guard any filter-dependent contract; the fakes can't fail comment or planning pages either, yet LINEAR-01 is marked Enforced for those passes
+- rule-gap: a test fake for a filtered or paginated remote API must apply the filter it receives (or assert on it), else guards about what the filter returns are vacuous; and a CLI `sync` verb must exit non-zero when any account/unit fails (the Jira twin does, the Linear one printed and returned nil) — the bimodal-coverage rule again: the untested CLI entry point carried the bug
+
 ## 2026-10-16 — feature/first-run-month-backfill (history backfill: migration `history_backfill` (slack|gmail|imap|jira rows, 2-day chunks newest-first, 5-min budget, 3-strike skip, plan gate), `FirstSyncFrom` per source, `RunBackfillWindow`/`RunBackfillRollups`, account-scoped `ideas.BackfillEmail`/`BackfillJira` (R28/R29), Slack-done hooks stamp, memory gate, `watchtower backfill status`, Desktop `BackfillProgress`; BACKFILL-01..03; rulings R1–R32 in the SDD ledger; panel: prosecutor + codex (no findings), 3 specialists DOWN (not installed); judge verified against cff645540 by reading, no runs; judge synthesis, round 1) — verdict: changes-needed
 
 - contested (held major, prosecutor F1): R28/R29 made the Gmail and Jira AI steps account-scoped after a reviewer found cross-account re-mining, but the Slack source was not revisited: `ChannelsWithMessagesInRange` has no account filter, so a Slack workspace connected later re-digests the first workspace's chunk tails (`LastDigestInRange` ignores a forward digest whose `period_to` lies above the chunk). **When a fix scopes one source per account, apply the same check to every sibling source in the same change. A per-account row whose Process takes only `(from, to)` is the tell.** [6]
