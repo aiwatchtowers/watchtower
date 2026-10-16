@@ -230,6 +230,22 @@ package struct AutomationChange: Decodable, Equatable, Sendable {
     }
 }
 
+/// One write tool the recipe's manifest admits (`show --json` `auto_tools`):
+/// the edit form's Auto toggle, or an "Always asks" row when `alwaysAsks`.
+package struct AutomationAutoTool: Decodable, Equatable, Sendable {
+    package let tool: String
+    package let alwaysAsks: Bool
+
+    package init(tool: String, alwaysAsks: Bool) {
+        self.tool = tool
+        self.alwaysAsks = alwaysAsks
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case tool, alwaysAsks = "always_asks"
+    }
+}
+
 /// `show --json`. P2's `grants` key is not decoded: grants are read from
 /// `automation_tool_grants` (spec §9.4).
 package struct AutomationDetail: Decodable, Equatable, Sendable {
@@ -263,6 +279,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
     package let changesKnown: Bool
     package let changedBy: String
     package let changedAt: Date?
+    package let autoTools: [AutomationAutoTool]
 
     enum CodingKeys: String, CodingKey {
         case id, slug, scope, path, name, description, script, permissions, outputs, concurrency, enabled
@@ -272,7 +289,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         case missedPolicy = "missed_policy", pauseTimeoutHours = "pause_timeout_hours"
         case needsConfirmation = "needs_confirmation", parseError = "parse_error", contentHash = "content_hash"
         case approvalHash = "approval_hash", confirmedHash = "confirmed_hash", changesKnown = "changes_known"
-        case changedBy = "changed_by", changedAt = "changed_at"
+        case changedBy = "changed_by", changedAt = "changed_at", autoTools = "auto_tools"
     }
 
     package init(from decoder: Decoder) throws {
@@ -306,6 +323,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         changes = try c.decodeIfPresent([AutomationChange].self, forKey: .changes) ?? []
         changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
         changedBy = try c.decodeIfPresent(String.self, forKey: .changedBy) ?? ""
+        autoTools = try c.decodeIfPresent([AutomationAutoTool].self, forKey: .autoTools) ?? []
         if let text = try c.decodeIfPresent(String.self, forKey: .changedAt) {
             guard let date = AutomationDates.parse(text) else {
                 throw DecodingError.dataCorruptedError(forKey: .changedAt, in: c,

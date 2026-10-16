@@ -208,6 +208,50 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(refreshed, [7])
     }
 
+    /// Review Focus 1: the page's debounced last keystroke is pulled in before
+    /// validate, so the validated and saved bytes are the ones on screen.
+    func testSaveFlushesThePendingMonacoEdit() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
+        runner.on("save") { _ in Self.saveJSON(approval: "h1") }
+        let center = makeCenter()
+        await center.beginEdit(7)
+        let form = try XCTUnwrap(center.drafts[7]?.form)
+        form.fields.name = "Weekly digest"
+        let typed = form.renderedText().replacingOccurrences(of: "const a = 1;", with: "const a = 2;")
+        form.buffer.flushPending = { [weak form] in
+            guard let form else { return }
+            form.buffer.pageSent(text: typed, base: form.buffer.revision)
+        }
+        await center.save(7)
+        XCTAssertEqual(runner.fileTexts["validate"], typed)
+        XCTAssertEqual(runner.fileTexts["save"], typed)
+        XCTAssertEqual(center.saving[7], .done)
+    }
+
+    /// A save whose kept auto grant failed drops the draft but shows the
+    /// failure (never an endless spinner) until the form is closed.
+    func testAutoKeepFailureIsShownAfterTheDraftIsGone() async throws {
+        grants = [Fixtures.grant("create_jira_issue", hash: "h1")]
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2") }
+        runner.on("save") { _ in Self.saveJSON(approval: "h2") }
+        runner.on("auto") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: not admitted\n") }
+        let center = makeCenter()
+        await center.beginEdit(7)
+        center.drafts[7]?.form.fields.budgetTokens = 120_000
+        await center.save(7)
+        guard case var .review(plan) = center.saving[7] else { return XCTFail("no sheet") }
+        plan.keepAuto = ["create_jira_issue"]
+        await center.commit(7, plan: plan)
+
+        XCTAssertNil(center.drafts[7], "the recipe was saved")
+        guard case let .finished(message) = center.formContent(7) else {
+            return XCTFail("the form shows the outcome, got \(center.formContent(7))")
+        }
+        XCTAssertEqual(message, "Saved, but auto could not be kept for create_jira_issue: Error: not admitted")
+        center.discard(7)
+        guard case .loading = center.formContent(7) else { return XCTFail("closed") }
+    }
+
     func testTempFileRemovedOnFailure() async throws {
         runner.on("validate") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: boom\n") }
         let center = makeCenter()

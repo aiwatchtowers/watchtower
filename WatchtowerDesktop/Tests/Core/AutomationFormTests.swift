@@ -162,6 +162,33 @@ final class AutomationFormTests: XCTestCase {
         XCTAssertEqual(form.problems, [])
     }
 
+    /// A Monaco edit typed before a form change reached the page replaced
+    /// the text; it touched only the script, so the form change is spliced back.
+    func testFormEditLostToAScriptEditIsSplicedBack() throws {
+        let form = AutomationFormModel(detail: try Fixtures.detail())
+        let typedBase = form.buffer.revision
+        let typed = Fixtures.recipe.replacingOccurrences(of: "const a = 1;", with: "const a = 2;")
+        form.fields.name = "From the form"
+        form.buffer.pageSent(text: typed, base: typedBase)
+        XCTAssertTrue(form.renderedText().contains("name: \"From the form\""), "the form change is applied again")
+        XCTAssertTrue(form.renderedText().contains("const a = 2;"), "the script edit is kept")
+        XCTAssertFalse(form.frontmatterEditedInRecipe)
+        XCTAssertFalse(form.lostFormEdit)
+    }
+
+    /// The concurrent Monaco edit changed the settings too: the form pauses
+    /// and says its change did not land, never showing it as applied.
+    func testFormEditLostToASettingsEditSaysSo() throws {
+        let form = AutomationFormModel(detail: try Fixtures.detail())
+        let typedBase = form.buffer.revision
+        let typed = Fixtures.recipe.replacingOccurrences(of: "name: Digest", with: "name: Typed")
+        form.fields.budgetMinutes = 9
+        form.buffer.pageSent(text: typed, base: typedBase)
+        XCTAssertEqual(form.renderedText(), typed)
+        XCTAssertTrue(form.frontmatterEditedInRecipe)
+        XCTAssertTrue(form.lostFormEdit)
+    }
+
     func testOutOfRangeValuesAreBlocked() throws {
         let form = AutomationFormModel(detail: try Fixtures.detail())
         XCTAssertEqual(form.problems, [])

@@ -30,11 +30,14 @@ package final class AutomationFormModel {
     package var fields: RecipeFrontmatter {
         didSet {
             guard fields != oldValue, isEditable, !frontmatterEditedInRecipe else { return }
-            let text = RecipeFrontmatter.splice(fields, into: buffer.text)
-            formBlock = RecipeFrontmatter.block(in: text).map(String.init)
-            buffer.replace(text: text)
+            writeFields()
         }
     }
+
+    /// The form's last change was overwritten by an edit typed in the Monaco
+    /// pane at the same moment that also touched the settings: the form is
+    /// paused and says the change did not land.
+    package private(set) var lostFormEdit = false
 
     package let detail: AutomationDetail
     /// The recipe file being edited (frontmatter, description, script).
@@ -42,12 +45,42 @@ package final class AutomationFormModel {
 
     /// The frontmatter block as the form last wrote it (or as loaded).
     @ObservationIgnored private var formBlock: String?
+    /// Every block the form wrote or loaded: a page edit carrying one of the
+    /// older ones touched only the script.
+    @ObservationIgnored private var formBlocks: Set<String> = []
+    /// The buffer revision of the form's last splice.
+    @ObservationIgnored private var spliceRevision = 0
 
     package init(detail: AutomationDetail) {
         self.detail = detail
         fields = RecipeFrontmatter(detail: detail)
         buffer = RecipeBufferModel(automationID: detail.id, text: detail.recipeText, contentHash: detail.contentHash)
         formBlock = RecipeFrontmatter.block(in: detail.recipeText).map(String.init)
+        if let formBlock { formBlocks.insert(formBlock) }
+        buffer.onPageSent = { [weak self] base in self?.pageSent(base: base) }
+    }
+
+    private func writeFields() {
+        let text = RecipeFrontmatter.splice(fields, into: buffer.text)
+        formBlock = RecipeFrontmatter.block(in: text).map(String.init)
+        if let formBlock { formBlocks.insert(formBlock) }
+        buffer.replace(text: text)
+        spliceRevision = buffer.revision
+    }
+
+    /// A page edit typed before the form's last splice reached the page
+    /// replaced the text, form change included. When it touched only the
+    /// script (its settings block is one the form wrote earlier), the form's
+    /// fields are spliced in again; otherwise the form pauses and says so.
+    private func pageSent(base: Int) {
+        guard isEditable, base < spliceRevision else { return }
+        let block = RecipeFrontmatter.block(in: buffer.text).map(String.init)
+        guard block != formBlock else { return }
+        if let block, formBlocks.contains(block) {
+            writeFields()
+        } else {
+            lostFormEdit = true
+        }
     }
 
     /// Workbench recipes are edited in their folder in P3 (R-P3-5); the form

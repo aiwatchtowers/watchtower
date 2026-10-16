@@ -33,6 +33,13 @@ package final class RecipeBufferModel {
 
     package var isDirty: Bool { text != original }
 
+    /// Set by the editor view: pulls an edit the page still holds in its
+    /// 300 ms debounce into the buffer. A save awaits `flush()` first, so the
+    /// bytes it validates include the last keystroke.
+    @ObservationIgnored package var flushPending: (@MainActor () async -> Void)?
+    /// Set by the edit form: told the base revision of every edit the page sends.
+    @ObservationIgnored package var onPageSent: (@MainActor (Int) -> Void)?
+
     /// The text of the last load or reset.
     @ObservationIgnored private var original: String
     /// The content hash given with each revision.
@@ -53,6 +60,12 @@ package final class RecipeBufferModel {
             baseContentHash = hash
             textRevision = base
         }
+        onPageSent?(base)
+    }
+
+    /// Brings in the page's pending edit, if an editor is showing this buffer.
+    package func flush() async {
+        await flushPending?()
     }
 
     /// The host changed the text (the edit form spliced its fields into the

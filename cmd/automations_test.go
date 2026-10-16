@@ -443,7 +443,7 @@ func TestAutomationsCLI_ShowJSONKeys(t *testing.T) {
 		"description", "script", "recipe_text", "trigger_kind", "trigger_spec", "permissions", "outputs",
 		"budget_tokens", "budget_minutes", "concurrency", "missed_policy", "pause_timeout_hours", "enabled",
 		"runnable", "needs_confirmation", "parse_error", "content_hash", "approval_hash", "confirmed_hash", "widening", "grants",
-		"changes", "changes_known", "changed_by", "changed_at")
+		"changes", "changes_known", "changed_by", "changed_at", "auto_tools")
 }
 
 func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {

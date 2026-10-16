@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +16,7 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 )
 
 // automationsFlags holds every flag of the automations subcommands. Tests
@@ -258,6 +260,9 @@ type automationJSON struct {
 	Widening          []string `json:"widening"`
 	// Grants are the auto grants, inactive ones included (P2, spec §6.4).
 	Grants []automationGrantJSON `json:"grants"`
+	// AutoTools are the write tools the manifest admits, for the edit form's
+	// Auto toggles (P3); never null, empty for a recipe that does not parse.
+	AutoTools []automationAutoToolJSON `json:"auto_tools"`
 	// The confirmation sheet's Changed block (P3, spec §12.2, D26): see
 	// automationChanges and automationAuthor.
 	Changes      []automationChangeJSON `json:"changes"`
@@ -273,6 +278,30 @@ type automationChangeJSON struct {
 	Field string `json:"field"`
 	Old   string `json:"old"`
 	New   string `json:"new"`
+}
+
+// automationAutoToolJSON is one entry of show's auto_tools: a write tool the
+// manifest admits; always_asks marks one auto can never be turned on for (D14).
+type automationAutoToolJSON struct {
+	Tool       string `json:"tool"`
+	AlwaysAsks bool   `json:"always_asks"`
+}
+
+// automationAutoTools lists the write tools of reg the manifest of a admits
+// (Manifest.AdmitsWriteTool), sorted by name; [] when a does not parse.
+func automationAutoTools(reg *tools.Registry, a *db.Automation) []automationAutoToolJSON {
+	out := []automationAutoToolJSON{}
+	m, err := automationManifest(a)
+	if err != nil {
+		return out
+	}
+	for _, t := range reg.All() {
+		if m.AdmitsWriteTool(t) {
+			out = append(out, automationAutoToolJSON{Tool: t.Name, AlwaysAsks: t.AlwaysAsk})
+		}
+	}
+	slices.SortFunc(out, func(x, y automationAutoToolJSON) int { return strings.Compare(x.Tool, y.Tool) })
+	return out
 }
 
 // changedByAssistant is changed_by when an applied save_automation wrote the
@@ -298,7 +327,7 @@ func newAutomationJSON(database *db.DB, a *db.Automation, grants []db.Automation
 		Enabled: a.Enabled, Runnable: a.Runnable(), NeedsConfirmation: automationNeedsConfirmation(a),
 		ParseError: a.ParseError, ContentHash: a.ContentHash, ApprovalHash: a.ApprovalHash,
 		ConfirmedHash: a.ConfirmedHash, Widening: []string{}, Grants: newAutomationGrantsJSON(grants),
-		Changes: []automationChangeJSON{},
+		AutoTools: []automationAutoToolJSON{}, Changes: []automationChangeJSON{},
 	}
 	if j.ChangedBy, j.ChangedAt, err = automationAuthor(database, a); err != nil {
 		return automationJSON{}, err
@@ -395,7 +424,7 @@ func rfc3339UTC(s string) *string {
 }
 
 func runAutomationsShow(cmd *cobra.Command, args []string) error {
-	_, database, err := openAutomationsCmd()
+	cfg, database, err := openAutomationsCmd()
 	if err != nil {
 		return err
 	}
@@ -412,6 +441,7 @@ func runAutomationsShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	j.AutoTools = automationAutoTools(buildAutomationRegistry(cfg, database), a)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, j)

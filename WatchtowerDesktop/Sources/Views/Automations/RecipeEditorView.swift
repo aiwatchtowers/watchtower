@@ -66,6 +66,28 @@ struct RecipeEditorView: NSViewRepresentable {
             self.buffer = buffer
             self.readOnly = readOnly
             self.path = path
+            super.init()
+            registerFlush(on: buffer)
+        }
+
+        /// A save awaits this buffer's `flush()`: it pulls the page's
+        /// debounced edit into the buffer first.
+        private func registerFlush(on buffer: RecipeBufferModel) {
+            buffer.flushPending = { [weak self, weak buffer] in
+                guard let self, let buffer, buffer === self.buffer else { return }
+                await self.flush()
+            }
+        }
+
+        /// Pulls an edit the page holds in its 300 ms debounce into the buffer.
+        func flush() async {
+            guard state.ready, !readOnly, retiring == nil, let webView else { return }
+            let buffer = buffer
+            let modelID = RecipeEditorPageState.modelID(buffer)
+            guard let edits = await MonacoEditorView.Coordinator.takePending(from: webView) else { return }
+            for edit in edits where edit.id == modelID {
+                buffer.pageSent(text: edit.text, base: edit.base)
+            }
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -116,6 +138,7 @@ struct RecipeEditorView: NSViewRepresentable {
             let editable = retiring?.editable ?? !readOnly
             buffer = newBuffer
             path = newPath
+            registerFlush(on: newBuffer)
             generation += 1
             guard state.ready, let webView else {
                 retiring = nil

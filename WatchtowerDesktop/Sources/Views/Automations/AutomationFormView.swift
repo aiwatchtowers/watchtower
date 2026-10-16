@@ -20,20 +20,25 @@ struct AutomationFormView: View {
 
     var body: some View {
         Group {
-            if let form = editor.drafts[automationID]?.form {
+            switch editor.formContent(automationID) {
+            case let .editing(form):
                 AutomationFormContent(form: form, editor: editor, vm: vm, onChangeInWords: onChangeInWords) {
                     cancel(form)
                 }
-            } else if let error = editor.loadErrors[automationID] {
+            case let .loadFailed(message), let .finished(message):
                 VStack(spacing: 12) {
-                    Label(error, systemImage: "exclamationmark.triangle")
+                    Label(message, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                         .textSelection(.enabled)
-                    Button("Close", action: onClose)
-                        .keyboardShortcut(.cancelAction)
+                    Button("Close") {
+                        editor.discard(automationID)
+                        onClose()
+                    }
+                    .keyboardShortcut(.cancelAction)
                 }
                 .padding(24)
-            } else {
+                .frame(minWidth: 420)
+            case .loading:
                 ProgressView()
                     .frame(width: 720, height: 300)
             }
@@ -120,7 +125,7 @@ private struct AutomationFormContent: View {
                         spendSection
                         mayDoSection
                     }
-                    .disabled(!controlsEnabled)
+                    .disabled(!controlsEnabled || isBusy)
                     stateSection
                     scriptSection
                     messages
@@ -168,6 +173,10 @@ private struct AutomationFormContent: View {
             Label("Workbench automations are edited in their folder for now; this form only shows it.",
                   systemImage: "info.circle")
                 .foregroundStyle(.secondary)
+        } else if form.lostFormEdit {
+            Label("Your last change in the form did not land: the recipe below was edited at the same moment. The "
+                + "form is paused; save, or discard to use the form again.", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
         } else if form.frontmatterEditedInRecipe {
             Label("The settings were changed in the recipe below, so the form is paused. Save, or discard to use "
                 + "the form again.", systemImage: "info.circle")
@@ -447,18 +456,6 @@ private struct AutomationFormContent: View {
 
     // MARK: - Enabled and Auto
 
-    /// Tools that may get auto: the recipe's grants (paused ones included)
-    /// and its `tool:<name>` permissions. The CLI refuses a tool the manifest
-    /// does not admit as a write or one that always asks.
-    private var autoTools: [String] {
-        let granted = (vm.grants[id] ?? []).map(\.tool)
-        let declared = form.detail.permissions.compactMap { entry -> String? in
-            guard entry.hasPrefix("tool:") else { return nil }
-            return String(entry.dropFirst("tool:".count).split(separator: "@").first ?? "")
-        }
-        return Array(Set(granted + declared)).filter { !$0.isEmpty }.sorted()
-    }
-
     private var stateSection: some View {
         labeled("State") {
             Toggle("Enabled", isOn: Binding(
@@ -466,11 +463,21 @@ private struct AutomationFormContent: View {
                 set: { on in Task { await vm.setEnabled(id, on) } }
             ))
             .toggleStyle(.switch)
-            if !autoTools.isEmpty {
+            if !form.detail.autoTools.isEmpty {
                 Text("Auto — runs these tools without asking you each time")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                ForEach(autoTools, id: \.self) { tool in
+                ForEach(form.detail.autoTools.filter(\.alwaysAsks), id: \.tool) { entry in
+                    HStack(spacing: 8) {
+                        Toggle(entry.tool, isOn: .constant(false))
+                            .toggleStyle(.checkbox)
+                            .disabled(true)
+                        Text("Always asks")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(form.detail.autoTools.filter { !$0.alwaysAsks }.map(\.tool), id: \.self) { tool in
                     Toggle(tool, isOn: Binding(
                         get: {
                             vm.grants[id]?.contains { $0.tool == tool && $0.isActive(approvalHash: form.detail.approvalHash) }

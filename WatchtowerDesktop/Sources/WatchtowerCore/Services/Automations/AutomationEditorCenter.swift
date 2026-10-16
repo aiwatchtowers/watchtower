@@ -69,6 +69,23 @@ package final class AutomationEditorCenter {
         self.tempDirectory = tempDirectory
     }
 
+    /// What the edit form shows for an automation.
+    package enum FormContent {
+        case loading
+        case editing(AutomationFormModel)
+        case loadFailed(String)
+        /// The draft is gone but the save's outcome is not done ("Saved, but
+        /// auto could not be kept …"): shown until the form is closed.
+        case finished(String)
+    }
+
+    package func formContent(_ id: Int64) -> FormContent {
+        if let form = drafts[id]?.form { return .editing(form) }
+        if let error = loadErrors[id] { return .loadFailed(error) }
+        if case let .failed(message) = saving[id] { return .finished(message) }
+        return .loading
+    }
+
     // MARK: - Drafts
 
     /// Opens the form: loads the recipe with `show --json`. A draft with
@@ -101,6 +118,9 @@ package final class AutomationEditorCenter {
     /// once, or puts the Save sheet up when the plan needs it.
     package func save(_ id: Int64) async {
         guard let draft = drafts[id], saving[id] != .saving, saving[id] != .validating else { return }
+        // The last keystroke may still sit in the page's debounce: the bytes
+        // validated and saved are the ones on screen.
+        await draft.form.buffer.flush()
         guard let plan = await prepareSave(id, text: draft.form.renderedText()) else { return }
         if plan.needsSheet {
             saving[id] = .review(plan)

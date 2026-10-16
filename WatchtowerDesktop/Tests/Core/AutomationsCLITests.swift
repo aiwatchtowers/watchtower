@@ -98,8 +98,9 @@ final class AutomationsCLITests: XCTestCase {
             + #""budget_minutes":5,"concurrency":1,"missed_policy":"run_once","pause_timeout_hours":72,"#
             + #""enabled":false,"runnable":false,"needs_confirmation":true,"parse_error":"","content_hash":"c","#
             + #""approval_hash":"a","confirmed_hash":"","widening":[],"grants":[],"changes":[],"#
-            + #""changes_known":false,"changed_by":"","changed_at":null}"#
+            + #""changes_known":false,"changed_by":"","changed_at":null,"auto_tools":[]}"#
         let detail = try await cli(show).0.show(2)
+        XCTAssertEqual(detail.autoTools, [])
         XCTAssertEqual(detail.permissions, [])
         XCTAssertEqual(detail.outputs, [])
         XCTAssertEqual(detail.widening, [])
@@ -128,6 +129,16 @@ final class AutomationsCLITests: XCTestCase {
         XCTAssertEqual(detail.changedBy, "assistant")
         XCTAssertEqual(detail.changedAt, AutomationDates.parse("2026-10-15T08:30:00Z"))
         XCTAssertEqual(detail.projectID, 3)
+        XCTAssertEqual(detail.autoTools, [], "an older CLI without auto_tools decodes as []")
+    }
+
+    func testDecodesShowAutoTools() async throws {
+        let show = #"{"id":2,"slug":"s","scope":"personal","path":"/p","name":"N","enabled":true,"runnable":true,"#
+            + #""needs_confirmation":false,"auto_tools":[{"tool":"create_idea","always_asks":false},"#
+            + #"{"tool":"bulk_dismiss","always_asks":true}]}"#
+        let detail = try await cli(show).0.show(2)
+        XCTAssertEqual(detail.autoTools, [AutomationAutoTool(tool: "create_idea", alwaysAsks: false),
+                                          AutomationAutoTool(tool: "bulk_dismiss", alwaysAsks: true)])
     }
 
     func testIgnoresUnknownKeys() async throws {
