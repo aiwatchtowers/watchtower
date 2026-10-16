@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -170,4 +171,28 @@ func TestBuild_SubagentsFromMetaOnly(t *testing.T) {
 	assert.Equal(t, "ag1", ref.AgentID)
 	assert.Equal(t, "Explore", ref.Type)
 	assert.Equal(t, "look", ref.Description)
+}
+
+// BEHAVIOR FEED-01: the reader only reads transcripts.
+func TestFeed01_ReaderLeavesTranscriptUntouched(t *testing.T) {
+	dir := t.TempDir()
+	c := writeConv(t, dir, "A", join(userStr("u1", "one"), assistantRec("a1", "m1", textB("two"))))
+	old := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	require.NoError(t, os.Chtimes(c.Path, old, old))
+	before, err := os.Stat(c.Path)
+	require.NoError(t, err)
+
+	f, err := Build([]Conversation{c}, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, f.Entries, 2)
+	_, err = Build([]Conversation{c}, &f.Cursor, nil)
+	require.NoError(t, err)
+
+	after, err := os.Stat(c.Path)
+	require.NoError(t, err)
+	assert.Equal(t, before.Size(), after.Size())
+	assert.True(t, before.ModTime().Equal(after.ModTime()), "mtime changed")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "reader must create no sibling files")
 }
