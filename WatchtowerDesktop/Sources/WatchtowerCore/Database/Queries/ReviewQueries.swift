@@ -194,12 +194,16 @@ package enum ReviewQueries {
 
     /// Takes a comment the agent resolved back into the open round: the open
     /// copy goes back to `carried` (a copy-less draft to `draft`), a resolved
-    /// source gets its copy restored or a new `carried` one. A round that is
-    /// not open changes nothing.
+    /// source gets its copy restored or a new `carried` one. Changes nothing
+    /// when the round is not open or the comment is of neither that round nor
+    /// the round it follows.
     package static func reopen(_ db: Database, commentID: Int64, openRoundID: Int64) throws {
         guard try Bool.fetchOne(db, sql: "SELECT status = 'open' FROM review_rounds WHERE id = ?", arguments: [openRoundID]) == true,
               let c = try ReviewComment.fetchOne(db, sql: "SELECT * FROM review_comments WHERE id = ?", arguments: [commentID]),
-              c.status == .resolved
+              c.status == .resolved,
+              try Bool.fetchOne(db, sql: """
+                  SELECT ? IN (id, prev_round_id) FROM review_rounds WHERE id = ?
+                  """, arguments: [c.roundID, openRoundID]) == true
         else { return }
         let touch = "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')"
         if c.roundID == openRoundID {

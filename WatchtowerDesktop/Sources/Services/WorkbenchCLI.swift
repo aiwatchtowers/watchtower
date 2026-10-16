@@ -765,7 +765,12 @@ struct WorkbenchCLI {
     /// `error` at exit 0, not a throw.
     private func review(_ args: [String], timeout: TimeInterval? = nil) async throws -> ReviewEnvelope {
         let full = ["workbench", "review"] + args + ["--json"]
-        let data = if let timeout { try await runner.run(args: full, timeout: timeout) } else { try await runner.run(args: full) }
+        let data: Data
+        if let timeout {
+            data = try await runner.run(args: full, timeout: timeout)
+        } else {
+            data = try await runner.run(args: full)
+        }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(ReviewEnvelope.self, from: data)

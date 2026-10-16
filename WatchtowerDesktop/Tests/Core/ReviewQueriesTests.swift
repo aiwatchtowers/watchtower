@@ -239,6 +239,8 @@ final class ReviewQueriesTests: XCTestCase {
         XCTAssertEqual(copy.path, "a.go")
         XCTAssertEqual(copy.body, "b")
         XCTAssertEqual(copy.agentReply, "fixed")
+        // The reopened source no longer counts as agent-resolved.
+        XCTAssertEqual(try f.db.read { try ReviewQueries.agentResolved($0, previousRoundID: f.prev, openRoundID: f.open) }, [])
         // Reopening again does not add a second copy.
         try f.db.write { try ReviewQueries.reopen($0, commentID: f.source, openRoundID: f.open) }
         XCTAssertEqual(try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }.count, 1)
@@ -274,6 +276,16 @@ final class ReviewQueriesTests: XCTestCase {
         XCTAssertEqual(try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }.count, 0)
     }
 
+    func testReopenRefusedForAnUnrelatedRound() throws {
+        let f = try replyFixture(withCopy: false)
+        // A comment of a round that is neither the open one nor the one it follows.
+        let other = try f.db.write { try Self.seedRound($0) }
+        let foreign = try draft(f.db, other, "x.go")
+        try f.db.write { try Self.agentResolve($0, foreign) }
+        try f.db.write { try ReviewQueries.reopen($0, commentID: foreign, openRoundID: f.open) }
+        XCTAssertEqual(try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }.count, 0)
+    }
+
     private struct ReplyFixture {
         let db: DatabaseQueue
         let prev: Int64
@@ -292,6 +304,7 @@ final class ReviewQueriesTests: XCTestCase {
             try $0.execute(sql: "UPDATE review_rounds SET status='sent' WHERE id=?", arguments: [prev])
         }
         let open = try db.write { try Self.seedRound($0) }
+        try db.write { try $0.execute(sql: "UPDATE review_rounds SET prev_round_id = ? WHERE id = ?", arguments: [prev, open]) }
         var copy: Int64 = 0
         if withCopy {
             let rows = try db.read { try ReviewQueries.comments($0, roundID: prev) }

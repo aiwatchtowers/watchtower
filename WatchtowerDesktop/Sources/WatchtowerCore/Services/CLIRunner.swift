@@ -175,7 +175,7 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
             if Task.isCancelled {
                 throw CancellationError()
             }
-            if let deadline, deadline.fired {
+            if let deadline, deadline.fired, process.terminationReason == .uncaughtSignal {
                 let note = "timed out after \(Int(timeout ?? 0)) s"
                 CLILog.failure(args: args, exitCode: -1, stderr: note)
                 throw CLIRunnerError.nonZeroExit(code: -1, stderr: note)
