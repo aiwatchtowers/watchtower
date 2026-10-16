@@ -1,6 +1,6 @@
 import GRDB
 
-/// Swift twin of internal/db/owner.go (ResolveOwner) — a deliberate dual path; change both together. Ladder: Slack #1 → Google #1 → Jira #1.
+/// Swift twin of internal/db/owner.go (ResolveOwner) — a deliberate dual path; change both together. Ladder: Slack #1 → Google #1 → Jira #1 → Linear #1.
 ///
 /// Every owner-identity read in the Desktop goes through `resolve` (OWNER-01,
 /// pinned by `OwnerQueriesTests.testOwner01NoRawOwnerQueriesOutsideResolver`).
@@ -15,6 +15,14 @@ package enum OwnerQueries {
         var displayName = ""
     }
 
+    /// The Linear rung's row: the connecting person's own Linear identity on
+    /// the first enabled, non-removed account that recorded one.
+    private struct OwnerLinear {
+        var userID = ""
+        var email = ""
+        var displayName = ""
+    }
+
     /// The Slack user row enrichment reads.
     private struct OwnerSlackUser {
         let displayName: String
@@ -23,13 +31,14 @@ package enum OwnerQueries {
     }
 
     /// The one owner identity of this install: Slack account #1 → Google
-    /// account #1 → Jira account #1. Every field is enriched from every
+    /// account #1 → Jira account #1 → Linear account #1. Every field is enriched from every
     /// source, independent of which rung produced `id`. No connected identity
     /// → `Owner.unknown`, never an error.
     package static func resolve(_ db: Database) throws -> Owner {
         let slackID = try ownerSlackID(db)
         let google = try ownerGoogleEmail(db)
         let jira = try ownerJiraAccount(db)
+        let linear = try ownerLinearAccount(db)
 
         let id: String
         let source: OwnerSource
@@ -39,10 +48,12 @@ package enum OwnerQueries {
             (id, source) = ("google:" + google.lowercased(), .google)
         } else if !jira.accountID.isEmpty {
             (id, source) = ("jira:" + jira.accountID, .jira)
+        } else if !linear.userID.isEmpty {
+            (id, source) = ("linear:" + linear.userID, .linear)
         } else {
             return .unknown
         }
-        return try enrich(db, id: id, source: source, slackID: slackID, googleEmail: google, jira: jira)
+        return try enrich(db, id: id, source: source, slackID: slackID, googleEmail: google, jira: jira, linear: linear)
     }
 
     // MARK: - Rungs
@@ -77,6 +88,29 @@ package enum OwnerQueries {
         )
     }
 
+    /// The first enabled, non-removed Linear account that recorded its
+    /// connecting person's identity (viewer at connect).
+    private static func ownerLinearAccount(_ db: Database) throws -> OwnerLinear {
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT owner_user_id, owner_email, owner_display_name FROM linear_accounts
+            WHERE enabled = 1 AND status != 'removed' AND owner_user_id != '' ORDER BY id LIMIT 1
+            """) else { return OwnerLinear() }
+        return OwnerLinear(
+            userID: row["owner_user_id"],
+            email: row["owner_email"],
+            displayName: row["owner_display_name"]
+        )
+    }
+
+    /// The owner's Linear user id on every enabled, non-removed account (one
+    /// per workspace), by account id. Empty when none.
+    private static func ownerLinearUserIDs(_ db: Database) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT owner_user_id FROM linear_accounts
+            WHERE enabled = 1 AND status != 'removed' AND owner_user_id != '' ORDER BY id
+            """)
+    }
+
     // MARK: - Enrichment
 
     private static func enrich(
@@ -85,15 +119,17 @@ package enum OwnerQueries {
         source: OwnerSource,
         slackID: String,
         googleEmail: String,
-        jira: OwnerJira
+        jira: OwnerJira,
+        linear: OwnerLinear
     ) throws -> Owner {
         let slackUser = slackID.isEmpty ? nil : try fetchSlackUser(db, id: slackID)
-        let email = ownerEmail(slackUser, googleEmail: googleEmail, jira: jira)
+        let email = ownerEmail(slackUser, googleEmail: googleEmail, jira: jira, linear: linear)
         let jiraID = jira.accountID.isEmpty ? try ownerJiraFromUserMap(db, slackUserID: slackID) : jira.accountID
         return Owner(
             id: id, source: source, slackUserID: slackID, email: email,
             jiraAccountID: jiraID,
-            displayName: ownerDisplayName(slackUser, jira: jira, email: email)
+            displayName: ownerDisplayName(slackUser, jira: jira, linear: linear, email: email),
+            linearUserIDs: try ownerLinearUserIDs(db)
         )
     }
 
@@ -106,21 +142,23 @@ package enum OwnerQueries {
         )
     }
 
-    /// The Slack user's email, else the Google email, else the Jira owner email.
-    private static func ownerEmail(_ slackUser: OwnerSlackUser?, googleEmail: String, jira: OwnerJira) -> String {
+    /// The Slack user's email, else the Google email, else the Jira owner email, else the Linear one.
+    private static func ownerEmail(_ slackUser: OwnerSlackUser?, googleEmail: String, jira: OwnerJira, linear: OwnerLinear) -> String {
         if let email = slackUser?.email, !email.isEmpty { return email }
         if !googleEmail.isEmpty { return googleEmail }
-        return jira.email
+        if !jira.email.isEmpty { return jira.email }
+        return linear.email
     }
 
     /// The Slack user's display name (else real name), else the Jira owner
-    /// display name, else the email's local part with its case kept.
-    private static func ownerDisplayName(_ slackUser: OwnerSlackUser?, jira: OwnerJira, email: String) -> String {
+    /// display name, else the Linear one, else the email's local part with its case kept.
+    private static func ownerDisplayName(_ slackUser: OwnerSlackUser?, jira: OwnerJira, linear: OwnerLinear, email: String) -> String {
         if let user = slackUser {
             if !user.displayName.isEmpty { return user.displayName }
             if !user.realName.isEmpty { return user.realName }
         }
         if !jira.displayName.isEmpty { return jira.displayName }
+        if !linear.displayName.isEmpty { return linear.displayName }
         guard let at = email.firstIndex(of: "@") else { return email }
         return String(email[..<at])
     }
