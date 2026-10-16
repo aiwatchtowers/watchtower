@@ -47,8 +47,10 @@ final class DestructivePrimaryButtonStyleTests: XCTestCase {
     }
 
     /// No red action is left on the system prominent style, whose label
-    /// depends on window and app state: a file that tints a prominent
-    /// button red within a few lines is the tell.
+    /// depends on window and app state: a red tint (`.red`, `Color.red`, or
+    /// a ternary choosing `.red`) within three file lines of
+    /// `.borderedProminent` is the tell. Comment lines draw no button and are
+    /// skipped, but keep their line numbers.
     func testNoRedBorderedProminentRemains() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Tests
@@ -58,12 +60,10 @@ final class DestructivePrimaryButtonStyleTests: XCTestCase {
         var scanned = 0
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             scanned += 1
-            // Comment lines aside: a mention in a comment draws no button.
             let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
-                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
-            for (index, line) in lines.enumerated() where line.contains(".tint(.red)") {
-                let window = lines[max(0, index - 3)...min(lines.count - 1, index + 3)].joined(separator: "\n")
-                XCTAssertFalse(window.contains(".borderedProminent"),
+            for (index, line) in lines.enumerated() where !Self.isComment(line) && Self.tintsRed(line) {
+                let nearby = lines[max(0, index - 3)...min(lines.count - 1, index + 3)].filter { !Self.isComment($0) }
+                XCTAssertFalse(nearby.contains { $0.contains(".borderedProminent") },
                                "\(url.lastPathComponent):\(index + 1) uses a red .borderedProminent; use .destructivePrimary")
             }
         }
@@ -72,6 +72,27 @@ final class DestructivePrimaryButtonStyleTests: XCTestCase {
                                    encoding: .utf8)
         XCTAssertEqual(indicator.components(separatedBy: ".buttonStyle(.destructivePrimary)").count - 1, 2,
                        "both Stop buttons (capsule and expanded panel) use the destructive style")
+    }
+
+    func testRedTintMatcherCatchesEverySpelling() {
+        XCTAssertTrue(Self.tintsRed("    .tint(.red)"))
+        XCTAssertTrue(Self.tintsRed("    .tint(Color.red)"))
+        XCTAssertTrue(Self.tintsRed("    .tint(isRecording ? .red : nil)"))
+        XCTAssertTrue(Self.tintsRed("    .tint(isIdle ? .accentColor : .red)"))
+        XCTAssertFalse(Self.tintsRed("    .tint(.orange)"))
+        XCTAssertFalse(Self.tintsRed("    .foregroundStyle(.red)"))
+        XCTAssertTrue(Self.isComment("  // .tint(.red)"))
+        XCTAssertFalse(Self.isComment("  .tint(.red) // trailing note"))
+    }
+
+    private static func isComment(_ line: String) -> Bool {
+        line.trimmingCharacters(in: .whitespaces).hasPrefix("//")
+    }
+
+    /// A `.tint(` call whose argument names red in any spelling.
+    private static func tintsRed(_ line: String) -> Bool {
+        guard let start = line.range(of: ".tint(") else { return false }
+        return line[start.upperBound...].contains(".red")
     }
 
     // MARK: - Pixels

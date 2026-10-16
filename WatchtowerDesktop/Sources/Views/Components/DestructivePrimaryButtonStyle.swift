@@ -14,12 +14,15 @@ struct DestructivePrimaryButtonStyle: ButtonStyle {
 
     @Environment(\.controlSize) private var controlSize
     @Environment(\.isEnabled) private var isEnabled
+    /// A font set at the call site wins; the control size's text size is
+    /// only the default.
+    @Environment(\.font) private var font
 
     func makeBody(configuration: Configuration) -> some View {
         let metrics = Self.metrics(for: controlSize)
         let plate = RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
         configuration.label
-            .font(.system(size: metrics.fontSize))
+            .font(font ?? .system(size: metrics.fontSize))
             .foregroundStyle(Self.label)
             .padding(.horizontal, metrics.horizontalPadding)
             .frame(minHeight: metrics.height)
