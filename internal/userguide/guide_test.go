@@ -1,4 +1,4 @@
-package guide
+package userguide
 
 import (
 	"io/fs"

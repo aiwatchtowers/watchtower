@@ -1,4 +1,5 @@
-package guide
+// Package userguide indexes the embedded user guide by section for search.
+package userguide
 
 import (
 	"fmt"
