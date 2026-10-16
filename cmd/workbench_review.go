@@ -61,16 +61,19 @@ func init() {
 }
 
 type reviewRoundJSON struct {
-	ID           int64  `json:"id"`
-	Status       string `json:"status"`
-	Mode         string `json:"mode"`
-	FolderRoot   string `json:"folder_root"`
-	BaseSHA      string `json:"base_sha"`
-	BaseLabel    string `json:"base_label"`
-	TreeSHA      string `json:"tree_sha"`
-	PrevRoundID  int64  `json:"prev_round_id"`
-	PrevTreeSHA  string `json:"prev_tree_sha"`
-	PrevTreeLost bool   `json:"prev_tree_lost"`
+	ID            int64  `json:"id"`
+	Status        string `json:"status"`
+	Mode          string `json:"mode"`
+	FolderRoot    string `json:"folder_root"`
+	BaseSHA       string `json:"base_sha"`
+	BaseLabel     string `json:"base_label"`
+	TreeSHA       string `json:"tree_sha"`
+	PrevRoundID   int64  `json:"prev_round_id"`
+	PrevTreeSHA   string `json:"prev_tree_sha"`
+	PrevTreeLost  bool   `json:"prev_tree_lost"`
+	Phase         string `json:"phase"`
+	ChapterKey    string `json:"chapter_key"`
+	ActiveSeconds int    `json:"active_seconds"`
 }
 
 type reviewEnvelope struct {
@@ -87,6 +90,8 @@ type reviewEnvelope struct {
 	Comments         int                 `json:"comments,omitempty"`
 	Line             string              `json:"line,omitempty"`
 	Items            []reviewContextItem `json:"items,omitempty"`
+	Lenses           []reviewdiff.Lens   `json:"lenses,omitempty"`
+	LensNotes        []string            `json:"lens_notes,omitempty"`
 }
 
 // reviewTarget resolves --workbench to its row and an open DB; a bad id or a
@@ -127,7 +132,8 @@ func failReview(cmd *cobra.Command, err error) error {
 
 func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (*reviewRoundJSON, error) {
 	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
-		BaseLabel: r.BaseLabel, TreeSHA: r.TreeSHA}
+		BaseLabel: r.BaseLabel, TreeSHA: r.TreeSHA, Phase: r.Phase, ChapterKey: r.ChapterKey,
+		ActiveSeconds: r.ActiveSeconds}
 	if r.PrevRoundID.Valid {
 		out.PrevRoundID = r.PrevRoundID.Int64
 		if prev, err := database.GetReviewRound(r.ProjectID, r.PrevRoundID.Int64); err == nil {
@@ -238,6 +244,7 @@ func createReviewRound(ctx context.Context, repo *reviewdiff.Repo, database *db.
 		FolderRoot: folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
 	if last, err := database.LastSentReviewRound(p.ID, reviewFlagSession); err == nil && last != nil {
 		r.PrevRoundID = sql.NullInt64{Int64: last.ID, Valid: true}
+		r.Mode = last.Mode
 	}
 	id, err := database.CreateReviewRound(r)
 	if err != nil {

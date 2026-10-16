@@ -97,3 +97,21 @@ func TestGetReview_TextNamesTheOldSideAndKeepsBlankQuoteLines(t *testing.T) {
 	assert.Contains(t, v.Text, "a.go:3-5 (old side)\n")
 	assert.Contains(t, v.Text, "> x := 1\n> \n> y := 2\n")
 }
+
+func TestGetReview_TextShowsLens(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	rid := seedSentReviewRound(t, fx.d, fx.a, "a.go", 3, 4, "q", "tests missing")
+	_, err := fx.d.Exec(`UPDATE review_comments SET lens = 'tests' WHERE round_id = ?`, rid)
+	require.NoError(t, err)
+	// a second round-less insert is not allowed after send, so add the others before reading
+	_, err = fx.d.Exec(`INSERT INTO review_comments (round_id, body, lens, status) VALUES (?, 'why this shape', 'intent', 'sent')`, rid)
+	require.NoError(t, err)
+	_, err = fx.d.Exec(`INSERT INTO review_comments (round_id, path, start_line, end_line, body, status) VALUES (?, 'b.go', 1, 1, 'plain', 'sent')`, rid)
+	require.NoError(t, err)
+	var v reviewView
+	require.NoError(t, json.Unmarshal([]byte(callReadIn(t, reg, fx.a, "get_review", fmt.Sprintf(`{"round_id":%d}`, rid))), &v))
+	assert.Regexp(t, `#\d+ a\.go:3-4 \[tests\]\n`, v.Text)
+	assert.Regexp(t, `#\d+ design \[intent\]\n`, v.Text)
+	assert.Regexp(t, `#\d+ b\.go:1-1\n`, v.Text)
+}
