@@ -109,6 +109,32 @@ final class WholeBufferSpeechGateTests: XCTestCase {
         XCTAssertEqual(input.filter { $0 != 0 }.count, rate)
     }
 
+    func testWordAcrossAChunkSeamIsKept() async throws {
+        // Board #564: 0.4 s of speech at 29.8–30.2 s. Cut at the 30 s seam,
+        // each piece (0.2 s) is under the detector's minimum speech; the
+        // overlapping chunk sees it whole.
+        var samples = [Float](repeating: 0.001, count: 60 * rate)
+        let word = (29 * rate + rate * 8 / 10)..<(30 * rate + rate * 2 / 10)
+        for i in word { samples[i] = 0.4 }
+        let log = BufferDecodeLog()
+        _ = try await ParakeetTranscriber(speechDetector: MinimumSpeechDetector()) { buffer in
+            log.record(buffer)
+            return "x"
+        }.transcribe(samples, config: TranscriptionConfig()) { _, _ in }
+        let input = try XCTUnwrap(log.decoded.first, "the word is speech: the recording is decoded")
+        XCTAssertTrue(input[word].allSatisfy { $0 == 0.4 }, "the word reaches the engine unmuted")
+    }
+
+    /// `LoudDetector` with Silero's segmentation rules that matter at a
+    /// seam: a run shorter than 0.3 s is not speech, and every window with
+    /// under 0.3 s of speech is silent.
+    private final class MinimumSpeechDetector: SpeechDetector, @unchecked Sendable {
+        func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
+            let minimum = Int(0.3 * Double(TranscriptionConfig.sampleRate))
+            return try await LoudDetector().speechRanges(in: samples).filter { $0.count >= minimum }
+        }
+    }
+
     // MARK: Memory (board #564)
 
     private func baseAddress(_ samples: [Float]) -> UnsafeRawPointer? {

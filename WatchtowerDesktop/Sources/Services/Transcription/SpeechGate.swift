@@ -187,14 +187,24 @@ struct SpeechOnlyAudio {
     }
 }
 
+/// How far `speechOnlyBuffer`'s chunks overlap: well above the longest
+/// speech a seam can hide (a run under the 0.3 s minimum on both sides of
+/// it), so any run cut by a seam lies whole inside the next chunk or keeps a
+/// piece longer than the overlap in the previous one.
+let wholeBufferChunkOverlapSec = 2.0
+
 /// L5 (spec D5) for engines that decode the whole recording in one call
 /// (Parakeet, Apple): the detector runs over the recording in 30 s chunks
 /// with the window gate's rules (minimum speech, per-recording energy
 /// fallback), and every sample outside the padded speech is to be set to 0
-/// (`SpeechOnlyAudio`). Returns the audio to decode — nothing to mute when
-/// the gate is off or the speech covers the whole recording, nil when the
-/// recording holds no speech at all (nothing to decode) — and the gate,
-/// whose counts the caller logs once the text is filtered.
+/// (`SpeechOnlyAudio`). Neighbouring chunks overlap by
+/// `wholeBufferChunkOverlapSec` and their speech is joined, so a word cut by
+/// a chunk seam — two pieces each under the detector's minimum speech — is
+/// still found whole in the next chunk (board #564). Returns the audio to
+/// decode — nothing to mute when the gate is off or the speech covers the
+/// whole recording, nil when the recording holds no speech at all (nothing
+/// to decode) — and the gate, whose counts the caller logs once the text is
+/// filtered.
 func speechOnlyBuffer(
     _ samples: [Float],
     detector: SpeechDetector?,
@@ -203,12 +213,14 @@ func speechOnlyBuffer(
     var gate = WindowSpeechGate(detector: detector, config: config)
     guard detector != nil, config.speechGate else { return (SpeechOnlyAudio(samples: samples, speech: nil), gate) }
     let chunk = 30 * TranscriptionConfig.sampleRate
+    let overlap = Int(wholeBufferChunkOverlapSec * Double(TranscriptionConfig.sampleRate))
     var speech: [Range<Int>] = []
-    for start in stride(from: 0, to: samples.count, by: chunk) {
+    for start in stride(from: 0, to: samples.count, by: chunk - overlap) {
         let end = min(start + chunk, samples.count)
         if case let .speech(ranges) = await gate.check(Array(samples[start..<end])) {
             speech += ranges.map { (start + $0.lowerBound)..<(start + $0.upperBound) }
         }
+        if end == samples.count { break }
     }
     speech = SpeechGate.merged(speech)
     guard !speech.isEmpty else { return (nil, gate) }
