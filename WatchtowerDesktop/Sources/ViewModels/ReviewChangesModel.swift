@@ -28,6 +28,7 @@ extension SessionLineDelivery: ReviewLineSink {
 final class ReviewChangesModel {
     enum Load: Equatable { case idle, loading, failed(String), ready }
     enum View: Equatable { case all, sinceLastRound }
+    enum Mode: String { case quick, deep }
 
     enum ModelError: Error, Equatable, LocalizedError {
         case noRound
@@ -35,11 +36,13 @@ final class ReviewChangesModel {
         case unknownFile(String)
         case oldSideInSinceView
         case roundNotOpen
+        case roundClosed
 
         var errorDescription: String? {
             switch self {
             case .noRound: "No review round is open."
             case .roundNotOpen: "This round was sent. Refresh to open the next round."
+            case .roundClosed: "This round was already sent, so it cannot change."
             case .fileNotLoaded(let path): "The file \(path) is not open, so its lines cannot be anchored."
             case .unknownFile(let path): "The file \(path) is not part of this diff."
             case .oldSideInSinceView: "Switch to All changes to comment on removed lines"
@@ -67,15 +70,33 @@ final class ReviewChangesModel {
     private var refreshAgain = false
     private(set) var lastSend: SessionLineDelivery.Delivery?
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
-    private(set) var lastError: String?
+    var lastError: String?
+
+    // Deep mode (spec §10; written by ReviewChangesModel+Deep.swift only): persisted through `saveRoundState` on an open round.
+    var mode: Mode = .quick
+    var phase: ReviewPhase = .meaning
+    var chapters: [ReviewChapter] = []
+    var currentChapterKey: String?
+    private(set) var lenses: [ReviewLens] = []
+    private(set) var lensNotes: [String] = []
+    var checks: [ReviewCheck] = []
+    var pace = ReviewPace(activeSeconds: 0)
+    var breakHintDismissed = false
+    /// The active seconds the round row holds.
+    var savedActiveSeconds = 0
+
+    var intentItems: [ReviewIntentItem] { ReviewWrapUp.intentItems(context) }
+    var progress: ReviewProgress {
+        ReviewProgress.make(files: files, chapters: chapters) { isViewed($0) }
+    }
 
     /// The base..tree diff: the Viewed keys always come from it, whatever view is shown.
     private var allFiles: [ReviewDiffFile] = []
 
     private let projectID: Int64
     private let sessionID: Int64
+    let db: DatabasePool
     private let cli: WorkbenchCLI
-    private let db: DatabasePool
     private let lineDelivery: any ReviewLineSink
 
     private struct Failure: Error { let message: String }
@@ -137,7 +158,15 @@ final class ReviewChangesModel {
             round = info
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
             view = info.prevRoundId > 0 && !previousTreeLost ? .sinceLastRound : .all
-            context = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID)).items ?? []
+            let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
+            context = ctx.items ?? []
+            lenses = ctx.lenses ?? []
+            lensNotes = ctx.lensNotes ?? []
+            mode = Mode(rawValue: info.mode) ?? .quick
+            phase = ReviewPhase(stored: info.phase)
+            currentChapterKey = info.chapterKey.isEmpty ? nil : info.chapterKey
+            pace = ReviewPace(activeSeconds: info.activeSeconds)
+            savedActiveSeconds = info.activeSeconds
             try await loadDiff(info)
             let roundID = info.id
             var rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
@@ -149,7 +178,9 @@ final class ReviewChangesModel {
             }
             comments = rows
             viewed = marks
+            checks = try await db.read { try ReviewQueries.checks($0, roundID: roundID) }
             load = .ready
+            noteInteraction()
             // The next round after a Send keeps the file on screen: its sides come from the new tree.
             if selectedPath != nil { await reloadSides() }
         } catch {
@@ -236,7 +267,7 @@ final class ReviewChangesModel {
     // MARK: - Comments and Viewed
 
     /// A draft on lines of the open file `path` (anchored by its text on `side`).
-    func addComment(path: String, side: String, startLine: Int, endLine: Int, body: String) throws {
+    func addComment(path: String, side: String, startLine: Int, endLine: Int, body: String, lens: String = "") throws {
         try run {
             guard let info = round else { throw ModelError.noRound }
             // A sent round is closed: a draft written into it would never be sent.
@@ -248,7 +279,7 @@ final class ReviewChangesModel {
             let anchor = ReviewCommentAnchor.anchor(text: text, startLine: startLine, endLine: endLine)
             _ = try db.write {
                 try ReviewQueries.addDraft($0, roundID: info.id, path: path, side: side, startLine: startLine,
-                                           endLine: endLine, anchor: anchor, treeSHA: info.treeSha, body: body)
+                                           endLine: endLine, anchor: anchor, treeSHA: info.treeSha, body: body, lens: lens)
             }
             try reloadComments()
         }
@@ -302,6 +333,7 @@ final class ReviewChangesModel {
         sending = true
         defer { sending = false }
         lastError = nil
+        flushState()
         do {
             let env = try Self.checked(await cli.reviewSend(projectID: projectID, roundID: info.id))
             // Either way the round is closed now: sent by this call, or already before it.
@@ -322,7 +354,7 @@ final class ReviewChangesModel {
     // MARK: - Private
 
     /// Records a failure of a throwing action in `lastError` and rethrows it.
-    private func run(_ body: () throws -> Void) throws {
+    func run(_ body: () throws -> Void) throws {
         do {
             lastError = nil
             try body()
@@ -332,7 +364,7 @@ final class ReviewChangesModel {
         }
     }
 
-    private func reloadComments() throws {
+    func reloadComments() throws {
         guard let info = round else { return }
         comments = try db.read { try ReviewQueries.comments($0, roundID: info.id) }
     }
@@ -345,6 +377,7 @@ final class ReviewChangesModel {
         allFiles = all.files
         files = diff.files
         truncated = diff.truncated
+        refreshChapters()
         if let selectedPath, !diff.files.contains(where: { $0.path == selectedPath }) {
             self.selectedPath = nil
         }
