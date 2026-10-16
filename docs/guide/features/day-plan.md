@@ -46,7 +46,7 @@ Click **Regenerate with feedback…**, say what to change under "Tell me what to
 
 ### Tune it
 
-Settings → Features → **Day Plan** sets **Generate at hour** (05:00 to 12:00), **Working hours** (default 09:00 to 19:00), **Max timeblocks** (1 to 5, default 3) and the **Backlog min** and **Backlog max** (defaults 3 and 8).
+Settings → Features → **Day Plan** sets **Generate at hour** (05:00 to 12:00), **Working hours** (default 09:00 to 19:00), and three steppers, **Max timeblocks**, **Backlog min** and **Backlog max**, that are saved but do not change the plan today (see [Known issues](../troubleshooting/known-issues.md)).
 
 ## When it's empty or wrong
 

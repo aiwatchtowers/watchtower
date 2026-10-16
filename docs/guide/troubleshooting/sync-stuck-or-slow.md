@@ -23,7 +23,7 @@ The menu bar menu shows one of three lines:
 2. **Sync daemon not running:** open Watchtower. Launching the app starts the daemon. If it keeps stopping, the error is printed under the line.
 3. **Syncing, counter moving:** wait. The counter refreshes every few seconds.
 4. **Idle, but data is old:** choose **Sync Now**. A cycle already in progress finishes first.
-5. **Counter frozen for more than 10 minutes:** choose **Quit Watchtower** and open the app again. This restarts the daemon.
+5. **Counter frozen for 10 minutes or more (a rule of thumb, not a limit):** choose **Quit Watchtower** and open the app again. This restarts the daemon.
 6. **Quit hangs:** in a terminal run `watchtower sync stop`, and if it says it is still shutting down, `watchtower sync stop --force`. Then open Watchtower.
 7. Run `watchtower status` for the last sync time and `watchtower logs` for the log. A line naming one source points at [An account needs attention](account-needs-attention.md).
 

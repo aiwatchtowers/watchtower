@@ -18,7 +18,7 @@ The service revoked or expired the sign-in (a password change, an admin removing
 
 1. **Slack:** on the account row press **Re-login**, then approve in the browser. A healthy row shows **Reconnect**, which also grants new permissions such as sending messages.
 2. **Google and Jira:** press **Re-login** on the row and approve in the browser.
-3. **Linear:** sign in again with `watchtower linear add` in a terminal.
+3. **Linear:** sign in again with `watchtower linear login` in a terminal (add `--account N` if you have several Linear workspaces). `linear add` refuses a workspace that is already connected.
 4. **Email (IMAP, Outlook) and CalDAV or ICS:** these rows have no **Re-login**. Remove the account and add it again, using SSL or STARTTLS for mail and an https URL for CalDAV.
    **Known issue:** removing a Google, Email or Calendar account deletes the mail or events synced from it, though the dialog says they are kept. Before you remove one, make sure you can live without the old mail or events; adding the account again syncs recent mail and events from the server again, and older mail returns through [history backfill](../concepts/history-backfill.md). Slack and Jira keep their data. See [Known issues](known-issues.md).
 

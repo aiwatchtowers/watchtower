@@ -21,8 +21,8 @@ A list of services (Slack, Google, Email, Calendar, Jira, Quick Connections) wit
 ## Features
 
 - The feature list turns each feature on or off; turning one off asks first if others depend on it. **Keep ML engines in memory** keeps the speech models loaded. **Save** restarts the background sync once. See [Features on and off](../concepts/features-on-and-off.md).
-- Tuning sections appear only while their feature is on: **Digest** (minimum messages), **Briefing** (**Briefing Hour**, [Briefings](../features/briefings.md)), **Day Plan** (**Generate at hour**, **Working hours:**, **Max timeblocks**, **Backlog min** / **Backlog max**, [Day plan](../features/day-plan.md)), **Ideas** (**Mining interval (hours)**, 1–48, [Ideas and decisions](../features/ideas-and-decisions.md)).
-- Notifications: **Notification Types**, **Meeting Reminders** (minutes before, 0–60; the "still recording" alert ignores the toggle and the minutes, and only **Quiet Hours** silence it), **Quiet Hours** and **Test**.
+- Tuning sections appear only while their feature is on: **Digest** (minimum messages), **Briefing** (**Briefing Hour**, [Briefings](../features/briefings.md)), **Day Plan** (**Generate at hour**, **Working hours:**, **Max timeblocks** and **Backlog min** / **Backlog max** (saved, but not used by the plan today), [Day plan](../features/day-plan.md)), **Ideas** (**Mining interval (hours)**, 1–48, [Ideas and decisions](../features/ideas-and-decisions.md)).
+- Notifications: **Notification Types**, **Meeting Reminders** (minutes before, 0–60; the "still recording" alert ignores the toggle and the minutes, and only **Quiet Hours** silence it), **Quiet Hours** (one on/off switch, no hours; it holds back only some notices, see [Known issues](../troubleshooting/known-issues.md)) and **Test**.
 - **Automations** off hides the tab and **Run Automation…**, and the daemon runs no recipe. See [Automations](../features/automations.md).
 
 ## Meetings

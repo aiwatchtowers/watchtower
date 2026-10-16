@@ -39,7 +39,7 @@ Attendees are matched to Slack people by email. An attendee with no Slack match 
 
 Before each meeting a notification fires, 5 minutes ahead by default. When the event has a conference link it carries **Join** and **Join + Record**. While the app is open, a banner at the top of the window shows the same countdown with **Join** and **Record**.
 
-If a recording linked to an event is still running 2 minutes after the event ends, a "Meeting ended — still recording" notification with **Stop recording** appears and repeats every 10 minutes. It ignores the reminder switch and is silenced only by Quiet Hours.
+If a recording linked to an event is still running 2 minutes after the event ends, a "Meeting ended — still recording" notification with **Stop recording** appears and repeats every 10 minutes. It ignores the reminder switch and is silenced only by Quiet Hours (an on/off switch, not a time range).
 
 ## Using it
 

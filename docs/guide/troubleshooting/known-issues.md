@@ -26,6 +26,24 @@ Workaround: filter the registry by **Not now** and press **Activate** when you w
 
 Workaround: use the **Daily** digest and [Tracks](../features/tracks.md). See [Digests](../features/digests.md).
 
+## Quiet Hours is a switch, and Daily summary does nothing
+
+**Known issue.** **Enable quiet hours** in **Settings → Features → Notification Types** has no hours: it is one switch. While it is on it holds back new-decision, Claude plan limit, Workbench and meeting-reminder notices (including "Meeting ended — still recording"). Other notices still arrive: transcript ready or failed, voices to label, update available, automation finished. **Daily summary notifications** does nothing; no code reads it.
+
+Workaround: to silence other notices, use macOS **Focus** or the Notifications page in System Settings. Leave **Daily summary notifications** alone.
+
+## Day Plan steppers change nothing
+
+**Known issue.** **Max timeblocks**, **Backlog min** and **Backlog max** in **Settings → Features → Day Plan** are saved but the plan ignores them. **Working hours** and **Generate at hour** do work.
+
+Workaround: press **Regenerate with feedback…** and say how many blocks or backlog items you want. See [Day Plan](../features/day-plan.md).
+
+## People Connections shows no interaction scores
+
+**Known issue.** On **My Card**, the **Connections** tab has no interaction scores, because nothing computes them yet. **Edit Connections** still sets who your manager, reports and peers are.
+
+Workaround: none for the scores; the people cards and the briefing use the connections you set. See [People](../features/people.md).
+
 ## Related
 
 - [Troubleshooting index](README.md)

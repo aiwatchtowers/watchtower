@@ -16,7 +16,7 @@ Your Claude plan limit belongs to your Claude account, so Watchtower's backgroun
 ## Fix
 
 1. Open **Usage** and pick a day to see which pipeline made the calls, and **Progress** to see each run's tokens.
-2. Switch off what you do not need in **Settings → Features**. The badges mark Heavy, Medium and Light. Turning off Slack Digests also stops Tracks, People Cards and Ideas from having anything to read.
+2. Switch off what you do not need in **Settings → Features**. The badges mark Heavy, Medium and Light. Turning off Slack Digests also leaves Tracks and People Cards with nothing to read, and Ideas with most of it.
 3. In **Statistics**, **Mute for AI** on noisy channels or bots. Muted channels are skipped by digests, tracks and the briefing.
 4. Lower the load per call: set **Light Model** and **Strong Model** in **Settings → System → AI**, or use Codex or a local Ollama model, which bills nothing.
 5. Reduce parallel calls with **Workers** under **Settings → System → AI** (default 5).

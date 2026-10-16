@@ -24,7 +24,8 @@ Recording needs two macOS permissions, microphone and system audio, and macOS 14
 5. **No recap:** open the recording and use **Generate recap** on the **Recap** tab, or **Retry recap** under the transcript. A transcript under 200 characters gets no recap by design.
 6. **Wrong transcript:** **Re-transcribe** under the transcript runs it again while the audio file exists. Audio is deleted after 30 days (**Delete audio after N days** in **Settings → Meetings**).
 7. **The app quit mid-recording:** at the next launch press **Transcribe recovered recording** on the pill.
-8. A recap error that names the Claude or Codex tool: [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md).
+8. **Can't find an old recording:** recordings open only from the **Calendar** tab, and the list loads the newest 200. Without a connected calendar the tab is hidden; see [Calendar events are missing](calendar-events-missing.md).
+9. A recap error that names the Claude or Codex tool: [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md).
 
 ## How to check
 

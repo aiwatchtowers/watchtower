@@ -21,7 +21,7 @@ Watchtower saves your answer first, then types one line into that session's term
 ## Fix
 
 1. **Waiting for the permission prompt:** answer the prompt in the terminal; the line follows. Or press **Dismiss** on the line, and the agent reads the answer from the session's next brief.
-2. **Typed, press Return:** the agent's input already held text. Click the terminal and press Return.
+2. **Typed, press Return:** the agent's input already held text, or Watchtower could not tell whether the agent was free to take the line. Click the terminal and press Return.
 3. **Copied:** paste with ⌘V in the terminal and press Return.
 4. **Session not running:** press **Resume** or **Restart**. The agent reads the answer when it starts.
 5. **Green dot only, or an orange icon:** open the **…** menu in the page header and choose **Repair install**; it only adds what is missing. **Re-run Setup** brings an older folder fully up to date.

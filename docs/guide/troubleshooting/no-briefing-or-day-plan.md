@@ -22,10 +22,11 @@ On a new install the first briefing and the first day plan do not wait for the h
 1. Read the status line ("Today at 08:00", "Tomorrow at 08:00", "Didn't work yet — retries automatically", **Off — Turn on**). The meanings are in [Turning features on and off](../concepts/features-on-and-off.md).
 2. **Open Connections** appears when there is no owner: connect any one source.
 3. **Turn on** when the feature is off.
-4. **Briefings:** with no briefing yet, press **Generate Briefing** in the empty tab; a failure shows its reason in red below the button. If a briefing already exists for today you cannot rebuild it in the app; `watchtower briefing generate` returns the existing one.
-5. **Day Plan:** press **Generate today's plan**. With a plan you dislike, **Regenerate with feedback…** rewrites it, and **Reset plan** deletes it so the footer offers **Generate today's plan** again.
-6. A reason that names the Claude or Codex tool: [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md).
-7. Wanted midnight? **Known issue:** the Briefing Hour list offers 00:00, but the briefing is made at 08:00. Pick 01:00 or later; see [Known issues](known-issues.md).
+4. **Briefings, none yet:** press **Generate Briefing** in the empty tab; a failure shows its reason in red below the button.
+5. **Briefings, one exists:** you cannot rebuild today's briefing in the app; `watchtower briefing generate` returns the existing one.
+6. **Day Plan:** press **Generate today's plan**. With a plan you dislike, **Regenerate with feedback…** rewrites it, and **Reset plan** deletes it so the footer offers **Generate today's plan** again.
+7. A reason that names the Claude or Codex tool: [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md).
+8. Wanted midnight? **Known issue:** the Briefing Hour list offers 00:00, but the briefing is made at 08:00. Pick 01:00 or later; see [Known issues](known-issues.md).
 
 ## How to check
 

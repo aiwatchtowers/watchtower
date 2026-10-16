@@ -22,7 +22,7 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 
 1. Open **People**. **My Card** is pinned first, then everyone else. Select **Team Summary** for the team view.
 2. A card shows the summary, **Communication Guide**, **Decision Style**, **Tactics**, **Red Flags**, **Highlights**, **Accomplishments**, an activity-hours chart and a week-by-week history. When Jira is connected and the person has work there, a **Delivery** box adds closed issues, cycle time, velocity and open issues, plus **Expertise** tags.
-3. On **My Card**, the **Connections** tab draws your manager, reports and peers around you with interaction scores. **Edit Connections** changes who they are; the briefing and other cards use that.
+3. On **My Card**, the **Connections** tab draws your manager, reports and peers around you. Its interaction scores stay empty today (see [Known issues](../troubleshooting/known-issues.md)). **Edit Connections** changes who they are; the briefing and other cards use that.
 4. The box **How the system understands you** appears on your card when you wrote custom profile context.
 
 ## When it's empty or wrong
