@@ -9,7 +9,7 @@ import Foundation
 package struct AutomationsCLI {
     // swiftlint:disable:next type_name
     package enum Op: Equatable, Sendable {
-        case run(Int64)
+        case run(Int64, rerunOf: Int64? = nil)
         case dryRun(Int64)
         case show(Int64)
         case validate(file: String, against: Int64?)
@@ -33,8 +33,10 @@ package struct AutomationsCLI {
     // swiftlint:disable:next cyclomatic_complexity
     package static func args(_ op: Op) -> [String] {
         switch op {
-        case let .run(id):
-            return ["automations", "run", String(id), "--json"]
+        case let .run(id, rerunOf):
+            var out = ["automations", "run", String(id)]
+            if let rerunOf { out += ["--rerun-of", String(rerunOf)] }
+            return out + ["--json"]
         case let .dryRun(id):
             return ["automations", "dry-run", String(id), "--json"]
         case let .show(id):
@@ -70,8 +72,9 @@ package struct AutomationsCLI {
         }
     }
 
-    package func run(_ id: Int64) async throws -> RunResult {
-        try await decode(.run(id))
+    /// `rerunOf` repeats one failed (or interrupted) run of `id`.
+    package func run(_ id: Int64, rerunOf: Int64? = nil) async throws -> RunResult {
+        try await decode(.run(id, rerunOf: rerunOf))
     }
 
     package func dryRun(_ id: Int64) async throws -> DryRunResult {
@@ -219,6 +222,12 @@ package struct AutomationChange: Decodable, Equatable, Sendable {
     package let field: String
     package let old: String
     package let new: String
+
+    package init(field: String, old: String, new: String) {
+        self.field = field
+        self.old = old
+        self.new = new
+    }
 }
 
 /// `show --json`. P2's `grants` key is not decoded: grants are read from

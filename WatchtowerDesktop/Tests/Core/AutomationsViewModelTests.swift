@@ -328,6 +328,38 @@ final class AutomationsViewModelTests: XCTestCase {
 
     // MARK: - Enable, delete, cancel
 
+    func testRerunPassesRerunOf() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        runner.on("run") { _ in Self.json(#"{"run_id":10,"coalesced":false,"daemon_running":true}"#) }
+        let vm = makeViewModel()
+        await vm.rerun(id, runID: 4)
+        XCTAssertEqual(runner.invocations, [["automations", "run", String(id), "--rerun-of", "4", "--json"]])
+        XCTAssertNil(vm.busy[id])
+        XCTAssertNil(vm.lastError)
+    }
+
+    func testLoadDetailReadsShowJSONAndKeepsItOnFailure() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        runner.on("show") { _ in
+            Self.json(#"{"id":\#(id),"slug":"digest","scope":"personal","path":"/tmp/acme/digest.md","#
+                + #""name":"Digest","description":"Reads **mail**.","enabled":true,"runnable":false,"#
+                + #""needs_confirmation":true,"widening":["llm:light"],"#
+                + #""changes":[{"field":"trigger","old":"a","new":"b"}],"changes_known":true}"#)
+        }
+        let vm = makeViewModel()
+        await vm.loadDetail(id)
+        XCTAssertEqual(runner.invocations, [["automations", "show", String(id), "--json"]])
+        XCTAssertEqual(vm.details[id]?.description, "Reads **mail**.")
+        XCTAssertEqual(vm.details[id]?.widening, ["llm:light"])
+        XCTAssertEqual(vm.details[id]?.changes.map(\.field), ["trigger"])
+        XCTAssertNil(vm.detailErrors[id])
+
+        runner.on("show") { _ in throw Self.failure }
+        await vm.loadDetail(id)
+        XCTAssertEqual(vm.details[id]?.name, "Digest", "a failed read keeps the previous detail")
+        XCTAssertEqual(vm.detailErrors[id], "automation 7 is not runnable: disabled")
+    }
+
     func testSetEnabledArgs() async throws {
         let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
         let vm = makeViewModel()

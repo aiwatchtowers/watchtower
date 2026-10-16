@@ -44,6 +44,10 @@ package final class AutomationsViewModel {
     package private(set) var reports: [Int64: [AutomationOutput]] = [:]
     /// Keyed by automation id.
     package private(set) var grants: [Int64: [AutomationToolGrant]] = [:]
+    /// `show --json` of an opened card (description, `widening`, `changes`), keyed by automation id.
+    package private(set) var details: [Int64: AutomationDetail] = [:]
+    /// Why the last `show --json` failed, keyed by automation id.
+    package private(set) var detailErrors: [Int64: String] = [:]
     /// Keyed by automation id.
     package private(set) var dryRuns: [Int64: DryRunState] = [:]
     /// Keyed by automation id.
@@ -208,10 +212,26 @@ package final class AutomationsViewModel {
         refresh()
     }
 
+    /// Reads the card's `show --json`. The card calls it on open and whenever
+    /// the recipe's hashes change; a failure keeps the previous detail.
+    package func loadDetail(_ id: Int64) async {
+        do {
+            details[id] = try await cli.show(id)
+            detailErrors[id] = nil
+        } catch {
+            detailErrors[id] = Self.message(for: error)
+        }
+    }
+
     // MARK: - CLI operations
 
     package func runNow(_ id: Int64) async {
         await perform(.running, on: id) { cli in _ = try await cli.run(id) }
+    }
+
+    /// Repeats a failed (or interrupted) run: `automations run <id> --rerun-of <run>`.
+    package func rerun(_ id: Int64, runID: Int64) async {
+        await perform(.running, on: id) { cli in _ = try await cli.run(id, rerunOf: runID) }
     }
 
     /// Runs `automations dry-run` (the owner's click; it works for an
@@ -248,6 +268,8 @@ package final class AutomationsViewModel {
         runs[id] = nil
         reports[id] = nil
         grants[id] = nil
+        details[id] = nil
+        detailErrors[id] = nil
         dryRuns[id] = nil
     }
 

@@ -221,6 +221,52 @@ package struct AutomationRun: FetchableRecord, Identifiable, Equatable, Sendable
     package let startedAt: Date?
     package let finishedAt: Date?
 
+    package init(
+        id: Int64,
+        automationID: Int64,
+        trigger: String = "manual",
+        scheduledFor: Date? = nil,
+        rerunOf: Int64? = nil,
+        status: AutomationRunStatus,
+        waitingReason: String = "",
+        recipeHash: String = "",
+        budgetTokens: Int = 50000,
+        budgetMinutes: Int = 5,
+        inputTokens: Int64 = 0,
+        outputTokens: Int64 = 0,
+        tokensEstimated: Bool = false,
+        reportedCostUSD: Double? = nil,
+        activeMS: Int64 = 0,
+        error: String = "",
+        errorKind: String = "",
+        summary: String = "",
+        queuedAt: Date? = nil,
+        startedAt: Date? = nil,
+        finishedAt: Date? = nil
+    ) {
+        self.id = id
+        self.automationID = automationID
+        self.trigger = trigger
+        self.scheduledFor = scheduledFor
+        self.rerunOf = rerunOf
+        self.status = status
+        self.waitingReason = waitingReason
+        self.recipeHash = recipeHash
+        self.budgetTokens = budgetTokens
+        self.budgetMinutes = budgetMinutes
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.tokensEstimated = tokensEstimated
+        self.reportedCostUSD = reportedCostUSD
+        self.activeMS = activeMS
+        self.error = error
+        self.errorKind = errorKind
+        self.summary = summary
+        self.queuedAt = queuedAt
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+    }
+
     package init(row: Row) throws {
         id = row["id"]
         automationID = row["automation_id"]

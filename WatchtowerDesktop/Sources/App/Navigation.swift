@@ -185,6 +185,14 @@ struct MainNavigationView: View {
     /// (stale persisted selection), on every live feature-list or
     /// connected-source change, and on every selection change, sharing the
     /// same pure `fallbackDestination` rule.
+    /// The Automations tab's hooks into other surfaces; later tasks add
+    /// the New/Templates/Edit/Change in words ones.
+    private var automationsTabActions: AutomationsTabActions {
+        var actions = AutomationsTabActions()
+        actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
+        return actions
+    }
+
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
@@ -273,14 +281,15 @@ struct MainNavigationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .automations:
-            // A placeholder until the tab's list and card land (plan Task 8);
-            // it already drives the poll's visible-tab cadence.
             if let vm = appState.automationsViewModel {
-                Text("Automations")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .onAppear { vm.setTabVisible(true) }
-                    .onDisappear { vm.setTabVisible(false) }
+                AutomationsView(
+                    vm: vm,
+                    actions: automationsTabActions,
+                    workbenchName: { id in
+                        appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
+                    },
+                    emptyStateContext: appState.emptyStateContext
+                )
             } else {
                 Text("Automations unavailable")
                     .foregroundStyle(.secondary)
