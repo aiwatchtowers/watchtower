@@ -94,6 +94,9 @@ final class ReviewChangesModel {
     private(set) var overview: OverviewState = .idle
     /// The overview's load; awaited by tests, replaced when another one starts.
     @ObservationIgnored private(set) var overviewTask: Task<Void, Never>?
+    /// The tree the overview shown or loading was asked for; a refresh that
+    /// may regenerate asks again when the round's tree differs (after an Undo).
+    private var overviewTreeSHA: String?
     /// The session's notes and chapters from the agent (`annotate_changes`).
     private(set) var notes: [ReviewNote] = []
     /// Where the selected file's notes sit on its new side; an unplaced note is absent.
@@ -257,7 +260,7 @@ final class ReviewChangesModel {
     /// gives way to the next one through `open()`, the single path that
     /// creates a round and carries the comments and Viewed marks into it.
     /// `regenerateOverview: false` (an owner Undo) keeps the overview shown
-    /// although the tree changed; the next refresh finding a new tree asks again.
+    /// although the tree changed; the next refresh asks again.
     func refresh(regenerateOverview: Bool = true) async {
         guard load == .ready, !sending else { return }
         guard round?.status == "open" else {
@@ -294,9 +297,11 @@ final class ReviewChangesModel {
             lensNotes = ctx.lensNotes ?? []
             try reloadNotes()
             try await loadDiff(info)
-            // Without an overview on screen (one still loading for the old
-            // tree would be dropped) a new one is asked for even after an Undo.
-            if treeChanged, regenerateOverview || !overviewShown { startOverview() }
+            // A refresh that may regenerate asks when the overview was built
+            // for another tree (also the one an earlier Undo left). After an
+            // Undo, without an overview on screen (one still loading for the
+            // old tree would be dropped) a new one is asked for anyway.
+            if regenerateOverview ? overviewTreeSHA != info.treeSha : treeChanged && !overviewShown { startOverview() }
             let roundID = info.id
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
@@ -765,6 +770,7 @@ final class ReviewChangesModel {
     /// Starts the overview's load, dropping the one running.
     private func startOverview() {
         overviewTask?.cancel()
+        overviewTreeSHA = round?.treeSha
         overviewTask = Task { [weak self] in await self?.loadOverview() }
     }
 

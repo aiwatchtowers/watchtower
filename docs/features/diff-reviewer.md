@@ -190,8 +190,8 @@ refresh that changed the tree) the Desktop runs `review overview --round R` (330
 timeout; the CLI bounds the whole command — git, the model call, the db — at 5 minutes,
 `reviewAIBudget`, and a cancelled parent or a SIGINT/SIGTERM cancels the model call, which
 kills its claude/codex child). The refresh after an owner **Undo** does not ask for a new
-overview (ask #249): the shown one stays until the next Refresh or auto-refresh that finds
-a new tree (one is asked for anyway when none is on screen). The cache is looked up before
+overview (ask #249): after an owner Undo, the overview is kept until the next Refresh, which
+regenerates it (as does an auto-refresh; one is asked for anyway when none is on screen). The cache is looked up before
 the diff is read, and a failed cache write is logged to stderr while the overview is still
 answered. A linked target that cannot be read fails `review context` and `review overview`
 (`ok:false`, nothing cached) instead of being skipped. Input: the review

@@ -1237,6 +1237,35 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(after.summary, "After a refresh.")
     }
 
+    func testRefreshAfterUndoRegeneratesTheOverview() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u"), startJSON(id: 7, prev: 0, tree: "u")])
+        h.cli.script(["revert-hunk": #"{"ok":true,"revert":{"hunk_id":"0123456789abcdef","path":"a.go"}}"#])
+        h.cli.script("overview", [
+            #"{"ok":true,"overview":{"summary":"Before the undo."},"overview_cached":false}"#,
+            #"{"ok":true,"overview":{"summary":"After the undo."},"overview_cached":false}"#
+        ])
+        await h.model.open()
+        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        await h.model.undo(hunkID: "0123456789abcdef")
+        XCTAssertEqual(h.model.round?.treeSha, "u7")
+        await awaitOverview(h)
+        XCTAssertEqual(h.cli.calls("overview").count, 1, "the undo asks for no new overview")
+
+        await h.model.refresh()
+        XCTAssertEqual(h.model.round?.treeSha, "u7", "nothing changed after the undo")
+        await awaitOverview(h)
+        XCTAssertEqual(h.cli.calls("overview").count, 2, "the next refresh regenerates the pre-undo overview")
+        guard case .ready(let after) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(after.summary, "After the undo.")
+
+        await h.model.refresh()
+        await awaitOverview(h)
+        XCTAssertEqual(h.cli.calls("overview").count, 2, "an overview built for this tree is kept")
+    }
+
     func testUndoRefusalShowsGoText() async throws {
         let h = try harness()
         h.baseScript()
