@@ -99,8 +99,8 @@ final class PlanUsageCenter {
     /// notifications are denied (the `sendSessionAgentNotice` precedent).
     private func notify(_ status: PlanUsageStatus) {
         guard let notifier, defaults.object(forKey: PlanUsageNoticePolicy.enabledKey) as? Bool ?? true else { return }
-        // Quiet hours hold the notice back; `sent` is untouched, so one still due fires afterwards.
-        guard !defaults.bool(forKey: "quietHoursEnabled") else { return }
+        // A pause holds the notice back; `sent` is untouched, so one still due fires afterwards.
+        guard !NotificationPreferences.isPaused(defaults) else { return }
         let sent = Set(defaults.stringArray(forKey: PlanUsageNoticePolicy.sentKey) ?? [])
         let result = PlanUsageNoticePolicy.evaluate(status, sent: sent, now: now())
         for notice in result.notices { notifier.sendPlanUsageNotice(notice) }
