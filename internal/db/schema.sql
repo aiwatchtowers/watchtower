@@ -2865,7 +2865,9 @@ CREATE TABLE IF NOT EXISTS agent_log_events (
   lines_added    INTEGER NOT NULL DEFAULT 0,
   lines_removed  INTEGER NOT NULL DEFAULT 0,
   src_path       TEXT NOT NULL,
-  src_offset     INTEGER NOT NULL
+  src_offset     INTEGER NOT NULL,
+  spawned_agent_id TEXT NOT NULL DEFAULT '',
+  background     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_agent_log_events_session ON agent_log_events(session_uuid, ts);
 CREATE INDEX IF NOT EXISTS idx_agent_log_events_kind ON agent_log_events(kind, name);
@@ -2879,7 +2881,7 @@ SELECT session_uuid,
   SUM(cache_write_1h_tokens) AS cache_write_1h_tokens,
   SUM(cost_usd) AS cost_usd,
   SUM(cost_estimated) AS cost_estimated_calls,
-  SUM(CASE WHEN kind = 'owner_turn' THEN 1 ELSE 0 END) AS owner_turns,
+  SUM(CASE WHEN kind = 'owner_turn' AND trigger NOT IN ('notification','hook') THEN 1 ELSE 0 END) AS owner_turns,
   SUM(CASE WHEN kind = 'tool' THEN 1 ELSE 0 END)       AS tool_calls,
   SUM(CASE WHEN kind = 'tool' AND outcome = 'error' THEN 1 ELSE 0 END)       AS tool_errors,
   SUM(CASE WHEN kind = 'tool' AND outcome = 'denied' THEN 1 ELSE 0 END)      AS tool_denials,
