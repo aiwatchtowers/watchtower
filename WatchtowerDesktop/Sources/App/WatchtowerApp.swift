@@ -532,7 +532,7 @@ struct WatchtowerApp: App {
                     .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
                     .disabled(!navigation.canGoForward(root: shownRoot))
             }
-            HelpCommands()
+            HelpCommands(appState: appState)
         }
 
         Window("Keyboard Shortcuts", id: KeyboardShortcutsView.sceneID) {

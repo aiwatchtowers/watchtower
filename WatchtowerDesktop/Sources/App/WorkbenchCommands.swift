@@ -100,10 +100,16 @@ struct WorkbenchCommands: Commands {
 
 /// Help menu additions, after the stock Help search and app help.
 struct HelpCommands: Commands {
+    let appState: AppState
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(after: .help) {
+            Button("Ask Watchtower…") { appState.showAskPanel() }
+                .keyboardShortcut("/", modifiers: .command)
+            Button("Watchtower User Guide") {
+                if let url = appState.askCenter.guideHomeURL { NSWorkspace.shared.open(url) }
+            }
             Button("Keyboard Shortcuts") { openWindow(id: KeyboardShortcutsView.sceneID) }
         }
     }

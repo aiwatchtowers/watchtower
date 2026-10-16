@@ -16,12 +16,19 @@ struct AskMatches {
 @MainActor
 @Observable
 final class AskCenter {
+    /// The guide's web base, used only before the index has loaded.
+    static let fallbackGuideBaseURL = "https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/"
     static let guideLimit = 5
     static let screenLimit = 4
     /// Sections put into each help turn's prompt.
     static let turnSectionLimit = 4
 
     private(set) var index: GuideIndex?
+
+    /// The User Guide's front page (Help menu).
+    var guideHomeURL: URL? {
+        URL(string: (index?.baseURL ?? Self.fallbackGuideBaseURL) + "README.md")
+    }
     /// Why the guide could not load; the screens still match. Retried on the next open.
     private(set) var indexError: String?
     /// The guide section each help answer was built from, by assistant message id.
