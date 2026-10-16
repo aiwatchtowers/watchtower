@@ -90,7 +90,8 @@ func (db *DB) EndAutomationSessionStep(stepID int64, status, errText string) (bo
 			stepID, status, SessionStepStopped, SessionStepLaunchFailed)
 	}
 	res, err := db.Exec(`UPDATE automation_run_steps SET status = ?, result_summary = ?, error = ?
-		WHERE id = ? AND kind = 'session' AND status = 'waiting' AND finished_at IS NULL`,
+		WHERE id = ? AND kind = 'session' AND status = 'waiting' AND finished_at IS NULL
+		  AND EXISTS (SELECT 1 FROM automation_runs r WHERE r.id = automation_run_steps.run_id AND r.status = 'waiting')`,
 		stepStatus, summary, errText, stepID)
 	if err != nil {
 		return false, fmt.Errorf("ending automation run step %d: %w", stepID, err)

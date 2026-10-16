@@ -197,3 +197,25 @@ func TestSessionPending_OnlyWorkbenchRuns(t *testing.T) {
 		t.Fatalf("pending = %+v, %v; want none for a personal run", pending, err)
 	}
 }
+
+// A delayed session-ended after the run was cancelled leaves the step alone.
+func TestSessionEnded_NeedsRunWaiting(t *testing.T) {
+	d := openTestDB(t)
+	_, run, step := seedSessionStepRun(t, d, "review")
+	// The run ends while its step is still open (a cancel normally closes the
+	// step too; this is the race the guard covers).
+	if _, err := d.Exec(`UPDATE automation_runs SET status = 'cancelled' WHERE id = ?`, run); err != nil {
+		t.Fatal(err)
+	}
+	before, err := d.GetAutomationSessionStep(step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.EndAutomationSessionStep(step, SessionStepStopped, ""); err != nil || ok {
+		t.Fatalf("end after cancel = (%v, %v); want false", ok, err)
+	}
+	after, err := d.GetAutomationSessionStep(step)
+	if err != nil || after != before {
+		t.Fatalf("step = %+v, %v; want unchanged %+v", after, err, before)
+	}
+}
