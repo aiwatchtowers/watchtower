@@ -8,13 +8,17 @@ Catching up on a channel you were away from, or checking "did we decide that?", 
 
 ## How it works
 
-**A channel gets a digest when it has new human messages.** After each sync cycle the daemon finds every channel with messages its last digest has not covered and summarises them. Each channel keeps its own position, so a failed or skipped channel is offered again next cycle. Left out: muted channels, one-to-one DMs (group DMs are kept), and channels with only bot traffic. A mostly-bot channel is digested around the human replies.
+**A channel gets a digest when it has new human messages.** After each sync cycle the daemon summarises every channel with messages its last digest has not covered. Each channel keeps its own position, so a failed or skipped channel is offered again next cycle.
+
+Left out: muted channels, one-to-one DMs (group DMs are kept), and channels with only bot traffic. A mostly-bot channel is digested around the human replies.
 
 **Trickle channels wait.** A channel digested less than 30 minutes ago with fewer than 10 visible messages is skipped until the next cycle. On a fresh install the first run reads the initial history window, 2 days by default.
 
 **Daily rollups combine channels.** Once at least two channel digests exist for the same UTC day, the daemon writes one **Daily** digest across channels, and rewrites it when a newer channel digest lands. A day with one channel digest gets no rollup. After 3 failed attempts in a day the daemon stops retrying the rollup until the next day.
 
-**Mail and Jira are digested too.** Stream digests summarise new Gmail threads and changed Jira issues and comments per account, at most every 6 hours by default. They run only with **Stream Digests** on and a connected account, independently of Slack. Meeting recaps appear in the same feed once a recording has one.
+**Mail and Jira are digested too.** Stream digests summarise new Gmail threads and changed Jira issues per account, at most every 6 hours by default. They need **Stream Digests** on and a connected account, not Slack.
+
+Meeting recaps appear in the same feed once a recording has one.
 
 **Decisions are mined, not typed.** While summarising Slack, mail, Jira and meetings, the AI also extracts decisions. The Ideas pipeline (every 6 hours by default) merges repeats into one entry and keeps its source mentions. Decisions are born settled: **active**, with no review step.
 

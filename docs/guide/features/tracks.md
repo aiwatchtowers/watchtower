@@ -8,7 +8,7 @@ Scrolling channels to find "what was I asked to do?" is the cost this removes. A
 
 ## How it works
 
-**Tracks are mined from digests, not from raw messages.** After each sync cycle the daemon reads the channel digests created since its last run and asks the AI which of them hold an actionable request, decision or follow-up for you. A topic that matches an existing track updates it; the prompt prefers merging over splitting. Informational topics, finished work and mere mentions create nothing.
+**Tracks are mined from digests, not from raw messages.** After each sync cycle the daemon reads the channel digests created since its last run and asks the AI which of them hold an actionable request, decision or follow-up for you. A topic that matches an existing track updates it; when the AI is unsure, it creates a new track, so a duplicate is the expected slip. Informational topics, finished work and mere mentions create nothing.
 
 **It needs [Digests](digests.md) first.** Tracks run only when both **Tracks** and **Slack Digests** are on, and they need to know who you are in Slack. Muted channels are skipped. On the first run it looks back over the initial history window (2 days by default); after that it takes only new digests.
 
@@ -23,7 +23,7 @@ Scrolling channels to find "what was I asked to do?" is the cost this removes. A
 1. Open **Tracks**. The orange number next to the title counts tracks updated since you read them.
 2. Filter by priority, by **All / Mine / Delegated / Watching**, or by Jira link (the Jira filter appears when Jira is connected). The eye button toggles read tracks, the archive button toggles dismissed ones.
 3. Open a track to see context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues. A chat at the bottom talks about this track.
-4. **Create Target** turns it into a [target](targets.md); the track then shows **Go to Target**. **Dismiss** removes it from the list; **Restore** brings it back.
+4. **Create Target** turns it into a [target](targets.md); the target then appears in the track's **Targets** section. **Dismiss** removes it from the list; **Restore** brings it back. A custom track has **Delete** (with confirmation) instead, and **Go to Target** when it is linked to one.
 5. To clean up in bulk, use the checklist button: **Select tracks**, then **Select all** and **Dismiss selected**, or **Dismiss all auto tracks…** (custom tracks stay). Both ask for confirmation with the exact count.
 6. To watch a topic, press **+** ("Create a custom track to watch"), describe it and choose **Create with AI**.
 
@@ -33,11 +33,11 @@ On a custom track, **Collecting / Paused** switches scanning. **Scan** fills the
 
 - **"No tracks yet"** means no digest has produced an actionable item for you yet. Check that **Slack Digests** is on and that digests exist; tracks follow the next cycle after them.
 - **Few tracks from a busy channel is by design.** Silence is intended: informational chatter and topics without an action for you are skipped. Muting a channel in [Statistics](statistics.md) removes it from tracks entirely.
-- **Duplicates or a wrong merge.** The AI matches by meaning. Dismiss the extra one; rate the track with the thumbs buttons to improve later runs.
+- **Duplicates.** The AI matches by meaning and prefers a duplicate to a wrong merge. Dismiss the extra one; rate the track with the thumbs buttons to improve later runs.
 - **A custom watch shows nothing.** It scans only while **Collecting** is on and only reads what Watchtower already holds, so use **Scan** to backfill history.
 
 ## Related
 
 [Digests](digests.md), [Targets](targets.md), [Statistics](statistics.md).
 
-For developers: [docs/inventory/tracks.md](../../inventory/tracks.md)
+For developers: [internal/tracks and the tracks prompt](../../../internal/tracks/pipeline.go)

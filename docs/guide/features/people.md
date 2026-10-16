@@ -10,13 +10,13 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 
 **Cards are built from digests, once a day.** The daemon generates cards at most every 24 hours. Each run covers the last 7 days of Slack, ending at the start of today. The first run on a fresh install ends now, so cards do not wait for midnight.
 
-**A person needs enough activity.** To get a card someone must have at least 3 messages in the window, and the digests must have produced observations about them. With 3 or more observations, or 10 or more messages, they get a full card. People with less get a lighter card, and the screen says "Not enough data for full analysis." Missing both thresholds creates nothing.
+**A person needs enough activity.** Anyone with at least 3 messages in the window gets a card. With 3 or more digest observations about them, or 10 or more messages, it is a full card. Otherwise it is a lighter one, and the screen says "Not enough data for full analysis." The run as a whole is skipped only when the digests hold no observations at all.
 
 **The Team Summary comes with the run.** After the cards, one more AI call writes the team-level summary: **Needs Attention** and **Tips**.
 
 **It depends on Digests.** People Cards read what [Digests](digests.md) record, so both **People Cards** and **Slack Digests** must be on. A run with no data (no digests yet, or nobody active) writes no run record and does not use up the day, so cards appear in the first cycle that has material. After 3 failed AI attempts in a day it waits until tomorrow.
 
-**Bots and muted people are left out.** Bots and deleted accounts get no card. A user you mute in [Statistics](statistics.md) is treated as a bot when digests are written, so their messages are not read.
+**Bots and deleted accounts get no card.** Only accounts Slack itself flags as bots are excluded. A user you mute or hand-mark as a bot in [Statistics](statistics.md) still gets a card, although a muted user's messages are not read when digests are written.
 
 ## Using it
 
@@ -28,7 +28,7 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 ## When it's empty or wrong
 
 - **"No people cards yet"**: cards need digests first, then up to a day for the first run. On a new install expect them after the first cycle that produced digests.
-- **A colleague has no card.** They had fewer than 3 messages in the last 7 days, they are a bot or a deleted account, they are muted, or the digests saw nothing about them.
+- **A colleague has no card.** They had fewer than 3 messages in the last 7 days in non-DM channels, or they are a bot or a deleted account.
 - **A card says "Not enough data."** It was built from thin signals and improves as messages accumulate.
 - **The card is a day old.** Cards refresh at most daily.
 - **Your reports or manager look wrong.** Fix them under **Edit Connections** on **My Card**.

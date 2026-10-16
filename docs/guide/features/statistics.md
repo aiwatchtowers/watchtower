@@ -22,7 +22,7 @@ Most of the AI bill and most of the noise come from a few channels: bot feeds, h
 | **Suggest Leave** | You never posted, or last posted over 30 days ago; not a DM, not a favorite, not watched, and you are a member |
 | **Suggest Favorite** | You posted 10+ times and were mentioned 3+ times; the channel is on your watch list; or it holds 5+ decisions or 2+ active tracks |
 
-A channel with pending inbox items or open targets is never suggested for muting. One with active tracks or three or more decisions is never suggested for leaving.
+Pending inbox items or open targets block both muting and leaving suggestions; active tracks or three or more decisions also block leaving.
 
 **"Leave" only mutes.** Watchtower cannot remove you from a Slack channel, so the **Mute** button on a **Suggest Leave** row does exactly what the other **Mute** does.
 
@@ -30,7 +30,7 @@ A channel with pending inbox items or open targets is never suggested for muting
 
 1. Open **Statistics** and pick **Channels**. Read the recommendations, then press **Mute** or **Favorite** on each row you agree with.
 2. In the table, the speaker button toggles **Mute for AI** and the star toggles favorite. The filter offers All, Muted, Favorites and Recommendations. Sort by Messages, Name, Bot % or Activity.
-3. The **Digest** column shows each channel's status: **OK** (digested up to date), **Pending**, **New** (never digested), **Few** (under 5 messages) or **Muted**.
+3. The **Digest** column shows each channel's status: **Up to date**, **N pending**, **Not processed**, **Too few msgs** or **Muted**. The chart above the table counts them as OK, Pending, New, Few and Muted.
 4. On **Users**, mark a person **Mark as bot** or **Mark as human** when Slack got it wrong, and **Mute for AI** for a noisy account. A hand-marked row shows a hand icon.
 5. **Activity** summarises human versus bot traffic, the most active users, and a **Bot Management** table for muting bots in one place.
 
