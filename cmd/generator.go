@@ -151,7 +151,9 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 		if c, ok := client.(mcpConfigurable); ok {
 			c.SetMCPArgs(chatMCPArgs()) // claude/codex reach tools via the MCP subprocess
 		}
-		if c, ok := client.(externalMCPConfigurable); ok {
+		// The editor chat carries only draft/save and read tools (spec
+		// 2026-10-14 §14.5, D11); an external server may expose writes.
+		if c, ok := client.(externalMCPConfigurable); ok && aiFlagSurface != tools.AutomationEditorSurface {
 			c.SetExternalMCPServers(loadExternalMCPServers(cfg, dbPath))
 		}
 	}
