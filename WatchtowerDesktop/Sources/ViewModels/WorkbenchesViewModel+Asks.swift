@@ -128,14 +128,14 @@ extension WorkbenchesViewModel {
 
     /// The workbench whose stack A / ⌃⌘A would go to: the one on the page,
     /// drilled into, with an ask waiting; nil otherwise (the key is left
-    /// alone, Navigate › Show Waiting for You is off).
+    /// alone, Workbench › Show Waiting for You is off).
     var stackKeyboardWorkbench: Int64? {
         guard hasWorkbenchPage, let projectID = selectedWorkbenchID, drilledWorkbenchID == projectID,
               !asks.stack(projectID: projectID).asks.isEmpty else { return nil }
         return projectID
     }
 
-    /// Whether Navigate › Show Waiting for You acts for `shownID`, the
+    /// Whether Workbench › Show Waiting for You acts for `shownID`, the
     /// workbench of the key window (`OpenQuicklyCenter.keyWorkbench`).
     func canShowWaitingStack(shownID: Int64?) -> Bool {
         shownID != nil && stackKeyboardWorkbench == shownID
