@@ -16,21 +16,43 @@ Details: [Home](../features/home.md). A tab that stays empty is explained on [A 
 
 ## Day 2: read your first briefing
 
-**Try:** open **Briefings** after 08:00. **See:** one morning read with **Needs Attention**, **Your Day** and **What Happened**, each line linking to its source. **Needs:** **Daily Briefing** on, and Slack, Google or Jira connected so Watchtower knows who you are. The very first one does not wait for the hour. No briefing? **Generate Briefing** in the empty tab builds one now.
+By now the sync has had time to write something for you.
 
-Details: [Briefings](../features/briefings.md).
+- **Try:** open **Briefings**. The first one on a new install skips the 08:00 hour, so it may already be there from Day 1.
+- **See:** one morning read with **Needs Attention**, **Your Day** and **What Happened**, each line linking to its source.
+- **Needs:** **Daily Briefing** on, and Slack, Google or Jira connected so Watchtower knows who you are.
+
+No briefing yet? **Generate Briefing** in the empty tab builds one now. Details: [Briefings](../features/briefings.md).
 
 ## Day 2: catch up after being away
 
-**Try:** open **Catch Up**, leave the window on **Auto** and click **Build recap**. **See:** a TL;DR, topics with sources, decisions and a **For you** list. Press **I'm caught up** when done, and the next recap starts from there. **Needs:** one connected source. A recap is built only when you ask.
+A briefing covers today; for a longer gap, ask for a recap.
+
+- **Try:** open **Catch Up**, leave the window on **Auto** and click **Build recap**. Press **I'm caught up** when done.
+- **See:** a TL;DR, topics with sources, decisions and a **For you** list. The next recap starts where this one ended.
+- **Needs:** one connected source, and one of Attention detection, Slack Digests or Stream Digests on. A recap is built only when you ask.
 
 Details: [Catch Up](../features/catch-up.md).
 
 ## Day 3: make one target and one reaction
 
-**Try:** in **Targets**, press **⌘N**, write a promise you made, and press **Enter**. Then, in Slack, react with :white_check_mark: to a message you owe a reply on. **See:** your target with a **NEXT STEP** card the assistant suggests, and the second one as a card waiting for your **Approve** in the Inbox or Targets. **Needs:** the daemon running for next steps; Slack and **Reaction Commands** (on by default) for the reaction.
+Now start your own list.
 
-Details: [Targets](../features/targets.md) and [Inbox](../features/inbox.md). Nothing lands in the Inbox on its own; every card exists because of something you did.
+- **Try:** in **Targets**, press **⌘N**, write a promise you made and press **Enter**. Then react with :white_check_mark: to a Slack message you owe a reply on.
+- **See:** your target with a suggested **NEXT STEP**. The reaction arrives as a proposal in **Inbox**, and the target appears in Targets after you click **Approve**.
+- **Needs:** the daemon running for next steps; Slack and **Reaction Commands** (on by default) for the reaction.
+
+Details: [Targets](../features/targets.md) and [Inbox](../features/inbox.md).
+
+## Day 4: prepare for a meeting
+
+Your calendar is synced by now, so use it.
+
+- **Try:** open **Calendar**, click an event with other people and click **Prepare**. Later, click **Record** on a call.
+- **See:** talking points, open items and a **Missing Context** note for attendees it could not match. A recording gets a transcript, a recap and action items.
+- **Needs:** a connected calendar, or the tab stays hidden. Recording needs macOS 14.4 or later and two macOS permissions on first use.
+
+Details: [Calendar and meeting prep](../features/calendar-and-meeting-prep.md) and [Meeting recording](../features/meeting-recording.md).
 
 ## Day 4: prepare for a meeting
 
@@ -46,13 +68,21 @@ Details: [Workbench](../features/workbench/README.md).
 
 ## Day 6: automate one chore
 
-**Try:** open **Automations**, click **+ New**, choose **Describe in words** and ask for a weekly summary of something you check by hand. **See:** a draft you can **Dry run**, which writes nothing, then a confirmation sheet. **Needs:** the Automations feature on, the daemon running and a confirmation from you; a recipe never runs before it. Every run has a token and time budget.
+Once you do something weekly, let the daemon do it.
+
+- **Try:** open **Automations**, click **+ New**, choose **Describe in words** and ask for a weekly summary of something you check by hand.
+- **See:** a draft you can **Dry run**, which writes nothing, then a confirmation sheet. Every run has a token and time budget.
+- **Needs:** the Automations feature on, the daemon running and your confirmation; a recipe never runs before it.
 
 Details: [Automations](../features/automations.md).
 
-## Day 7: look at what it cost
+## Day 7: see what it used
 
-**Try:** check **Usage** and your Claude plan limits. **See:** what the week's AI work used. **Needs:** nothing extra. If it is more than you expected, switch off the features you do not read, in **Settings → Features**.
+Close the week by checking the bill in tokens.
+
+- **Try:** open **Usage** and pick a day.
+- **See:** AI calls and tokens per request, not money. The Claude plan tab shows your 5-hour and weekly limits when **Claude plan limits** is on in **Settings → Features**.
+- **Needs:** nothing for token counts. If it is more than you expected, switch off the features you do not read.
 
 Details: [AI providers, models and cost](../concepts/ai-providers-and-cost.md) and [Turning features on and off](../concepts/features-on-and-off.md).
 
