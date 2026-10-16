@@ -24,6 +24,9 @@ package final class RecipeBufferModel {
     package private(set) var baseContentHash: String
     /// The revision the page is given with the text; bumped by every `reset`.
     package private(set) var revision = 1
+    /// The revision `text` is tied to: `revision`, or an older one while an
+    /// edit typed before a reset is kept. A page shown afresh is given this.
+    package private(set) var textRevision = 1
     /// Why the editor page failed (load error, script error, a restart); nil
     /// while it works. Written by the view, shown by its host.
     package var pageError: String?
@@ -46,13 +49,17 @@ package final class RecipeBufferModel {
     /// The page sent the text as typed on revision `base`.
     package func pageSent(text: String, base: Int) {
         self.text = text
-        if let hash = hashes[base] { baseContentHash = hash }
+        if let hash = hashes[base] {
+            baseContentHash = hash
+            textRevision = base
+        }
     }
 
     /// The file was loaded again (after a save, or a reload from disk): a new
     /// revision with nothing unsaved.
     package func reset(text: String, contentHash: String) {
         revision += 1
+        textRevision = revision
         hashes[revision] = contentHash
         self.text = text
         original = text

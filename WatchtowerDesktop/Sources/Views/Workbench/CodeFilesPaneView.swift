@@ -838,7 +838,8 @@ struct MonacoEditorView: NSViewRepresentable {
         }
 
         /// `fn(<JSON argument>)`; nil when the argument cannot be encoded.
-        private static func script(_ function: String, _ argument: Any) -> String? {
+        /// Shared with RecipeEditorView.
+        static func script(_ function: String, _ argument: Any) -> String? {
             guard let data = try? JSONSerialization.data(withJSONObject: [argument], options: [.fragmentsAllowed]),
                   let array = String(data: data, encoding: .utf8) else { return nil }
             return "\(function)(\(array.dropFirst().dropLast()))"

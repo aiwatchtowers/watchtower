@@ -54,4 +54,14 @@ final class RecipeBufferModelTests: XCTestCase {
         XCTAssertEqual(buffer.baseContentHash, "h3")
     }
 
+    func testTextRevisionFollowsTheEditsBase() {
+        let buffer = RecipeBufferModel(automationID: 7, text: recipe, contentHash: "h1")
+        buffer.reset(text: "changed on disk", contentHash: "h2")
+        XCTAssertEqual(buffer.textRevision, 2)
+        buffer.pageSent(text: "typed before the reload", base: 1)
+        XCTAssertEqual(buffer.textRevision, 1, "a kept old-base edit stays tied to revision 1")
+        XCTAssertEqual(buffer.revision, 2)
+        buffer.pageSent(text: "unknown base", base: 99)
+        XCTAssertEqual(buffer.textRevision, 1, "an unknown base changes nothing but the text")
+    }
 }
