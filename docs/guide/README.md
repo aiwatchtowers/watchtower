@@ -28,6 +28,11 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 - [Digests](features/digests.md) — per-channel, daily, mail, Jira and meeting summaries in one feed, with a journal of decisions.
 - [People](features/people.md) — a card per colleague with style, role and tips, plus a team summary.
 - [Statistics](features/statistics.md) — channel and user activity, and the mute switch that decides what the AI reads.
+- [Jira and Linear](features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards, and connect Linear.
+
+## Insights
+
+- [Search and knowledge](features/search-and-knowledge.md) — find a Slack message, or let the assistant search everything you have synced.
 
 ## Workbench
 
