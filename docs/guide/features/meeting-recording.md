@@ -12,17 +12,28 @@ You finish a call and the decisions are already written down: a summary, chapter
 
 **Record** captures the microphone and the system audio (the other participants). The first time, macOS asks for two permissions: microphone, and system audio recording. While you record, a pill at the bottom right of the window shows the elapsed time and **Stop**, whatever tab you are on.
 
-After **Stop**, the recording joins a queue. Each queued recording gets its own pill: "Transcribing 2/5", "Identifying speakers…", "Summarizing…". You can start a new recording while an old one is still processing, because only one transcription runs at a time. The new recording keeps capturing, and its live panel reads "Waiting for previous transcription… live transcript will catch up."
+After **Stop**, the recording joins a queue, and each queued recording gets its own pill: "Transcribing 2/5", "Identifying speakers…", "Summarizing…".
 
-If the call goes quiet, you get a warning. When nothing has come from the call for over 2 minutes after it was heard, the pill shows **No call audio** in orange and a notification fires. It usually means the output device changed. The recording's detail later notes the gap, such as "No call audio from 15:29 to the end".
+You can start a new recording while an old one is processing. Only one transcription runs at a time, so the new one keeps capturing and its live panel reads "Waiting for previous transcription… live transcript will catch up."
+
+If the call goes quiet, you get a warning. When nothing has come from the call for over 2 minutes after it was heard, the pill shows **No call audio** in orange and a notification fires. It usually means the output device changed.
+
+The recording's detail later notes the gap, such as "No call audio from 15:29 to the end".
 
 When headphones or AirPods connect or disconnect, the capture reattaches to the new device about a second later. Turn this off with **Follow audio device changes** in **Settings › Meetings**.
 
 ### Transcription is local
 
-Audio never leaves your Mac. Only the transcript text goes to your AI provider, for the recap. The **Engine** in **Settings › Meetings** is **WhisperKit (Whisper)** by default with the **Large v3 Turbo** model. Other engines are **Qwen3-ASR**, **Parakeet v3** and **Apple Speech (macOS 26+)**, where available on your Mac. WhisperKit and Qwen3 transcribe while you record. Parakeet and Apple transcribe after **Stop**, and show no live text meanwhile.
+Audio never leaves your Mac. Only the transcript text goes to your AI provider, for the recap.
 
-The model downloads once. If you chose the **Meetings** goal at setup, it downloads in the background after the first sync (or after 10 minutes, whichever comes first). Otherwise it downloads at your first recording or dictation, and a pill shows progress with **Retry** if the connection drops. **Preload model before meetings** (on by default) loads the model about 5 minutes before a calendar meeting starts, so **Record** starts at once.
+Pick the **Engine** in **Settings › Meetings**. Only engines available on your Mac are listed:
+
+- **WhisperKit (Whisper)**, the default, with the **Large v3 Turbo (recommended)** model, and **Qwen3-ASR** transcribe while you record, as long as **Live transcription** (on by default) is on.
+- **Parakeet v3 (NVIDIA)** and **Apple Speech (macOS 26+)** transcribe after **Stop** and show no live text meanwhile.
+
+The model downloads once. With the **Meetings** goal chosen at setup, it downloads in the background after the first sync, or after 10 minutes, whichever comes first. Otherwise it downloads at your first recording or dictation, and a pill shows progress with **Retry** if the connection drops.
+
+**Preload model before meetings** (on by default) loads the model about 5 minutes before a calendar meeting starts, so **Record** starts at once.
 
 ### What a recording produces
 
@@ -42,11 +53,15 @@ Each recording has four tabs:
 3. Open the meeting. The recap appears when the pills clear.
 4. For a recording with no event, use **Link to event…** in its header.
 
-Audio files are deleted after 30 days (**Delete audio after N days** in **Settings › Meetings**; 0 keeps them). Transcripts and recaps stay. **Delete** removes the recording, its transcript, notes, chat and audio after confirmation. The event's recap stays with the event.
+Audio files are deleted after 30 days (**Delete audio after N days** in **Settings › Meetings**; 0 keeps them). Transcripts and recaps stay.
+
+**Delete** removes the recording, its transcript, notes, chat and audio after confirmation. The event's recap stays with the event.
 
 ### Naming voices
 
-Watchtower learns recurring voices and names speakers automatically. Voice data stays on your Mac. When a voice is unknown, a notification says "N voices to label". Open the **Voices** window from the menu bar icon: **Voices to label (N)**, **Review voices** or **Train voices**.
+Watchtower learns recurring voices and names speakers automatically. Voice data stays on your Mac.
+
+When a voice is unknown, a notification says "N voices to label". Open the **Voices** window from the menu bar icon with **Voices to label (N)**, **Review voices** or **Train voices**.
 
 - **Queue**: one card per unknown voice, with short clips. Pick a name, then **Confirm**. **Don't know** keeps "Speaker N", **Several people** marks a mixed voice, **Skip** leaves it for later. Nothing is saved until you confirm.
 - **Review**: the list of known voices, spot-checks of recent automatic labels (**Correct** or **Wrong**), and **Export…** / **Import…** of a password-protected `.wtvoices` file. It holds only voice numbers, never audio or text.

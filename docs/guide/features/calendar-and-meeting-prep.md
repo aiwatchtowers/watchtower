@@ -16,18 +16,21 @@ The list covers the last `calendar.history_days` days (30 by default) and the ne
 
 ### Where events come from
 
-The daemon syncs calendars on every cycle (every 15 minutes by default) and once more when it starts, so a freshly connected calendar fills within about a minute. Google Calendar fetches `calendar.sync_days_ahead` days ahead (7 by default). You can change it in **Settings › Connections › Google** with **Sync days ahead** (2, 3, 5, 7 or 14); the list itself only shows 7. CalDAV and ICS calendars are added under **Settings › Connections › Calendar** with **Add Calendar**.
+The daemon syncs calendars on every cycle (every 15 minutes by default) and once when it starts, so a freshly connected calendar fills within about a minute.
+
+Google Calendar fetches `calendar.sync_days_ahead` days ahead (7 by default). Change it with **Sync days ahead** in **Settings › Connections › Google** (2, 3, 5, 7 or 14); the list itself only shows 7. Add CalDAV and ICS calendars under **Settings › Connections › Calendar** with **Add Calendar**.
 
 Connecting a calendar is also what makes the **Calendar** tab appear in the sidebar. With no calendar connected the tab stays hidden.
 
 ### What Prepare reads
 
-**Prepare** runs only when you click it; nothing is prepared in advance. It builds the prep from:
+**Prepare** runs only when you click it, here or on the Day Plan timeline; nothing is prepared in advance. It builds the prep from:
 
 - the attendees' people cards and their last 7 days of activity
 - tracks and digests that involve them
 - their Jira issues
-- your pending Inbox items and targets
+- your pending attention items and targets
+- the attendees' memory context
 - your own profile
 
 Attendees are matched to Slack people by email. An attendee with no Slack match gets no people context, and the prep says so under **Missing Context**. The result is stored per event, so reopening **Prepare** shows it again.
@@ -50,7 +53,9 @@ To change reminders, go to **Settings › Features › Meeting Reminders**: **Me
 
 ### What the prep contains
 
-**Talking Points** (with priority and source), **Open Items** per person, **People Notes**, **Recommendations**, **Suggested Prep**, and **Missing Context** in orange when the data was thin.
+Talking points carry a priority and a link to their source track or digest. **Missing Context** appears in orange when the data was thin, so you know what the prep could not see.
+
+No recording? In the same pane, **Recap from text** under **Meeting Notes** writes a recap from pasted notes, and **Paste and extract** under **Discussion Topics** splits pasted text into topics.
 
 ## When it's empty or wrong
 

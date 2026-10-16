@@ -4,7 +4,7 @@ Watchtower reads your inbox so that mail someone sent you shows up beside Slack 
 
 ## Why use it
 
-A customer emails you a question on Tuesday and your Slack is quiet. Because the message reaches your Inbox, Catch Up and the briefing, it does not wait until you open your mail client.
+A customer emails you a question on Tuesday and your Slack is quiet. Because the message becomes an attention item, it turns up in Catch Up and the briefing instead of waiting until you open your mail client.
 
 ## How it works
 
@@ -19,25 +19,25 @@ Every sync cycle (every 15 minutes by default) the daemon pulls new mail for eac
 
 ### Where mail shows up
 
-- **Inbox:** a message addressed to you (you are in To) becomes an item, like a Slack mention. A message that only copies you (Cc) becomes a lower-priority item. A message from you mints nothing.
-- **Catch Up and briefing:** both include your pending Inbox items. Catch Up also reads the Gmail stream digests described below.
+- **Attention items:** a message addressed to you (you are in To) becomes an item, like a Slack mention. A message that only copies you (Cc) becomes a lower-priority item. A message from you mints nothing.
+- **Where you see them:** items have no screen of their own. They surface in **Catch Up** (needs you), the briefing and meeting prep. Catch Up also reads the Gmail stream digests described below.
 - **Ideas:** with **Stream Digests** on (**Settings › Features**), new Gmail threads are summarized per account, and ideas and decisions mined from them reach the Ideas registry. Stream Digests is a medium AI cost.
 - **Memory:** Gmail is a Memory source, off by default.
 
-An Inbox item for mail is not closed by your reply. Slack, Jira and calendar items resolve themselves; mail items stay until you handle them in Inbox.
+Your reply does not close a mail item. Slack, Jira and calendar items resolve when you answer; mail items instead archive on their own, after 14 days if you are in To and after 7 days if you are in Cc.
 
 ## Using it
 
 1. Open **Settings › Connections**.
 2. For Gmail with Calendar, use **Google** and click **Add Google Account**. Leave **Gmail** switched on and click **Connect**.
 3. For Gmail on its own, Outlook or another IMAP mailbox, use **Email** and click **Add Account**. Choose **Connect Gmail**, **Connect Outlook** or fill in the **IMAP** form (host, username, password, folder) and click **Test and Connect**.
-4. Wait for the next sync, or open **Inbox** after a cycle.
+4. Wait for the next sync cycle, then check **Catch Up** or the next briefing.
 
 Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** under **Settings › Connections › Google**. Remove one account with **Remove**.
 
 ## When it's empty or wrong
 
-- **No mail in Inbox:** only messages that name you are shown. Check that **Enable Gmail sync** is on and that the account is listed. The first items appear after the first sync.
+- **No mail in Catch Up or the briefing:** only messages that name you become items. Check that **Enable Gmail sync** is on and that the account is listed. The first items appear after the first sync.
 - **Missing a newsletter or promotion:** Gmail Promotions and Social are skipped on purpose.
 - **Missing mail from a folder other than Inbox:** Gmail reads the Inbox only, and IMAP reads the single folder from the form.
 - **Account shows an error:** use **Re-login** on the Google account to sign in again. For IMAP, remove the account and add it again.
