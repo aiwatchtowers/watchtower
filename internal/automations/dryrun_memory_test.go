@@ -75,3 +75,23 @@ func TestDryRunInMemory_BudgetBound(t *testing.T) {
 		t.Fatalf("generator calls = %d; want 2 (the third never reaches it)", n)
 	}
 }
+
+// TestDryRunInMemory_StepResultIsJSON pins that a step's result_summary is
+// the call's JSON, not the base64 of it (Env.Call's encodedResult).
+func TestDryRunInMemory_StepResultIsJSON(t *testing.T) {
+	b := automations.Backends{Generator: usageGen(10, 5), Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart)}
+	rep, err := automations.DryRunInMemory(context.Background(), b, parseExRecipe(t, `tool("list_targets", {}); return llm("x")`),
+		automations.DryRunOptions{})
+	if err != nil {
+		t.Fatalf("DryRunInMemory: %v", err)
+	}
+	if len(rep.Steps) != 2 {
+		t.Fatalf("steps = %s; want tool and llm", stepStatusesOf(rep.Steps))
+	}
+	if got := rep.Steps[0].ResultSummary; got != `[{"id":7,"title":"Ship it"}]` {
+		t.Errorf("tool step result = %q; want the JSON of the read", got)
+	}
+	if got := rep.Steps[1].ResultSummary; got != `"done"` {
+		t.Errorf("llm step result = %q; want the JSON of the reply", got)
+	}
+}
