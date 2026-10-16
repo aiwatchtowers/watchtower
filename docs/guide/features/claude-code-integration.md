@@ -40,11 +40,11 @@ Run in a terminal:
 watchtower integrate claude-code
 ```
 
-This copies the skills into `~/.claude/skills` and runs `claude mcp add watchtower -- <path to watchtower> mcp`. If the `claude` CLI is not found, it prints that command for you to run. If registration fails because the server is already registered, it says so and exits normally; check with `claude mcp list`.
+This copies the skills into `~/.claude/skills` and runs `claude mcp add watchtower -- <path to watchtower> mcp`. If the `claude` CLI is not found, it prints that command for you to run. If `claude mcp add` fails, it prints the error, names "already registered" as the most common cause, points to `claude mcp list`, and exits normally.
 
 Options:
 
-- `--scope project` installs the skills into `./.claude/skills` instead. A narrowed scope or `--path DIR` does not touch the global MCP registration unless you add `--mcp-only`.
+- `--scope project` installs the skills into `./.claude/skills` instead. A narrowed scope or `--path DIR` does not touch the global MCP registration. `--mcp-only` reaches it, but then skips the skills.
 - `--skills-only` or `--mcp-only` does just one half.
 
 `watchtower integrate status` shows each skill as installed, drifted or missing, plus the binary path. `watchtower integrate remove` deletes only skills carrying Watchtower's marker and unregisters the server.

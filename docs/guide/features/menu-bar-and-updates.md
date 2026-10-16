@@ -25,7 +25,9 @@ Other lines appear only when they apply:
 
 ### Updates
 
-Watchtower checks for a new version at every launch and then every 6 hours while it runs. When it finds one, you get one notification and one **Update Available** window per version, never repeated. The window is held back while a recording or transcription is running and appears after it ends. **Update to <version> available…** also shows in the menu.
+Watchtower checks for a new version at every launch and then every 6 hours while it runs. When it finds one, you get one notification and one **Software Update** window per version, never repeated.
+
+The window is held back while a recording or transcription is running, and appears at the next background check after it ends (checks run every 6 hours). **Update to <version> available…** also shows in the menu.
 
 Installing replaces the app in place and restarts it. Before it swaps anything, it checks that the new app is signed by the same developer as the one you run. A build that is distributed outside the public releases shows "Updates for this build are distributed out of band" instead, and never updates from the public feed.
 
@@ -55,7 +57,7 @@ Watchtower registers itself as a login item once per installed copy, so the daem
 3. When it says **Ready to install**, press **Install & Restart**.
 4. If it says **Update installed — restart Watchtower to finish**, press **Restart Now**.
 
-**Check for Updates** in the same place checks on demand. The **Update Available** window does the same with **Update Now** and **Later**.
+**Check for Updates** in the same place checks on demand. The **Software Update** window does the same with **Update Now** and **Later**.
 
 ## When it's empty or wrong
 

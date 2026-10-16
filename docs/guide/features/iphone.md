@@ -18,7 +18,9 @@ A phone links to up to four Macs and switches between them; each Mac is its own 
 
 ### Which builds pair
 
-iCloud keeps a Development and a Production environment, and records saved in one never reach the other. A normal Mac build and a TestFlight or App Store phone build are both Production and pair. A phone run from Xcode is Development, and only pairs with a Mac built for Development. Mixed pairs fail silently: the phone never sees the Mac.
+iCloud keeps a Development and a Production environment, and records saved in one never reach the other. The downloaded (Developer ID) Mac app and a TestFlight or App Store phone build are both Production and pair.
+
+A phone run from Xcode is Development, and only pairs with a Mac built for Development. Mixed pairs fail silently: the phone never sees the Mac.
 
 A Mac build without iCloud signing shows **Needs a signed build** and cannot turn sync on. An unsigned phone build runs a demo linked to "Acme Mac".
 
@@ -55,7 +57,7 @@ A permission prompt in a session is never answered from the phone; the session s
 
 Settings → **Macs** lists your Macs. **Add Mac** scans another code (up to four), and rows can be dragged to reorder. **Unlink** (or **Forget**, for a Mac that removed the phone or is long offline) deletes that Mac's data from the phone; changes not yet sent are lost, and the phone says how many ("Not sent: 3 items were still waiting for your Mac").
 
-On the Mac, **Remove…** next to a phone unlinks it. A phone on another Apple ID loses the Mac's data at once. A phone on your own Apple ID keeps what it already synced but reads nothing new.
+On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's hub freezes in both cases: what it already synced stays readable and nothing new arrives, until you tap **Forget** on the phone. A phone on another Apple ID also leaves the Mac's iCloud sharing.
 
 ## When it's empty or wrong
 
@@ -64,7 +66,7 @@ On the Mac, **Remove…** next to a phone unlinks it. A phone on another Apple I
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone needs an iCloud account; the Mac needs one too ("Mobile isn't available on this Mac: iCloud is off.").
 - **Another Apple ID won't link.** The message "This Mac can't share with another Apple ID right now" means the Mac's share failed. Show a new code and try again.
 - **"<Mac> hasn't synced for a day".** The phone has had no heartbeat for a day. If the Mac changed iCloud account, link again.
-- **"<Mac> removed this phone".** The Mac removed the link. The phone drops that Mac's data; **Forget** clears the row.
+- **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes on the phone: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
 - **"iCloud is slowing sync down"** on the Mac's Mobile tab means iCloud has held sync back for over a minute. It clears on its own.
 - **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit Watchtower. Closing the window is fine; the app keeps running in the menu bar.
 
