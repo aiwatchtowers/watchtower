@@ -13,11 +13,12 @@ package enum CatchUpQueries {
     /// Newest recaps first (the Go `ListCatchupRecaps` order). `now` decides
     /// which `building` rows read as stale (`CatchUpRecap.init(row:now:)`).
     package static func fetchRecaps(_ db: Database, limit: Int = 50, now: Date = Date()) throws -> [CatchUpRecap] {
-        try Row.fetchAll(
+        let rows = try Row.fetchAll(
             db,
             sql: "SELECT * FROM catchup_recaps ORDER BY id DESC LIMIT ?",
             arguments: [limit]
-        ).map { CatchUpRecap(row: $0, now: now) }
+        )
+        return rows.map { CatchUpRecap(row: $0, now: now) }
     }
 
     package static func fetchRecap(_ db: Database, id: Int) throws -> CatchUpRecap? {
