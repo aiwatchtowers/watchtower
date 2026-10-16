@@ -163,7 +163,10 @@ func extractObject(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if i := strings.Index(raw, "["); i >= 0 && i < strings.Index(raw, js) {
+	head := strings.TrimSpace(raw)
+	head = strings.TrimSpace(strings.TrimPrefix(head, "```json"))
+	head = strings.TrimSpace(strings.TrimPrefix(head, "```"))
+	if strings.HasPrefix(head, "[") {
 		return "", errors.New("the reply is an array, not an object")
 	}
 	return js, nil

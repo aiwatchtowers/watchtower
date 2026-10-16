@@ -89,8 +89,16 @@ func TestWorkbenchReviewLessons_ProposeWithFewCommentsCallsNoModel(t *testing.T)
 	out, err := lessonsJSONCall(t, wb, "propose")
 	require.NoError(t, err)
 	assert.Equal(t, true, out["ok"])
-	assert.Empty(t, out["lessons"])
+	assert.Equal(t, []any{}, out["lessons"])
 	assert.Zero(t, g.calls)
+
+	// A model reply with no groups also answers an explicit empty list.
+	lessonComments(t, database, wb, s, 2)
+	g.out = `{"lessons":[]}`
+	out, err = lessonsJSONCall(t, wb, "propose")
+	require.NoError(t, err)
+	assert.Equal(t, 1, g.calls)
+	assert.Equal(t, []any{}, out["lessons"])
 }
 
 // proposed: one proposed lesson on the workbench, ready to decide.

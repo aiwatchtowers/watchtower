@@ -40,6 +40,12 @@ func init() {
 	workbenchReviewCmd.AddCommand(workbenchReviewLessonsCmd)
 }
 
+// ptrLessons: a pointer so an empty list is still emitted as "lessons": [].
+func ptrLessons(ls []db.ReviewLesson) *[]reviewLessonJSON {
+	out := lessonsJSON(ls)
+	return &out
+}
+
 func lessonsJSON(ls []db.ReviewLesson) []reviewLessonJSON {
 	out := make([]reviewLessonJSON, 0, len(ls))
 	for _, l := range ls {
@@ -58,7 +64,7 @@ func runWorkbenchReviewLessonsPropose(cmd *cobra.Command, _ []string) error {
 		return failReview(cmd, err)
 	}
 	if len(comments) < 2 {
-		return writeReview(cmd, reviewEnvelope{OK: true, Lessons: []reviewLessonJSON{}})
+		return writeReview(cmd, reviewEnvelope{OK: true, Lessons: ptrLessons(nil)})
 	}
 	lenses, _ := reviewdiff.LoadLenses(p.FolderPath)
 	cfg, err := loadReviewAIConfig()
@@ -81,7 +87,7 @@ func runWorkbenchReviewLessonsPropose(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	return writeReview(cmd, reviewEnvelope{OK: true, Lessons: lessonsJSON(saved)})
+	return writeReview(cmd, reviewEnvelope{OK: true, Lessons: ptrLessons(saved)})
 }
 
 func errLessonDecided(id int64) error { return fmt.Errorf("lesson %d was already decided", id) }

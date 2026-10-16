@@ -78,6 +78,14 @@ func TestParseOverview_RejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestParseOverview_ProseBracketsAreFine(t *testing.T) {
+	o, err := ParseOverview(`Here [1] is the result: {"summary":"ok"}`, okInput())
+	require.NoError(t, err)
+	assert.Equal(t, "ok", o.Summary)
+	_, err = ParseOverview("```json\n[{\"summary\":\"s\"}]\n```", okInput())
+	assert.Error(t, err)
+}
+
 func TestBuildOverviewUser_CapsPerFileAndOverall(t *testing.T) {
 	in := Input{Diff: reviewdiff.Diff{Files: []reviewdiff.File{fileOf("big.go", 1000)}}}
 	out := BuildOverviewUser(in)

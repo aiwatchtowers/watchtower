@@ -96,7 +96,7 @@ type reviewEnvelope struct {
 	Revert           *reviewRevertJSON   `json:"revert,omitempty"`
 	Overview         json.RawMessage     `json:"overview,omitempty"`
 	OverviewCached   bool                `json:"overview_cached,omitempty"`
-	Lessons          []reviewLessonJSON  `json:"lessons,omitempty"`
+	Lessons          *[]reviewLessonJSON `json:"lessons,omitempty"`
 	Written          string              `json:"written,omitempty"`
 }
 
