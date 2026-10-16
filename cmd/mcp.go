@@ -285,6 +285,12 @@ func mcpAgent(raw string) (agentkind.Kind, error) {
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("project") {
+		// A pre-rename registration (`mcp --project N`): no session is
+		// bound or served, and Claude Code shows the server failed with
+		// this line (ask #312).
+		return errors.New(preRenameSetupLine(preRenameWorkbenchID([]string{"--project", mcpFlagPreRename})))
+	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)

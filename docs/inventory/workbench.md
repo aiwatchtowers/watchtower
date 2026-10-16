@@ -52,7 +52,14 @@ UserDefaults keys and every CLI `--json` key. The legacy aliases
 `mcp --project N`) were removed on 2026-10-15: a folder set up before the
 rename and never resynced no longer runs its old hooks or its
 `watchtower-project` server until a resync (the Desktop's Repair) migrates
-it. What stays is the cleanup of such a folder (resync and removal take its
+it. Since 2026-10-16 (ask #312) the old spellings reach only a tombstone,
+never the aliases: the hidden `watchtower project …` command reads no config
+or database and always exits 0 — `project brief` prints one stdout line asking
+the agent to have the owner run Repair install (with `watchtower workbench
+resync N` when the argv names N), every other `project …` (the Stop hook's
+`project check --project N --stop-hook` included) prints nothing on stdout
+and that line on stderr — and `mcp --project N` (a hidden flag) fails with
+the same line, binding and serving nothing. What stays is the cleanup of such a folder (resync and removal take its
 old hooks, skill, registration and exclude lines, PROJ-02/04) and the
 read-only old→new tool name map for stored `agent_actions` rows (DEV-06); see
 `docs/features/workbench.md`, "Rename".
@@ -61,7 +68,7 @@ read-only old→new tool name map for stored `agent_actions` rows (DEV-06); see
 `internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_asks,workbench_finish,workbench_images,workbench_scope,workbench_names}.go` +
 `internal/db/workbench_images.go` + `internal/workbenchfiles/` +
 `internal/asks/` + `internal/db/owner_asks.go` + `internal/db/migrations/00100_owner_asks.sql` + `internal/kb/{fileset,source_workbench}.go` +
-`cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_askguard,workbench_askguard_stop,workbench_asks_cli,workbench_escalate,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/devpack/askguard_classifier.md` + `internal/devpack/testdata/askguard_prompt_v{1,2,3}.md` +
+`cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_askguard,workbench_askguard_stop,workbench_asks_cli,workbench_escalate,workbench_session_state,workbench_flags,integrate_workbench,project_tombstone}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/devpack/askguard_classifier.md` + `internal/devpack/testdata/askguard_prompt_v{1,2,3}.md` +
 `internal/db/owner_presence.go` + `internal/db/migrations/00107_owner_asks_v2.sql` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
 `internal/db/terminal_sessions.go` + `internal/db/migrations/00098_terminal_session_agent_state.sql` +
 `internal/db/session_report.go` + `internal/db/migrations/00101_workbench_session_report.sql` +
@@ -661,6 +668,12 @@ own 1 s busy timeout, and its failure is one stderr line; stdout
 the variable the hook does exactly what it did before (no DB open on the
 `stop_hook_active` path). The three guards below run unchanged.
 
+**Note (2026-10-16, ask #312):** a never-resynced folder's pre-rename Stop
+hook (`project check --project N --stop-hook`) reaches the `project`
+tombstone (see the naming note): empty stdout, one stderr line saying the
+setup is outdated and to run Repair install, exit 0 — never exit 2, so it
+never traps a turn either. Guard: `cmd/workbench_test.go::TestWorkbench_NoPreRenameCommandOrFlag`.
+
 **Why locked:** Owner request (board target #131). The agent finished and
 merged work but never moved its targets, so a board that looks alive lied
 about what was done; the product, not the agent's memory, must catch that.
@@ -671,6 +684,7 @@ timeout would be worse than none.
 - `cmd/workbench_check_test.go::TestProj07_StopHookBlocksOnceWithTheDrift`
 - `cmd/workbench_check_test.go::TestProj07_StopHookIsSilentWithoutGitDrift`
 - `cmd/workbench_check_test.go::TestProj07_StopHookFailuresAreSilent`
+- supporting: `cmd/workbench_test.go::TestWorkbench_NoPreRenameCommandOrFlag` (the pre-rename Stop hook argv: no error, empty stdout, the Repair line on stderr, never an `exitCodeError`)
 - `WatchtowerDesktop/Tests/WorkbenchesViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchDriftReportTests.swift`, `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingStopHookNeedsRepair`
 - `cmd/workbench_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
 - `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`, `TestProj07_GitUnavailableIsANote`
@@ -2094,6 +2108,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
+- 2026-10-16 (board #376, owner decision in ask #312): **tombstone for the pre-rename spellings** — strengthening, no guard relaxed. The aliases stay removed; `watchtower project …` and `mcp --project N` now reach a tombstone instead of failing as unknown: `project brief` prints one stdout line ("Watchtower: this folder was set up before the Workbench rename and its setup no longer runs — ask the owner to run Repair install in Watchtower (or 'watchtower workbench resync N').", the parenthesis only when the argv names N), every other `project …` prints that line on stderr only with empty stdout, all exit 0 and read no config or database; `mcp --project N` fails with the same line and serves nothing. This replaces the 2026-10-15 entry's "fails as an unknown command with exit 1" for the old Stop hook. The naming note says so and PROJ-07 gains a note; guard `cmd/workbench_test.go::TestWorkbench_NoPreRenameCommandOrFlag` (rewritten to the tombstone, its never-`exitCodeError` assertion kept) is listed as supporting under PROJ-07.
 - 2026-10-16 (board #411, Desktop New Task): note only — **no contract, guard test or status changed**. The Desktop board creates targets too (header **New Task**, under the current scope; card menu **New Sub-task…**): `WorkbenchBoardViewModel.createTarget` runs `watchtower workbench target add`, the phone's owner writer, so the creation is recorded as `owner` (PROJ-06), Go does the PROJ-09 parent check and the PROJ-05 rollup, and the new target plus every parent whose status moved are reported through `onOwnerWrite` so the owner is never notified about their own change.
 - 2026-10-16 (Automations P5 part 1, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §13): **PROJ-02 strengthened** — deleting a workbench also removes its automation rows (`automations`, `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`) and the owner asks its automations filed; guard `TestProj02_DeleteRemovesAutomationRows`; the recipe files under `.watchtower/automations/` stay (owner's repo files). **PROJ-12/PROJ-13:** an automation's ask never reaches a session (see the entry above; guard `TestAutomationAsks_InvisibleToSessionReaders`); the Desktop-side guard that the terminal delivery excludes it follows in part 2. **PROJ-11 note, no text changed:** a session an automation's `session()` starts is an ordinary workbench session (same hooks, states, report and cleanup); for the run, "stopped" means the process ending, reported by the Desktop through `automations session-ended` (R-P5-3). No guard relaxed.
 - 2026-10-16 (Automations P5 Task 6, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §5, D6/D7): **PROJ-12 and PROJ-13 strengthened — no contract text weakened, no guard changed.** A workbench automation's `ask()` files an `owner_asks` row with `session_id` NULL and `automation_run_id` set (migration `00122`); its run waits for the answer itself and marks it `delivered`. Every session-side reader leaves such a row out (`a.automation_run_id IS NULL`): the brief's "Answered asks for you" and its other-sessions count (`AnsweredAsksForBrief`), `list_asks` (`OwnerAskFilter.ExcludeAutomation`), `get_ask`, `withdraw_ask` and ask_owner's `previous_ask_id` (all through `askInWorkbench`: "no ask with id N"), the series hint (`RecentOpenQuestionAsk`) and the withdrawn-title check (`LastWithdrawnByTitle`) — so PROJ-12's "an ask with no session … the session's next `workbench brief` lists it" never applies to an automation's ask, and no session's `get_ask` can deliver it. The owner-facing readers keep it (the Waiting-for-you stack, `CountOpenOwnerAsks` — the 30-ask cap stays per workbench —, badges, `workbench asks --json`, the daily briefing). **PROJ-13:** the Stop and `PreToolUse` ask guards read no `owner_asks` row (they classify the message and read the session row and presence), so they cannot see an automation's ask; text unchanged. The Desktop's terminal delivery of an automation ask is excluded in the Swift phase (Task 12). Guards: `internal/db/owner_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`, `internal/tools/workbench_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`; every existing PROJ-12/PROJ-13 guard green unmodified.

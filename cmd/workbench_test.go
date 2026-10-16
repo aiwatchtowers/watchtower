@@ -87,33 +87,69 @@ func resetSetFlags(cmds ...*cobra.Command) {
 }
 
 // The pre-rename `project` command and --project flag are gone (spec
-// 2026-10-02 §10): only the workbench vocabulary is served. A never-resynced
-// folder's hooks (internal/devpack/workbench_legacy_test.go's argv) and its
-// `mcp --project N` server fail with nothing on stdout and a plain error —
-// exit 1 through Execute, never an exitCodeError's other code (a Stop hook
-// exiting 2 would block the turn, PROJ-07).
+// 2026-10-02 §10); only a tombstone answers them (ask #312). A never-resynced
+// folder's hooks (internal/devpack/workbench_legacy_test.go's argv) exit 0
+// with one "run Repair install" line — on stdout for the SessionStart brief,
+// on stderr only for the Stop hook, whose stdout may be parsed — and touch no
+// config or database; never an exitCodeError (a Stop hook exiting 2 would
+// block the turn, PROJ-07). Its `mcp --project N` server fails with that
+// line and serves nothing.
 func TestWorkbench_NoPreRenameCommandOrFlag(t *testing.T) {
 	assert.Empty(t, workbenchCmd.Aliases)
-	rootCmd.SetIn(strings.NewReader(`{"hook_event_name":"Stop","stop_hook_active":false}`))
+	t.Setenv("HOME", t.TempDir())
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
+	original := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = original })
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	for _, argv := range [][]string{
-		{"project", "brief", "--project", "7"},
-		{"project", "check", "--project", "7", "--stop-hook"},
-		{"mcp", "--project", "7"},
-	} {
-		stdout, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, argv...)
-		require.Error(t, err, "%v", argv)
-		assert.Empty(t, stdout, "%v", argv)
-		var ec *exitCodeError
-		assert.False(t, errors.As(err, &ec), "%v must exit 1, got %v", argv, err)
-		if argv[0] == "project" {
-			assert.Contains(t, err.Error(), `unknown command "project"`)
-		} else {
-			assert.Contains(t, err.Error(), "unknown flag: --project")
-		}
-	}
+	const repair = "ask the owner to run Repair install in Watchtower (or 'watchtower workbench resync 7')."
 
-	cmds := []*cobra.Command{mcpCmd, integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd, integrateCodexCmd}
+	rootCmd.SetIn(strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"s"}`))
+	stdout, stderr, err := runRootCmd(t, nil, "project", "brief", "--project", "7")
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(stdout, "\n"), "one line: %q", stdout)
+	assert.Contains(t, stdout, "set up before the Workbench rename")
+	assert.Contains(t, stdout, repair)
+	assert.Empty(t, stderr)
+
+	rootCmd.SetIn(strings.NewReader(`{"hook_event_name":"Stop","stop_hook_active":false}`))
+	stdout, stderr, err = runRootCmd(t, nil, "project", "check", "--project", "7", "--stop-hook")
+	require.NoError(t, err)
+	assert.Empty(t, stdout, "a Stop hook's stdout may be parsed as JSON")
+	assert.Equal(t, 1, strings.Count(stderr, "\n"), "one line: %q", stderr)
+	assert.Contains(t, stderr, repair)
+
+	for _, argv := range [][]string{
+		{"project", "session-state", "--project", "7", "--event", "Stop"},
+		{"project"},
+		{"project", "brief", "--project", "x"},
+	} {
+		_, _, err := runRootCmd(t, nil, argv...)
+		require.NoError(t, err, "%v", argv)
+	}
+	_, stderr, err = runRootCmd(t, nil, "project", "check")
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "run Repair install in Watchtower.", "no id, no resync hint")
+	_, statErr := os.Stat(cfg.DBPath())
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the tombstone opens no database")
+
+	stdout, _, err = runRootCmd(t, []*cobra.Command{mcpCmd}, "mcp", "--project", "7")
+	require.Error(t, err)
+	assert.Empty(t, stdout, "no session is served")
+	assert.Contains(t, err.Error(), repair)
+	var ec *exitCodeError
+	assert.False(t, errors.As(err, &ec), "mcp --project must exit 1, got %v", err)
+
+	assert.True(t, projectTombstoneCmd.Hidden)
+	help, _, err := runRootCmd(t, nil, "--help")
+	require.NoError(t, err)
+	assert.NotContains(t, help, "\n  project ")
+	assert.True(t, mcpCmd.Flags().Lookup("project").Hidden)
+
+	cmds := []*cobra.Command{integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd, integrateCodexCmd}
 	var walk func(*cobra.Command)
 	walk = func(c *cobra.Command) {
 		cmds = append(cmds, c)

@@ -429,8 +429,8 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 // Desktop's WorkbenchCLI. Keys are a wire contract and keep their pre-rename
 // spelling (spec 2026-10-02 A2); new ones are only added. hook, stop_hook
 // and mcp count a pre-rename entry too (unchanged contract), although such
-// an entry no longer runs: the old hook commands and `mcp --project` are
-// gone. legacy says the folder still holds something a resync would migrate
+// an entry no longer runs: the old hook commands and `mcp --project` only
+// answer with the tombstone's Repair line (ask #312). legacy says the folder still holds something a resync would migrate
 // (old registration, old hook command, or the old skill as we shipped it) —
 // a folder that is not running until it is resynced or repaired;
 // legacy_skill is the old skill's state
