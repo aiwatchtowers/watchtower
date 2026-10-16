@@ -481,17 +481,6 @@ func TestSaveAutomation_ParseErrorNoRow(t *testing.T) {
 	}
 }
 
-func TestSaveAutomation_WorkbenchRefusedInP3(t *testing.T) {
-	f := newSaveFixture(t)
-	_, err := f.proposeErr(map[string]any{
-		"recipe_text": recipeText([]string{"llm:light"}, "", `return 1`), "slug": "foo", "workbench_id": 3, "reason": "r",
-	})
-	var ve *tools.ValidationError
-	if !errors.As(err, &ve) || ve.Msg != msgWorkbenchSaveLater {
-		t.Fatalf("propose = %v; want %q", err, msgWorkbenchSaveLater)
-	}
-}
-
 func TestSaveAutomation_DryRunSummaryClipped(t *testing.T) {
 	f := newSaveFixture(t)
 	rc, err := f.proposeErr(map[string]any{

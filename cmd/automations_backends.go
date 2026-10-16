@@ -92,11 +92,18 @@ func automationBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 		Generator: gen,
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     automations.RealClock{},
-		Workbench: automations.NewWorkbenchResolver(database, func() string { return cfg.Workbench.DefaultAgent }, fsutil.PrivacyProtected),
+		Workbench: automationWorkbenchResolver(cfg, database),
 		Shell:     automations.NewProcessShellRunner(),
 		MCP:       newAutomationMCPCaller(cfg, database),
 		Agent:     newAutomationAgentRunner(cfg, flagConfig, cfg.DBPath(), database),
 	}
+}
+
+// automationWorkbenchResolver is the workbench lookup of the executors and
+// of save_automation: the workbench rows, fsutil.PrivacyProtected and
+// workbench.default_agent.
+func automationWorkbenchResolver(cfg *config.Config, database *db.DB) automations.WorkbenchResolver {
+	return automations.NewWorkbenchResolver(database, func() string { return cfg.Workbench.DefaultAgent }, fsutil.PrivacyProtected)
 }
 
 // automationAgentMaxTurns bounds an agent() loop's model calls (spec §6.5).
