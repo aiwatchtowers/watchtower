@@ -14,7 +14,10 @@ import (
 	"watchtower/internal/agentlog"
 )
 
-const maxLineBytes = 8 << 20
+const (
+	maxLineBytes = 8 << 20
+	handbackTool = "SubagentHandback"
+)
 
 const (
 	reviewPrefix   = "Review round #"
@@ -52,8 +55,24 @@ type record struct {
 }
 
 type block struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+}
+
+// state is the mutable parse state of one pass over a transcript file.
+type state struct {
+	res       *Result
+	conv      string
+	byMsg     map[string]int // assistant message id -> index in res.Entries
+	markers   map[string]int // Agent tool_use id -> index in res.Entries
+	sidechain bool           // reading a subagent file: its records are the feed
+	hasTask   bool
+	handback  string
 }
 
 // Parse reads complete lines from r (positioned at startOffset) and returns
@@ -64,8 +83,19 @@ func Parse(r io.Reader, startOffset int64, conv string) (*Result, error) {
 }
 
 func parse(r io.Reader, startOffset int64, conv string, limit int) (*Result, error) {
-	res := &Result{Offset: startOffset, Unknown: map[string]int{}}
-	byMsg := map[string]int{} // assistant message id -> index in res.Entries
+	st := newState(conv, startOffset, false)
+	return st.run(r, limit)
+}
+
+func newState(conv string, startOffset int64, sidechain bool) *state {
+	return &state{
+		res:  &Result{Offset: startOffset, Unknown: map[string]int{}},
+		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, sidechain: sidechain,
+	}
+}
+
+func (st *state) run(r io.Reader, limit int) (*Result, error) {
+	res := st.res
 	br := bufio.NewReaderSize(r, 64<<10)
 	for {
 		raw, n, complete, err := agentlog.NextLine(br, limit)
@@ -79,13 +109,14 @@ func parse(r io.Reader, startOffset int64, conv string, limit int) (*Result, err
 		if raw == nil {
 			res.Skipped++
 		} else {
-			handle(raw, conv, res, byMsg)
+			st.handle(raw)
 		}
 	}
 	return res, nil
 }
 
-func handle(raw []byte, conv string, res *Result, byMsg map[string]int) {
+func (st *state) handle(raw []byte) {
+	res, conv := st.res, st.conv
 	var rec record
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		res.Unknown["<invalid>"]++
@@ -94,18 +125,29 @@ func handle(raw []byte, conv string, res *Result, byMsg map[string]int) {
 	at, _ := time.Parse(time.RFC3339Nano, rec.Timestamp)
 	switch rec.Type {
 	case "user":
-		if rec.IsMeta || rec.IsCompact || rec.IsSidechain {
+		if rec.IsMeta || rec.IsCompact || rec.IsSidechain != st.sidechain {
 			return
+		}
+		if !st.sidechain {
+			st.recordParentReport(rec)
+		}
+		if st.sidechain {
+			// only the first plain-string record is the task
+			var task string
+			if st.hasTask || json.Unmarshal(rec.Message.Content, &task) != nil {
+				return
+			}
+			st.hasTask = true
 		}
 		if e, ok := userEntry(rec); ok {
 			e.At, e.Conversation = at, conv
 			res.Entries = append(res.Entries, e)
 		}
 	case "assistant":
-		if rec.IsSidechain {
+		if rec.IsSidechain != st.sidechain {
 			return
 		}
-		assistant(rec, at, conv, res, byMsg)
+		st.assistant(rec, at)
 	case "attachment":
 		if text, ok := briefText(rec.Attachment); ok {
 			res.Entries = append(res.Entries, Entry{ID: rec.UUID, Kind: KindBrief, At: at, Text: text, Conversation: conv})
@@ -169,31 +211,45 @@ func firstGroup(re *regexp.Regexp, s string) string {
 	return ""
 }
 
-func assistant(rec record, at time.Time, conv string, res *Result, byMsg map[string]int) {
+func (st *state) assistant(rec record, at time.Time) {
+	res, conv := st.res, st.conv
 	var blocks []block
 	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
 		return
 	}
 	var parts []string
+	var calls []block
 	for _, b := range blocks {
-		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+		switch {
+		case b.Type == "text" && strings.TrimSpace(b.Text) != "":
 			parts = append(parts, strings.TrimSpace(b.Text))
+		case b.Type == "tool_use" && b.Name == "Agent":
+			calls = append(calls, b)
+		case b.Type == "tool_use" && b.Name == handbackTool && st.sidechain:
+			var in struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(b.Input, &in) == nil {
+				st.handback = in.Message
+			}
 		}
 	}
-	if len(parts) == 0 {
-		return
+	if len(parts) > 0 {
+		text := strings.Join(parts, "\n\n")
+		id := rec.Message.ID
+		if id == "" {
+			id = rec.UUID
+		}
+		if i, ok := st.byMsg[id]; ok {
+			res.Entries[i].Text = text
+		} else {
+			st.byMsg[id] = len(res.Entries)
+			res.Entries = append(res.Entries, Entry{ID: id, Kind: KindAgent, At: at, Text: text, Conversation: conv})
+		}
 	}
-	text := strings.Join(parts, "\n\n")
-	id := rec.Message.ID
-	if id == "" {
-		id = rec.UUID
+	for _, b := range calls {
+		st.marker(b, at)
 	}
-	if i, ok := byMsg[id]; ok {
-		res.Entries[i].Text = text
-		return
-	}
-	byMsg[id] = len(res.Entries)
-	res.Entries = append(res.Entries, Entry{ID: id, Kind: KindAgent, At: at, Text: text, Conversation: conv})
 }
 
 func briefText(raw json.RawMessage) (string, bool) {
