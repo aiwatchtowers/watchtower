@@ -16,7 +16,7 @@
 
 **Status:** Enforced
 
-**Observable:** The feed is built on demand from the transcript files and kept nowhere. The ledger (`terminal_session_agent_sessions`) holds agent session ids and times only. The reader opens transcripts for reading: it never writes, locks, renames or creates files beside them; a transcript's size and mtime are unchanged after a build.
+**Observable:** The feed is built on demand from the transcript files and kept nowhere. The ledger (`terminal_session_agent_sessions`) holds agent session ids and times only. The reader opens transcripts for reading only. The guard test checks that after a build the transcript's size and mtime are unchanged and no sibling file appeared.
 
 **Why locked:** Transcripts hold the owner's prompts, code and secrets (AGENTLOG-01, AGENTLOG-05 apply the same rule to analytics); a copy in the shared database would travel with backups and sync.
 
@@ -46,7 +46,7 @@
 
 **Status:** Enforced
 
-**Observable:** `workbench session-feed --json` emits `session_id`, `cursor`, `entries`, `subagents`, `skipped`, `unknown_records`; an entry has `id`, `kind`, `at`, `text`, `conversation` and, when set, `ask_id`, `title`, `via`, `subagent`. The Desktop decodes these; renaming a key breaks the app silently.
+**Observable:** `workbench session-feed --json` emits `session_id`, `cursor`, `entries`, `subagents`, `skipped`, `unknown_records`; an entry has `id`, `kind`, `at`, `text`, `conversation` and, when set, `ask_id`, `title`, `via`, `subagent`; a `subagent` object has `tool_use_id`, `agent_id`, `type`, `description`, `status`. The Desktop decodes these; renaming a key breaks the app silently.
 
 **Test guards:**
 - `cmd/workbench_session_feed_test.go::TestSessionFeedJSON_PinnedKeys`

@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/reviewdiff"
 )
 
 func parseStr(t *testing.T, s string, off int64) *Result {
@@ -138,4 +140,21 @@ func TestParse_ImageAndSidechain(t *testing.T) {
 	), 0)
 	require.Len(t, res.Entries, 1)
 	assert.Equal(t, "see\n[image]", res.Entries[0].Text)
+}
+
+func TestParse_KnownIgnoredTypes(t *testing.T) {
+	res := parseStr(t, "{\"type\":\"atis-latch\"}\n{\"type\":\"frame-link\"}\n{\"type\":\"queue-operation\"}\n{\"type\":\"file-history-delta\"}\n{\"type\":\"artifact-view\"}\n{\"type\":\"mystery\"}\n", 0)
+	assert.Equal(t, map[string]int{"mystery": 1}, res.Unknown)
+}
+
+func TestParse_PastedImageMarkerNotDoubled(t *testing.T) {
+	res := parseStr(t, join(
+		userBlocks("u1", textB("[Image #1] look"), map[string]any{"type": "image"}),
+	), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, "[Image #1] look", res.Entries[0].Text)
+}
+
+func TestParse_ReviewPrefixMatchesDeliveryLine(t *testing.T) {
+	assert.True(t, strings.HasPrefix(reviewdiff.DeliveryLine(3, 2), reviewPrefix))
 }

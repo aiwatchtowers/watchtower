@@ -8,7 +8,7 @@ A workbench session's transcript holds hundreds of tool calls; the owner wants t
 
 | Piece | Where |
 |---|---|
-| Reader | `internal/sessionfeed/` (`parse.go` record rules, `feed.go` `Build`/`Locate`/cursor, `subagent.go` subagent markers and feeds, `entry.go` types) |
+| Reader | `internal/sessionfeed/` (`parse.go` record rules, `feed.go` `Build`/`LocateAll`/cursor, `subagent.go` subagent markers and feeds, `entry.go` types) |
 | Ledger | migration `00124_*` `terminal_session_agent_sessions`, `internal/db/terminal_session_agent_sessions.go` (`ListTerminalAgentSessions`) |
 | CLI | `watchtower workbench session-feed --session N [--after C] [--subagent TOOL_USE_ID] [--json]` (`cmd/workbench_session_feed.go`) |
 | Desktop model/store/poller | `WatchtowerCore` `Models/SessionFeed.swift`, `Services/SessionFeedStore.swift`, `Services/SessionFeedPoller.swift` |
@@ -21,7 +21,7 @@ The Desktop runs the CLI with `--json` and decodes it; there is no Swift twin of
 `owner`, `agent`, `ask_answer`, `watchtower` (`via` = `review` or `handoff`), `brief`, `subagent`, `separator`. Every entry has a stable `id`, an `at` time, `text` and the tab's `conversation` (agent session id).
 
 Record rules (`parse.go`):
-- `user` records with string or `text` content are `owner`. Dropped: `isMeta`, `isCompactSummary`, any record holding a `tool_result` block, `<local-command…>` wrappers, `[Request interrupted…` lines, and sidechain records outside a subagent file. `<system-reminder>` blocks are stripped; images become `[image]`; a slash command becomes `/name args`.
+- `user` records with string or `text` content are `owner`. Dropped: `isMeta`, `isCompactSummary`, any record holding a `tool_result` block, `<local-command…>` wrappers, `[Request interrupted…` lines, and sidechain records outside a subagent file. `<system-reminder>` blocks are stripped; images become `[image]` (unless the text already has an `[Image #N]` marker); a slash command becomes `/name args`.
 - `Ask #N answered …` is `ask_answer`; the CLI joins it to `owner_asks` (title and answer text), **only for an ask of the session's own workbench** (FEED-04). An ask that cannot be read keeps the bare typed line.
 - `Review round #…` and `From a Watchtower code question:` lines are `watchtower` entries (`via` review / handoff). Hook feedback is not a chat line and is dropped with the meta records.
 - The start brief is not a `user` record: it is an `attachment` with `hookEvent` `SessionStart` whose `stdout` starts `Watchtower workbench #`; other SessionStart outputs are dropped. One collapsed `brief` entry.
@@ -34,7 +34,7 @@ The cursor is `<agent session id>:<byte offset after the last complete line>`. `
 
 ## Subagents
 
-`--subagent T` prints the feed of the subagent started by tool call `T`, read whole (empty cursor): its task as the first entry, its text replies, then the final report. A foreground subagent's report is the parent's `tool_result` for the `Agent` call; a background one reports through its `SubagentHandback` call (text in `input.message`). A background subagent without a hand-back has no report (the parent's result is only a launch notice). Nested subagents open the same way. The Desktop shows the feed in a side sheet.
+`--subagent T` prints the feed of the subagent started by tool call `T`, read whole (empty cursor): its task as the first entry, its text replies, then the final report. A foreground subagent's report is the parent's `tool_result` for the `Agent` call; a background one reports through its `SubagentHandback` call (text in `input.message`). A background subagent without a hand-back has no report (the parent's result is only a launch notice). Nested subagents open the same way: the Desktop shows the feed in a sheet, and a nested marker inside it opens a further sheet.
 
 ## The ledger (migration 00124)
 
@@ -45,7 +45,7 @@ The rows are written by **SQL triggers on `terminal_sessions`** (`AFTER INSERT` 
 - `internal/db/schema.sql` mirrors the table but not the triggers (only a comment points at 00124).
 - The migration backfills one row per existing tab with an id (`created_at` as `first_seen_at`).
 
-Locating a transcript: `Locate` searches the workbench's candidate directories (`agentlog.CandidateDirs`, worktrees included) under `<claude dir>/projects`. A missing transcript is skipped, not an error.
+Locating transcripts: `LocateAll` lists the workbench's candidate directories (`agentlog.CandidateDirs`, worktrees included) under `<claude dir>/projects` once per call and resolves every ledger id from that one listing. A missing transcript is skipped, not an error.
 
 ## Entry points in the app
 
@@ -56,7 +56,7 @@ Session row context menu **Show Chat**; the session header **Chat** toggle; the 
 - Claude Code only. A Codex session returns `codex sessions are not supported yet`; the entry kinds are agent-neutral so it can be added.
 - No search, export or sharing. The iPhone chat is pending (phase 3: tail of a feed in the 900 000-byte envelope, subagent feeds on request).
 - Zero time means no time: the separator, a report entry and a meta-only subagent marker may carry `0001-01-01T00:00:00Z`; the Desktop treats it as unknown and shows no timestamp.
-- `--after` is ignored with `--subagent`.
+- `--after` and `--subagent` are mutually exclusive (the command refuses both). `skipped` and `unknown_records` count only what that call read.
 - A marker whose `meta.json` is not written yet is missing from `subagents` until it appears (it is still in `entries` when its call is after the cursor); a meta-only marker has no time or parent report until its transcript part is parsed.
 - A background subagent without a `SubagentHandback` has no report.
 - `unknown_records` is noisy on live data (several expected Claude Code record types are not yet on the ignore list); it is a drift signal, not an error.

@@ -124,19 +124,19 @@ func TestParseCursor_Rejects(t *testing.T) {
 	}
 }
 
-func TestLocate_FindsInCandidateDirs(t *testing.T) {
+func TestLocateAll_FindsInCandidateDirs(t *testing.T) {
 	proj := t.TempDir()
 	slugDir := filepath.Join(proj, "-w-app")
 	require.NoError(t, os.MkdirAll(filepath.Join(slugDir, "u1", "subagents"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(slugDir, "u1.jsonl"), []byte("x\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(slugDir, "u2.jsonl"), []byte("x\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(slugDir, "u1", "subagents", "agent-z.jsonl"), []byte("x\n"), 0o600))
-	p, ok := Locate(proj, []string{"/w/app"}, "u1")
-	require.True(t, ok)
-	assert.Equal(t, filepath.Join(slugDir, "u1.jsonl"), p)
-	_, ok = Locate(proj, []string{"/w/app"}, "nope")
-	assert.False(t, ok)
-	_, ok = Locate(proj, []string{"/w/app"}, "z") // a subagent id is not a session
-	assert.False(t, ok)
+	// "z" is a subagent id, not a session; "nope" has no transcript.
+	got := LocateAll(proj, []string{"/w/app"}, []string{"u1", "u2", "nope", "z"})
+	assert.Equal(t, map[string]string{
+		"u1": filepath.Join(slugDir, "u1.jsonl"),
+		"u2": filepath.Join(slugDir, "u2.jsonl"),
+	}, got)
 }
 
 func TestBuild_AfterCursorReadsOnlyTail(t *testing.T) {

@@ -10,6 +10,7 @@ struct SessionChatSubagentSheet: View {
     @State private var entries: [SessionFeedEntry] = []
     @State private var loading = true
     @State private var error: String?
+    @State private var nested: SessionFeedEntry?
 
     private var subagent: SessionFeedSubagent? { entry.subagent }
 
@@ -31,6 +32,9 @@ struct SessionChatSubagentSheet: View {
         }
         .frame(minWidth: 480, minHeight: 420)
         .task(id: entry.id) { await load() }
+        .sheet(item: $nested) { inner in
+            Self(store: store, entry: inner)
+        }
     }
 
     @ViewBuilder
@@ -49,7 +53,7 @@ struct SessionChatSubagentSheet: View {
                         if let heading = heading(index) {
                             Text(heading).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         }
-                        SessionChatRow(entry: item)
+                        SessionChatRow(entry: item) { nested = item }
                     }
                 }
                 .padding(14)

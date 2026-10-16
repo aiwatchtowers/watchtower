@@ -28,7 +28,8 @@ var workbenchSessionFeedCmd = &cobra.Command{
 		"answers to its asks, subagent markers, and a separator where the tab started a new\n" +
 		"conversation (/clear). --after C returns only what follows cursor C (an entry that\n" +
 		"grew keeps its id: upsert by id). --subagent T prints the feed of the subagent started\n" +
-		"by tool call T, read whole (its cursor is empty). The database is opened read-only.",
+		"by tool call T, read whole (its cursor is empty); --after and --subagent exclude each other.\n" +
+		"skipped and unknown_records count only what this call read. The database is opened read-only.",
 	Args: cobra.NoArgs,
 	RunE: runWorkbenchSessionFeed,
 }
@@ -48,6 +49,7 @@ func init() {
 	fs.StringVar(&workbenchSessionFeedFlagSubagent, "subagent", "", "tool_use id of a subagent: print its feed")
 	fs.BoolVar(&workbenchSessionFeedFlagJSON, "json", false, "output JSON")
 	_ = c.MarkFlagRequired("session")
+	c.MarkFlagsMutuallyExclusive("after", "subagent")
 	workbenchCmd.AddCommand(c)
 }
 
@@ -179,9 +181,14 @@ func sessionFeedConversations(ctx context.Context, database *db.DB, sess *db.Ter
 	}
 	roots := append([]string{sess.FolderPath}, agentlog.WorktreeRoots(ctx, sess.FolderPath)...)
 	projects := filepath.Join(agentsClaudeDir(), "projects")
+	ids := make([]string, 0, len(ledger))
+	for _, l := range ledger {
+		ids = append(ids, l.AgentSessionID)
+	}
+	located := sessionfeed.LocateAll(projects, roots, ids)
 	var convs []sessionfeed.Conversation
 	for _, l := range ledger {
-		if p, ok := sessionfeed.Locate(projects, roots, l.AgentSessionID); ok {
+		if p, ok := located[l.AgentSessionID]; ok {
 			convs = append(convs, sessionfeed.Conversation{AgentSessionID: l.AgentSessionID, Path: p})
 		}
 	}

@@ -164,21 +164,27 @@ func parseFile(c Conversation, start int64) (*Result, error) {
 	return Parse(f, start, c.AgentSessionID)
 }
 
-// Locate finds the main transcript of agentSessionID under the Claude
-// projects directory, searching the directories of folderRoots.
-func Locate(projectsDir string, folderRoots []string, agentSessionID string) (string, bool) {
+// LocateAll finds the main transcripts of agentSessionIDs under the Claude
+// projects directory, searching the directories of folderRoots once. Ids
+// without a transcript are absent from the result.
+func LocateAll(projectsDir string, folderRoots []string, agentSessionIDs []string) map[string]string {
+	found := map[string]string{}
 	dirs, err := agentlog.CandidateDirs(projectsDir, folderRoots)
 	if err != nil {
-		return "", false
+		return found
 	}
 	files, err := agentlog.ListTranscripts(dirs)
 	if err != nil {
-		return "", false
+		return found
+	}
+	want := map[string]bool{}
+	for _, id := range agentSessionIDs {
+		want[id] = true
 	}
 	for _, f := range files {
-		if !f.Subagent && f.SessionUUID == agentSessionID {
-			return f.Path, true
+		if _, dup := found[f.SessionUUID]; !f.Subagent && want[f.SessionUUID] && !dup {
+			found[f.SessionUUID] = f.Path
 		}
 	}
-	return "", false
+	return found
 }

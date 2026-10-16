@@ -239,3 +239,10 @@ func TestSessionFeed_PlainOutput(t *testing.T) {
 	assert.Regexp(t, `(?m)^\d\d:\d\d  You:\n    hello\n    second line\n\d\d:\d\d  Agent:\n    hi there\n── new conversation ──\n\d\d:\d\d  You:\n    again\n$`, out)
 	t.Log("\n" + out)
 }
+
+func TestSessionFeed_AfterAndSubagentExclusive(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	_, err := fx.run(t, "--after", "conv-1:0", "--subagent", "toolu_x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "none of the others can be")
+}

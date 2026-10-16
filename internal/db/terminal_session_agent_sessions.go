@@ -30,7 +30,9 @@ func (db *DB) ListTerminalAgentSessions(terminalSessionID int64) ([]TerminalAgen
 		if err := rows.Scan(&s.AgentSessionID, &at); err != nil {
 			return nil, fmt.Errorf("scanning agent session of terminal session %d: %w", terminalSessionID, err)
 		}
-		s.FirstSeenAt, _ = time.Parse(time.RFC3339, at)
+		if s.FirstSeenAt, err = time.Parse(time.RFC3339, at); err != nil {
+			return nil, fmt.Errorf("parsing first_seen_at of agent session %s: %w", s.AgentSessionID, err)
+		}
 		out = append(out, s)
 	}
 	return out, rows.Err()

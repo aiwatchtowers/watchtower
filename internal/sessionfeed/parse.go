@@ -38,6 +38,7 @@ var ignoredTypes = map[string]bool{
 	"attachment": true, "system": true, "mode": true, "permission-mode": true,
 	"file-history-snapshot": true, "ai-title": true, "last-prompt": true,
 	"cost-state": true, "pr-link": true, "summary": true,
+	"atis-latch": true, "frame-link": true, "queue-operation": true, "file-history-delta": true,
 }
 
 type record struct {
@@ -151,7 +152,7 @@ func (st *state) handle(raw []byte) {
 			res.Entries = append(res.Entries, Entry{ID: rec.UUID, Kind: KindBrief, At: at, Text: text, Conversation: conv})
 		}
 	default:
-		if !ignoredTypes[rec.Type] && !strings.HasPrefix(rec.Type, "api-request") {
+		if !ignoredTypes[rec.Type] && !strings.HasPrefix(rec.Type, "api-request") && !strings.HasPrefix(rec.Type, "artifact-") {
 			res.Unknown[rec.Type]++
 		}
 	}
@@ -165,6 +166,7 @@ func userEntry(rec record) (Entry, bool) {
 			return Entry{}, false
 		}
 		var parts []string
+		hasImage := false
 		for _, b := range blocks {
 			switch b.Type {
 			case "tool_result":
@@ -172,10 +174,13 @@ func userEntry(rec record) (Entry, bool) {
 			case "text":
 				parts = append(parts, b.Text)
 			case "image":
-				parts = append(parts, "[image]")
+				hasImage = true
 			}
 		}
 		text = strings.Join(parts, "\n")
+		if hasImage && !strings.Contains(text, "[Image #") {
+			text += "\n[image]"
+		}
 	}
 	text = strings.TrimSpace(reminderRe.ReplaceAllString(text, ""))
 	if text == "" {
