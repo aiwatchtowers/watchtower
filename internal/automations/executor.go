@@ -117,13 +117,17 @@ func (e *Executor) nudged() <-chan struct{} {
 func (e *Executor) Wait() { e.wg.Wait() }
 
 // Run first ends the runs a previous daemon left running or waiting
-// (failed/interrupted, AUTO-08; a live CLI dry run is spared), then polls
+// (failed/interrupted, AUTO-08; a live CLI dry run is spared) and withdraws
+// their open asks (sweepAsks), then polls
 // every PollInterval and on Wake until ctx is done. In-flight runs are
 // interrupted with ctx and finished before Run returns nil.
 func (e *Executor) Run(ctx context.Context) error {
 	defer e.Wait()
 	if !e.markInterrupted(ctx) {
 		return nil
+	}
+	if err := e.sweepAsks(); err != nil {
+		e.logger.Printf("automations: executor start: %v", err)
 	}
 	for ctx.Err() == nil {
 		if _, err := e.Step(ctx); err != nil && ctx.Err() == nil {
@@ -159,7 +163,8 @@ func (e *Executor) markInterrupted(ctx context.Context) bool {
 	}
 }
 
-// Step is one poll (the test seam): it ends dry runs whose CLI died, cancels
+// Step is one poll (the test seam): it ends dry runs whose CLI died,
+// withdraws the open asks of ended runs (sweepAsks), cancels
 // queued runs of non-runnable automations, and claims queued runs oldest
 // first while running runs are fewer than MaxConcurrent, starting one
 // goroutine per claim. It claims nothing while AbandonedRuns() ≥ 2 (but
@@ -172,6 +177,9 @@ func (e *Executor) Step(ctx context.Context) (started int, err error) {
 		errs = append(errs, err)
 	} else if n > 0 {
 		e.logger.Printf("automations: %d dry run(s) past their deadline ended (their CLI process stopped)", n)
+	}
+	if err := e.sweepAsks(); err != nil {
+		errs = append(errs, err)
 	}
 	gated := e.claimsGated()
 	queued, err := e.db.NextQueuedAutomationRuns(0)
@@ -194,6 +202,17 @@ func (e *Executor) Step(ctx context.Context) (started int, err error) {
 		}
 	}
 	return p.started, errors.Join(errs...)
+}
+
+// sweepAsks withdraws (agent) the open asks of runs that ended: no run waits
+// for them any more (a daemon restart, a cancel racing ask()'s insert, a
+// withdraw that failed when the wait ended).
+func (e *Executor) sweepAsks() error {
+	n, err := e.db.WithdrawAsksOfEndedAutomationRuns()
+	if n > 0 {
+		e.logger.Printf("automations: withdrew %d open ask(s) of ended runs", n)
+	}
+	return err
 }
 
 // claimsGated reports whether AbandonedRuns() ≥ maxAbandonedRuns (no claim;
