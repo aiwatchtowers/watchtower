@@ -1,0 +1,370 @@
+package automations_test
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"watchtower/internal/automations"
+	"watchtower/internal/automations/automationstest"
+	"watchtower/internal/db"
+)
+
+// The workbench recipes (spec §15 #2 and #5) in testdata/workbench, run end
+// to end through the executor: FakeShell answers shell(), FakeSessionDesk
+// plays the Desktop for session().
+
+const prListCmd = "gh pr list --state open --json number,title,url,author,updatedAt"
+
+// buttonRecipes are the three button recipes: slug, label, command.
+var buttonRecipes = []struct{ slug, label, cmd string }{
+	{"release", "Release", "make release"},
+	{"deploy-test", "Deploy to test", "make deploy-test"},
+	{"deploy-stage", "Deploy to stage", "make deploy-stage"},
+}
+
+var workbenchRecipeSlugs = []string{"pr-review-rounds", "release", "deploy-test", "deploy-stage"}
+
+func readWorkbenchRecipe(t *testing.T, slug string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "workbench", slug+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// wbE2E is an executor over a file DB with one workbench, a FakeShell and a
+// FakeSessionDesk.
+type wbE2E struct {
+	*exFixture
+	wb     int64
+	folder string
+	shell  *automationstest.FakeShell
+	desk   *automationstest.FakeSessionDesk
+}
+
+func newWbE2E(t *testing.T, res automations.ShellResult) *wbE2E {
+	t.Helper()
+	w := &wbE2E{shell: &automationstest.FakeShell{Result: res}}
+	w.exFixture = newExFixture(t, exOpts{fileDB: true, backends: func(f *exFixture, b *automations.Backends) {
+		b.Shell = w.shell
+		b.Workbench = automations.NewWorkbenchResolver(f.d, func() string { return "claude" }, func(string) bool { return false })
+	}})
+	w.wb, w.folder = newWorkbench(t, w.d)
+	w.desk = &automationstest.FakeSessionDesk{DB: w.d, Wake: w.e.Wake}
+	return w
+}
+
+// seedRecipe indexes testdata recipe slug in the workbench, confirms and
+// enables it.
+func (w *wbE2E) seedRecipe(t *testing.T, slug string) db.Automation {
+	t.Helper()
+	writeWorkbenchRecipe(t, w.folder, slug, string(readWorkbenchRecipe(t, slug)))
+	rescanWorkbench(t, w.ix, w.wb, w.folder)
+	a := workbenchRow(t, w.d, w.wb, slug)
+	if a.ParseError != "" {
+		t.Fatalf("%s does not parse: %s", slug, a.ParseError)
+	}
+	if err := w.d.ConfirmAutomation(a.ID, a.ApprovalHash, exStart); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.d.SetAutomationEnabled(a.ID, true, exStart); err != nil {
+		t.Fatal(err)
+	}
+	return workbenchRow(t, w.d, w.wb, slug)
+}
+
+// drive starts run id and plays the Desktop until the run ended.
+func (w *wbE2E) drive(t *testing.T, id int64) *db.AutomationRun {
+	t.Helper()
+	w.stepNoWait(t, 1)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := w.desk.Poll(); err != nil {
+			t.Fatalf("desk: %v", err)
+		}
+		r := w.run(t, id)
+		if !slices.Contains([]string{db.RunQueued, db.RunRunning, db.RunWaiting}, r.Status) {
+			w.e.Wait()
+			return r
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run %d never ended (is %s/%s)", id, r.Status, r.WaitingReason)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (w *wbE2E) setState(t *testing.T, a db.Automation, state string) {
+	t.Helper()
+	if _, err := w.d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)`, a.ID, state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (w *wbE2E) state(t *testing.T, a db.Automation) map[string]any {
+	t.Helper()
+	raw, err := w.d.GetAutomationState(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("state %s: %v", raw, err)
+	}
+	return m
+}
+
+// onlyReport is the one committed report output.
+func (w *wbE2E) onlyReport(t *testing.T) db.AutomationOutput {
+	t.Helper()
+	outs, err := w.d.ListAutomationOutputs("report", 10)
+	if err != nil || len(outs) != 1 {
+		t.Fatalf("report outputs = %+v, %v; want one", outs, err)
+	}
+	return outs[0]
+}
+
+func (w *wbE2E) stepsOfKind(t *testing.T, id int64, kind string) []db.AutomationRunStep {
+	t.Helper()
+	var out []db.AutomationRunStep
+	for _, s := range w.steps(t, id) {
+		if s.Kind == kind {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func runLabelOf(id int64) string { return " · run #" + strconv.FormatInt(id, 10) }
+
+func TestWorkbenchRecipes_AllParseAndConfirm(t *testing.T) {
+	for _, slug := range workbenchRecipeSlugs {
+		data := readWorkbenchRecipe(t, slug)
+		r, err := automations.ParseRecipe(slug, data, automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: 1})
+		if err != nil {
+			t.Fatalf("%s: %v", slug, err)
+		}
+		if r.Scope.Kind != automations.ScopeWorkbench || !slices.Equal(r.Outputs, []string{"report"}) {
+			t.Fatalf("%s: scope %v outputs %v; want workbench, [report]", slug, r.Scope, r.Outputs)
+		}
+		if _, err := automations.ParseRecipe(slug, data, automations.Scope{Kind: automations.ScopePersonal}); err == nil {
+			t.Fatalf("%s parsed as a personal recipe; its shell:/session: entries are workbench only", slug)
+		}
+	}
+	w := newWbE2E(t, automations.ShellResult{})
+	for _, slug := range workbenchRecipeSlugs {
+		if a := w.seedRecipe(t, slug); !a.Runnable() {
+			t.Fatalf("%s is not runnable after confirm and enable", slug)
+		}
+	}
+}
+
+func TestRelease_ButtonTriggerConfirmTrue(t *testing.T) {
+	for _, b := range buttonRecipes {
+		r, err := automations.ParseRecipe(b.slug, readWorkbenchRecipe(t, b.slug), automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: 1})
+		if err != nil {
+			t.Fatalf("%s: %v", b.slug, err)
+		}
+		if r.Trigger.Kind != automations.TriggerButton || r.Trigger.Button == nil ||
+			*r.Trigger.Button != (automations.ButtonTrigger{Label: b.label, Confirm: true}) {
+			t.Fatalf("%s trigger = %+v (button %+v); want button{label: %q, confirm: true}", b.slug, r.Trigger, r.Trigger.Button, b.label)
+		}
+		want := `shell:"` + b.cmd + `"`
+		if !slices.Contains(r.Permissions, want) {
+			t.Fatalf("%s permissions = %v; want %s", b.slug, r.Permissions, want)
+		}
+	}
+	r, err := automations.ParseRecipe("pr-review-rounds", readWorkbenchRecipe(t, "pr-review-rounds"), automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: 1})
+	if err != nil || r.Trigger.Kind != automations.TriggerSchedule || r.Trigger.Schedule != "0 10,16 * * 1-5" {
+		t.Fatalf("pr-review-rounds trigger = %+v, %v; want schedule 0 10,16 * * 1-5", r.Trigger, err)
+	}
+}
+
+// prList is gh's JSON for three open pull requests: #12 last updated before
+// the seeded last round, #14 and #15 after it.
+const prList = `[
+	{"number": 15, "title": "Retry the sync", "url": "https://example.com/acme/pull/15", "author": {"login": "colleague-a"}, "updatedAt": "2026-10-14T09:30:00Z"},
+	{"number": 12, "title": "Old docs fix", "url": "https://example.com/acme/pull/12", "author": {"login": "colleague-b"}, "updatedAt": "2026-10-13T16:00:00Z"},
+	{"number": 14, "title": "Add the export", "url": "https://example.com/acme/pull/14", "author": {"login": "colleague-a"}, "updatedAt": "2026-10-14T10:00:00Z"}
+]`
+
+const lastRound = "2026-10-14T08:00:00.000Z"
+
+func TestPRReviewRounds_E2E(t *testing.T) {
+	w := newWbE2E(t, automations.ShellResult{Stdout: prList})
+	w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "2 findings filed, 1 comment posted"}, {AgentError: "overloaded_error"}}
+	a := w.seedRecipe(t, "pr-review-rounds")
+	w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+	id := w.enqueue(t, a, db.TriggerSchedule)
+
+	r := w.drive(t, id)
+	if r.Status != db.RunSucceeded {
+		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+	}
+	if calls := w.shell.Calls(); len(calls) != 1 || calls[0].Cmd != prListCmd || calls[0].Dir != w.folder {
+		t.Fatalf("shell calls = %+v; want one %q in %s", calls, prListCmd, w.folder)
+	}
+	launches := w.desk.Launches()
+	if len(launches) != 2 {
+		t.Fatalf("launches = %+v; want two sessions", launches)
+	}
+	for i, n := range []string{"14", "15"} {
+		l := launches[i]
+		if l.Title != "⚙ PR #"+n+" review"+runLabelOf(id) || l.Agent != "claude" {
+			t.Fatalf("launch %d = title %q agent %q; want PR #%s review, claude", i, l.Title, l.Agent, n)
+		}
+		for _, want := range []string{"#" + n, "ask_owner", "after", "gh pr review " + n, "finish_session"} {
+			mustContain(t, "session prompt", l.Prompt, want)
+		}
+		if len(l.Prompt) > 3000 {
+			t.Fatalf("prompt is %d bytes; keep it well under the 4096-byte step args limit", len(l.Prompt))
+		}
+	}
+	if steps := w.stepsOfKind(t, id, automations.StepKindSession); len(steps) != 2 || steps[0].SessionID != launches[0].SessionID ||
+		steps[1].SessionID != launches[1].SessionID {
+		t.Fatalf("session steps = %+v; want two, in launch order", steps)
+	}
+
+	got, _ := w.state(t, a)["last_round"].(string)
+	if prev, _ := time.Parse(time.RFC3339, lastRound); got == "" || !mustParseTime(t, got).After(prev) {
+		t.Fatalf("last_round = %q; want advanced past %s", got, lastRound)
+	}
+	rep := w.onlyReport(t)
+	mustContain(t, "report title", rep.Title, "2 pull requests")
+	for _, want := range []string{"#14 Add the export (https://example.com/acme/pull/14): finished — 2 findings filed, 1 comment posted",
+		"#15 Retry the sync (https://example.com/acme/pull/15): error — overloaded_error"} {
+		mustContain(t, "report body", rep.Body, want)
+	}
+	if strings.Contains(rep.Body, "#12") {
+		t.Fatalf("report names #12, which did not change since the last round:\n%s", rep.Body)
+	}
+}
+
+func mustParseTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("time %q: %v", s, err)
+	}
+	return ts
+}
+
+func TestPRReviewRounds_NoUpdatedPRsStartsNoSession(t *testing.T) {
+	w := newWbE2E(t, automations.ShellResult{Stdout: prList})
+	a := w.seedRecipe(t, "pr-review-rounds")
+	w.setState(t, a, `{"last_round":"2026-10-15T08:00:00.000Z"}`)
+	id := w.enqueue(t, a, db.TriggerSchedule)
+
+	if r := w.drive(t, id); r.Status != db.RunSucceeded {
+		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+	}
+	if n := len(w.desk.Launches()); n != 0 || len(w.stepsOfKind(t, id, automations.StepKindSession)) != 0 {
+		t.Fatalf("%d sessions launched; want none", n)
+	}
+	if n := w.count(t, "terminal_sessions"); n != 0 {
+		t.Fatalf("terminal_sessions = %d; want none", n)
+	}
+	mustContain(t, "report body", w.onlyReport(t).Body, "No open pull request changed since the last round.")
+}
+
+func TestRelease_E2E(t *testing.T) {
+	for _, b := range buttonRecipes {
+		t.Run(b.slug+" succeeds", func(t *testing.T) {
+			w := newWbE2E(t, automations.ShellResult{Stdout: "built v1.2.3\npublished v1.2.3\n"})
+			w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "healthy: v1.2.3 answers"}}
+			id := w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton)
+
+			r := w.drive(t, id)
+			if r.Status != db.RunSucceeded {
+				t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+			}
+			if calls := w.shell.Calls(); len(calls) != 1 || calls[0].Cmd != b.cmd {
+				t.Fatalf("shell calls = %+v; want one %q", calls, b.cmd)
+			}
+			launches := w.desk.Launches()
+			if len(launches) != 1 || launches[0].Title != "⚙ "+b.label+" check"+runLabelOf(id) {
+				t.Fatalf("launches = %+v; want one %s check", launches, b.label)
+			}
+			mustContain(t, "check prompt", launches[0].Prompt, "healthy")
+			mustContain(t, "check prompt", launches[0].Prompt, b.cmd)
+			rep := w.onlyReport(t)
+			mustContain(t, "report title", rep.Title, b.label+": finished")
+			mustContain(t, "report body", rep.Body, "published v1.2.3")
+			mustContain(t, "report body", rep.Body, "healthy: v1.2.3 answers")
+		})
+		t.Run(b.slug+" fails", func(t *testing.T) {
+			w := newWbE2E(t, automations.ShellResult{ExitCode: 2, Stdout: "building\n", Stderr: "error: the tag v1.2.3 exists\n"})
+			id := w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton)
+
+			r := w.drive(t, id)
+			if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindScript {
+				t.Fatalf("run = %s/%s (%s); want failed/script", r.Status, r.ErrorKind, r.Error)
+			}
+			mustContain(t, "run error", r.Error, "exited 2")
+			mustContain(t, "run error", r.Error, "error: the tag v1.2.3 exists")
+			if n := len(w.desk.Launches()); n != 0 || len(w.stepsOfKind(t, id, automations.StepKindSession)) != 0 {
+				t.Fatalf("%d sessions launched; want none after a failed command", n)
+			}
+			outs := w.stepsOfKind(t, id, automations.StepKindOutput)
+			if len(outs) != 1 || outs[0].Name != "report" {
+				t.Fatalf("output steps = %+v; want the failure report", outs)
+			}
+			mustContain(t, "failure report", outs[0].ArgsJSON, "error: the tag v1.2.3 exists")
+			if n := w.count(t, "automation_outputs"); n != 0 {
+				t.Fatalf("automation_outputs = %d; a failed run commits none (AUTO-04)", n)
+			}
+		})
+	}
+}
+
+// A dry run of each workbench recipe runs no shell() process, starts no
+// session and files no ask: its shell and session steps are dry_run and
+// nothing waits for the Desktop.
+func TestAuto12_DryRunStartsNoSessionOrShell(t *testing.T) {
+	for _, slug := range workbenchRecipeSlugs {
+		t.Run(slug, func(t *testing.T) {
+			w := newWbE2E(t, automations.ShellResult{Stdout: prList})
+			id := w.enqueue(t, w.seedRecipe(t, slug), db.TriggerDryRun)
+			if r, err := w.e.ExecuteInline(context.Background(), id); err != nil || r.Status != db.RunSucceeded {
+				t.Fatalf("dry run = %+v, %v; want succeeded", r, err)
+			}
+			if n := len(w.shell.Calls()); n != 0 {
+				t.Fatalf("shell ran %d commands in a dry run", n)
+			}
+			pending, err := w.d.PendingAutomationSessionSteps()
+			if err != nil || len(pending) != 0 {
+				t.Fatalf("pending session steps = %+v, %v; want none", pending, err)
+			}
+			for _, table := range []string{"terminal_sessions", "owner_asks", "agent_actions", "automation_outputs"} {
+				if n := w.count(t, table); n != 0 {
+					t.Fatalf("%s = %d rows after a dry run; want none", table, n)
+				}
+			}
+			kinds := map[string]int{}
+			for _, s := range w.steps(t, id) {
+				if s.Kind != automations.StepKindShell && s.Kind != automations.StepKindSession {
+					continue
+				}
+				kinds[s.Kind]++
+				if s.Status != automations.StepDryRun || s.SessionID != 0 {
+					t.Fatalf("%s step = %s session %d; want dry_run, no session", s.Kind, s.Status, s.SessionID)
+				}
+			}
+			wantSessions := 1
+			if slug == "pr-review-rounds" {
+				wantSessions = 0 // no pull request list in a dry run, so no review session
+			}
+			if kinds[automations.StepKindShell] != 1 || kinds[automations.StepKindSession] != wantSessions {
+				t.Fatalf("steps = %v; want one shell and %d session step", kinds, wantSessions)
+			}
+		})
+	}
+}

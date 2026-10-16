@@ -391,7 +391,7 @@ script did; a call missing from it is an action nobody can audit.
 ## AUTO-12 — Dry run writes nothing outside its journal
 
 **Status:** Enforced (P1: no `agent_actions` row, no output, no state
-change; P5: no `shell()` process) · Planned (P5: no session)
+change; P5: no `shell()` process, no session, no ask)
 
 **Observable:** A dry run makes no `agent_actions` row, no output, no state
 change, starts no session and runs no `shell()`: `output.*` and `state.set`
@@ -411,7 +411,8 @@ would make checking as dangerous as running.
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
 - P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a dry run, QC-02 reads only); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
 - `internal/automations/sdk_shell_test.go` — `TestShell_DryRunStartsNoProcess` (P5: a dry-run `shell()` returns `{status:"dry_run"}`, journals a `dry_run` step and starts no process)
-- P5 adds the session guard (plan `2026-10-14-automations-p5.md`) and flips that half.
+- `internal/automations/sdk_session_test.go` — `TestSession_DryRunWaitsForNothing` (P5: a dry-run `session()` returns `{status:"dry_run"}` and asks the Desktop for nothing); `internal/automations/sdk_ask_test.go` — `TestAsk_DryRunCreatesNoRow`
+- `internal/automations/workbench_e2e_test.go` — `TestAuto12_DryRunStartsNoSessionOrShell` (P5: a dry run of each workbench recipe — `pr-review-rounds`, `release`, `deploy-test`, `deploy-stage` — runs no `shell()` command, leaves no waiting session step, no `terminal_sessions`, `owner_asks`, `agent_actions` or output row, and journals its `shell`/`session` steps `dry_run`)
 
 **Locked since:** 2026-10-14
 
@@ -461,6 +462,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-16 (Automations P5 Task 7, board #753; spec §6.1, §13, §15 #2/#5): **AUTO-12 is Enforced in full** — its session half joins with `TestAuto12_DryRunStartsNoSessionOrShell` over the four workbench recipes (`internal/automations/testdata/workbench/`, moved into the P6 templates later), `TestSession_DryRunWaitsForNothing` and `TestAsk_DryRunCreatesNoRow`. **AUTO-02:** the P2 workbench write gate is lifted (spec §13): a workbench automation's run writes through `Registry.Propose` like a personal one, and the registry resolves its workbench from the run at Propose, Approve and Apply (AGENT-01 amended in `agent-actions.md`); `TestWorkbenchAutomation_WritesNotAvailable` keeps its name and now pins that a live run's writes are proposals, a dry run records none, and Apply after the workbench was deleted fails. No other guard relaxed.
 - 2026-10-16 (Automations P5 Task 4, board #753; spec §5, §13.2, §20.1 D19): **AUTO-13 flips from Planned to Enforced** with the `shell()` guards listed there; **AUTO-12's `shell()` half is Enforced** (`TestShell_DryRunStartsNoProcess`), its session half stays Planned. `NewProcessShellRunner` is wired as `Backends.Shell`. Oversized `shell()` output is cut to fit, never `ResultTooLarge` (owner decision ask #272, replacing R-P5-1). No guard relaxed.
 - 2026-10-16 (Automations P6 part 1, board #753; spec §5, §6.5, §14.7): **`mcp()` and `agent()` land (runtime B, the claude CLI and the codex CLI); the templates and the gallery CLI follow in the second P6 part.** No status flips (AUTO-01/07/08/11/12 were Enforced since P1) and no guard relaxed; guards added to AUTO-01/07/08/11/12 as listed there. `agent()` is one journal step: its inner tool calls are summarised in that step (AUTO-11 counts SDK calls). Behaviours recorded with their tests: the `--surface automation` server's `get_action` shows only the bound run's own rows (`TestGetAction_ScopedToAutomationRun`); `internalmcp.WithResultCheck` applies the 256 KiB `ResultTooLarge` refusal on that server and runtime B applies `CheckAgentResult` per tool result (`TestChatMode_ResultCheckReplacesResult`, `TestAgentLoop_ResultCheckRefusesResult`, `TestCheckAgentResult_RefusesOverLimit`); a codex child runs in a per-run temporary `CODEX_HOME` (`TestAgent_CodexChildBoundToRun`); an empty `ai.provider` runs `agent()` through the claude CLI (`TestAutomationBackends_WireMCPAndAgent`); a carved minutes deadline throws a catchable `BudgetExceeded`.
 - 2026-10-15 (Automations P2 Task 9, board #814): **AUTO-02 (write side) and AUTO-03 flip from Planned to Enforced.** AUTO-02 names `output.target`/`output.slack` (shortcuts through `Registry.Propose`) and the P2 workbench write gate (until P5); AUTO-03 records the grant table (migration 00117 — 00114–00116 are unrelated main migrations), the `automations auto` refusal order and the dormant `AutomationAgent` branch (P6); AUTO-01 records D28 (ask #315: `output.slack` needs `outputs: [slack]` and `slack:write@<account>`; an unscoped `tool:send_slack_message` counts as `slack:write@*`), which changed the `TestManifest_AdmitsWrite` case formerly named "outputs slack" (admitted) to "outputs slack alone admits no grant (D28)" (refused) (a narrowing). AUTO-04/12 gain the P2 output and dry-run guards. P1's interim `TestTool_WriteNotAvailableInP1` stays retired (entry below). No guard relaxed.
