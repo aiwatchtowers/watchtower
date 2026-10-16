@@ -281,22 +281,27 @@ func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *
 				if want := map[State]string{StateUpdated: workbenchSkill().Content, StateDrifted: string(tc.content)}[tc.want]; got != want {
 					t.Fatalf("the skill on disk after a %s install is not what DEV-04 says", tc.want)
 				}
-				// Spec §4.3: an unedited copy gets the preset beside the v10
-				// core; an edited one keeps the single-file layout, no preset.
-				if tc.want == StateUpdated {
-					if rep.Flow.State != StateInstalled || rep.SingleFileLayout {
-						t.Fatalf("unedited %s: flow %+v single=%v, want the preset installed", fixture, rep.Flow, rep.SingleFileLayout)
-					}
-				} else if fixture == "watchtower-workbench-v10.md" {
-					// An edited v10 core is already the split layout: kept, and the preset is not its concern.
-					if rep.SingleFileLayout {
-						t.Fatalf("edited %s: reported as the single-file layout", fixture)
-					}
-				} else if exists(filepath.Dir(flowSkillFile(folder))) || !rep.SingleFileLayout {
-					t.Fatalf("edited %s: a preset was written beside the single file (single=%v)", fixture, rep.SingleFileLayout)
-				}
+				assertUpgradeLayout(t, fixture, folder, tc.want, rep)
 			})
 		}
+	}
+}
+
+// assertUpgradeLayout checks spec §4.3: an unedited copy gets the preset
+// beside the v10 core; an edited one keeps the single-file layout, no preset.
+func assertUpgradeLayout(t *testing.T, fixture, folder string, want State, rep WorkbenchInstallReport) {
+	t.Helper()
+	if want == StateUpdated {
+		if rep.Flow.State != StateInstalled || rep.SingleFileLayout {
+			t.Fatalf("unedited %s: flow %+v single=%v, want the preset installed", fixture, rep.Flow, rep.SingleFileLayout)
+		}
+	} else if fixture == "watchtower-workbench-v10.md" {
+		// An edited v10 core is already the split layout: kept, and the preset is not its concern.
+		if rep.SingleFileLayout {
+			t.Fatalf("edited %s: reported as the single-file layout", fixture)
+		}
+	} else if exists(filepath.Dir(flowSkillFile(folder))) || !rep.SingleFileLayout {
+		t.Fatalf("edited %s: a preset was written beside the single file (single=%v)", fixture, rep.SingleFileLayout)
 	}
 }
 

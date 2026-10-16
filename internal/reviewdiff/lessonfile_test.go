@@ -108,16 +108,18 @@ func TestAppendLessonRule_RefusesUnsafe(t *testing.T) {
 func snapshot(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	require.NoError(t, filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	r, err := os.OpenRoot(root)
+	require.NoError(t, err)
+	defer func() { _ = r.Close() }()
+	require.NoError(t, fs.WalkDir(r.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(root, p)
 		if d.IsDir() {
 			out[rel+"/"] = ""
 			return nil
 		}
-		b, err := os.ReadFile(p)
+		b, err := r.ReadFile(rel)
 		out[rel] = string(b)
 		return err
 	}))

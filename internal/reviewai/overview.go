@@ -100,55 +100,76 @@ func fileLines(f reviewdiff.File) int {
 func BuildOverviewUser(in Input) string {
 	var b strings.Builder
 	b.WriteString("=== DATA ===\n\n=== INTENT ===\n")
-	if len(in.Intent) == 0 {
+	writeOverviewIntent(&b, in.Intent)
+	b.WriteString("\n=== AGENT NOTES ===\n")
+	writeOverviewNotes(&b, in.Notes)
+	b.WriteString("\n=== LENS IDS ===\n" + strings.Join(in.LensIDs, ", ") + "\n\n=== DIFF ===\n")
+	writeOverviewDiff(&b, in.Diff)
+	return b.String()
+}
+
+// writeOverviewIntent lists the intent items, numbered from 1.
+func writeOverviewIntent(b *strings.Builder, items []IntentItem) {
+	if len(items) == 0 {
 		b.WriteString("(none given)\n")
 	}
-	for i, it := range in.Intent {
-		fmt.Fprintf(&b, "%d. %s\n", i+1, oneLine(it.Text))
+	for i, it := range items {
+		fmt.Fprintf(b, "%d. %s\n", i+1, oneLine(it.Text))
 		if it.Intent != "" {
-			fmt.Fprintf(&b, "   Intent: %s\n", oneLine(it.Intent))
+			fmt.Fprintf(b, "   Intent: %s\n", oneLine(it.Intent))
 		}
 		if it.Task != "" {
-			fmt.Fprintf(&b, "   Plan task: %s\n", it.Task)
+			fmt.Fprintf(b, "   Plan task: %s\n", it.Task)
 		}
 	}
-	b.WriteString("\n=== AGENT NOTES ===\n")
-	if len(in.Notes) == 0 {
+}
+
+// writeOverviewNotes lists the agent's notes and chapters.
+func writeOverviewNotes(b *strings.Builder, notes []db.ReviewNote) {
+	if len(notes) == 0 {
 		b.WriteString("(none)\n")
 	}
-	for _, n := range in.Notes {
+	for _, n := range notes {
 		switch n.Kind {
 		case "chapter":
-			fmt.Fprintf(&b, "chapter %q: %s\n", n.Text, strings.Join(n.Paths, ", "))
+			fmt.Fprintf(b, "chapter %q: %s\n", n.Text, strings.Join(n.Paths, ", "))
 		default:
-			fmt.Fprintf(&b, "%s:%d-%d: %s\n", n.Path, n.StartLine, n.EndLine, oneLine(n.Text))
+			fmt.Fprintf(b, "%s:%d-%d: %s\n", n.Path, n.StartLine, n.EndLine, oneLine(n.Text))
 		}
 	}
-	b.WriteString("\n=== LENS IDS ===\n" + strings.Join(in.LensIDs, ", ") + "\n\n=== DIFF ===\n")
+}
+
+// writeOverviewDiff writes the diff under the caps: a file past a cap,
+// binary or collapsed is only listed.
+func writeOverviewDiff(b *strings.Builder, d reviewdiff.Diff) {
 	shown := 0
 	capped := false
-	for _, f := range in.Diff.Files {
+	for _, f := range d.Files {
 		n := fileLines(f)
 		if capped || f.Binary || f.CollapsedReason != "" || n > MaxOverviewFileLines || shown+n > MaxOverviewLines {
 			if !f.Binary && f.CollapsedReason == "" && n <= MaxOverviewFileLines {
 				capped = true // the overall cap is spent: every later file is only listed
 			}
-			fmt.Fprintf(&b, "%s (+%d −%d) — not shown\n", f.Path, f.Additions, f.Deletions)
+			fmt.Fprintf(b, "%s (+%d −%d) — not shown\n", f.Path, f.Additions, f.Deletions)
 			continue
 		}
 		shown += n
-		fmt.Fprintf(&b, "--- %s (%s, +%d −%d)\n", f.Path, f.Status, f.Additions, f.Deletions)
-		for _, h := range f.Hunks {
-			b.WriteString(h.Header + "\n")
-			for _, l := range h.Lines {
-				b.WriteString(l + "\n")
-			}
-		}
+		writeOverviewFile(b, f)
 	}
-	if in.Diff.Truncated {
+	if d.Truncated {
 		b.WriteString("(the diff itself was truncated; more files changed than listed)\n")
 	}
-	return b.String()
+}
+
+// writeOverviewFile writes one shown file's header and hunks.
+func writeOverviewFile(b *strings.Builder, f reviewdiff.File) {
+	fmt.Fprintf(b, "--- %s (%s, +%d −%d)\n", f.Path, f.Status, f.Additions, f.Deletions)
+	for _, h := range f.Hunks {
+		b.WriteString(h.Header + "\n")
+		for _, l := range h.Lines {
+			b.WriteString(l + "\n")
+		}
+	}
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
@@ -201,42 +222,63 @@ func ParseOverview(raw string, in Input) (Overview, error) {
 	for _, id := range in.LensIDs {
 		lensOK[id] = true
 	}
-	keep := func(ss []string, ok map[string]bool) []string {
-		out := []string{}
-		for _, s := range ss {
-			if ok[s] {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
+	o.Coverage = parseCoverage(o.Coverage, len(in.Intent), paths)
+	o.OutOfScope = keepKnown(o.OutOfScope, paths)
+	o.Risk = parseRisk(o.Risk, paths)
+	o.Chapters = parseChapters(o.Chapters, paths, lensOK)
+	return o, nil
+}
 
+// keepKnown keeps the entries of ss that ok knows, in order (never nil).
+func keepKnown(ss []string, ok map[string]bool) []string {
+	out := []string{}
+	for _, s := range ss {
+		if ok[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// parseCoverage keeps the coverage entries with an item, a known status and
+// an index among the intentCount given items not already covered, up to
+// maxCoverage.
+func parseCoverage(in []Coverage, intentCount int, paths map[string]bool) []Coverage {
 	cov := []Coverage{}
 	seenIndex := map[int]bool{}
-	for _, c := range o.Coverage {
+	for _, c := range in {
 		item := clipRunes(strings.TrimSpace(c.Item), maxOverviewFields)
 		if item == "" || (c.Status != "done" && c.Status != "partial" && c.Status != "not_found") || len(cov) >= maxCoverage {
 			continue
 		}
-		if c.Index < 1 || c.Index > len(in.Intent) || seenIndex[c.Index] {
+		if c.Index < 1 || c.Index > intentCount || seenIndex[c.Index] {
 			continue // not one of the given items, or one already covered
 		}
 		seenIndex[c.Index] = true
-		cov = append(cov, Coverage{Index: c.Index, Item: item, Status: c.Status, Where: keep(c.Where, paths)})
+		cov = append(cov, Coverage{Index: c.Index, Item: item, Status: c.Status, Where: keepKnown(c.Where, paths)})
 	}
-	o.Coverage = cov
-	o.OutOfScope = keep(o.OutOfScope, paths)
+	return cov
+}
+
+// parseRisk keeps the risk entries on a known path with a known level, up to
+// maxRisk.
+func parseRisk(in []Risk, paths map[string]bool) []Risk {
 	risk := []Risk{}
-	for _, r := range o.Risk {
+	for _, r := range in {
 		if !paths[r.Path] || (r.Level != "low" && r.Level != "medium" && r.Level != "high") || len(risk) >= maxRisk {
 			continue
 		}
 		risk = append(risk, Risk{Path: r.Path, Level: r.Level, Why: clipRunes(strings.TrimSpace(r.Why), maxOverviewFields)})
 	}
-	o.Risk = risk
+	return risk
+}
+
+// parseChapters keeps the chapters with at least one known path, up to
+// maxChapters; an empty title falls back to the first path.
+func parseChapters(in []Chapter, paths, lensOK map[string]bool) []Chapter {
 	chs := []Chapter{}
-	for _, c := range o.Chapters {
-		ps := keep(c.Paths, paths)
+	for _, c := range in {
+		ps := keepKnown(c.Paths, paths)
 		if len(ps) == 0 || len(chs) >= maxChapters {
 			continue
 		}
@@ -244,10 +286,9 @@ func ParseOverview(raw string, in Input) (Overview, error) {
 		if title == "" {
 			title = ps[0]
 		}
-		chs = append(chs, Chapter{Title: title, Paths: ps, Core: c.Core, Lenses: keep(c.Lenses, lensOK)})
+		chs = append(chs, Chapter{Title: title, Paths: ps, Core: c.Core, Lenses: keepKnown(c.Lenses, lensOK)})
 	}
-	o.Chapters = chs
-	return o, nil
+	return chs
 }
 
 // Overview runs the strong-tier call and validates the reply. Nothing is

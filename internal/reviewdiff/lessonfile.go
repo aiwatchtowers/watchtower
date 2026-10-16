@@ -29,6 +29,32 @@ func AppendLessonRule(workbenchFolder, lensName, text string) error {
 	}
 
 	dir := filepath.Join(workbenchFolder, ".watchtower")
+	if err := ensureWatchtowerDir(dir); err != nil {
+		return err
+	}
+
+	data, note := readLensFile(workbenchFolder)
+	if note != "" {
+		return errors.New(lensFileNotePrefix + note)
+	}
+	path := filepath.Join(dir, "review.md")
+	if data == nil {
+		return createReviewMD(path, "## "+lensName+"\n- "+text+"\n")
+	}
+
+	out, changed := insertRule(string(data), lensName, target, text)
+	if !changed {
+		return nil
+	}
+	if len(out) > MaxLensFileBytes {
+		return errors.New(lensFileNotePrefix + "the rule would make the file larger than 64 KB")
+	}
+	return replaceReviewMD(dir, path, out)
+}
+
+// ensureWatchtowerDir creates dir when it is missing and refuses anything
+// there that is not a real directory.
+func ensureWatchtowerDir(dir string) error {
 	di, err := os.Lstat(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -40,33 +66,26 @@ func AppendLessonRule(workbenchFolder, lensName, text string) error {
 	case !di.IsDir():
 		return errors.New(".watchtower is not a real directory")
 	}
+	return nil
+}
 
-	data, note := readLensFile(workbenchFolder)
-	if note != "" {
-		return errors.New(lensFileNotePrefix + note)
+// createReviewMD creates an absent review.md with O_EXCL|O_NOFOLLOW and
+// writes out; a failed write removes the new file.
+func createReviewMD(path, out string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return fmt.Errorf("creating review.md: %w", err)
 	}
-	path := filepath.Join(dir, "review.md")
-	if data == nil {
-		out := "## " + lensName + "\n- " + text + "\n"
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
-		if err != nil {
-			return fmt.Errorf("creating review.md: %w", err)
-		}
-		if _, err := f.WriteString(out); err != nil {
-			_ = f.Close()
-			_ = os.Remove(path)
-			return fmt.Errorf("writing review.md: %w", err)
-		}
-		return f.Close()
+	if _, err := f.WriteString(out); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("writing review.md: %w", err)
 	}
+	return f.Close()
+}
 
-	out, changed := insertRule(string(data), lensName, target, text)
-	if !changed {
-		return nil
-	}
-	if len(out) > MaxLensFileBytes {
-		return errors.New(lensFileNotePrefix + "the rule would make the file larger than 64 KB")
-	}
+// replaceReviewMD writes out to a temp file in dir and renames it over path.
+func replaceReviewMD(dir, path, out string) error {
 	tmp, err := os.CreateTemp(dir, ".review-*.tmp")
 	if err != nil {
 		return fmt.Errorf("writing review.md: %w", err)

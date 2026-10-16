@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
@@ -74,18 +75,9 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	var in reviewai.Input
-	if r.SessionID.Valid {
-		items, err := reviewContextItems(ctx, database, p, r.SessionID.Int64)
-		if err != nil {
-			return failReview(cmd, err)
-		}
-		for _, it := range items {
-			in.Intent = append(in.Intent, reviewai.IntentItem{Text: it.Text, Intent: it.Intent, Task: it.PlanText})
-		}
-		if in.Notes, err = database.ReviewNotes(p.ID, r.SessionID.Int64); err != nil {
-			return failReview(cmd, err)
-		}
+	in, err := reviewOverviewIntent(ctx, database, p, r)
+	if err != nil {
+		return failReview(cmd, err)
 	}
 	lenses, _ := reviewdiff.LoadLenses(p.FolderPath)
 	for _, l := range lenses {
@@ -101,6 +93,32 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 		return failReview(cmd, err)
 	}
 
+	return generateReviewOverview(aiCtx, cmd, database, p, r, in, hash)
+}
+
+// reviewOverviewIntent gathers the round's session context items and the
+// agent's notes; a round without a session has neither.
+func reviewOverviewIntent(ctx context.Context, database *db.DB, p *db.Workbench, r *db.ReviewRound) (reviewai.Input, error) {
+	var in reviewai.Input
+	if !r.SessionID.Valid {
+		return in, nil
+	}
+	items, err := reviewContextItems(ctx, database, p, r.SessionID.Int64)
+	if err != nil {
+		return in, err
+	}
+	for _, it := range items {
+		in.Intent = append(in.Intent, reviewai.IntentItem{Text: it.Text, Intent: it.Intent, Task: it.PlanText})
+	}
+	if in.Notes, err = database.ReviewNotes(p.ID, r.SessionID.Int64); err != nil {
+		return in, err
+	}
+	return in, nil
+}
+
+// generateReviewOverview makes the model call, caches the reply under hash
+// and answers it.
+func generateReviewOverview(aiCtx context.Context, cmd *cobra.Command, database *db.DB, p *db.Workbench, r *db.ReviewRound, in reviewai.Input, hash string) error {
 	cfg, err := loadReviewAIConfig()
 	if err != nil {
 		return failReview(cmd, fmt.Errorf("AI overview unavailable: %w", err))

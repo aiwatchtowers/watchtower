@@ -124,6 +124,41 @@ func TestReviewRounds_SendIncludesCarried(t *testing.T) {
 func TestReplyReviewComment_RepliesResolvesAndFollowsTheOpenCopy(t *testing.T) {
 	d := openTestDB(t)
 	pid, sid := seedReviewSession(t, d)
+	cid, copies := seedSentCommentWithCopies(t, d, pid, sid)
+	carried, outdated, ownerResolved := copies[0], copies[1], copies[2]
+
+	ok, err := d.ReplyReviewComment(pid, cid, "looked at it", false)
+	if err != nil || !ok {
+		t.Fatalf("reply = %v %v", ok, err)
+	}
+	assertRepliedUnresolved(t, d, []int64{cid, carried, outdated}, "looked at it")
+	assertOwnerResolvedUntouched(t, d, ownerResolved)
+
+	ok, err = d.ReplyReviewComment(pid, cid, "fixed", true)
+	if err != nil || !ok {
+		t.Fatalf("resolve = %v %v", ok, err)
+	}
+	for _, id := range []int64{cid, carried, outdated} {
+		if st, reply, _ := reviewCommentState(t, d, id); st != "resolved" || reply != "fixed" {
+			t.Fatalf("comment %d = %q %q", id, st, reply)
+		}
+	}
+	assertOwnerResolvedUntouched(t, d, ownerResolved)
+
+	// resolved:false never reopens an agent- or owner-resolved comment.
+	if ok, err = d.ReplyReviewComment(pid, cid, "one more word", false); err != nil || !ok {
+		t.Fatalf("second reply = %v %v", ok, err)
+	}
+	if st, reply, _ := reviewCommentState(t, d, cid); st != "resolved" || reply != "one more word" {
+		t.Fatalf("comment = %q %q", st, reply)
+	}
+}
+
+// seedSentCommentWithCopies sends a round holding one comment, opens the
+// next round and gives it a carried, an outdated and an owner-resolved copy
+// of that comment. It returns the comment id and the three copies in order.
+func seedSentCommentWithCopies(t *testing.T, d *DB, pid, sid int64) (int64, [3]int64) {
+	t.Helper()
 	sent, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t1"})
 	if err != nil {
 		t.Fatal(err)
@@ -149,49 +184,38 @@ func TestReplyReviewComment_RepliesResolvesAndFollowsTheOpenCopy(t *testing.T) {
 		return id
 	}
 	carried, outdated, ownerResolved := copyOf("carried"), copyOf("outdated"), copyOf("resolved")
-	state := func(id int64) (status, reply string, at sql.NullString) {
-		if err := d.QueryRow(`SELECT status, agent_reply, agent_reply_at FROM review_comments WHERE id = ?`, id).Scan(&status, &reply, &at); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
+	return cid, [3]int64{carried, outdated, ownerResolved}
+}
 
-	ok, err := d.ReplyReviewComment(pid, cid, "looked at it", false)
-	if err != nil || !ok {
-		t.Fatalf("reply = %v %v", ok, err)
+// reviewCommentState reads a comment's status and agent reply.
+func reviewCommentState(t *testing.T, d *DB, id int64) (status, reply string, at sql.NullString) {
+	t.Helper()
+	if err := d.QueryRow(`SELECT status, agent_reply, agent_reply_at FROM review_comments WHERE id = ?`, id).Scan(&status, &reply, &at); err != nil {
+		t.Fatal(err)
 	}
-	for _, id := range []int64{cid, carried, outdated} {
-		st, reply, at := state(id)
-		if reply != "looked at it" || !at.Valid {
+	return
+}
+
+// assertRepliedUnresolved checks each comment carries reply, stamped, and is
+// not resolved.
+func assertRepliedUnresolved(t *testing.T, d *DB, ids []int64, want string) {
+	t.Helper()
+	for _, id := range ids {
+		st, reply, at := reviewCommentState(t, d, id)
+		if reply != want || !at.Valid {
 			t.Fatalf("comment %d reply = %q %v", id, reply, at)
 		}
 		if st == "resolved" {
 			t.Fatalf("comment %d resolved by an unresolved reply", id)
 		}
 	}
-	if st, reply, _ := state(ownerResolved); st != "resolved" || reply != "" {
-		t.Fatalf("owner-resolved copy touched: %q %q", st, reply)
-	}
+}
 
-	ok, err = d.ReplyReviewComment(pid, cid, "fixed", true)
-	if err != nil || !ok {
-		t.Fatalf("resolve = %v %v", ok, err)
-	}
-	for _, id := range []int64{cid, carried, outdated} {
-		if st, reply, _ := state(id); st != "resolved" || reply != "fixed" {
-			t.Fatalf("comment %d = %q %q", id, st, reply)
-		}
-	}
-	if st, reply, _ := state(ownerResolved); st != "resolved" || reply != "" {
+// assertOwnerResolvedUntouched checks the owner-resolved copy got no reply.
+func assertOwnerResolvedUntouched(t *testing.T, d *DB, id int64) {
+	t.Helper()
+	if st, reply, _ := reviewCommentState(t, d, id); st != "resolved" || reply != "" {
 		t.Fatalf("owner-resolved copy touched: %q %q", st, reply)
-	}
-
-	// resolved:false never reopens an agent- or owner-resolved comment.
-	if ok, err = d.ReplyReviewComment(pid, cid, "one more word", false); err != nil || !ok {
-		t.Fatalf("second reply = %v %v", ok, err)
-	}
-	if st, reply, _ := state(cid); st != "resolved" || reply != "one more word" {
-		t.Fatalf("comment = %q %q", st, reply)
 	}
 }
 
@@ -206,16 +230,8 @@ func TestReplyReviewComment_RefusesDraftsOpenRoundsAndOtherWorkbenches(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := d.Exec(`INSERT INTO review_comments (round_id, body, status) VALUES (?, 'draft one', 'draft')`, round)
-	if err != nil {
-		t.Fatal(err)
-	}
-	draft, _ := res.LastInsertId()
-	res, err = d.Exec(`INSERT INTO review_comments (round_id, body, status) VALUES (?, 'sent one', 'sent')`, round)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inOpen, _ := res.LastInsertId()
+	draft := insertRoundComment(t, d, round, "draft one", "draft")
+	inOpen := insertRoundComment(t, d, round, "sent one", "sent")
 	for name, c := range map[string]struct {
 		project, id int64
 	}{"draft in open round": {pid, draft}, "sent status in an open round": {pid, inOpen}, "unknown": {pid, 9999}} {
@@ -236,6 +252,23 @@ func TestReplyReviewComment_RefusesDraftsOpenRoundsAndOtherWorkbenches(t *testin
 	if ok, err := d.ReplyReviewComment(pid, draft, "x", true); err != nil || ok {
 		t.Fatalf("draft: ok=%v err=%v", ok, err)
 	}
+	assertNoReplyWritten(t, d)
+}
+
+// insertRoundComment adds a comment with body and status to round.
+func insertRoundComment(t *testing.T, d *DB, round int64, body, status string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO review_comments (round_id, body, status) VALUES (?, ?, ?)`, round, body, status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// assertNoReplyWritten checks no comment carries an agent reply.
+func assertNoReplyWritten(t *testing.T, d *DB) {
+	t.Helper()
 	var n int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM review_comments WHERE agent_reply <> ''`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("replies written = %d %v", n, err)

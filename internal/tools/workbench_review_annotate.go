@@ -114,45 +114,71 @@ func cleanAnnotation(a annotateChangesArgs) (annotateChangesArgs, error) {
 	out := a
 	out.Notes = make([]annotateNote, len(a.Notes))
 	for i, n := range a.Notes {
-		note, err := boundedText(fmt.Sprintf("notes[%d].note", i), n.Note, maxNoteRunes)
+		note, err := cleanAnnotateNote(i, n)
 		if err != nil {
 			return a, err
 		}
-		n.Path, n.Note = strings.TrimSpace(n.Path), note
-		if n.Path == "" {
-			return a, &ValidationError{Msg: fmt.Sprintf("notes[%d].path: required", i)}
-		}
-		out.Notes[i] = n
+		out.Notes[i] = note
 	}
 	out.Chapters = make([]annotateChapter, len(a.Chapters))
 	for i, c := range a.Chapters {
-		title, err := boundedText(fmt.Sprintf("chapters[%d].title", i), c.Title, maxChapterTitle)
+		chapter, err := cleanAnnotateChapter(i, c)
 		if err != nil {
 			return a, err
 		}
-		c.Title = title
-		c.Why = strings.TrimSpace(c.Why)
-		if utf8.RuneCountInString(c.Why) > maxChapterWhy {
-			return a, &ValidationError{Msg: fmt.Sprintf("chapters[%d].why: at most %d characters", i, maxChapterWhy)}
-		}
-		if len(c.Paths) == 0 || len(c.Paths) > maxChapterPaths {
-			return a, &ValidationError{Msg: fmt.Sprintf("chapters[%d].paths: 1 to %d files", i, maxChapterPaths)}
-		}
-		seen := map[string]bool{}
-		paths := make([]string, 0, len(c.Paths))
-		for _, p := range c.Paths {
-			if p = strings.TrimSpace(p); p != "" && !seen[p] {
-				seen[p] = true
-				paths = append(paths, p)
-			}
-		}
-		if len(paths) == 0 {
-			return a, &ValidationError{Msg: fmt.Sprintf("chapters[%d].paths: 1 to %d files", i, maxChapterPaths)}
-		}
-		c.Paths = paths
-		out.Chapters[i] = c
+		out.Chapters[i] = chapter
 	}
 	return out, nil
+}
+
+// cleanAnnotateNote bounds notes[i].note and trims its required path.
+func cleanAnnotateNote(i int, n annotateNote) (annotateNote, error) {
+	note, err := boundedText(fmt.Sprintf("notes[%d].note", i), n.Note, maxNoteRunes)
+	if err != nil {
+		return n, err
+	}
+	n.Path, n.Note = strings.TrimSpace(n.Path), note
+	if n.Path == "" {
+		return n, &ValidationError{Msg: fmt.Sprintf("notes[%d].path: required", i)}
+	}
+	return n, nil
+}
+
+// cleanAnnotateChapter bounds chapters[i]'s title and why and trims and
+// de-duplicates its paths (1 to maxChapterPaths, none left empty).
+func cleanAnnotateChapter(i int, c annotateChapter) (annotateChapter, error) {
+	title, err := boundedText(fmt.Sprintf("chapters[%d].title", i), c.Title, maxChapterTitle)
+	if err != nil {
+		return c, err
+	}
+	c.Title = title
+	c.Why = strings.TrimSpace(c.Why)
+	if utf8.RuneCountInString(c.Why) > maxChapterWhy {
+		return c, &ValidationError{Msg: fmt.Sprintf("chapters[%d].why: at most %d characters", i, maxChapterWhy)}
+	}
+	if len(c.Paths) == 0 || len(c.Paths) > maxChapterPaths {
+		return c, &ValidationError{Msg: fmt.Sprintf("chapters[%d].paths: 1 to %d files", i, maxChapterPaths)}
+	}
+	paths := uniqueTrimmedPaths(c.Paths)
+	if len(paths) == 0 {
+		return c, &ValidationError{Msg: fmt.Sprintf("chapters[%d].paths: 1 to %d files", i, maxChapterPaths)}
+	}
+	c.Paths = paths
+	return c, nil
+}
+
+// uniqueTrimmedPaths trims each path and drops empty and repeated ones,
+// keeping the first occurrence's order.
+func uniqueTrimmedPaths(in []string) []string {
+	seen := map[string]bool{}
+	paths := make([]string, 0, len(in))
+	for _, p := range in {
+		if p = strings.TrimSpace(p); p != "" && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 // annotationPlan is what annotate_changes will store.
@@ -182,42 +208,70 @@ func prepareAnnotation(ctx context.Context, d *db.DB, b Binding, a annotateChang
 	if !session.Valid {
 		return annotationPlan{}, errNoAnnotateSession
 	}
-	folder, err := ReviewSessionFolder(ctx, d, p, session.Int64)
+	repo, tree, err := snapshotSessionFolder(ctx, d, p, session.Int64)
 	if err != nil {
 		return annotationPlan{}, err
 	}
-	repo, err := reviewdiff.Open(folder, nil)
+	rows, err := annotationNoteRows(ctx, repo, tree, a.Notes)
 	if err != nil {
 		return annotationPlan{}, err
-	}
-	tree, err := repo.Snapshot(ctx)
-	if err != nil {
-		return annotationPlan{}, err
-	}
-	var rows []db.ReviewNote
-	files := map[string][]string{}
-	for i, n := range a.Notes {
-		lines, ok := files[n.Path]
-		if !ok {
-			side, err := repo.File(ctx, tree, n.Path)
-			if err != nil {
-				return annotationPlan{}, err
-			}
-			if !side.Exists || side.Binary || side.TooLarge {
-				return annotationPlan{}, &ValidationError{Msg: fmt.Sprintf("notes[%d].path: %s is not a text file of the current changes", i, n.Path)}
-			}
-			lines = strings.Split(strings.TrimSuffix(side.Text, "\n"), "\n")
-			files[n.Path] = lines
-		}
-		if n.StartLine < 1 || n.EndLine < n.StartLine || n.EndLine > len(lines) {
-			return annotationPlan{}, &ValidationError{Msg: fmt.Sprintf("notes[%d]: %s has %d lines; lines %d-%d do not fit",
-				i, n.Path, len(lines), n.StartLine, n.EndLine)}
-		}
-		rows = append(rows, db.ReviewNote{Kind: "note", Path: n.Path, StartLine: n.StartLine, EndLine: n.EndLine,
-			Quote: strings.Join(lines[n.StartLine-1:n.EndLine], "\n"), Text: n.Note, TreeSHA: tree})
 	}
 	for _, c := range a.Chapters {
 		rows = append(rows, db.ReviewNote{Kind: "chapter", Text: c.Title, Paths: c.Paths, Core: c.Core, Why: c.Why, TreeSHA: tree})
 	}
 	return annotationPlan{project: p.ID, session: session.Int64, tree: tree, rows: rows}, nil
+}
+
+// snapshotSessionFolder opens the session's review folder and snapshots it.
+func snapshotSessionFolder(ctx context.Context, d *db.DB, p *db.Workbench, session int64) (*reviewdiff.Repo, string, error) {
+	folder, err := ReviewSessionFolder(ctx, d, p, session)
+	if err != nil {
+		return nil, "", err
+	}
+	repo, err := reviewdiff.Open(folder, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	tree, err := repo.Snapshot(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	return repo, tree, nil
+}
+
+// annotationNoteRows checks each note against the snapshot tree (the file is
+// there, text, and the lines exist) and returns its row with the quoted lines.
+func annotationNoteRows(ctx context.Context, repo *reviewdiff.Repo, tree string, notes []annotateNote) ([]db.ReviewNote, error) {
+	var rows []db.ReviewNote
+	files := map[string][]string{}
+	for i, n := range notes {
+		lines, ok := files[n.Path]
+		if !ok {
+			var err error
+			if lines, err = annotatedFileLines(ctx, repo, tree, i, n.Path); err != nil {
+				return nil, err
+			}
+			files[n.Path] = lines
+		}
+		if n.StartLine < 1 || n.EndLine < n.StartLine || n.EndLine > len(lines) {
+			return nil, &ValidationError{Msg: fmt.Sprintf("notes[%d]: %s has %d lines; lines %d-%d do not fit",
+				i, n.Path, len(lines), n.StartLine, n.EndLine)}
+		}
+		rows = append(rows, db.ReviewNote{Kind: "note", Path: n.Path, StartLine: n.StartLine, EndLine: n.EndLine,
+			Quote: strings.Join(lines[n.StartLine-1:n.EndLine], "\n"), Text: n.Note, TreeSHA: tree})
+	}
+	return rows, nil
+}
+
+// annotatedFileLines reads notes[i]'s file from the snapshot and splits it
+// into lines; a missing, binary or too-large file is refused.
+func annotatedFileLines(ctx context.Context, repo *reviewdiff.Repo, tree string, i int, path string) ([]string, error) {
+	side, err := repo.File(ctx, tree, path)
+	if err != nil {
+		return nil, err
+	}
+	if !side.Exists || side.Binary || side.TooLarge {
+		return nil, &ValidationError{Msg: fmt.Sprintf("notes[%d].path: %s is not a text file of the current changes", i, path)}
+	}
+	return strings.Split(strings.TrimSuffix(side.Text, "\n"), "\n"), nil
 }
