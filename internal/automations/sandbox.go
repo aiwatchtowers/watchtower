@@ -47,8 +47,7 @@ type Env struct {
 
 // Binding is the registry binding of this run's tool calls (spec §6.1). A
 // workbench automation's binding carries its WorkbenchID, which scopes its
-// reads; until P5 the registry refuses its writes
-// (tools.ErrWorkbenchAutomationWrite, thrown to the script as NotAvailable).
+// reads and writes (the registry re-resolves it from the run at Apply).
 func (e *Env) Binding() tools.Binding {
 	b := tools.Binding{Surface: tools.AutomationSurface, ContextType: tools.AutomationContextType}
 	if e.Run != nil {

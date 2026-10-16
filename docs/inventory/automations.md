@@ -95,11 +95,12 @@ same path: each proposes `create_target`/`send_slack_message` through
 `Registry.Propose` under the run's binding (a pending row unless a grant or
 trust decides execute), gated by `outputs` (plus, for `output.slack`, the
 `slack:write` scope of D28 — AUTO-01), and throw `NotAvailable` when the tool is
-not visible on the `automation` surface. Until P5 a workbench automation's run
-writes nothing through either path: the registry's `workbenchAutomationGate`
-refuses its `Propose`/`Approve`/`Apply` (`ErrWorkbenchAutomationWrite`; a row
-whose run is gone fails closed, `ErrAutomationRunGone`) and the script gets
-`NotAvailable`, dry runs included (AGENT-01). The automation read
+not visible on the `automation` surface. A workbench automation's run writes
+through the same paths (since P5): the registry resolves its workbench from
+run → `automations.project_id` at Propose, Approve and every Apply and checks
+`WorkbenchAlive` and the tool's `Scope` against it, so a proposal whose
+workbench was deleted fails at Apply, and a row whose run is gone fails closed
+(`ErrAutomationRunGone`, `NotAvailable` to the script) (AGENT-01). The automation read
 tools write nothing either: `memory_open` skips its access-stat bump on the
 `automation` surface and `buildAutomationRegistry` mounts `memory_recall`
 without the shadow handle, so it writes no shadow row.

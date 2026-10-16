@@ -94,9 +94,7 @@ func parseToolOpts(env *Env, rt *goja.Runtime, call goja.FunctionCall, name stri
 	return wait, nil
 }
 
-// writeTool runs one admitted write. A workbench automation's write throws
-// NotAvailable until P5, dry run included (the registry refuses it live).
-// Otherwise a dry run records the would-be args
+// writeTool runs one admitted write. A dry run records the would-be args
 // and returns {status:"dry_run"}; otherwise the proposal goes through
 // Registry.Propose (a default reason when the script gave none) and the step
 // closes with the receipt's outcome — or, with wait on a pending proposal,
@@ -104,12 +102,6 @@ func parseToolOpts(env *Env, rt *goja.Runtime, call goja.FunctionCall, name stri
 func writeTool(env *Env, b Backends, step *Step, t *tools.Tool, args json.RawMessage, wait bool) (any, error) {
 	if t.Access != tools.AccessWrite {
 		return nil, &SDKError{Name: ErrNameTool, Message: t.Name + " is neither a read nor a write tool"}
-	}
-	if wb := env.Binding().WorkbenchID; wb != 0 {
-		// The registry refuses a workbench automation's write until P5; a dry
-		// run never reaches it, so refuse here too rather than report a
-		// would-be write a live run cannot make.
-		return nil, registryError(t, tools.WorkbenchAutomationWriteError(wb))
 	}
 	if env.DryRun {
 		return dryRunResult(step, args), nil
@@ -270,12 +262,11 @@ func automationName(env *Env) string {
 }
 
 // registryError maps a registry failure for the script: a registry
-// ValidationError is a ValidationError; a write of a workbench automation
-// (tools.ErrWorkbenchAutomationWrite, until P5) or of a run that no longer
-// exists (tools.ErrAutomationRunGone) is NotAvailable; an unknown or non-writable tool and
-// every other failure a ToolError.
+// ValidationError is a ValidationError; a write of a run that no longer
+// exists (tools.ErrAutomationRunGone) is NotAvailable; an unknown or
+// non-writable tool and every other failure a ToolError.
 func registryError(t *tools.Tool, err error) error {
-	if errors.Is(err, tools.ErrWorkbenchAutomationWrite) || errors.Is(err, tools.ErrAutomationRunGone) {
+	if errors.Is(err, tools.ErrAutomationRunGone) {
 		return notAvailable(fmt.Sprintf("%s: %v", t.Name, err))
 	}
 	var ve *tools.ValidationError
