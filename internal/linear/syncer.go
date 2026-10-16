@@ -126,27 +126,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	total := 0
-	var firstErr error
-	for _, t := range teams {
-		if !t.IsSelected {
-			continue
-		}
-		n, err := s.syncTeam(ctx, t)
-		total += n
-		if err == nil {
-			continue
-		}
-		s.logger.Printf("team %s: %v", t.Key, err)
-		if rerr := s.db.RecordLinearSyncError(s.accountID, t.ID, err.Error()); rerr != nil {
-			s.logger.Printf("team %s: %v", t.Key, rerr)
-		}
-		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
-			return total, err
-		}
-		if firstErr == nil {
-			firstErr = err
-		}
+	total, firstErr, err := s.syncSelectedTeams(ctx, teams)
+	if err != nil {
+		return total, err
 	}
 	if err := s.reconcileMoved(ctx, teams, preWatermark); err != nil {
 		s.logger.Printf("moved issues: %v", err)
@@ -166,16 +148,50 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			firstErr = err
 		}
 	}
+	if err := s.resolveIdentities(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return total, firstErr
+}
+
+// syncSelectedTeams syncs every selected team. A team error is recorded on
+// that team and kept as firstErr; ErrAuthRevoked or a cancelled context stops
+// the loop and comes back as abort.
+func (s *Syncer) syncSelectedTeams(ctx context.Context, teams []db.LinearTeam) (total int, firstErr, abort error) {
+	for _, t := range teams {
+		if !t.IsSelected {
+			continue
+		}
+		n, err := s.syncTeam(ctx, t)
+		total += n
+		if err == nil {
+			continue
+		}
+		s.logger.Printf("team %s: %v", t.Key, err)
+		if rerr := s.db.RecordLinearSyncError(s.accountID, t.ID, err.Error()); rerr != nil {
+			s.logger.Printf("team %s: %v", t.Key, rerr)
+		}
+		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+			return total, firstErr, err
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return total, firstErr, nil
+}
+
+// resolveIdentities maps Linear users to Slack by email and stamps the Slack
+// ids on the account's issues; only the stamping failure is returned.
+func (s *Syncer) resolveIdentities() error {
 	if _, err := s.db.ResolveLinearUsersByEmail(time.Now().UTC().Format(time.RFC3339)); err != nil {
 		s.logger.Printf("%v", err)
 	}
 	if _, err := s.db.BackfillLinearSlackIDs(s.accountID); err != nil {
 		s.logger.Printf("%v", err)
-		if firstErr == nil {
-			firstErr = err
-		}
+		return err
 	}
-	return total, firstErr
+	return nil
 }
 
 // refreshTeams stores every team of the organization; teams the viewer belongs

@@ -283,10 +283,7 @@ func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.
 	if err != nil {
 		return 0, false, err
 	}
-	for _, a := range existing {
-		if a.ID == id || a.OrgID == "" || a.OrgID != viewer.OrgID {
-			continue
-		}
+	if a, ok := sameWorkspaceAccount(existing, id, viewer.OrgID); ok {
 		if a.Status != "removed" {
 			return 0, false, fmt.Errorf("this Linear workspace is already connected as account %d", a.ID)
 		}
@@ -310,6 +307,17 @@ func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.
 		return 0, false, fmt.Errorf("saving linear config: %w", err)
 	}
 	return id, false, nil
+}
+
+// sameWorkspaceAccount returns the account other than newID that already
+// holds the workspace orgID.
+func sameWorkspaceAccount(accounts []db.LinearAccount, newID int64, orgID string) (db.LinearAccount, bool) {
+	for _, a := range accounts {
+		if a.ID != newID && a.OrgID != "" && a.OrgID == orgID {
+			return a, true
+		}
+	}
+	return db.LinearAccount{}, false
 }
 
 func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, a db.LinearAccount, token *linear.Token, label string, viewer linear.Viewer) error {

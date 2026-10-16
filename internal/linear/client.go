@@ -67,12 +67,31 @@ func (c *Client) tokenEndpoint() string {
 
 type gqlResponse struct {
 	Data   json.RawMessage `json:"data"`
-	Errors []struct {
-		Message    string `json:"message"`
-		Extensions struct {
-			Code string `json:"code"`
-		} `json:"extensions"`
-	} `json:"errors"`
+	Errors []gqlError      `json:"errors"`
+}
+
+type gqlError struct {
+	Message    string `json:"message"`
+	Extensions struct {
+		Code string `json:"code"`
+	} `json:"extensions"`
+}
+
+// classifyGraphQLErrors maps a non-empty errors list: AUTHENTICATION_ERROR is
+// an auth failure (retryable once), RATELIMITED wraps ErrRateLimited, anything
+// else reports the first message.
+func classifyGraphQLErrors(errs []gqlError) (authFailed bool, err error) {
+	for _, e := range errs {
+		if e.Extensions.Code == "AUTHENTICATION_ERROR" {
+			return true, nil
+		}
+	}
+	for _, e := range errs {
+		if e.Extensions.Code == "RATELIMITED" {
+			return false, fmt.Errorf("%w: %s", ErrRateLimited, e.Message)
+		}
+	}
+	return false, fmt.Errorf("linear graphql: %s", errs[0].Message)
 }
 
 // Do runs one GraphQL operation and decodes resp.data into out.
@@ -127,17 +146,7 @@ func (c *Client) send(ctx context.Context, body []byte, access string, out any) 
 	var gr gqlResponse
 	parseErr := json.Unmarshal(raw, &gr)
 	if parseErr == nil && len(gr.Errors) > 0 {
-		for _, e := range gr.Errors {
-			if e.Extensions.Code == "AUTHENTICATION_ERROR" {
-				return true, nil
-			}
-		}
-		for _, e := range gr.Errors {
-			if e.Extensions.Code == "RATELIMITED" {
-				return false, fmt.Errorf("%w: %s", ErrRateLimited, e.Message)
-			}
-		}
-		return false, fmt.Errorf("linear graphql: %s", gr.Errors[0].Message)
+		return classifyGraphQLErrors(gr.Errors)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("linear graphql: HTTP %d", resp.StatusCode)
