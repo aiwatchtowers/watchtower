@@ -120,6 +120,32 @@ func TestTimeModel_EveryCategorySumsToWall(t *testing.T) {
 	assert.Equal(t, "2026-10-01T10:00:10.000Z", segs[1].Start)
 }
 
+// AGENTLOG-06 guard: the trigger of the turn closing a wait decides it. A
+// notification closes background work even with no subagent span stored; a
+// hook record answers at once, so its gap is model; only the owner's turn
+// (or a v1 row's '') makes "waiting for you".
+func TestTimeModel_WaitClosedByTrigger(t *testing.T) {
+	var f fixture
+	f.owner(0)
+	f.api(10 * sec)
+	f.add(db.AgentReportEvent{Kind: "owner_turn", Trigger: "notification"}, 10*sec+5*mn)
+	f.api(20*sec + 5*mn)
+	f.add(db.AgentReportEvent{Kind: "owner_turn", Trigger: "hook"}, 50*sec+5*mn)
+	f.api(6 * mn)
+	f.add(db.AgentReportEvent{Kind: "owner_turn", Trigger: ""}, 6*mn+40*mn)
+	f.api(46*mn + 5*sec)
+
+	split, segs := SessionTime(f.evs)
+	assert.Equal(t, ms(5*mn), split.BackgroundMS, "a notification-closed wait is background work")
+	assert.Equal(t, ms(10*sec+10*sec+30*sec+10*sec+5*sec), split.ModelMS, "a hook-closed gap is model")
+	assert.Equal(t, ms(30*mn), split.OwnerMS)
+	assert.Equal(t, ms(10*mn), split.AwayMS)
+	assert.Equal(t, ms(46*mn+5*sec), split.WallMS)
+	assert.Equal(t, split.WallMS-split.AwayMS, split.ActiveMS)
+	assert.Equal(t, split.WallMS, sum(split))
+	assert.Equal(t, split.WallMS, segSum(t, segs))
+}
+
 func TestTimeModel_OverlappingToolsCountedOnce(t *testing.T) {
 	var f fixture
 	f.owner(0)

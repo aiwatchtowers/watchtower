@@ -54,8 +54,8 @@ type toolInterval struct {
 // walk splits [first, last event] of one lane into pieces. A gap goes to the
 // earliest-started open tool call while one is open; otherwise, with waits on,
 // a gap of a wait (see waitStarts) is background where a background span
-// covers it, else owner up to AwayAfter per wait, then away; anything else is
-// model.
+// covers it or when a notification turn closes the wait, else owner up to
+// AwayAfter per wait, then away; anything else is model.
 func walk(evs []timedEvent, bg []span, waits bool) []piece {
 	var out []piece
 	emit := func(p piece) {
@@ -75,6 +75,13 @@ func walk(evs []timedEvent, bg []span, waits bool) []piece {
 	var starts []int
 	if waits {
 		starts = waitStarts(evs)
+	}
+	closer := func(i int) string { // trigger of the owner_turn closing the wait of gap i
+		j := i + 1
+		for j < len(evs) && seeThrough(evs[j].Kind) {
+			j++
+		}
+		return evs[j].Trigger
 	}
 	wait := -1 // the wait whose owner time ownerUsed counts
 	var ownerUsed time.Duration
@@ -99,6 +106,7 @@ func walk(evs []timedEvent, bg []span, waits bool) []piece {
 		if isWait && starts[i] != wait {
 			wait, ownerUsed = starts[i], 0
 		}
+		notified := isWait && closer(i) == "notification"
 		for k := 0; k+1 < len(cuts); k++ {
 			p, q := cuts[k], cuts[k+1]
 			if t, ok := earliestOpen(active, p); ok {
@@ -110,7 +118,8 @@ func walk(evs []timedEvent, bg []span, waits bool) []piece {
 				continue
 			}
 			for _, w := range cutBySpans(p, q, bg) {
-				if w.cat == CatBackground {
+				if w.cat == CatBackground || notified {
+					w.cat = CatBackground
 					emit(w)
 					continue
 				}
@@ -167,7 +176,8 @@ func seeThrough(kind string) bool {
 // waitStarts maps each gap start i to the index of the turn-ending event of
 // the wait the gap [i, i+1) belongs to, or -1. A turn ends on an api_call, an
 // api_error or a pending tool the owner answered; the wait runs from there,
-// across see-through events only, to the next owner_turn.
+// across see-through events only, to the next owner_turn that is not a hook
+// record (a hook answers at once: the gap before it is model).
 func waitStarts(evs []timedEvent) []int {
 	out := make([]int, len(evs))
 	last := -1 // last non-see-through event at or before i
@@ -183,7 +193,7 @@ func waitStarts(evs []timedEvent) []int {
 		for j < len(evs) && seeThrough(evs[j].Kind) {
 			j++
 		}
-		if j < len(evs) && evs[j].Kind == "owner_turn" {
+		if j < len(evs) && evs[j].Kind == "owner_turn" && evs[j].Trigger != "hook" {
 			out[i] = last
 		}
 	}

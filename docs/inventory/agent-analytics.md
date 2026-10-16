@@ -109,12 +109,13 @@
 
 **Status:** Enforced
 
-**Observable:** A session's time categories (model, each tool class, background, owner, away) sum exactly to its wall time, first to last main-agent event; no stretch is counted twice (overlapping tool calls count once); active time is wall time minus away. Time spent waiting for background subagents is never counted as waiting for the owner, even when the owner writes before the notification arrives.
+**Observable:** A session's time categories (model, each tool class, background, owner, away) sum exactly to its wall time, first to last main-agent event; no stretch is counted twice (overlapping tool calls count once); active time is wall time minus away. "Waiting for you" never contains time before a `notification` turn: a wait closed by a notification is background work, a wait covered by a running background subagent is background even when the owner writes before the notification arrives, and a gap closed by a hook record is model; only the owner's own turn (or a v1 row's empty trigger) makes owner or away time.
 
 **Why locked:** The pane's whole answer to "where did the time go" is these shares; a stretch counted twice or filed under the owner would blame the wrong party without any visible error.
 
 **Test guards:**
 - `internal/agentreport/timemodel_test.go::TestTimeModel_EveryCategorySumsToWall`
+- `internal/agentreport/timemodel_test.go::TestTimeModel_WaitClosedByTrigger`
 
 **Locked since:** 2026-10-16
 
@@ -135,4 +136,4 @@
 
 - 2026-10-15 (board #297): file created, AGENTLOG-01..05.
 - 2026-10-15 (board #297, final review): guards added — `TestParseClaude_UUIDLessRecordsKeepDistinctKeys` (02), `TestScan_SessionlessRecordDoesNotStopOtherFiles` and `TestScan_FailedBatchSkipsFileAndContinues` (03), `TestListTranscripts_SymlinkedSubagentsDirSkipped` (04); robustness notes on 02/03. Nothing relaxed.
-- 2026-10-16 (board #298): AGENTLOG-06 (time adds up) and AGENTLOG-07 (hints cite evidence) added; AGENTLOG-01 gains the parser v2 shapes (`#<id>` board targets, `bash <script>`, first-real-command shell verb) and the guards `TestShellTarget_FirstRealCommand`, `TestToolUses_AgentCallTargetAndBackground`, `TestToolResults_AgentIDAndAsync`, `TestToolTarget_WorkbenchTargetID`. Nothing relaxed.
+- 2026-10-16 (board #298): AGENTLOG-06 (time adds up) and AGENTLOG-07 (hints cite evidence) added; AGENTLOG-01 gains the parser v2 shapes (`#<id>` board targets, `bash <script>`, first-real-command shell verb) and the guards `TestShellTarget_FirstRealCommand`, `TestToolUses_AgentCallTargetAndBackground`, `TestToolResults_AgentIDAndAsync`, `TestToolTarget_WorkbenchTargetID`; AGENTLOG-06 also guarded by `TestTimeModel_WaitClosedByTrigger` (a notification closes background work, a hook record is model). Nothing relaxed.
