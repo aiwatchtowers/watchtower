@@ -199,7 +199,7 @@ func TestAllTablesExist(t *testing.T) {
 		"terminal_sessions", "target_status_history", "owner_asks",
 		"terminal_session_targets", "workbench_pr_states", "owner_presence",
 		"review_rounds", "review_comments", "review_viewed",
-		"terminal_session_worktrees",
+		"terminal_session_worktrees", "terminal_session_agent_sessions",
 		"automations", "automation_runs", "automation_run_steps", "automation_state", "automation_outputs",
 		"plan_usage_samples", "plan_usage_status",
 		"linear_accounts", "linear_teams", "linear_sync_state", "linear_issues", "linear_comments",
