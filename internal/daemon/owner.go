@@ -19,7 +19,7 @@ func (d *Daemon) logNoOwnerOnce(now time.Time, phase string) {
 		d.noOwnerLoggedDay = make(map[string]string)
 	}
 	d.noOwnerLoggedDay[phase] = day
-	d.logger.Printf("daemon: %s skipped: no owner identity (connect Slack, Google or Jira)", phase)
+	d.logger.Printf("daemon: %s skipped: no owner identity (connect Slack, Google, Jira or Linear)", phase)
 }
 
 // dayPlanOwner is the owner the day-plan phases run for, resolved once per
