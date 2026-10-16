@@ -444,15 +444,15 @@ rule from one Repair or Re-run Setup; `workbench resync --json` reports
 `cleanup_permission_added`.
 
 *2026-10-15 (board #266, spec §4.3):* the install writes two skills into `.claude/skills` and
-`.agents/skills`: the core `watchtower-workbench` (pack v10) always, and the `watchtower-flow` preset
+`.agents/skills`: the core `watchtower-workbench` (pack v11) always, and the `watchtower-flow` preset
 unless the effective preset is `none` (`WorkbenchInstallOptions.PresetNone`, resolved like the hooks).
 Both follow the DEV-04 rules. Preset `none` removes the preset only when its bytes are ours (shipped,
 or matching the sidecar); an edited or foreign copy is kept and reported. An owner-edited core from
 before v10 (marker below `v10`) keeps the single-file layout: nothing is written beside it, and
 `resync` says "Your edited skill keeps the old single-file layout; delete it to take the v10 core and
-preset." A core byte-identical to the shipped v8 or v9 with no sidecar is adopted as ours. A preset change
+preset." A core byte-identical to the shipped v8, v9 or v10 with no sidecar is adopted as ours. A preset change
 through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the skills only: each core
-copy goes through the install first, so a pre-v10 core of ours becomes v10, then the preset follows; no
+copy goes through the install first, so a pre-v10 core of ours becomes v11, then the preset follows; no
 hook or registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install
 or resync, and the brief names the mismatch. An owner-edited preset copy counts as installed under
 `watchtower-flow` (no mismatch line, never rewritten); under `none` it is kept, `methodology --json`
@@ -1818,6 +1818,9 @@ loses uncommitted work for good, so every doubt keeps the item.
 - `WatchtowerDesktop/Tests/Core/BoardColumnLayoutTests.swift::testEmptyDefinitionIsTodaysColumns` (an empty definition lays the board out as before), with `testHiddenEmptyStatusIsSkipped`, `testHiddenStatusWithCardsStillShows`
 - `WatchtowerDesktop/Tests/Core/WorkbenchBoardColumnWritesTests.swift` — `testMoveToColumnWritesStatusAndColumnOnce`, `testMoveBetweenColumnsOfOneStatusWritesNoHistory`, `testMoveWithinOneStatusKeepsProgress`, `testMismatchedColumnIsRefusedByTheTrigger`
 - `WatchtowerDesktop/Tests/Core/BoardColumnsDraftTests.swift::testDraftRejectsHideWithColumns`
+- `WatchtowerDesktop/Tests/MobileHub/WorkbenchTargetSliceTests.swift::testColumnOnlyWithDefinition` (the slice carries `column` only with a definition)
+- `WatchtowerKit/Tests/WatchtowerKitTests/WorkbenchTargetTests.swift::testDecodesWithAndWithoutColumn`
+- `WatchtowerMobile/Tests/BoardModelTests.swift::testRowShowsColumnTitle`
 
 **P5 note (Automations):** any future agent-facing writer of a workbench target's status (an automation tool, a new MCP tool) must call `hiddenStatusRefusal` (`internal/tools/workbench_columns.go`) for a hidden status, exactly as `update_target` does.
 
