@@ -46,16 +46,16 @@ final class KeyboardShortcutCatalogTests: XCTestCase {
         XCTAssertEqual(markdown.components(separatedBy: "\n### ").count, KeyboardShortcutCatalog.areas.count)
     }
 
-    /// docs/app-guide.md carries the list verbatim; on a failure, paste
+    /// docs/guide/reference/keyboard-shortcuts.md carries the list verbatim; on a failure, paste
     /// `KeyboardShortcutCatalog.markdown` (printed below) into its
-    /// "Keyboard Shortcuts" section.
+    /// "By area" section.
     func testTheGuideMatchesTheTable() throws {
         let guide = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Tests/Core
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerDesktop
             .deletingLastPathComponent() // the repository
-            .appendingPathComponent("docs/app-guide.md")
+            .appendingPathComponent("docs/guide/reference/keyboard-shortcuts.md")
         let text = try String(contentsOf: guide, encoding: .utf8)
         XCTAssertTrue(text.contains(KeyboardShortcutCatalog.markdown + "\n"),
                       "the guide's Keyboard Shortcuts section is out of date; expected:\n\(KeyboardShortcutCatalog.markdown)")
