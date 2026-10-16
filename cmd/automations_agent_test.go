@@ -539,7 +539,8 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 
 // Both executors that run recipes — the daemon's and `automations dry-run`'s
 // — get their backends here: the Quick Connection caller and the agent()
-// runner of the configured provider.
+// runner of the configured provider, the shell() runner and the workbench
+// resolver.
 func TestAutomationBackends_WireMCPAndAgent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	d := db.OpenTestDB(t)
@@ -547,6 +548,8 @@ func TestAutomationBackends_WireMCPAndAgent(t *testing.T) {
 		cfg := &config.Config{ActiveWorkspace: "acme", AI: config.AIConfig{Provider: provider}}
 		b := automationBackends(cfg, d, &automationstest.FakeGenerator{})
 		require.NotNil(t, b.MCP, provider)
+		require.NotNil(t, b.Shell, provider)
+		require.NotNil(t, b.Workbench, provider)
 		require.NotNil(t, b.Agent, provider)
 		assert.Equal(t, want, b.Agent.Name(), provider)
 		assert.NotNil(t, b.Registry)

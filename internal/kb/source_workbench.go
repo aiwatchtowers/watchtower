@@ -8,11 +8,10 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/workbenchdocs"
 )
 
@@ -92,7 +91,7 @@ func listWorkbenchFolders(ctx context.Context, q Queryer) ([]workbenchFolder, er
 // files is w's listing for this run, or nil when the daemon must not read
 // the folder (protected), the folder is gone, or the listing failed (logged).
 func (s *workbenchDocSource) files(ctx context.Context, w workbenchFolder) ([]workbenchdocs.File, bool) {
-	if privacyProtected(w.folder) {
+	if fsutil.PrivacyProtected(w.folder) {
 		return nil, false
 	}
 	if _, err := os.Stat(w.folder); errors.Is(err, fs.ErrNotExist) {
@@ -180,39 +179,6 @@ func (*workbenchDocSource) Build(ctx context.Context, q Queryer, key string) (*D
 		return nil, fmt.Errorf("kb %s: %w", key, err)
 	}
 	return renderFile(WorkbenchDocSource, workbenchDocKind, id, folder, rel), nil
-}
-
-// privacyProtected reports whether folder sits where macOS asks the user
-// before an app reads it — the home locations the Desktop's New-workbench flow
-// warns about, and any other volume (removable and network volumes are
-// guarded too, and a dead network mount can block a stat for minutes).
-// Paths compare case-insensitively, as on the default APFS volume.
-func privacyProtected(folder string) bool {
-	if hasPathPrefix(folder, "/Volumes") {
-		return true
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return true // cannot tell: never risk a background prompt
-	}
-	homes := []string{home}
-	if resolved, err := filepath.EvalSymlinks(home); err == nil && resolved != home {
-		homes = append(homes, resolved)
-	}
-	for _, h := range homes {
-		for _, rel := range []string{"Documents", "Desktop", "Downloads", "Library/CloudStorage", "Library/Mobile Documents"} {
-			if hasPathPrefix(folder, filepath.Join(h, rel)) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// hasPathPrefix reports whether path is root or below it, ignoring case.
-func hasPathPrefix(path, root string) bool {
-	return strings.EqualFold(path, root) ||
-		(len(path) > len(root) && path[len(root)] == filepath.Separator && strings.EqualFold(path[:len(root)], root))
 }
 
 // IndexWorkbenchDocs indexes the text files of one workbench folder now,

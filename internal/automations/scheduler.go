@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 )
 
 // clockBackwardsReprime is how far an automation's last_scheduled_for may lie
@@ -23,7 +24,8 @@ const clockBackwardsReprime = 24 * time.Hour
 
 // Scheduler turns cron schedules into queued runs (spec §7.2). It only
 // inserts rows (AUTO-09); the executor runs them. Each tick it rescans the
-// personal folder when it changed, then for every runnable schedule
+// personal folder and every unprotected workbench's recipe folder when they
+// changed (rescanWorkbenches), then for every runnable schedule
 // automation looks at the due times in (last_scheduled_for, now]: the latest
 // one within ScheduleGrace of now is on time and queues a `schedule` run
 // (older missed ones are folded into it); otherwise `missed: run_once` queues
@@ -40,18 +42,21 @@ type Scheduler struct {
 	// zone resolves the local time zone at each tick (systemZone), so a time
 	// zone change takes effect without a restart; tests replace it.
 	zone func() *time.Location
+	// protected is the privacy-protected folder rule (fsutil.PrivacyProtected);
+	// tests replace it.
+	protected func(string) bool
 	// beforeWrite, when set (tests), runs between reading a row and writing
 	// its schedule.
 	beforeWrite func(db.Automation)
 }
 
-// NewScheduler returns a scheduler over d. ix rescans the personal folder; a
-// nil ix skips rescans. wake, when not nil, is called after a tick that
-// inserted a run (the executor's wake).
+// NewScheduler returns a scheduler over d. ix rescans the personal and
+// workbench folders; a nil ix skips rescans. wake, when not nil, is called
+// after a tick that inserted a run (the executor's wake).
 func NewScheduler(d *db.DB, ix *Indexer, clock Clock, wake func()) *Scheduler {
 	return &Scheduler{
 		db: d, ix: ix, clock: clock, wake: wake, wakeCh: make(chan struct{}, 1),
-		logger: log.Default(), zone: systemZone,
+		logger: log.Default(), zone: systemZone, protected: fsutil.PrivacyProtected,
 	}
 }
 
@@ -93,10 +98,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // failure does not stop the others; every failure is returned, joined.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 	var errs []error
-	if s.ix != nil && s.ix.Changed(PersonalDir(s.ix.workspaceDir)) {
-		if _, err := s.ix.RescanPersonal(ctx); err != nil {
-			errs = append(errs, err)
+	if s.ix != nil {
+		if s.ix.Changed(PersonalDir(s.ix.workspaceDir)) {
+			if _, err := s.ix.RescanPersonal(ctx); err != nil {
+				errs = append(errs, err)
+			}
 		}
+		errs = append(errs, s.rescanWorkbenches(ctx)...)
 	}
 	list, err := s.db.ListAutomations(db.AutomationFilter{TriggerKind: string(TriggerSchedule), RunnableOnly: true})
 	if err != nil {
@@ -119,6 +127,39 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 		s.wake()
 	}
 	return errors.Join(errs...)
+}
+
+// rescanWorkbenches rescans the recipe folder of every workbench whose folder
+// is not privacy-protected, when it changed. A protected folder is skipped
+// before any filesystem call — the daemon never stats, lists or reads it (a
+// background read there raises a macOS privacy prompt attributed to
+// Watchtower, a dead network mount can block it); its rows stay as the
+// Desktop indexed them. A workbench whose folder is gone, or whose folder,
+// .watchtower or automations folder is a symlink, is skipped the same way: a
+// link is never followed, since it could lead into a protected folder (the
+// Desktop's rescan indexes such a workbench).
+func (s *Scheduler) rescanWorkbenches(ctx context.Context) []error {
+	wbs, err := s.db.ListWorkbenches()
+	if err != nil {
+		return []error{fmt.Errorf("scheduler tick: %w", err)}
+	}
+	var errs []error
+	for _, wb := range wbs {
+		if ctx.Err() != nil {
+			break // the schedule loop reports ctx's end
+		}
+		if s.protected(wb.FolderPath) || !s.ix.workbenchPathPlain(wb.FolderPath) {
+			continue
+		}
+		dir := WorkbenchDir(wb.FolderPath)
+		if !s.ix.Changed(dir) {
+			continue
+		}
+		if _, err := s.ix.RescanFolder(ctx, Scope{Kind: ScopeWorkbench, WorkbenchID: wb.ID}, dir); err != nil {
+			errs = append(errs, fmt.Errorf("workbench %d: %w", wb.ID, err))
+		}
+	}
+	return errs
 }
 
 // scheduleOne applies the schedule decision for one runnable automation and

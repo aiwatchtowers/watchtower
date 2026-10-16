@@ -11,20 +11,29 @@ import (
 // or waiting run of the automation.
 var ErrAutomationActive = errors.New("automation has an active run")
 
-// DeleteIdleAutomation deletes automation id with its runs, steps, state and
-// outputs (FK cascade) in one statement that holds only while no run of it is
-// running or waiting — a run claimed between a check and the delete cannot
-// lose its rows. An active run → ErrAutomationActive naming it; a missing row
-// → ErrAutomationNotFound.
+// DeleteIdleAutomation deletes automation id with its runs' asks and, by FK
+// cascade, its runs, steps, state and outputs, in one transaction that holds
+// only while no run of it is running or waiting — a run claimed between a
+// check and the delete cannot lose its rows. An active run →
+// ErrAutomationActive naming it; a missing row → ErrAutomationNotFound.
 func (db *DB) DeleteIdleAutomation(id int64) error {
-	res, err := db.Exec(`DELETE FROM automations WHERE id = ? AND NOT EXISTS (
-		SELECT 1 FROM automation_runs WHERE automation_id = ? AND status IN ('running','waiting'))`, id, id)
+	const idle = ` NOT EXISTS (SELECT 1 FROM automation_runs WHERE automation_id = ? AND status IN ('running','waiting'))`
+	var n int64
+	err := db.WithTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(deleteRunAsksSQL+` AND`+idle, id, id); err != nil {
+			return fmt.Errorf("deleting the asks of automation %d: %w", id, err)
+		}
+		res, err := tx.Exec(`DELETE FROM automations WHERE id = ? AND`+idle, id, id)
+		if err != nil {
+			return fmt.Errorf("deleting automation %d: %w", id, err)
+		}
+		if n, err = res.RowsAffected(); err != nil {
+			return fmt.Errorf("deleting automation %d: %w", id, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("deleting automation %d: %w", id, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("deleting automation %d: %w", id, err)
+		return err
 	}
 	if n == 1 {
 		return nil

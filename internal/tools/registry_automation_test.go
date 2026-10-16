@@ -393,92 +393,173 @@ func (f *autoFixture) seedWorkbenchAuto(t *testing.T) (wb, run int64) {
 	return wb, f.claimRun(t, a.ID)
 }
 
-// Until P5 a workbench automation run may not write: Propose refuses it —
-// with the WorkbenchID its binding carries, and from the run's automation
-// when the binding lacks it — even with a grant, and writes no row.
-func TestWorkbenchAutomation_ProposeRefused(t *testing.T) {
-	f := newAutoFixture(t)
-	wb, run := f.seedWorkbenchAuto(t)
-	a, err := f.d.GetAutomationBySlug("workbench", wb, "wbauto")
+// wbWrite registers wb_write, a local automation write whose Scope needs a
+// workbench (like a workbench tool's): it records the WorkbenchID its Scope
+// saw on each call, Propose and Apply alike.
+func (f *autoFixture) wbWrite(t *testing.T) *[]int64 {
+	t.Helper()
+	var scoped []int64
+	require.NoError(t, f.reg.Register(f.tool(t, "wb_write", func(tl *tools.Tool) {
+		tl.Scope = func(_ context.Context, _ *db.DB, _ json.RawMessage, b tools.Binding) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			scoped = append(scoped, b.WorkbenchID)
+			if b.WorkbenchID == 0 {
+				return &tools.ValidationError{Msg: "no workbench in the binding"}
+			}
+			return nil
+		}
+	})))
+	return &scoped
+}
+
+// approveApply approves pending row id and applies it.
+func (f *autoFixture) approveApply(t *testing.T, id int64) *db.AgentAction {
+	t.Helper()
+	ok, err := f.reg.Approve(context.Background(), id, nil)
 	require.NoError(t, err)
-	f.grant(t, a.ID, "local_write")
+	require.True(t, ok)
+	row, err := f.reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	return row
+}
+
+func (f *autoFixture) actionCount(t *testing.T) int {
+	t.Helper()
+	var rows int
+	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&rows))
+	return rows
+}
+
+// Since P5 a workbench automation's run writes (spec §13): Propose records
+// its proposal — with the WorkbenchID its binding carries, and with the
+// workbench resolved from the run's automation when the binding lacks it —
+// and the tool's Scope sees that workbench. A binding naming another
+// workbench than its run's is refused, and once the workbench is deleted
+// (its automations and runs cascade) Propose is refused and writes no row.
+func TestWorkbenchAutomation_ProposesInItsRunsWorkbench(t *testing.T) {
+	f := newAutoFixture(t)
+	scoped := f.wbWrite(t)
+	wb, run := f.seedWorkbenchAuto(t)
 	withWorkbench := autoBinding(run)
 	withWorkbench.WorkbenchID = wb
 	for name, b := range map[string]tools.Binding{"binding workbench": withWorkbench, "run's automation": autoBinding(run)} {
-		_, err := f.reg.Propose(context.Background(), "local_write", json.RawMessage(autoCallArgs), b)
-		require.ErrorIs(t, err, tools.ErrWorkbenchAutomationWrite, name)
+		rc, row := f.propose(t, "wb_write", b)
+		assert.Equal(t, "pending", rc.Status, name)
+		assert.Equal(t, tools.AutomationContextType, row.ContextType, name)
+		assert.Equal(t, strconv.FormatInt(run, 10), row.ContextID, name)
 	}
-	var rows int
-	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&rows))
-	assert.Zero(t, rows, "a refused call writes no row")
+	assert.Equal(t, []int64{wb, wb}, *scoped, "Scope saw the run's workbench")
+
+	otherFolder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
+	require.NoError(t, err)
+	other, err := f.d.CreateWorkbench("acme-other", otherFolder)
+	require.NoError(t, err)
+	wrong := autoBinding(run)
+	wrong.WorkbenchID = other
+	_, err = f.reg.Propose(context.Background(), "wb_write", json.RawMessage(autoCallArgs), wrong)
+	var verr *tools.ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Contains(t, verr.Msg, "does not belong to workbench")
+
+	require.NoError(t, f.d.DeleteWorkbench(wb))
+	for name, b := range map[string]tools.Binding{"binding workbench": withWorkbench, "run's automation": autoBinding(run)} {
+		_, err = f.reg.Propose(context.Background(), "wb_write", json.RawMessage(autoCallArgs), b)
+		require.ErrorIs(t, err, tools.ErrAutomationRunGone, name)
+	}
+	assert.Equal(t, 2, f.actionCount(t), "a refused call writes no row")
 	calls, _ := f.executed()
-	assert.Empty(t, calls)
+	assert.Empty(t, calls, "nothing applied without an approval")
 }
 
-// A row of a workbench automation's run recorded before the gate (or written
-// directly) is neither approved nor applied: Approve refuses it and leaves it
-// pending, Apply of an approved one lands it failed without Execute. A row
-// whose run no longer exists — deleting a workbench cascades its runs — fails
-// closed too, with its own ErrAutomationRunGone message.
-func TestWorkbenchAutomation_PreexistingRowCannotBeApplied(t *testing.T) {
+// A row of a workbench automation's run carries the run, not the workbench
+// (context_type='automation_run'), so Approve and Apply resolve the
+// workbench from run → automations.project_id: while it lives the row is
+// approved and applied with that workbench in the binding (Scope and
+// Execute see it). Once the workbench is deleted after the propose — its
+// automations and runs cascade — Apply lands the row failed without
+// Execute, Approve refuses (the row stays pending), and a row whose run
+// never existed fails closed the same way (ErrAutomationRunGone).
+func TestWorkbenchAutomation_RowAppliesOnlyWhileItsWorkbenchLives(t *testing.T) {
 	f := newAutoFixture(t)
-	_, run := f.seedWorkbenchAuto(t)
+	scoped := f.wbWrite(t)
+	wb, run := f.seedWorkbenchAuto(t)
 	insert := func(runID int64, status string) int64 {
 		id, err := f.d.InsertAgentAction(db.AgentAction{
-			Tool: "local_write", ArgsJSON: autoCallArgs, Reason: "scheduled", Surface: tools.AutomationSurface,
+			Tool: "wb_write", ArgsJSON: autoCallArgs, Reason: "scheduled", Surface: tools.AutomationSurface,
 			ContextType: tools.AutomationContextType, ContextID: strconv.FormatInt(runID, 10), Status: status,
 		})
 		require.NoError(t, err)
 		return id
 	}
 
+	live := f.approveApply(t, insert(run, "pending"))
+	assert.Equal(t, "applied", live.Status, live.Error)
+	calls, _ := f.executed()
+	require.Len(t, calls, 1)
+	assert.Equal(t, wb, calls[0].Binding.WorkbenchID, "Execute ran in the run's workbench")
+	assert.Equal(t, run, calls[0].Binding.AutomationRunID)
+	assert.Equal(t, []int64{wb}, *scoped, "Scope re-checked the workbench at Apply")
+
+	approved := insert(run, "approved")
 	pending := insert(run, "pending")
+	missing := insert(run+1000, "approved")
+	require.NoError(t, f.d.DeleteWorkbench(wb))
+	for name, id := range map[string]int64{"deleted workbench": approved, "missing run": missing} {
+		applied, err := f.reg.Apply(context.Background(), id)
+		require.NoError(t, err, name)
+		assert.Equal(t, "failed", applied.Status, name)
+		assert.Contains(t, applied.Error, "the automation run no longer exists", name)
+	}
 	ok, err := f.reg.Approve(context.Background(), pending, nil)
-	require.ErrorIs(t, err, tools.ErrWorkbenchAutomationWrite)
+	require.ErrorIs(t, err, tools.ErrAutomationRunGone)
 	assert.False(t, ok)
 	row, err := f.d.GetAgentAction(pending)
 	require.NoError(t, err)
 	assert.Equal(t, "pending", row.Status)
-
-	for name, tc := range map[string]struct {
-		id   int64
-		want string
-	}{
-		"workbench run": {insert(run, "approved"), "workbench automations get writes in a later phase"},
-		"missing run":   {insert(run+1000, "approved"), "the automation run no longer exists"},
-	} {
-		applied, err := f.reg.Apply(context.Background(), tc.id)
-		require.NoError(t, err, name)
-		assert.Equal(t, "failed", applied.Status, name)
-		assert.Contains(t, applied.Error, tc.want, name)
-	}
-	calls, _ := f.executed()
-	assert.Empty(t, calls, "nothing executed")
+	calls, _ = f.executed()
+	assert.Len(t, calls, 1, "nothing executed after the workbench was deleted")
 }
 
-// The binding's WorkbenchID alone refuses a write, with no run or with a run
-// of a personal automation, so the gate does not depend on the run lookup.
-func TestWorkbenchAutomation_BindingWorkbenchAloneRefuses(t *testing.T) {
+// A binding's WorkbenchID alone (no run) is a workbench write too: its row
+// carries the workbench, it applies while the workbench lives and fails at
+// Apply once the workbench was deleted after the propose. A personal run's
+// binding that names a workbench is refused — the run's automation has none.
+func TestWorkbenchAutomation_BindingWorkbenchAloneWrites(t *testing.T) {
 	f := newAutoFixture(t)
+	f.wbWrite(t)
 	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	require.NoError(t, err)
 	wb, err := f.d.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
+	noRun := tools.Binding{Surface: tools.AutomationSurface, WorkbenchID: wb}
+
+	_, first := f.propose(t, "wb_write", noRun)
+	assert.Equal(t, tools.WorkbenchContextType, first.ContextType)
+	assert.Equal(t, "applied", f.approveApply(t, first.ID).Status)
+
 	personalRun := f.claimRun(t, f.seedAuto(t, "personal", `llm("x")`).ID)
 	withRun := autoBinding(personalRun)
 	withRun.WorkbenchID = wb
-	for name, b := range map[string]tools.Binding{
-		"no run":       {Surface: tools.AutomationSurface, WorkbenchID: wb},
-		"personal run": withRun,
-	} {
-		_, err := f.reg.Propose(context.Background(), "local_write", json.RawMessage(autoCallArgs), b)
-		require.ErrorIs(t, err, tools.ErrWorkbenchAutomationWrite, name)
-	}
+	_, err = f.reg.Propose(context.Background(), "local_write", json.RawMessage(autoCallArgs), withRun)
+	var verr *tools.ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Contains(t, verr.Msg, "does not belong to workbench")
 	_, row := f.propose(t, "local_write", autoBinding(personalRun))
 	assert.Equal(t, "pending", row.Status, "the same personal run without a WorkbenchID still proposes")
-	var rows int
-	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&rows))
-	assert.Equal(t, 1, rows, "only the personal proposal is recorded")
+
+	_, second := f.propose(t, "wb_write", noRun)
+	ok, err := f.reg.Approve(context.Background(), second.ID, nil)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, f.d.DeleteWorkbench(wb))
+	applied, err := f.reg.Apply(context.Background(), second.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", applied.Status)
+	assert.Contains(t, applied.Error, "no longer exists")
+	assert.Equal(t, 3, f.actionCount(t), "the refused personal call records no row")
+	calls, _ := f.executed()
+	assert.Len(t, calls, 1, "only the first workbench write executed")
 }
 
 func TestAutomationBinding_DirectApplyRefused(t *testing.T) {
@@ -521,4 +602,33 @@ func TestSetTrust_AutomationSurfaceIsATrustPlace(t *testing.T) {
 	tl, ok := f.reg.Get("local_write")
 	require.True(t, ok)
 	assert.Equal(t, []string{"main", "target", tools.AutomationSurface}, tools.TrustSurfaces(tl))
+}
+
+// A stored automation_run row whose context id does not parse (or is not a
+// positive id) has no run to resolve a workbench from: Approve and Apply fail
+// closed (ErrAutomationRunGone) instead of applying with no workbench check.
+func TestWorkbenchAutomation_UnparsableRunContextFailsClosed(t *testing.T) {
+	f := newAutoFixture(t)
+	f.wbWrite(t)
+	for _, ctxID := range []string{"not-a-number", "", "0"} {
+		id, err := f.d.InsertAgentAction(db.AgentAction{
+			Tool: "wb_write", ArgsJSON: autoCallArgs, Reason: "scheduled", Surface: tools.AutomationSurface,
+			ContextType: tools.AutomationContextType, ContextID: ctxID, Status: "approved",
+		})
+		require.NoError(t, err)
+		applied, err := f.reg.Apply(context.Background(), id)
+		require.NoError(t, err, ctxID)
+		assert.Equal(t, "failed", applied.Status, ctxID)
+		assert.Contains(t, applied.Error, "the automation run no longer exists", ctxID)
+
+		pid, err := f.d.InsertAgentAction(db.AgentAction{
+			Tool: "wb_write", ArgsJSON: autoCallArgs, Reason: "scheduled", Surface: tools.AutomationSurface,
+			ContextType: tools.AutomationContextType, ContextID: ctxID, Status: "pending",
+		})
+		require.NoError(t, err)
+		_, err = f.reg.Approve(context.Background(), pid, nil)
+		require.ErrorIs(t, err, tools.ErrAutomationRunGone, ctxID)
+	}
+	calls, _ := f.executed()
+	assert.Empty(t, calls)
 }
