@@ -71,6 +71,9 @@ package final class QuickRunCenter {
     package private(set) var rows: [QuickRunRow] = []
     /// The `confirm: true` recipe whose "Run “<name>”?" sheet is up.
     package private(set) var pendingConfirm: QuickRunRow?
+    /// Where `pendingConfirm` came from: the palette's sheet shows only a
+    /// palette one (the tray asks in its own alert).
+    package private(set) var pendingOrigin: Origin = .palette
     /// Keyed by run id.
     package private(set) var watched: [Int64: WatchedRun] = [:]
     package var hasWatchedRuns: Bool { !watched.isEmpty }
@@ -84,7 +87,6 @@ package final class QuickRunCenter {
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let notifier: AutomationRunNotifying
     @ObservationIgnored private let isFeatureEnabled: () -> Bool
-    @ObservationIgnored private var pendingOrigin: Origin = .palette
 
     /// Registers itself as `viewModel`'s run watcher (held weakly there).
     package init(

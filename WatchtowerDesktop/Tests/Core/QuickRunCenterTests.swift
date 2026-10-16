@@ -112,6 +112,7 @@ final class QuickRunCenterTests: XCTestCase {
         let outcome = await center.activate(release, origin: .tray)
         XCTAssertEqual(outcome, .askFirst)
         XCTAssertEqual(center.pendingConfirm, release)
+        XCTAssertEqual(center.pendingOrigin, .tray, "the palette's sheet leaves it to the tray's alert")
         XCTAssertEqual(runner.invocations, [], "nothing runs before Run")
 
         center.cancelConfirm()

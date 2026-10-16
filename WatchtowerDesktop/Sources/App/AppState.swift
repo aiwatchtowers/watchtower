@@ -1361,7 +1361,7 @@ final class AppState {
         vm.start()
         automationsViewModel = vm
         let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
-                                      notifier: NoopAutomationRunNotifier()) { [weak self] in
+                                      notifier: AutomationRunNotifier()) { [weak self] in
             self?.isAutomationsFeatureEnabled ?? false
         }
         quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }

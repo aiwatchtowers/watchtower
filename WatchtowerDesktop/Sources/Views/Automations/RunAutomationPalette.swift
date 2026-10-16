@@ -22,10 +22,11 @@ struct RunAutomationPaletteHost: ViewModifier {
             }
     }
 
-    /// The center's pending `confirm: true` recipe; dismissing the sheet cancels it.
+    /// The center's pending `confirm: true` recipe from the palette (the
+    /// tray asks in its own alert); dismissing the sheet cancels it.
     private var confirming: Binding<QuickRunRow?> {
         Binding(
-            get: { appState.quickRunCenter?.pendingConfirm },
+            get: { appState.quickRunCenter.flatMap { $0.pendingOrigin == .palette ? $0.pendingConfirm : nil } },
             set: { if $0 == nil, appState.quickRunCenter?.pendingConfirm != nil { appState.quickRunCenter?.cancelConfirm() } }
         )
     }

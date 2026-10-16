@@ -41,18 +41,77 @@ extension AppState {
         guard RunAutomationCommand.target(featureEnabled: isAutomationsFeatureEnabled,
                                           hasCenter: quickRunCenter != nil,
                                           selected: selectedDestination) == .runAutomationPalette else { return }
-        let shown = (windows ?? NSApp.windows).first {
+        bringMainWindowForward(windows: windows, activate: activate)
+        quickRunCenter?.lastError = nil
+        quickRunCenter?.reload()
+        isRunAutomationPaletteShown = true
+    }
+
+    /// Fronts the main window, or opens one when none is visible (the
+    /// Settings window is key, tray-only mode). `windows` and `activate`
+    /// are test seams; with no app object or window opener (tests) nothing
+    /// is fronted or activated.
+    func bringMainWindowForward(
+        windows: [NSWindow]? = nil,
+        activate: () -> Void = ActivationPolicyDecision.becomeRegularAndActivate
+    ) {
+        let shown = (windows ?? NSApp?.windows ?? []).first {
             TrayAppDelegate.isMainWindow($0) && ($0.isVisible || $0.isMiniaturized)
         }
         if let shown {
             if shown.isMiniaturized { shown.deminiaturize(nil) }
             shown.makeKeyAndOrderFront(nil)
-        } else {
+        } else if let openMainWindow {
+            // A deliberate open: it must win over a still-armed login-launch close.
+            (NSApp?.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
             activate()
-            openMainWindow?()
+            openMainWindow()
         }
-        quickRunCenter?.lastError = nil
-        quickRunCenter?.reload()
-        isRunAutomationPaletteShown = true
+    }
+
+    // MARK: - Tray "Run automation ▸" (spec §12.7)
+
+    /// The tray's sections: nil hides the submenu (feature off, or the
+    /// database not open yet). Reads `quickRunCenter.rows`, never the database.
+    func trayRunAutomationSections(now: Date = Date()) -> [TrayRunAutomationMenu.Section]? {
+        guard isAutomationsFeatureEnabled, let center = quickRunCenter else { return nil }
+        return TrayRunAutomationMenu.sections(center.rows, now: now)
+    }
+
+    /// A click on a tray item. A runnable row runs (a `confirm: true` one
+    /// only after **Run** in an app-modal alert — the tray has no window,
+    /// ruling R-P3-16); a row that opens something opens it in a main
+    /// window brought forward; a refusal is shown in an alert.
+    func runAutomationFromTray(_ automationID: Int64, alerts: TrayAutomationAlerts? = nil) async {
+        guard let center = quickRunCenter, let row = center.rows.first(where: { $0.id == automationID }) else { return }
+        let alerts = alerts ?? .live
+        switch await center.activate(row, origin: .tray) {
+        case .started, .coalesced:
+            break
+        case .askFirst:
+            guard alerts.confirmRun(row) else {
+                center.cancelConfirm()
+                return
+            }
+            await center.confirmRun()
+            // A refusal keeps the pending row (the palette's sheet stays up);
+            // the tray has no sheet, so it says why and lets go.
+            guard center.pendingConfirm != nil else { return }
+            let message = center.lastError ?? "The automation did not start."
+            center.cancelConfirm()
+            alerts.showRefusal(message)
+        case .openedConfirmation, .openedCard, .openedRun:
+            // `activate` already opened the card, run or sheet in the view model.
+            bringMainWindowForward()
+            selectedDestination = .automations
+        case let .refused(message):
+            alerts.showRefusal(message)
+        }
+    }
+
+    /// "Open Automations…" at the end of the submenu.
+    func openAutomationsFromTray() {
+        bringMainWindowForward()
+        selectedDestination = .automations
     }
 }

@@ -116,4 +116,23 @@ final class NotificationForwardingTests: XCTestCase {
         XCTAssertNil(NotificationForwarding.decode("{\"payload\":{\"type\":\"decision\"}}"))
         XCTAssertNil(NotificationForwarding.decode("{\"actionID\":42,\"payload\":{}}"))
     }
+
+    // MARK: - Automation finish notice (spec §12.7)
+
+    func testAutomationKeysAreRoutedAndRestoredAsInt64() {
+        let decoded = roundTrip(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: AutomationRunNotifier.userInfo(automationID: 4, runID: 9)
+        )
+        XCTAssertEqual(decoded?.payload, ["type": "automation_run", "automationId": "4", "runId": "9"])
+        XCTAssertEqual(decoded?.userInfo["automationId"] as? Int64, 4)
+        XCTAssertEqual(decoded?.userInfo["runId"] as? Int64, 9)
+    }
+
+    func testUnparseableAutomationKeyIsDropped() {
+        let decoded = roundTrip(actionID: "a", userInfo: ["type": "automation_run", "automationId": "x", "runId": Int64(9)])
+        XCTAssertEqual(decoded?.payload["automationId"], "x")
+        XCTAssertNil(decoded?.userInfo["automationId"])
+        XCTAssertEqual(decoded?.userInfo["runId"] as? Int64, 9)
+    }
 }
