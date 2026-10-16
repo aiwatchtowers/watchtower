@@ -28,6 +28,14 @@ Only the main chat, the target chat and the automation editor can act, through p
 4. Attach files with the paperclip, drag and drop, or paste. Images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB. One message's files together stay under 30 MB. Anything else is refused with the reason. Files are stored privately in the workspace and deleted with their chat.
 5. **New chat** is ⌘N; ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title is written after the first reply, and one you set is never replaced.
 
+### Asking from any tab
+
+Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same chat as a panel over it. It continues the conversation the **AI Chat** tab has selected, so what you say there shows up here and the other way round. **New** starts a fresh conversation, and **Open in AI Chat** switches to the tab on this conversation.
+
+Each message you send from the panel also tells the assistant which tab you are on, what status line an empty tab shows and which item is selected. That note goes to your AI provider with the message but is never stored, so the history shows only what you typed. For questions about Watchtower itself the assistant searches this guide and links the section.
+
+**Esc** stops a running answer; a second **Esc** closes the panel. While an answer streams you can't send another message, as in the tab. In the **AI Chat** tab, **⌘/** puts the cursor in the message box. In the **Files** editor of a Workbench, **⌘/** still toggles a comment.
+
 ### Artifacts
 
 A document, table, email or Slack draft, event or code opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it to a file (the extension follows the kind, for example .md, .csv or a language's extension for code).

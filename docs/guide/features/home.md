@@ -58,6 +58,8 @@ AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOC
 - **A card is missing from Today.** It has nothing to show right now, or its feature is off or its source isn't connected.
 - **"Couldn't read today's items — see the log."** The local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
 
+Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." It is always there; **⌘/** opens the [assistant over this tab](ai-chat.md).
+
 A tab stays empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 
 ## Related

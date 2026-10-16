@@ -40,6 +40,24 @@ Show the release notes to the user and ask for confirmation.
 
 Update the `Version` variable in `cmd/version.go` to the new version.
 
+## Step 3b: Docs check
+
+The user guide (`docs/guide/`) is what the in-app assistant answers from, so a
+user-visible change must reach it before the release.
+
+1. List the PRs merged since the last tag that touched `WatchtowerDesktop/`,
+   `cmd/` or `internal/` but not `docs/guide/`:
+
+   ```bash
+   git log --merges --format='%s' <last-tag>..HEAD
+   gh pr view <N> --json files --jq '.files[].path'
+   ```
+
+2. For each one that changes something a user sees, update its guide page per
+   `docs/guide/WRITING.md`, or name in the release notes why none was needed.
+3. Run `go test ./docs/guide/` (links, catalogue, page size). Any failure halts
+   the release.
+
 ## Step 4: Pre-release gate
 
 Run the pre-release checks. This runs sentrux quality (rules + structural
