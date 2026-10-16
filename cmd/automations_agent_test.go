@@ -345,6 +345,23 @@ func TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets(t *testing.T) {
 	t.Setenv("USER", "acme")
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("WT_FAKE_SECRET", "s3cret")
+	t.Setenv("SLACK_TOKEN", "xoxp-fake")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-fake")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-fake")
+	t.Setenv("OPENAI_API_KEY", "sk-openai-fake")
+	// The allowed network plumbing (owner ask #185); no_proxy is left unset.
+	allowed := map[string]string{
+		"HTTPS_PROXY": "http://proxy.example.com:3128", "HTTP_PROXY": "http://proxy.example.com:3128",
+		"NO_PROXY": "localhost", "https_proxy": "http://proxy.example.com:3128",
+		"http_proxy": "http://proxy.example.com:3128", "ALL_PROXY": "socks5://proxy.example.com:1080",
+		"all_proxy": "socks5://proxy.example.com:1080", "NODE_EXTRA_CA_CERTS": "/etc/ca/extra.pem",
+		"SSL_CERT_FILE": "/etc/ca/cert.pem", "SSL_CERT_DIR": "/etc/ca/certs", "TMPDIR": t.TempDir(),
+	}
+	for k, v := range allowed {
+		t.Setenv(k, v)
+	}
+	t.Setenv("no_proxy", "")
+	require.NoError(t, os.Unsetenv("no_proxy"))
 	configPath := setFlagConfig(t)
 	f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
 	_, err := f.d.InsertExternalConnection(db.ExternalConnection{Name: "github", Kind: "stdio", Command: "/bin/false", Enabled: true})
@@ -361,7 +378,18 @@ func TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	assert.Equal(t, []string{"HOME", "LANG", "PATH", "USER", automations.RunEnvMarker}, keys, "env: %q", env)
+	wantKeys := []string{"HOME", "LANG", "PATH", "USER", automations.RunEnvMarker}
+	for k := range allowed {
+		wantKeys = append(wantKeys, k)
+	}
+	slices.Sort(wantKeys)
+	assert.Equal(t, wantKeys, keys, "env: %q", env)
+	for k, v := range allowed {
+		assert.Contains(t, env, k+"="+v)
+	}
+	for _, secret := range []string{"SLACK_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CLAUDECODE", "WT_FAKE_SECRET"} {
+		assert.NotContains(t, strings.Join(keys, " "), secret)
+	}
 	assert.Contains(t, env, "HOME="+home)
 	assert.Contains(t, env, "LANG=en_US.UTF-8")
 	assert.Contains(t, env, "USER=acme")
