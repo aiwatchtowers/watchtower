@@ -328,7 +328,6 @@ struct TargetDetailView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
             }
-            .clearsRecordingIndicator()
         case .watch:
             scrollableTab { watchTab }
         case .links:

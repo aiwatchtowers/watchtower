@@ -14,10 +14,15 @@ private func indicatorCapsule<Content: View>(@ViewBuilder _ content: () -> Conte
         .shadow(radius: 8, y: 2)
 }
 
-/// Global bottom-trailing overlay reflecting `MeetingRecorderCenter` state, so an
-/// in-flight recording / transcription / summarization is visible from every
-/// screen and survives navigation. Hidden only when nothing is capturing, the
-/// queue is empty, and nothing is waiting for the user.
+/// Global overlay reflecting `MeetingRecorderCenter` state, so an in-flight
+/// recording / transcription / summarization is visible from every screen and
+/// survives navigation. Hidden only when nothing is capturing, the queue is
+/// empty, and nothing is waiting for the user.
+///
+/// It sits in one of the window's corners (`RecordingIndicatorCorner`, kept
+/// across launches): dragging the stack by its background moves it, and on
+/// release it snaps to the corner nearest the pointer. Buttons keep their
+/// clicks — a drag that starts on one is the button's, not the stack's.
 ///
 /// Capture and post-processing are decoupled in the Center, so the stack renders
 /// `captureState` and the `jobs` queue side by side (a recording capsule plus one
@@ -28,9 +33,15 @@ struct RecordingIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
-    /// Receives the bottom space composers must keep free while pills show
-    /// (`RecordingIndicatorInset.reservedHeight`), 0 once the stack is empty.
+    @AppStorage(RecordingIndicatorCorner.storageKey) private var corner = RecordingIndicatorCorner.default
+    /// The window's content size, which the release point is snapped in.
+    var windowSize: CGSize = .zero
+    /// Receives the space the window must keep free on the corner's edge
+    /// while pills show (`RecordingIndicatorInset.reservedHeight`), 0 once
+    /// the stack is empty.
     var onReservedInsetChange: (CGFloat) -> Void = { _ in }
+    /// The stack's offset while it is being dragged; zero at rest.
+    @State private var dragOffset: CGSize = .zero
     @State private var stackHeight: CGFloat = 0
     /// Height of the model-download capsule drawn below the recorder pills,
     /// read only while one shows.
@@ -64,24 +75,72 @@ struct RecordingIndicatorView: View {
     var body: some View {
         let center = appState.meetingRecorderCenter
         let provisioner = appState.transcriptionModelProvisioner
-        VStack(alignment: .trailing, spacing: RecordingIndicatorInset.stackSpacing) {
-            recorderContent(center)
-            provisionerContent(provisioner)
+        // A mirror image in a top corner: the stack reads outward from the
+        // window's edge in the same order, so the live panel opens toward
+        // the window's interior and the download pills stay between the
+        // panel and the edge (what `reservedHeight` counts).
+        VStack(alignment: corner.horizontalAlignment, spacing: RecordingIndicatorInset.stackSpacing) {
+            if corner.isTop {
+                provisionerContent(provisioner)
+                recorderContent(center, edgeFirst: true)
+            } else {
+                recorderContent(center, edgeFirst: false)
+                provisionerContent(provisioner)
+            }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stackHeight = $0 }
         .onChange(of: reservedInset, initial: true) { _, inset in onReservedInsetChange(inset) }
+        .offset(dragOffset)
+        // Not while the live panel is open: a drag across its transcript
+        // selects text.
+        .gesture(moveGesture, including: expandedPanelShown ? .subviews : .all)
         .padding(RecordingIndicatorInset.outerPadding)
     }
 
+    /// Moves the stack with the pointer and, on release, snaps it to the
+    /// corner nearest the pointer. The minimum distance leaves a click on the
+    /// stack's background a click.
+    private var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named(RecordingIndicatorCorner.coordinateSpace))
+            .onChanged { dragOffset = $0.translation }
+            .onEnded { value in
+                withAnimation(.snappy) {
+                    if windowSize.width > 0, windowSize.height > 0 {
+                        corner = RecordingIndicatorCorner.nearest(to: value.location, in: windowSize)
+                    }
+                    dragOffset = .zero
+                }
+            }
+    }
+
+    /// From the window's interior to its edge — or, `edgeFirst` (a top
+    /// corner), the same pills from the edge inward.
     @ViewBuilder
-    private func recorderContent(_ center: MeetingRecorderCenter) -> some View {
+    private func recorderContent(_ center: MeetingRecorderCenter, edgeFirst: Bool) -> some View {
+        if edgeFirst {
+            recordingContent(center)
+            jobQueue(center)
+            interruptedContent(center)
+        } else {
+            interruptedContent(center)
+            jobQueue(center)
+            recordingContent(center)
+        }
+    }
+
+    /// A capture that failed, then the recordings recovered after a crash.
+    @ViewBuilder
+    private func interruptedContent(_ center: MeetingRecorderCenter) -> some View {
         if let message = center.captureError {
             captureFailedCapsule(center, message: message)
         }
         if !center.recoverable.isEmpty {
             recoveredPill(center)
         }
-        jobQueue(center)
+    }
+
+    @ViewBuilder
+    private func recordingContent(_ center: MeetingRecorderCenter) -> some View {
         if case let .recording(startedAt) = center.captureState {
             recordingView(center, startedAt: startedAt)
         }
@@ -115,7 +174,7 @@ struct RecordingIndicatorView: View {
     @ViewBuilder
     private func provisionerContent(_ provisioner: TranscriptionModelProvisioner) -> some View {
         if !provisioner.downloads.isEmpty {
-            VStack(alignment: .trailing, spacing: RecordingIndicatorInset.stackSpacing) {
+            VStack(alignment: corner.horizontalAlignment, spacing: RecordingIndicatorInset.stackSpacing) {
                 ForEach(provisioner.downloads) { download in
                     ModelDownloadPill(
                         download: download,
@@ -171,7 +230,8 @@ struct RecordingIndicatorView: View {
             }
             if showsLiveAffordance(center) {
                 liveEngineIndicator(center.liveEngineState)
-                Button { expanded = true } label: { Image(systemName: "chevron.up") }
+                // The panel opens toward the window's interior.
+                Button { expanded = true } label: { Image(systemName: corner.isTop ? "chevron.down" : "chevron.up") }
                     .buttonStyle(.plain)
                     .controlSize(.small)
                     .help("Show live transcript")
@@ -213,7 +273,7 @@ struct RecordingIndicatorView: View {
                     Text(Self.elapsed(from: startedAt, to: context.date)).font(.callout.monospacedDigit())
                 }
                 Spacer()
-                Button { expanded = false } label: { Image(systemName: "chevron.down") }
+                Button { expanded = false } label: { Image(systemName: corner.isTop ? "chevron.up" : "chevron.down") }
                     .buttonStyle(.plain).controlSize(.small)
                 Button { stop(center) } label: { Label("Stop", systemImage: "stop.fill") }
                     .buttonStyle(.destructivePrimary).controlSize(.small)

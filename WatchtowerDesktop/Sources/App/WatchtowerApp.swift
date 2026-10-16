@@ -310,9 +310,13 @@ struct WatchtowerApp: App {
     /// never mounts one), and a singleton is what makes "the SwiftUI-managed
     /// state" and "the state the delegate initialized" provably identical.
     @State private var appState = AppState.shared
-    /// Bottom space the recorder pills need, handed to every composer so the
-    /// pills never cover what the owner is typing.
+    /// Space the recorder pills need on their corner's edge; the whole
+    /// content is padded by it, so the pills never cover anything (#397).
     @State private var recordingIndicatorInset: CGFloat = 0
+    /// The corner the owner dragged the recorder pills to.
+    @AppStorage(RecordingIndicatorCorner.storageKey) private var recordingIndicatorCorner = RecordingIndicatorCorner.default
+    /// The root's size, which a dragged pill stack is snapped in.
+    @State private var rootSize: CGSize = .zero
     /// Settings → Claude plan toggle for the menu bar text; absent = on.
     @AppStorage(PlanUsageCenter.menuBarKey) private var showPlanUsageInMenuBar = true
     /// Read here — not inside `TrayMenuView`, which has its own copy for the
@@ -372,19 +376,25 @@ struct WatchtowerApp: App {
 
     private var rootContent: some View {
         NavigationRoot()
-            .environment(\.recordingIndicatorInset, recordingIndicatorInset)
+            // The pills' edge keeps a band free for them on every screen.
+            .padding(recordingIndicatorCorner.insetEdge, recordingIndicatorInset)
             .frame(minWidth: 800, minHeight: 600)
-            .overlay(alignment: .bottomTrailing) {
-                RecordingIndicatorView { recordingIndicatorInset = $0 }
+            .overlay(alignment: recordingIndicatorCorner.alignment) {
+                RecordingIndicatorView(windowSize: rootSize) { recordingIndicatorInset = $0 }
             }
+            // Above the recorder pills when they share its corner.
             .overlay(alignment: .bottomTrailing) {
                 ExtractIndicatorView()
+                    .padding(.bottom, recordingIndicatorCorner == .bottomTrailing ? recordingIndicatorInset : 0)
             }
-            // Separate alignment from the recording/extract indicators'
-            // corner, so the banner and the pills never overlap.
+            // Below the pills' band when they sit in a top corner, so the
+            // banner and the pills never overlap.
             .overlay(alignment: .top) {
                 UpcomingMeetingBannerView()
+                    .padding(.top, recordingIndicatorCorner.isTop ? recordingIndicatorInset : 0)
             }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { rootSize = $0 }
+            .coordinateSpace(.named(RecordingIndicatorCorner.coordinateSpace))
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
             .modifier(RunAutomationPaletteHost(appState: appState))
             .background(OpaqueWindowBackground())

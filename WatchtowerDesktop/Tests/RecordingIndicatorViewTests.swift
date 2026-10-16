@@ -202,7 +202,7 @@ final class RecordingIndicatorViewTests: XCTestCase {
     // (`retriableFailureID`/`dismissableFailureID`, so the buttons can never
     // disagree with what the Center would do); see MeetingRecorderQueueTests.
 
-    // MARK: - Reserved composer inset
+    // MARK: - Reserved inset
 
     /// Nothing recording, queued or failed: the empty stack measures zero and
     /// composers keep their normal layout.
@@ -240,50 +240,78 @@ final class RecordingIndicatorViewTests: XCTestCase {
                        90 + RecordingIndicatorInset.outerPadding)
     }
 
-    /// The inset is opt-in on the bottom-most content of main-window screens
-    /// only — never inside the shared `ChatComposerField` (which also serves sheets,
-    /// onboarding and setup assistants). Exact per-file counts of code
-    /// (non-comment) occurrences, so a second opt-in inside a listed file
-    /// fails too.
-    func testInsetIsAppliedOnlyAtTheAgreedMainWindowSites() throws {
+    /// The inset clears every screen at once (#397): the root pads its whole
+    /// content on the pills' edge, and no screen opts in on its own — the
+    /// per-view `.clearsRecordingIndicator()` it replaced is gone, and the
+    /// shared `ChatComposerField` (which also serves sheets, onboarding and
+    /// setup assistants) never reserves anything.
+    func testInsetIsAppliedOnceAtTheRoot() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerDesktop
             .appendingPathComponent("Sources")
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
-        var counts: [String: Int] = [:]
+        var padders: [String: Int] = [:]
         for case let url as URL in enumerator where url.pathExtension == "swift" {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            if url.lastPathComponent == "ChatComposerField.swift" {
-                XCTAssertFalse(text.contains("recordingIndicatorInset"), "ChatComposerField must not reserve the pill inset")
-            }
-            guard !url.path.hasSuffix("RecordingIndicatorInset.swift") else { continue }
-            let uses = Self.codeLines(text).reduce(0) { total, line in
-                total + line.components(separatedBy: ".clearsRecordingIndicator()").count - 1
-            }
-            if uses > 0 { counts[url.lastPathComponent, default: 0] += uses }
+            let lines = Self.codeLines(try String(contentsOf: url, encoding: .utf8))
+            XCTAssertFalse(lines.contains { $0.contains("clearsRecordingIndicator") },
+                           "\(url.lastPathComponent) opts into the pills' inset; the root already pads every screen")
+            let pads = lines.filter { $0.contains(".padding(recordingIndicatorCorner.insetEdge") }.count
+            if pads > 0 { padders[url.lastPathComponent, default: 0] += pads }
         }
-        XCTAssertEqual(counts, [
-            // The thread's composer; on the Chat landing the composer opts
-            // out and the landing's recent list (bottom-most) carries it.
-            "ChatComposerView.swift": 1,
-            "ChatLandingView.swift": 1,
-            "TargetChatView.swift": 1,
-            "TargetDetailView.swift": 1,
-            "TrackChatView.swift": 1,
-            "RecordingDetailTabs.swift": 1,
-            "IdeaDetailPane.swift": 1,
-            "DecisionDetailView.swift": 1
-        ])
+        XCTAssertEqual(padders, ["WatchtowerApp.swift": 1])
+    }
+
+    // MARK: - Corner
+
+    /// A release point snaps to the corner of its quadrant; the midlines go
+    /// trailing and bottom, so the centre lands on the default corner, and a
+    /// point dragged past the window's edge snaps to that side.
+    func testReleasePointSnapsToTheNearestCorner() {
+        let size = CGSize(width: 1000, height: 600)
+        XCTAssertEqual(RecordingIndicatorCorner.nearest(to: CGPoint(x: 100, y: 80), in: size), .topLeading)
+        XCTAssertEqual(RecordingIndicatorCorner.nearest(to: CGPoint(x: 900, y: 80), in: size), .topTrailing)
+        XCTAssertEqual(RecordingIndicatorCorner.nearest(to: CGPoint(x: 100, y: 500), in: size), .bottomLeading)
+        XCTAssertEqual(RecordingIndicatorCorner.nearest(to: CGPoint(x: 900, y: 500), in: size), .bottomTrailing)
+        XCTAssertEqual(RecordingIndicatorCorner.nearest(to: CGPoint(x: 500, y: 300), in: size), .bottomTrailing)
+        XCTAssertEqual(RecordingIndicatorCorner.nearest(to: CGPoint(x: 499, y: 299), in: size), .topLeading)
+        XCTAssertEqual(RecordingIndicatorCorner.nearest(to: CGPoint(x: -40, y: 700), in: size), .bottomLeading)
+        XCTAssertEqual(RecordingIndicatorCorner.nearest(to: CGPoint(x: 1200, y: -10), in: size), .topTrailing)
+    }
+
+    /// Each corner pads the content edge it sits on and aligns the stack to
+    /// its own side.
+    func testCornerPicksItsEdgeAndAlignment() {
+        let expected: [(RecordingIndicatorCorner, Edge.Set, Alignment, HorizontalAlignment)] = [
+            (.topLeading, .top, .topLeading, .leading),
+            (.topTrailing, .top, .topTrailing, .trailing),
+            (.bottomLeading, .bottom, .bottomLeading, .leading),
+            (.bottomTrailing, .bottom, .bottomTrailing, .trailing)
+        ]
+        for (corner, edge, alignment, horizontal) in expected {
+            XCTAssertEqual(corner.insetEdge, edge, "\(corner)")
+            XCTAssertEqual(corner.alignment, alignment, "\(corner)")
+            XCTAssertEqual(corner.horizontalAlignment, horizontal, "\(corner)")
+        }
+    }
+
+    /// The stored corner survives launches under a stable key and raw
+    /// values; an unknown stored value falls back to the default corner.
+    func testCornerStorageIsStable() {
+        XCTAssertEqual(RecordingIndicatorCorner.storageKey, "recordingIndicator.corner")
+        XCTAssertEqual(RecordingIndicatorCorner.allCases.map(\.rawValue),
+                       ["topLeading", "topTrailing", "bottomLeading", "bottomTrailing"])
+        XCTAssertEqual(RecordingIndicatorCorner.default, .bottomTrailing)
+        XCTAssertNil(RecordingIndicatorCorner(rawValue: "middle"))
     }
 
     func testCodeLinesSkipsCommentLines() {
         let text = """
-        // .clearsRecordingIndicator() in a comment
-        /// .clearsRecordingIndicator() in a doc comment
-          .clearsRecordingIndicator()
+        // .padding(recordingIndicatorCorner.insetEdge) in a comment
+        /// .padding(recordingIndicatorCorner.insetEdge) in a doc comment
+          .padding(recordingIndicatorCorner.insetEdge, inset)
         """
-        XCTAssertEqual(Self.codeLines(text), ["  .clearsRecordingIndicator()"])
+        XCTAssertEqual(Self.codeLines(text), ["  .padding(recordingIndicatorCorner.insetEdge, inset)"])
     }
 
     /// Source lines minus `//` / `///` comment lines.
