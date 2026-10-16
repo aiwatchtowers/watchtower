@@ -26,6 +26,10 @@ import (
 var workbenchSkillFS embed.FS
 
 const (
+	// FlowSkillName is the methodology preset skill (spec 2026-10-15 §4.2):
+	// its directory name beside the core skill and the frontmatter name it
+	// carries. Installed unless the workbench's preset is none.
+	FlowSkillName = "watchtower-flow"
 	// WorkbenchSkillName is the skill's directory name inside the workbench
 	// folder's .claude/skills and the frontmatter name it carries.
 	WorkbenchSkillName = "watchtower-workbench"
@@ -55,6 +59,7 @@ var (
 // git-invisible: everything it writes into the folder, nothing else.
 var workbenchExcludeLines = []string{
 	".claude/skills/" + WorkbenchSkillName + "/",
+	flowExcludeLine,
 	".claude/settings.local.json",
 }
 
@@ -76,6 +81,10 @@ type WorkbenchInstallOptions struct {
 	Folder      string
 	Bin         string
 	Run         CommandRunner
+	// PresetNone: the workbench's methodology preset is none (spec
+	// 2026-10-15 §4.3), so the watchtower-flow preset is removed when ours
+	// instead of installed. The zero value installs it.
+	PresetNone bool
 }
 
 // WorkbenchInstallReport is what InstallWorkbench did; Excluded holds the
@@ -89,7 +98,15 @@ type WorkbenchInstallOptions struct {
 // LegacyPermissionRules how many allow rules in the folder's
 // settings.local.json still name the old server (reported, never changed).
 type WorkbenchInstallReport struct {
-	Skill       SkillStatus
+	Skill SkillStatus
+	// Flow is what became of the watchtower-flow preset (spec 2026-10-15
+	// §4.3): installed/updated/unchanged, removed (preset none, ours),
+	// drifted/foreign (kept), or missing (none there beside a single-file
+	// core). SingleFileLayout: the core is an owner-edited copy from before
+	// v10 that still carries the methodology, so no preset went beside it.
+	Flow             SkillStatus
+	SingleFileLayout bool
+
 	HookChanged bool
 	// CleanupPermissionChanged: the cleanup allow rule (PROJ-04, session
 	// cleanup §10) was added or repaired; reported apart from the hooks.
@@ -148,6 +165,24 @@ func WorkbenchSkill() (name string, body []byte) {
 // the pack.
 func workbenchSkill() Skill {
 	name, body := WorkbenchSkill()
+	sum := sha256.Sum256(body)
+	return Skill{Name: name, Content: string(body), SHA256: hex.EncodeToString(sum[:])}
+}
+
+// FlowSkill returns the embedded watchtower-flow preset skill.
+func FlowSkill() (name string, body []byte) {
+	b, err := workbenchSkillFS.ReadFile(path.Join("workbenchskill", FlowSkillName, "SKILL.md"))
+	if err != nil {
+		// An embed failure is a build-time defect, not a runtime condition.
+		panic("devpack: reading embedded flow skill: " + err.Error())
+	}
+	return FlowSkillName, b
+}
+
+// flowSkill wraps FlowSkill in the pack's Skill shape, so the preset goes
+// through the same DEV-04 decision (installSkill/planFor/removeSkill).
+func flowSkill() Skill {
+	name, body := FlowSkill()
 	sum := sha256.Sum256(body)
 	return Skill{Name: name, Content: string(body), SHA256: hex.EncodeToString(sum[:])}
 }
@@ -271,12 +306,12 @@ func keptLegacySkill(legacySkillDir string) SkillStatus {
 func installWorkbenchFiles(o WorkbenchInstallOptions, rep *WorkbenchInstallReport, hadLegacyHooks bool) []error {
 	var errs []error
 	var err error
-	if err = skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), legacySkill()); err != nil {
+	if err = skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), flowSkill(), legacySkill()); err != nil {
 		errs = append(errs, err)
 	} else {
-		if rep.Skill, err = installSkill(o.skillsDir(), workbenchSkill()); err != nil {
-			errs = append(errs, err)
-		}
+		var pairErrs []error
+		rep.Skill, rep.Flow, rep.SingleFileLayout, pairErrs = installSkillPair(o.skillsDir(), o.PresetNone)
+		errs = append(errs, pairErrs...)
 		if rep.LegacySkill, err = removeSkill(o.skillsDir(), legacySkill()); err != nil {
 			errs = append(errs, err)
 		}
@@ -376,15 +411,15 @@ func refusedFileReported(reported []error, err error) bool {
 	})
 }
 
-// removeWorkbenchSkills removes our un-edited skills in both vocabularies,
-// unless the skills directory leads outside the folder: then nothing is
-// removed and that refusal is returned (PROJ-04).
+// removeWorkbenchSkills removes our un-edited skills — the core, the preset
+// and the pre-rename one —, unless the skills directory leads outside the
+// folder: then nothing is removed and that refusal is returned (PROJ-04).
 func removeWorkbenchSkills(o WorkbenchInstallOptions) error {
-	if err := skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), legacySkill()); err != nil {
+	if err := skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), flowSkill(), legacySkill()); err != nil {
 		return err
 	}
 	var errs []error
-	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
+	for _, s := range []Skill{workbenchSkill(), flowSkill(), legacySkill()} {
 		if _, err := removeSkill(o.skillsDir(), s); err != nil {
 			errs = append(errs, err)
 		}

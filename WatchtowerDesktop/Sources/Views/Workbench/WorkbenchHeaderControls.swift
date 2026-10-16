@@ -16,6 +16,7 @@ struct WorkbenchHeaderControls: View {
     @State private var hoveredView: WorkspaceView?
     @State private var chevronHovered = false
     @State private var showsWorktreeSetup = false
+    @State private var showsAgentSettings = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -25,6 +26,9 @@ struct WorkbenchHeaderControls: View {
         }
         .sheet(isPresented: $showsWorktreeSetup) {
             WorktreeSetupSheet(vm: vm, project: project)
+        }
+        .sheet(isPresented: $showsAgentSettings) {
+            AgentSettingsSheet(vm: vm, project: project)
         }
     }
 
@@ -130,8 +134,8 @@ struct WorkbenchHeaderControls: View {
         .accessibilityLabel(isSplit ? "Single Pane" : "Split")
     }
 
-    /// Repair install, Re-run Setup, the archive items, Clean Up Old
-    /// Worktrees… and Delete…, out of the header row.
+    /// Repair install, Re-run Setup, the archive items, Agent Settings…,
+    /// Clean Up Old Worktrees… and Delete…, out of the header row.
     private var moreMenu: some View {
         let status = vm.installStatus[project.id]
         let installing = vm.isInstalling(projectID: project.id)
@@ -167,6 +171,12 @@ struct WorkbenchHeaderControls: View {
                 Label("Worktree Setup Command…", systemImage: "terminal")
             }
             .help("A command a new session's worktree runs before the agent starts")
+            Button {
+                showsAgentSettings = true
+            } label: {
+                Label("Agent Settings…", systemImage: "slider.horizontal.3")
+            }
+            .help("The methodology, the ask guard and the finish check this workbench's agents run under")
             Divider()
             Button {
                 onCleanUpOldWorktrees()

@@ -21,8 +21,8 @@ import (
 )
 
 // codexExcludeLines are the folder-relative paths the codex install makes
-// git-invisible: the skill copy, nothing else.
-var codexExcludeLines = []string{".agents/skills/" + WorkbenchSkillName + "/"}
+// git-invisible: the skill copies, nothing else.
+var codexExcludeLines = []string{".agents/skills/" + WorkbenchSkillName + "/", codexFlowExcludeLine}
 
 // ErrCodexHooksNotEditable means a folder's .codex/config.toml holds our
 // imported hooks in a shape the installer does not rewrite in place (an
@@ -51,7 +51,11 @@ type CodexStatus struct {
 	ImportedDuplicates bool
 	TrustError         string
 
-	SkillState        State
+	SkillState State
+	// FlowState and SingleFileLayout are the preset's outcome beside the
+	// skill copy, as WorkbenchInstallReport's Flow and SingleFileLayout.
+	FlowState         State
+	SingleFileLayout  bool
 	DuplicatesRemoved bool
 }
 
@@ -137,15 +141,18 @@ func InstallCodex(ctx context.Context, o WorkbenchInstallOptions, srv func() (co
 	if _, err := EnsureGitExclude(o.Folder, codexExcludeLines); err != nil {
 		errs = append(errs, err)
 	}
-	err := skillDirsInside(o.Folder, o.codexSkillsDir(), workbenchSkill())
 	var sk SkillStatus
-	if err == nil {
-		sk, err = installSkill(o.codexSkillsDir(), workbenchSkill())
-	}
-	if err != nil {
+	if err := skillDirsInside(o.Folder, o.codexSkillsDir(), workbenchSkill(), flowSkill()); err != nil {
 		errs = append(errs, err)
+	} else {
+		var flow SkillStatus
+		var pairErrs []error
+		sk, flow, st.SingleFileLayout, pairErrs = installSkillPair(o.codexSkillsDir(), o.PresetNone)
+		st.FlowState = flow.State
+		errs = append(errs, pairErrs...)
 	}
-	st.SkillState, st.Skill = sk.State, err == nil
+	st.SkillState, st.Skill = sk.State, sk.Path != "" // the core copy went in, whatever became of the preset
+	var err error
 	st.DuplicatesRemoved, err = dedupeImportedHooks(o.Folder, o.WorkbenchID)
 	if err != nil {
 		errs = append(errs, err)
@@ -172,9 +179,12 @@ func RemoveCodex(_ context.Context, o WorkbenchInstallOptions) (SkillStatus, err
 	}
 	var errs []error
 	var sk SkillStatus
-	err := skillDirsInside(o.Folder, o.codexSkillsDir(), workbenchSkill())
+	err := skillDirsInside(o.Folder, o.codexSkillsDir(), workbenchSkill(), flowSkill())
 	if err == nil {
 		if sk, err = removeSkill(o.codexSkillsDir(), workbenchSkill()); err != nil {
+			errs = append(errs, err)
+		}
+		if _, err := removeSkill(o.codexSkillsDir(), flowSkill()); err != nil {
 			errs = append(errs, err)
 		}
 		removeIfEmpty(o.codexSkillsDir())
