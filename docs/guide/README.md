@@ -10,6 +10,8 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 
 ## Focus
 
+- [Mail](features/mail.md) — what Gmail, Outlook and IMAP mail feeds into your Inbox, Catch Up and Ideas.
+
 ## Execution
 
 ## Insights
@@ -19,6 +21,10 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 ## Automations & AI
 
 ## Meetings & calendar
+
+- [Calendar and meeting prep](features/calendar-and-meeting-prep.md) — one timeline of meetings and recordings, plus an AI brief on the people before you join.
+- [Meeting recording](features/meeting-recording.md) — record a call locally and get a transcript, recap, action items and named speakers.
+- [Voice dictation](features/voice-dictation.md) — speak instead of typing in chats, ideas and notes, or capture an idea from anywhere.
 
 ## Apps & integration
 
