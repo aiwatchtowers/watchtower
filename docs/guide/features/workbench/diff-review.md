@@ -12,7 +12,7 @@ A pull request review needs a pull request. Here you review before anything is c
 
 The pane has a file list, a diff, and a list of comments. Files show added, modified, deleted or renamed, their line counts and a **Viewed** checkbox. Lockfiles, generated files and very large files are folded by name. Binary and oversized files show a placeholder.
 
-A round moves through three states: you collect drafts, **Send review** stores the round, and the agent reads it with its `get_review` tool, which marks it delivered. Watchtower then puts one line into the session, `Review round #N sent (n comments) — read it with get_review N`. The agent sees your comment text, the quoted lines and where each sits.
+A round moves through three states: you collect drafts, **Send review** stores the round, and the agent reads it with its `get_review` tool, which marks it delivered. Watchtower then puts one line into the session, `Review round #N sent (n comments) — read it with get_review N using the watchtower-workbench skill.`. The agent sees your comment text, the quoted lines and where each sits.
 
 ### Next rounds
 
@@ -26,7 +26,7 @@ After a send, **Refresh** opens the next round. The view switch then offers **Al
 4. Tick **Viewed** on files you have read.
 5. **Send review (n)**. A banner tells you what happened to the line: "Line pasted — press Return in the terminal", "Will be sent when the agent's turn ends", or "Copied — paste it into the terminal".
 
-A comment has **Edit**, **Delete** and **Resolve**. Deleting a carried comment resolves it, so it does not return.
+A draft has **Delete**. A carried comment has **Edit** and **Resolve**, and an outdated one has **Resolve**. Resolved comments are not carried again.
 
 ## When it's empty or wrong
 

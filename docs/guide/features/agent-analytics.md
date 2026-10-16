@@ -10,9 +10,15 @@ Agent bills and habits are invisible until you add them up. Analytics turns the 
 
 You turn analytics on per workbench. Watchtower then reads the transcript files Claude Code keeps under `~/.claude/projects/`, picks the ones that belong to the workbench folder (or one of its git worktrees, including worktrees that cleanup has removed) and stores one row per API call, tool call, skill and error in the local database. It copies no prompt or reply text, only counts and a pointer back to the file.
 
-Each API call counts once, even when a resumed or forked session replays it. The earliest session owns a replayed call. Cost is computed when a call is stored, from a built-in price table. A model the table does not know costs 0 and is counted as estimated. When the table changes, older rows are re-priced from their stored tokens. Claude Code's own cost figure is kept per session so you can compare.
+Each API call counts once, even when a resumed or forked session replays it. The earliest session owns a replayed call.
 
-Once on, the background daemon keeps the numbers current: each cycle it reads only new lines, for up to 30 seconds. The history already on disk is loaded when you turn the feature on. Turning it off keeps what was stored. Deleting the workbench keeps it too, and a new workbench on the same folder picks it up again.
+Cost is computed when a call is stored, from a built-in price table. A model the table does not know costs 0 and is counted as estimated.
+
+When the table changes, older rows are re-priced from their stored tokens. Claude Code's own cost figure is kept per session so you can compare.
+
+Once on, the background daemon keeps the numbers current: each cycle it reads only new lines, for up to 30 seconds.
+
+The history already on disk is loaded when you turn the feature on. Turning it off keeps what was stored. Deleting the workbench keeps it too, and a new workbench on the same folder picks it up again.
 
 Only Claude Code transcripts in `~/.claude` are read. Codex sessions are not.
 
@@ -26,7 +32,7 @@ watchtower agents disable --workbench 3
 
 - `enable` turns it on and reads the folder's history now.
 - `scan` reads new lines on demand and reports `unknown_records` and `failed_files`.
-- `stats` prints totals and a per-session breakdown: tokens, `cost_usd`, tools by outcome, skills and owner turns.
+- `stats` prints totals and a per-session breakdown: tokens, `cost_usd`, `tools` and `outcomes` (separate keys), skills and owner turns.
 - `disable` stops reading.
 
 Find a workbench's number with `watchtower workbench list`, or use the id in its board.

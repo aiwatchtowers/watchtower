@@ -46,7 +46,7 @@ The **+** in **FILES** and each row's menu create files and folders, rename, cop
 
 ## When it's empty or wrong
 
-- **"No definition of …"** The language is indexed and has no such name, or the index is still building ("still indexing"). Use **Show All Usages** or the **Text** scope.
+- **"No definition of …"** The language is indexed and has no such name, or the index is still building ("Still indexing…"). Use **Show All Usages** or the **Text** scope.
 - **"Language X: text search".** There is no grammar for that language, so definitions come from a text search.
 - **"Git status unavailable — the marks may be out of date."** Git failed to answer. The last marks stay.
 - **A banner says the file changed.** Another program wrote it. Choose **Reload from disk**, or keep your version.
