@@ -35,7 +35,7 @@ var projectTombstoneCmd = &cobra.Command{
 	},
 }
 
-// mcpFlagPreRename is the old registration's `mcp --project N`; runMCP
+// mcpFlagPreRename is the old registration's `mcp --project N`; mcpPreRun
 // refuses it with preRenameSetupLine instead of binding a session.
 var mcpFlagPreRename string
 

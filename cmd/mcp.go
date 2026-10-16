@@ -38,7 +38,22 @@ workbench tools (board, documents, comments) apply directly to that workbench
 only, and nothing else becomes writable. 'watchtower integrate claude-code
 --workbench N' registers this mode in the workbench folder; never register it
 by hand for an unrelated client.`,
-	RunE: runMCP,
+	PersistentPreRunE: mcpPreRun,
+	RunE:              runMCP,
+}
+
+// mcpPreRun refuses a pre-rename registration (`mcp --project N`) before any
+// config or schema work, so a broken or stale config can neither hide the
+// Repair line nor be rewritten on the way to the refusal: no session is bound
+// or served, and Claude Code shows the server failed with that line (ask
+// #312). Any other mcp run gets the root's ensureSchemaFormat — cobra runs
+// only the CLOSEST PersistentPreRunE (EnableTraverseRunHooks is unset), so
+// declaring this one replaces the root's unless it calls it.
+func mcpPreRun(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("project") {
+		return errors.New(preRenameSetupLine(preRenameWorkbenchID([]string{"--project", mcpFlagPreRename})))
+	}
+	return ensureSchemaFormat(cmd, args)
 }
 
 var (
@@ -285,12 +300,6 @@ func mcpAgent(raw string) (agentkind.Kind, error) {
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
-	if cmd.Flags().Changed("project") {
-		// A pre-rename registration (`mcp --project N`): no session is
-		// bound or served, and Claude Code shows the server failed with
-		// this line (ask #312).
-		return errors.New(preRenameSetupLine(preRenameWorkbenchID([]string{"--project", mcpFlagPreRename})))
-	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)

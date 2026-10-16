@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -314,4 +317,62 @@ func TestMCP_SurfaceFlagRejectsUnknown(t *testing.T) {
 		_, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "t1", nil)
 		require.ErrorContains(t, err, "--surface must be main, target, automation or automation_editor", surface)
 	}
+}
+
+// A pre-rename `mcp --project N` is refused before the root's config hook:
+// a malformed, missing or stale config neither replaces the Repair line with
+// a config error nor gets rewritten on the way to the refusal (ask #312), and
+// the refusal is never an exitCodeError.
+func TestMCP_PreRenameRefusedBeforeConfigHook(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const repair = "ask the owner to run Repair install in Watchtower (or 'watchtower workbench resync 7')."
+	original := flagConfig
+	t.Cleanup(func() { flagConfig = original })
+
+	for name, content := range map[string]string{
+		"malformed": "active_workspace: [unclosed\n\tbad",
+		"stale":     "active_workspace: test\ndb:\n  schema_format: 0\n",
+		"missing":   "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			flagConfig = filepath.Join(t.TempDir(), "config.yaml")
+			if content != "" {
+				require.NoError(t, os.WriteFile(flagConfig, []byte(content), 0o600))
+			}
+
+			stdout, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, "mcp", "--project", "7")
+			require.Error(t, err)
+			assert.Empty(t, stdout, "no session is served")
+			assert.Contains(t, err.Error(), repair)
+			assert.NotContains(t, err.Error(), "config")
+			var ec *exitCodeError
+			assert.False(t, errors.As(err, &ec), "mcp --project must exit 1, got %v", err)
+
+			got, readErr := os.ReadFile(flagConfig)
+			if content == "" {
+				assert.ErrorIs(t, readErr, os.ErrNotExist, "no config is created")
+				return
+			}
+			require.NoError(t, readErr)
+			assert.Equal(t, content, string(got), "the config file is untouched")
+		})
+	}
+}
+
+// mcp's own PersistentPreRunE replaces the root's (cobra runs only the
+// closest one), so a normal `mcp --workbench N` must still get
+// ensureSchemaFormat's schema_format bump. No database exists under the temp
+// HOME, so the hook skips RunSchemaUpgrade.
+func TestMCP_WorkbenchStillRunsRootSchemaFormatHook(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "db:\n  schema_format: 0\n")
+	require.NoError(t, mcpCmd.ParseFlags([]string{"--workbench", "7"}))
+	t.Cleanup(func() { resetSetFlags(mcpCmd) })
+
+	require.NoError(t, mcpCmd.PersistentPreRunE(mcpCmd, nil))
+
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	require.NoError(t, v.ReadInConfig())
+	assert.Equal(t, db.CurrentSchemaFormat, v.GetInt("db.schema_format"), "rootCmd's ensureSchemaFormat must still run")
 }
