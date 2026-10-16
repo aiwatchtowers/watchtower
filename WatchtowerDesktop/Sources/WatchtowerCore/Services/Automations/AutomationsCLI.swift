@@ -22,6 +22,16 @@ package struct AutomationsCLI {
         case wake
         case templates
         case installTemplate(name: String, workbenchID: Int64?)
+        case sessionLaunched(step: Int64, session: Int64)
+        case sessionEnded(step: Int64, status: SessionEnd, error: String?)
+        case rescan(workbenchID: Int64)
+    }
+
+    /// How a `session()` step's session ended, as `session-ended --status`
+    /// takes it: its process ended unfinished, or it never launched.
+    package enum SessionEnd: String, Equatable, Sendable {
+        case stopped
+        case launchFailed = "launch_failed"
     }
 
     private let runner: any CLIRunnerProtocol
@@ -69,6 +79,15 @@ package struct AutomationsCLI {
             var out = ["automations", "install-template", name]
             if let workbenchID { out += ["--workbench", String(workbenchID)] }
             return out + ["--json"]
+        case let .sessionLaunched(step, session):
+            return ["automations", "session-launched", "--step", String(step), "--session", String(session), "--json"]
+        case let .sessionEnded(step, status, error):
+            var out = ["automations", "session-ended", "--step", String(step), "--status", status.rawValue]
+            if let error, !error.isEmpty { out += ["--error", error] }
+            return out + ["--json"]
+        case let .rescan(workbenchID):
+            // The personal folder and this workbench's (spec §13.4).
+            return ["automations", "rescan", "--workbench", String(workbenchID)]
         }
     }
 
@@ -127,6 +146,26 @@ package struct AutomationsCLI {
         try await decode(.installTemplate(name: name, workbenchID: workbenchID))
     }
 
+    /// Attaches the session the app launched to its waiting step; false when
+    /// the step no longer waits for one (nothing attached).
+    package func sessionLaunched(step: Int64, session: Int64) async throws -> Bool {
+        let result: Attached = try await decode(.sessionLaunched(step: step, session: session))
+        return result.attached
+    }
+
+    /// Reports a step's session ended (or never launched); false when the
+    /// step no longer waits for a session.
+    package func sessionEnded(step: Int64, status: SessionEnd, error: String?) async throws -> Bool {
+        let result: Ended = try await decode(.sessionEnded(step: step, status: status, error: error))
+        return result.ended
+    }
+
+    /// Indexes the personal folder and workbench `workbenchID`'s (a protected
+    /// folder the daemon never reads, spec §13.4).
+    package func rescan(workbenchID: Int64) async throws {
+        _ = try await runner.run(args: Self.args(.rescan(workbenchID: workbenchID)))
+    }
+
     private func decode<T: Decodable>(_ op: Op) async throws -> T {
         let data = try await runner.run(args: Self.args(op))
         return try JSONDecoder().decode(T.self, from: data)
@@ -136,6 +175,10 @@ package struct AutomationsCLI {
 // MARK: - Results
 
 extension AutomationsCLI {
+    /// `session-launched --json` / `session-ended --json`: `{attached}` / `{ended}`.
+    private struct Attached: Decodable { let attached: Bool }
+    private struct Ended: Decodable { let ended: Bool }
+
     /// `run --json`.
     package struct RunResult: Decodable, Equatable, Sendable {
         package let runID: Int64
