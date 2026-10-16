@@ -185,7 +185,9 @@ func TestCLIAgent_ProcessGroupKilledOnCancel(t *testing.T) {
 }
 
 func TestCLIAgent_ProcessGroupKilledOnDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// The deadline must outlast the stub's start-up under full-suite load so
+	// the pid file exists before it fires; the kill still comes from the deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	requireGroupGone(t, runGroupStub(t, ctx, nil, true))
 }
