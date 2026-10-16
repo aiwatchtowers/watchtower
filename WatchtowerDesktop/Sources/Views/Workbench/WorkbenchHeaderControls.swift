@@ -60,7 +60,7 @@ struct WorkbenchHeaderControls: View {
                 })
                 .help(view.help)
                 // No session to review: say so rather than a click that does nothing.
-                .disabled(view == .changes && !layout.isShowing(.changes) && vm.sessionViewTarget(projectID: project.id) == nil)
+                .disabled((view == .changes || view == .chat) && !layout.isShowing(view) && vm.sessionViewTarget(projectID: project.id) == nil)
                 if view == .terminal {
                     sessionMenu(slot: layout.terminalSlot, isOn: layout.isShowing(.terminal))
                 }
@@ -360,6 +360,7 @@ private extension WorkspaceView {
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
         case .changes: "Review the session's changes"
+        case .chat: "Show the session's dialog as a chat (in a split, beside its session's terminal)"
         }
     }
 }

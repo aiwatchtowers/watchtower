@@ -50,7 +50,7 @@ struct WorkspacePaneView: View {
                 header
                 Divider()
             }
-            if isHidden, [.terminal, .report, .changes].contains(WorkspaceView(pane)) {
+            if isHidden, [.terminal, .report, .changes, .chat].contains(WorkspaceView(pane)) {
                 // A hidden Session view leaves the screen too: its report
                 // stops refreshing until it is back; so does a Changes pane.
                 Color.clear
@@ -96,6 +96,7 @@ struct WorkspacePaneView: View {
             Button("Files") { show(.files) }.disabled(pane == .files)
             if let id = currentSessionID {
                 Button("Changes") { show(.changes(id)) }.disabled(pane == .changes(id))
+                Button("Chat") { show(.sessionChat(id)) }.disabled(pane == .sessionChat(id))
             }
             Divider()
             Section("Sessions") {
@@ -148,6 +149,9 @@ struct WorkspacePaneView: View {
                 .id(project.id)
         case let .sessionReport(id):
             WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)
+                .id(id)
+        case let .sessionChat(id):
+            SessionChatView(vm: vm, sessionID: id, projectID: project.id)
                 .id(id)
         case let .changes(id):
             if let model = vm.reviewModel(sessionID: id, projectID: project.id) {
@@ -267,6 +271,7 @@ extension WorkspaceView {
         case .board: "Board"
         case .files: "Files"
         case .changes: "Changes"
+        case .chat: "Chat"
         }
     }
 
@@ -277,6 +282,7 @@ extension WorkspaceView {
         case .board: "square.grid.2x2"
         case .files: "chevron.left.forwardslash.chevron.right"
         case .changes: "plus.forwardslash.minus"
+        case .chat: "bubble.left.and.bubble.right"
         }
     }
 }
