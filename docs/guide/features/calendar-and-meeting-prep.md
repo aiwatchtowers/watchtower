@@ -53,7 +53,7 @@ To change reminders, go to **Settings › Features › Meeting Reminders**: **Me
 
 ### What the prep contains
 
-Talking points carry a priority and a link to their source track or digest. **Missing Context** appears in orange when the data was thin, so you know what the prep could not see.
+Talking points carry a priority and a source label such as "track #12". **Missing Context** appears in orange when the data was thin, so you know what the prep could not see.
 
 No recording? In the same pane, **Recap from text** under **Meeting Notes** writes a recap from pasted notes, and **Paste and extract** under **Discussion Topics** splits pasted text into topics.
 
