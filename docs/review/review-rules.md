@@ -114,7 +114,7 @@ tags in brackets.
 
 Owner decision 2026-08-19 (supersedes the two-persona split of 2026-08-18): the app has ONE AI
 persona — **the assistant** — and that is the only word UI strings, prompts, and
-`docs/app-guide.md` may use for it ("secretary" survives only in stable identifiers:
+the user guide (`docs/guide/`) may use for it ("secretary" survives only in stable identifiers:
 `workspace.secretary_profile`, the `secretary-inbox` feature id, historical type names). What
 used to be encoded as two personas is now encoded as per-surface capability contracts, and those
 contracts did NOT move:
@@ -141,6 +141,7 @@ assistant a "secretary", is the tell. [5/6]
 ### Tests
 
 - Every new `@Observable` ViewModel/center ships with its own test suite in the same change — the recurring failure shape is bimodal coverage: a thorough library-layer suite beside a zero-test VM or CLI entry point, where green-overall masks the untested core. (weak-dimension 7 in ≥5 consecutive lesson entries) [7]
+- A test never puts a window on screen: no `orderFront`/`makeKeyAndOrderFront` on a test's `NSWindow`. A hosted view lays out and runs `onChange`/`onAppear` in a window that is never ordered in (`layoutSubtreeIfNeeded` plus a run-loop spin, as `ViewRenderProbe` does); an ordered-in window flashes over the owner's screen on every `make test-swift`, which agents run all day. (2026-10-16, two tests flashing empty windows) [7]
 
 ## Review process
 
