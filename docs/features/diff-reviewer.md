@@ -261,7 +261,9 @@ needs at least two distinct source ids from the input, an unknown lens becomes
 workbench's `proposed` lessons (decided ones stay). **Accept** writes `- <rule>` under the
 lens's heading in the workbench folder's `.watchtower/review.md` (`reviewdiff.AppendLessonRule`,
 the file's only writer: real `.watchtower` directory, regular `review.md` read under the
-Plan 2 rules, 64 KB cap, atomic rename, a rule already present writes nothing) and marks the
+Plan 2 rules, 64 KB cap, a rule already present writes nothing; created with
+`O_EXCL|O_NOFOLLOW` when `review.md` is absent, otherwise a temp file in `.watchtower`
+renamed over it) and marks the
 lesson `accepted`; a refusal writes nothing and leaves it `proposed`. Accept refuses under an
 agent marker (REVIEW-01). **Dismiss** marks it `dismissed`. The new rule shows up in the
 `house_rules` (or its lens's) checklist on the next context read.
@@ -290,6 +292,8 @@ to the key window (owner ruling, ask #221).
 - A repository with a local `filter.lfs.*` is snapshotted with raw content (filters are
   blanked, REVIEW-05), so LFS files show their pointer or raw bytes.
 - No PR source (the `source` column accepts `pr`).
+- Active review time counts the owner's input anywhere in the window, not only in the
+  Changes pane (owner ruling, ask #221).
 - Keep is implicit: a hunk not undone is kept; there is no explicit Keep mark.
 - Undo is not LFS-aware: filters are blanked (REVIEW-05), so an LFS file is checked and
   patched on its raw content, as it was snapshotted. Renamed, binary, symlink, submodule,

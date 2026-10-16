@@ -58,8 +58,9 @@ The two exceptions, both pressed by the owner in the Desktop:
   (lstat; created when absent) and an existing `review.md` a regular file read
   under the Plan 2 lens-file rules (no symlink, `O_NOFOLLOW|O_NONBLOCK`, fstat
   re-check, at most 65,536 bytes); a result over 64 KB is refused; a rule
-  already in the lens writes nothing; the new text goes to a temp file in
-  `.watchtower` renamed over `review.md`. A refusal writes nothing and the
+  already in the lens writes nothing. When `review.md` is absent it is created
+  with `O_EXCL|O_NOFOLLOW`; otherwise the new text goes to a temp file in
+  `.watchtower` renamed over it. A refusal writes nothing and the
   lesson stays `proposed`.
 
 Both commands refuse to run under an AI agent's environment marker
@@ -101,6 +102,8 @@ reason:
   undone in this round");
 - the hunk is in the round's diff (all or since view; "hunk … is not in this
   round's diff") and its file is a supported kind (REVIEW-01);
+- no parent directory of the file under the repository top is a symlink
+  (REVIEW-01: "undo is not available for a symlink file");
 - the work-tree file is still the round tree's blob (`git hash-object`; a
   deleted file is still absent; otherwise "the file changed since this round's
   snapshot — refresh first");

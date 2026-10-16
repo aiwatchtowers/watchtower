@@ -92,6 +92,17 @@ final class ReviewPresentationTests: XCTestCase {
         XCTAssertNil(ReviewPresentation.sourceCaption(.mechanical))
     }
 
+    func testLessonsEmptyTextBeforeAndAfterASearch() {
+        typealias Pres = ReviewPresentation
+        XCTAssertEqual(Pres.lessonsEmptyText(searched: false, finding: false, count: 0, failed: false),
+                       "No stored proposals. Find Repeats looks for comments you keep repeating.")
+        XCTAssertEqual(Pres.lessonsEmptyText(searched: true, finding: false, count: 0, failed: false),
+                       "No repeated comments found in the last 20 rounds.")
+        XCTAssertNil(Pres.lessonsEmptyText(searched: true, finding: true, count: 0, failed: false), "searching")
+        XCTAssertNil(Pres.lessonsEmptyText(searched: false, finding: false, count: 2, failed: false), "stored proposals show")
+        XCTAssertNil(Pres.lessonsEmptyText(searched: true, finding: false, count: 0, failed: true), "the error shows instead")
+    }
+
     func testUndoMessageIsHonouredOnlyForAShownHunkWithAWellFormedID() {
         let shown: [MonacoDiffView.Payload.Hunk] = [
             .init(id: "0123456789abcdef", newStart: 1, canUndo: true, reason: ""),

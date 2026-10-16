@@ -156,6 +156,14 @@ final class ReviewChaptersTests: XCTestCase {
         XCTAssertEqual(ReviewChapters.resolve(files, agent: [], ai: [spec("G", ["zzz"])]), ReviewChapters.mechanical(files))
     }
 
+    func testCollapsedFilesInChosenChapterCostNoReadingTime() {
+        let files = [file("a/x.go", add: 10, del: 2), file("a/go.sum", add: 500, collapsed: "lock")]
+        let out = ReviewChapters.resolve(files, agent: [spec("A", ["a/x.go", "a/go.sum"])], ai: [])
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].paths, ["a/x.go", "a/go.sum"])
+        XCTAssertEqual(out[0].changedLines, 12)
+    }
+
     func testLensesForAIChapterKeepHouseRulesAndOwnerLenses() {
         let all = [
             lens("correctness", builtin: true), lens("tests", builtin: true),

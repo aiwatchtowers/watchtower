@@ -2,19 +2,22 @@ import SwiftUI
 import WatchtowerCore
 
 /// Find Repeats (board #328, spec §13): the house rules mined from the
-/// workbench's sent comments. Opening the sheet runs the search; each
-/// proposal can be accepted (appended to `.watchtower/review.md`) or dismissed.
+/// workbench's sent comments. Opening the sheet shows the stored proposals;
+/// the Find Repeats button runs the search (one model call, up to minutes).
+/// Each proposal can be accepted (appended to `.watchtower/review.md`) or dismissed.
 struct ReviewLessonsSheet: View {
     let model: ReviewLessonsModel
     let lenses: [ReviewLens]
     @Environment(\.dismiss) private var dismiss
     /// The search finished at least once, so an empty list is an answer.
     @State private var searched = false
+    /// Reading the stored proposals failed on open.
+    @State private var loadError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Find Repeats").font(.headline)
-            if let error = model.lastError {
+            if let error = model.lastError ?? loadError {
                 Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
             }
             if model.finding {
@@ -22,8 +25,11 @@ struct ReviewLessonsSheet: View {
                     ProgressView().controlSize(.small)
                     Text("Looking for repeated comments…").foregroundStyle(.secondary)
                 }
-            } else if searched, model.lessons.isEmpty, model.lastError == nil {
-                Text("No repeated comments found in the last 20 rounds.").foregroundStyle(.secondary)
+            } else if let empty = ReviewPresentation.lessonsEmptyText(
+                searched: searched, finding: model.finding, count: model.lessons.count,
+                failed: model.lastError != nil || loadError != nil
+            ) {
+                Text(empty).foregroundStyle(.secondary)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
@@ -32,6 +38,14 @@ struct ReviewLessonsSheet: View {
             }
             .frame(maxHeight: 300)
             HStack {
+                Button("Find Repeats") {
+                    Task {
+                        loadError = nil
+                        await model.findRepeats()
+                        searched = true
+                    }
+                }
+                .disabled(model.finding)
                 Spacer()
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -39,9 +53,11 @@ struct ReviewLessonsSheet: View {
         .padding(16)
         .frame(width: 460)
         .task {
-            try? model.load() // a failure shows after the search, through lastError
-            await model.findRepeats()
-            searched = true
+            do {
+                try model.load()
+            } catch {
+                loadError = error.localizedDescription
+            }
         }
     }
 
@@ -54,8 +70,8 @@ struct ReviewLessonsSheet: View {
             Text(lesson.text).textSelection(.enabled)
             HStack {
                 Spacer()
-                Button("Dismiss") { Task { await model.dismiss(lesson.id) } }
-                Button("Accept") { Task { await model.accept(lesson.id) } }
+                Button("Dismiss") { loadError = nil; Task { await model.dismiss(lesson.id) } }
+                Button("Accept") { loadError = nil; Task { await model.accept(lesson.id) } }
             }
             .controlSize(.small)
             .disabled(model.finding)

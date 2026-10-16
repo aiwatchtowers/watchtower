@@ -143,7 +143,10 @@ package enum ReviewChapters {
         _ files: [ReviewDiffFile], agent: [ReviewChapterSpec], ai: [ReviewChapterSpec]
     ) -> [ReviewChapter] {
         var lines: [String: Int] = [:]
-        for file in files where lines[file.path] == nil { lines[file.path] = file.additions + file.deletions }
+        // Collapsed (generated, lock) files cost no reading time, as in mechanical chapters.
+        for file in files where lines[file.path] == nil {
+            lines[file.path] = file.collapsedReason == nil ? file.additions + file.deletions : 0
+        }
         func build(_ specs: [ReviewChapterSpec], source: ReviewChapter.Source, prefix: String, taken: inout Set<String>) -> [ReviewChapter] {
             var out: [ReviewChapter] = []
             for (index, spec) in specs.enumerated() {

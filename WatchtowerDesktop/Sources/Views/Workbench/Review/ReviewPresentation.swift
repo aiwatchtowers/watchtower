@@ -89,6 +89,16 @@ enum ReviewPresentation {
         }
     }
 
+    /// Find Repeats' empty line: before the first search it says nothing is
+    /// stored; after one, that nothing repeated. Nil while searching, when
+    /// proposals show, or when the error line shows instead.
+    static func lessonsEmptyText(searched: Bool, finding: Bool, count: Int, failed: Bool) -> String? {
+        guard !finding, count == 0, !failed else { return nil }
+        return searched
+            ? "No repeated comments found in the last 20 rounds."
+            : "No stored proposals. Find Repeats looks for comments you keep repeating."
+    }
+
     static func sourceCaption(_ source: ReviewChapter.Source) -> String? {
         switch source {
         case .agent: "by the agent"

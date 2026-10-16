@@ -15,8 +15,8 @@ import (
 // missing, the file too). It is the only writer of that file and the only
 // thing Accept does: .watchtower must be a real directory and review.md a
 // regular file read under LoadLenses' rules; a question already in the lens
-// writes nothing. The result goes to a temp file in .watchtower and is
-// renamed over review.md.
+// writes nothing. An absent review.md is created with O_EXCL|O_NOFOLLOW;
+// otherwise the result goes to a temp file in .watchtower renamed over it.
 func AppendLessonRule(workbenchFolder, lensName, text string) error {
 	lensName = strings.TrimSpace(lensName)
 	text = strings.TrimSpace(text)

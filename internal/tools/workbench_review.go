@@ -49,7 +49,7 @@ func NewGetReview() *Tool {
 	return &Tool{
 		Name: "get_review",
 		Description: "Read a review round the owner sent from Watchtower's diff reviewer: every comment with its file, " +
-			"lines, the quoted code and the owner's text. Answer each comment in your reply and fix the code; the " +
+			"lines, the quoted code and the owner's text. Answer each comment with reply_review_comment and fix the code; the " +
 			"line 'Review round #N sent' or the session brief names the round.",
 		InputSchema: mustSchema[getReviewArgs]("get_review"),
 		Access:      AccessRead,
