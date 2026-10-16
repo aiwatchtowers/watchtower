@@ -323,6 +323,7 @@ window.__h = {
   proposalZones: function () {
     return Array.prototype.map.call(document.querySelectorAll('.wt-proposal-new'), function (n) { return n.textContent; });
   },
+  readOnly: function () { return monaco.editor.getEditors()[0].getOption(monaco.editor.EditorOption.readOnly); },
   undo: function (id) { var m = __h.model(id); if (!m) { return false; } m.undo(); return true; },
   onScreen: function () {
     var m = monaco.editor.getEditors()[0].getModel();
@@ -1036,6 +1037,22 @@ func questionChecks(_ page: Page) async {
     page.askAIs.removeAll()
 }
 
+/// setReadOnly (the automation recipe editor's confirmation sheet).
+@MainActor
+func readOnlyChecks(_ page: Page) async {
+    check("setReadOnly: off by default", await page.eval("__h.readOnly()") as? Bool == false)
+    await page.call("wt.setReadOnly", true)
+    check("setReadOnly(true): the editor is read-only", await page.eval("__h.readOnly()") as? Bool == true)
+    await page.call("wt.show", ["id": "ro", "path": "digest.md", "text": "---\nname: Digest\n---\n", "rev": 1])
+    check("setReadOnly: show still puts the file on screen", await page.evalString("__h.onScreen()") == "ro")
+    check("setReadOnly: a .md path is Markdown", await page.evalString("__h.lang('ro')") == "markdown")
+    await page.call("wt.setReadOnly", false)
+    check("setReadOnly(false): editable again", await page.eval("__h.readOnly()") as? Bool == false)
+    await page.call("wt.close", "ro")
+    await pause(0.5)
+    page.texts.removeAll()
+}
+
 // MARK: - Main
 
 @MainActor
@@ -1056,6 +1073,7 @@ func run(root: URL) async -> Int32 {
     await questionChecks(page)
     await detectionChecks(page)
     await tokenChecks(page)
+    await readOnlyChecks(page)
 
     check("no error posted by the page during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
     print("\n\(passes) passed, \(failures) failed")

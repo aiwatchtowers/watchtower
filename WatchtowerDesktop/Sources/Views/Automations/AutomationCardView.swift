@@ -4,7 +4,8 @@ import WatchtowerCore
 /// The automation card (spec §12.2, approved mockup 1): title and subtitle,
 /// **Run now** / **Dry run** / **Change in words** / **Edit** / **⋯**
 /// (Enable/Disable, Delete), the dry-run result, the description, **It may**,
-/// **Limits per run**, the latest reports, the recipe and **History**.
+/// **Limits per run**, the latest reports and **History**. The recipe itself
+/// is reached from **Edit** and the confirmation sheet, not shown here.
 struct AutomationCardView: View {
     @Bindable var vm: AutomationsViewModel
     let item: AutomationListItem
@@ -25,6 +26,12 @@ struct AutomationCardView: View {
         let contentHash: String
         let approvalHash: String
         let confirmedHash: String
+    }
+
+    /// A run that becomes the newest opens once (`expandNewestRun`).
+    private struct NewestRunKey: Hashable {
+        let id: Int64
+        let newestRunID: Int64?
     }
 
     var body: some View {
@@ -53,7 +60,6 @@ struct AutomationCardView: View {
                     limitsBox
                 }
                 reports
-                recipe
                 AutomationRunHistoryView(
                     runs: vm.runs[automation.id] ?? [],
                     steps: vm.steps,
@@ -75,7 +81,9 @@ struct AutomationCardView: View {
                             approvalHash: automation.approvalHash, confirmedHash: automation.confirmedHash)) {
             await vm.loadDetail(automation.id)
         }
-        .task(id: automation.id) { expandNewestRun() }
+        .task(id: NewestRunKey(id: automation.id, newestRunID: vm.runs[automation.id]?.first?.id)) {
+            vm.expandNewestRun(automation.id)
+        }
         .confirmationDialog("Delete “\(automation.name)”?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 let id = automation.id
@@ -85,12 +93,6 @@ struct AutomationCardView: View {
         } message: {
             Text("This removes the recipe file with its runs, state and outputs.")
         }
-    }
-
-    /// The newest run opens expanded (mockup 1), once per card.
-    private func expandNewestRun() {
-        guard let newest = vm.runs[automation.id]?.first, !vm.expandedRuns.contains(newest.id) else { return }
-        vm.toggleRun(newest.id)
     }
 
     // MARK: - Header
@@ -239,21 +241,6 @@ struct AutomationCardView: View {
                     }
                 }
             }
-        }
-    }
-
-    /// Read-only until the recipe editor lands (plan Task 9).
-    private var recipe: some View {
-        DisclosureGroup("Recipe") {
-            ScrollView(.horizontal) {
-                Text(automation.recipeText)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(10)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         }
     }
 

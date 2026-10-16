@@ -360,6 +360,50 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.detailErrors[id], "automation 7 is not runnable: disabled")
     }
 
+    /// Leaving the card (or switching rows fast) cancels the read: that is
+    /// not an error to show on the card.
+    func testLoadDetailIgnoresCancellation() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        runner.on("show") { _ in throw CancellationError() }
+        let vm = makeViewModel()
+        await vm.loadDetail(id)
+        XCTAssertNil(vm.detailErrors[id])
+        XCTAssertNil(vm.details[id])
+        XCTAssertNil(vm.lastError)
+    }
+
+    /// The newest run opens expanded once; a collapse by the owner sticks
+    /// across card appearances until another run becomes the newest.
+    func testNewestRunExpandsOnlyTheFirstTimeItIsNewest() throws {
+        let (id, otherID, runID) = try pool.write { db -> (Int64, Int64, Int64) in
+            let id = try TestDatabase.insertAutomation(db)
+            let otherID = try TestDatabase.insertAutomation(db, slug: "other")
+            let runID = try TestDatabase.insertAutomationRun(db, automationID: id)
+            return (id, otherID, runID)
+        }
+        let vm = makeViewModel()
+        vm.select(id)
+        vm.expandNewestRun(id)
+        XCTAssertEqual(vm.expandedRuns, [runID])
+
+        vm.toggleRun(runID)
+        vm.expandNewestRun(id)
+        XCTAssertEqual(vm.expandedRuns, [], "the owner's collapse sticks")
+
+        vm.select(otherID)
+        vm.select(id)
+        vm.expandNewestRun(id)
+        XCTAssertEqual(vm.expandedRuns, [], "coming back to the card does not re-expand it")
+
+        let newer = try pool.write { db in
+            try TestDatabase.insertAutomationRun(db, automationID: id, queuedAt: "2026-10-16T13:00:00Z")
+        }
+        vm.refresh()
+        XCTAssertEqual(vm.runs[id]?.first?.id, newer)
+        vm.expandNewestRun(id)
+        XCTAssertEqual(vm.expandedRuns, [newer], "a run that becomes the newest opens once")
+    }
+
     func testSetEnabledArgs() async throws {
         let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
         let vm = makeViewModel()

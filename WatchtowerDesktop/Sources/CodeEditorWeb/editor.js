@@ -332,7 +332,7 @@
         if (viewStates[args.id]) { editor.restoreViewState(viewStates[args.id]); }
         if (reveals[args.id]) { revealNow(reveals[args.id]); delete reveals[args.id]; }
         addZone(args.id);
-        editor.focus();
+        if (!editor.getOption(monaco.editor.EditorOption.readOnly)) { editor.focus(); }
       },
       reveal: function (args) {
         if (!models[args.id]) { return; }
@@ -387,6 +387,7 @@
         }).filter(function (edit) { return models[edit.id]; });
       },
       focus: function () { editor.focus(); },
+      setReadOnly: function (flag) { editor.updateOptions({ readOnly: !!flag }); },
       definitionAtCursor: function () {
         var position = editor.getPosition();
         return !!position && requestDefinition(position);

@@ -847,8 +847,8 @@ struct MonacoEditorView: NSViewRepresentable {
 }
 
 /// WKUserContentController retains its handlers; this breaks the
-/// controller → coordinator → web view cycle.
-private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
+/// controller → coordinator → web view cycle. Shared with RecipeEditorView.
+final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
     weak var target: WKScriptMessageHandler?
 
     init(_ target: WKScriptMessageHandler) {

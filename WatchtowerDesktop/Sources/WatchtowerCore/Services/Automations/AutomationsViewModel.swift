@@ -61,6 +61,8 @@ package final class AutomationsViewModel {
     @ObservationIgnored private let sleep: (Duration) async -> Void
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var tabVisible = false
+    /// The run last opened as the newest, per automation id: it opens once.
+    @ObservationIgnored private var expandedAsNewest: [Int64: Int64] = [:]
 
     package init(
         dbPool: DatabasePool,
@@ -203,6 +205,14 @@ package final class AutomationsViewModel {
         }
     }
 
+    /// The card's newest run opens expanded (mockup 1) the first time it is
+    /// the newest; the owner's collapse then sticks across card appearances.
+    package func expandNewestRun(_ id: Int64) {
+        guard let newest = runs[id]?.first?.id, expandedAsNewest[id] != newest else { return }
+        expandedAsNewest[id] = newest
+        if !expandedRuns.contains(newest) { toggleRun(newest) }
+    }
+
     /// Navigation into a card, optionally with one run's steps open (a
     /// notification, an Inbox card's label).
     package func open(automationID: Int64, runID: Int64?) {
@@ -213,12 +223,16 @@ package final class AutomationsViewModel {
     }
 
     /// Reads the card's `show --json`. The card calls it on open and whenever
-    /// the recipe's hashes change; a failure keeps the previous detail.
+    /// the recipe's hashes change; a failure keeps the previous detail. A
+    /// cancelled read (a fast row switch, leaving the tab) is not a failure.
     package func loadDetail(_ id: Int64) async {
         do {
             details[id] = try await cli.show(id)
             detailErrors[id] = nil
+        } catch is CancellationError {
+            return
         } catch {
+            if Task.isCancelled { return }
             detailErrors[id] = Self.message(for: error)
         }
     }
@@ -271,6 +285,7 @@ package final class AutomationsViewModel {
         details[id] = nil
         detailErrors[id] = nil
         dryRuns[id] = nil
+        expandedAsNewest[id] = nil
     }
 
     package func cancel(runID: Int64) async {
