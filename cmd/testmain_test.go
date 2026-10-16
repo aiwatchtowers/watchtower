@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"watchtower/internal/codex"
@@ -95,6 +96,12 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
+	// --config's default was computed at package init from the real home:
+	// without this, a test that sets no config of its own reads the owner's
+	// config.yaml, and a DB open through it (openDBFromConfig) creates that
+	// workspace's database under the temp home, which later tests expecting
+	// "no workspace" then auto-pick (order-dependent failures).
+	flagConfig = filepath.Join(home, ".config", "watchtower", "config.yaml")
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

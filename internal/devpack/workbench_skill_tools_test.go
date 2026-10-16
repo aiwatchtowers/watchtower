@@ -81,18 +81,22 @@ func skillToolsSectionNames(content string) map[string]bool {
 func TestWorkbenchSkill_ExplainsBothWorkOnPrompts(t *testing.T) {
 	_, body := devpack.WorkbenchSkill()
 	content := string(body)
-	for _, want := range []string{
-		"## Working a target", "`Work on target #<id>`",
-		"## Working a group", "`Work on group #<id>`",
-	} {
+	for _, want := range []string{"## Working a target", "`Work on target #<id>`", "`Work on group #<id>`"} {
 		if !strings.Contains(content, want) {
-			t.Errorf("the skill must contain %q", want)
+			t.Errorf("the core skill must contain %q", want)
+		}
+	}
+	_, flowBody := devpack.FlowSkill()
+	flow := string(flowBody)
+	for _, want := range []string{"## Working a group", "`Work on group #<id>`"} {
+		if !strings.Contains(flow, want) {
+			t.Errorf("the preset must contain %q", want)
 		}
 	}
 	// Review 2026-10-08: the skip rule covers both the plan path and the
 	// board-order path, so it comes before either.
-	skip := strings.Index(content, "skip a leaf that is `blocked`")
-	plan := strings.Index(content, "If the intent names a plan")
+	skip := strings.Index(flow, "skip a leaf that is `blocked`")
+	plan := strings.Index(flow, "If the intent names a plan")
 	if skip < 0 || plan < 0 || skip > plan {
 		t.Error("the group section must state the skip rule before the plan and board-order paths")
 	}

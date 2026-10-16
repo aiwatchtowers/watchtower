@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/workbenchfiles"
+	"watchtower/internal/workbenchmethod"
 )
 
 // WorkbenchSurface is the registry surface of `watchtower mcp --workbench N`.
@@ -102,6 +103,33 @@ type sourceView struct {
 	Label string `json:"label,omitempty"`
 }
 
+// methodologyView is the effective methodology and where each value comes
+// from (default, personal or file); Error names why the settings could not
+// be read, and the built-in defaults are shown then.
+type methodologyView struct {
+	Preset      string             `json:"preset"`
+	AskGuard    string             `json:"ask_guard"`
+	FinishCheck string             `json:"finish_check"`
+	Sources     methodologySources `json:"sources"`
+	Error       string             `json:"error,omitempty"`
+}
+
+type methodologySources struct {
+	Preset      string `json:"preset"`
+	AskGuard    string `json:"ask_guard"`
+	FinishCheck string `json:"finish_check"`
+}
+
+func methodologyOf(e workbenchmethod.Effective) methodologyView {
+	v := methodologyView{Preset: e.Preset, AskGuard: e.AskGuard, FinishCheck: e.FinishCheck,
+		Sources: methodologySources{Preset: string(e.Sources.Preset), AskGuard: string(e.Sources.AskGuard),
+			FinishCheck: string(e.Sources.FinishCheck)}}
+	if e.Err != nil {
+		v.Error = "reading the methodology: " + e.Err.Error()
+	}
+	return v
+}
+
 type workbenchInfoView struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
@@ -113,6 +141,9 @@ type workbenchInfoView struct {
 	Targets           map[string]int `json:"targets_by_status"` // the whole board, archived targets included
 	Archived          int            `json:"archived"`          // archived targets (PROJ-15)
 	NewComments       int            `json:"comments_new_for_agent"`
+	// Methodology is what this workbench's sessions run under (spec
+	// 2026-10-15 §8), read-only: no tool changes the agent's own checks.
+	Methodology methodologyView `json:"methodology"`
 }
 
 // NewWorkbenchInfo describes the bound workbench: what it is, its sources and
@@ -122,7 +153,8 @@ func NewWorkbenchInfo() *Tool {
 		Name: WorkbenchInfoTool,
 		Description: "Describe this Watchtower workbench: name, folder, description, board language, sources, target counts by " +
 			"status (the whole board), how many targets are archived and owner comments waiting for you. An empty description means the " +
-			"workbench is not set up yet (run the setup of the Watchtower skill in this folder).",
+			"workbench is not set up yet (run the setup of the Watchtower skill in this folder). It also shows the methodology this " +
+			"workbench runs under (preset, ask guard, finish check and where each comes from); only the owner changes it.",
 		InputSchema: mustSchema[emptyArgs](WorkbenchInfoTool),
 		Access:      AccessRead,
 		Surfaces:    workbenchSurfaces,
@@ -153,6 +185,8 @@ func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 		ID: p.ID, Name: p.Name, Folder: p.FolderPath, Description: p.Description,
 		BoardLanguageRule: BoardLanguageLine, Sources: make([]sourceView, 0, len(sources)),
 		Targets: map[string]int{}, Archived: db.CountArchived(board), NewComments: len(fresh),
+		// An unreadable setting shows the defaults the hooks then run under.
+		Methodology: methodologyOf(workbenchmethod.Resolve(d, p.ID, p.FolderPath)),
 	}
 	for _, s := range sources {
 		v.Sources = append(v.Sources, sourceView{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})

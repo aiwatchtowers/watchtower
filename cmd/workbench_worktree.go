@@ -173,7 +173,7 @@ func sessionCwdIn(ctx context.Context, main workbenchgit.Options, worktreeTop st
 // and hook trust, when codex is found) for the worktree folder, under the
 // same workbench id.
 func installWorktreeIntegration(ctx context.Context, id int64, folder string) error {
-	o, err := workbenchInstallOptions(&db.Workbench{ID: id, FolderPath: folder})
+	o, err := workbenchSetupOptions(&db.Workbench{ID: id, FolderPath: folder})
 	if err != nil {
 		return err
 	}

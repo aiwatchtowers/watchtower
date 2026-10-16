@@ -2443,7 +2443,10 @@ CREATE TABLE IF NOT EXISTS projects (
     archive_after_days INTEGER NOT NULL DEFAULT 14 CHECK (archive_after_days BETWEEN 0 AND 365), -- closed targets older than this leave the board; 0 = never (00103)
     archived_through TEXT NULL CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), -- "Archive Closed Targets Now" moment (UTC, second precision); closed work not closed after it leaves the board; NULL = never pressed (00105)
     worktree_setup TEXT NOT NULL DEFAULT '', -- the command run in a new session worktree before the agent's first launch; '' = none (00114)
-    agent_analytics INTEGER NOT NULL DEFAULT 0 CHECK (agent_analytics IN (0, 1)) -- 1 = Agent analytics reads this workbench's Claude Code logs (00116)
+    agent_analytics INTEGER NOT NULL DEFAULT 0 CHECK (agent_analytics IN (0, 1)), -- 1 = Agent analytics reads this workbench's Claude Code logs (00116)
+    methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00123)
+    ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00123)
+    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')) -- the owner's finish check; NULL = the folder file, else on (00123)
 );
 
 -- Board archive (00103, amended 00105, PROJ-15): one row per workbench target;
@@ -2548,7 +2551,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_tool_run    INTEGER NOT NULL DEFAULT 0, -- 1 = the stored state came from a main-thread PostToolUse (written by Go; the Desktop's Start fresh resets it to 0)
     agent_background  INTEGER CHECK (agent_background IS NULL OR agent_background >= 0), -- in-flight background subagents at the last Stop of this run, lowered by later reports; NULL = none / unknown; meaningful only under agent_state = 'waiting' (written by the hooks; the Desktop's Start fresh clears it)
     agent_background_at TEXT, -- last report about those subagents (the Stop, a subagent's tool result, a SubagentStop), agent_state_at format; NULL when agent_background is NULL
-    chat_question     TEXT, -- a short question the Stop ask guard let through while the owner was present: JSON {"question": "...", "options": [{"label","recommended"}]}; NULL = none (written by Go; the Desktop's Start fresh clears it)
+    chat_question     TEXT, -- a question the Stop ask guard let through and recorded for escalation: strict, a short one while the owner was present; soft, any chat question or full request, present or away: JSON {"question": "...", "options": [{"label","recommended"}], "level": "full"} (level only for a full request soft recorded with the message's own text); NULL = none (written by Go; the Desktop's Start fresh clears it)
     chat_question_at  TEXT, -- the guard's Stop time, agent_state_at format; NULL with chat_question
     agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (written by Go; the Desktop's Start fresh clears it)
     agent_transcript_path TEXT, -- the transcript path the agent's SessionStart hook reported (00109); NULL = none (written by Go; the Desktop's Start fresh clears it)
