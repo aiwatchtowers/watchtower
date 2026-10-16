@@ -70,6 +70,7 @@ struct AutomationDraftPanel: View {
                             .padding(12)
                     }
                     .frame(width: 520, height: 420)
+                    .popoverSurface()
                 }
         }
     }

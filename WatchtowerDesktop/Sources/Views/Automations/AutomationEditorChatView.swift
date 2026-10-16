@@ -31,8 +31,6 @@ struct AutomationEditorChatView: View {
             )
             .frame(minWidth: 420, maxWidth: .infinity)
         }
-        // The composer is the pane's bottom-most content.
-        .clearsRecordingIndicator()
     }
 
     @ViewBuilder

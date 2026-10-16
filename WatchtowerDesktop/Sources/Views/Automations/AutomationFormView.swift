@@ -399,7 +399,7 @@ private struct AutomationFormContent: View {
                 }
                 Button("+ Add") { addingPermission = true }
                     .buttonStyle(.borderless)
-                    .popover(isPresented: $addingPermission) { addPermissionPopover }
+                    .popover(isPresented: $addingPermission) { addPermissionPopover.popoverSurface() }
             }
             HStack(spacing: 14) {
                 Text("Outputs").foregroundStyle(.secondary)
