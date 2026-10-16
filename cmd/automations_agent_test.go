@@ -229,7 +229,7 @@ func TestAgent_DryRunRemovesWriteTools(t *testing.T) {
 
 // claudeStub is a fake claude (or codex) CLI: it records its environment,
 // its argv and a codex --cd folder's config.toml, writes its pid, sleeps
-// when its dir holds a "sleep" file, and prints reply.
+// ignoring SIGINT when its dir holds a "sleep" file, and prints reply.
 type claudeStub struct {
 	dir, path string
 }
@@ -245,8 +245,10 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 		"env > '" + dir + "/env'\n" +
 		"for a in \"$@\"; do printf '%s\\0' \"$a\"; done > '" + dir + "/argv'\n" +
 		"prev=; for a in \"$@\"; do [ \"$prev\" = --cd ] && cp \"$a/.codex/config.toml\" '" + dir + "/codex.toml'; prev=$a; done\n" +
+		"if [ -n \"$CODEX_HOME\" ]; then echo \"$CODEX_HOME\" > '" + dir + "/codex-home'; cp \"$CODEX_HOME/config.toml\" '" + dir + "/codex-home.toml'; " +
+		"readlink \"$CODEX_HOME/auth.json\" > '" + dir + "/codex-auth-link'; fi\n" +
 		"echo $$ > '" + dir + "/pid'\n" +
-		"if [ -f '" + dir + "/sleep' ]; then exec sleep 30; fi\n" +
+		"if [ -f '" + dir + "/sleep' ]; then trap '' INT; exec sleep 30; fi\n" +
 		"cat '" + dir + "/reply'\n"
 	require.NoError(t, os.WriteFile(s.path, []byte(script), 0o700))
 	t.Cleanup(func() {
@@ -417,14 +419,29 @@ func TestAgent_CancelKillsCLIChild(t *testing.T) {
 	run, err := f.d.GetAutomationRun(id)
 	require.NoError(t, err)
 	assert.Equal(t, db.RunCancelled, run.Status)
+	// The SIGINT-ignoring child is SIGKILLed within the sandbox's
+	// AbandonGrace: the call returns with the group dead, so the run is not
+	// abandoned (which would disable the automation) and a stopping daemon,
+	// which waits for its runs, cannot outlive the child.
 	assert.True(t, errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH), "the stub's process group is gone")
+	a, err := f.d.GetAutomation(f.a.ID)
+	require.NoError(t, err)
+	assert.True(t, a.Enabled, "a cancelled agent() run is not abandoned")
 }
 
 func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	stub := newClaudeStub(t, `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}`+"\n"+
 		`{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}`)
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	t.Setenv("WT_FAKE_SECRET", "s3cret")
+	// The owner's own codex home: a sign-in and a personal MCP server.
+	ownerHome := filepath.Join(home, ".codex")
+	require.NoError(t, os.MkdirAll(ownerHome, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(ownerHome, "auth.json"), []byte(`{"fake":true}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(ownerHome, "config.toml"),
+		[]byte("[mcp_servers.personal]\ncommand = \"/bin/false\"\n"), 0o600))
 	cfg := &config.Config{ActiveWorkspace: "acme", CodexPath: stub.path, AI: config.AIConfig{Provider: "codex"}}
 	f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
 	run := f.run(t, db.TriggerManual)
@@ -438,6 +455,27 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	toml, err := os.ReadFile(filepath.Join(stub.dir, "codex.toml"))
 	require.NoError(t, err)
 	assert.Contains(t, string(toml), `"--surface", "automation", "--automation-run", "`+runID+`", "--automation-tools", "create_target,list_targets"`)
+
+	// CODEX_HOME is a scrubbed per-run home: web search off, only the
+	// watchtower server, the owner's sign-in linked; gone after the run.
+	codexHome, err := os.ReadFile(filepath.Join(stub.dir, "codex-home"))
+	require.NoError(t, err)
+	scrubbed := strings.TrimSpace(string(codexHome))
+	assert.NotEqual(t, ownerHome, scrubbed)
+	assert.Contains(t, stub.env(t), "CODEX_HOME="+scrubbed)
+	homeTOML, err := os.ReadFile(filepath.Join(stub.dir, "codex-home.toml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(homeTOML), `web_search = "disabled"`)
+	assert.Contains(t, string(homeTOML), "[mcp_servers.watchtower]")
+	assert.Equal(t, 1, strings.Count(string(homeTOML), "[mcp_servers."), "no server of the owner's: %s", homeTOML)
+	assert.Contains(t, string(homeTOML), `"--automation-run", "`+runID+`"`)
+	link, err := os.ReadFile(filepath.Join(stub.dir, "codex-auth-link"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(ownerHome, "auth.json"), strings.TrimSpace(string(link)))
+	_, err = os.Stat(scrubbed)
+	assert.True(t, os.IsNotExist(err), "the per-run home is removed")
+	_, err = os.Stat(filepath.Join(ownerHome, "auth.json"))
+	assert.NoError(t, err, "the owner's sign-in is untouched")
 }
 
 // Both executors that run recipes — the daemon's and `automations dry-run`'s

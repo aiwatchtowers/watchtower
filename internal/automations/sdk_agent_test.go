@@ -216,3 +216,13 @@ func TestAgent_RunnerErrorsAndNotAvailable(t *testing.T) {
 	mustReturn(t, `try { agent(""); return "ran" } catch (e) { return e.name }`,
 		agentCase(t, a, nil, "agent:run", "llm:light"), "ValidationError")
 }
+
+// The carve's own minutes running out is the agent's budget, not the run's:
+// a catchable BudgetExceeded, and the run goes on.
+func TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded(t *testing.T) {
+	a := &automationstest.FakeAgent{UntilDone: true}
+	r := mustReturn(t, `try { agent("x", {budget: {minutes: 1}}); return "ran" } catch (e) { return e.name + "|" + e.message + "|" + llm("after") }`,
+		agentCase(t, a, nil, "agent:run", "llm:light"), "BudgetExceeded|agent(): its time budget is spent|ok")
+	assert.Empty(t, r.env.Meter.Crossed())
+	require.Len(t, a.Requests(), 1)
+}

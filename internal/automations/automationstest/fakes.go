@@ -218,11 +218,13 @@ func (m *FakeMCP) Calls() []FakeMCPCall {
 // FakeAgent is an automations.AgentRunner that records its requests. OnRun,
 // when set, runs first; then each ModelCalls entry is one model call through
 // the request's hooks — BeforeModelCall (its error is returned at once),
-// then AfterModelCall with the entry's input and output tokens. It returns
-// Result or Err.
+// then AfterModelCall with the entry's input and output tokens. With
+// UntilDone it then blocks until ctx ends and returns ctx.Err(); otherwise it
+// returns Result or Err.
 type FakeAgent struct {
 	RunnerName string // "" = "fake"
 	ModelCalls [][2]int
+	UntilDone  bool
 	OnRun      func(req automations.AgentRequest)
 	Result     automations.AgentResult
 	Err        error
@@ -243,7 +245,7 @@ func (a *FakeAgent) Name() string {
 }
 
 // Run records req and plays the scripted model calls.
-func (a *FakeAgent) Run(_ context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+func (a *FakeAgent) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
 	a.mu.Lock()
 	a.reqs = append(a.reqs, req)
 	a.mu.Unlock()
@@ -258,6 +260,10 @@ func (a *FakeAgent) Run(_ context.Context, req automations.AgentRequest) (automa
 		a.mu.Lock()
 		a.afterCalls++
 		a.mu.Unlock()
+	}
+	if a.UntilDone {
+		<-ctx.Done()
+		return automations.AgentResult{}, ctx.Err()
 	}
 	return a.Result, a.Err
 }

@@ -226,9 +226,22 @@ func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 			step.Usage(int64(in), int64(out), false, nil)
 		},
 	}
+	// The carve's own minutes, when they end before the run's deadline, are
+	// the agent's budget: running out of them is a catchable BudgetExceeded.
+	// The run's deadline stays the sandbox's interrupt.
+	localDeadline := req.minutes > 0 && req.deadline.Before(env.Meter.Deadline())
 	var res AgentResult
 	err = env.MeteredModelCall(step, func(ctx context.Context) (ModelUsage, error) {
-		r, err := b.Agent.Run(ctx, ar)
+		runCtx := ctx
+		if localDeadline {
+			var cancel context.CancelFunc
+			runCtx, cancel = context.WithDeadline(ctx, req.deadline)
+			defer cancel()
+		}
+		r, err := b.Agent.Run(runCtx, ar)
+		if err != nil && localDeadline && errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			err = &SDKError{Name: ErrNameBudget, Message: "agent(): its time budget is spent"}
+		}
 		res = r
 		// Debit what the hooks did not report (a CLI child's usage, an
 		// estimate) once.

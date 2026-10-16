@@ -209,11 +209,22 @@ func (c *Client) childEnviron() []string {
 	return append(env, "PATH="+claude.RichPATH())
 }
 
+// GroupKillGrace is how long a process-group child (SetProcessGroup, an
+// automation's agent() child) has between SIGINT and the group's SIGKILL. It
+// stays under the automation sandbox's 2 s AbandonGrace, so a cancelled or
+// stopped run's call returns — the whole group dead — before the run would
+// be abandoned and before the daemon, which waits for its runs, can exit and
+// leave a SIGINT-ignoring child behind.
+const GroupKillGrace = time.Second
+
 // ConfigureChild applies the cancel policy to cmd: SIGINT then SIGKILL after
 // grace via WaitDelay, or, with group, a process group of its own that is
 // interrupted and then killed as a whole (the leader's grandchildren
-// included). Shared with the codex client.
+// included) after GroupKillGrace. Shared with the codex client.
 func ConfigureChild(cmd *exec.Cmd, group bool, grace time.Duration) {
+	if group {
+		grace = GroupKillGrace
+	}
 	cmd.WaitDelay = grace
 	if !group {
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }

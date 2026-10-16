@@ -189,3 +189,37 @@ func TestCLIAgent_ProcessGroupKilledOnDeadline(t *testing.T) {
 	defer cancel()
 	requireGroupGone(t, runGroupStub(t, ctx, nil, true))
 }
+
+// A group that ignores SIGINT is SIGKILLed after GroupKillGrace, so the call
+// returns well within the automation sandbox's 2 s AbandonGrace.
+func TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	script := "trap '' INT\necho $$ > " + pidFile + ".tmp; mv " + pidFile + ".tmp " + pidFile + "\nsleep 60 &\nwait\nsleep 60\n"
+	t.Cleanup(func() {
+		if pid := readPid(pidFile); pid > 0 {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+	})
+	c := NewClient("m", "", "")
+	c.claudeCmd = writeMockClaude(t, script)
+	c.SetProcessGroup(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
+		done <- err
+	}()
+	pgid := waitPid(t, pidFile)
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("QuerySync did not return")
+	}
+	assert.Less(t, time.Since(start), 2*time.Second, "returned within the sandbox's AbandonGrace")
+	requireGroupGone(t, pgid)
+}
