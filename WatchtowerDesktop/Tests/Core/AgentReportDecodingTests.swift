@@ -1,8 +1,9 @@
 import XCTest
 @testable import WatchtowerCore
 
-/// The fixtures are the Go report structs (`internal/agentreport`) marshalled
-/// with placeholder data; a renamed key on either side fails here.
+/// The fixtures are written by the Go builders over a seeded placeholder
+/// database (`internal/agentreport` `TestDesktopReportFixtures`, `-update`
+/// regenerates them); a renamed key on either side fails a test.
 final class AgentReportDecodingTests: XCTestCase {
     private func fixture(_ name: String) throws -> Data {
         let url = URL(fileURLWithPath: #filePath)   // …/Tests/Core/<this file>
@@ -16,22 +17,23 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertEqual(ov.workbenchID, 1)
         XCTAssertTrue(ov.enabled)
         XCTAssertEqual(ov.totals.sessions, 2)
-        XCTAssertEqual(ov.totals.tokens.cacheWrite5m, 300)
-        XCTAssertEqual(ov.time.tools.subagentsFG, 120000)
-        XCTAssertEqual(ov.time.wallMS, 3_800_000)
-        XCTAssertEqual(ov.subagents.avgParallel, 1.25)
+        XCTAssertEqual(ov.totals.tokens.cacheRead, 400)
+        XCTAssertEqual(ov.time.tools.buildTest, 360_000)
+        XCTAssertEqual(ov.time.backgroundMS, 785_000)
+        XCTAssertEqual(ov.time.wallMS, 3_630_000)
+        XCTAssertEqual(ov.subagents.background, 1)
+        XCTAssertEqual(ov.subagents.avgParallel, 1)
         XCTAssertEqual(ov.commands.first?.class, "build_test")
-        XCTAssertEqual(ov.commands.first?.avgMS, 180000)
-        XCTAssertEqual(ov.models.first?.cacheReadShare, 0.91)
-        XCTAssertEqual(ov.hints.map(\.id), ["H1", "H6"])
-        XCTAssertEqual(ov.hints[0].evidence.map(\.kind), ["command", "target", "session"])
-        XCTAssertEqual(ov.hints[1].evidence, [])
-        XCTAssertEqual(ov.hints[1].estimateUSD, 9)
-        XCTAssertEqual(ov.tasks.first?.targetID, 7)
-        XCTAssertEqual(ov.tasks.first?.phases["in_review"], 2_200_000)
+        XCTAssertEqual(ov.commands.first?.avgMS, 120_000)
+        XCTAssertEqual(ov.models.first?.cacheReadShare ?? 0, 0.2837, accuracy: 0.0001)
+        XCTAssertEqual(ov.hints.map(\.id), ["H4", "H1", "H6"])
+        XCTAssertEqual(ov.hints[1].evidence.map(\.kind), ["command", "target", "session"])
+        XCTAssertEqual(ov.hints[2].estimateUSD, 15)
+        XCTAssertEqual(ov.tasks.first?.targetID, 1)
+        XCTAssertEqual(ov.tasks.first?.phases["in_review"], 567_000_000)
         XCTAssertEqual(ov.tasks.first?.shared, true)
-        XCTAssertEqual(ov.sessions.map(\.oldFormat), [false, true])
-        XCTAssertEqual(ov.sessions[0].prs, ["https://example.com/acme/app/pull/1"])
+        XCTAssertEqual(ov.sessions.map(\.oldFormat), [true, false])
+        XCTAssertEqual(ov.sessions[1].prs, ["https://example.com/acme/app/pull/1"])
         XCTAssertEqual(ov.oldFormatSessions, 1)
     }
 
@@ -41,11 +43,13 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertEqual(d.lanes.count, 2)
         XCTAssertEqual(d.lanes[0].agentID, "")
         XCTAssertTrue(d.lanes[1].background)
-        XCTAssertEqual(d.lanes[0].segments.map(\.timeCategory), [.model, .tool])
-        XCTAssertEqual(d.lanes[0].segments[1].toolClass, "build_test")
-        XCTAssertEqual(d.lanes[0].segments[1].verb, "make test")
-        XCTAssertEqual(d.lanes[1].segments[0].timeCategory, .background)
-        XCTAssertEqual(d.hints.count, 1)
+        XCTAssertEqual(Set(d.lanes[0].segments.compactMap(\.timeCategory)), [.model, .tool, .background, .owner, .away])
+        XCTAssertEqual(d.lanes[0].segments[5].toolClass, "build_test")
+        XCTAssertEqual(d.lanes[0].segments[5].verb, "make test")
+        XCTAssertEqual(d.lanes[1].agentID, "agent-1")
+        XCTAssertEqual(d.lanes[1].subagentType, "general-purpose")
+        XCTAssertEqual(d.lanes[1].segments.map(\.timeCategory), [.model, .tool, .model])
+        XCTAssertEqual(d.hints.map(\.id), ["H4", "H1", "H6"])
     }
 
     func testUnknownCategoryDoesNotFailTheDecode() throws {
