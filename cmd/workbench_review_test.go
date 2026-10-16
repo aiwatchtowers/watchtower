@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -174,4 +175,57 @@ func TestWorkbenchReview_ContextPlanReadLimits(t *testing.T) {
 	assert.Equal(t, "plan", items[1].(map[string]any)["missing"])
 	assert.Equal(t, "task", items[2].(map[string]any)["missing"])
 	assert.Empty(t, items[0].(map[string]any)["plan_text"])
+}
+
+func reviewRoundCount(t *testing.T, database *db.DB) int {
+	t.Helper()
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM review_rounds`).Scan(&n))
+	return n
+}
+
+// TestWorkbenchReview_RefreshNeverCreatesARound: --refresh with no open round
+// (none yet, or the last one sent) answers an envelope and writes nothing; only
+// a plain start opens the next round.
+func TestWorkbenchReview_RefreshNeverCreatesARound(t *testing.T) {
+	database, wb, s, _ := reviewFixture(t)
+	out := reviewJSON(t, wb, "start", "--session", itoa(s), "--refresh")
+	assert.Equal(t, false, out["ok"])
+	assert.Equal(t, "no open review round", out["error"])
+	assert.Equal(t, 0, reviewRoundCount(t, database))
+
+	rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+	reviewJSON(t, wb, "send", "--round", itoa(rid))
+	after := reviewJSON(t, wb, "start", "--session", itoa(s), "--refresh")
+	assert.Equal(t, false, after["ok"])
+	assert.Equal(t, 1, reviewRoundCount(t, database), "refresh after Send created a round")
+}
+
+// TestWorkbenchReview_FileOldPathReadsTheRenamedSide: a renamed file's old
+// side is read at --old-path.
+func TestWorkbenchReview_FileOldPathReadsTheRenamedSide(t *testing.T) {
+	_, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.Rename(filepath.Join(repo, "README.md"), filepath.Join(repo, "GUIDE.md")))
+	rid := itoa(int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64)))
+	plain := reviewJSON(t, wb, "file", "--round", rid, "--path", "GUIDE.md")
+	assert.Equal(t, false, plain["old"].(map[string]any)["exists"])
+	renamed := reviewJSON(t, wb, "file", "--round", rid, "--path", "GUIDE.md", "--old-path", "README.md")
+	assert.Equal(t, "hello\n", renamed["old"].(map[string]any)["text"])
+	assert.Equal(t, "hello\n", renamed["new"].(map[string]any)["text"])
+}
+
+// TestWorkbenchReview_CancelledStartPersistsNothing: a start whose context is
+// already done answers an envelope and creates no round (never a round on an
+// empty-tree base).
+func TestWorkbenchReview_CancelledStartPersistsNothing(t *testing.T) {
+	database, wb, s, _ := reviewFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// cobra hands the root's context only to a subcommand without one, and
+	// earlier runs left one on start: set it there.
+	workbenchReviewStartCmd.SetContext(ctx)
+	t.Cleanup(func() { workbenchReviewStartCmd.SetContext(context.Background()) })
+	m := reviewJSON(t, wb, "start", "--session", itoa(s))
+	assert.Equal(t, false, m["ok"])
+	assert.Equal(t, 0, reviewRoundCount(t, database))
 }

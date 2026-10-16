@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 )
 
 const workbenchReviewBudget = 30 * time.Second
+
+// errNoOpenReviewRound: start --refresh found no open round; only a plain
+// start opens the next one (the Desktop's single path that carries comments).
+var errNoOpenReviewRound = errors.New("no open review round")
 
 var (
 	workbenchReviewCmd = &cobra.Command{Use: "review", Short: "Diff reviewer rounds of a workbench session (JSON for the Desktop)"}
@@ -29,6 +34,7 @@ var (
 	reviewFlagSession   int64
 	reviewFlagRound     int64
 	reviewFlagPath      string
+	reviewFlagOldPath   string
 	reviewFlagSince     bool
 	reviewFlagRefresh   bool
 )
@@ -49,7 +55,8 @@ func init() {
 	workbenchReviewDiffCmd.Flags().BoolVar(&reviewFlagSince, "since", false, "diff since the previous round")
 	workbenchReviewFileCmd.Flags().BoolVar(&reviewFlagSince, "since", false, "old side = the previous round")
 	workbenchReviewFileCmd.Flags().StringVar(&reviewFlagPath, "path", "", "file path in the round")
-	workbenchReviewStartCmd.Flags().BoolVar(&reviewFlagRefresh, "refresh", false, "re-snapshot an open round")
+	workbenchReviewFileCmd.Flags().StringVar(&reviewFlagOldPath, "old-path", "", "a renamed file's old path: the old side is read there")
+	workbenchReviewStartCmd.Flags().BoolVar(&reviewFlagRefresh, "refresh", false, "re-snapshot the open round (never creates one)")
 	workbenchCmd.AddCommand(workbenchReviewCmd)
 }
 
@@ -118,17 +125,30 @@ func failReview(cmd *cobra.Command, err error) error {
 	return writeReview(cmd, reviewEnvelope{Error: err.Error()})
 }
 
-func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) *reviewRoundJSON {
+func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (*reviewRoundJSON, error) {
 	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
 		BaseLabel: r.BaseLabel, TreeSHA: r.TreeSHA}
 	if r.PrevRoundID.Valid {
 		out.PrevRoundID = r.PrevRoundID.Int64
 		if prev, err := database.GetReviewRound(r.ProjectID, r.PrevRoundID.Int64); err == nil {
+			exists, err := repo.TreeExists(ctx, prev.TreeSHA)
+			if err != nil {
+				return nil, err
+			}
 			out.PrevTreeSHA = prev.TreeSHA
-			out.PrevTreeLost = !repo.TreeExists(ctx, prev.TreeSHA)
+			out.PrevTreeLost = !exists
 		}
 	}
-	return out
+	return out, nil
+}
+
+// writeRound answers the round's envelope.
+func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) error {
+	out, err := roundJSON(ctx, repo, database, r)
+	if err != nil {
+		return failReview(cmd, err)
+	}
+	return writeReview(cmd, reviewEnvelope{OK: true, Round: out})
 }
 
 // checkSessionOnWorkbench refuses a session of another workbench.
@@ -173,6 +193,9 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
+	if open == nil && reviewFlagRefresh {
+		return failReview(cmd, errNoOpenReviewRound)
+	}
 	folder := ""
 	if open != nil {
 		folder = open.FolderRoot
@@ -184,7 +207,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		return failReview(cmd, err)
 	}
 	if open != nil && !reviewFlagRefresh {
-		return writeReview(cmd, reviewEnvelope{OK: true, Round: roundJSON(ctx, repo, database, open)})
+		return writeRound(ctx, cmd, repo, database, open)
 	}
 	tree, err := repo.Snapshot(ctx)
 	if err != nil {
@@ -195,7 +218,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 			return failReview(cmd, err)
 		}
 		open.TreeSHA = tree
-		return writeReview(cmd, reviewEnvelope{OK: true, Round: roundJSON(ctx, repo, database, open)})
+		return writeRound(ctx, cmd, repo, database, open)
 	}
 	base, err := repo.Base(ctx)
 	if err != nil {
@@ -214,20 +237,28 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	return writeReview(cmd, reviewEnvelope{OK: true, Round: roundJSON(ctx, repo, database, created)})
+	return writeRound(ctx, cmd, repo, database, created)
 }
 
 // roundRange: from/to of the round's diff; since → the previous round's tree
-// when it still exists, else the base with lost=true.
-func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (from string, lost bool) {
+// when it still exists, else the base with lost=true. A done context is an
+// error, never "lost".
+func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (from string, lost bool, err error) {
 	if !reviewFlagSince || !r.PrevRoundID.Valid {
-		return r.BaseSHA, false
+		return r.BaseSHA, false, nil
 	}
 	prev, err := database.GetReviewRound(r.ProjectID, r.PrevRoundID.Int64)
-	if err != nil || !repo.TreeExists(ctx, prev.TreeSHA) {
-		return r.BaseSHA, true
+	if err != nil {
+		return r.BaseSHA, true, nil //nolint:nilerr // a missing previous round reads as lost, as a pruned tree does
 	}
-	return prev.TreeSHA, false
+	exists, err := repo.TreeExists(ctx, prev.TreeSHA)
+	if err != nil {
+		return "", false, err
+	}
+	if !exists {
+		return r.BaseSHA, true, nil
+	}
+	return prev.TreeSHA, false, nil
 }
 
 func loadRound(cmd *cobra.Command) (*db.DB, *db.ReviewRound, *reviewdiff.Repo, context.Context, context.CancelFunc, error) {
@@ -255,7 +286,10 @@ func runWorkbenchReviewDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer cancel()
-	from, lost := roundRange(ctx, repo, database, r)
+	from, lost, err := roundRange(ctx, repo, database, r)
+	if err != nil {
+		return failReview(cmd, err)
+	}
 	d, err := repo.Diff(ctx, from, r.TreeSHA)
 	if err != nil {
 		return failReview(cmd, err)
@@ -269,8 +303,15 @@ func runWorkbenchReviewFile(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer cancel()
-	from, _ := roundRange(ctx, repo, database, r)
-	oldSide, err := repo.File(ctx, from, reviewFlagPath)
+	from, _, err := roundRange(ctx, repo, database, r)
+	if err != nil {
+		return failReview(cmd, err)
+	}
+	oldPath := reviewFlagPath
+	if reviewFlagOldPath != "" {
+		oldPath = reviewFlagOldPath
+	}
+	oldSide, err := repo.File(ctx, from, oldPath)
 	if err != nil {
 		return failReview(cmd, err)
 	}

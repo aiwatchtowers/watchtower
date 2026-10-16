@@ -62,15 +62,16 @@ func NewGetReview() *Tool {
 			if r.Status == "open" {
 				return nil, fmt.Errorf("review round %d is still open: the owner has not sent it", a.RoundID)
 			}
+			cs, err := d.ReviewRoundComments(r.ID)
+			if err != nil {
+				return nil, err
+			}
+			// Delivered only once the comments were read: a failed read leaves the round waiting in the brief.
 			if r.Status == "sent" {
 				if _, err := d.MarkReviewRoundDelivered(p.ID, r.ID); err != nil {
 					return nil, err
 				}
 				r.Status = "delivered"
-			}
-			cs, err := d.ReviewRoundComments(r.ID)
-			if err != nil {
-				return nil, err
 			}
 			v := reviewView{RoundID: r.ID, Status: r.Status, Folder: r.FolderRoot, TreeSHA: r.TreeSHA, BaseLabel: r.BaseLabel,
 				Comments: []reviewCommentView{}}
@@ -95,11 +96,14 @@ func reviewText(v reviewView) string {
 		where := "design"
 		if c.Path != "" {
 			where = fmt.Sprintf("%s:%d-%d", c.Path, c.StartLine, c.EndLine)
+			if c.Side == "old" {
+				where += " (old side)"
+			}
 		}
 		fmt.Fprintf(&b, "\n#%d %s\n", c.ID, where)
-		for _, l := range strings.Split(strings.TrimRight(c.Quote, "\n"), "\n") {
-			if l != "" {
-				fmt.Fprintf(&b, "> %s\n", l)
+		if quote := strings.TrimRight(c.Quote, "\n"); quote != "" {
+			for _, l := range strings.Split(quote, "\n") {
+				fmt.Fprintf(&b, "> %s\n", l) // a blank line inside the quote stays a "> " line
 			}
 		}
 		fmt.Fprintf(&b, "%s\n", c.Body)

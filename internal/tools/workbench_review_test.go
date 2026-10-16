@@ -76,3 +76,24 @@ func TestGetReview_OpenRoundAndDraftsStayHidden(t *testing.T) {
 	got := callReadIn(t, reg, fx.a, "get_review", fmt.Sprintf(`{"round_id":%d}`, rid))
 	assert.NotContains(t, got, "still a draft")
 }
+
+// TestGetReview_TextNamesTheOldSideAndKeepsBlankQuoteLines: an old-side
+// comment says so, and a blank line inside a quote stays in it.
+func TestGetReview_TextNamesTheOldSideAndKeepsBlankQuoteLines(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	sid := seedTerminalSession(t, fx.d, fx.a)
+	rid, err := fx.d.CreateReviewRound(db.ReviewRound{ProjectID: fx.a, SessionID: sql.NullInt64{Int64: sid, Valid: true},
+		FolderRoot: "/tmp/acme", BaseSHA: "b", TreeSHA: "t"})
+	require.NoError(t, err)
+	_, err = fx.d.Exec(`INSERT INTO review_comments (round_id, path, side, start_line, end_line, quote, body) VALUES (?, 'a.go', 'old', 3, 5, ?, 'why removed')`,
+		rid, "x := 1\n\ny := 2\n")
+	require.NoError(t, err)
+	_, ok, err := fx.d.SendReviewRound(fx.a, rid)
+	require.NoError(t, err)
+	require.True(t, ok)
+	var v reviewView
+	require.NoError(t, json.Unmarshal([]byte(callReadIn(t, reg, fx.a, "get_review", fmt.Sprintf(`{"round_id":%d}`, rid))), &v))
+	assert.Contains(t, v.Text, "a.go:3-5 (old side)\n")
+	assert.Contains(t, v.Text, "> x := 1\n> \n> y := 2\n")
+}
