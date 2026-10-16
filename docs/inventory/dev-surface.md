@@ -293,7 +293,7 @@ sixteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`
 `workbench_review.go`) plus every
 surface-less read tool and `get_action`; no other write tool is visible
 there. The mode is served only under the Workbench names (since
-2026-10-15): there is no `--project N` flag and no pre-rename tool name on
+2026-10-15): no `--project N` flag serves anything and no pre-rename tool name is on
 the surface — a call to `project_info`, `project_board`, `update_project`,
 `add_project_source` or `remove_project_source` is an unknown tool. The one
 remnant is read-only: `tools.CanonicalToolName` maps those five old names to
