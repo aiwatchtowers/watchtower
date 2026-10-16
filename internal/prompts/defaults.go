@@ -149,7 +149,7 @@ var DefaultVersions = map[string]int{
 	InboxStyleSample:           1,  // v1: owner communication-style profile from their own Slack messages
 	ChatTitle:                  1,  // v1: light-tier conversation title from the first exchange
 	TerminalTitle:              2,  // v2: agent-neutral (Claude Code or Codex); v1 named a Claude Code session
-	ReviewOverview:             1,  // v1: diff reviewer overview — intent coverage, risk map, chapters (strong tier)
+	ReviewOverview:             2,  // v2: coverage entries carry the intent item's 1-based "index" (v1: overview — intent coverage, risk map, chapters, strong tier)
 	ReviewLessons:              1,  // v1: diff reviewer — repeated review comments to house rules (strong tier)
 }
 
@@ -1614,14 +1614,14 @@ Return ONLY a JSON object (no markdown fences, no prose outside the JSON) with e
 
 {
   "summary": "2-4 sentences: what the change does and how well it matches the intent",
-  "coverage": [{"item": "an intent item, quoted or shortened", "status": "done", "where": ["path/in/the/diff.go"]}],
+  "coverage": [{"index": 1, "item": "an intent item, quoted or shortened", "status": "done", "where": ["path/in/the/diff.go"]}],
   "out_of_scope": ["path/in/the/diff.go"],
   "risk": [{"path": "path/in/the/diff.go", "level": "low", "why": "one short reason"}],
   "chapters": [{"title": "Short chapter title", "paths": ["path/in/the/diff.go"], "core": true, "lenses": ["lens_id"]}]
 }
 
 Rules:
-- coverage has one entry per intent item, in the given order. status is one of "done", "partial", "not_found". Use "not_found" when nothing in the diff does the item.
+- coverage has one entry per intent item, in the given order. "index" is the item's number from the INTENT list (1 for the first item); give each number once. status is one of "done", "partial", "not_found". Use "not_found" when nothing in the diff does the item.
 - "where" and every other path field use only paths that appear in the diff, exactly as written there. Never invent a path.
 - out_of_scope lists changed files that serve none of the intent items.
 - risk has one entry for every changed file. level is one of "low", "medium", "high"; "why" is one short phrase.

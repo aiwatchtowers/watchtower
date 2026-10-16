@@ -272,6 +272,9 @@ package struct ReviewOverview: Decodable, Equatable, Sendable {
     package struct Coverage: Decodable, Equatable, Sendable {
         package enum Status: String, Decodable, Sendable { case done, partial, notFound = "not_found" }
 
+        /// The intent item's 1-based number in the context list (0 when absent:
+        /// an overview cached before the field existed); Go drops a bad one.
+        package let index: Int
         package let item: String
         package let status: Status
         package let `where`: [String]
@@ -313,11 +316,12 @@ package struct ReviewOverview: Decodable, Equatable, Sendable {
 
 // The decoding inits live in extensions so the memberwise inits stay.
 extension ReviewOverview.Coverage {
-    private enum CodingKeys: String, CodingKey { case item, status, `where` }
+    private enum CodingKeys: String, CodingKey { case index, item, status, `where` }
 
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
+            index: try c.decodeIfPresent(Int.self, forKey: .index) ?? 0,
             item: try c.decode(String.self, forKey: .item),
             status: try c.decode(Status.self, forKey: .status),
             where: try c.decodeIfPresent([String].self, forKey: .where) ?? []

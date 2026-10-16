@@ -40,7 +40,7 @@ func TestParseOverview_ValidFixture(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, o.Summary, "greeting endpoint")
 	require.Len(t, o.Coverage, 2)
-	assert.Equal(t, Coverage{Item: "Add a greeting endpoint", Status: "done", Where: []string{"server/greet.go"}}, o.Coverage[0])
+	assert.Equal(t, Coverage{Index: 1, Item: "Add a greeting endpoint", Status: "done", Where: []string{"server/greet.go"}}, o.Coverage[0])
 	assert.Equal(t, "not_found", o.Coverage[1].Status)
 	assert.Equal(t, []string{"scripts/cleanup.sh"}, o.OutOfScope)
 	require.Len(t, o.Risk, 3)
@@ -52,7 +52,7 @@ func TestParseOverview_ValidFixture(t *testing.T) {
 
 func TestParseOverview_DropsUnknownPathsLensesAndEnums(t *testing.T) {
 	raw := "```json\n" + `{"summary":"s",
-	 "coverage":[{"item":"a","status":"done","where":["server/greet.go","ghost.go"]},{"item":"b","status":"great","where":[]}],
+	 "coverage":[{"index":1,"item":"a","status":"done","where":["server/greet.go","ghost.go"]},{"index":2,"item":"b","status":"great","where":[]}],
 	 "out_of_scope":["ghost.go","scripts/cleanup.sh"],
 	 "risk":[{"path":"server/greet.go","level":"critical","why":"x"},{"path":"ghost.go","level":"low","why":"x"},{"path":"scripts/cleanup.sh","level":"low","why":"y"}],
 	 "chapters":[{"title":"A","paths":["server/greet.go"],"core":true,"lenses":["perf","tests"]},{"title":"B","paths":["ghost.go"],"core":false,"lenses":[]}]}` + "\n```"
@@ -65,6 +65,22 @@ func TestParseOverview_DropsUnknownPathsLensesAndEnums(t *testing.T) {
 	assert.Equal(t, "scripts/cleanup.sh", o.Risk[0].Path)
 	require.Len(t, o.Chapters, 1)
 	assert.Equal(t, []string{"tests"}, o.Chapters[0].Lenses)
+}
+
+func TestParseOverview_DropsBadCoverageIndex(t *testing.T) {
+	raw := `{"summary":"s","coverage":[
+	 {"index":2,"item":"Docs, reworded","status":"not_found","where":[]},
+	 {"index":0,"item":"zero","status":"done","where":[]},
+	 {"index":3,"item":"past the end","status":"done","where":[]},
+	 {"item":"no index","status":"done","where":[]},
+	 {"index":2,"item":"again","status":"done","where":[]},
+	 {"index":1,"item":"Greeting","status":"done","where":["server/greet.go"]}]}`
+	o, err := ParseOverview(raw, okInput())
+	require.NoError(t, err)
+	assert.Equal(t, []Coverage{
+		{Index: 2, Item: "Docs, reworded", Status: "not_found", Where: []string{}},
+		{Index: 1, Item: "Greeting", Status: "done", Where: []string{"server/greet.go"}},
+	}, o.Coverage)
 }
 
 func TestParseOverview_RejectsInvalid(t *testing.T) {

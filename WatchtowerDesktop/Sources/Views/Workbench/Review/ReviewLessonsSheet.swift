@@ -45,7 +45,7 @@ struct ReviewLessonsSheet: View {
                         searched = true
                     }
                 }
-                .disabled(model.finding)
+                .disabled(model.finding || model.deciding)
                 Spacer()
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -74,7 +74,7 @@ struct ReviewLessonsSheet: View {
                 Button("Accept") { loadError = nil; Task { await model.accept(lesson.id) } }
             }
             .controlSize(.small)
-            .disabled(model.finding)
+            .disabled(model.finding || model.deciding)
         }
         .padding(8)
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))

@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -125,17 +127,91 @@ func TestWorkbenchReviewLessons_AcceptWritesAndDecides(t *testing.T) {
 }
 
 func TestWorkbenchReviewLessons_AcceptRefusedUnderAgentMarkers(t *testing.T) {
+	verbs := map[string]string{"accept": "accept a review lesson", "dismiss": "dismiss a review lesson", "propose": "propose review lessons"}
+	for _, marker := range agentEnvMarkers {
+		for sub, verb := range verbs {
+			t.Run(marker+"/"+sub, func(t *testing.T) {
+				database, wb, s, repo := reviewFixture(t)
+				lessonComments(t, database, wb, s, 2)
+				id := proposed(t, database, wb)
+				g := &fakeReviewGen{out: `{"lessons":[]}`}
+				useReviewGen(t, g)
+				t.Setenv(marker, "1")
+				args := []string{}
+				if sub != "propose" {
+					args = append(args, "--lesson", itoa(id))
+				}
+				_, err := lessonsJSONCall(t, wb, sub, args...)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "refusing to "+verb)
+				assert.Contains(t, err.Error(), marker)
+				assert.Zero(t, g.calls, "no model call under %s", marker)
+				_, statErr := os.Stat(filepath.Join(repo, ".watchtower", "review.md"))
+				assert.True(t, os.IsNotExist(statErr))
+				l, err := database.GetReviewLesson(wb, id)
+				require.NoError(t, err)
+				assert.Equal(t, "proposed", l.Status, "the proposed lesson is untouched under %s", marker)
+			})
+		}
+	}
+}
+
+func TestWorkbenchReviewLessons_ReplyWithoutLessonsKeepsTheProposedRows(t *testing.T) {
+	database, wb, s, _ := reviewFixture(t)
+	lessonComments(t, database, wb, s, 2)
+	id := proposed(t, database, wb)
+	g := &fakeReviewGen{out: `{}`}
+	useReviewGen(t, g)
+	out, err := lessonsJSONCall(t, wb, "propose")
+	require.NoError(t, err)
+	assert.Equal(t, false, out["ok"])
+	assert.Contains(t, out["error"], "find repeats unavailable:")
+	l, err := database.GetReviewLesson(wb, id)
+	require.NoError(t, err)
+	require.NotNil(t, l, "the earlier proposal stays")
+	assert.Equal(t, "proposed", l.Status)
+}
+
+func TestWorkbenchReviewLessons_SecondAcceptWritesNoSecondCopy(t *testing.T) {
 	database, wb, _, repo := reviewFixture(t)
 	id := proposed(t, database, wb)
-	t.Setenv("CLAUDECODE", "1")
-	_, err := lessonsJSONCall(t, wb, "accept", "--lesson", itoa(id))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "refusing to accept a review lesson")
-	_, statErr := os.Stat(filepath.Join(repo, ".watchtower", "review.md"))
-	assert.True(t, os.IsNotExist(statErr))
+	out, err := lessonsJSONCall(t, wb, "accept", "--lesson", itoa(id))
+	require.NoError(t, err)
+	require.Equal(t, true, out["ok"], out)
+	out, err = lessonsJSONCall(t, wb, "accept", "--lesson", itoa(id))
+	require.NoError(t, err)
+	assert.Equal(t, false, out["ok"])
+	got, err := os.ReadFile(filepath.Join(repo, ".watchtower", "review.md"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(got), "- Does every change come with a test?"))
+}
+
+func TestWorkbenchReviewLessons_AppendFailureLeavesTheLessonProposed(t *testing.T) {
+	database, wb, _, repo := reviewFixture(t)
+	id := proposed(t, database, wb)
+	// .watchtower is a plain file: the rule cannot be written.
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".watchtower"), []byte("x"), 0o644))
+	out, err := lessonsJSONCall(t, wb, "accept", "--lesson", itoa(id))
+	require.NoError(t, err)
+	assert.Equal(t, false, out["ok"])
+	assert.Contains(t, out["error"], ".watchtower is not a real directory")
 	l, err := database.GetReviewLesson(wb, id)
 	require.NoError(t, err)
 	assert.Equal(t, "proposed", l.Status)
+}
+
+// A cancel while Find repeats waits for the model ends the call.
+func TestWorkbenchReviewLessons_CancelEndsTheModelCall(t *testing.T) {
+	database, wb, s, _ := reviewFixture(t)
+	lessonComments(t, database, wb, s, 2)
+	g := newBlockingReviewGen()
+	useReviewGenerator(t, g)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := cancelWhileGenerating(t, g, cancel, func() (string, error) {
+		return runReviewWithContext(t, ctx, workbenchReviewLessonsProposeCmd, "lessons", "propose", "--workbench", itoa(wb), "--json")
+	})
+	assert.Equal(t, false, out["ok"])
 }
 
 func TestWorkbenchReviewLessons_DecideOnlyProposed(t *testing.T) {

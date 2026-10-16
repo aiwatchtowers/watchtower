@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -15,8 +16,25 @@ import (
 	"watchtower/internal/reviewdiff"
 )
 
-// reviewAIBudget bounds one model call of the reviewer (the Desktop waits 330 s).
+// reviewAIBudget bounds a whole overview or lessons command — git, the model
+// call and the db writes — below the Desktop's 330 s wait.
 const reviewAIBudget = 5 * time.Minute
+
+// reviewAIContext is the command's context for a model call: a cancelled
+// parent or a SIGINT/SIGTERM (the Desktop's cancel) cancels it, so the CLI
+// generator kills its model child instead of leaving it running.
+func reviewAIContext(cmd *cobra.Command) (context.Context, context.CancelFunc) {
+	parent := cmd.Context()
+	if parent == nil {
+		parent = context.Background()
+	}
+	sigCtx, stop := notifyShutdownContext(parent, stderrLogf)
+	ctx, cancel := context.WithTimeout(sigCtx, reviewAIBudget)
+	return ctx, func() {
+		cancel()
+		stop()
+	}
+}
 
 // reviewAIGeneratorFactory builds the generator of the overview and lessons
 // calls; tests swap it.
@@ -45,7 +63,9 @@ func loadReviewAIConfig() (*config.Config, error) {
 }
 
 func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
-	database, r, repo, ctx, cancel, err := loadRound(cmd)
+	aiCtx, aiCancel := reviewAIContext(cmd)
+	defer aiCancel()
+	database, r, repo, ctx, cancel, err := loadRoundIn(cmd, aiCtx)
 	if err != nil || r == nil {
 		return err
 	}
@@ -54,11 +74,7 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	diff, err := repo.Diff(ctx, r.BaseSHA, r.TreeSHA)
-	if err != nil {
-		return failReview(cmd, err)
-	}
-	in := reviewai.Input{Diff: diff}
+	var in reviewai.Input
 	if r.SessionID.Valid {
 		items, err := reviewContextItems(ctx, database, p, r.SessionID.Int64)
 		if err != nil {
@@ -81,6 +97,9 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 	} else if ok {
 		return writeReview(cmd, reviewEnvelope{OK: true, Overview: json.RawMessage(js), OverviewCached: true})
 	}
+	if in.Diff, err = repo.Diff(ctx, r.BaseSHA, r.TreeSHA); err != nil {
+		return failReview(cmd, err)
+	}
 
 	cfg, err := loadReviewAIConfig()
 	if err != nil {
@@ -88,8 +107,6 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 	}
 	pipe := reviewai.New(reviewAIGeneratorFactory(cfg))
 	pipe.SetPromptStore(prompts.New(database, nil))
-	aiCtx, aiCancel := workbenchGitContext(cmd, reviewAIBudget)
-	defer aiCancel()
 	ov, err := pipe.Overview(aiCtx, in)
 	if err != nil {
 		return failReview(cmd, fmt.Errorf("AI overview unavailable: %w", err))
@@ -100,7 +117,8 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 	}
 	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	if err := database.PutReviewOverview(p.ID, r.TreeSHA, r.BaseSHA, hash, string(js), strong); err != nil {
-		return failReview(cmd, err)
+		// The overview is paid for: answer it; the next open just asks again.
+		fmt.Fprintf(cmd.ErrOrStderr(), "review overview: caching failed: %v\n", err)
 	}
 	return writeReview(cmd, reviewEnvelope{OK: true, Overview: js})
 }

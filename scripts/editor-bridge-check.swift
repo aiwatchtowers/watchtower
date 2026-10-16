@@ -1132,6 +1132,17 @@ func diffNotesAndHunksChecks(_ page: Page) async {
     check("setNotes: the note shows as text under an Agent note label, not as HTML",
           (note?.first as? String)?.contains(hostile) == true && (note?[1] as? Int) == 0 && (note?[2] as? Bool) == true,
           "\(String(describing: note))")
+    let long = String(repeating: "This long note wraps across the pane. ", count: 22) // ~800 chars, one line
+    await page.call("wt.setNotes", [["startLine": 1, "endLine": 1, "text": long] as [String: Any]])
+    await pause(0.2)
+    // The zone sits above line 1: line 1's top is the zone's height (read
+    // from the view model; the headless page paints no frames).
+    let tall = await page.eval(
+        "(function () { var e = monaco.editor.getDiffEditors()[0].getModifiedEditor();"
+            + " return [e.getTopForLineNumber(1), e.getOption(monaco.editor.EditorOption.lineHeight)]; })()"
+    ) as? [Int]
+    check("setNotes: a long one-line note gets a zone tall enough to show it (> 2 lines)",
+          tall.map { $0.count == 2 && $0[0] > 2 * $0[1] } ?? false, "\(String(describing: tall))")
     await page.call("wt.setNotes", [["startLine": 1, "endLine": 1, "text": "second"] as [String: Any]])
     let replaced = await page.evalInt("document.querySelectorAll('.wt-note').length")
     check("setNotes: a new set replaces the last one", replaced == 1, "\(String(describing: replaced))")

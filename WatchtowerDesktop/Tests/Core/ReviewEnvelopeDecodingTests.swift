@@ -115,8 +115,8 @@ final class ReviewEnvelopeDecodingTests: XCTestCase {
         let ov = try decoder.decode(ReviewOverview.self, from: Data(contentsOf: url))
         XCTAssertEqual(ov.summary, "Adds the greeting endpoint and its test; the docs update is missing.")
         XCTAssertEqual(ov.coverage, [
-            .init(item: "Add a greeting endpoint", status: .done, where: ["server/greet.go"]),
-            .init(item: "Document the endpoint", status: .notFound, where: [])
+            .init(index: 1, item: "Add a greeting endpoint", status: .done, where: ["server/greet.go"]),
+            .init(index: 2, item: "Document the endpoint", status: .notFound, where: [])
         ])
         XCTAssertEqual(ov.outOfScope, ["scripts/cleanup.sh"])
         XCTAssertEqual(ov.risk, [

@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 package struct ReviewIntentItem: Equatable, Sendable, Identifiable {
@@ -21,15 +20,17 @@ package enum ReviewWrapUp {
         context.map { ReviewIntentItem(key: "target:\($0.targetId)", text: $0.text) }
     }
 
-    /// Coverage entries when the overview has any (stable key from the text),
-    /// else one item per context item.
+    /// One item per context item, keyed and worded by the context item; the
+    /// overview's coverage entry with that item's 1-based index adds its
+    /// status. The model's wording never reaches the key, so a mark survives
+    /// a new overview that phrases the item differently.
     package static func intentItems(
-        _ context: [ReviewContextItem], coverage: [(item: String, status: String)]
+        _ context: [ReviewContextItem], coverage: [(index: Int, status: String)]
     ) -> [ReviewIntentItem] {
-        guard !coverage.isEmpty else { return intentItems(context) }
-        return coverage.map { entry in
-            let hash = SHA256.hash(data: Data(entry.item.utf8)).map { String(format: "%02x", $0) }.joined()
-            return ReviewIntentItem(key: "cov:" + hash.prefix(16), text: entry.item, aiStatus: entry.status)
+        var statusOf: [Int: String] = [:]
+        for entry in coverage where statusOf[entry.index] == nil { statusOf[entry.index] = entry.status }
+        return context.enumerated().map { offset, item in
+            ReviewIntentItem(key: "target:\(item.targetId)", text: item.text, aiStatus: statusOf[offset + 1])
         }
     }
 

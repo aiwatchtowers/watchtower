@@ -29,7 +29,11 @@ type Input struct {
 	LensIDs []string
 }
 
+// Coverage is the model's verdict on one intent item. Index is the item's
+// 1-based number in the INTENT block: the Desktop keys the Wrap-up mark to
+// that item, never to the model's wording.
 type Coverage struct {
+	Index  int      `json:"index"`
 	Item   string   `json:"item"`
 	Status string   `json:"status"` // done | partial | not_found
 	Where  []string `json:"where"`
@@ -173,7 +177,8 @@ func extractObject(raw string) (string, error) {
 }
 
 // ParseOverview validates a model reply against the input: unknown paths,
-// lens ids and enum values are dropped entry by entry; malformed JSON or an
+// lens ids and enum values, and coverage entries whose index is out of range
+// or repeated, are dropped entry by entry; malformed JSON or an
 // empty summary fails the whole call.
 func ParseOverview(raw string, in Input) (Overview, error) {
 	js, err := extractObject(raw)
@@ -207,12 +212,17 @@ func ParseOverview(raw string, in Input) (Overview, error) {
 	}
 
 	cov := []Coverage{}
+	seenIndex := map[int]bool{}
 	for _, c := range o.Coverage {
 		item := clipRunes(strings.TrimSpace(c.Item), maxOverviewFields)
 		if item == "" || (c.Status != "done" && c.Status != "partial" && c.Status != "not_found") || len(cov) >= maxCoverage {
 			continue
 		}
-		cov = append(cov, Coverage{Item: item, Status: c.Status, Where: keep(c.Where, paths)})
+		if c.Index < 1 || c.Index > len(in.Intent) || seenIndex[c.Index] {
+			continue // not one of the given items, or one already covered
+		}
+		seenIndex[c.Index] = true
+		cov = append(cov, Coverage{Index: c.Index, Item: item, Status: c.Status, Where: keep(c.Where, paths)})
 	}
 	o.Coverage = cov
 	o.OutOfScope = keep(o.OutOfScope, paths)

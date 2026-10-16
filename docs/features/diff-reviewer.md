@@ -98,7 +98,7 @@ questions). A lens id is its name lowercased, every run of non `[a-z0-9]` charac
 replaced by `_` and trimmed; comments store the id in `review_comments.lens`, and
 `intent` is the Wrap-up lens. The workbench folder may extend them with
 `.watchtower/review.md` (the **workbench folder**, `projects.folder_path`, not the
-session worktree; only read, never written). Grammar: `## <name>` names a lens (a
+session worktree; read; written only by an owner-pressed Accept (REVIEW-01)). Grammar: `## <name>` names a lens (a
 built-in is matched case-insensitively and extended; any other name is added after the
 built-ins in file order), `- <question>` is a question, blank lines are ignored, any
 other line (text before the first heading too) is skipped and reported as
@@ -187,15 +187,23 @@ reverts and refreshes the round; undone hunks are listed in an **Undone** group.
 
 **AI overview (`internal/reviewai`, `workbench review overview`).** On round open (and on a
 refresh that changed the tree) the Desktop runs `review overview --round R` (330 s
-timeout; the CLI bounds one model call at 5 minutes, `reviewAIBudget`). Input: the review
+timeout; the CLI bounds the whole command — git, the model call, the db — at 5 minutes,
+`reviewAIBudget`, and a cancelled parent or a SIGINT/SIGTERM cancels the model call, which
+kills its claude/codex child). The refresh after an owner **Undo** does not ask for a new
+overview (ask #249): the shown one stays until the next Refresh or auto-refresh that finds
+a new tree (one is asked for anyway when none is on screen). The cache is looked up before
+the diff is read, and a failed cache write is logged to stderr while the overview is still
+answered. A linked target that cannot be read fails `review context` and `review overview`
+(`ok:false`, nothing cached) instead of being skipped. Input: the review
 context items (the linked targets' text, intent and plan task, `reviewContextItems`), the
 session's agent notes, the lens ids, and the round's diff from base to tree. Caps live only
 in `internal/reviewai/limits.go`: at most 300 diff lines per file and 6,000 in all; a file
 past either cap, binary or collapsed is listed as `<path> (+a −d) — not shown`, and once the
 overall cap is spent every later file is only listed. The call is strong tier
-(`workbench.review_overview`, prompt `review.overview` v1, tunable in Settings → Prompts).
+(`workbench.review_overview`, prompt `review.overview` v2, tunable in Settings → Prompts).
 The reply is validated, never trusted: malformed JSON, an array root or an empty `summary`
-fails the call; coverage entries with an unknown status (`done|partial|not_found`), risk
+fails the call; coverage entries with an unknown status (`done|partial|not_found`) or an
+`index` (the item's 1-based number in the INTENT list) out of range or already used, risk
 entries on an unknown path or level (`low|medium|high`), unknown paths in `where`,
 `out_of_scope` and chapters, and unknown lens ids are dropped one by one; a chapter left
 with no path disappears; caps of 50 coverage, 200 risk, 30 chapters, 2,000 runes of
@@ -220,10 +228,12 @@ checks in the shown chapters does not swap them: a banner offers **Use AI chapte
 Reopening a round on AI chapters (a saved `ai:` chapter, or checks on `ai:` keys) applies
 the AI chapters again and lands on the saved chapter.
 
-**Intent items from coverage (`ReviewWrapUp.intentItems(_:coverage:)`).** With an overview
-that has coverage entries, Wrap-up's intent checklist is one item per coverage entry (key
-`cov:` + the first 16 hex of sha256 of the item text; the item carries the AI's status as
-`aiStatus`); without one it stays one item per linked target (`target:<id>`).
+**Intent items from coverage (`ReviewWrapUp.intentItems(_:coverage:)`).** Wrap-up's intent
+checklist is always one item per context item (linked target): key `target:<id>`, text from
+the context item. With an overview, the coverage entry whose `index` names that item adds
+the AI's status as `aiStatus`. The model's wording never reaches the key, so a mark (and the
+Not done / Partly done draft it leaves) survives a new overview that words the item
+differently; an overview cached before `index` existed decodes it as 0 and adds no status.
 
 **The agent's tools (DEV-06: eighteen workbench tools; skill pack v11).**
 - `annotate_changes` (`internal/tools/workbench_review_annotate.go`): `notes` (≤ 40: path,
@@ -255,7 +265,8 @@ that has coverage entries, Wrap-up's intent checklist is one item per coverage e
 opens a sheet. Input: the owner's comments of the workbench's newest 20 sent or delivered
 rounds, `sent` or `resolved`, never carried copies (a remark carried across rounds is one
 remark), minus comments a decided lesson already cites; fewer than two calls no model.
-Strong tier (`workbench.review_lessons`, prompt `review.lessons` v1). Validation: a lesson
+Strong tier (`workbench.review_lessons`, prompt `review.lessons` v1; the same cancel and
+5-minute bound as the overview). Validation: a lesson
 needs at least two distinct source ids from the input, an unknown lens becomes
 `house_rules`, the text is one line of 1–300 runes, at most 20. Each propose replaces the
 workbench's `proposed` lessons (decided ones stay). **Accept** writes `- <rule>` under the
@@ -263,9 +274,13 @@ lens's heading in the workbench folder's `.watchtower/review.md` (`reviewdiff.Ap
 the file's only writer: real `.watchtower` directory, regular `review.md` read under the
 Plan 2 rules, 64 KB cap, a rule already present writes nothing; created with
 `O_EXCL|O_NOFOLLOW` when `review.md` is absent, otherwise a temp file in `.watchtower`
-renamed over it) and marks the
-lesson `accepted`; a refusal writes nothing and leaves it `proposed`. Accept refuses under an
-agent marker (REVIEW-01). **Dismiss** marks it `dismissed`. The new rule shows up in the
+renamed over it). Accept decides first: it moves the lesson `proposed` → `accepted`
+(compare-and-set; one already decided stops before the file is touched, so a second Accept
+never writes a second copy), then appends; an append failure sets it back to `proposed` and
+reports the error. Propose, Accept and Dismiss all refuse under an agent marker (REVIEW-01
+covers Accept). A model reply without a `lessons` list is an error (earlier proposals stay);
+an explicit `"lessons": []` is an empty answer. **Dismiss** marks it `dismissed`. The sheet
+disables Accept and Dismiss (and Find Repeats) while a decision runs. The new rule shows up in the
 `house_rules` (or its lens's) checklist on the next context read.
 
 **Quick mode** also shows the agent's notes, the risk badges, per-hunk Undo and the
@@ -288,7 +303,7 @@ to the key window (owner ruling, ask #221).
 
 - Generated and vendored files are collapsed by name pattern only; `linguist-generated`
   attributes are not read.
-- Intent items are the linked targets or the overview's coverage entries; there is no free-form intent.
+- Intent items are the linked targets (the overview only adds its status to each); there is no free-form intent.
 - A repository with a local `filter.lfs.*` is snapshotted with raw content (filters are
   blanked, REVIEW-05), so LFS files show their pointer or raw bytes.
 - No PR source (the `source` column accepts `pr`).

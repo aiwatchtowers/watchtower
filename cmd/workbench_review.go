@@ -267,11 +267,19 @@ func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *
 }
 
 func loadRound(cmd *cobra.Command) (*db.DB, *db.ReviewRound, *reviewdiff.Repo, context.Context, context.CancelFunc, error) {
+	return loadRoundIn(cmd, cmd.Context())
+}
+
+// loadRoundIn is loadRound with the git budget taken under parent.
+func loadRoundIn(cmd *cobra.Command, parent context.Context) (*db.DB, *db.ReviewRound, *reviewdiff.Repo, context.Context, context.CancelFunc, error) {
 	database, p, err := reviewTarget(cmd)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	ctx, cancel := workbenchGitContext(cmd, workbenchReviewBudget)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, workbenchReviewBudget)
 	r, err := database.GetReviewRound(p.ID, reviewFlagRound)
 	if err != nil {
 		cancel()

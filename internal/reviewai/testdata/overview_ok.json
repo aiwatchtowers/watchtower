@@ -1,8 +1,8 @@
 {
   "summary": "Adds the greeting endpoint and its test; the docs update is missing.",
   "coverage": [
-    {"item": "Add a greeting endpoint", "status": "done", "where": ["server/greet.go"]},
-    {"item": "Document the endpoint", "status": "not_found", "where": []}
+    {"index": 1, "item": "Add a greeting endpoint", "status": "done", "where": ["server/greet.go"]},
+    {"index": 2, "item": "Document the endpoint", "status": "not_found", "where": []}
   ],
   "out_of_scope": ["scripts/cleanup.sh"],
   "risk": [

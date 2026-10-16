@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -60,7 +63,13 @@ func reviewContextItems(_ context.Context, database *db.DB, p *db.Workbench, ses
 	items := []reviewContextItem{}
 	for _, id := range ids {
 		t, err := database.GetTargetByID(int(id))
-		if err != nil || t == nil || !t.WorkbenchID.Valid || t.WorkbenchID.Int64 != p.ID {
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // deleted between the two reads
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading linked target %d: %w", id, err)
+		}
+		if t == nil || !t.WorkbenchID.Valid || t.WorkbenchID.Int64 != p.ID {
 			continue
 		}
 		items = append(items, contextItem(p.FolderPath, t))

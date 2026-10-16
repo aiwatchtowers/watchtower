@@ -246,3 +246,40 @@ func TestGetReview_ListsReverts(t *testing.T) {
 	assert.Contains(t, v.Text, "Undone by the owner (reverted in the work tree — do not redo without asking):\n- a.go @@ -1,2 +1,3 @@\n  -old\n  +new\n")
 	assert.True(t, strings.HasSuffix(v.Text, "  +new\n"), v.Text)
 }
+
+// A session whose agent works in a git worktree of the workbench folder gets
+// its notes snapshotted (and quoted) against the worktree, not the folder.
+func TestAnnotateChanges_UsesTheSessionsWorktree(t *testing.T) {
+	fx, wb, session, reg := reviewRepoWorkbench(t)
+	var folder string
+	require.NoError(t, fx.d.QueryRow(`SELECT folder_path FROM projects WHERE id = ?`, wb).Scan(&folder))
+	bin, _ := gitbin.Locate()
+	wt := filepath.Join(t.TempDir(), "wt")
+	cmd := exec.Command(bin, "worktree", "add", "-q", "-b", "side", wt)
+	cmd.Dir = folder
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, os.WriteFile(filepath.Join(wt, "a.go"), []byte("one\nTWO in the worktree\nthree\nfour\nfive\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(wt, "only.go"), []byte("worktree only\n"), 0o600))
+	_, err = fx.d.Exec(`UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = '2026-10-16T10:00:00Z' WHERE id = ?`, wt, session)
+	require.NoError(t, err)
+
+	res := mustApply(t, reg, wb, "annotate_changes", `{"notes":[
+		{"path":"a.go","start_line":2,"end_line":2,"note":"changed here"},
+		{"path":"only.go","start_line":1,"end_line":1,"note":"new in the worktree"}],"reason":"hand back"}`)
+	tree, _ := res["tree_sha"].(string)
+	require.Len(t, tree, 40)
+	notes, err := fx.d.ReviewNotes(wb, session)
+	require.NoError(t, err)
+	require.Len(t, notes, 2)
+	assert.Equal(t, "TWO in the worktree", strings.TrimRight(notes[0].Quote, "\n"))
+	assert.Equal(t, "worktree only", strings.TrimRight(notes[1].Quote, "\n"))
+
+	// The folder itself has neither change: its tree differs from the note's.
+	ls := exec.Command(bin, "ls-tree", "--name-only", tree)
+	ls.Dir = wt
+	names, err := ls.CombinedOutput()
+	require.NoError(t, err, string(names))
+	assert.Contains(t, string(names), "only.go")
+	assert.NotContains(t, string(names), "b.go", "b.go is only in the workbench folder")
+}

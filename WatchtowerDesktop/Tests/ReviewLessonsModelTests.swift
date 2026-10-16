@@ -24,11 +24,33 @@ private final class LessonsRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     var calls: [[String]] { lock.withLock { seen } }
 
+    // A held call waits (its answer already picked) until `release`.
+    private var holding = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+    func hold() { lock.withLock { holding = true } }
+    var pending: Int { lock.withLock { held.count } }
+    func release() {
+        let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            holding = false
+            defer { held = [] }
+            return held
+        }
+        waiting.forEach { $0.resume() }
+    }
+
     func run(args: [String]) async throws -> Data {
         let action = args[3]
         let (json, effect) = lock.withLock { () -> (String, ((Database) throws -> Void)?) in
             seen.append(args)
             return (answers[action] ?? #"{"ok":false,"error":"unscripted \#(action)"}"#, effects[action])
+        }
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let wait = lock.withLock { () -> Bool in
+                guard holding else { return false }
+                held.append(c)
+                return true
+            }
+            if !wait { c.resume() }
         }
         if let effect { try await db.write(effect) }
         return Data(json.utf8)
@@ -96,6 +118,28 @@ final class ReviewLessonsModelTests: XCTestCase {
         XCTAssertEqual(model.lessons, [])
         XCTAssertEqual(runner.calls.map { Array($0.prefix(4)) }.map(\.last), ["accept", "dismiss"])
         XCTAssertEqual(runner.calls.last?.suffix(3), ["--lesson", String(ids[1]), "--json"])
+    }
+
+    /// While one decision runs, a second Accept or Dismiss calls nothing.
+    func testNoSecondDecisionWhileOneRuns() async throws {
+        let (model, runner, db, project) = try make()
+        try await db.write { try Self.insertLesson(project: project, text: "A")($0) }
+        try model.load()
+        let id = try XCTUnwrap(model.lessons.first?.id)
+        runner.answer("accept", #"{"ok":true,"written":".watchtower/review.md"}"#) { db in
+            try db.execute(sql: "UPDATE review_lessons SET status = 'accepted' WHERE id = ?", arguments: [id])
+        }
+        runner.hold()
+        let first = Task { await model.accept(id) }
+        for _ in 0..<2000 where runner.pending < 1 { try? await Task.sleep(nanoseconds: 1_000_000) }
+        XCTAssertTrue(model.deciding)
+        await model.accept(id)
+        await model.dismiss(id)
+        XCTAssertEqual(runner.calls.count, 1, "the second decision calls nothing")
+        runner.release()
+        await first.value
+        XCTAssertFalse(model.deciding)
+        XCTAssertEqual(model.lessons, [])
     }
 
     func testAcceptRefusalSetsLastError() async throws {

@@ -71,6 +71,8 @@ final class ReviewChangesModel {
     /// A refresh is running; another one asked for meanwhile runs once after it.
     private(set) var refreshing = false
     private var refreshAgain = false
+    /// Whether a refresh asked for while one ran wants a new overview.
+    private var refreshAgainRegenerates = false
     private(set) var lastSend: SessionLineDelivery.Delivery?
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
@@ -114,7 +116,7 @@ final class ReviewChangesModel {
 
     var intentItems: [ReviewIntentItem] {
         guard let ready = lastReadyOverview else { return ReviewWrapUp.intentItems(context) }
-        return ReviewWrapUp.intentItems(context, coverage: ready.coverage.map { (item: $0.item, status: $0.status.rawValue) })
+        return ReviewWrapUp.intentItems(context, coverage: ready.coverage.map { (index: $0.index, status: $0.status.rawValue) })
     }
     var progress: ReviewProgress {
         ReviewProgress.make(files: files, chapters: chapters) { isViewed($0) }
@@ -254,7 +256,9 @@ final class ReviewChangesModel {
     /// it, so the last tree read always wins. A round that is no longer open
     /// gives way to the next one through `open()`, the single path that
     /// creates a round and carries the comments and Viewed marks into it.
-    func refresh() async {
+    /// `regenerateOverview: false` (an owner Undo) keeps the overview shown
+    /// although the tree changed; the next refresh finding a new tree asks again.
+    func refresh(regenerateOverview: Bool = true) async {
         guard load == .ready, !sending else { return }
         guard round?.status == "open" else {
             await open()
@@ -262,17 +266,21 @@ final class ReviewChangesModel {
         }
         guard !refreshing else {
             refreshAgain = true
+            refreshAgainRegenerates = refreshAgainRegenerates || regenerateOverview
             return
         }
         refreshing = true
         defer { refreshing = false }
+        var regenerate = regenerateOverview
         repeat {
             refreshAgain = false
-            await refreshOnce()
+            refreshAgainRegenerates = false
+            await refreshOnce(regenerateOverview: regenerate)
+            regenerate = refreshAgainRegenerates
         } while refreshAgain && load == .ready
     }
 
-    private func refreshOnce() async {
+    private func refreshOnce(regenerateOverview: Bool) async {
         lastError = nil
         do {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: true))
@@ -286,7 +294,9 @@ final class ReviewChangesModel {
             lensNotes = ctx.lensNotes ?? []
             try reloadNotes()
             try await loadDiff(info)
-            if treeChanged { startOverview() }
+            // Without an overview on screen (one still loading for the old
+            // tree would be dropped) a new one is asked for even after an Undo.
+            if treeChanged, regenerateOverview || !overviewShown { startOverview() }
             let roundID = info.id
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
@@ -576,6 +586,11 @@ final class ReviewChangesModel {
         refreshChapters()
     }
 
+    private var overviewShown: Bool {
+        if case .ready = overview { return true }
+        return false
+    }
+
     func risk(for path: String) -> ReviewOverview.Risk? {
         lastReadyOverview?.risk.first { $0.path == path }
     }
@@ -614,7 +629,7 @@ final class ReviewChangesModel {
             lastError = Self.message(error)
             return
         }
-        await refresh()
+        await refresh(regenerateOverview: false)
     }
 
     // MARK: - The agent's answers

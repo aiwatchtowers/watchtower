@@ -244,8 +244,21 @@ func (db *DB) DecideReviewLesson(projectID, id int64, status string) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("deciding review lesson %d: %w", id, err)
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("deciding review lesson %d: %w", id, err)
+	}
 	return n == 1, nil
+}
+
+// ReopenReviewLesson moves an accepted lesson back to proposed: Accept's
+// undo when the rule could not be written after the decision was taken.
+func (db *DB) ReopenReviewLesson(projectID, id int64) error {
+	if _, err := db.Exec(`UPDATE review_lessons SET status = 'proposed', decided_at = NULL
+		WHERE project_id = ? AND id = ? AND status = 'accepted'`, projectID, id); err != nil {
+		return fmt.Errorf("reopening review lesson %d: %w", id, err)
+	}
+	return nil
 }
 
 // ReviewLessonInputComments are the owner's comments the lessons call learns

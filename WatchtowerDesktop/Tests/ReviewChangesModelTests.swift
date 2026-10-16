@@ -1068,16 +1068,88 @@ final class ReviewChangesModelTests: XCTestCase {
 
     func testWrapUpUsesCoverageItems() async throws {
         let h = try harness()
-        h.cli.script(["overview": overviewJSON(coverage: #"[{"item":"Ship it","status":"partial","where":["pkg/y.go"]}]"#)])
+        h.cli.script(["overview": overviewJSON(coverage: #"[{"index":1,"item":"Ship the thing","status":"partial","where":["pkg/y.go"]}]"#)])
         h.cli.hold("overview")
         await openDeep(h)
         XCTAssertEqual(h.model.intentItems.map(\.key), ["target:5"], "the context items until the overview is ready")
+        XCTAssertEqual(h.model.intentItems.map(\.aiStatus), [nil])
         await h.cli.waitPending("overview")
         h.cli.release("overview")
         await awaitOverview(h)
-        XCTAssertEqual(h.model.intentItems.map(\.text), ["Ship it"])
+        XCTAssertEqual(h.model.intentItems.map(\.key), ["target:5"])
+        XCTAssertEqual(h.model.intentItems.map(\.text), ["Ship it"], "the context's wording, not the model's")
         XCTAssertEqual(h.model.intentItems.map(\.aiStatus), ["partial"])
-        XCTAssertTrue(h.model.intentItems.first?.key.hasPrefix("cov:") == true)
+    }
+
+    /// A new overview words the item differently: the key, the mark and the
+    /// draft it left stay one.
+    func testWrapUpMarkSurvivesARewordedOverview() async throws {
+        let h = try harness()
+        h.cli.script("overview", [
+            overviewJSON(coverage: #"[{"index":1,"item":"Ship it","status":"partial","where":[]}]"#),
+            overviewJSON(coverage: #"[{"index":1,"item":"Shipping the feature","status":"done","where":[]}]"#)
+        ])
+        await openDeep(h)
+        h.cli.script("start", [deepStartJSON(tree: "u7")])
+        await awaitOverview(h)
+        let first = try XCTUnwrap(h.model.intentItems.first)
+        try h.model.markIntent(first, state: .notDone, note: "missing")
+        await h.model.refresh()
+        await awaitOverview(h)
+        XCTAssertEqual(h.cli.calls("overview").count, 2)
+        let second = try XCTUnwrap(h.model.intentItems.first)
+        XCTAssertEqual(second.key, first.key)
+        XCTAssertEqual(second.aiStatus, "done")
+        XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.itemKey), [first.key], "the mark set under the first overview shows")
+        XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.state), [.notDone])
+        try h.model.markIntent(second, state: .notDone, note: "still missing")
+        let drafts = try await h.comments().filter { $0.lens == "intent" && $0.status == .draft }
+        XCTAssertEqual(drafts.map(\.body), [ReviewWrapUp.intentCommentBody(partial: false, item: second, note: "still missing")],
+                       "the earlier draft is replaced, not duplicated")
+    }
+
+    /// An overview answered for a tree no longer shown never lands.
+    func testOverviewOfAnOldTreeIsDropped() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
+        h.cli.script("overview", [
+            #"{"ok":true,"overview":{"summary":"Of t7."},"overview_cached":false}"#,
+            #"{"ok":true,"overview":{"summary":"Of u7."},"overview_cached":false}"#
+        ])
+        h.cli.hold("overview")
+        await h.model.open()
+        await h.cli.waitPending("overview")
+        await h.model.refresh()
+        XCTAssertEqual(h.model.round?.treeSha, "u7")
+        await h.cli.waitPending("overview", count: 2)
+        h.cli.release("overview")
+        await awaitOverview(h)
+        guard case .ready(let overview) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(overview.summary, "Of u7.")
+    }
+
+    /// The same across a Send: round 7's overview does not land on round 8.
+    func testOverviewOfASentRoundIsDroppedInTheNextRound() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 8, prev: 7)])
+        h.cli.script(["send": #"{"ok":true,"sent":true,"comments":0,"line":"Review round #7 sent."}"#])
+        h.cli.script("overview", [
+            #"{"ok":true,"overview":{"summary":"Of round 7."},"overview_cached":false}"#,
+            #"{"ok":true,"overview":{"summary":"Of round 8."},"overview_cached":false}"#
+        ])
+        h.cli.hold("overview")
+        await h.model.open()
+        await h.cli.waitPending("overview")
+        await h.model.send()
+        await h.model.refresh()
+        XCTAssertEqual(h.model.round?.id, 8)
+        await h.cli.waitPending("overview", count: 2)
+        h.cli.release("overview")
+        await awaitOverview(h)
+        guard case .ready(let overview) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(overview.summary, "Of round 8.")
     }
 
     func testNotesArePlacedOnTheSelectedFile() async throws {
@@ -1133,6 +1205,36 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(args, ["workbench", "review", "revert-hunk", "--workbench", String(h.projectID), "--round", "7",
                               "--hunk", "0123456789abcdef", "--json"])
         XCTAssertEqual(h.cli.calls("start").map { $0.contains("--refresh") }, [false, true], "the undo refreshes the round")
+    }
+
+    /// An owner Undo changes the tree but keeps the overview on screen; the
+    /// next refresh that finds a new tree regenerates it as usual.
+    func testUndoDoesNotRegenerateTheOverview() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u"), startJSON(id: 7, prev: 0, tree: "v")])
+        h.cli.script(["revert-hunk": #"{"ok":true,"revert":{"hunk_id":"0123456789abcdef","path":"a.go"}}"#])
+        h.cli.script("overview", [
+            #"{"ok":true,"overview":{"summary":"Before the undo."},"overview_cached":false}"#,
+            #"{"ok":true,"overview":{"summary":"After a refresh."},"overview_cached":false}"#
+        ])
+        await h.model.open()
+        await awaitOverview(h)
+        let before = h.model.overview
+        guard case .ready = before else { return XCTFail("overview \(before)") }
+        await h.model.undo(hunkID: "0123456789abcdef")
+        XCTAssertNil(h.model.lastError)
+        XCTAssertEqual(h.model.round?.treeSha, "u7")
+        await awaitOverview(h)
+        XCTAssertEqual(h.cli.calls("overview").count, 1, "the undo asks for no new overview")
+        XCTAssertEqual(h.model.overview, before)
+
+        await h.model.refresh()
+        XCTAssertEqual(h.model.round?.treeSha, "v7")
+        await awaitOverview(h)
+        XCTAssertEqual(h.cli.calls("overview").count, 2)
+        guard case .ready(let after) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(after.summary, "After a refresh.")
     }
 
     func testUndoRefusalShowsGoText() async throws {
@@ -1313,11 +1415,11 @@ final class ReviewChangesModelTests: XCTestCase {
 
     func testCoverageAndRiskStayWhileTheNextOverviewLoads() async throws {
         let h = try harness()
-        h.cli.script(["overview": overviewJSON(coverage: #"[{"item":"Ship it","status":"partial","where":["pkg/y.go"]}]"#)])
+        h.cli.script(["overview": overviewJSON(coverage: #"[{"index":1,"item":"Ship it","status":"partial","where":["pkg/y.go"]}]"#)])
         await openDeep(h)
         await awaitOverview(h)
         let items = h.model.intentItems
-        XCTAssertTrue(items.first?.key.hasPrefix("cov:") == true)
+        XCTAssertEqual(items.first?.aiStatus, "partial")
         // The agent edits: the refresh reads a new tree, and its overview loads.
         h.cli.script("start", [deepStartJSON(), deepStartJSON(tree: "u7")])
         h.cli.hold("overview")

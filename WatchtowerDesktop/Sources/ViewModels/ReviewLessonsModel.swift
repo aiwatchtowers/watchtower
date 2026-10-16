@@ -13,6 +13,8 @@ final class ReviewLessonsModel {
     private(set) var lessons: [ReviewLesson] = []
     /// A Find repeats call runs (it can take minutes: one LLM call).
     private(set) var finding = false
+    /// An Accept or Dismiss runs: the rows' buttons wait for it.
+    private(set) var deciding = false
     /// The last refusal or failure; cleared by the next action.
     private(set) var lastError: String?
 
@@ -32,21 +34,29 @@ final class ReviewLessonsModel {
     }
 
     func findRepeats() async {
-        guard !finding else { return }
+        guard !finding, !deciding else { return }
         finding = true
         defer { finding = false }
         await perform(.propose)
     }
 
     func accept(_ id: Int64) async {
-        await perform(.accept(id))
+        await decide(.accept(id))
     }
 
     func dismiss(_ id: Int64) async {
-        await perform(.dismiss(id))
+        await decide(.dismiss(id))
     }
 
     // MARK: - Private
+
+    /// One decision at a time: a second click while one runs does nothing.
+    private func decide(_ action: WorkbenchCLI.LessonAction) async {
+        guard !deciding, !finding else { return }
+        deciding = true
+        defer { deciding = false }
+        await perform(action)
+    }
 
     /// Runs one lessons command, then re-reads the proposals whatever it answered.
     private func perform(_ action: WorkbenchCLI.LessonAction) async {

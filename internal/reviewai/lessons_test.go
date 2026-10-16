@@ -62,3 +62,13 @@ func TestLessons_BuildsInputAndUsesSourceTag(t *testing.T) {
 	assert.Contains(t, g.user, "quote: func a()")
 	assert.Contains(t, g.user, "#8 [design] design: add a test")
 }
+
+func TestParseLessons_MissingKeyIsAnError(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"lessons":null}`, `{"rules":[]}`} {
+		_, err := ParseLessons(raw, map[int64]bool{1: true}, nil)
+		assert.Error(t, err, raw)
+	}
+	ls, err := ParseLessons(`{"lessons":[]}`, map[int64]bool{1: true}, nil)
+	require.NoError(t, err, "an explicit empty list is an answer")
+	assert.Empty(t, ls)
+}

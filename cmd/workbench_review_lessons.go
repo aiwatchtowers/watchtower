@@ -55,6 +55,11 @@ func lessonsJSON(ls []db.ReviewLesson) []reviewLessonJSON {
 }
 
 func runWorkbenchReviewLessonsPropose(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("propose review lessons"); err != nil {
+		return err
+	}
+	ctx, cancel := reviewAIContext(cmd)
+	defer cancel()
 	database, p, err := reviewTarget(cmd)
 	if err != nil {
 		return err
@@ -73,8 +78,6 @@ func runWorkbenchReviewLessonsPropose(cmd *cobra.Command, _ []string) error {
 	}
 	pipe := reviewai.New(reviewAIGeneratorFactory(cfg))
 	pipe.SetPromptStore(prompts.New(database, nil))
-	ctx, cancel := workbenchGitContext(cmd, reviewAIBudget)
-	defer cancel()
 	found, err := pipe.Lessons(ctx, comments, lenses)
 	if err != nil {
 		return failReview(cmd, fmt.Errorf("find repeats unavailable: %w", err))
@@ -107,7 +110,13 @@ func runWorkbenchReviewLessonsAccept(cmd *cobra.Command, _ []string) error {
 	if l == nil {
 		return failReview(cmd, fmt.Errorf("lesson %d is not on this workbench", reviewFlagLesson))
 	}
-	if l.Status != "proposed" {
+	// Decide first: of two Accepts racing on one lesson only the one that
+	// moved it writes the rule.
+	ok, err := database.DecideReviewLesson(p.ID, l.ID, "accepted")
+	if err != nil {
+		return failReview(cmd, err)
+	}
+	if !ok {
 		return failReview(cmd, errLessonDecided(l.ID))
 	}
 	lensName := "House rules"
@@ -119,19 +128,18 @@ func runWorkbenchReviewLessonsAccept(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if err := reviewdiff.AppendLessonRule(p.FolderPath, lensName, l.Text); err != nil {
+		if rerr := database.ReopenReviewLesson(p.ID, l.ID); rerr != nil {
+			return failReview(cmd, fmt.Errorf("%w (and the lesson stays accepted: %w)", err, rerr))
+		}
 		return failReview(cmd, err)
-	}
-	ok, err := database.DecideReviewLesson(p.ID, l.ID, "accepted")
-	if err != nil {
-		return failReview(cmd, err)
-	}
-	if !ok {
-		return failReview(cmd, errLessonDecided(l.ID))
 	}
 	return writeReview(cmd, reviewEnvelope{OK: true, Written: reviewLessonsFile})
 }
 
 func runWorkbenchReviewLessonsDismiss(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("dismiss a review lesson"); err != nil {
+		return err
+	}
 	database, p, err := reviewTarget(cmd)
 	if err != nil {
 		return err

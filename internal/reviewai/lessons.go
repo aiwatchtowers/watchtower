@@ -3,6 +3,7 @@ package reviewai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -76,17 +77,20 @@ func ParseLessons(raw string, inputIDs map[int64]bool, lensIDs []string) ([]Less
 		return nil, fmt.Errorf("lessons reply: %w", err)
 	}
 	var reply struct {
-		Lessons []Lesson `json:"lessons"`
+		Lessons *[]Lesson `json:"lessons"`
 	}
 	if err := json.Unmarshal([]byte(js), &reply); err != nil {
 		return nil, fmt.Errorf("lessons reply: %w", err)
+	}
+	if reply.Lessons == nil { // absent or null: not an answer, unlike an explicit []
+		return nil, errors.New(`lessons reply: no "lessons" list`)
 	}
 	lensOK := map[string]bool{}
 	for _, id := range lensIDs {
 		lensOK[id] = true
 	}
 	out := []Lesson{}
-	for _, l := range reply.Lessons {
+	for _, l := range *reply.Lessons {
 		if len(out) >= maxLessons {
 			break
 		}
