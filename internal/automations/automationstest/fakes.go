@@ -181,3 +181,36 @@ func (r *FakeRegistry) ProposedCalls() []FakeProposal {
 	defer r.mu.Unlock()
 	return append([]FakeProposal(nil), r.Proposed...)
 }
+
+// FakeMCPCall is one Call a FakeMCP received.
+type FakeMCPCall struct {
+	Server, Tool string
+	Args         json.RawMessage
+}
+
+// FakeMCP is an automations.MCPCaller that records its calls. It returns
+// Result (null when empty) or Err.
+type FakeMCP struct {
+	Result json.RawMessage
+	Err    error
+
+	mu    sync.Mutex
+	calls []FakeMCPCall
+}
+
+var _ automations.MCPCaller = (*FakeMCP)(nil)
+
+// Call records the call and returns the scripted outcome.
+func (m *FakeMCP) Call(_ context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, FakeMCPCall{Server: server, Tool: tool, Args: append(json.RawMessage(nil), args...)})
+	return m.Result, m.Err
+}
+
+// Calls returns a copy of the calls received so far.
+func (m *FakeMCP) Calls() []FakeMCPCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]FakeMCPCall(nil), m.calls...)
+}

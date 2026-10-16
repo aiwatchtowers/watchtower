@@ -3,6 +3,7 @@ package automations
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"watchtower/internal/db"
@@ -35,7 +36,25 @@ type Backends struct {
 	Clock     Clock
 	Shell     ShellRunner
 	Workbench WorkbenchResolver
+	MCP       MCPCaller
 }
+
+// MCPCaller calls one tool of an enabled Quick Connection (P6). Only a tool
+// QC-02's verdict allows is ever called: the connection's last listing shows
+// it read-only, or the owner named it and the server does not mark it a
+// write.
+type MCPCaller interface {
+	Call(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error)
+}
+
+// ErrMCPNotAvailable means no enabled Quick Connection has exactly that name, its
+// tools were never listed (or the connections could not be read), its
+// credentials are unusable, or none of its tools is allowed.
+var ErrMCPNotAvailable = errors.New("quick connection not available")
+
+// ErrMCPToolNotAllowed means the connection is available but QC-02 does not allow
+// that tool. The server is never started.
+var ErrMCPToolNotAllowed = errors.New("quick connection tool not allowed")
 
 // RunEnvMarker is the environment variable every child process an automation
 // run starts carries (P5 shell()/session(), P6 agent()), set to the run id.
