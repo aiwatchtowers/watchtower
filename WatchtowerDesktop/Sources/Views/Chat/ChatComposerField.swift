@@ -37,6 +37,10 @@ struct ChatComposerField: View {
     /// quote batch): enables Send with an empty field. Defaults to none, so
     /// every other call site is unchanged.
     var hasPendingContent = false
+    /// Focus the input when it is created (the ⌘/ popup) ...
+    var autoFocus = false
+    /// ... and whenever this value changes (⌘/ on the AI Chat tab).
+    var focusRequest = 0
     @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
@@ -58,7 +62,9 @@ struct ChatComposerField: View {
             onRemoveAttachment: onRemoveAttachment,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
-            hasPendingContent: hasPendingContent
+            hasPendingContent: hasPendingContent,
+            autoFocus: autoFocus,
+            focusRequest: focusRequest
         )
     }
 }
@@ -86,6 +92,8 @@ struct ChatComposerFieldContent: View {
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     var hasPendingContent = false
+    var autoFocus = false
+    var focusRequest = 0
     @State private var inputHeight: CGFloat = 22
 
     var body: some View {
@@ -144,7 +152,9 @@ struct ChatComposerFieldContent: View {
                     onArrowUpWhenEmpty: onArrowUpWhenEmpty,
                     onPasteImage: onPasteImage,
                     onCursorChange: onCursorChange,
-                    onPickerKey: onPickerKey
+                    onPickerKey: onPickerKey,
+                    autoFocus: autoFocus,
+                    focusRequest: focusRequest
                 ) {
                     guard canSend else { return }
                     onSend()
@@ -227,6 +237,8 @@ struct ExpandingTextInput: NSViewRepresentable {
     var onCursorChange: ((String, Int) -> Void)?
     /// Offered Up/Down/Enter/Tab/Esc first while a picker may be open.
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    var autoFocus = false
+    var focusRequest = 0
     var onSubmit: () -> Void
 
     private let minHeight: CGFloat = 20
@@ -268,11 +280,25 @@ struct ExpandingTextInput: NSViewRepresentable {
             object: textView
         )
 
+        context.coordinator.focusedRequest = focusRequest
+        if autoFocus { Self.focus(textView) }
         return scrollView
+    }
+
+    /// Next run-loop turn: the view is in its window by then.
+    private static func focus(_ textView: NSTextView) {
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, let window = textView.window else { return }
+            window.makeFirstResponder(textView)
+        }
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
+        if context.coordinator.focusedRequest != focusRequest {
+            context.coordinator.focusedRequest = focusRequest
+            if let textView = scrollView.documentView as? NSTextView { Self.focus(textView) }
+        }
         guard let textView = scrollView.documentView as? PastingTextView else { return }
         textView.onPasteImage = onPasteImage
         if textView.string != text {
@@ -289,6 +315,7 @@ struct ExpandingTextInput: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ExpandingTextInput
+        var focusedRequest = 0
 
         init(_ parent: ExpandingTextInput) {
             self.parent = parent
