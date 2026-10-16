@@ -221,6 +221,7 @@ func TestReplaceBoardColumns_Validates(t *testing.T) {
 		"duplicate title":      {Columns: []BoardColumn{{Status: "todo", Title: "Spec"}, {Status: "in_progress", Title: "spec"}}},
 		"another status label": {Columns: []BoardColumn{{Status: "todo", Title: "done"}}},
 		"501-char description": {Columns: []BoardColumn{{Status: "todo", Title: "A", Description: strings.Repeat("d", 501)}}},
+		"digits-only title":    {Columns: []BoardColumn{{Status: "todo", Title: " 12 "}}},
 		"unknown status":       {Columns: []BoardColumn{{Status: "snoozed", Title: "Later"}}},
 		"hiding todo":          {Hidden: []string{"todo"}},
 		"status change":        {Columns: []BoardColumn{{ID: code.ID, Status: "todo", Title: "Code"}}},
@@ -383,4 +384,20 @@ func TestMigration00124_DownUp(t *testing.T) {
 	assert.False(t, columnNames(t, d.DB, "projects")["board_hidden_statuses"])
 	require.NoError(t, goose.Up(d.DB, "migrations"))
 	assert.True(t, columnNames(t, d.DB, "targets")["board_column_id"])
+}
+
+func TestGetWorkbenchBoard_UndecodableHiddenStatusesStillReadsColumns(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	tid := SeedTestWorkbenchTarget(t, d, wb, sql.NullInt64{}, "task")
+	replaceColumns(t, d, wb, BoardColumn{Status: "todo", Title: "Backlog"})
+	_, err := d.Exec(`UPDATE projects SET board_hidden_statuses = 'not json' WHERE id = ?`, wb)
+	require.NoError(t, err)
+
+	board, err := d.GetWorkbenchBoard(wb)
+
+	require.NoError(t, err)
+	require.Len(t, board, 1)
+	assert.Equal(t, tid, int64(board[0].Target.ID))
+	assert.Equal(t, "Backlog", board[0].Column)
 }

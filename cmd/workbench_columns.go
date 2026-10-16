@@ -43,8 +43,12 @@ func runWorkbenchColumns(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf(`--set reads the definition from stdin: use --set -`)
 		}
 		dec := json.NewDecoder(cmd.InOrStdin())
+		dec.DisallowUnknownFields()
 		if err := dec.Decode(&in); err != nil {
 			return fmt.Errorf("reading the column definition from stdin: %w", err)
+		}
+		if dec.More() {
+			return fmt.Errorf("reading the column definition from stdin: unexpected data after the JSON object")
 		}
 	}
 	_, database, err := openJiraCmdDB()

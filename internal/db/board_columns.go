@@ -143,21 +143,35 @@ func getBoardColumnsOn(q interface {
 		}
 		out.Hidden = normalizeHidden(stored)
 	}
+	cols, err := readBoardColumnRows(q, projectID)
+	if err != nil {
+		return BoardColumns{}, err
+	}
+	out.Columns = cols
+	return out, nil
+}
+
+// readBoardColumnRows reads workbench projectID's column rows in board order,
+// without touching its hidden-status setting.
+func readBoardColumnRows(q interface {
+	Query(string, ...any) (*sql.Rows, error)
+}, projectID int64) ([]BoardColumn, error) {
 	rows, err := q.Query(`SELECT id, status, title, description, position FROM workbench_board_columns
 		WHERE project_id = ? ORDER BY `+boardStatusOrderSQL+`, position, id`, projectID)
 	if err != nil {
-		return BoardColumns{}, fmt.Errorf("reading workbench %d board columns: %w", projectID, err)
+		return nil, fmt.Errorf("reading workbench %d board columns: %w", projectID, err)
 	}
 	defer rows.Close()
+	out := []BoardColumn{}
 	for rows.Next() {
 		var c BoardColumn
 		if err := rows.Scan(&c.ID, &c.Status, &c.Title, &c.Description, &c.Position); err != nil {
-			return BoardColumns{}, fmt.Errorf("scanning board column: %w", err)
+			return nil, fmt.Errorf("scanning board column: %w", err)
 		}
-		out.Columns = append(out.Columns, c)
+		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
-		return BoardColumns{}, fmt.Errorf("reading workbench %d board columns: %w", projectID, err)
+		return nil, fmt.Errorf("reading workbench %d board columns: %w", projectID, err)
 	}
 	return out, nil
 }
@@ -240,6 +254,9 @@ func validateBoardColumns(in BoardColumns) ([]BoardColumn, []string, error) {
 		}
 		if utf8.RuneCountInString(c.Title) > maxColumnTitleLen {
 			return nil, nil, columnsErrorf("column %q: title is longer than %d characters", c.Title, maxColumnTitleLen)
+		}
+		if strings.Trim(c.Title, "0123456789") == "" {
+			return nil, nil, columnsErrorf("column %q: a title cannot be only digits", c.Title)
 		}
 		if utf8.RuneCountInString(c.Description) > maxColumnDescLen {
 			return nil, nil, columnsErrorf("column %q: description is longer than %d characters", c.Title, maxColumnDescLen)
@@ -349,13 +366,11 @@ func (db *DB) SetTargetColumnTx(tx *sql.Tx, targetID int64, status string, colum
 // effective column title, or returns nil when the workbench defines no
 // columns. A parent's stored column is ignored (spec §3).
 func (db *DB) boardLeafColumns(workbenchID int64, targets []Target) (map[int64]string, error) {
-	def, err := db.GetBoardColumns(workbenchID)
+	cols, err := readBoardColumnRows(db, workbenchID)
 	if err != nil {
-		if errors.Is(err, ErrWorkbenchNotFound) {
-			return nil, nil
-		}
 		return nil, err
 	}
+	def := BoardColumns{Columns: cols}
 	if len(def.Columns) == 0 {
 		return nil, nil
 	}

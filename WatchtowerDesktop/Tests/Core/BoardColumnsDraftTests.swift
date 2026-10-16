@@ -21,6 +21,16 @@ final class BoardColumnsDraftTests: XCTestCase {
         XCTAssertEqual(draft.errors, ["In Progress: at most 6 columns"])
     }
 
+    func testDraftRejectsDigitOnlyTitle() {
+        var draft = BoardColumnsDraft(.empty)
+        let id = draft.add(to: "todo")
+        draft.setTitle(" 12 ", of: id)
+        XCTAssertEqual(draft.errors, ["“12”: a title cannot be only digits"])
+
+        draft.setTitle("Phase 2", of: id)
+        XCTAssertEqual(draft.errors, [])
+    }
+
     func testDraftRejectsTitleEqualToAnotherStatusLabel() {
         var draft = BoardColumnsDraft(.empty)
         let id = draft.add(to: "todo")

@@ -135,6 +135,9 @@ package struct BoardColumnsDraft: Equatable {
             if title.unicodeScalars.count > Self.maxTitleLength {
                 out.append("“\(title)”: the title is longer than \(Self.maxTitleLength) characters")
             }
+            if title.unicodeScalars.allSatisfy({ ("0"..."9").contains($0) }) {
+                out.append("“\(title)”: a title cannot be only digits")
+            }
             if Self.trimmed(column.description).unicodeScalars.count > Self.maxDescriptionLength {
                 out.append("“\(title)”: the description is longer than \(Self.maxDescriptionLength) characters")
             }

@@ -86,3 +86,25 @@ func TestWorkbenchColumns_UnknownWorkbench(t *testing.T) {
 
 	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
 }
+
+func TestWorkbenchColumns_SetRefusesUnknownKeyAndTrailingData(t *testing.T) {
+	_, pid, _ := methodologyWorkbench(t)
+	id := strconv.FormatInt(pid, 10)
+	good := `{"columns":[{"status":"todo","title":"Backlog","description":"","position":0}],"hidden":[]}`
+	_, _, err := runColumns(t, good, id, "--set", "-", "--json")
+	require.NoError(t, err)
+
+	for name, in := range map[string]string{
+		"misspelled key":  `{"colums":[],"hidden":[]}`,
+		"hidden_statuses": `{"columns":[],"hidden_statuses":["blocked"]}`,
+		"trailing data":   good + ` {"columns":[]}`,
+	} {
+		_, _, err = runColumns(t, in, id, "--set", "-", "--json")
+		require.Error(t, err, name)
+		out, _, err := runColumns(t, "", id, "--json")
+		require.NoError(t, err)
+		got := decodeColumns(t, out)
+		require.Len(t, got.Columns, 1, name)
+		assert.Equal(t, "Backlog", got.Columns[0].Title, name)
+	}
+}
