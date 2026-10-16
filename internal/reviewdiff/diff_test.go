@@ -38,12 +38,36 @@ func TestDiff_StatusesHunksAndOddPaths(t *testing.T) {
 	for _, f := range d.Files {
 		byPath[f.Path] = f
 	}
+	h := assertDiffFiles(t, d, byPath, odd)
+	again, _ := r.Diff(context.Background(), base, tree)
+	for _, f := range again.Files {
+		if f.Path == "a.go" && f.Hunks[0].ID != h.ID {
+			t.Fatal("hunk id not stable")
+		}
+	}
+}
+
+// assertDiffFiles checks each file's status, counts and hunks in the odd-paths
+// diff and returns a.go's hunk.
+func assertDiffFiles(t *testing.T, d Diff, byPath map[string]File, odd string) (h Hunk) {
+	t.Helper()
 	if f := byPath["a.go"]; f.Status != "modified" || f.Additions != 1 || f.Deletions != 1 || len(f.Hunks) != 1 {
 		t.Fatalf("a.go = %+v", f)
 	}
 	if f := byPath["gone.txt"]; f.Status != "deleted" {
 		t.Fatalf("gone.txt = %+v", f)
 	}
+	assertRenamedAddedBinary(t, d, byPath, odd)
+	h = byPath["a.go"].Hunks[0]
+	if h.ID == "" || h.NewStart == 0 {
+		t.Fatalf("hunk = %+v", h)
+	}
+	return h
+}
+
+// assertRenamedAddedBinary checks the rename, the odd-path add and the binary file.
+func assertRenamedAddedBinary(t *testing.T, d Diff, byPath map[string]File, odd string) {
+	t.Helper()
 	if f := byPath["new name.txt"]; f.Status != "renamed" || f.OldPath != "old name.txt" {
 		t.Fatalf("rename = %+v", f)
 	}
@@ -52,16 +76,6 @@ func TestDiff_StatusesHunksAndOddPaths(t *testing.T) {
 	}
 	if f := byPath["img.bin"]; !f.Binary || len(f.Hunks) != 0 {
 		t.Fatalf("binary = %+v", f)
-	}
-	h := byPath["a.go"].Hunks[0]
-	if h.ID == "" || h.NewStart == 0 {
-		t.Fatalf("hunk = %+v", h)
-	}
-	again, _ := r.Diff(context.Background(), base, tree)
-	for _, f := range again.Files {
-		if f.Path == "a.go" && f.Hunks[0].ID != h.ID {
-			t.Fatal("hunk id not stable")
-		}
 	}
 }
 

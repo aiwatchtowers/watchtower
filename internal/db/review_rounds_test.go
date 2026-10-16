@@ -43,6 +43,17 @@ func TestReview04_SendIsGuardedAndStoredBeforeTheLine(t *testing.T) {
 	if _, ok, _ := d.SendReviewRound(pid, id); ok {
 		t.Fatal("a sent round was sent again")
 	}
+	assertSentRoundState(t, d, pid, sid, id)
+	if _, err := d.CreateReviewRound(r); err != nil {
+		t.Fatalf("a new round after send: %v", err)
+	}
+}
+
+// assertSentRoundState checks what a sent round leaves behind: its comments
+// marked sent, no more tree updates, one waiting line, delivery limited to its
+// own workbench, and it being the session's last sent round.
+func assertSentRoundState(t *testing.T, d *DB, pid, sid, id int64) {
+	t.Helper()
 	cs, _ := d.ReviewRoundComments(id)
 	if len(cs) != 1 || cs[0].Status != "sent" {
 		t.Fatalf("comments = %+v", cs)
@@ -63,9 +74,6 @@ func TestReview04_SendIsGuardedAndStoredBeforeTheLine(t *testing.T) {
 	last, _ := d.LastSentReviewRound(pid, sid)
 	if last == nil || last.ID != id {
 		t.Fatalf("last sent = %+v", last)
-	}
-	if _, err := d.CreateReviewRound(r); err != nil {
-		t.Fatalf("a new round after send: %v", err)
 	}
 }
 
