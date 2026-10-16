@@ -13,13 +13,13 @@ import (
 )
 
 // Spec 2026-10-02 §5.2: the five renamed tools keep their old names as
-// aliases, and every one of them belongs to WorkbenchTools — DEV-06 (fifteen, plus get_review since 2026-10-16: sixteen).
+// aliases, and every one of them belongs to WorkbenchTools — DEV-06 (fifteen, plus get_review since 2026-10-16: sixteen, plus annotate_changes and reply_review_comment: eighteen).
 func TestLegacyWorkbenchToolNames_CoverTheRenamedWorkbenchTools(t *testing.T) {
 	var names []string
 	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
 		names = append(names, tool.Name)
 	}
-	require.Len(t, names, 16)
+	require.Len(t, names, 18)
 	require.Len(t, LegacyWorkbenchToolNames, 5)
 	for newName, oldName := range LegacyWorkbenchToolNames {
 		assert.Contains(t, names, newName)

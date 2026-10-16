@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, whenever you start work on a target or a group, whenever you need the owner's answer, decision, check or review, and when you finish a session. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v10
+x-watchtower-pack: v11
 ---
 
 # Watchtower Workbench
@@ -29,6 +29,8 @@ How the work itself is organised — features, specs, plans, groups, reviews, co
 - `ask_owner` — ask the owner for a document review (`kind: review`, `doc_path`), a check they run (`kind: check`, `checklist`) or a decision (`kind: question`, `questions`, each with two to four options), with a `title`, an optional `summary`, `focus` points, `target_id` and `level` (`quick` or `full`; by default from its shape). A follow-up round passes `previous_ask_id` and `changes`. It returns at once with the ask id; never wait for the answer (see "Asking the owner").
 - `get_ask` — one ask by `ask_id`; once answered, the answer as JSON and as text. Reading it marks the answer delivered.
 - `get_review` — read a review round the owner sent from the diff reviewer (`round_id`): each comment with file, lines, quoted code and text.
+- `annotate_changes` — leave the owner notes and chapters in the diff reviewer before you hand work back: `notes` (`path`, `start_line`, `end_line`, `note`), optional `chapters` (`title`, `paths`, `core`, `why`) and a `reason`; each call replaces your earlier ones (see "Review rounds").
+- `reply_review_comment` — answer one comment of a sent round: `comment_id`, `reply`, `resolved` and a `reason` (see "Review rounds").
 - `list_asks` — the workbench's asks: by default the answered ones you have not read, then the open ones.
 - `withdraw_ask` — withdraw an open ask the owner no longer needs to answer.
 - `finish_session` — mark this session finished with a `summary` for the owner (at most 4 lines: what was done, the PRs, what is left) and an optional `target_id` (see "Finishing a session").
@@ -87,11 +89,16 @@ Anything beyond a Chat question is an `ask_owner` call — never text in the ter
 
 The owner reviews your changes in Watchtower's diff reviewer and sends a round as one line: `Review round #N sent (K comments) — read it with get_review N …`. A waiting round is also listed in the session brief.
 
-- Call `get_review N` first. Each comment names a file and lines of the snapshot the owner reviewed, with the quoted code; the code may have moved since — find it by the quote.
-- Address every comment: fix it, or say why not. In your reply, name each comment as `#<id>` with what you did, one line each.
-- A design comment (no file) is about the approach as a whole; answer it before the line comments.
-- Do not ask the owner to re-review: they open the next round themselves.
+**Before you hand work back** (a task done, a PR opened, a stop for the owner):
+- If the workbench folder has `.watchtower/review.md`, read it and check your changes against every rule in it.
+- Call `annotate_changes` once: a note on each non-obvious change (why, not what) and, for more than ~400 changed lines, chapters in reading order (`core: true` for the heart of the change). Each call replaces your earlier notes for this session.
 
+**When a round arrives:**
+- Call `get_review N` first. Each comment names a file and lines of the snapshot the owner reviewed, with the quoted code; the code may have moved since — find it by the quote.
+- Answer every comment with `reply_review_comment`: what you did, or why not. Pass `resolved: true` once it is fixed; the owner can reopen it.
+- A design comment (no file) is about the approach as a whole; answer it before the line comments.
+- Hunks listed as undone by the owner were reverted on purpose: do not redo them without asking.
+- Do not ask the owner to re-review: they open the next round themselves.
 
 ## Finishing a session
 
