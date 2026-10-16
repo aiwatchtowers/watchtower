@@ -66,6 +66,8 @@ final class ReviewChangesModel {
     /// read `currentSides` to show or anchor on them.
     private(set) var sides: LoadedSides?
     private(set) var sending = false
+    /// An Undo runs (its CLI call and the refresh after it).
+    private(set) var undoing = false
     /// A refresh is running; another one asked for meanwhile runs once after it.
     private(set) var refreshing = false
     private var refreshAgain = false
@@ -101,11 +103,17 @@ final class ReviewChangesModel {
     private(set) var agentResolved: [ReviewComment] = []
     /// The AI chapters in use (empty = none chosen yet).
     private var appliedAIChapters: [ReviewChapterSpec] = []
+    /// The round's saved `ai:` chapter, waiting for its overview: it stays
+    /// the saved position until the AI chapters are back.
+    private var awaitedAIChapterKey: String?
+    /// The last overview that loaded in this round: its coverage and risk
+    /// stay while the next tree's overview loads.
+    private var lastReadyOverview: ReviewOverview?
     /// The previous round's agent replies by comment id, for the carried copies.
     private var sourceReplies: [Int64: String] = [:]
 
     var intentItems: [ReviewIntentItem] {
-        guard case .ready(let ready) = overview else { return ReviewWrapUp.intentItems(context) }
+        guard let ready = lastReadyOverview else { return ReviewWrapUp.intentItems(context) }
         return ReviewWrapUp.intentItems(context, coverage: ready.coverage.map { (item: $0.item, status: $0.status.rawValue) })
     }
     var progress: ReviewProgress {
@@ -146,6 +154,12 @@ final class ReviewChangesModel {
     /// The session states in which the agent may still edit the folder.
     static let agentWorkingKinds: Set<SessionSwitcherPresentation.State.Kind> = [.working, .background]
     static let agentWorkingMessage = "The agent is working in this session — undo when it stops."
+
+    /// The pane's reading of `isAgentWorking`: the session's dot state
+    /// (a session that is not live does not work, whatever its last hook said).
+    static func agentWorks(sessionID: Int64, liveIDs: Set<Int64>, statuses: [Int64: SessionAgentStatus]) -> Bool {
+        agentWorkingKinds.contains(SessionSwitcherPresentation.state(of: sessionID, liveIDs: liveIDs, statuses: statuses).kind)
+    }
 
     /// A file's two sides as `review file` returned them for `path` on `treeSHA` in `view`.
     struct LoadedSides: Equatable {
@@ -209,6 +223,8 @@ final class ReviewChangesModel {
             overview = .idle
             aiChaptersPending = false
             appliedAIChapters = []
+            lastReadyOverview = nil
+            awaitedAIChapterKey = info.chapterKey.hasPrefix("ai:") ? info.chapterKey : nil
             try reloadNotes()
             try await loadDiff(info)
             let roundID = info.id
@@ -381,7 +397,7 @@ final class ReviewChangesModel {
     /// Refresh opens the next round. Go answering "already sent" says so in
     /// `lastError`.
     func send() async {
-        guard !sending, !refreshing, let info = round else { return }
+        guard !sending, !refreshing, !undoing, let info = round else { return }
         sending = true
         defer { sending = false }
         lastError = nil
@@ -415,7 +431,7 @@ final class ReviewChangesModel {
 
     func setMode(_ m: Mode) throws {
         try run {
-            try saveState(mode: m, phase: phase, chapterKey: currentChapterKey)
+            try saveState(mode: m, phase: phase, chapterKey: persistedChapterKey)
             mode = m
         }
     }
@@ -423,7 +439,7 @@ final class ReviewChangesModel {
     func setPhase(_ p: ReviewPhase) throws {
         try run {
             // A sent round only moves on screen; the position is saved while it is open.
-            if round?.status == "open" { try saveState(mode: mode, phase: p, chapterKey: currentChapterKey) }
+            if round?.status == "open" { try saveState(mode: mode, phase: p, chapterKey: persistedChapterKey) }
             phase = p
         }
     }
@@ -435,6 +451,7 @@ final class ReviewChangesModel {
             // A sent round only moves on screen; the position is saved while it is open.
             if round?.status == "open" { try saveState(mode: mode, phase: phase, chapterKey: key) }
             currentChapterKey = key
+            awaitedAIChapterKey = nil
         }
         let first = chapter.paths.first { path in files.first { $0.path == path }?.collapsedReason == nil } ?? chapter.paths.first
         if let first { await select(first) }
@@ -445,6 +462,11 @@ final class ReviewChangesModel {
     /// first one otherwise); checks of a vanished chapter stay in the DB.
     private func refreshChapters() {
         chapters = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: appliedAIChapters)
+        if let awaited = awaitedAIChapterKey, chapters.contains(where: { $0.key == awaited }) {
+            currentChapterKey = awaited
+            awaitedAIChapterKey = nil
+            return
+        }
         if let key = currentChapterKey, chapters.contains(where: { $0.key == key }) { return }
         currentChapterKey = chapters.first?.key
     }
@@ -536,7 +558,10 @@ final class ReviewChangesModel {
         }
         guard !Task.isCancelled, round?.id == info.id, round?.treeSha == info.treeSha else { return }
         overview = state
-        if case .ready(let ready) = state { offerAIChapters(ready) }
+        if case .ready(let ready) = state {
+            lastReadyOverview = ready
+            offerAIChapters(ready)
+        }
     }
 
     func retryOverview() {
@@ -552,8 +577,7 @@ final class ReviewChangesModel {
     }
 
     func risk(for path: String) -> ReviewOverview.Risk? {
-        guard case .ready(let ready) = overview else { return nil }
-        return ready.risk.first { $0.path == path }
+        lastReadyOverview?.risk.first { $0.path == path }
     }
 
     /// Reading time of the shown diff's changed lines (generated and lock files excluded).
@@ -564,7 +588,7 @@ final class ReviewChangesModel {
     // MARK: - Undo
 
     var canUndo: Bool {
-        round?.status == "open" && !sending && !isAgentWorking()
+        round?.status == "open" && !sending && !undoing && !isAgentWorking()
     }
 
     /// Undoes one hunk of the shown diff in the work tree (Go checks the blob
@@ -574,10 +598,13 @@ final class ReviewChangesModel {
             lastError = Self.agentWorkingMessage
             return
         }
+        guard !undoing else { return }
         guard let info = round, info.status == "open", !sending else {
             lastError = ModelError.roundClosed.errorDescription
             return
         }
+        undoing = true
+        defer { undoing = false }
         lastError = nil
         do {
             _ = try Self.checked(await cli.reviewRevertHunk(projectID: projectID, roundID: info.id, hunkID: hunkID,
@@ -622,7 +649,7 @@ final class ReviewChangesModel {
     func flushState() {
         guard round?.status == "open" else { return }
         do {
-            try saveState(mode: mode, phase: phase, chapterKey: currentChapterKey)
+            try saveState(mode: mode, phase: phase, chapterKey: persistedChapterKey)
         } catch {
             lastError = error.localizedDescription
         }
@@ -706,6 +733,12 @@ final class ReviewChangesModel {
         notes = try db.read { try ReviewQueries.notes($0, projectID: project, sessionID: session) }
     }
 
+    /// The chapter position to save: a saved `ai:` chapter still waiting for
+    /// its overview is kept, not the fallback shown meanwhile.
+    private var persistedChapterKey: String? {
+        awaitedAIChapterKey ?? currentChapterKey
+    }
+
     private var agentChapterSpecs: [ReviewChapterSpec] {
         notes.filter { $0.kind == .chapter }.map { ReviewChapterSpec(title: $0.text, paths: $0.paths, core: $0.core, lenses: nil) }
     }
@@ -721,12 +754,14 @@ final class ReviewChangesModel {
     }
 
     /// Switches to the overview's chapters, unless they would replace
-    /// chapters the owner already checked in the Chapters phase.
+    /// chapters the owner already checked in the Chapters phase. AI chapters
+    /// the round already used (a saved `ai:` position or checks) come back.
     private func offerAIChapters(_ ready: ReviewOverview) {
         let specs = Self.specs(ready)
         let shown = Set(chapters.map(\.key))
         let candidate = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: specs)
-        if candidate != chapters, phase == .chapters, checks.contains(where: { shown.contains($0.chapterKey) }) {
+        let usedAI = awaitedAIChapterKey != nil || checks.contains { $0.chapterKey.hasPrefix("ai:") }
+        if !usedAI, candidate != chapters, phase == .chapters, checks.contains(where: { shown.contains($0.chapterKey) }) {
             aiChaptersPending = true
             return
         }

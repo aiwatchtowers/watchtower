@@ -658,10 +658,11 @@ final class ReviewChangesModelTests: XCTestCase {
 
     // MARK: - Deep mode
 
-    private func deepStartJSON(status: String = "open") -> String {
+    private func deepStartJSON(status: String = "open", chapterKey: String = "dir:cmd", tree: String = "t7") -> String {
         """
-        {"ok":true,"round":{"id":7,"status":"\(status)","mode":"deep","phase":"chapters","chapter_key":"dir:cmd","active_seconds":90,
-         "folder_root":"/r","base_sha":"b","base_label":"main","tree_sha":"t7","prev_round_id":0,"prev_tree_sha":"","prev_tree_lost":false}}
+        {"ok":true,"round":{"id":7,"status":"\(status)","mode":"deep","phase":"chapters","chapter_key":"\(chapterKey)",
+         "active_seconds":90,"folder_root":"/r","base_sha":"b","base_label":"main","tree_sha":"\(tree)","prev_round_id":0,
+         "prev_tree_sha":"","prev_tree_lost":false}}
         """
     }
 
@@ -1237,5 +1238,124 @@ final class ReviewChangesModelTests: XCTestCase {
 
     func testAgentWorkingKinds() {
         XCTAssertEqual(ReviewChangesModel.agentWorkingKinds, [.working, .background])
+    }
+
+    func testReopenOnAIChaptersRestoresThemAndTheSavedChapter() async throws {
+        let h = try harness()
+        h.cli.script(["overview": overviewJSON()])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        try await h.model.selectChapter("ai:1")
+        try h.model.setCheck(chapterKey: "ai:1", lens: "correctness", itemKey: "k1", checked: true)
+        // A check in the mechanical chapter the AI split leaves over, too.
+        try h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        h.model.flushState()
+
+        // The pane is made again (the app restarted): the round row says ai:1.
+        h.cli.script(["start": deepStartJSON(chapterKey: "ai:1")])
+        h.cli.hold("overview")
+        let again = ReviewChangesModel(projectID: h.projectID, sessionID: h.sessionID, cli: WorkbenchCLI(runner: h.cli), db: h.db,
+                                       lineDelivery: h.sink) { false }
+        await again.open()
+        await h.cli.waitPending("overview")
+        XCTAssertEqual(again.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "mechanical while the overview loads")
+        again.flushState()
+        let waiting = try await h.db.read { try String.fetchOne($0, sql: "SELECT chapter_key FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(waiting, "ai:1", "the fallback chapter is not saved over the waiting ai: one")
+        h.cli.release("overview")
+        await again.overviewTask?.value
+        XCTAssertEqual(again.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertEqual(again.currentChapterKey, "ai:1")
+        XCTAssertFalse(again.aiChaptersPending)
+        again.flushState()
+        let saved = try await h.db.read { try String.fetchOne($0, sql: "SELECT chapter_key FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(saved, "ai:1")
+    }
+
+    func testReopenWhenTheRoundWasSentBehindTheModelThrowsRoundClosed() async throws {
+        let h = try harness()
+        let f = try await carriedFixture(h)
+        try await h.db.write {
+            try $0.execute(sql: "UPDATE review_comments SET status='resolved', agent_reply_at='2026-10-16T10:00:00Z' WHERE id=?",
+                           arguments: [f.copy])
+        }
+        await h.model.refresh()
+        XCTAssertEqual(h.model.agentResolved.map(\.id), [f.copy])
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent' WHERE id = 7") }
+        XCTAssertThrowsError(try h.model.reopen(f.copy)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        XCTAssertEqual(h.model.round?.status, "sent")
+        XCTAssertEqual(h.model.lastError, ReviewChangesModel.ModelError.roundClosed.errorDescription)
+        let row = try await h.comments().first { $0.id == f.copy }
+        XCTAssertEqual(row?.status, .resolved)
+    }
+
+    func testSecondUndoWhileOneRunsIsRefused() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["revert-hunk": #"{"ok":true,"revert":{"hunk_id":"0123456789abcdef","path":"a.go"}}"#,
+                      "send": #"{"ok":true,"sent":true,"comments":0,"line":"x"}"#])
+        await h.model.open()
+        h.cli.hold("revert-hunk")
+        let first = Task { await h.model.undo(hunkID: "0123456789abcdef") }
+        await h.cli.waitPending("revert-hunk")
+        XCTAssertTrue(h.model.undoing)
+        XCTAssertFalse(h.model.canUndo)
+        await h.model.undo(hunkID: "fedcba9876543210")
+        await h.model.send()
+        XCTAssertEqual(h.cli.calls("revert-hunk").count, 1, "the second undo calls nothing")
+        XCTAssertEqual(h.cli.calls("send"), [], "no Send while an undo runs")
+        h.cli.release("revert-hunk")
+        await first.value
+        XCTAssertFalse(h.model.undoing)
+        XCTAssertTrue(h.model.canUndo)
+    }
+
+    func testCoverageAndRiskStayWhileTheNextOverviewLoads() async throws {
+        let h = try harness()
+        h.cli.script(["overview": overviewJSON(coverage: #"[{"item":"Ship it","status":"partial","where":["pkg/y.go"]}]"#)])
+        await openDeep(h)
+        await awaitOverview(h)
+        let items = h.model.intentItems
+        XCTAssertTrue(items.first?.key.hasPrefix("cov:") == true)
+        // The agent edits: the refresh reads a new tree, and its overview loads.
+        h.cli.script("start", [deepStartJSON(), deepStartJSON(tree: "u7")])
+        h.cli.hold("overview")
+        await h.model.refresh()
+        await h.cli.waitPending("overview")
+        XCTAssertEqual(h.model.round?.treeSha, "u7")
+        XCTAssertEqual(h.model.overview, .loading)
+        XCTAssertEqual(h.model.intentItems, items, "the Wrap-up marks keep their items")
+        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
+        h.cli.release("overview")
+        await awaitOverview(h)
+    }
+
+    func testAgentWorksReadsTheLiveDotState() {
+        func status(_ id: Int64, _ kind: SessionSwitcherPresentation.State.Kind) -> SessionAgentStatus {
+            SessionAgentStatus(sessionID: id, workbenchID: 1, workbenchName: "acme", title: "S",
+                               state: SessionSwitcherPresentation.State(kind: kind, live: true), at: nil)
+        }
+        let statuses: [Int64: SessionAgentStatus] = [
+            1: status(1, .working), 2: status(2, .background), 3: status(3, .stopped), 4: status(4, .working)
+        ]
+        let live: Set<Int64> = [1, 2, 3]
+        XCTAssertTrue(ReviewChangesModel.agentWorks(sessionID: 1, liveIDs: live, statuses: statuses))
+        XCTAssertTrue(ReviewChangesModel.agentWorks(sessionID: 2, liveIDs: live, statuses: statuses))
+        XCTAssertFalse(ReviewChangesModel.agentWorks(sessionID: 3, liveIDs: live, statuses: statuses))
+        XCTAssertFalse(ReviewChangesModel.agentWorks(sessionID: 4, liveIDs: live, statuses: statuses), "not live: not working")
+        XCTAssertFalse(ReviewChangesModel.agentWorks(sessionID: 5, liveIDs: [5], statuses: statuses), "live, nothing reported")
+    }
+
+    /// The workbench's model reads the session's dot: a session that is not live does not block Undo.
+    func testWorkbenchModelWiresTheAgentState() async throws {
+        let h = try harness()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "review-wiring-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: h.db, cli: WorkbenchCLI(runner: h.cli), defaults: defaults)
+        let model = try XCTUnwrap(vm.reviewModel(sessionID: h.sessionID, projectID: h.projectID))
+        await model.undo(hunkID: "0123456789abcdef")
+        XCTAssertEqual(model.lastError, ReviewChangesModel.ModelError.roundClosed.errorDescription,
+                       "refused for the missing round, not for a working agent")
+        XCTAssertEqual(h.cli.calls("revert-hunk"), [])
     }
 }

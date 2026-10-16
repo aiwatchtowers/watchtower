@@ -272,7 +272,9 @@ final class ReviewQueriesTests: XCTestCase {
             try Self.agentResolve($0, f.source)
             try $0.execute(sql: "UPDATE review_rounds SET status='sent' WHERE id=?", arguments: [f.open])
         }
-        try f.db.write { try ReviewQueries.reopen($0, commentID: f.source, openRoundID: f.open) }
+        XCTAssertThrowsError(try f.db.write { try ReviewQueries.reopen($0, commentID: f.source, openRoundID: f.open) }) {
+            XCTAssertEqual($0 as? ReviewQueries.ReviewQueryError, .roundNotOpen)
+        }
         XCTAssertEqual(try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }.count, 0)
     }
 
