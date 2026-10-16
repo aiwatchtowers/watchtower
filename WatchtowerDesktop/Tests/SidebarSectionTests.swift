@@ -30,7 +30,7 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testRootItems() {
-        XCTAssertEqual(SidebarDestination.rootItems, [.home, .targets, .tracks, .workbench, .calendar])
+        XCTAssertEqual(SidebarDestination.rootItems, [.home, .targets, .tracks, .workbench, .automations, .calendar])
     }
 
     /// The Workbench tab keeps the persisted raw value of the old Projects
@@ -247,7 +247,9 @@ final class SidebarSectionTests: XCTestCase {
         let visible = SidebarDestination.allCases.filter {
             $0.isVisible(disabledFeatures: Self.devOnlyDisabled, connected: .none)
         }
-        XCTAssertEqual(Set(visible), [.home, .workbench, .chat, .targets, .search, .usage, .mcpServer])
+        // Automations' feature is unmanaged by onboarding, so a dev-only
+        // install keeps whatever state it has (here: on).
+        XCTAssertEqual(Set(visible), [.home, .workbench, .automations, .chat, .targets, .search, .usage, .mcpServer])
     }
 
     func testDevOnlyFallbackIsHome() {

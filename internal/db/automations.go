@@ -528,3 +528,49 @@ func (db *DB) FastForwardAutomations(now time.Time) (primed, cancelled int, err 
 	}
 	return int(p), int(c), nil
 }
+
+// AutomationRunSnapshotAt is the recipe_snapshot of automationID's newest
+// run claimed at recipeHash ("" when there is none). The confirmation sheet
+// reads it as a candidate for the text the owner confirmed (spec §12.2).
+func (db *DB) AutomationRunSnapshotAt(automationID int64, recipeHash string) (string, error) {
+	var snapshot string
+	err := db.QueryRow(`SELECT recipe_snapshot FROM automation_runs
+		WHERE automation_id = ? AND recipe_hash = ? AND recipe_snapshot != ''
+		ORDER BY id DESC LIMIT 1`, automationID, recipeHash).Scan(&snapshot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading the run snapshot of automation %d: %w", automationID, err)
+	}
+	return snapshot, nil
+}
+
+// AutomationSave is what the confirmation sheet reads from an applied
+// save_automation proposal: the recipe text it saved (and confirmed) and when
+// it applied.
+type AutomationSave struct {
+	RecipeText string
+	AppliedAt  string
+}
+
+// LatestAppliedAutomationSave is the newest applied save_automation whose
+// pinned args name path and scope ("personal" | "workbench:<id>") and, when
+// approvalHash is not "", pinned that approval hash; nil when there is none.
+func (db *DB) LatestAppliedAutomationSave(path, scope, approvalHash string) (*AutomationSave, error) {
+	var s AutomationSave
+	err := db.QueryRow(`SELECT COALESCE(json_extract(args_json, '$.recipe_text'), ''), applied_at
+		FROM agent_actions
+		WHERE tool = 'save_automation' AND status = 'applied' AND json_valid(args_json)
+		  AND json_extract(args_json, '$.path') = ? AND json_extract(args_json, '$.scope') = ?
+		  AND (? = '' OR json_extract(args_json, '$.approval_hash') = ?)
+		ORDER BY applied_at DESC, id DESC LIMIT 1`, path, scope, approvalHash, approvalHash).
+		Scan(&s.RecipeText, &s.AppliedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the save_automation actions for %s: %w", path, err)
+	}
+	return &s, nil
+}

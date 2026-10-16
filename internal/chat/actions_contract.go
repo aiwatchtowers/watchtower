@@ -1,29 +1,28 @@
 package chat
 
-import "strings"
+import (
+	"strings"
+
+	"watchtower/internal/tools"
+)
 
 // ActionsContract is the system-prompt block that teaches an action surface
 // how write tools work. The Swift twin is
 // WatchtowerCore/Services/Actions/AgentToolsContract.swift — byte-identical,
-// pinned on both sides by testdata/actions_contract_{main,target}.txt. Any
-// surface other than main/target is draft-only (AGENT-04) and gets "".
+// pinned on both sides by testdata/actions_contract_{main,target,automation_editor}.txt.
+// Any surface other than main, target and automation_editor is draft-only
+// (AGENT-04) and gets "".
 func ActionsContract(surface string) string {
-	var tools []string
+	var lines []string
 	switch surface {
 	case "main":
-		tools = mainActionTools
+		lines = concat(actionsHeader, mainActionTools, mainActionsRules)
 	case "target":
-		tools = targetActionTools
+		lines = concat(actionsHeader, targetActionTools, actionsRules)
+	case tools.AutomationEditorSurface:
+		lines = concat(actionsHeader, automationEditorTools, automationEditorRules)
 	default:
 		return ""
-	}
-	lines := make([]string, 0, len(actionsHeader)+len(tools)+len(actionsRules))
-	lines = append(lines, actionsHeader...)
-	lines = append(lines, tools...)
-	if surface == "main" {
-		lines = append(lines, mainActionsRules...)
-	} else {
-		lines = append(lines, actionsRules...)
 	}
 	text := strings.Join(lines, "\n")
 	if surface == "target" {
@@ -63,8 +62,20 @@ var mainActionTools = concat(
 		"- create_idea — capture an idea in the owner's ideas registry.",
 		"- remind_me — set a reminder that resurfaces in the Inbox at a chosen time; pass message_ref when it is about one Slack message.",
 		"- send_slack_message — propose a Slack message sent as the owner to a channel, a thread (pass a message link), or a person (DM).",
+		saveAutomationTool,
 	},
 )
+
+// saveAutomationTool is save_automation's line on main and automation_editor
+// (Automations P3, spec 2026-10-14 §11).
+const saveAutomationTool = "- save_automation — propose saving an automation recipe: draft and dry-run it first with draft_automation, which writes nothing; Save is the owner's Approve on the card, and the automation never runs before it. Always needs the owner's approval."
+
+// automationEditorTools is the editor chat's pair (spec §14.5, D11): the
+// draft read is listed beside the one write so the block names both.
+var automationEditorTools = []string{
+	"- draft_automation — check a recipe draft and dry-run it in memory: parse errors, the permissions it asks for and widens, and what the dry run did. It writes nothing and records no proposal.",
+	saveAutomationTool,
+}
 
 var targetActionTools = concat(
 	[]string{"- create_jira_issue — propose a Jira issue on a connected site."},
@@ -88,6 +99,12 @@ var actionsRules = []string{
 
 const targetCoexistence = "Changes to THIS task and its vertical line still go through `watchtower-action` blocks (TASK ACTIONS above); " +
 	"Jira work goes through the Jira tools. Never create other Watchtower tasks from here — report the finding in prose instead."
+
+// automationEditorRules keep the receipt, one-proposal and get_action rules
+// and add the draft-first rule; nothing about Jira, Confluence or Slack.
+var automationEditorRules = concat(actionsRules[:3], []string{
+	"- Always draft and dry-run first; Save is the owner's Approve on the card. Call draft_automation with the whole recipe_text and its slug, fix every error it reports, tell the owner in plain words what the dry run did, then propose save_automation with the same recipe_text and slug.",
+}, actionsRules[len(actionsRules)-1:])
 
 // mainActionsRules adds the Slack send rule before the closing get_action line.
 var mainActionsRules = concat(actionsRules[:len(actionsRules)-1], []string{slackSendRule}, actionsRules[len(actionsRules)-1:])

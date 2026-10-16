@@ -3,6 +3,7 @@ import ViewInspector
 import SwiftUI
 @testable import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 @MainActor
 final class TrayMenuViewTests: XCTestCase {
@@ -25,6 +26,9 @@ final class TrayMenuViewTests: XCTestCase {
         updateVersion: String? = nil,
         updateAction: @escaping () -> Void = {},
         syncNowAction: @escaping () -> Void = {},
+        runAutomationSections: [TrayRunAutomationMenu.Section]? = nil,
+        runAutomationAction: @escaping (Int64) -> Void = { _ in },
+        openAutomationsAction: @escaping () -> Void = {},
         quickCaptureAction: @escaping () -> Void = {},
         voicesAction: @escaping () -> Void = {},
         reviewVoicesAction: @escaping () -> Void = {},
@@ -35,7 +39,9 @@ final class TrayMenuViewTests: XCTestCase {
         TrayMenuContent(
             isRunning: isRunning, syncProgress: syncProgress, daemonError: daemonError, cliStoreError: cliStoreError,
             voicesPendingCount: voicesPendingCount, updateVersion: updateVersion, updateAction: updateAction,
-            syncNowAction: syncNowAction, quickCaptureAction: quickCaptureAction,
+            syncNowAction: syncNowAction, runAutomationSections: runAutomationSections,
+            runAutomationAction: runAutomationAction, openAutomationsAction: openAutomationsAction,
+            quickCaptureAction: quickCaptureAction,
             voicesAction: voicesAction, reviewVoicesAction: reviewVoicesAction, trainVoicesAction: trainVoicesAction,
             openAction: openAction, settingsAction: settingsAction)
     }
@@ -249,5 +255,69 @@ final class TrayMenuViewTests: XCTestCase {
             reviewVoicesAction: {}, trainVoicesAction: {}, openAction: {}, settingsAction: {})
         try view.inspect().find(button: "Retry Large v3 Download").tap()
         XCTAssertEqual(retried, failed.key)
+    }
+
+    // MARK: - Run automation ▸ (spec §12.7)
+
+    private static let sections = [
+        TrayRunAutomationMenu.Section(id: "workbench-10", title: "acme", items: [
+            .init(id: 1, title: "Release…", status: "✓ 2 d ago", isActionable: true),
+            .init(id: 2, title: "Deploy to stage", status: "— disabled", isActionable: false)
+        ]),
+        TrayRunAutomationMenu.Section(id: "personal", title: "Personal", items: [
+            .init(id: 3, title: "Release notes draft", status: "", isActionable: true)
+        ])
+    ]
+
+    func testRunAutomationMenuHiddenWhenFeatureOff() throws {
+        let view = Self.content(runAutomationSections: nil)
+        XCTAssertThrowsError(try view.inspect().find(ViewType.Menu.self))
+        XCTAssertThrowsError(try view.inspect().find(button: "Open Automations…"))
+        XCTAssertNoThrow(try Self.content(runAutomationSections: []).inspect().find(ViewType.Menu.self))
+    }
+
+    func testRunAutomationMenuEndsWithOpenAutomations() throws {
+        var ran: [Int64] = []
+        var opened = false
+        let view = Self.content(runAutomationSections: Self.sections,
+                                runAutomationAction: { ran.append($0) },
+                                openAutomationsAction: { opened = true })
+        let menu = try view.inspect().find(ViewType.Menu.self)
+        XCTAssertEqual(try menu.labelView().text().string(), "Run automation")
+        let labels = try menu.findAll(ViewType.Button.self).map { try $0.labelView().text().string() }
+        XCTAssertEqual(labels, ["Release…  ✓ 2 d ago", "Deploy to stage  — disabled", "Release notes draft",
+                                "Open Automations…"])
+        XCTAssertNoThrow(try menu.find(text: "acme"))
+        XCTAssertNoThrow(try menu.find(text: "Personal"))
+        try menu.find(button: "Release…  ✓ 2 d ago").tap()
+        try menu.find(button: "Open Automations…").tap()
+        XCTAssertEqual(ran, [1])
+        XCTAssertTrue(opened)
+    }
+
+    func testDisabledItemRendersDisabled() throws {
+        let view = Self.content(runAutomationSections: Self.sections)
+        XCTAssertTrue(try view.inspect().find(button: "Deploy to stage  — disabled").isDisabled())
+        XCTAssertFalse(try view.inspect().find(button: "Release notes draft").isDisabled())
+    }
+
+    /// The environment-wired view reads its sections from `AppState`: the
+    /// quick-run rows while the feature is on, nil (no submenu) when off.
+    func testTraySectionsFollowTheFeature() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let suite = "TrayMenuViewTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let features = FeatureManagerService(runner: FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)))
+        let appState = AppState(onboardingDefaults: defaults, featureManager: features)
+        XCTAssertNil(appState.trayRunAutomationSections(), "no quick-run center before the database opens")
+        appState.wireAppDatabaseOverride = { _ in }
+        appState.databaseManager = manager
+        appState.completeOnboarding()
+        defer { appState.automationsViewModel?.stop() }
+        XCTAssertEqual(appState.trayRunAutomationSections(), [])
+        appState.featureVisibility.disabledFeatureIDs = ["automations"]
+        XCTAssertNil(appState.trayRunAutomationSections())
     }
 }

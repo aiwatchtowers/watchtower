@@ -442,7 +442,15 @@ func (m *Manifest) AdmitsTool(t *tools.Tool) bool {
 // send_slack_message: output.slack also needs slack:write (D28), which
 // AdmitsTool already covers, so a grant never exceeds the recipe's scope.
 func (m *Manifest) AdmitsWrite(t *tools.Tool) bool {
-	if t.Access != tools.AccessWrite || t.AlwaysAsk || !t.VisibleOn(tools.AutomationSurface) {
+	return !t.AlwaysAsk && m.AdmitsWriteTool(t)
+}
+
+// AdmitsWriteTool is AdmitsWrite without the AlwaysAsk refusal: t is a
+// write on the automation surface the manifest admits by name or through an
+// output shortcut. The edit form lists these tools, an AlwaysAsk one as
+// "Always asks" (show --json auto_tools).
+func (m *Manifest) AdmitsWriteTool(t *tools.Tool) bool {
+	if t.Access != tools.AccessWrite || !t.VisibleOn(tools.AutomationSurface) {
 		return false
 	}
 	return m.AdmitsTool(t) || m.admitsAsOutput(t)

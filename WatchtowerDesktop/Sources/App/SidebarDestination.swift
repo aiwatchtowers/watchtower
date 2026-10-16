@@ -15,6 +15,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     // The raw value is persisted (`sidebar.hiddenItems`, the tab id), so the
     // Workbench rename keeps its bytes (spec 2026-10-02 A9).
     case workbench = "projects"
+    case automations
     case digests
     case people
     case memory
@@ -43,6 +44,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .targets: "Targets"
         case .tracks: "Tracks"
         case .workbench: "Workbench"
+        case .automations: "Automations"
         case .digests: "Digests"
         case .people: "People"
         case .memory: "Memory"
@@ -71,6 +73,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .targets: "scope"
         case .tracks: "binoculars"
         case .workbench: "folder.badge.gearshape"
+        case .automations: "gearshape.2"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
         case .memory: "archivebox"
@@ -87,11 +90,12 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     }
 
     /// Always-visible items rendered above the collapsible sections, Home
-    /// first. Calendar sits right under Workbench (board #206; it was in FOCUS before): a root
+    /// first. Automations follows Workbench (hidden with its feature off).
+    /// Calendar sits right under them (board #206; it was in FOCUS before): a root
     /// item has no hide menu, so a `sidebar.hiddenItems` entry left from
     /// hiding it in FOCUS is ignored and the tab shows again.
     static var rootItems: [Self] {
-        [.home, .targets, .tracks, .workbench, .calendar]
+        [.home, .targets, .tracks, .workbench, .automations, .calendar]
     }
 
     /// Always-visible items rendered below the collapsible sections, as the last
@@ -123,6 +127,7 @@ extension SidebarDestination {
         case .dayPlan: ["day-plan"]
         case .tracks: ["tracks"]
         case .people: ["people-cards"]
+        case .automations: ["automations"]
         default: nil
         }
     }

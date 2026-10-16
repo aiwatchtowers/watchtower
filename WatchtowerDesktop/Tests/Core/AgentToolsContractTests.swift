@@ -65,6 +65,26 @@ final class AgentToolsContractTests: XCTestCase {
     func testPromptBlocksMatchTheGoFixturesByteForByte() throws {
         XCTAssertEqual(AgentToolsContract.promptBlock(surface: .main), try Self.goFixture("main"))
         XCTAssertEqual(AgentToolsContract.promptBlock(surface: .target), try Self.goFixture("target"))
+        XCTAssertEqual(AgentToolsContract.promptBlock(surface: .automationEditor),
+                       try Self.goFixture("automation_editor"))
+    }
+
+    /// The editor chat (spec 2026-10-14 §14.5, D11) names exactly the authoring
+    /// pair and the draft-first rule, nothing about Jira, Confluence or Slack.
+    func testAutomationEditorBlockNamesOnlyDraftAndSave() {
+        XCTAssertEqual(AgentSurface.automationEditor.rawValue, "automation_editor")
+        let block = AgentToolsContract.promptBlock(surface: .automationEditor)
+        let named = block.split(separator: "\n").compactMap { line -> String? in
+            guard line.hasPrefix("- "), let dash = line.range(of: " — ") else { return nil }
+            return String(line[line.index(line.startIndex, offsetBy: 2)..<dash.lowerBound])
+        }
+        XCTAssertEqual(named, ["draft_automation", "save_automation"])
+        XCTAssertTrue(block.contains("draft and dry-run first; Save is the owner's Approve on the card"))
+        for other in ["Jira", "Confluence", "Slack", "watchtower-action"] {
+            XCTAssertFalse(block.contains(other), other)
+        }
+        XCTAssertTrue(AgentToolsContract.promptBlock(surface: .main).contains("- save_automation — "))
+        XCTAssertFalse(AgentToolsContract.promptBlock(surface: .target).contains("save_automation"))
     }
 
     func testBothBlocksTeachConfluenceEditing() {

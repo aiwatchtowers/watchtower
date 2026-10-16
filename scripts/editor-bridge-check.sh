@@ -5,7 +5,7 @@
 # rebase / rename / close / takePending, edit revisions, reveal, go to
 # definition, usages and the cursor stream, Monaco's keybindings for the app's
 # navigation chords, the code question messages — selection, scroll, askAI,
-# selectionRect, proposeEdit/clearProposal, applyEdit) and spot-checks the file associations and Monarch
+# selectionRect, proposeEdit/clearProposal, applyEdit, setReadOnly) and spot-checks the file associations and Monarch
 # grammars of languages.js, and smoke-tests the Changes pane's diff page
 # (diff.html: showDiff, setComments, the Comment post). Not part of any gate; run it after touching
 # CodeEditorWeb/ or bumping Monaco.

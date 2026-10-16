@@ -16,6 +16,8 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
+	"watchtower/internal/config"
+	"watchtower/internal/tools"
 )
 
 func TestChatMCPArgs_Shape(t *testing.T) {
@@ -236,4 +238,55 @@ func resetSystemPromptFlags(t *testing.T) {
 	for _, name := range []string{"system-prompt", "system-prompt-stdin"} {
 		aiQueryCmd.Flags().Lookup(name).Changed = false
 	}
+}
+
+// setAIChatFlags sets the --tools chat binding flags and restores them.
+func setAIChatFlags(t *testing.T, surface string, conversation int64, turn, ctxType, ctxID string) {
+	t.Helper()
+	s, c, tu, ct, ci := aiFlagSurface, aiFlagConversation, aiFlagTurn, aiFlagContextType, aiFlagContextID
+	t.Cleanup(func() {
+		aiFlagSurface, aiFlagConversation, aiFlagTurn, aiFlagContextType, aiFlagContextID = s, c, tu, ct, ci
+	})
+	aiFlagSurface, aiFlagConversation, aiFlagTurn, aiFlagContextType, aiFlagContextID = surface, conversation, turn, ctxType, ctxID
+}
+
+// editorChatToolNames starts the chat server from args the way the provider
+// relaunches this binary (`watchtower mcp <args>`) and lists its tools.
+func editorChatToolNames(t *testing.T, args []string) map[string]bool {
+	t.Helper()
+	resetMCPFlags(t)
+	resetMCPChatBindingFlags(t)
+	// Parse sets only the flags it sees: start from the defaults.
+	mcpFlagSurface, mcpFlagConversation, mcpFlagTurn, mcpFlagContextType, mcpFlagContextID = "main", 0, "", "", ""
+	require.NoError(t, mcpCmd.Flags().Parse(args))
+	require.True(t, mcpFlagChat)
+	database := openMCPTestDB(t)
+	opts, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, mcpFlagTurn, nil)
+	require.NoError(t, err)
+	names, _ := localToolNames(t, database, opts)
+	return names
+}
+
+func TestAiQuery_PassesAutomationEditorSurfaceAndContext(t *testing.T) {
+	setAIChatFlags(t, tools.AutomationEditorSurface, 3, "t1", "automation", "7")
+	got := strings.Join(chatMCPArgs(), " ")
+	assert.Contains(t, got, "--surface automation_editor")
+	assert.Contains(t, got, "--context-type automation --context-id 7")
+	names := editorChatToolNames(t, chatMCPArgs())
+	assert.True(t, names["draft_automation"] && names["save_automation"])
+	assert.Equal(t, "automation", mcpFlagContextType)
+	assert.Equal(t, "7", mcpFlagContextID)
+}
+
+// A new draft (the "New automation" sheet) has no automation yet: the editor
+// surface without a context is accepted and mounts the same tools.
+func TestAiQuery_AutomationEditorWithoutContextForNewDraft(t *testing.T) {
+	setAIChatFlags(t, tools.AutomationEditorSurface, 3, "t1", "automation", "7")
+	withContext := editorChatToolNames(t, chatMCPArgs())
+
+	setAIChatFlags(t, tools.AutomationEditorSurface, 3, "t1", "", "")
+	args := chatMCPArgs()
+	assert.NotContains(t, args, "--context-type")
+	assert.NotContains(t, args, "--context-id")
+	assert.Equal(t, withContext, editorChatToolNames(t, args))
 }

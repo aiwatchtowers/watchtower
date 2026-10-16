@@ -700,14 +700,18 @@ when. **It may** lists the permissions with widening entries marked, or "No chan
 "Show the script (N lines)" discloses the script read-only. Buttons **Dry run first**, **Not now**, **Confirm**
 (primary). Go computes the block (`show --json` keys `changes`, `changes_known`, `changed_by`, `changed_at`, added
 in P3): the index holds only `confirmed_hash`, so the confirmed text is the newest `automation_runs.recipe_snapshot`
-whose `recipe_hash` equals `confirmed_hash`, else the `previous_recipe_text` pinned in the last applied
-`save_automation` for that automation, and a candidate counts only if its `approval_hash` computed now equals
+whose `recipe_hash` equals `confirmed_hash`, else the `recipe_text` of the newest applied `save_automation` for
+that automation that pinned `confirmed_hash` (a save confirms its own text, §11 Execute; amended 2026-10-16 —
+the earlier `previous_recipe_text` named the replaced text, which hashes to `confirmed_hash` only when the save
+left the hash unchanged), and a candidate counts only if its `approval_hash` computed now equals
 `confirmed_hash`. So: confirmed → no changes, known; never confirmed → "First confirmation"; a counting candidate →
 its field diff, known; no counting candidate — including after a hash-format change such as D26's re-hash, where
 the snapshot text may equal the current text yet its hash no longer matches — → `changes_known` false and the
 block reads "What changed is not known — review the whole recipe". The author line is "Changed by the
 assistant in the chat · <age>" when an applied `save_automation` pinned the recipe's current `approval_hash`,
-otherwise "Changed outside Watchtower · <age of updated_at>" — v1 limit: a plain `automations save`
+otherwise "Changed outside Watchtower · <age of updated_at>". Since Execute confirms the hash it pins, the
+assistant case cannot appear in this sheet (an assistant save is confirmed by the owner's Approve on its card);
+`show --json` still reports `changed_by: "assistant"` for such a confirmed recipe — v1 limit: a plain `automations save`
 or a hand edit records no author, so the mockup's "Changed by Claude in the workbench terminal" needs an author
 record (owner-accepted limit, 2026-10-15; a later phase; a `confirmed_text` column would also remove the snapshot fallback).
 

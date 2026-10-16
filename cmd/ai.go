@@ -94,7 +94,7 @@ func init() {
 	aiQueryCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
 	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "", "tool mode: chat = mount the assistant's write tools as proposals")
-	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target")
+	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target|automation_editor")
 	aiQueryCmd.Flags().Int64Var(&aiFlagConversation, "conversation", 0, "chat conversation id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagTurn, "turn", "", "turn id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagContextType, "context-type", "", "chat context type (e.g. target)")

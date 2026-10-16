@@ -305,6 +305,17 @@ final class AppState {
     /// Workbench tab (spec §6). Owned here so create/repair and the selection
     /// survive navigation.
     private(set) var workbenchesViewModel: WorkbenchesViewModel?
+    /// Automations tab and its sidebar badge (spec §12.1). Owned here so a
+    /// run, a dry run or a delete survives navigation; built with the
+    /// sidebar on both paths that reveal it (launch, `completeOnboarding()`).
+    private(set) var automationsViewModel: AutomationsViewModel?
+    /// The Automations edit form's drafts, saves and the confirmation
+    /// sheet's confirm; owned here so a save finishes after the form closes.
+    private(set) var automationEditorCenter: AutomationEditorCenter?
+    /// Quick run's rows and finish watch (spec §12.7); built with `automationsViewModel`.
+    private(set) var quickRunCenter: QuickRunCenter?
+    /// The "Run Automation…" palette (⌃⌘R) is up.
+    var isRunAutomationPaletteShown = false
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
@@ -535,6 +546,57 @@ final class AppState {
         selectedDestination = .workbench
     }
 
+    /// "Change it in words" for one automation: its engine comes from
+    /// `embeddedChatCenter`, so a turn outlives the sheet. Nil while the
+    /// database is not open or the automation is gone.
+    func automationEditorChat(automationID: Int64) throws -> AutomationEditorChat? {
+        guard let pool = databaseManager?.dbPool,
+              let automation = try pool.read({ db in try AutomationQueries.fetchAutomation(db, id: automationID) })
+        else { return nil }
+        let provider = Constants.aiProviderID()
+        let conversationID = try AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+        return makeAutomationEditorChat(
+            conversationID: conversationID, pool: pool, provider: provider,
+            onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
+            makeSpec: { outcomes in
+                AutomationEditorChatSurface.spec(automation: automation, provider: provider,
+                                                 conversationID: conversationID, dbPool: pool, outcomes: outcomes)
+            }
+        )
+    }
+
+    /// The "New automation" sheet's chat, keyed by the draft id
+    /// `automationsViewModel` keeps, so a half-written draft survives the
+    /// sheet. Once its save lands, the next **+ New** starts a fresh draft.
+    func newAutomationEditorChat() throws -> AutomationEditorChat? {
+        guard let pool = databaseManager?.dbPool, let draftID = automationsViewModel?.newDraftID else { return nil }
+        let provider = Constants.aiProviderID()
+        let conversationID = try AutomationEditorChatSurface.newConversationID(draftID: draftID, dbPool: pool)
+        let onSaved: () -> Void = { [weak self] in
+            self?.automationsViewModel?.refresh()
+            self?.automationsViewModel?.startNewDraft()
+        }
+        return makeAutomationEditorChat(conversationID: conversationID, pool: pool, provider: provider,
+                                        onSaved: onSaved) { outcomes in
+            AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID,
+                                                conversationID: conversationID, outcomes: outcomes)
+        }
+    }
+
+    private func makeAutomationEditorChat(
+        conversationID: Int64,
+        pool: DatabasePool,
+        provider: String,
+        onSaved: @escaping () -> Void,
+        makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
+    ) -> AutomationEditorChat {
+        AutomationEditorChat(
+            conversationID: conversationID, dbPool: pool,
+            toolsAvailable: AutomationEditorChatSurface.toolsAvailable(provider: provider),
+            center: embeddedChatCenter, onSaved: onSaved, makeSpec: makeSpec
+        )
+    }
+
     private var isInitializing = false
     /// `initialize()`'s launch work and its daemon (re)start — held so tests
     /// can await them.
@@ -653,6 +715,7 @@ final class AppState {
                     // Sessions waiting in the Undo batch are deleted now (PROJ-17).
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
+                    self?.automationsViewModel?.stop()
                     self?.homeCenter.endReading()
                     self?.readinessCenter.stop()
                 }
@@ -729,6 +792,7 @@ final class AppState {
                 // Pre-load sidebar badge counts so they're already visible when the splash hides.
                 // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
                 if !needsOnboarding {
+                    initAutomations(dbPool: manager.dbPool)
                     await initSidebarCounts(dbPool: manager.dbPool)
                 }
                 isLoading = false
@@ -1254,6 +1318,9 @@ final class AppState {
         if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
             Task { await initSidebarCounts(dbPool: pool) }
         }
+        if let pool = databaseManager?.dbPool {
+            initAutomations(dbPool: pool)
+        }
         // Sources onboarding connected (its account sheets may write through
         // the CLI without a VM reload) must reach the sidebar now — as a new
         // baseline: onboarding picked their features, so they raise no
@@ -1276,6 +1343,37 @@ final class AppState {
         guard databaseManager == nil else { return }
         isInitializing = false
         initialize()
+    }
+
+    /// Builds the Automations view model once and starts its poll (the
+    /// sidebar badge reads it). Once: a second call (a setup re-run) keeps
+    /// the in-flight runs and dry runs.
+    private func initAutomations(dbPool: DatabasePool) {
+        guard automationsViewModel == nil else { return }
+        let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
+        let cli = AutomationsCLI(runner: runner)
+        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli)
+        // Daemon-written inbox outputs never fire the counts VM's observation.
+        // Resolved at call time: the counts VM may be built after this one.
+        vm.onInboxOutputCountChanged = { [weak self] in
+            Task { await self?.sidebarCountsViewModel?.refresh() }
+        }
+        vm.start()
+        automationsViewModel = vm
+        let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
+                                      notifier: AutomationRunNotifier()) { [weak self] in
+            self?.isAutomationsFeatureEnabled ?? false
+        }
+        quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }
+        quickRunCenter = quickRun
+        automationEditorCenter = AutomationEditorCenter(
+            cli: cli,
+            grants: { id in try await dbPool.read { db in try AutomationQueries.fetchGrants(db, automationID: id) } },
+            refresh: { [weak vm] id in
+                vm?.refresh()
+                await vm?.loadDetail(id)
+            }
+        )
     }
 
     /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
@@ -1662,7 +1760,13 @@ final class AppState {
     }
 
     func initActionStrip(dbPool: DatabasePool) {
-        let vm = ActionStripViewModel(dbPool: dbPool)
+        // A decision on an automation run's proposal wakes the daemon's
+        // automations loop (spec §7.4); the runner resolves per call, like
+        // the feed's own.
+        let vm = ActionStripViewModel(dbPool: dbPool) {
+            guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+            try await AutomationsCLI(runner: runner).wake()
+        }
         vm.refresh()
         actionStripViewModel = vm
     }

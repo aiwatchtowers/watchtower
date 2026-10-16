@@ -71,7 +71,7 @@ func init() {
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.Flags().StringVar(&mcpFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 	mcpCmd.Flags().BoolVar(&mcpFlagChat, "chat", false, "assistant chat mode: mount write tools as proposals (never for external clients)")
-	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target|automation")
+	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target|automation|automation_editor")
 	mcpCmd.Flags().Int64Var(&mcpFlagConversation, "conversation", 0, "chat conversation id for --chat")
 	mcpCmd.Flags().StringVar(&mcpFlagTurn, "turn", "", "turn id for --chat (proposals attach to it)")
 	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
@@ -170,8 +170,8 @@ func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	if mcpFlagSurface == tools.AutomationSurface || mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil {
 		return mcpAutomationOptions(cfg, database)
 	}
-	if mcpFlagSurface != "main" && mcpFlagSurface != "target" {
-		return nil, fmt.Errorf("--surface must be main, target or automation")
+	if mcpFlagSurface != "main" && mcpFlagSurface != "target" && mcpFlagSurface != tools.AutomationEditorSurface {
+		return nil, fmt.Errorf("--surface must be main, target, %s or %s", tools.AutomationSurface, tools.AutomationEditorSurface)
 	}
 	if mcpFlagContextType == tools.AutomationContextType {
 		// Only the automations executor binds a run (Binding.AutomationRunID);

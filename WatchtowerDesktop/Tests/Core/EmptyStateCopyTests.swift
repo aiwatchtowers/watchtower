@@ -5,7 +5,7 @@ final class EmptyStateCopyTests: XCTestCase {
     /// Every raw value the table covers (SidebarDestination is Desktop-side;
     /// EmptyStateCopyCoverageTests sweeps the real enum).
     private let covered = [
-        "catchUp", "briefings", "dayPlan", "inbox", "ideas", "calendar", "targets", "tracks", "projects",
+        "catchUp", "briefings", "dayPlan", "inbox", "ideas", "calendar", "targets", "tracks", "projects", "automations",
         "digests", "people", "memory", "workload", "blockers", "projectMap", "releases", "statistics", "boards"
     ]
 

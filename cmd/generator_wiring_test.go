@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/providers"
+	"watchtower/internal/tools"
 )
 
 func TestCliGeneratorProviderSwitch(t *testing.T) {
@@ -129,6 +130,41 @@ func TestNewQueryClientWiresEnabledExternalConnections(t *testing.T) {
 	assert.Equal(t, map[string]string{"TRELLO_TOKEN": "abc"}, servers[0].Env)
 	assert.Equal(t, []string{"list_boards"}, servers[0].AllowTools, "only the read-only tool is allowed (QC-02)")
 	assert.Equal(t, []string{"create_card"}, servers[0].DenyTools)
+}
+
+// The automation editor chat (spec 2026-10-14 §14.5, D11) carries only
+// draft_automation, save_automation and read tools: an automation_editor
+// query mounts no Quick Connections server, while a main query still does.
+func TestNewQueryClientSkipsExternalConnectionsOnAutomationEditor(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "claude"}}
+	dbPath := cfg.DBPath()
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	connID, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "trello", Kind: "stdio", Command: "npx", Enabled: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, database.SetExternalConnectionTools(connID,
+		[]db.ExternalTool{{Name: "list_boards"}, {Name: "create_card"}}, time.Now().UTC().Format(time.RFC3339)))
+	require.NoError(t, database.Close())
+
+	oldTools, oldModel, oldSurface := aiFlagTools, aiFlagModel, aiFlagSurface
+	defer func() { aiFlagTools, aiFlagModel, aiFlagSurface = oldTools, oldModel, oldSurface }()
+	aiFlagTools, aiFlagModel = "chat", ""
+	servers := func(surface string) []ai.ExternalMCPServer {
+		aiFlagSurface = surface
+		client, cleanup, err := newQueryClient(cfg, dbPath)
+		require.NoError(t, err)
+		defer cleanup()
+		c, ok := client.(*ai.Client)
+		require.True(t, ok, "claude provider must build *ai.Client, got %T", client)
+		return c.ExternalServersForTest()
+	}
+
+	assert.Empty(t, servers(tools.AutomationEditorSurface), "no external server on automation_editor")
+	assert.Len(t, servers("main"), 1, "main still mounts the owner's connections")
+	assert.Len(t, servers("target"), 1, "target still mounts the owner's connections")
 }
 
 // TestNewQueryClientExternalConnectionsMissingTableDegradesGracefully makes

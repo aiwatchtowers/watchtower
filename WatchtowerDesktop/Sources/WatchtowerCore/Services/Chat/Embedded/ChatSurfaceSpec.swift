@@ -173,11 +173,22 @@ package struct ChatSurfaceSpec {
     package enum ToolAccess: Equatable, Sendable {
         case draftOnly
         case actions(surface: String)
+        /// An action surface whose conversation names no context to the CLI
+        /// (no `--context-type`/`--context-id`): the "New automation" chat,
+        /// which has no automation yet.
+        case actionsWithoutContext(surface: String)
 
         package func toolMode(key: EmbeddedChatKey, turnID: String) -> ChatToolMode? {
-            guard case .actions(let surface) = self, let conversationID = key.conversationID else { return nil }
-            return ChatToolMode(surface: surface, conversationID: conversationID, turnID: turnID,
-                                contextType: key.contextType, contextID: key.contextID)
+            guard let conversationID = key.conversationID else { return nil }
+            switch self {
+            case .draftOnly:
+                return nil
+            case .actions(let surface):
+                return ChatToolMode(surface: surface, conversationID: conversationID, turnID: turnID,
+                                    contextType: key.contextType, contextID: key.contextID)
+            case .actionsWithoutContext(let surface):
+                return ChatToolMode(surface: surface, conversationID: conversationID, turnID: turnID)
+            }
         }
     }
 

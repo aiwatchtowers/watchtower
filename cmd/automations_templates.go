@@ -240,7 +240,7 @@ func indexTemplateFiles(ctx context.Context, cfg *config.Config, database *db.DB
 	}
 	out := installJSON{Installed: make([]installedRecipeJSON, 0, len(written))}
 	for _, path := range written {
-		a, err := recipeInReport(database, scope, report, path)
+		a, err := ix.RecipeInReport(scope, report, path)
 		if err != nil {
 			return installJSON{}, err
 		}

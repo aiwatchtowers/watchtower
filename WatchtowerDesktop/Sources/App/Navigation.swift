@@ -185,6 +185,27 @@ struct MainNavigationView: View {
     /// (stale persisted selection), on every live feature-list or
     /// connected-source change, and on every selection change, sharing the
     /// same pure `fallbackDestination` rule.
+    /// The Automations tab's hooks into other surfaces; later tasks add
+    /// the New/Templates/Change in words ones. Edit and the confirmation
+    /// sheet are the tab's own (`AutomationEditorCenter`).
+    private var automationsTabActions: AutomationsTabActions {
+        var actions = AutomationsTabActions()
+        actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
+        return actions
+    }
+
+    private var automationEditorChatHooks: AutomationEditorChatHooks {
+        // Personal recipes live in <workspace>/automations, beside the database.
+        let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent
+        return AutomationEditorChatHooks(
+            open: { try appState.automationEditorChat(automationID: $0) },
+            openNew: { try appState.newAutomationEditorChat() },
+            automationsDir: (workspaceDir as NSString?)?.appendingPathComponent("automations"),
+            unavailableHelp: AutomationEditorChatSurface.toolsAvailable(provider: nil)
+                ? nil : AutomationEditorChatSurface.unavailableHelp
+        )
+    }
+
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
@@ -269,6 +290,23 @@ struct MainNavigationView: View {
                 WorkbenchesView(vm: vm)
             } else {
                 Text("Workbench unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .automations:
+            if let vm = appState.automationsViewModel {
+                AutomationsView(
+                    vm: vm,
+                    actions: automationsTabActions,
+                    workbenchName: { id in
+                        appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
+                    },
+                    emptyStateContext: appState.emptyStateContext,
+                    editor: appState.automationEditorCenter,
+                    chats: automationEditorChatHooks
+                )
+            } else {
+                Text("Automations unavailable")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

@@ -341,7 +341,8 @@ func applyFinish(row *db.AutomationRunStep, f db.StepFinish) {
 }
 
 // marshalForStep renders v for args_json/result_summary: strings as is,
-// json.RawMessage as is, anything else as JSON.
+// json.RawMessage and an encodedResult (Env.Call's already-serialised
+// result) as is, anything else as JSON.
 func marshalForStep(v any) string {
 	switch x := v.(type) {
 	case nil:
@@ -349,6 +350,8 @@ func marshalForStep(v any) string {
 	case string:
 		return x
 	case json.RawMessage:
+		return string(x)
+	case encodedResult:
 		return string(x)
 	}
 	b, err := json.Marshal(v)

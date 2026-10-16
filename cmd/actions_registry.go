@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"watchtower/internal/automations/authoring"
 	"watchtower/internal/config"
 	"watchtower/internal/confluence"
 	"watchtower/internal/db"
@@ -174,6 +175,11 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	// The D23 local-store reads (ask #277): automation surface only, never in
 	// tools.ReadTools() (DEV-01).
 	regTools = append(regTools, tools.AutomationReadTools()...)
+	// Automation authoring (Automations P3, spec 2026-10-14 §11): main chat
+	// and the editor chat (automation_editor) only; draft is a read that
+	// writes nothing, save an AlwaysAsk write — Save is the owner's Approve.
+	authoringDeps := automationAuthoringDeps(cfg, database)
+	regTools = append(regTools, authoring.NewDraftAutomation(authoringDeps), authoring.NewSaveAutomation(authoringDeps))
 	// The workbench tools (surface "project" only, spec 2026-10-02 A1):
 	// mounted by `mcp --workbench N` (and the legacy `mcp --project N`),
 	// which applies them directly under Binding.DirectApply (DEV-06).

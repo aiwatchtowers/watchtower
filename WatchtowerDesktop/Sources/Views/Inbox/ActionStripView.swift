@@ -1,8 +1,9 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The Inbox tab's content: a flat strip of due reminders and pending agent-
-/// action proposals — the reaction-command surface, which replaced the
+/// The Inbox tab's content: a flat strip of due reminders, pending agent-
+/// action proposals and unread automation inbox outputs — the reaction-command
+/// surface, which replaced the
 /// situations Dashboard (now deleted). The Dashboard's two sibling tabs did
 /// not go with it: the learned-rules manager still feeds the digest/tracks/
 /// briefing/catch-up prompts (`ListLearnedRulesByPipeline`) and the assistant
@@ -48,6 +49,10 @@ struct ActionStripView: View {
                         onEnable: enableReactionCommands,
                         onOpenSettings: openReactionDictionary,
                         onOpen: open,
+                        onOpenAutomationRun: { runID in appState.openAutomationRun(runID: runID) },
+                        onOpenAutomation: { output in
+                            appState.openAutomationRun(automationID: output.automationID, runID: output.runID)
+                        },
                         onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
                         emptyState: appState.emptyStateContext
                     )
@@ -135,6 +140,11 @@ struct ActionStripActionsView: View {
     let onEnable: () -> Void
     let onOpenSettings: () -> Void
     let onOpen: (AgentActionDestination) -> Void
+    /// An automation row's label (run id) and an output card's automation
+    /// line: open that automation's card with the run expanded. Nil (tests)
+    /// renders them as plain text.
+    var onOpenAutomationRun: ((Int64) -> Void)?
+    var onOpenAutomation: ((AutomationOutputCard) -> Void)?
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> String?)?
     /// The empty strip's readiness and actions (`AppState.emptyStateContext`).
@@ -147,7 +157,7 @@ struct ActionStripActionsView: View {
             if let message = vm.lastError {
                 errorBanner(message)
             }
-            if vm.actionRows.isEmpty && vm.reminderRows.isEmpty {
+            if vm.actionRows.isEmpty && vm.reminderRows.isEmpty && vm.outputRows.isEmpty {
                 ScrollView {
                     TabEmptyState(.inbox, context: emptyState) {
                         ReactionCheatSheetView(
@@ -190,6 +200,17 @@ struct ActionStripActionsView: View {
                             }
                         }
                     }
+                    if !vm.outputRows.isEmpty {
+                        Section("From your automations") {
+                            ForEach(vm.outputRows) { output in
+                                AutomationOutputRow(
+                                    output: output,
+                                    vm: vm,
+                                    onOpenAutomation: onOpenAutomation.map { open in { open(output) } }
+                                )
+                            }
+                        }
+                    }
                     if !vm.actionRows.isEmpty {
                         Section("Proposals") {
                             ForEach(vm.actionRows) { action in
@@ -212,8 +233,16 @@ struct ActionStripActionsView: View {
             gestureError: vm.actionFeed.rowErrors[action.id],
             onOpen: onOpen,
             onApproveEdited: { patch in Task { await vm.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
-            onReconnectSlack: onReconnectSlack
+            onReconnectSlack: onReconnectSlack,
+            contextLabel: vm.actionLabels[action.id],
+            onOpenContext: openContext(action)
         )
+    }
+
+    /// Only a row whose label names a run gets a clickable label.
+    private func openContext(_ action: AgentAction) -> (() -> Void)? {
+        guard let onOpenAutomationRun, let runID = ActionStripViewModel.automationRunID(action) else { return nil }
+        return { onOpenAutomationRun(runID) }
     }
 
     /// The `IdeasView` house pattern: a write failure
@@ -258,5 +287,52 @@ struct ReminderRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// One unread automation inbox output: its title and body, the automation
+/// and run it came from, and Done / Dismiss — each writes only its own column
+/// (`read_at` / `dismissed_at`); the card stays until the write lands.
+struct AutomationOutputRow: View {
+    let output: AutomationOutputCard
+    let vm: ActionStripViewModel
+    var onOpenAutomation: (() -> Void)?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(output.title.isEmpty ? "Automation output" : output.title)
+                    .font(.callout.weight(output.priority == "high" ? .semibold : .regular))
+                    .fixedSize(horizontal: false, vertical: true)
+                if !output.body.isEmpty {
+                    Text(output.body)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                source
+            }
+            Spacer()
+            Button("Done") { vm.markOutputDone(output.id) }
+            Button("Dismiss") { vm.dismissOutput(output.id) }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var sourceText: String {
+        "⚙ \(output.automationName) · run #\(output.runID)"
+    }
+
+    @ViewBuilder
+    private var source: some View {
+        if let onOpenAutomation {
+            Button(sourceText, action: onOpenAutomation)
+                .buttonStyle(.link)
+                .font(.caption)
+                .help("Open the automation run")
+        } else {
+            Text(sourceText).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }

@@ -1,16 +1,20 @@
 package cmd
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/automations"
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 )
 
 // grantRecipe is a recipe whose manifest admits create_idea (ideas:write),
@@ -229,4 +233,65 @@ func TestAutomationsAuto_GrantsJSONNeverNull(t *testing.T) {
 		"automation_id", "tool", "auto", "changed")
 	keys := automationJSONKeys(listItem(t, a.ID))
 	assert.True(t, slices.Contains(keys, "grants") && slices.Contains(keys, "auto_paused"), "%v", keys)
+}
+
+// autoToolsOf reads show --json's auto_tools as tool → always_asks.
+func autoToolsOf(t *testing.T, show map[string]any) map[string]bool {
+	t.Helper()
+	raw, ok := show["auto_tools"].([]any)
+	require.True(t, ok, "auto_tools is an array, never null: %v", show["auto_tools"])
+	out := map[string]bool{}
+	for _, e := range raw {
+		m := e.(map[string]any)
+		wantKeys(t, m, "tool", "always_asks")
+		out[m["tool"].(string)] = m["always_asks"].(bool)
+	}
+	return out
+}
+
+// show --json's auto_tools lists the writes the manifest admits — by
+// capability (ideas:write → create_idea) and through an output shortcut
+// (outputs:[target] → create_target) — and no read tool; a recipe that admits
+// no write has [].
+func TestAutomationsCLI_ShowAutoTools(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.indexRecipe(t, "grants", defaultGrantRecipe().text())
+	got := autoToolsOf(t, runAutomationsJSON(t, "show", idArg(a.ID)))
+	assert.Contains(t, got, "create_idea")
+	assert.False(t, got["create_idea"])
+	assert.Contains(t, got, "create_target", "outputs:[target] admits create_target")
+	assert.NotContains(t, got, "list_jira_issues", "a read tool is never an auto tool")
+	assert.NotContains(t, got, "create_jira_issue", "jira:read admits no Jira write")
+
+	plain := c.indexRecipe(t, "plain", autoCLIRecipeText(`return 1`))
+	assert.Empty(t, autoToolsOf(t, runAutomationsJSON(t, "show", idArg(plain.ID))))
+
+	broken := c.indexRecipe(t, "broken", "broken")
+	assert.Empty(t, automationAutoTools(tools.New(c.d), broken), "a parse-error row admits nothing")
+}
+
+// An AlwaysAsk write the manifest admits is listed with always_asks, so the
+// form shows it as "Always asks" instead of a toggle the CLI refuses (D14).
+// No AlwaysAsk tool is on the automation surface today, so a stub stands in.
+func TestAutomationsCLI_AutoToolsMarkAlwaysAsk(t *testing.T) {
+	c := newAutoCLI(t)
+	text := strings.Replace(defaultGrantRecipe().text(), "  - ideas:write\n", "  - ideas:write\n  - tool:bulk_stub\n", 1)
+	a := c.indexRecipe(t, "stub", text)
+	reg := tools.New(c.d)
+	schema, err := jsonschema.For[struct{}](nil)
+	require.NoError(t, err)
+	stub := func(name string, alwaysAsk bool, access tools.Access) *tools.Tool {
+		return &tools.Tool{
+			Name: name, InputSchema: schema, Access: access, AlwaysAsk: alwaysAsk,
+			Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+			Execute:  func(context.Context, *db.DB, tools.Call) (any, error) { return nil, nil },
+		}
+	}
+	require.NoError(t, reg.Register(stub("bulk_stub", true, tools.AccessWrite)))
+	require.NoError(t, reg.Register(stub("create_idea", false, tools.AccessWrite)))
+	require.NoError(t, reg.Register(stub("other_stub", false, tools.AccessWrite)))
+	assert.Equal(t, []automationAutoToolJSON{
+		{Tool: "bulk_stub", AlwaysAsks: true},
+		{Tool: "create_idea", AlwaysAsks: false},
+	}, automationAutoTools(reg, a))
 }

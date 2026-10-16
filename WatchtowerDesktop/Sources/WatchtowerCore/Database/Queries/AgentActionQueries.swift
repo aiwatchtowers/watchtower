@@ -36,6 +36,11 @@ package enum AgentActionQueries {
             """, arguments: [conversationID, after, after])
     }
 
+    /// The row's `context_type`; nil when the row is gone.
+    package static func contextType(_ db: Database, id: Int64) throws -> String? {
+        try String.fetchOne(db, sql: "SELECT context_type FROM agent_actions WHERE id = ?", arguments: [id])
+    }
+
     /// How many proposals wait on the owner right now: pending ones and failed
     /// ones (retriable). Drives the Inbox sidebar badge; `approved`/`executing`
     /// rows are in flight, not decisions, so they are not counted. Project

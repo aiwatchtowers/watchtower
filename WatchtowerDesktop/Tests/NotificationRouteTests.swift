@@ -145,7 +145,8 @@ final class NotificationRouteTests: XCTestCase {
         let pushTypes = [
             "decision", "track", "track_update", "task_overdue", "target_extract",
             "daily_summary", "voice_label", "meeting_reminder", "meeting_stop_recording",
-            "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update", "agent_action", "plan_usage"
+            "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update", "agent_action", "plan_usage",
+            "automation_run"
         ]
         let actionIDs = [
             UNNotificationDefaultActionIdentifier,
@@ -447,7 +448,8 @@ final class NotificationRouteTests: XCTestCase {
                 "type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey,
                 NotificationForwarding.transcriptIDKey, NotificationForwarding.workbenchIDKey,
                 NotificationForwarding.workbenchSubjectIDKey, NotificationForwarding.workbenchPaneKey,
-                NotificationForwarding.workbenchAskIDKey
+                NotificationForwarding.workbenchAskIDKey, NotificationForwarding.automationIDKey,
+                NotificationForwarding.runIDKey
             ]
         )
         XCTAssertEqual(NotificationForwarding.digestIDKey, "digestId")
@@ -457,6 +459,8 @@ final class NotificationRouteTests: XCTestCase {
         XCTAssertEqual(NotificationForwarding.workbenchSubjectIDKey, "subjectId")
         XCTAssertEqual(NotificationForwarding.workbenchPaneKey, "pane")
         XCTAssertEqual(NotificationForwarding.workbenchAskIDKey, "askId")
+        XCTAssertEqual(NotificationForwarding.automationIDKey, "automationId")
+        XCTAssertEqual(NotificationForwarding.runIDKey, "runId")
     }
 
     /// The wire codec itself: a voice-label push's transcript id survives encode →
@@ -468,5 +472,46 @@ final class NotificationRouteTests: XCTestCase {
         )
         let response = try XCTUnwrap(json.flatMap(NotificationForwarding.decode))
         XCTAssertEqual(response.userInfo["transcriptID"] as? Int64, 5)
+    }
+
+    // MARK: - Automation finish notice (spec §12.7)
+
+    /// A click names the run it opens and lands on the Automations tab. That
+    /// `openAutomationRun` then selects the card with the run expanded is
+    /// `SidebarAutomationsVisibilityTests`' (a booted app here would leave
+    /// background reads running past this test's database).
+    func testAutomationRunNoticeOpensTheRun() async throws {
+        let info = AutomationRunNotifier.userInfo(automationID: 4, runID: 9)
+        let target = try XCTUnwrap(NotificationDelegate.automationRunTarget(info))
+        XCTAssertEqual(target.automationID, 4)
+        XCTAssertEqual(target.runID, 9)
+        let appState = AppState.isolated()
+        appState.selectedDestination = .catchUp
+        await NotificationDelegate.route(actionID: UNNotificationDefaultActionIdentifier, userInfo: info,
+                                         appState: appState, forwarded: false)
+        XCTAssertEqual(appState.selectedDestination, .automations)
+    }
+
+    /// Over the forwarding bus the notice still only navigates: the ids come
+    /// back as Int64 and name the same run; the branch has no action to arm.
+    func testForwardedAutomationRunNoticeIsNavigationOnly() async throws {
+        let json = try XCTUnwrap(NotificationForwarding.encode(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: AutomationRunNotifier.userInfo(automationID: 4, runID: 9)
+        ))
+        let response = try XCTUnwrap(NotificationForwarding.decode(json))
+        let target = try XCTUnwrap(NotificationDelegate.automationRunTarget(response.userInfo))
+        XCTAssertEqual(target.automationID, 4)
+        XCTAssertEqual(target.runID, 9)
+        let appState = AppState.isolated()
+        await NotificationDelegate.routeForwarded(response, appState: appState)
+        XCTAssertEqual(appState.selectedDestination, .automations)
+        // Without both ids it lands on the tab.
+        XCTAssertNil(NotificationDelegate.automationRunTarget(["type": "automation_run", "automationId": Int64(4)]))
+        appState.selectedDestination = .catchUp
+        await NotificationDelegate.route(actionID: UNNotificationDefaultActionIdentifier,
+                                         userInfo: ["type": "automation_run", "automationId": Int64(4)],
+                                         appState: appState, forwarded: true)
+        XCTAssertEqual(appState.selectedDestination, .automations)
     }
 }

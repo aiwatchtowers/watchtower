@@ -149,12 +149,20 @@ and trust escalation nobody asked for.
 
 **Observable:** A card reaches the inbox action strip only because of an
 owner gesture — a dictionary reaction (REACT-01 owner-only), a `remind_me`
-call, or a chat proposal the owner elicited. `ActionStripViewModel.refresh()`
-is a pure read (`AgentActionQueries.fetchStrip` + `ReminderQueries.fetchDue`)
-over two tables — `agent_actions` and `reminders` — and every row in both is
-written only by a `Registry.Propose` call or a `remind_me`
-`Execute`/`InsertReminder`, all gesture-triggered. There is no third writer,
-and no scan of ambient Slack/Jira/Calendar/Gmail traffic feeds either table.
+call, a chat proposal the owner elicited, or a recipe the owner confirmed.
+`ActionStripViewModel.refresh()` is a pure read (`AgentActionQueries.fetchStrip`
++ `ReminderQueries.fetchDue` + `AutomationQueries.fetchInboxOutputs`, plus the
+automation run labels) over three tables — `agent_actions`, `reminders` and
+`automation_outputs` (`kind='inbox'`, unread and not dismissed) — and every
+row in them is written only by a `Registry.Propose` call, a `remind_me`
+`Execute`/`InsertReminder`, or a succeeded run of an automation. An
+automation output is gesture-gated by construction: it exists only because
+the owner confirmed a recipe that declares `outputs: [inbox]` (AUTO-06), and
+an `agent_actions` row with `context_type='automation_run'` likewise comes
+only from such a recipe's `Registry.Propose`. There is no other writer, and
+no scan of ambient Slack/Jira/Calendar/Gmail traffic feeds any of the three
+tables. (Amended 2026-10-16, Automations P3, spec §14.4, D10, approved in ask
+#270.)
 
 **Why locked:** The whole point of the strip taking over from the situations
 Dashboard was "no trash bin by construction" (design §1) — a flat list that
@@ -165,7 +173,7 @@ the only thing the sidebar's "Inbox" tab shows besides its Learned and Profile
 segments — which makes this contract the sole remaining guarantee that nothing
 ambient can reach that tab.
 
-**Test guards:** No dedicated negative test (an absence-of-writer property); covered indirectly by every writer-side guard above (`TestReactionCmd_DispatchesNewCommandAsProposal`, AGENT-05's guards in `docs/inventory/agent-actions.md`) each being reachable only from a gesture, plus `WatchtowerDesktop/Tests/Core/AgentActionQueriesTests.swift::testFetchStripReturnsNonTerminalAcrossConversations` and `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testRefreshPopulatesActionAndReminderRows` (the read side pulls only from `agent_actions`/`reminders`, nothing else).
+**Test guards:** No dedicated negative test (an absence-of-writer property); covered indirectly by every writer-side guard above (`TestReactionCmd_DispatchesNewCommandAsProposal`, AGENT-05's guards in `docs/inventory/agent-actions.md`) each being reachable only from a gesture, plus `WatchtowerDesktop/Tests/Core/AgentActionQueriesTests.swift::testFetchStripReturnsNonTerminalAcrossConversations` and `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testRefreshPopulatesActionAndReminderRows` (the read side pulls only from `agent_actions`/`reminders`, nothing else). Automation outputs (P3): `WatchtowerDesktop/Tests/Core/ActionStripAutomationOutputTests.swift` (`testStripListsUnreadInboxOutputs`, `testReportAndBriefingOutputsNotOnStrip` — only `kind='inbox'` reaches the strip — and `testRefreshIsAPureRead`).
 
 **Locked since:** 2026-09-06
 
@@ -173,17 +181,21 @@ ambient can reach that tab.
 
 **Status:** Enforced
 
-**Observable:** `ActionStripViewModel.refresh()` writes nothing — it is two
-SELECTs. Every mutation a strip card triggers (Approve/Reject/Retry, Done,
-Snooze) writes to the backing `agent_actions` or `reminders` row directly
-(via `AgentActionFeed`/`ReminderQueries`); there is no strip-local table
-(migration 00065 adds only `reminders` — no "strip" or "feed" table exists).
+**Observable:** `ActionStripViewModel.refresh()` writes nothing — it is one
+pure read (SELECTs only, inside one `dbPool.read`). Every mutation a strip
+card triggers (Approve/Reject/Retry, Done, Snooze, and for an automation
+output Done/Dismiss) writes to the backing `agent_actions`, `reminders` or
+`automation_outputs` row directly (via `AgentActionFeed`/`ReminderQueries`/
+`AutomationQueries` — an output's Done writes only `read_at`, Dismiss only
+`dismissed_at`); there is no strip-local table (migration 00065 adds only
+`reminders` — no "strip" or "feed" table exists; `automation_outputs` is the
+automation's own table, 00113).
 
 **Why locked:** A separate strip-owned store would create a second source of
 truth for state that already lives on the agent-action/reminder row, risking
 drift between what the strip shows and what `Registry.Apply` actually did.
 
-**Test guards:** `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testMarkReminderDoneDropsItOnNextRefresh`, `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testSnoozeReminderMovesItOutOfTheDueWindow` (mutation lands on `reminders`, confirmed by a subsequent `refresh()`); `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testMarkDoneRemovesFromDue`, `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testSnoozeBumpsRemindAt`.
+**Test guards:** `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testMarkReminderDoneDropsItOnNextRefresh`, `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testSnoozeReminderMovesItOutOfTheDueWindow` (mutation lands on `reminders`, confirmed by a subsequent `refresh()`); `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testMarkDoneRemovesFromDue`, `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testSnoozeBumpsRemindAt`; automation outputs (P3): `WatchtowerDesktop/Tests/Core/ActionStripAutomationOutputTests.swift::testRefreshIsAPureRead` (full row dumps of `agent_actions`, `reminders`, `automation_outputs`, `automation_runs`, `automations`, `pipeline_runs` unchanged by a refresh), `::testDoneWritesOnlyReadAt`, `::testDismissWritesOnlyDismissedAt`, `::testFailedWriteKeepsCard`.
 
 **Locked since:** 2026-09-06
 
@@ -251,6 +263,7 @@ surface must never grow an implicit Slack-write side effect.
 
 ## Changelog
 
+- 2026-10-16 (Automations P3, board #753; spec §12.5, §14.4, D10, approved in ask #270): **STRIP-01 amended** — `automation_outputs` with `kind='inbox'` are the strip's third source (the "From your automations" section), gesture-gated by construction (they exist only because the owner confirmed a recipe declaring `outputs: [inbox]`, AUTO-06); `context_type='automation_run'` proposals carry the "⚙ <automation name> · run #<n>" label. New guard `ActionStripAutomationOutputTests`. **STRIP-02**: outputs are backing rows, not a strip store — Done writes only `read_at`, Dismiss only `dismissed_at`, and `refresh()` stays one pure read (the Observable's former "two SELECTs" now reads "one pure read"; the read gained the outputs and the run labels). The Inbox badge also counts unread inbox outputs. No guard relaxed.
 - 2026-10-15 (Automations P2, board #753/#814): `agent_actions` rows with `context_type='automation_run'` reach the strip through `Registry.Propose` from a recipe the owner confirmed (AUTO-06), per the approved design §6.3 (`docs/superpowers/specs/2026-10-14-automations-design.md`); the STRIP-01 three-table amendment (spec §14.4, `automation_outputs`) lands with P3. STRIP-01's Observable text is not edited in P2; no guard changed.
 - 2026-10-14 (target 167, approved by the owner 2026-10-14, ask #109; AGENT-01 amended in `agent-actions.md`): trust is now per (tool, surface) — migration 00112 keeps the 00065 seeds (`create_idea`/`remind_me`/`brief_context` = `execute`, `create_track` = `ask`) on every surface the tool is on, so the reaction path and the main chat run exactly as before (owner decision 2026-10-14, ask #118: upgrade keeps today's behaviour); trust only becomes editable per surface. This supersedes the 2026-09-26 trust note below ("trust is per tool, not per surface"). REACT-01..05 and their guards unchanged.
 - 2026-10-02 (board #166, Slack send; owner decision that a workbench terminal's send is approved in the Desktop): the strip/badge filter `AgentActionQueries.notWorkbenchRow` (`notProjectRow` before the 2026-10-02 Workbench rename) keeps hiding a workbench's direct-apply audit rows but now lets an **External** workbench row through — DEV-06 refuses every External tool inline, so such a row is always a propose-only proposal (`send_slack_message`) the owner elicited in the workbench terminal and must decide. STRIP-01 holds (gesture-gated: the owner asked the agent to send). `testStripAndBadgeExcludeProjectRows` is unchanged and green; new `testStripShowsAProjectTerminalsExternalProposal`.

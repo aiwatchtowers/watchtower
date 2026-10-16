@@ -19,8 +19,11 @@ of these entries; decisions §20, §20.1).
 `cmd/automations*.go` (incl. `cmd/automations_auto.go`), `cmd/automations_registry.go`,
 `internal/briefing/automations.go` (the FROM YOUR AUTOMATIONS block),
 `internal/daemon/automation_wake.go`, `internal/tools/emails.go`,
-`internal/tools/automation_reads.go`
-**Last full audit:** 2026-10-15 (Automations P2)
+`internal/tools/automation_reads.go`, `internal/automations/authoring/` (`draft_automation`,
+`save_automation`, P3), the Desktop's automation views and Core services
+(`WatchtowerDesktop/Sources/Views/Automations/`,
+`WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/`, P3)
+**Last full audit:** 2026-10-16 (Automations P3)
 
 Phases: P1 (core) and P2 (writes) are in code. P3 (authoring + Desktop), P4
 (events), P5 (workbench) and P6 (mcp, agent, templates) each flip their
@@ -142,7 +145,13 @@ alone does not admit `send_slack_message`, which needs `slack:write`, D28).
 inside an automation's `agent()` (`Binding.AutomationAgent`) is never auto
 (the branch is in code; nothing sets the flag until P6's `agent()`). The
 amendment of AGENT-03 (spec §14.2, owner-approved in ask #265) is in
-`agent-actions.md`.
+`agent-actions.md`. P3: the Desktop runs `auto … on` only from an explicit
+owner gesture — an **Auto** toggle in the edit form (with the loaded
+`approval_hash`) or a checked "Keep auto for <tool>" box in the Save sheet
+(with the saved hash). A save that changes `approval_hash` lists the grants it
+pauses with every box **unchecked**, and no `auto … on` runs unless the owner
+checks one. `save_automation` never carries a grant over to the saved hash
+(spec §6.4).
 
 **Why locked:** Auto is the one place an External write runs without a
 per-call click; it is safe only while it is bound to exactly the code and
@@ -153,6 +162,7 @@ permissions the owner reviewed.
 - `internal/tools/registry_automation_test.go` — `TestAgent03_AutoGrantAppliesExternalOnlyOnAutomationSurfaceWithMatchingHash`, `TestAgent03_AutoGrantNeverCoversAnotherAutomationOrSurface`, `TestAgent03_RecipeEditMakesAutoGrantInactive`, `TestAgent03_AlwaysAskIsNeverAuto`, `TestTrustOrder_AutomationSurface` (incl. its `AutomationAgent` rows)
 - `internal/db/automation_grants_test.go` — `TestMigration00117_GrantsTable`, `TestGrant_StaleReGrantKeepsExistingGrant`
 - `internal/automations/manifest_test.go` — `TestManifest_AdmitsWrite`
+- P3: `internal/automations/authoring/save_test.go` — `TestSaveAutomation_GrantsNotCarriedOver`; `WatchtowerDesktop/Tests/Core/AutomationFormTests.swift` — `testAuto03_KeepAutoBoxesUncheckedByDefault`; `WatchtowerDesktop/Tests/Core/AutomationEditorCenterTests.swift` — `testNoAutoOnWithoutACheckedBox`
 - see AGENT-03 in `agent-actions.md`
 
 **Locked since:** 2026-10-14
@@ -208,8 +218,8 @@ a burst of schedules from loading the machine.
 ## AUTO-06 — Only confirmed content runs
 
 **Status:** Enforced (P1: the executor, the indexer and the CLI, including
-the CLI dry-run refusal of ask #271) · Planned (P3: the `draft_automation`
-half)
+the CLI dry-run refusal of ask #271; P3: the `draft_automation` half, ask
+#271)
 
 **Observable:** A run is claimed only when `confirmed_hash = approval_hash`
 (and the row is parsed, enabled and not removed — `Automation.Runnable()`); a
@@ -233,9 +243,33 @@ AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271):
 `automations dry-run` of an unconfirmed recipe refuses under every marker
 (`WATCHTOWER_AUTOMATION_RUN_ID` included) and writes no run row; the CLI pins
 the `approval_hash` its gate checked (`ExecuteInlinePinned`), so a recipe
-changed between the check and the claim is cancelled, never run. P3 adds the
-same refusal to `draft_automation` (a draft whose `approval_hash` is an
-indexed unconfirmed recipe's, owner-confirmed reading in ask #280).
+changed between the check and the claim is cancelled, never run.
+`draft_automation` refuses the same way (P3): when the draft's
+`approval_hash` equals that of an indexed, not removed, unconfirmed
+automation it validates but does not dry-run (`dry_run.status="refused"`, no
+model call, no registry call) — owner-confirmed reading in ask #280. The
+comparison is within the draft's scope: `approval_hash` covers the scope, so
+the same text with another `workbench_id` hashes differently and dry-runs,
+which is equivalent to the allowed one-line edit (any edit makes a draft).
+`save_automation` (P3) is the third caller of `ConfirmAutomation`: an
+`AlwaysAsk` write whose `Execute` runs only after the owner's Approve
+(AGENT-07) and confirms only the pinned `approval_hash`, refusing when the
+re-parsed text hashes differently or the file's content hash changed since
+propose (a hand edit, a file that appeared at a new slug, one that vanished).
+Its card shows what Approve confirms: every hashed field (missed policy and
+concurrency included) and the code — the whole text of a new recipe, the diff
+of an edit (`SaveAutomationCardModelTests`).
+The Desktop confirms only what it showed: the confirmation sheet passes the
+hash it displayed (`confirm --hash <shown>`, a stale one is refused and
+re-read), the edit form saves with `--confirm-hash` = the `approval_hash`
+`validate` returned for the very bytes it saves and `--expect-content-hash`
+of the file it loaded (a recipe changed on disk is refused, never
+overwritten), and the sheet lists every hashed field that changed since the
+confirmed text, or says the change is unknown (D26). Quick run (P3, D27)
+never runs what the CLI would refuse: a palette or tray row that is
+unconfirmed, disabled or unreadable runs nothing — it opens the confirmation
+sheet or the card — and a `confirm: true` recipe runs only after **Run** in
+its sheet or alert.
 Switching a recipe on and deleting an automation are owner gestures too
 (ask #293): `automations enable` and `automations delete` refuse under every
 marker before anything is read or written (AGENT-07); `disable` stays open.
@@ -253,7 +287,8 @@ code or permissions the owner did not see.
 - `internal/db/automations_test.go` — `TestAutomationIndex_RunnableTable`, `TestAutomationIndex_ConfirmRefusesStaleHash`, `TestAutomationIndex_UpsertKeepsOwnerColumns`, `TestAutomationIndex_InsertNeverSetsOwnerColumns`, `TestAutomationIndex_UpsertChangedApprovalHashNeedsConfirmation`
 - `cmd/automations_test.go` — `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes` (`--confirm-hash` under a marker refused, file not written), `TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers`, `TestAutomationsCLI_DryRunRecipeChangedBeforeClaimRefused`, `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`
 - `cmd/automations_templates_test.go` — `TestInstallTemplate_InstalledUnconfirmedAndDisabled` (P6: an installed template is unconfirmed and disabled; `run` is refused and a queued run is cancelled `not_runnable`)
-- P3 adds the `draft_automation` guard (plan `2026-10-14-automations-p3.md`) and flips that half.
+- P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_RefusesDryRunOfUnconfirmedRecipe`, `TestDraftAutomation_RemovedUnconfirmedRecipeDoesNotBlock`; `internal/automations/authoring/save_test.go` — `TestSaveAutomation_AlwaysAskAndPinsHash`, `TestSaveAutomation_RefusesWhenFileChangedSincePropose`, `TestSaveAutomation_RefusesWhenFileAppearedForNewSlug`, `TestSaveAutomation_RefusesHashDrift`; `cmd/automations_test.go` — `TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad`, `TestAutomationsCLI_ShowChangesFromConfirmedSnapshot`, `TestAutomationsCLI_ShowChangesUnknownWithoutSource`, `TestAutomationsCLI_ShowChangesUnknownAfterRehash`
+- P3 Desktop: `WatchtowerDesktop/Tests/Core/AutomationEditorCenterTests.swift` — `testSaveConfirmsTheValidatedHashOnly`, `testAuto06_ConfirmSheetPassesTheShownHash`, `testAuto06_ConfirmSheetShowsHashedFieldChanges`; `WatchtowerDesktop/Tests/Core/AutomationCardPresentationTests.swift` — `testButtonsForStates`; quick run: `WatchtowerDesktop/Tests/Core/QuickRunCenterTests.swift` — `testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun`; `WatchtowerDesktop/Tests/Core/TrayRunAutomationMenuTests.swift` — `testDisabledItemsAreNotActionable`
 
 **Locked since:** 2026-10-14
 
@@ -401,7 +436,11 @@ change; P5: no `shell()` process, no session, no ask)
 change, starts no session and runs no `shell()`: `output.*` and `state.set`
 steps record `status='dry_run'` and nothing is committed; `llm` and read
 tools run for real and their tokens count on the run. The in-memory dry run (`DryRunInMemory`, P3's `draft_automation`)
-writes no row of any table, not even a run row.
+writes no row of any table, not even a run row, and does not execute
+`agent()` (its step closes `dry_run` with a note, no child, no tokens). The
+editor's draft cache (`<workspace>/automation-drafts/<conversation id>.jsonl`,
+P3) is a UI cache of the tool's own result written by `draft_automation`
+itself, not by the script, and no database row.
 
 **Why locked:** Dry run is how the owner (and, for a confirmed recipe, the
 assistant) checks a recipe before trusting it; a dry run with side effects
@@ -413,6 +452,7 @@ would make checking as dangerous as running.
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_P2KindsDryRun` (P2: `output.briefing`/`target`/`slack` in a dry run commit nothing and propose nothing)
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
+- P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_WritesNothing` (a draft whose script calls `output.*`, `state.set` and a write tool writes no row); `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_AgentIsNotRun`
 - P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a dry run, QC-02 reads only); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
 - `internal/automations/sdk_shell_test.go` — `TestShell_DryRunStartsNoProcess` (P5: a dry-run `shell()` returns `{status:"dry_run"}`, journals a `dry_run` step and starts no process)
 - `internal/automations/sdk_session_test.go` — `TestSession_DryRunWaitsForNothing` (P5: a dry-run `session()` returns `{status:"dry_run"}` and asks the Desktop for nothing); `internal/automations/sdk_ask_test.go` — `TestAsk_DryRunCreatesNoRow`
@@ -470,6 +510,8 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-16 (Automations P3 final review, fix wave 1): AUTO-06 records that the `save_automation` card shows every hashed field and the whole text of a new recipe (J1). Strengthening only; no guard touched.
+- 2026-10-16 (Automations P3, board #753 group #353; spec §11, §12, §14.3–§14.5): **the `draft_automation` half of AUTO-06 flips from Planned to Enforced (ask #271)** — the one P3 status flip; every other AUTO entry P3 touches was already Enforced. Strengthening, no guard relaxed. AUTO-06 records `draft_automation`'s refusal (compared within the draft's scope), `save_automation` as the third `ConfirmAutomation` caller (AlwaysAsk, pinned hash and content hash), the Desktop's hash binding (`--confirm-hash` from `validate`, `--expect-content-hash`, the confirmation sheet's shown hash and **Changed** block, D26) and the quick-run pins (a dimmed row never runs; `confirm: true` runs only after **Run**); AUTO-03 records that the Desktop's Save sheet keeps every "Keep auto" box unchecked and that `save_automation` carries no grant over; AUTO-12 records that a draft writes nothing (`TestDraftAutomation_WritesNothing`, also in AGENT-06's chat-mode guard) and does not execute `agent()` (Ruling K). Guards added as listed under AUTO-03, AUTO-06 and AUTO-12. Related: AGENT-04 amended for the `automation_editor` surface (D11) and AGENT-06 extended (`agent-actions.md`); STRIP-01 amended for automation outputs (D10, `reaction-commands.md`). A P1 journal bug was fixed on the way: a generic step's `result_summary` is now its JSON, no longer the base64 of it (`TestDryRunInMemory_StepResultIsJSON`; AUTO-11 unchanged).
 - 2026-10-16 (Automations P6 part 2 final-review fixes, board #753): strengthening and one narrowing, no guard relaxed. **AUTO-01 narrowing:** a manifest `@scope` holding `<` or `>` is refused (`checkScopePresence`: an installed template placeholder such as `jira:read@<PROJECT>` must be replaced before the recipe parses; no real account, project or space name carries those characters). **AUTO-12:** `TestTemplates_DryRunE2E` now pins every workbench recipe's dry-run journal too (it formerly checked only the step statuses, so an empty journal passed). Tool contracts: `list_jira_issues` returns lean rows on every surface (no `RawJSON`/`CustomFieldsJSON`, description clipped at 512 bytes — `TestListJiraIssues_LeanRows`; `get_jira_issue` unchanged) and `list_emails` gains an exclusive `before` (`TestListEmails_BeforePagesOlder`). `install-template` rolls back on any failure after its first write and, with `save`, refuses a workbench recipe folder behind a symlink; `templates`/`install-template` carry template `notes`.
 - 2026-10-16 (Automations P6 part 2, board #753; spec §10, §12.3, §15): P6 part 2 — template gallery, `install-template`; the four P5 workbench fixtures moved from `internal/automations/testdata/workbench/` into `internal/automations/templates/`. Guards added: AUTO-12 `TestTemplates_DryRunE2E`, AUTO-06 `TestInstallTemplate_InstalledUnconfirmedAndDisabled`. No guard relaxed.
 - 2026-10-16 (Automations P5 part 1 final-review fixes, board #753): strengthening, no guard relaxed. A workbench folder path whose folder or any ancestor is a symlink is never followed: the daemon's rescan skips it and `shell()` refuses it with `NotAvailable` before any stat or process (`fsutil.NoSymlinkComponents`; guards `TestScheduler_NeverFollowsAnAncestorLink`, `TestShell_RefusedWhenTheFolderPathHasALink`). `shell()`'s PATH is the daemon's resolved rich PATH (`claude.RichPATH`), not launchd's minimal one; the env keys are unchanged. `automations session-launched`/`session-ended` are refused under AGENT-07's markers. Guards renamed to say what they pin, assertions unchanged: `TestWorkbenchAutomation_WritesNotAvailable` → `TestWorkbenchAutomation_WritesAreProposals` (and the three `internal/tools` ones listed in agent-actions.md).
