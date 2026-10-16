@@ -79,15 +79,18 @@ final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
         progress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> TranscriptionOutput {
         progress(0, 1)
-        let (input, gate) = await speechOnlyBuffer(samples, detector: detectors.detector(for: config), config: config)
+        let (audio, gate) = await speechOnlyBuffer(samples, detector: detectors.detector(for: config), config: config)
         try Task.checkCancellation() // a cancelled detection is no reason to decode a half-muted buffer
         var drops = WindowDropCounts()
         defer { gate.logSummary(engineDrops: drops) }
-        guard let input else {
+        guard let audio else {
             progress(1, 1)
             return TranscriptionOutput(text: "", langStats: [:])
         }
-        let text = withoutHallucinatedPhrases(try await decode(input), config: config, counting: &drops)
+        // One muted copy of the recording while it decodes: FluidAudio's
+        // long-form path takes only a [Float] (its chunk source is internal),
+        // and the caller keeps the original for diarization.
+        let text = withoutHallucinatedPhrases(try await decode(audio.muted()), config: config, counting: &drops)
         progress(1, 1)
         // ASRResult carries no per-utterance language tag (FluidAudio does not
         // expose language detection results for the v3 batch path), so langStats

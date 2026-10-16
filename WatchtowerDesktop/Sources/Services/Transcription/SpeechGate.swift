@@ -161,20 +161,47 @@ final class SpeechDetectorSlot: @unchecked Sendable {
     }
 }
 
+/// What a whole-buffer engine decodes after L5: the recording and the
+/// padded speech to keep (nil = all of it). The muting is left to the
+/// engine (board #564), so one that copies the samples into its own buffer
+/// anyway (Apple's PCM buffer) mutes them on the way instead of holding one
+/// more copy of the recording — 460 MB for 2 h at 16 kHz.
+struct SpeechOnlyAudio {
+    let samples: [Float]
+    let speech: [Range<Int>]?
+
+    /// The samples with everything outside the speech set to exactly 0:
+    /// one new buffer when anything is muted, the samples themselves when
+    /// nothing is.
+    func muted() -> [Float] {
+        speech.map { SpeechGate.muted(samples, keeping: $0) } ?? samples
+    }
+
+    /// `muted()` written into `destination` (at least `samples.count` long).
+    func writeMuted(into destination: UnsafeMutableBufferPointer<Float>) {
+        if let speech {
+            SpeechGate.writeMuted(samples, keeping: speech, into: destination)
+        } else {
+            _ = destination.initialize(fromContentsOf: samples)
+        }
+    }
+}
+
 /// L5 (spec D5) for engines that decode the whole recording in one call
 /// (Parakeet, Apple): the detector runs over the recording in 30 s chunks
 /// with the window gate's rules (minimum speech, per-recording energy
-/// fallback), and every sample outside the padded speech is set to 0.
-/// Returns the samples to decode — unchanged when the gate is off, nil when
-/// the recording holds no speech at all (nothing to decode) — and the gate,
+/// fallback), and every sample outside the padded speech is to be set to 0
+/// (`SpeechOnlyAudio`). Returns the audio to decode — nothing to mute when
+/// the gate is off or the speech covers the whole recording, nil when the
+/// recording holds no speech at all (nothing to decode) — and the gate,
 /// whose counts the caller logs once the text is filtered.
 func speechOnlyBuffer(
     _ samples: [Float],
     detector: SpeechDetector?,
     config: TranscriptionConfig
-) async -> (samples: [Float]?, gate: WindowSpeechGate) {
+) async -> (audio: SpeechOnlyAudio?, gate: WindowSpeechGate) {
     var gate = WindowSpeechGate(detector: detector, config: config)
-    guard detector != nil, config.speechGate else { return (samples, gate) }
+    guard detector != nil, config.speechGate else { return (SpeechOnlyAudio(samples: samples, speech: nil), gate) }
     let chunk = 30 * TranscriptionConfig.sampleRate
     var speech: [Range<Int>] = []
     for start in stride(from: 0, to: samples.count, by: chunk) {
@@ -183,8 +210,10 @@ func speechOnlyBuffer(
             speech += ranges.map { (start + $0.lowerBound)..<(start + $0.upperBound) }
         }
     }
+    speech = SpeechGate.merged(speech)
     guard !speech.isEmpty else { return (nil, gate) }
-    return (SpeechGate.muted(samples, keeping: speech), gate)
+    let everything = speech == [0..<samples.count]
+    return (SpeechOnlyAudio(samples: samples, speech: everything ? nil : speech), gate)
 }
 
 /// The phrase filter on a non-Whisper engine's text (Qwen3 window text,

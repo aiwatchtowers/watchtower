@@ -45,8 +45,8 @@ final class WholeBufferSpeechGateTests: XCTestCase {
                 log.record(samples)
                 return text
             }),
-            ("apple", AppleTranscriber(speechDetector: LoudDetector()) { samples, _ in
-                log.record(samples)
+            ("apple", AppleTranscriber(speechDetector: LoudDetector()) { audio, _ in
+                log.record(audio.muted())
                 return text
             })
         ]
@@ -107,5 +107,44 @@ final class WholeBufferSpeechGateTests: XCTestCase {
         let input = try XCTUnwrap(log.decoded.first)
         XCTAssertTrue(input[(45 * rate)..<(46 * rate)].allSatisfy { $0 == 0.4 })
         XCTAssertEqual(input.filter { $0 != 0 }.count, rate)
+    }
+
+    // MARK: Memory (board #564)
+
+    private func baseAddress(_ samples: [Float]) -> UnsafeRawPointer? {
+        samples.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+    }
+
+    func testAppleGetsTheRecordingItselfAndMutesIntoItsPCMBuffer() async throws {
+        // No muted copy of the recording besides the analyzer's own PCM
+        // buffer: the decode is handed the caller's samples (same storage)
+        // and the speech ranges, and the PCM copy mutes on the way.
+        let samples = noisy()
+        final class Box: @unchecked Sendable { var audio: SpeechOnlyAudio? }
+        let box = Box()
+        _ = try await AppleTranscriber(speechDetector: LoudDetector()) { audio, _ in
+            box.audio = audio
+            return "x"
+        }.transcribe(samples, config: TranscriptionConfig()) { _, _ in }
+        let audio = try XCTUnwrap(box.audio)
+        XCTAssertEqual(baseAddress(audio.samples), baseAddress(samples), "the recording is not copied")
+        XCTAssertEqual(audio.speech, [0..<rate, (3 * rate)..<(4 * rate)])
+
+        let buffer = try AppleTranscriber.makePCMBuffer(audio: audio)
+        let channel = Array(UnsafeBufferPointer(start: try XCTUnwrap(buffer.floatChannelData)[0],
+                                                count: Int(buffer.frameLength)))
+        XCTAssertEqual(channel, audio.muted(), "the PCM buffer holds the muted recording")
+    }
+
+    func testAllSpeechRecordingIsNotCopied() async throws {
+        let samples = [Float](repeating: 0.3, count: 2 * rate)
+        final class Box: @unchecked Sendable { var decoded: [Float]? }
+        let box = Box()
+        _ = try await ParakeetTranscriber(speechDetector: LoudDetector()) { input in
+            box.decoded = input
+            return "x"
+        }.transcribe(samples, config: TranscriptionConfig()) { _, _ in }
+        let decoded = try XCTUnwrap(box.decoded)
+        XCTAssertEqual(baseAddress(decoded), baseAddress(samples), "nothing to mute, nothing copied")
     }
 }

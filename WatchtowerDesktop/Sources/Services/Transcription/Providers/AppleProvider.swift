@@ -121,7 +121,7 @@ enum AppleLocaleCatalog {
 /// (L5, `speechOnlyBuffer`; a recording with no speech is not decoded), and
 /// the text goes through the phrase filter.
 final class AppleTranscriber: Transcriber, @unchecked Sendable {
-    typealias Decode = @Sendable (_ samples: [Float], _ locale: Locale) async throws -> String
+    typealias Decode = @Sendable (_ audio: SpeechOnlyAudio, _ locale: Locale) async throws -> String
 
     /// Whole-buffer decode (production: `analyze`; tests: a fake).
     private let decode: Decode
@@ -139,15 +139,15 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
     ) async throws -> TranscriptionOutput {
         progress(0, 1)
         let locale = AppleLocaleCatalog.resolveLocale(langset: config.langset)
-        let (input, gate) = await speechOnlyBuffer(samples, detector: detectors.detector(for: config), config: config)
+        let (audio, gate) = await speechOnlyBuffer(samples, detector: detectors.detector(for: config), config: config)
         try Task.checkCancellation() // a cancelled detection is no reason to decode a half-muted buffer
         var drops = WindowDropCounts()
         defer { gate.logSummary(engineDrops: drops) }
-        guard let input else {
+        guard let audio else {
             progress(1, 1)
             return TranscriptionOutput(text: "", langStats: [:])
         }
-        let text = withoutHallucinatedPhrases(try await decode(input, locale), config: config, counting: &drops)
+        let text = withoutHallucinatedPhrases(try await decode(audio, locale), config: config, counting: &drops)
         progress(1, 1)
         // langStats has different semantics from WhisperKit's per-window counters (one
         // fixed locale for the whole session, not windows-per-language) — synthesize a
@@ -160,8 +160,10 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
     /// The real macOS 26 `SpeechAnalyzer` pass over one buffer (see the type comment).
     /// `@Sendable` so it is the `Decode` default as is: a static function
     /// captures nothing.
+    /// The muting happens while the samples are copied into the analyzer's
+    /// PCM buffer, so no muted copy of the recording is held besides it.
     @Sendable
-    static func analyze(samples: [Float], locale: Locale) async throws -> String {
+    static func analyze(audio: SpeechOnlyAudio, locale: Locale) async throws -> String {
         guard #available(macOS 26, *) else {
             throw NSError(domain: "AppleProvider", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "Requires macOS 26"])
@@ -169,7 +171,7 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
         let transcriberModule = SpeechTranscriber(locale: locale, preset: .transcription)
         let analyzer = SpeechAnalyzer(modules: [transcriberModule])
 
-        let sourceBuffer = try Self.makePCMBuffer(samples: samples)
+        let sourceBuffer = try Self.makePCMBuffer(audio: audio)
         let inputBuffer = await Self.converted(sourceBuffer, forModules: [transcriberModule])
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
@@ -199,6 +201,12 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
     /// every WhisperKit/Parakeet path already uses (`TranscriptionConfig.sampleRate`).
     /// Internal (not private) so `AppleDictationSession` reuses it per mic chunk.
     static func makePCMBuffer(samples: [Float]) throws -> AVAudioPCMBuffer {
+        try makePCMBuffer(audio: SpeechOnlyAudio(samples: samples, speech: nil))
+    }
+
+    /// The same, muted outside the speech as it is copied (L5).
+    static func makePCMBuffer(audio: SpeechOnlyAudio) throws -> AVAudioPCMBuffer {
+        let samples = audio.samples
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                          sampleRate: Double(TranscriptionConfig.sampleRate),
                                          channels: 1, interleaved: false) else {
@@ -212,10 +220,7 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
                           userInfo: [NSLocalizedDescriptionKey: "Could not allocate PCM buffer"])
         }
         buffer.frameLength = buffer.frameCapacity
-        samples.withUnsafeBufferPointer { source in
-            guard let base = source.baseAddress else { return } // empty input → nothing to copy
-            channel.update(from: base, count: samples.count)
-        }
+        audio.writeMuted(into: UnsafeMutableBufferPointer(start: channel, count: samples.count))
         return buffer
     }
 
