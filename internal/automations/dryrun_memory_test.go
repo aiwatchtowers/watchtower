@@ -123,7 +123,7 @@ func TestDryRunInMemory_AgentIsNotRun(t *testing.T) {
 	if rep.InputTokens+rep.OutputTokens != 0 {
 		t.Errorf("tokens spent: %+v", rep)
 	}
-	if !strings.Contains(string(rep.Steps[0].ResultSummary), "not previewed in a draft") {
+	if !strings.Contains(rep.Steps[0].ResultSummary, "not previewed in a draft") {
 		t.Errorf("summary = %s; want the draft note", rep.Steps[0].ResultSummary)
 	}
 }
