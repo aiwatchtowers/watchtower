@@ -10,13 +10,14 @@ package enum CatchUpQueries {
 
     // MARK: - Fetch
 
-    /// Newest recaps first (the Go `ListCatchupRecaps` order).
-    package static func fetchRecaps(_ db: Database, limit: Int = 50) throws -> [CatchUpRecap] {
-        try CatchUpRecap.fetchAll(
+    /// Newest recaps first (the Go `ListCatchupRecaps` order). `now` decides
+    /// which `building` rows read as stale (`CatchUpRecap.init(row:now:)`).
+    package static func fetchRecaps(_ db: Database, limit: Int = 50, now: Date = Date()) throws -> [CatchUpRecap] {
+        try Row.fetchAll(
             db,
             sql: "SELECT * FROM catchup_recaps ORDER BY id DESC LIMIT ?",
             arguments: [limit]
-        )
+        ).map { CatchUpRecap(row: $0, now: now) }
     }
 
     package static func fetchRecap(_ db: Database, id: Int) throws -> CatchUpRecap? {
@@ -25,8 +26,10 @@ package enum CatchUpQueries {
 
     /// Reactive observation of the recap list — a CLI run inserting or finishing
     /// a row pushes straight into the Desktop list.
-    package static func observeRecaps(limit: Int = 50) -> ValueObservation<ValueReducers.Fetch<[CatchUpRecap]>> {
-        ValueObservation.tracking { db in try fetchRecaps(db, limit: limit) }
+    package static func observeRecaps(
+        limit: Int = 50, now: @escaping @Sendable () -> Date = { Date() }
+    ) -> ValueObservation<ValueReducers.Fetch<[CatchUpRecap]>> {
+        ValueObservation.tracking { db in try fetchRecaps(db, limit: limit, now: now()) }
     }
 
     /// Start of the next **auto** window: `period_to` of the most recently
