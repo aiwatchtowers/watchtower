@@ -264,6 +264,7 @@ func (f *exFixture) dump(t *testing.T) string {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var s string
 			if err := rows.Scan(&s); err != nil {
@@ -274,7 +275,6 @@ func (f *exFixture) dump(t *testing.T) string {
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		_ = rows.Close()
 	}
 	return out.String()
 }

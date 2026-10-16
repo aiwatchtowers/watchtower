@@ -399,6 +399,7 @@ func (w *writeFixture) runRowDump(t *testing.T, id int64) string {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer func() { _ = rows.Close() }()
 		cols, err := rows.Columns()
 		if err != nil {
 			t.Fatal(err)
@@ -417,7 +418,6 @@ func (w *writeFixture) runRowDump(t *testing.T, id int64) string {
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		_ = rows.Close()
 	}
 	return out.String()
 }
