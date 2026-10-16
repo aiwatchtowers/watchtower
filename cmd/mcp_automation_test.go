@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"testing"
@@ -213,6 +214,42 @@ func TestMCP_WorkbenchWithAutomationFlagsRefused(t *testing.T) {
 			require.ErrorContains(t, err, "--workbench and the automation flags")
 		})
 	}
+}
+
+// The ready file is the agent() runner's startup record: written once the
+// server accepted the run's binding and serves, never on a refused start,
+// and the flag needs --surface automation.
+func TestAgentMCPServer_ReadyFileOnlyOnAcceptedStart(t *testing.T) {
+	s := newAgentMCP(t)
+	serve := func(t *testing.T, run int64) (string, error) {
+		t.Helper()
+		ready := filepath.Join(t.TempDir(), "ready")
+		t.Setenv(automations.RunEnvMarker, strconv.FormatInt(run, 10))
+		mcpFlagChat, mcpFlagSurface, mcpFlagAutomationRun = true, tools.AutomationSurface, run
+		mcpFlagAutomationTools, mcpFlagAutomationReadyFile = []string{"list_jira_issues"}, ready
+		// The client disconnects at once: stdin is a closed pipe.
+		r, w, err := os.Pipe()
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+		stdin := os.Stdin
+		os.Stdin = r
+		t.Cleanup(func() { os.Stdin = stdin; _ = r.Close() })
+		mcpCmd.SetContext(context.Background())
+		return ready, runMCP(mcpCmd, nil)
+	}
+
+	ready, err := serve(t, s.running(t, db.TriggerManual))
+	_ = err // the closed stdin ends the session; only the record matters
+	assert.FileExists(t, ready, "an accepted start records it")
+
+	ready, err = serve(t, s.queue(t, db.TriggerManual))
+	require.ErrorContains(t, err, "not running")
+	assert.NoFileExists(t, ready, "a refused start records nothing")
+
+	resetMCPFlags(t)
+	mcpFlagChat, mcpFlagAutomationReadyFile = true, filepath.Join(t.TempDir(), "ready")
+	_, err = mcpModeOptions(s.cfg, s.d, "", nil)
+	require.ErrorContains(t, err, "--automation-ready-file requires --chat --surface automation")
 }
 
 func TestAgentMCPServer_CallAfterRunEndedRefused(t *testing.T) {

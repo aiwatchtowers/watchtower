@@ -58,6 +58,9 @@ var (
 	// for (mcpAutomationOptions).
 	mcpFlagAutomationRun   int64
 	mcpFlagAutomationTools []string
+	// mcpFlagAutomationReadyFile is touched once the automation server
+	// accepted its binding and serves (the agent() runner's startup record).
+	mcpFlagAutomationReadyFile string
 	// mcpFlagWorkbenchLegacy reports an `mcp --project N` invocation: the
 	// registration a pre-rename install wrote, whose session lists the
 	// renamed workbench tools under their old names (spec 2026-10-02 §5.2).
@@ -76,6 +79,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
 	mcpCmd.Flags().Int64Var(&mcpFlagChatProject, "chat-project", 0, "chat project for --chat: search_knowledge prefers its pinned sources")
 	mcpCmd.Flags().Int64Var(&mcpFlagAutomationRun, "automation-run", 0, "--surface automation: the running automation run whose agent() child this server serves")
+	mcpCmd.Flags().StringVar(&mcpFlagAutomationReadyFile, "automation-ready-file", "", "--surface automation: a file created once the server accepted the run's binding and serves")
 	mcpCmd.Flags().StringSliceVar(&mcpFlagAutomationTools, "automation-tools", nil, "--surface automation: the tools the agent() call asked for (comma-separated)")
 	mcpCmd.Flags().StringVar(&mcpFlagAgent, "agent", "", "workbench mode: the coding agent of the session (claude|codex); labels its comments when no terminal session names it")
 	mcpFlagWorkbenchLegacy = addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
@@ -103,9 +107,12 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	if mcpFlagChatProject != 0 && !mcpFlagChat {
 		return nil, errors.New("--chat-project requires --chat")
 	}
-	if mcpFlagWorkbench != 0 && (mcpFlagSurface == tools.AutomationSurface || mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil) {
+	if mcpFlagWorkbench != 0 && (mcpFlagSurface == tools.AutomationSurface || mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil || mcpFlagAutomationReadyFile != "") {
 		// Never a workbench DirectApply server for an automation's agent.
-		return nil, errors.New("--workbench and the automation flags (--surface automation, --automation-run, --automation-tools) are mutually exclusive")
+		return nil, errors.New("--workbench and the automation flags (--surface automation, --automation-run, --automation-tools, --automation-ready-file) are mutually exclusive")
+	}
+	if mcpFlagAutomationReadyFile != "" && (!mcpFlagChat || mcpFlagSurface != tools.AutomationSurface) {
+		return nil, errors.New("--automation-ready-file requires --chat --surface automation")
 	}
 	if (mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil) && !mcpFlagChat {
 		return nil, errors.New("--automation-run and --automation-tools require --chat --surface automation")
@@ -317,5 +324,14 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			opts = append(opts, internalmcp.WithMemoryRetrieveCompare(shadowDB))
 		}
 	}
-	return internalmcp.NewServer(database, opts...).ServeStdio(cmd.Context())
+	srv := internalmcp.NewServer(database, opts...)
+	if mcpFlagAutomationReadyFile != "" {
+		// mcpAutomationOptions accepted the binding (the run's own marker,
+		// the run running) and the server is built: record the start for the
+		// agent() runner, which fails a child whose server never got here.
+		if err := os.WriteFile(mcpFlagAutomationReadyFile, nil, 0o600); err != nil {
+			return fmt.Errorf("writing the automation ready file: %w", err)
+		}
+	}
+	return srv.ServeStdio(cmd.Context())
 }

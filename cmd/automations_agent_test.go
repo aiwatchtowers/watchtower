@@ -230,7 +230,9 @@ func TestAgent_DryRunRemovesWriteTools(t *testing.T) {
 // claudeStub is a fake claude (or codex) CLI: it records its environment,
 // its argv and a codex --cd folder's config.toml, writes its pid, sleeps
 // ignoring SIGINT when its dir holds a "sleep" file, exits 1 with no output
-// when it holds a "fail" file, and prints reply.
+// when it holds a "fail" file, and prints reply. It touches the server's
+// ready file (as a started `watchtower mcp` would) unless it holds a
+// "noserver" file.
 type claudeStub struct {
 	dir, path string
 }
@@ -248,6 +250,12 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 		"prev=; for a in \"$@\"; do [ \"$prev\" = --cd ] && cp \"$a/.codex/config.toml\" '" + dir + "/codex.toml'; prev=$a; done\n" +
 		"if [ -n \"$CODEX_HOME\" ]; then echo \"$CODEX_HOME\" > '" + dir + "/codex-home'; cp \"$CODEX_HOME/config.toml\" '" + dir + "/codex-home.toml'; " +
 		"readlink \"$CODEX_HOME/auth.json\" > '" + dir + "/codex-auth-link'; fi\n" +
+		// Act as the bound server starting: touch the ready file the
+		// watchtower server's args name (in --mcp-config or the codex TOML),
+		// unless the dir holds a "noserver" file.
+		"{ for a in \"$@\"; do printf '%s\\n' \"$a\"; done; cat '" + dir + "/codex.toml' 2>/dev/null; } > '" + dir + "/allargs'\n" +
+		"rf=$(sed -n 's/.*\"--automation-ready-file\", *\"\\([^\"]*\\)\".*/\\1/p' '" + dir + "/allargs' | head -n 1)\n" +
+		"if [ -n \"$rf\" ] && [ ! -f '" + dir + "/noserver' ]; then : > \"$rf\"; fi\n" +
 		"echo $$ > '" + dir + "/pid'\n" +
 		"if [ -f '" + dir + "/sleep' ]; then trap '' INT; exec sleep 30; fi\n" +
 		"if [ -f '" + dir + "/fail' ]; then exit 1; fi\n" +
@@ -417,6 +425,24 @@ func TestAgent_CLIUsageDebitedOrEstimated(t *testing.T) {
 	require.Equal(t, db.RunFailed, run.Status)
 	assert.Equal(t, int64(len("triage the inbox")+3)/4, run.InputTokens+run.OutputTokens, "ceil(len(instruction)/4)")
 	assert.True(t, run.TokensEstimated)
+}
+
+// A child whose bound watchtower server never started (no ready file)
+// answered with no tools: agent() fails with a ToolError, its usage still
+// debited.
+func TestAgent_CLIServerNeverStartedIsToolError(t *testing.T) {
+	stub := newClaudeStub(t, `{"type":"result","result":"done","usage":{"input_tokens":40,"output_tokens":10}}`)
+	require.NoError(t, os.WriteFile(filepath.Join(stub.dir, "noserver"), nil, 0o600))
+	f := newAgentFixture(t, stub.config(t), `return agent("triage").text`, "")
+	run := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunFailed, run.Status)
+	assert.Contains(t, run.Error, "ToolError")
+	assert.Contains(t, run.Error, "agent(): the watchtower tools never connected (the bound MCP server did not start)")
+	assert.Equal(t, int64(50), run.InputTokens+run.OutputTokens, "the usage is still debited")
+	step := f.agentStep(t, run.ID)
+	assert.Equal(t, automations.StepError, step.Status)
+	assert.Contains(t, step.Error, "never connected")
+	assert.Contains(t, flagAfter(t, stub.mcpArgs(t), "--automation-ready-file"), "wt-agent-ready-")
 }
 
 func TestAgent_CancelKillsCLIChild(t *testing.T) {

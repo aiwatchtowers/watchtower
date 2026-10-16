@@ -152,7 +152,13 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
 	defer cancel()
 	model := tierModel(r.cfg, r.provider, req.Tier)
-	mcpArgs := r.mcpArgs(req)
+	readyDir, err := os.MkdirTemp("", "wt-agent-ready-*")
+	if err != nil {
+		return automations.AgentResult{}, fmt.Errorf("creating the agent's ready folder: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(readyDir) }()
+	readyFile := filepath.Join(readyDir, "ready")
+	mcpArgs := append(r.mcpArgs(req), "--automation-ready-file", readyFile)
 	env := automationAgentEnv(req.RunID)
 	var client ai.Provider
 	if r.provider == "codex" {
@@ -188,8 +194,19 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		// numbers cannot run unbounded (spec §7.5).
 		return automations.AgentResult{InputTokens: int64(len(req.Instruction)+3) / 4, Estimated: true}, err
 	}
-	return agentResult(req.Instruction, text, usage), nil
+	res := agentResult(req.Instruction, text, usage)
+	// The server touches readyFile once it accepted the run's binding and
+	// serves: without it the child answered with no watchtower tools at all
+	// (e.g. the marker never reached the server), which is not a success.
+	if _, err := os.Stat(readyFile); err != nil {
+		return res, errAgentToolsNeverConnected
+	}
+	return res, nil
 }
+
+// errAgentToolsNeverConnected is an agent() CLI child that exited without its
+// bound watchtower server ever starting (no ready file).
+var errAgentToolsNeverConnected = errors.New("the watchtower tools never connected (the bound MCP server did not start)")
 
 // mcpArgs are the flags of the child's `watchtower mcp` server: the
 // automation-run binding, then this process's config file and workspace.

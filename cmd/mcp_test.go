@@ -41,13 +41,13 @@ func TestMCPTurnBinding(t *testing.T) {
 func resetMCPFlags(t *testing.T) {
 	t.Helper()
 	chat, project, chatProject, agent := mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent
-	surface, run, runTools := mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools
+	surface, run, runTools, ready := mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools, mcpFlagAutomationReadyFile
 	t.Cleanup(func() {
 		mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent = chat, project, chatProject, agent
-		mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools = surface, run, runTools
+		mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools, mcpFlagAutomationReadyFile = surface, run, runTools, ready
 	})
 	mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent = false, 0, 0, ""
-	mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools = "main", 0, nil
+	mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools, mcpFlagAutomationReadyFile = "main", 0, nil, ""
 }
 
 func openMCPTestDB(t *testing.T) *db.DB {
