@@ -211,6 +211,10 @@ func TestSaveAutomation_AlwaysAskAndPinsHash(t *testing.T) {
 	if !json.Valid(p.TriggerSpec) || len(p.Outputs) != 0 || p.Outputs == nil {
 		t.Errorf("trigger_spec=%s outputs=%v; want valid JSON and []", p.TriggerSpec, p.Outputs)
 	}
+	// The card lists every hashed field (D26), missed and concurrency included.
+	if p.Missed != "run_once" || p.Concurrency != automations.DefaultConcurrency {
+		t.Errorf("pinned missed=%q concurrency=%d; want the defaults", p.Missed, p.Concurrency)
+	}
 }
 
 func TestSaveAutomation_ApplyWritesIndexesConfirms(t *testing.T) {
