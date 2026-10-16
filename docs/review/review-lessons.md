@@ -1710,3 +1710,12 @@ Entry format:
 - weak-dimension: 6. The two widening/consent paths (the form's `validate --against` and the assistant's `ConfirmedRecipe`) were each reviewed per task, but nobody compared them until the final panel.
 - rule-gap (candidate, dim 6): *when a change adds a second consent path for the same act (a form sheet and an assistant card both confirming a recipe), both compute "what's new" from one shared baseline helper, and a test runs the same unconfirmed hand edit through both and asserts that they agree.*
 - outcome: TBD
+
+## 2026-10-16 — feature/session-chat-feed (session chat feed: sessionfeed package, `workbench session-feed`, migration 00124 triggers, Desktop chat pane + subagent sheet; panel: prosecutor + codex, specialists unavailable) — verdict: changes-needed
+
+- contested: prosecutor F2 (earlier conversation's tail lost when a later conversation appears) [ac-correctness]. Dismissed: Build parses the cursor conversation from `after.Offset` (i == afterIdx) before moving on, so the tail is emitted; only the unknown-`after.Conv` re-emit remains, already logged as deferred.
+- false-positive: prosecutor F2 as above (read the loop before trusting a cursor-loss claim) [ac-correctness].
+- miss: codex alone caught the nested subagent marker being a dead button in the subagent sheet (SessionChatRow built without `openSubagent`) [ac-correctness].
+- weak-dimension: 6 (UI reachability of a spec'd "opens the same way" path was untested).
+- rule-gap (candidate): *a recursive UI affordance (sheet inside sheet) needs a test or a manual check that the nested callback is wired.*
+- outcome: TBD
