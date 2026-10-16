@@ -281,6 +281,11 @@ final class WarmEnginePolicyTests: XCTestCase {
         XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(roomOnly))
     }
 
+    func testUndecodableGuestsCountAsAMeeting() {
+        let event = makeEvent(start: now, organizer: "owner@example.com", attendees: "{not json", conferenceURL: "")
+        XCTAssertTrue(WarmEnginePolicy.mayBeRecorded(event), "unknown guests are not no guests")
+    }
+
     func testFocusTimeOutOfOfficeAndCancelledAreNotRecorded() {
         XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now, type: "focusTime")))
         XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now, type: "outOfOffice")))

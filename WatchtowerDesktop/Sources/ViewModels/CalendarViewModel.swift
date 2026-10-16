@@ -95,7 +95,7 @@ final class CalendarViewModel {
     func loadEvents() {
         let token = beginLoad()
         let window = currentWindow()
-        apply(try? dbPool.read { try Self.read($0, dayStarts: window.days, calendar: window.calendar) }, token: token)
+        apply(Result { try dbPool.read { try Self.read($0, dayStarts: window.days, calendar: window.calendar) } }, token: token)
     }
 
     /// The same load, its read off the main actor (the poll and the return
@@ -103,8 +103,13 @@ final class CalendarViewModel {
     func reload() async {
         let token = beginLoad()
         let window = currentWindow()
-        let snapshot = try? await dbPool.read { try Self.read($0, dayStarts: window.days, calendar: window.calendar) }
-        apply(snapshot, token: token)
+        let result: Result<Snapshot, Error>
+        do {
+            result = .success(try await dbPool.read { try Self.read($0, dayStarts: window.days, calendar: window.calendar) })
+        } catch {
+            result = .failure(error)
+        }
+        apply(result, token: token)
     }
 
     /// The UI went on or off screen (board #731): off screen the poll skips
@@ -148,19 +153,28 @@ final class CalendarViewModel {
         )
     }
 
-    /// A failed read empties the lists, as before the off-main split.
-    private func apply(_ snapshot: Snapshot?, token: Int) {
+    /// A failed read is logged and keeps what was shown — the reconnect
+    /// prompt included — until a read succeeds.
+    private func apply(_ result: Result<Snapshot, Error>, token: Int) {
         guard token > loadApplied else { return }
         loadApplied = token
-        dailyEvents = snapshot?.days ?? []
-        nextEvent = snapshot?.next
-        calendars = snapshot?.calendars ?? []
-        if let auth = snapshot?.auth, auth.status == "revoked" || auth.status == "error" {
+        let snapshot: Snapshot
+        switch result {
+        case let .success(read):
+            snapshot = read
+        case let .failure(error):
+            print("[Calendar] load failed, keeping the last events: \(error.localizedDescription)")
+            return
+        }
+        dailyEvents = snapshot.days
+        nextEvent = snapshot.next
+        calendars = snapshot.calendars
+        if let auth = snapshot.auth, auth.status == "revoked" || auth.status == "error" {
             authState = auth
         } else {
             authState = nil
         }
-        isConnected = snapshot?.hasEvents ?? false
+        isConnected = snapshot.hasEvents
     }
 
     /// Ensure the day containing `date` is part of the rendered window,

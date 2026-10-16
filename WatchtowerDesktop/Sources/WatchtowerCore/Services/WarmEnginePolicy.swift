@@ -104,11 +104,15 @@ package enum WarmEnginePolicy {
     /// `default` type — never focus time, out of office or a working
     /// location), not declined by the calendar's own account, and with a call
     /// link or someone besides the organizer (room resources do not count).
+    /// Guests that do not decode count as a meeting.
     package static func mayBeRecorded(_ event: CalendarEvent) -> Bool {
         guard !event.isAllDay, event.eventStatus != "cancelled" else { return false }
         guard event.eventType.isEmpty || event.eventType == "default" else { return false }
-        let owner = event.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let people = event.attendeesIncludingOrganizer
+        // Guests that do not decode are unknown, not absent: warm, as before.
+        let raw = event.attendees.trimmingCharacters(in: .whitespacesAndNewlines)
+        if event.parsedAttendees.isEmpty, !raw.isEmpty, raw != "[]" { return true }
+        let owner = event.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !owner.isEmpty, people.contains(where: {
             $0.email.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(owner) == .orderedSame
                 && $0.responseStatus == "declined"

@@ -114,7 +114,7 @@ final class CodeFilesCenter {
     @ObservationIgnored private var watchers: [CodeRoot: FolderWatcher] = [:]
     /// Whether the UI is on screen (`setOnScreen`); off it the streams'
     /// batches wait in `heldBatches`.
-    @ObservationIgnored private var isOnScreen = true
+    @ObservationIgnored private(set) var isOnScreen = true
     @ObservationIgnored private var heldBatches: [CodeRoot: FolderWatcher.Batch] = [:]
     /// The roots shown at least once (their folder watched, git read).
     @ObservationIgnored private var watched: Set<CodeRoot> = []
@@ -274,7 +274,6 @@ final class CodeFilesCenter {
         stopShowing(root)
     }
 
-    /// What FSEvents saw; internal for tests.
     /// The UI went on or off screen (board #731). Off screen the folder's
     /// batches are held, merged per root, instead of refreshing a tree, git
     /// marks and the symbol index nobody sees; back on screen each root's
@@ -314,6 +313,7 @@ final class CodeFilesCenter {
 
     nonisolated static let heldPathCap = 1000
 
+    /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, root: CodeRoot) {
         guard watched.contains(root) else { return }
         if !root.isMain, batch.mustRescan || batch.paths.contains(""), !CodeRootPolicy.directoryExists(root.folder) {

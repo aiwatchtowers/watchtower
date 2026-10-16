@@ -297,4 +297,39 @@ final class SidebarCountsViewModelTests: XCTestCase {
         }
         XCTAssertEqual(vm.catchUpTotalCount, 1)
     }
+
+    /// Every start delivers a value, so an error right after each start must
+    /// keep doubling the pause; a delivered change resets it.
+    func testTheBackoffDoublesWhenEachStartFailsAfterItsFirstValue() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let starts = OSAllocatedUnfairLock(initialState: 0)
+        let pauses = OSAllocatedUnfairLock<[Duration]>(initialState: [])
+        let vm = SidebarCountsViewModel(
+            dbPool: manager.dbPool,
+            changes: { _ in
+                let start = starts.withLock { count -> Int in
+                    count += 1
+                    return count
+                }
+                return AsyncThrowingStream { continuation in
+                    continuation.yield()
+                    // The fourth run delivers a change too, then fails.
+                    if start == 4 { continuation.yield() }
+                    if start <= 4 { continuation.finish(throwing: CocoaError(.fileReadUnknown)) }
+                }
+            },
+            backoff: RestartBackoff(first: .seconds(2), max: .seconds(60)),
+            // Labelled, like the `changes:` closure above it.
+            pause: { duration in pauses.withLock { $0.append(duration) } } // swiftlint:disable:this trailing_closure
+        )
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while starts.withLock({ $0 }) < 5, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(pauses.withLock { $0 }, [.seconds(2), .seconds(4), .seconds(8), .seconds(2)])
+    }
 }

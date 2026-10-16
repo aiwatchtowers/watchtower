@@ -12,7 +12,7 @@ package struct RestartBackoff: Equatable {
     package let max: Duration
     package private(set) var next: Duration
 
-    package init(first: Duration = RestartBackoff.standardFirst, max: Duration = RestartBackoff.standardMax) {
+    package init(first: Duration = Self.standardFirst, max: Duration = Self.standardMax) {
         self.first = first
         self.max = Swift.max(first, max)
         next = first

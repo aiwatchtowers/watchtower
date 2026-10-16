@@ -5,7 +5,8 @@ extension AppState {
     /// not told: the workbench notices' poll itself, the owner asks, the
     /// session agent states behind the macOS notices and the phone's lines,
     /// the mobile hub, the daemon status behind the tray, meeting reminders,
-    /// recording and dictation.
+    /// recording and dictation. Also run once after the view models are
+    /// built, so one built off screen starts gated.
     func applyUIVisibility(_ onScreen: Bool) {
         calendarViewModel?.setOnScreen(onScreen)
         ideasViewModel?.setOnScreen(onScreen)

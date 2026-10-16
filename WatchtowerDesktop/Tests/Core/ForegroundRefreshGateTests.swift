@@ -125,6 +125,30 @@ final class ForegroundRefreshGateTests: XCTestCase {
         XCTAssertEqual(grouped.first { $0.day == days[3] }?.events.map(\.id), ["overnight"])
     }
 
+    /// A far pinned day is read on its own: the result still matches a
+    /// query per day, and nothing of the gap comes back.
+    func testEventsByDayWithAGapMatchesAQueryPerDay() throws {
+        let queue = try TestDatabase.create()
+        let today = Calendar.current.startOfDay(for: Date())
+        let pinned = today.addingTimeInterval(40 * 86400)
+        let days = [today, today.addingTimeInterval(86400), pinned]
+        try queue.write { db in
+            func insert(_ id: String, at day: Date) throws {
+                try TestDatabase.insertCalendarEvent(
+                    db, id: id,
+                    startTime: Self.iso.string(from: day.addingTimeInterval(3600)),
+                    endTime: Self.iso.string(from: day.addingTimeInterval(7200))
+                )
+            }
+            try insert("today", at: today)
+            try insert("gap", at: today.addingTimeInterval(20 * 86400))
+            try insert("pinned", at: pinned)
+        }
+        let grouped = try queue.read { try CalendarQueries.fetchEventsByDay($0, dayStarts: days) }
+        XCTAssertEqual(grouped.map(\.day), [today, pinned])
+        XCTAssertEqual(grouped.map { $0.events.map(\.id) }, [["today"], ["pinned"]])
+    }
+
     func testEventsByDayOfNoDaysIsEmpty() throws {
         let queue = try TestDatabase.create()
         XCTAssertTrue(try queue.read { try CalendarQueries.fetchEventsByDay($0, dayStarts: []) }.isEmpty)

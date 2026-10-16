@@ -8,6 +8,7 @@ struct StatusBarView: View {
     @State private var stats: WorkspaceStats?
     @State private var backfillLine: String?
     @State private var refreshTask: Task<Void, Never>?
+    @State private var refreshGate = ForegroundRefreshGate()
 
     /// The app's one `DaemonManager`, polled from `AppState.initialize()`
     /// for the tray too: this bar never starts or stops its poll (board #731).
@@ -66,17 +67,18 @@ struct StatusBarView: View {
         .background(Color(.windowBackgroundColor))
         .onAppear {
             loadStats()
-            // Every 30 s while a window is on screen; back on screen the
-            // stats load at once (board #731).
+            // Every 30 s while a window is on screen; back on screen after
+            // a skipped one, the stats load at once (board #731).
+            refreshGate = ForegroundRefreshGate(isOnScreen: appState.uiVisibility.isOnScreen)
             refreshTask = Task {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(30))
-                    if appState.uiVisibility.isOnScreen { loadStats() }
+                    if refreshGate.tick() { loadStats() }
                 }
             }
         }
         .onChange(of: appState.uiVisibility.isOnScreen) { _, onScreen in
-            if onScreen { loadStats() }
+            if refreshGate.setOnScreen(onScreen) { loadStats() }
         }
         .onDisappear {
             refreshTask?.cancel()

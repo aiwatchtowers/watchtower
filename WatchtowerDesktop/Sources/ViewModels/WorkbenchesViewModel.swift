@@ -642,10 +642,22 @@ final class WorkbenchesViewModel {
     /// The notification center's 30 s poll. The agent writes comments and
     /// asks from another process (DB only), so the list — and the badge —
     /// reloads, while the UI is on screen (board #731; the notices
-    /// themselves go out either way).
+    /// themselves go out either way). Off screen only the workbench ids are
+    /// read: one deleted elsewhere (the CLI) still has its terminals closed
+    /// and its state dropped by a full reload at once.
     func refreshOnPoll() async {
-        guard pollRefreshGate.tick() else { return }
-        await reload()
+        if pollRefreshGate.tick() {
+            await reload()
+            return
+        }
+        let ids: [Int64]
+        do {
+            ids = try await dbPool.read { try WorkbenchQueries.fetchAll($0).map(\.id) }
+        } catch {
+            print("[Workbenches] off-screen poll read failed: \(error.localizedDescription)")
+            return
+        }
+        if !Self.vanished(previous: summaries.map(\.id), current: ids).isEmpty { await reload() }
     }
 
     /// The UI went on or off screen: back on screen after a skipped poll,

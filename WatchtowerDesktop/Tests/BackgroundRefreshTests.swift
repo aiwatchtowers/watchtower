@@ -28,7 +28,11 @@ final class BackgroundRefreshTests: XCTestCase {
     func testVisibilityFollowsTheWindowNotifications() async {
         let center = NotificationCenter()
         var windows = [UIVisibilityPolicy.Window(canBecomeMain: true, isVisible: true, isMiniaturized: false, isOccluded: false)]
-        let visibility = UIVisibilityCenter(notificationCenter: center, windows: { windows }, appHidden: { false })
+        var evaluations = 0
+        let visibility = UIVisibilityCenter(notificationCenter: center, windows: {
+            evaluations += 1
+            return windows
+        }, appHidden: { false })
         var changes: [Bool] = []
         visibility.onChange = { changes.append($0) }
         visibility.start()
@@ -39,7 +43,8 @@ final class BackgroundRefreshTests: XCTestCase {
         center.post(name: NSWindow.willCloseNotification, object: nil)
         center.post(name: NSWindow.didChangeOcclusionStateNotification, object: nil)
         await settle { !visibility.isOnScreen }
-        XCTAssertEqual(changes, [false], "two notifications in one turn: one evaluation")
+        XCTAssertEqual(changes, [false])
+        XCTAssertEqual(evaluations, 2, "the start's, then one for two notifications in one turn")
 
         windows[0].isVisible = true
         windows[0].isOccluded = false
@@ -48,10 +53,12 @@ final class BackgroundRefreshTests: XCTestCase {
         XCTAssertEqual(changes, [false, true])
 
         visibility.stop()
+        let evaluated = evaluations
         windows = []
         center.post(name: NSWindow.didChangeOcclusionStateNotification, object: nil)
-        await Task.yield()
-        XCTAssertTrue(visibility.isOnScreen, "stopped: no longer follows")
+        await settle { false }
+        XCTAssertEqual(evaluations, evaluated, "stopped: no longer follows")
+        XCTAssertTrue(visibility.isOnScreen)
     }
 
     // MARK: - CalendarViewModel
@@ -72,7 +79,7 @@ final class BackgroundRefreshTests: XCTestCase {
         XCTAssertTrue(vm.isConnected)
     }
 
-    func testCalendarOnScreenPollLoadsOffTheMainActor() async throws {
+    func testCalendarOnScreenPollLoads() async throws {
         let vm = CalendarViewModel(dbPool: pool, historyDays: 1)
         vm.stopObserving()
         try await insertEventToday()
@@ -125,6 +132,62 @@ final class BackgroundRefreshTests: XCTestCase {
         vm.setOnScreen(true)
         await vm.onScreenRefresh?.value
         XCTAssertEqual(vm.badgeCount, 1)
+    }
+
+    /// Off screen a workbench deleted elsewhere (the CLI) is still torn
+    /// down at the next poll: its terminals close.
+    func testAWorkbenchDeletedOffScreenIsStillTornDown() async throws {
+        let p = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let suite = "BackgroundRefreshTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults)
+        var closed: [Int64] = []
+        vm.closeTerminal = { closed.append($0) }
+        await vm.reload()
+        vm.setOnScreen(false)
+
+        await vm.refreshOnPoll()
+        XCTAssertEqual(closed, [], "nothing vanished: no reload")
+        try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [p]) }
+        await vm.refreshOnPoll()
+        XCTAssertEqual(closed, [p])
+        XCTAssertTrue(vm.summaries.isEmpty)
+    }
+
+    // MARK: - AppState wiring
+
+    /// What `AppState` hands the pollers: off screen they skip, back on
+    /// screen each one refreshes.
+    func testAppStateHandsTheVisibilityToEveryPoller() async throws {
+        let appState = AppState.isolated()
+        appState.initCalendar(dbPool: pool)
+        appState.initIdeas(dbManager: dbManager)
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
+        let calendar = try XCTUnwrap(appState.calendarViewModel)
+        let ideas = try XCTUnwrap(appState.ideasViewModel)
+        let workbenches = try XCTUnwrap(appState.workbenchesViewModel)
+        defer {
+            calendar.stopObserving()
+            appState.workbenchNotificationCenter?.stop()
+        }
+        appState.applyUIVisibility(false)
+        XCTAssertFalse(workbenches.codeFiles.isOnScreen)
+        await calendar.pollTick()
+        await ideas.pollTick()
+        await workbenches.refreshOnPoll()
+        appState.applyUIVisibility(true)
+        XCTAssertTrue(workbenches.codeFiles.isOnScreen)
+
+        XCTAssertNotNil(calendar.onScreenRefresh)
+        XCTAssertNotNil(ideas.onScreenRefresh)
+        XCTAssertNotNil(workbenches.onScreenRefresh)
+        await calendar.onScreenRefresh?.value
+        await ideas.onScreenRefresh?.value
+        await workbenches.onScreenRefresh?.value
     }
 
     // MARK: - CodeFilesCenter

@@ -51,12 +51,20 @@ final class SidebarCountsViewModel {
     private let dbPool: DatabasePool
     private let changes: Changes
     private let backoff: RestartBackoff
+    /// The wait before a restart; seamed so a test reads the pauses.
+    private let pause: @Sendable (Duration) async -> Void
     private var observationTask: Task<Void, Never>?
 
-    init(dbPool: DatabasePool, changes: @escaping Changes = SidebarCountsViewModel.tableChanges, backoff: RestartBackoff = RestartBackoff()) {
+    init(
+        dbPool: DatabasePool,
+        changes: @escaping Changes = SidebarCountsViewModel.tableChanges,
+        backoff: RestartBackoff = RestartBackoff(),
+        pause: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) {
         self.dbPool = dbPool
         self.changes = changes
         self.backoff = backoff
+        self.pause = pause
     }
 
     /// Loads the counts once and updates the published properties.
@@ -83,18 +91,23 @@ final class SidebarCountsViewModel {
     /// value and never show. A failed observation (a read error) starts again
     /// after a pause (`RestartBackoff`, board #526), and its first value
     /// reloads what changed meanwhile; before, one error froze the badges
-    /// until a relaunch.
+    /// until a relaunch. The pause is back to its first length only after a
+    /// change was delivered (a second value of one run): every start
+    /// delivers one, so an error right after each start keeps doubling.
     func startObserving() {
         guard observationTask == nil else { return }
         let pool = dbPool
         let changes = changes
+        let pause = pause
         let initialBackoff = backoff
         observationTask = Task { [weak self] in
             var backoff = initialBackoff
             while !Task.isCancelled {
                 do {
+                    var values = 0
                     for try await _ in changes(pool) {
-                        backoff.succeeded()
+                        values += 1
+                        if values == 2 { backoff.succeeded() }
                         guard !Task.isCancelled, let self else { return }
                         let counts = await self.fetch()
                         guard !Task.isCancelled else { return }
@@ -104,9 +117,9 @@ final class SidebarCountsViewModel {
                 } catch {
                     // Stopped, or the view model is gone: nothing to restart for.
                     guard !Task.isCancelled, self != nil else { return }
-                    let pause = backoff.failed()
-                    print("SidebarCounts observation error, restarting in \(pause): \(error)")
-                    try? await Task.sleep(for: pause)
+                    let wait = backoff.failed()
+                    print("SidebarCounts observation error, restarting in \(wait): \(error)")
+                    await pause(wait)
                 }
             }
         }

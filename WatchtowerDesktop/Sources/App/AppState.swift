@@ -43,8 +43,7 @@ final class AppState {
     /// AppState). Its path lookup is deliberately deferred until after the CLI
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
-    /// Whether a window of the app is on screen; the UI pollers skip their
-    /// refreshes off screen (board #731, `applyUIVisibility`).
+    /// Whether a window of the app is on screen (board #731, `applyUIVisibility`).
     let uiVisibility = UIVisibilityCenter()
     var isDBAvailable: Bool { databaseManager != nil }
 
@@ -1321,7 +1320,10 @@ final class AppState {
         // The initialize() path skips sidebar counts while onboarding is pending, so build
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
         if sidebarCountsViewModel == nil, sidebarCountsSetup == nil, let pool = databaseManager?.dbPool {
-            sidebarCountsSetup = Task { await initSidebarCounts(dbPool: pool) }
+            sidebarCountsSetup = Task {
+                await initSidebarCounts(dbPool: pool)
+                sidebarCountsSetup = nil
+            }
         }
         if let pool = databaseManager?.dbPool {
             initAutomations(dbPool: pool)
@@ -1381,10 +1383,8 @@ final class AppState {
         )
     }
 
-    /// Builds the sidebar counts view model, pre-loads counts, and starts
-    /// observing — unless cancelled meanwhile (`sidebarCountsSetup`).
+    /// Builds the sidebar counts view model, pre-loads counts, and starts observing (unless cancelled).
     private func initSidebarCounts(dbPool: DatabasePool) async {
-        defer { sidebarCountsSetup = nil }
         guard !Task.isCancelled else { return }
         let countsVM = SidebarCountsViewModel(dbPool: dbPool)
         await countsVM.loadInitial()
@@ -1568,6 +1568,7 @@ final class AppState {
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
         initWorkbenches(dbPool: manager.dbPool)
+        applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
@@ -1585,9 +1586,7 @@ final class AppState {
     /// the Calendar tab on a test pool (`HomeLinkTests`).
     func initCalendar(dbPool: DatabasePool) {
         calendarViewModel?.stopObserving()
-        let vm = CalendarViewModel(dbPool: dbPool)
-        vm.setOnScreen(uiVisibility.isOnScreen)
-        calendarViewModel = vm
+        calendarViewModel = CalendarViewModel(dbPool: dbPool)
     }
 
     private func initDayPlan(dbPool: DatabasePool) {
@@ -1616,7 +1615,6 @@ final class AppState {
     /// `IdeaNavigationTests` to drive `navigateToIdea`).
     func initIdeas(dbManager: DatabaseManager) {
         let vm = IdeasViewModel(dbManager: dbManager)
-        vm.setOnScreen(uiVisibility.isOnScreen)
         vm.startObserving()
         ideasViewModel = vm
     }
@@ -1850,8 +1848,6 @@ final class AppState {
                 && NSApp.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isVisible && $0.occlusionState.contains(.visible) }
         }
         notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
-        vm.setOnScreen(uiVisibility.isOnScreen)
-        vm.codeFiles.setOnScreen(uiVisibility.isOnScreen)
         let reports = SessionReportCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         reports.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
@@ -1867,7 +1863,7 @@ final class AppState {
         sessionReportCenter?.stop()
         sessionReportCenter = reports
         replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
-        // The first poll also loads the list (onPolled → reload).
+        // The first poll also loads the list (onPolled → reload; off screen, once a window shows).
         notices.start()
         vm.startTitleRefresh()
         vm.asks.start()
@@ -2021,8 +2017,7 @@ final class AppState {
     /// The refresh `completeOnboarding()` kicked off — held so tests can
     /// await it.
     @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
-    /// The sidebar counts' build `completeOnboarding()` kicked off — held so
-    /// tests can await or cancel it before their database goes.
+    /// The sidebar counts' build `completeOnboarding()` kicked off (tests cancel it).
     @ObservationIgnored private(set) var sidebarCountsSetup: Task<Void, Never>?
 
     /// A Slack/Google/Jira account-list reload: re-resolves the owner
