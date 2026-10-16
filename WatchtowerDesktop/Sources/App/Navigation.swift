@@ -151,6 +151,12 @@ struct MainNavigationView: View {
             StatusBarView()
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .topTrailing) {
+            if appState.isHelpChatShown, let chatVM = appState.chatViewModel {
+                HelpChatPanel(chatVM: chatVM)
+                    .padding(12)
+            }
+        }
         .alert(
             "Google Calendar disconnected",
             isPresented: Binding(

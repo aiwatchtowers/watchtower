@@ -101,9 +101,12 @@ struct WorkbenchCommands: Commands {
 /// Help menu additions, after the stock Help search and app help.
 struct HelpCommands: Commands {
     @Environment(\.openWindow) private var openWindow
+    let appState: AppState
 
     var body: some Commands {
         CommandGroup(after: .help) {
+            Button("Ask Watchtower…") { appState.askWatchtower() }
+                .keyboardShortcut("/", modifiers: .command)
             Button("Keyboard Shortcuts") { openWindow(id: KeyboardShortcutsView.sceneID) }
         }
     }
