@@ -82,4 +82,20 @@ final class ReviewChaptersTests: XCTestCase {
         XCTAssertFalse(ReviewChapters.done(chapter) { $0 == "a/x" })
         XCTAssertTrue(ReviewChapters.done(chapter) { _ in true })
     }
+
+    func testTestPairsWithSubjectInItsOwnDirectoryFirst() {
+        let chapters = ReviewChapters.mechanical([
+            file("cmd/x.go"), file("cmd/x_test.go"), file("pkg/x.go"), file("pkg/x_test.go")
+        ])
+        let byKey = Dictionary(uniqueKeysWithValues: chapters.map { ($0.key, $0.paths) })
+        XCTAssertEqual(byKey["dir:cmd"], ["cmd/x_test.go", "cmd/x.go"])
+        XCTAssertEqual(byKey["dir:pkg"], ["pkg/x_test.go", "pkg/x.go"])
+    }
+
+    func testProgressIgnoresCollapsedFiles() {
+        let files = [file("a/x", add: 10), file("go.sum", add: 500, collapsed: "lock")]
+        let progress = ReviewProgress.make(files: files, chapters: []) { _ in true }
+        XCTAssertEqual(progress.totalLines, 10)
+        XCTAssertEqual(progress.viewedLines, 10)
+    }
 }

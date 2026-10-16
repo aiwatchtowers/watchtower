@@ -116,7 +116,9 @@ final class ReviewQueriesTests: XCTestCase {
         let db = try TestDatabase.create()
         let roundID = try db.write { try Self.seedRound($0) }
         try db.write { try $0.execute(sql: "UPDATE review_rounds SET status='sent' WHERE id=?", arguments: [roundID]) }
-        try db.write { try ReviewQueries.setCheck($0, roundID: roundID, chapterKey: "c", lens: "tests", itemKey: "k", state: .checked) }
+        XCTAssertThrowsError(try db.write {
+            try ReviewQueries.setCheck($0, roundID: roundID, chapterKey: "c", lens: "tests", itemKey: "k", state: .checked)
+        }) { XCTAssertEqual($0 as? ReviewQueries.ReviewQueryError, .roundNotOpen) }
         XCTAssertEqual(try db.read { try ReviewQueries.checks($0, roundID: roundID) }, [])
         let changed = try db.write {
             try ReviewQueries.saveRoundState($0, roundID: roundID, mode: "deep", phase: .wrapup, chapterKey: "x", activeSeconds: 9)

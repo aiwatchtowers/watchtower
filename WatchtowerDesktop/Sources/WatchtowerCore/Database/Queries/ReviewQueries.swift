@@ -3,7 +3,7 @@ import GRDB
 /// The Desktop's writes of the diff reviewer (spec §10): drafts, Resolve and
 /// Viewed marks. Go owns rounds and the send transition.
 package enum ReviewQueries {
-    package enum ReviewQueryError: Error, Equatable { case notADraft, notResolvable }
+    package enum ReviewQueryError: Error, Equatable { case notADraft, notResolvable, roundNotOpen }
 
     package static func comments(_ db: Database, roundID: Int64) throws -> [ReviewComment] {
         try ReviewComment.fetchAll(db, sql: "SELECT * FROM review_comments WHERE round_id = ? ORDER BY id", arguments: [roundID])
@@ -113,7 +113,8 @@ package enum ReviewQueries {
             """, arguments: [roundID])
     }
 
-    /// Ticks (or re-marks) a checklist item; nil unticks. A round that is not open is read-only.
+    /// Ticks (or re-marks) a checklist item; nil unticks. A round that is not open
+    /// is read-only: it throws `roundNotOpen`, so the caller's write transaction rolls back.
     package static func setCheck(
         _ db: Database,
         roundID: Int64,
@@ -122,7 +123,9 @@ package enum ReviewQueries {
         itemKey: String,
         state: ReviewCheck.State?
     ) throws {
-        guard try Bool.fetchOne(db, sql: "SELECT status = 'open' FROM review_rounds WHERE id = ?", arguments: [roundID]) == true else { return }
+        guard try Bool.fetchOne(db, sql: "SELECT status = 'open' FROM review_rounds WHERE id = ?", arguments: [roundID]) == true else {
+            throw ReviewQueryError.roundNotOpen
+        }
         if let state {
             try db.execute(sql: """
                 INSERT INTO review_checks (round_id, chapter_key, lens, item_key, state) VALUES (?, ?, ?, ?, ?)

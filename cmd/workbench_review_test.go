@@ -235,6 +235,11 @@ func TestWorkbenchReviewContext_ReturnsLenses(t *testing.T) {
 	none := reviewJSON(t, wb, "context", "--session", itoa(s))
 	assert.Len(t, none["lenses"], 5)
 	assert.NotContains(t, none, "lens_notes")
+	for _, l := range none["lenses"].([]any) {
+		if l.(map[string]any)["id"] == "house_rules" {
+			assert.Equal(t, []any{}, l.(map[string]any)["items"])
+		}
+	}
 
 	require.NoError(t, os.MkdirAll(filepath.Join(repo, ".watchtower"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, ".watchtower", "review.md"), []byte("## Tests\n- Extra?\nbad\n"), 0o644))

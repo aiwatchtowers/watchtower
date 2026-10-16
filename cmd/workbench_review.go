@@ -230,7 +230,11 @@ func createReviewRound(ctx context.Context, repo *reviewdiff.Repo, database *db.
 	}
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
 		FolderRoot: folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
-	if last, err := database.LastSentReviewRound(p.ID, reviewFlagSession); err == nil && last != nil {
+	last, err := database.LastSentReviewRound(p.ID, reviewFlagSession)
+	if err != nil {
+		return nil, fmt.Errorf("last sent review round: %w", err)
+	}
+	if last != nil {
 		r.PrevRoundID = sql.NullInt64{Int64: last.ID, Valid: true}
 		r.Mode = last.Mode
 	}

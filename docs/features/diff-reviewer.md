@@ -103,7 +103,10 @@ built-ins in file order), `- <question>` is a question, blank lines are ignored,
 other line (text before the first heading too) is skipped and reported as
 `line N: not a "## lens" heading or a "- question"`. A leading UTF-8 BOM is ignored. An
 item key is the first 16 hex characters of sha256 of the trimmed question; a duplicate
-question in one lens is kept once. Read rules: the file is read only when `.watchtower`
+question in one lens is kept once. A heading without a latin letter or digit (a non-latin
+name) has no id: it is skipped with a note and its bullets are dropped. A heading whose id
+is `intent` is reserved for Wrap-up: skipped with `line N: "intent" is reserved for
+Wrap-up`, bullets dropped. Read rules: the file is read only when `.watchtower`
 is a real directory (lstat) and `review.md` a regular file opened
 `O_NOFOLLOW|O_NONBLOCK` and re-checked with fstat (same inode); over 65,536 bytes it is
 not read. Any refusal gives the built-in lenses plus one note; a missing file is no note.

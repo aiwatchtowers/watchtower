@@ -694,7 +694,9 @@ final class ReviewChangesModelTests: XCTestCase {
         await sent.model.open()
         try await sent.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent', mode = 'quick', phase = ''") }
         XCTAssertThrowsError(try sent.model.setMode(.quick)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
-        XCTAssertThrowsError(try sent.model.setPhase(.meaning)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        // A sent round moves the phase on screen and writes nothing.
+        try sent.model.setPhase(.meaning)
+        XCTAssertEqual(sent.model.phase, .meaning)
         XCTAssertEqual(ReviewChangesModel.ModelError.roundClosed.errorDescription, "This round was already sent, so it cannot change.")
         let after = try await sent.db.read { try Row.fetchOne($0, sql: "SELECT mode, phase FROM review_rounds WHERE id = 7") }
         XCTAssertEqual(after?["mode"] as String?, "quick")
@@ -784,6 +786,91 @@ final class ReviewChangesModelTests: XCTestCase {
         let rows = try await h.comments()
         XCTAssertTrue(rows.isEmpty)
         XCTAssertEqual(h.model.comments, rows)
+    }
+
+    func testRemarkingIntentLeavesAnotherItemsDraftAlone() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let item = try XCTUnwrap(h.model.intentItems.first)
+        let other = ReviewIntentItem(key: "target:6", text: "Other")
+        try h.model.markIntent(other, state: .notDone, note: "x")
+        try h.model.markIntent(item, state: .notDone, note: "a")
+        try h.model.markIntent(item, state: .partial, note: "b")
+        let bodies = try await h.comments().filter { $0.status == .draft }.map(\.body)
+        XCTAssertEqual(bodies, [
+            ReviewWrapUp.intentCommentBody(partial: false, item: other, note: "x"),
+            ReviewWrapUp.intentCommentBody(partial: true, item: item, note: "b")
+        ])
+    }
+
+    func testRemarkingIntentReplacesAnEmojiTitleDraft() async throws {
+        let h = try harness()
+        await openDeep(h)
+        for text in ["Ship 🚀 e\u{301}", "Ship 🚀 e\u{301}"] {
+            try h.model.markIntent(ReviewIntentItem(key: "target:9", text: text), state: .notDone, note: "n")
+        }
+        let drafts = try await h.comments().filter { $0.status == .draft }
+        XCTAssertEqual(drafts.count, 1)
+    }
+
+    func testMarkingDoneInRound2ResolvesTheCarriedNotDone() async throws {
+        let h = try harness()
+        let item = ReviewIntentItem(key: "target:5", text: "Ship it")
+        h.cli.script(["start": startJSON(id: 8, prev: 7), "context": deepContextJSON(), "diff": diffJSON(["cmd/x.go"])])
+        try await h.db.write { db in
+            try db.execute(sql: """
+                INSERT INTO review_rounds (id, project_id, session_id, folder_root, base_sha, tree_sha, status)
+                VALUES (7, ?, ?, '/r', 'b', 't7', 'sent')
+                """, arguments: [h.projectID, h.sessionID])
+            try db.execute(sql: """
+                INSERT INTO review_comments (round_id, path, side, start_line, end_line, tree_sha, lens, body, status)
+                VALUES (7, NULL, 'new', 0, 0, 't7', 'intent', ?, 'sent')
+                """, arguments: [ReviewWrapUp.intentCommentBody(partial: false, item: item, note: "gone")])
+        }
+        await h.model.open()
+        let carried = try await h.comments(8).filter { $0.status == .carried }
+        XCTAssertEqual(carried.count, 1)
+        try h.model.markIntent(item, state: .done, note: "")
+        let rows = try await h.comments(8)
+        XCTAssertEqual(rows.map(\.status), [.resolved])
+    }
+
+    func testRefreshRereadsTheContext() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let lens = #"{"id":"tests","name":"Tests","builtin":true,"items":[{"key":"z","text":"Z?"}]}"#
+        let changed = #"{"ok":true,"items":[],"lenses":[\#(lens)],"lens_notes":[]}"#
+        h.cli.script(["context": changed])
+        await h.model.refresh()
+        XCTAssertEqual(h.model.lenses.map(\.id), ["tests"])
+        XCTAssertTrue(h.model.lensNotes.isEmpty)
+        XCTAssertTrue(h.model.intentItems.isEmpty)
+    }
+
+    func testChecklistWritesRollBackWhenTheRowWasSentBehindTheModel() async throws {
+        let actions: [(ReviewChangesModel) throws -> Void] = [
+            { m in
+                let item = try XCTUnwrap(m.lenses.first?.items.first)
+                try m.commentOnCheck(chapterKey: "dir:cmd", lens: "correctness", item: item, body: "B")
+            },
+            { m in try m.markIntent(try XCTUnwrap(m.intentItems.first), state: .done, note: "") },
+            { m in try m.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true) }
+        ]
+        for action in actions {
+            let h = try harness()
+            await openDeep(h)
+            let intent = try XCTUnwrap(h.model.intentItems.first)
+            try h.model.markIntent(intent, state: .notDone, note: "keep")
+            try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent'") }
+            XCTAssertThrowsError(try action(h.model)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+            XCTAssertEqual(h.model.round?.status, "sent")
+            let rows = try await h.comments()
+            XCTAssertEqual(rows.map(\.status), [.draft])
+            XCTAssertEqual(rows.map(\.lens), ["intent"])
+            let checks = try await h.db.read { try ReviewQueries.checks($0, roundID: 7) }
+            XCTAssertEqual(checks.map(\.itemKey), [intent.key])
+            XCTAssertEqual(checks.map(\.state), [.notDone])
+        }
     }
 
     func testSetModeThrowsWhenTheRowWasSentBehindTheModel() async throws {

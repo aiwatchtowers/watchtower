@@ -220,6 +220,10 @@ final class ReviewChangesModel {
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
             round = info
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
+            let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
+            context = ctx.items ?? []
+            lenses = ctx.lenses ?? []
+            lensNotes = ctx.lensNotes ?? []
             try await loadDiff(info)
             let roundID = info.id
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
@@ -371,7 +375,8 @@ final class ReviewChangesModel {
 
     func setPhase(_ p: ReviewPhase) throws {
         try run {
-            try saveState(mode: mode, phase: p, chapterKey: currentChapterKey)
+            // A sent round only moves on screen; the position is saved while it is open.
+            if round?.status == "open" { try saveState(mode: mode, phase: p, chapterKey: currentChapterKey) }
             phase = p
         }
     }
@@ -405,7 +410,7 @@ final class ReviewChangesModel {
     func setCheck(chapterKey: String, lens: String, itemKey: String, checked: Bool) throws {
         try run {
             let info = try openRound()
-            try db.write {
+            try writeInOpenRound {
                 try ReviewQueries.setCheck($0, roundID: info.id, chapterKey: chapterKey, lens: lens, itemKey: itemKey,
                                            state: checked ? .checked : nil)
             }
@@ -417,7 +422,7 @@ final class ReviewChangesModel {
     func commentOnCheck(chapterKey: String, lens: String, item: ReviewLens.Item, body: String) throws {
         try run {
             let info = try openRound()
-            try db.write { db in
+            try writeInOpenRound { db in
                 _ = try Self.addDesign(db, info: info, body: body, lens: lens)
                 try ReviewQueries.setCheck(db, roundID: info.id, chapterKey: chapterKey, lens: lens, itemKey: item.key,
                                            state: .commented)
@@ -439,14 +444,19 @@ final class ReviewChangesModel {
     func markIntent(_ item: ReviewIntentItem, state: ReviewCheck.State, note: String) throws {
         try run {
             let info = try openRound()
-            try db.write { db in
-                // An earlier mark of this item left a draft that the new mark replaces.
-                for partial in [false, true] {
-                    let prefix = ReviewWrapUp.intentCommentBody(partial: partial, item: item, note: "")
-                    try db.execute(sql: """
-                        DELETE FROM review_comments WHERE round_id = ? AND lens = ? AND path IS NULL AND status = 'draft'
-                        AND (body = ? OR substr(body, 1, ?) = ?)
-                        """, arguments: [info.id, Self.intentLens, prefix, prefix.count + 3, prefix + " — "])
+            try writeInOpenRound { db in
+                // An earlier mark of this item (this round's draft, or a carried one) is replaced.
+                let heads = [false, true].map { ReviewWrapUp.intentCommentBody(partial: $0, item: item, note: "") }
+                let earlier = try ReviewQueries.comments(db, roundID: info.id).filter { c in
+                    c.lens == Self.intentLens && c.path == nil
+                        && heads.contains { c.body == $0 || c.body.hasPrefix($0 + " — ") }
+                }
+                for c in earlier {
+                    switch c.status {
+                    case .draft: try ReviewQueries.deleteDraft(db, id: c.id)
+                    case .carried: try ReviewQueries.resolve(db, id: c.id)
+                    default: break
+                    }
                 }
                 if state == .partial || state == .notDone {
                     let body = ReviewWrapUp.intentCommentBody(partial: state == .partial, item: item, note: note)
@@ -489,6 +499,17 @@ final class ReviewChangesModel {
         return info
     }
 
+    /// A write in the open round: a row that is no longer open rolls the whole
+    /// write back and closes the round here, as `saveState` does.
+    private func writeInOpenRound(_ body: (Database) throws -> Void) throws {
+        do {
+            try db.write(body)
+        } catch ReviewQueries.ReviewQueryError.roundNotOpen {
+            round?.status = "sent"
+            throw ModelError.roundClosed
+        }
+    }
+
     private func saveState(mode: Mode, phase: ReviewPhase, chapterKey: String?) throws {
         let info = try openRound()
         let seconds = pace.activeSeconds
@@ -514,8 +535,6 @@ final class ReviewChangesModel {
                                    anchor: CommentAnchor(quote: "", prefix: "", suffix: "", heading: ""),
                                    treeSHA: info.treeSha, body: body, lens: lens)
     }
-
-    // MARK: - Private
 
     /// Records a failure of a throwing action in `lastError` and rethrows it.
     private func run(_ body: () throws -> Void) throws {
