@@ -27,11 +27,24 @@ const memoryMapMaxRunes = 4000
 const noToolsBlock = `=== TOOLS ===
 No tools are connected in this session. Answer from the conversation only, and say so plainly when the owner asks you to look something up or to create something.`
 
-// appGuide is the short, current app guide (spec §4.1 item 9) — reviewed
-// against WatchtowerDesktop/Sources/App/SidebarDestination.swift.
-const appGuide = `=== WATCHTOWER APP (answer questions about the app from this) ===
-Watchtower is a macOS app that mirrors the owner's Slack, Google (Gmail, Calendar), Jira and recorded meetings into a local database and runs AI pipelines over it.
-For any question about how to use Watchtower — a tab, a setting, why something is empty — call search_guide and answer from the sections it returns, using screen names as the app shows them; if nothing matches, say the guide doesn't cover it. To link a screen write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer.`
+// appGuide is the short app guide (spec §4.1 item 9): what Watchtower is,
+// the search_guide rule only where that tool is mounted (the main surface
+// with tools), and the screen-link rule — the screen ids are
+// WatchtowerDesktop/Sources/App/SidebarDestination.swift's.
+func appGuide(o PromptOptions) string {
+	lines := []string{
+		"=== WATCHTOWER APP (answer questions about the app from this) ===",
+		"Watchtower is a macOS app that mirrors the owner's Slack, Google (Gmail, Calendar), Jira and recorded meetings into a local database and runs AI pipelines over it.",
+	}
+	if o.Surface == "main" && o.ToolsAvailable {
+		lines = append(lines, appGuideSearchRule)
+	}
+	return strings.Join(append(lines, appGuideNavRule), "\n")
+}
+
+const appGuideSearchRule = "For any question about how to use Watchtower — a tab, a setting, why something is empty — call search_guide and answer from the sections it returns, using screen names as the app shows them; if nothing matches, say the guide doesn't cover it."
+
+const appGuideNavRule = "To link a screen write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer."
 
 const responseStyle = `=== RESPONSE STYLE ===
 - Give the answer first and keep it short. Do not narrate your search steps — the app already shows them.
