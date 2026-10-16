@@ -350,9 +350,10 @@ func TestLoadTraversalNeverEscapes(t *testing.T) {
 func TestShippedPack(t *testing.T) {
 	pack := Shipped()
 	want := map[string]bool{
-		"thread-untangle":  true,
-		"status-update":    true,
-		"target-breakdown": true,
+		"thread-untangle":   true,
+		"status-update":     true,
+		"target-breakdown":  true,
+		"create-automation": true,
 	}
 	if len(pack) != len(want) {
 		t.Fatalf("expected %d shipped skills, got %d", len(want), len(pack))
