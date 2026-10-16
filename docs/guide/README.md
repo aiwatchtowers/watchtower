@@ -18,6 +18,9 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 
 ## Automations & AI
 
+- [Automations](features/automations.md) — recipes the daemon runs on a schedule or on demand, with confirmation, budgets and auto grants.
+- [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe and the five ready-made templates.
+
 ## Meetings & calendar
 
 ## Apps & integration

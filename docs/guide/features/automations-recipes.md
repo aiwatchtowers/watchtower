@@ -1,0 +1,50 @@
+# Automations: recipes and templates
+A recipe is one Markdown file you can read in full. This page covers its parts and the five ready-made templates. How confirmation, budgets and runs work is on [Automations](automations.md).
+
+## Why use it
+A template gives you a working recipe to adapt instead of a blank page. Knowing the parts tells you what you are confirming.
+
+## How it works
+### The settings block
+The top of the file holds the settings:
+- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), a `button` (with a label), or `manual: true` (only when you run it).
+- **Permissions**, such as `gmail:read@work`, `jira:read@PAY`, `llm:light`, `llm:strong`, `tool:create_jira_issue`. Reading all Slack messages or all calendar events needs `slack:read@*` or `calendar:read@*`.
+- **Outputs**, any of `inbox`, `briefing`, `report`, `target`, `slack`. Posting to Slack also needs `slack:write@<account>`.
+- **Budget**: tokens (1,000 to 2,000,000) and minutes (1 to 60).
+- Optionally, how many runs may overlap (1 to 4) and what to do about a missed slot.
+
+Text outside the settings and the script is the description. The script is one block of plain, synchronous JavaScript. It can only use what Watchtower gives it: ask the assistant, read tools, a small saved state and the outputs.
+
+### Where recipes live
+Personal recipes sit in the `automations` folder inside Watchtower's workspace folder. The file name is the recipe's id: lower-case letters, digits and dashes. Shortcuts (symlinks) are never read; put the real file there.
+
+### Workbench recipes
+A recipe can also live in a Workbench folder, in `.watchtower/automations/`, where it may run a command or start an agent session. The app shows these read-only: no form editing and no **Change in words**.
+
+## Using it
+1. In **Automations**, click **Templates** (or **Browse templates** on an empty tab).
+2. Pick a card and click **Use template**. The copy arrives unconfirmed and disabled.
+3. If the card names a placeholder, such as the Jira project key, replace it in **Edit**.
+4. **Dry run**, then **Review…**, then **Confirm and enable**.
+
+### The templates
+| Template | Where | When | What it does |
+|---|---|---|---|
+| `new-mail-summary` | personal | by hand | summarises new mail, at most 600 messages per mailbox per run |
+| `jira-state-report` | personal | Mondays 09:00 | weekly Jira report to reports and the briefing; needs your project key |
+| `team-performance-report` | personal | Fridays 17:00 | report from Jira, people cards and Slack |
+| `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh`, starts a review session for each |
+| `release-buttons` | workbench | three buttons | release, deploy to test, deploy to stage, each asking first |
+
+`new-mail-summary` is written for new-mail events, which are not available yet. Run it by hand after listing your mailboxes in the script's `scheduledAccounts`, or switch its trigger to a schedule.
+
+## When it's empty or wrong
+- **"No templates yet."** The command-line tool is older than the app; update Watchtower.
+- **Install refused.** A recipe with that name already exists (a removed one counts), or a symlink is in the way. Nothing is left half-installed.
+- **The form opens on a parse error.** The placeholder is still in the file; replace it.
+- **A workbench template cannot be installed.** The gallery installs personal templates only.
+
+## Related
+- [Automations](automations.md)
+
+For developers: docs/features/automations.md
