@@ -29,10 +29,11 @@ type automationsFlags struct {
 	RerunOf     int64
 	Limit       int
 	Kind        string
-	Step        int64  // session-launched/-ended
-	Session     int64  // session-launched
-	Status      string // session-ended
-	Error       string // session-ended
+	Step        int64    // session-launched/-ended
+	Session     int64    // session-launched
+	Status      string   // session-ended
+	Error       string   // session-ended
+	Params      []string // install-template --param
 }
 
 var autoFlags automationsFlags

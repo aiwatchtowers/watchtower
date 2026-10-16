@@ -1,0 +1,47 @@
+[
+  {
+    "name": "new-mail-summary",
+    "title": "New mail summary",
+    "description": "After each mail sync, sums up the new messages of each mailbox and puts the summary in your Inbox.",
+    "scope": "personal",
+    "trigger_text": "On new Gmail",
+    "files": ["new-mail-summary"],
+    "params": []
+  },
+  {
+    "name": "pr-review-rounds",
+    "title": "PR review rounds",
+    "description": "Twice a day on weekdays, opens a review session for each pull request updated since the last round; the findings come to you as asks.",
+    "scope": "workbench",
+    "trigger_text": "Weekdays 10:00, 16:00",
+    "files": ["pr-review-rounds"],
+    "params": []
+  },
+  {
+    "name": "jira-state-report",
+    "title": "Jira state report",
+    "description": "Every Monday, a report on one Jira project: in progress, stuck, done and needing a decision, with a short version in your briefing.",
+    "scope": "personal",
+    "trigger_text": "Mondays 09:00",
+    "files": ["jira-state-report"],
+    "params": [{"key": "PROJECT", "label": "Jira project key", "example": "PAY"}]
+  },
+  {
+    "name": "team-performance-report",
+    "title": "Team performance report",
+    "description": "Every Friday, a report on the team's week from Jira, the people cards and Slack: what moved, what is stuck, who may need help.",
+    "scope": "personal",
+    "trigger_text": "Fridays 17:00",
+    "files": ["team-performance-report"],
+    "params": []
+  },
+  {
+    "name": "release-buttons",
+    "title": "Release and deploy buttons",
+    "description": "Three workbench header buttons — Release, Deploy to test, Deploy to stage — that run your command and then a session that checks the result.",
+    "scope": "workbench",
+    "trigger_text": "Button: Release",
+    "files": ["release", "deploy-test", "deploy-stage"],
+    "params": []
+  }
+]
