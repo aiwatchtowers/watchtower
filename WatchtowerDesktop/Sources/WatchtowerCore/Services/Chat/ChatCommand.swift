@@ -106,8 +106,10 @@ package enum ChatContinuity {
 /// user text (Task 25's composer — preflight ruling A31), so it is not added
 /// here.
 package enum ChatTurnText {
-    package static func compose(userText: String, outcomes: String?) -> String {
-        guard let outcomes, !outcomes.isEmpty else { return userText }
-        return outcomes + "\n\n" + userText
+    package static func compose(userText: String, outcomes: String?, screen: ScreenContext? = nil) -> String {
+        var text = userText
+        if let outcomes, !outcomes.isEmpty { text = outcomes + "\n\n" + text }
+        if let screen { text = screen.block + "\n\n" + text }
+        return text
     }
 }
