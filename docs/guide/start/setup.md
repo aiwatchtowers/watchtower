@@ -13,7 +13,7 @@ Each goal turns on a fixed set of features; the goals are not permissions. All f
 | **Meetings** | Daily Briefing (meeting prep rides on it) | Google |
 | **Development in Workbench** | nothing, because Workbench, the chat and Targets need no switch | nothing |
 
-Knowledge search and Attention detection are always switched on, whatever you tick. You can still turn either off later in **Settings → Features**. What each feature does and costs is on [Turning features on and off](../concepts/features-on-and-off.md).
+Knowledge search and Attention detection are always switched on, whatever you tick. You can still turn either off in **Settings → Features**, and if you do, running setup again leaves it off. What each feature does and costs is on [Turning features on and off](../concepts/features-on-and-off.md).
 
 **Customize features →** shows the same features as switches. Once you flip one, your choice wins over the goals until you press **Reset**.
 

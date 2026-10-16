@@ -30,7 +30,7 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Daily Briefing | Light | Day Plan |
 | Day Plan | Light | |
 | Next Step Suggestions | Medium | |
-| Automations | Medium | |
+| Automations (own switch) | Medium | |
 | Claude plan limits (no AI) | None | |
 
 Tracks and People Cards read what Slack Digests writes, so with Slack Digests off they have nothing to work on. Memory has an **Advanced** section with switches for each source and each place memory is used.
@@ -52,9 +52,12 @@ Once the tab has content, the empty state goes away, even if a newer run is stil
 
 **Turn on** works one feature at a time. If another is still turning on you see "Another feature is turning on — try again in a moment". If the restart fails the feature stays on, the reason shows under the button, and the button becomes **Try again**.
 
-Which source each feature waits for: Slack Digests, Tracks, People Cards and Ideas need Slack.
+Which source each feature waits for:
 
-Stream Digests need Jira or mail. Briefing, Day Plan, Memory and Attention detection accept any connected source. Calendar needs a calendar.
+- Slack Digests, Tracks, People Cards and Ideas need Slack.
+- Stream Digests need Jira or mail.
+- Briefing, Day Plan, Memory and Attention detection accept any connected source.
+- Calendar needs a calendar.
 
 Briefings, Day Plan and Inbox also need Watchtower to know who you are. Until a source supplies your identity they show no time at all; see [Sources and accounts](sources-and-accounts.md#why-watchtower-needs-to-know-who-you-are).
 

@@ -7,7 +7,7 @@ A source is an account Watchtower reads from. You connect them in **Settings →
 | Source | Where | What Watchtower takes | What reads it |
 |---|---|---|---|
 | **Slack** | Connections → Slack | Messages, mentions and threads of the workspaces you connect, plus your own reactions | Digests, Tracks, People, Catch Up, Attention detection, Reaction Commands |
-| **Google** | Connections → Google | Calendar events and the Gmail inbox, switched separately per account | Calendar, meeting prep, Day Plan, Briefings, Inbox, Ideas |
+| **Google** | Connections → Google | Calendar events and the Gmail inbox, switched separately per account | Calendar, meeting prep, Day Plan, Briefings, Inbox, Stream Digests, Ideas, Search |
 | **Email** | Connections → Email | New mail from an IMAP or Outlook mailbox | Search, Catch Up, Attention detection |
 | **Calendar** | Connections → Calendar | A CalDAV account or an ICS feed | Calendar, meeting prep, Day Plan |
 | **Jira** | Connections → Jira | Issues, boards, sprints, releases and comments of a Jira Cloud site; Confluence spaces you pick under the site | Targets, Boards, Workload, Blockers, Search, Ideas |
@@ -31,11 +31,13 @@ Use **Reconnect Slack** or **Re-login** on the row. Your data stays and syncing 
 It depends on the source. **Remove** always stops syncing and deletes the sign-in from your Mac.
 
 - **Slack and Jira:** the data already synced stays: messages, digests, issues, boards.
-- **Google, Email and Calendar:** the mail and calendar events synced from that account are deleted from the local database (a Google account keeps events tied to a recording or recap). Digests, briefings and other AI results built from them stay. The confirmation dialog says synced messages are kept; the database deletes them.
+- **Google, Email and Calendar:** the mail and calendar events synced from that account are deleted from the local database (a Google account keeps events tied to a recording or recap). Digests, briefings and other AI results built from them stay.
+
+**Known issue:** the confirmation dialog for Google, Email and Calendar says synced data is kept, but it is deleted. If you need the mail or events, do not remove the account; use its **Enabled** switch where there is one, or remove it only after you have what you need. Slack and Jira do keep their data.
 
 ## Why Watchtower needs to know who you are
 
-Briefings, Day Plan and Inbox are about you, so they need your identity before they run. Watchtower takes it from the first source that can supply it, in this order: your first Slack workspace, the first Google account, the first enabled Jira site, the first enabled Linear account. Other accounts then add details such as your email or Jira id.
+Briefings, Day Plan and Inbox are about you, so they need your identity before they run. Watchtower takes it from the first source that can supply it, in this order: Slack account #1 (if you remove it, another workspace does not take over), the first Google account, the first enabled Jira site, the first enabled Linear account. Other accounts then add details such as your email or Jira id.
 
 With none connected, Briefings and Day Plan say "Connect Slack, Google, Jira or Linear so Watchtower knows who you are", and those three never run. Connecting any one fixes it. A freshly connected Jira site can show this message for a moment, until Jira reports who you are.
 

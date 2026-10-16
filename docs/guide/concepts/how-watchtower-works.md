@@ -1,6 +1,6 @@
 # How Watchtower works
 
-Watchtower copies your work into a database on your Mac, then a background sync turns it into summaries, plans and an inbox. Nothing you see appears at the moment you open a tab. Everything is prepared on a schedule, which is why a new tab can be empty.
+Watchtower copies your work into a database on your Mac, then a background sync turns it into summaries, plans and an inbox. Most of what you see is not made when you open a tab. It is prepared on a schedule, which is why a new tab can be empty.
 
 ## The three layers
 
@@ -60,7 +60,7 @@ Times are local. "Every cycle" means every 15 minutes by default.
 | Snoozed items coming back | Every cycle | Nothing |
 | Meeting-audio cleanup | Every cycle | Recordings older than 30 days lose their audio; transcripts stay |
 | Claude plan limits | Own poller, every 5 minutes | Claude Code signed in; Claude plan limits on |
-| Automations | Own scheduler, per recipe | A confirmed recipe |
+| Automations | Own scheduler, per recipe | Automations on; a confirmed recipe |
 
 Two exceptions to the daily hour: on a brand-new install the first briefing and the first day plan are made in the first cycle that can make them, without waiting for 08:00. And if a daily job fails three times in one day it waits until tomorrow.
 
