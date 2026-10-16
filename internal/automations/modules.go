@@ -14,6 +14,7 @@ const (
 	StepKindState  = "state"
 	StepKindOutput = "output"
 	StepKindLog    = "log"
+	StepKindMCP    = "mcp"
 )
 
 // DefaultModules is the SDK every run gets, in install order: llm, tool,
@@ -25,7 +26,7 @@ const (
 func DefaultModules(b Backends) []Module {
 	out := OutputModule()
 	registerP2OutputKinds(out, b)
-	return []Module{LLMModule(b), ToolModule(b), StateModule(), out, LogModule(), ToolWriteModule(b)}
+	return []Module{LLMModule(b), ToolModule(b), StateModule(), out, LogModule(), ToolWriteModule(b), MCPModule(b)}
 }
 
 // sdkModule is a Module defining a fixed set of paths.
