@@ -55,7 +55,10 @@ The empty tab says "No ideas yet" and "Ideas and decisions picked up from conver
 
 - **Off — Turn on.** Click **Turn on**.
 - **Connect Slack to get this.** The tab's status line follows Slack, even though mail, Jira and meetings also feed it. Connect Slack, or use **Find Ideas** over a range.
-- **Starts after the first sync, In about N h.** The next consolidation is due; the line counts whole hours.
+- **Starts after the first sync.** The first sync hasn't finished.
+- **Preparing now.** A mining pass is running.
+- **Within ~15 min, After this sync.** The next pass is due on the next cycle.
+- **In about N h.** The last pass was recent; the line counts whole hours to the next.
 - **Didn't work yet — retries automatically.** The last run failed; the reason is in the line.
 - **Nothing from mail or Jira.** Turn on Stream Digests and connect the account.
 - **The badge count differs from the list.** It counts items to review in both Ideas and Notes, never decisions.

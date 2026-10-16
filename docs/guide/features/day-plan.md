@@ -54,7 +54,9 @@ The empty tab says "No day plan yet" with a status line, or "Today's plan at or 
 
 - **Connect Slack, Google, Jira or Linear so Watchtower knows who you are.** There is no owner. Click **Open Connections**. Without one, the footer has no Generate, Regenerate or Reset, but an existing plan stays readable.
 - **Off — Turn on.** Click **Turn on**.
-- **Starts after the first sync, Within ~15 min, Today at 08:00.** It is on its way; the line says when.
+- **Connect a source to get this.** No account is connected yet; connect any one source.
+- **Preparing now.** The plan is being written; wait a minute.
+- **Starts after the first sync, Within ~15 min, After this sync, Today at 08:00, Tomorrow at 08:00.** It is on its way; the line says when.
 - **Didn't work yet — retries automatically.** The last attempt failed; the line shows why. After three failures it waits until tomorrow.
 - **Plan missing though the hour passed.** The daemon may not have run (Mac off or asleep), or no connected account identifies you. Click **Generate today's plan**.
 

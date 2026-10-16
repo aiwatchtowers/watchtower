@@ -43,7 +43,8 @@ The empty tab says "No briefings yet" and "Generated once a day at or after 08:0
 - **Connect Slack, Google, Jira or Linear so Watchtower knows who you are.** There is no owner yet. Click **Open Connections** and connect one. A freshly connected Jira site can show this for a moment while your identity is read.
 - **Off — Turn on.** Click **Turn on**.
 - **Connect a source to get this.** Connect any one source.
-- **Starts after the first sync / Within ~15 min / Today at 08:00.** It is on its way; the line says when.
+- **Preparing now.** The briefing is being written; wait a minute.
+- **Starts after the first sync / Within ~15 min / After this sync / Today at 08:00 / Tomorrow at 08:00.** It is on its way; the line says when.
 - **Didn't work yet — retries automatically.** The last attempt failed, with the reason in the line. After three failures it waits until tomorrow.
 - **No briefing today though the hour passed.** The sync may not have run (the Mac was off or the daemon isn't running), or there was nothing to summarise. See [Day Plan](day-plan.md) for the same gate.
 - **Generate manually.** With no briefings yet, **Generate Briefing** in the empty tab builds one now; a failure shows its reason in red under the button. Once a briefing exists, run `watchtower briefing generate` in a terminal. Today's briefing is never rebuilt, so the command returns the existing one.

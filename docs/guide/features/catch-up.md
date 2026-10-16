@@ -33,7 +33,7 @@ Type what is wrong in the **Correction…** field at the bottom and click **Rege
 
 ### Teach it which topics matter
 
-Each topic has a thumbs-up and thumbs-down. Type under **What's wrong with this topic?** and click **Send** to add a comment. A comment can also rebuild the whole recap, and it becomes a rule in Inbox → Learned, which the digests, tracks, briefings and recaps then apply.
+Each topic has a thumbs-up and thumbs-down. Type under **What's wrong with this topic?** and click **Send** to add a comment. A comment can also rebuild the whole recap, and it can become a rule in Inbox → Learned, which the digests, tracks, briefings and recaps then apply.
 
 ### Mark it done
 
@@ -46,10 +46,11 @@ The empty pane says "No recap yet" with a status line. The line reads like this:
 | Line | Meaning | What to do |
 |---|---|---|
 | Off — Turn on | Slack Digests is off | Click **Turn on** |
-| Connect Slack to get this | No Slack workspace connected | Click **Connect Slack** |
+| Connect Slack to get this | No Slack workspace connected, so the pane shows **Connect Slack** instead of its **Build a recap** button | Connect Slack, or without Slack use **Build recap** in the left column, which works with mail, Jira or a calendar alone |
 | Starts after the first sync | The first sync hasn't finished | Wait; the sync line shows progress |
-| Within ~15 min, After this sync | Digests are scheduled for the next cycle | Wait, or build anyway |
-| Didn't work yet — retries automatically | The last digest run failed | Build a recap; the reason shows in the line |
+| Preparing now | Digests are being built right now | Wait, or build anyway |
+| Within ~15 min, After this sync | Digests are scheduled for the next cycle | Wait, or click **Build a recap** |
+| Didn't work yet — retries automatically | The last digest run failed | Click **Build a recap**; the reason shows in the line |
 
 - **"This recap failed to build."** Click **Retry**. A build stuck for more than 30 minutes is marked failed on its own.
 - **"Quiet — nothing happened in this window."** The window had no activity. Pick a wider one.

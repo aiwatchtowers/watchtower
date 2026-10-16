@@ -27,7 +27,7 @@ On a new install a **Getting ready** zone sits above Today, one card per feature
 
 A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button.
 
-When every card is ready the zone shrinks to "Everything's ready" for the rest of that launch and is gone on the next. It also folds by itself three days after it first showed, whatever is still waiting. An install that was already ready never sees it.
+When every card is ready or has failed and retries on its own, the zone shrinks to "Everything's ready" for the rest of that launch and is gone on the next. It also folds by itself three days after it first showed, whatever is still waiting. An install that was already ready never sees it.
 
 ## Using it
 
@@ -55,7 +55,7 @@ AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOC
 
 - **No Getting ready zone.** It is shown only while something is still preparing or waiting for a source. It is also gone after three days, or after you hid it.
 - **A tab is missing from the menu.** Turn its feature on in Settings → Features and connect its source. You may also have hidden it: look under **HIDDEN**.
-- **A card is missing from Today.** Its tab is hidden, or it has nothing to show right now.
+- **A card is missing from Today.** It has nothing to show right now, or its feature is off or its source isn't connected.
 - **"Couldn't read today's items — see the log."** The local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
 
 ## Related

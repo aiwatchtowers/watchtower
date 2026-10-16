@@ -62,7 +62,17 @@ The empty tab says "Nothing waiting for you". It shows a reaction cheat sheet: o
 - **"Enable Reaction Commands" button.** The feature is off. Click it; reactions you placed earlier are not replayed.
 - **"Watching your Slack reactions — last check N min ago".** Reaction Commands is working. The time is the last successful check.
 - **A reaction did nothing.** Check that the emoji is in the dictionary and enabled, that it was a new reaction on a different message, and that Slack is connected. Then run **Sync Now**.
-- **The status line says "Off — Turn on".** That line follows Attention detection, not the list. Turning it on fills Catch Up and the briefing, but the Inbox list works without it.
+- **A status line under the empty message.** It follows Attention detection, not the list, and the Inbox list works without it:
+
+| Line | Meaning |
+|---|---|
+| Off — Turn on | Attention detection is off; **Turn on** enables it for Catch Up and the briefing |
+| Connect a source to get this | No account connected yet |
+| Starts after the first sync | The first sync hasn't finished |
+| Preparing now | A detection pass is running |
+| Within ~15 min, After this sync | The next pass is due on the next cycle |
+| Didn't work yet — retries automatically | The last pass failed; the reason follows the dash |
+
 - **No reminder yet.** A reminder shows only once it is due.
 
 ## Related
