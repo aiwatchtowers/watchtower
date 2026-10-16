@@ -225,6 +225,166 @@ package struct ReviewEnvelope: Decodable, Sendable {
     package let items: [ReviewContextItem]?
     package let lenses: [ReviewLens]?
     package let lensNotes: [String]?
+    package let revert: RevertInfo?
+    package let overview: ReviewOverview?
+    // swiftlint:disable:next discouraged_optional_boolean
+    package let overviewCached: Bool?
+    /// Present as `[]` for `lessons propose`, absent for every other command.
+    package let lessons: [ReviewLesson]?
+    package let written: String?
+
+    /// The hunk an undo reverted.
+    package struct RevertInfo: Decodable, Equatable, Sendable {
+        package let hunkId: String
+        package let path: String
+    }
+}
+
+/// One `review_notes` row: an agent note on lines or one of the agent's chapters.
+package struct ReviewNote: FetchableRecord, Decodable, Equatable, Sendable, Identifiable {
+    package enum Kind: String, Decodable, Sendable { case note, chapter }
+
+    package let id: Int64
+    package let kind: Kind
+    package let ord: Int
+    package let path: String
+    package let startLine: Int
+    package let endLine: Int
+    package let quote: String
+    package let text: String
+    /// A chapter's files (`paths_json`).
+    package let paths: [String]
+    package let core: Bool
+    package let why: String
+    package let treeSHA: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, ord, path, quote, text, core, why
+        case startLine = "start_line"
+        case endLine = "end_line"
+        case paths = "paths_json"
+        case treeSHA = "tree_sha"
+    }
+}
+
+/// The AI overview (`workbench review overview`): the same JSON the Go cache stores.
+package struct ReviewOverview: Decodable, Equatable, Sendable {
+    package struct Coverage: Decodable, Equatable, Sendable {
+        package enum Status: String, Decodable, Sendable { case done, partial, notFound = "not_found" }
+
+        package let item: String
+        package let status: Status
+        package let `where`: [String]
+    }
+
+    package struct Risk: Decodable, Equatable, Sendable {
+        package enum Level: String, Decodable, Sendable { case low, medium, high }
+
+        package let path: String
+        package let level: Level
+        package let why: String
+    }
+
+    package struct Chapter: Decodable, Equatable, Sendable {
+        package let title: String
+        package let paths: [String]
+        package let core: Bool
+        package let lenses: [String]
+    }
+
+    package let summary: String
+    package let coverage: [Coverage]
+    package let outOfScope: [String]
+    package let risk: [Risk]
+    package let chapters: [Chapter]
+
+    private enum CodingKeys: String, CodingKey { case summary, coverage, outOfScope, risk, chapters }
+
+    /// Go omits empty lists (`null` or absent): they read as `[]`.
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try c.decode(String.self, forKey: .summary)
+        coverage = try c.decodeIfPresent([Coverage].self, forKey: .coverage) ?? []
+        outOfScope = try c.decodeIfPresent([String].self, forKey: .outOfScope) ?? []
+        risk = try c.decodeIfPresent([Risk].self, forKey: .risk) ?? []
+        chapters = try c.decodeIfPresent([Chapter].self, forKey: .chapters) ?? []
+    }
+}
+
+// The decoding inits live in extensions so the memberwise inits stay.
+extension ReviewOverview.Coverage {
+    private enum CodingKeys: String, CodingKey { case item, status, `where` }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            item: try c.decode(String.self, forKey: .item),
+            status: try c.decode(Status.self, forKey: .status),
+            where: try c.decodeIfPresent([String].self, forKey: .where) ?? []
+        )
+    }
+}
+
+extension ReviewOverview.Chapter {
+    private enum CodingKeys: String, CodingKey { case title, paths, core, lenses }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            title: try c.decode(String.self, forKey: .title),
+            paths: try c.decodeIfPresent([String].self, forKey: .paths) ?? [],
+            core: try c.decodeIfPresent(Bool.self, forKey: .core) ?? false,
+            lenses: try c.decodeIfPresent([String].self, forKey: .lenses) ?? []
+        )
+    }
+}
+
+/// One `review_reverts` row: a hunk the owner undid in the round.
+package struct ReviewRevert: FetchableRecord, Decodable, Equatable, Sendable {
+    package let hunkID: String
+    package let path: String
+    package let header: String
+    package let at: String
+
+    private enum CodingKeys: String, CodingKey {
+        case path, header, at
+        case hunkID = "hunk_id"
+    }
+}
+
+/// One `review_lessons` row: a proposed house rule. The same type decodes the
+/// `lessons` envelope (wire key `source_comment_ids`, an array) and the row
+/// (column of the same name, JSON text — GRDB decodes it as JSON).
+package struct ReviewLesson: FetchableRecord, Decodable, Equatable, Sendable, Identifiable {
+    package let id: Int64
+    package let lens: String
+    package let text: String
+    package let sourceCommentIDs: [Int64]
+    package let status: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, lens, text, status
+        case sourceCommentIDsRow = "source_comment_ids"
+        case sourceCommentIDsWire = "sourceCommentIds"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int64.self, forKey: .id)
+        lens = try c.decode(String.self, forKey: .lens)
+        text = try c.decode(String.self, forKey: .text)
+        status = try c.decode(String.self, forKey: .status)
+        sourceCommentIDs = try c.decodeIfPresent([Int64].self, forKey: .sourceCommentIDsWire)
+            ?? c.decodeIfPresent([Int64].self, forKey: .sourceCommentIDsRow) ?? []
+    }
+
+    package init(id: Int64, lens: String, text: String, sourceCommentIDs: [Int64], status: String) {
+        self.id = id
+        self.lens = lens
+        self.text = text
+        self.sourceCommentIDs = sourceCommentIDs
+        self.status = status
+    }
 }
 
 /// One `review_comments` row. A nil `path` is a design comment on the round.
@@ -246,6 +406,8 @@ package struct ReviewComment: FetchableRecord, Decodable, Equatable, Identifiabl
     package let status: Status
     package let carriedFrom: Int64?
     package let agentReply: String
+    /// Set when the agent replied (and maybe resolved) through `reply_review_comment`.
+    package let agentReplyAt: String?
 
     private enum CodingKeys: String, CodingKey {
         case id, path, side, quote, lens, body, status
@@ -257,6 +419,7 @@ package struct ReviewComment: FetchableRecord, Decodable, Equatable, Identifiabl
         case treeSHA = "tree_sha"
         case carriedFrom = "carried_from"
         case agentReply = "agent_reply"
+        case agentReplyAt = "agent_reply_at"
     }
 
     package init(
@@ -274,7 +437,8 @@ package struct ReviewComment: FetchableRecord, Decodable, Equatable, Identifiabl
         body: String,
         status: Status,
         carriedFrom: Int64?,
-        agentReply: String
+        agentReply: String,
+        agentReplyAt: String? = nil
     ) {
         self.id = id
         self.roundID = roundID
@@ -291,5 +455,6 @@ package struct ReviewComment: FetchableRecord, Decodable, Equatable, Identifiabl
         self.status = status
         self.carriedFrom = carriedFrom
         self.agentReply = agentReply
+        self.agentReplyAt = agentReplyAt
     }
 }

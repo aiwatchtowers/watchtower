@@ -156,6 +156,159 @@ final class ReviewQueriesTests: XCTestCase {
         XCTAssertEqual(row.lens, "intent")
     }
 
+    // MARK: - Plan 3: notes, reverts, lessons, the agent's answers
+
+    func testNotesDecodePathsJSON() throws {
+        let db = try TestDatabase.create()
+        let round = try db.write { try Self.seedRound($0) }
+        let (project, session) = try db.read { db -> (Int64, Int64) in
+            let r = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT project_id, session_id FROM review_rounds WHERE id = ?", arguments: [round]))
+            return (r["project_id"], r["session_id"])
+        }
+        try db.write {
+            try $0.execute(sql: """
+                INSERT INTO review_notes (project_id, session_id, tree_sha, kind, ord, path, start_line, end_line, quote, text, paths_json, core, why)
+                VALUES (?, ?, 't', 'chapter', 1, '', 0, 0, '', 'Server', '["a.go","b.go"]', 1, 'the core'),
+                       (?, ?, 't', 'note', 1, 'a.go', 3, 4, 'q', 'look here', '[]', 0, '')
+                """, arguments: [project, session, project, session])
+        }
+        let notes = try db.read { try ReviewQueries.notes($0, projectID: project, sessionID: session) }
+        XCTAssertEqual(notes.map(\.kind), [.chapter, .note])
+        XCTAssertEqual(notes[0].paths, ["a.go", "b.go"])
+        XCTAssertTrue(notes[0].core)
+        XCTAssertEqual(notes[0].why, "the core")
+        XCTAssertEqual(notes[1].path, "a.go")
+        XCTAssertEqual(notes[1].startLine, 3)
+        XCTAssertEqual(notes[1].treeSHA, "t")
+        XCTAssertEqual(notes[1].paths, [])
+    }
+
+    func testRevertsInRoundOrder() throws {
+        let db = try TestDatabase.create()
+        let round = try db.write { try Self.seedRound($0) }
+        try db.write {
+            for (hunk, path) in [("h2", "b.go"), ("h1", "a.go")] {
+                try $0.execute(sql: "INSERT INTO review_reverts (round_id, hunk_id, path, header, patch) VALUES (?, ?, ?, '@@', 'p')",
+                               arguments: [round, hunk, path])
+            }
+        }
+        let reverts = try db.read { try ReviewQueries.reverts($0, roundID: round) }
+        XCTAssertEqual(reverts.map(\.hunkID), ["h2", "h1"])
+        XCTAssertEqual(reverts[0].path, "b.go")
+        XCTAssertEqual(reverts[0].header, "@@")
+        XCTAssertFalse(reverts[0].at.isEmpty)
+    }
+
+    func testProposedLessonsOnly() throws {
+        let db = try TestDatabase.create()
+        let project = try db.write { _ = try Self.seedRound($0); return try XCTUnwrap(try Int64.fetchOne($0, sql: "SELECT id FROM projects")) }
+        try db.write {
+            try $0.execute(sql: """
+                INSERT INTO review_lessons (project_id, lens, text, source_comment_ids, status)
+                VALUES (?, 'tests', 'add a test', '[4,7]', 'proposed'), (?, 'tests', 'old', '[1]', 'accepted')
+                """, arguments: [project, project])
+        }
+        let lessons = try db.read { try ReviewQueries.proposedLessons($0, projectID: project) }
+        XCTAssertEqual(lessons.count, 1)
+        XCTAssertEqual(lessons[0].sourceCommentIDs, [4, 7])
+        XCTAssertEqual(lessons[0].text, "add a test")
+    }
+
+    func testAgentResolvedListsOnlyAgentResolved() throws {
+        let f = try replyFixture()
+        // Owner-resolved (no agent_reply_at) is left out; the copy shadows its source.
+        let owner = try draft(f.db, f.prev, "o.go", body: "owner closed")
+        try f.db.write {
+            try $0.execute(sql: "UPDATE review_comments SET status='resolved' WHERE id=?", arguments: [owner])
+            try $0.execute(sql: """
+                UPDATE review_comments SET status='resolved', agent_reply='fixed', agent_reply_at='2026-10-16T10:00:00Z' WHERE id IN (?, ?)
+                """, arguments: [f.source, f.copy])
+        }
+        let list = try f.db.read { try ReviewQueries.agentResolved($0, previousRoundID: f.prev, openRoundID: f.open) }
+        XCTAssertEqual(list.map(\.id), [f.copy])
+        XCTAssertEqual(list[0].agentReplyAt, "2026-10-16T10:00:00Z")
+    }
+
+    func testReopenInsertsACarriedCopy() throws {
+        let f = try replyFixture(withCopy: false)
+        try f.db.write { try Self.agentResolve($0, f.source) }
+        try f.db.write { try ReviewQueries.reopen($0, commentID: f.source, openRoundID: f.open) }
+        let open = try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }
+        let copy = try XCTUnwrap(open.first { $0.carriedFrom == f.source })
+        XCTAssertEqual(copy.status, .carried)
+        XCTAssertEqual(copy.path, "a.go")
+        XCTAssertEqual(copy.body, "b")
+        XCTAssertEqual(copy.agentReply, "fixed")
+        // Reopening again does not add a second copy.
+        try f.db.write { try ReviewQueries.reopen($0, commentID: f.source, openRoundID: f.open) }
+        XCTAssertEqual(try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }.count, 1)
+    }
+
+    func testReopenRestoresTheOpenCopy() throws {
+        let f = try replyFixture()
+        try f.db.write {
+            try Self.agentResolve($0, f.source)
+            try Self.agentResolve($0, f.copy)
+        }
+        try f.db.write { try ReviewQueries.reopen($0, commentID: f.source, openRoundID: f.open) }
+        let open = try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }
+        XCTAssertEqual(open.map(\.status), [.carried])
+        XCTAssertEqual(open[0].id, f.copy)
+        // The copy itself, resolved again, reopens as carried; a copy-less draft as draft.
+        try f.db.write { try Self.agentResolve($0, f.copy) }
+        try f.db.write { try ReviewQueries.reopen($0, commentID: f.copy, openRoundID: f.open) }
+        XCTAssertEqual(try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }.map(\.status), [.carried])
+        let own = try draft(f.db, f.open, "n.go")
+        try f.db.write { try Self.agentResolve($0, own) }
+        try f.db.write { try ReviewQueries.reopen($0, commentID: own, openRoundID: f.open) }
+        XCTAssertEqual(try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }.last?.status, .draft)
+    }
+
+    func testReopenRefusedOnSentRound() throws {
+        let f = try replyFixture(withCopy: false)
+        try f.db.write {
+            try Self.agentResolve($0, f.source)
+            try $0.execute(sql: "UPDATE review_rounds SET status='sent' WHERE id=?", arguments: [f.open])
+        }
+        try f.db.write { try ReviewQueries.reopen($0, commentID: f.source, openRoundID: f.open) }
+        XCTAssertEqual(try f.db.read { try ReviewQueries.comments($0, roundID: f.open) }.count, 0)
+    }
+
+    private struct ReplyFixture {
+        let db: DatabaseQueue
+        let prev: Int64
+        let open: Int64
+        let source: Int64
+        let copy: Int64
+    }
+
+    /// A sent previous round with a comment, and (optionally) its carried copy in the session's open round.
+    private func replyFixture(withCopy: Bool = true) throws -> ReplyFixture {
+        let db = try TestDatabase.create()
+        let prev = try db.write { try Self.seedRound($0) }
+        let source = try draft(db, prev, "a.go")
+        try db.write {
+            try $0.execute(sql: "UPDATE review_comments SET status='sent' WHERE id=?", arguments: [source])
+            try $0.execute(sql: "UPDATE review_rounds SET status='sent' WHERE id=?", arguments: [prev])
+        }
+        let open = try db.write { try Self.seedRound($0) }
+        var copy: Int64 = 0
+        if withCopy {
+            let rows = try db.read { try ReviewQueries.comments($0, roundID: prev) }
+            try db.write {
+                try ReviewQueries.carry($0, from: rows, into: open, plan: .init(moved: [:], lost: []), treeSHA: "t")
+                copy = try XCTUnwrap(try Int64.fetchOne($0, sql: "SELECT id FROM review_comments WHERE round_id=?", arguments: [open]))
+            }
+        }
+        return ReplyFixture(db: db, prev: prev, open: open, source: source, copy: copy)
+    }
+
+    private static func agentResolve(_ db: Database, _ id: Int64) throws {
+        try db.execute(sql: """
+            UPDATE review_comments SET status='resolved', agent_reply='fixed', agent_reply_at='2026-10-16T10:00:00Z' WHERE id=?
+            """, arguments: [id])
+    }
+
     private func draft(_ db: DatabaseQueue, _ round: Int64, _ path: String, tree: String = "t", body: String = "b") throws -> Int64 {
         try db.write {
             try ReviewQueries.addDraft($0, roundID: round, path: path, side: "new", startLine: 1, endLine: 1,

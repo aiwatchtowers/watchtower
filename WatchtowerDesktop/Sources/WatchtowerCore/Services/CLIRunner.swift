@@ -9,6 +9,16 @@ package protocol CLIRunnerProtocol {
     /// Runs `watchtower <args>` and returns its stdout as Data.
     /// Throws on nonzero exit or launch failure.
     func run(args: [String]) async throws -> Data
+    /// `run(args:)` that gives up after `timeout` seconds (the child is
+    /// terminated and the call throws `nonZeroExit(code: -1, …)`). Runners
+    /// that cannot enforce it fall back to `run(args:)`.
+    func run(args: [String], timeout: TimeInterval) async throws -> Data
+}
+
+extension CLIRunnerProtocol {
+    package func run(args: [String], timeout: TimeInterval) async throws -> Data {
+        try await run(args: args)
+    }
 }
 
 // MARK: - CLIRunnerError
@@ -113,6 +123,14 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
     /// (session cleanup drops `WATCHTOWER_TERMINAL_SESSION_ID`) passes the
     /// environment it built.
     package func run(args: [String], environment: [String: String]) async throws -> Data {
+        try await run(args: args, environment: environment, timeout: nil)
+    }
+
+    package func run(args: [String], timeout: TimeInterval) async throws -> Data {
+        try await run(args: args, environment: Constants.resolvedEnvironment(), timeout: timeout)
+    }
+
+    private func run(args: [String], environment: [String: String], timeout: TimeInterval?) async throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = args
@@ -145,6 +163,8 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         // the write syscall until something reads stderr — if we're still
         // parked in `readDataToEndOfFile()` on stdout at that point, both
         // sides wait forever.
+        let deadline = timeout.map { RunDeadline(process: process, after: $0) }
+        defer { deadline?.cancel() }
         return try await withTaskCancellationHandler {
             let stdoutRead = ProcessPipes.drain(stdoutPipe)
             let stderrRead = ProcessPipes.drain(stderrPipe)
@@ -154,6 +174,11 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
 
             if Task.isCancelled {
                 throw CancellationError()
+            }
+            if let deadline, deadline.fired {
+                let note = "timed out after \(Int(timeout ?? 0)) s"
+                CLILog.failure(args: args, exitCode: -1, stderr: note)
+                throw CLIRunnerError.nonZeroExit(code: -1, stderr: note)
             }
             let exitCode = process.terminationStatus
             let stderr = String(data: stderrData, encoding: .utf8)?
@@ -170,4 +195,30 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
             process.terminate()
         }
     }
+}
+
+/// Terminates a child that outlives its deadline and remembers it did.
+private final class RunDeadline: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didFire = false
+    private var task: Task<Void, Never>?
+
+    init(process: Process, after seconds: TimeInterval) {
+        task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            lock.lock()
+            didFire = true
+            lock.unlock()
+            process.terminate()
+        }
+    }
+
+    var fired: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didFire
+    }
+
+    func cancel() { task?.cancel() }
 }
