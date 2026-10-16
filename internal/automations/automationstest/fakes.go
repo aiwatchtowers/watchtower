@@ -3,6 +3,8 @@ package automationstest
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
 	"sync"
 
 	"watchtower/internal/automations"
@@ -110,6 +112,20 @@ func (r *FakeRegistry) Get(name string) (*tools.Tool, bool) {
 	defer r.mu.Unlock()
 	t, ok := r.Tools[name]
 	return t, ok
+}
+
+// List returns the tools visible on surface, sorted by name.
+func (r *FakeRegistry) List(surface string) []*tools.Tool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*tools.Tool, 0, len(r.Tools))
+	for _, t := range r.Tools {
+		if t.VisibleOn(surface) {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b *tools.Tool) int { return strings.Compare(a.Name, b.Name) })
+	return out
 }
 
 // CallRead records the read and returns its scripted result.

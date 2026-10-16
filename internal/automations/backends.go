@@ -11,10 +11,12 @@ import (
 )
 
 // ToolRegistry is the part of the tool registry the SDK calls: Get and
-// CallRead for reads, Propose for writes (ToolWriteModule).
+// CallRead for reads, Propose for writes (ToolWriteModule), List for
+// agent()'s effective tool set (EffectiveAgentTools).
 // *tools.Registry satisfies it.
 type ToolRegistry interface {
 	Get(name string) (*tools.Tool, bool)
+	List(surface string) []*tools.Tool
 	CallRead(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (any, error)
 	Propose(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (tools.Receipt, error)
 }
