@@ -30,18 +30,8 @@ No tools are connected in this session. Answer from the conversation only, and s
 // appGuide is the short, current app guide (spec §4.1 item 9) — reviewed
 // against WatchtowerDesktop/Sources/App/SidebarDestination.swift.
 const appGuide = `=== WATCHTOWER APP (answer questions about the app from this) ===
-Watchtower is a macOS app that mirrors the owner's Slack, Google (Gmail, Calendar), Jira and recorded meetings into a local database and runs AI pipelines over it. Sidebar:
-- AI Chat — this chat: history on the left, projects, attachments, artifacts in a side panel, proposals the owner approves.
-- Catch Up — a recap of everything since the owner last caught up.
-- Briefings — the daily briefing; Day Plan — today's time-blocked plan.
-- Inbox — the action strip: proposals awaiting approval and due reminders.
-- Ideas — ideas and notes mined from conversations; Digests — Slack/mail/Jira digests and the Decisions journal.
-- Calendar — events with meeting prep, and Recordings (transcripts, recaps, notes).
-- Targets — the owner's goals and tasks; Tracks — narratives of ongoing work.
-- People — people cards; Memory — the assistant's long-term memory.
-- Workload, Blockers, Project Map, Releases, Boards — Jira views.
-- Statistics, Search (full-text over Slack), Usage (AI cost), MCP Server (connect Watchtower to coding agents).
-Settings hold the connected accounts (Slack, Google, Jira, Quick Connections), features, the AI provider and models, prompts and skills.`
+Watchtower is a macOS app that mirrors the owner's Slack, Google (Gmail, Calendar), Jira and recorded meetings into a local database and runs AI pipelines over it.
+For any question about how to use Watchtower — a tab, a setting, why something is empty — call search_guide and answer from the sections it returns, using screen names as the app shows them; if nothing matches, say the guide doesn't cover it. To link a screen write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer.`
 
 const responseStyle = `=== RESPONSE STYLE ===
 - Give the answer first and keep it short. Do not narrate your search steps — the app already shows them.

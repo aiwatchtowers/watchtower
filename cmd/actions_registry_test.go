@@ -283,3 +283,22 @@ func pinAutomationWriteTools(t *testing.T, reg *tools.Registry, automation map[s
 		assert.False(t, automation[name], "%s is never offered to automations", name)
 	}
 }
+
+// TestSearchGuideToolMainOnly pins the guide tools to the main chat and out of
+// the dev-mode read mount (DEV-01).
+func TestSearchGuideToolMainOnly(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	reg := buildToolRegistry(&config.Config{ActiveWorkspace: "test-ws"}, database)
+	for _, name := range []string{"search_guide", "get_guide_page"} {
+		assert.True(t, surfaceToolNames(reg, "main")[name], "%s on main", name)
+		for _, s := range []string{"target", "automation_editor", "project"} {
+			assert.False(t, surfaceToolNames(reg, s)[name], "%s must not be on %s", name, s)
+		}
+		for _, rt := range tools.ReadTools() {
+			assert.NotEqual(t, name, rt.Name, "%s must not be in ReadTools (DEV-01)", name)
+		}
+	}
+}

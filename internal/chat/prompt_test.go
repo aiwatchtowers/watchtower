@@ -361,3 +361,11 @@ func TestArtifactsContract(t *testing.T) {
 	}
 	assert.Contains(t, c, "never send", "CHAT-05: artifacts only open or copy")
 }
+
+func TestPromptAppGuideMentionsSearchGuide(t *testing.T) {
+	d, cfg, o := promptFixture(t)
+	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.Contains(t, got, "search_guide")
+	assert.NotContains(t, got, "Sidebar:")
+}
