@@ -10,7 +10,7 @@ struct GuideSearchTests {
         GuideSection(page: "catchup/", pageTitle: "Catch-Up", heading: "Get a recap", anchor: "get-a-recap",
                      level: 2, text: "Open Catch-Up to see what changed while you were away."),
         GuideSection(page: "inbox/", pageTitle: "Inbox", heading: "Reading items", anchor: "reading-items",
-                     level: 2, text: "Items wait here."),
+                     level: 2, text: "Items wait here.")
     ]
 
     @Test("a heading match outranks a text match")
@@ -52,5 +52,16 @@ struct GuideSearchTests {
         let s = index.sections[0]
         #expect(s.id == "calendar/#syncing")
         #expect(s.url(in: index)?.absoluteString == "https://docs.example.com/calendar/#syncing")
+    }
+}
+
+extension GuideSearchTests {
+    @Test("a word scores once, by its best match, and query words split on whitespace")
+    func exclusiveScoringAndWhitespaceWords() {
+        // "calendar" is a heading word (3) and a title word (2) of the same section: still 3, not 5.
+        let a = GuideSection(page: "a/", pageTitle: "Calendar", heading: "Calendar basics", anchor: "a", level: 2, text: "x")
+        let b = GuideSection(page: "b/", pageTitle: "Other", heading: "Misc", anchor: "b", level: 2, text: "calendar calendar")
+        #expect(GuideSearch.rank("calendar", in: [b, a], limit: 5).map(\.anchor) == ["a", "b"])
+        #expect(GuideSearch.rank("zzzz-no-match", in: [a, b], limit: 5).isEmpty)
     }
 }

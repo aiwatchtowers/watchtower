@@ -1,20 +1,26 @@
 import Foundation
 
 /// Keyword ranking over guide sections; mirrors the Go ranker (internal/guide).
+/// Each query word adds only its best match: 3 heading word prefix, else 2 page-title
+/// word prefix, else 1 text contains. Words are split on whitespace; words under 2 chars drop.
 package enum GuideSearch {
     package static func rank(_ query: String, in sections: [GuideSection], limit: Int) -> [GuideSection] {
-        let words = tokens(query).filter { $0.count >= 2 }
+        let words = words(query).filter { $0.count >= 2 }
         guard !words.isEmpty, limit > 0 else { return [] }
         var scored: [(score: Int, index: Int)] = []
         for (index, section) in sections.enumerated() {
-            let heading = tokens(section.heading)
-            let title = tokens(section.pageTitle)
-            let text = tokens(section.text)
+            let heading = Self.words(section.heading)
+            let title = Self.words(section.pageTitle)
+            let text = section.text.lowercased()
             var score = 0
             for word in words {
-                if heading.contains(where: { $0.hasPrefix(word) }) { score += 3 }
-                if title.contains(where: { $0.hasPrefix(word) }) { score += 2 }
-                if text.contains(where: { $0.hasPrefix(word) }) { score += 1 }
+                if heading.contains(where: { $0.hasPrefix(word) }) {
+                    score += 3
+                } else if title.contains(where: { $0.hasPrefix(word) }) {
+                    score += 2
+                } else if text.contains(word) {
+                    score += 1
+                }
             }
             if score > 0 { scored.append((score, index)) }
         }
@@ -23,7 +29,7 @@ package enum GuideSearch {
         return scored.prefix(limit).map { sections[$0.index] }
     }
 
-    private static func tokens(_ s: String) -> [String] {
-        s.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    private static func words(_ s: String) -> [String] {
+        s.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
     }
 }
