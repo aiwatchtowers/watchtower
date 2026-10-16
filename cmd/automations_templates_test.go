@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -200,7 +201,7 @@ func TestTemplatesCLI_JSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &entries), out)
 	require.Len(t, entries, 5)
 	for _, e := range entries {
-		for _, k := range []string{"name", "title", "description", "scope", "trigger_text", "permissions", "outputs", "files", "params"} {
+		for _, k := range []string{"name", "title", "description", "scope", "trigger_text", "permissions", "outputs", "files", "params", "notes"} {
 			assert.Contains(t, e, k, "entry %v", e["name"])
 		}
 		assert.IsType(t, []any{}, e["permissions"])
@@ -227,4 +228,83 @@ func TestTemplatesCLI_JSON(t *testing.T) {
 	assert.Contains(t, top, "automation_id")
 	assert.Contains(t, top, "path")
 	assert.Contains(t, top, "installed")
+	assert.Contains(t, top, "notes")
+}
+
+// A rescan that fails after it indexed the new files rolls the install back:
+// the files and their index rows are gone, so a retry is not refused.
+func TestInstallTemplate_FailedRescanRollsBack(t *testing.T) {
+	c := newAutoCLI(t)
+	wb, folder := templateWorkbench(t, c)
+	orig := rescanTemplateFolder
+	rescanTemplateFolder = func(ctx context.Context, ix *automations.Indexer, scope automations.Scope, dir string) (automations.RescanReport, error) {
+		if _, err := ix.RescanFolder(ctx, scope, dir); err != nil {
+			return automations.RescanReport{}, err
+		}
+		return automations.RescanReport{}, errors.New("the rescan broke")
+	}
+	t.Cleanup(func() { rescanTemplateFolder = orig })
+
+	_, err := runAutomations(t, "install-template", "release-buttons", "--workbench", idArg(wb))
+	require.ErrorContains(t, err, "the rescan broke")
+	dir := automations.WorkbenchDir(folder)
+	for _, slug := range []string{"release", "deploy-test", "deploy-stage"} {
+		assert.NoFileExists(t, filepath.Join(dir, slug+".md"))
+	}
+	rows, err := c.d.ListAutomations(db.AutomationFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, rows, "the rows the rescan made are deleted")
+
+	rescanTemplateFolder = orig
+	got := installTemplate(t, "release-buttons", "--workbench", idArg(wb))
+	assert.Len(t, got.Installed, 3, "a retry is not refused")
+}
+
+// A workbench recipe folder with a symlink in its path is refused by
+// install-template --workbench and by save before anything is written.
+func TestInstallTemplate_RefusesLinkedWorkbenchDir(t *testing.T) {
+	c := newAutoCLI(t)
+	wb, folder := templateWorkbench(t, c)
+	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(elsewhere, filepath.Join(folder, ".watchtower")))
+
+	_, err = runAutomations(t, "install-template", "release-buttons", "--workbench", idArg(wb))
+	require.ErrorContains(t, err, "symlink")
+	assert.NoDirExists(t, filepath.Join(elsewhere, "automations"), "nothing is written through the link")
+
+	src := writeRecipe(t, t.TempDir(), "draft", autoCLIRecipeText(`return 1`))
+	_, err = runAutomations(t, "save", "--file", src, "--path", filepath.Join(automations.WorkbenchDir(folder), "wb.md"))
+	require.ErrorContains(t, err, "symlink")
+	assert.NoDirExists(t, filepath.Join(elsewhere, "automations"))
+	rows, err := c.d.ListAutomations(db.AutomationFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+// new-mail-summary's note (its event trigger fires once P4 ships) is in the
+// gallery and in install-template's text and JSON output.
+func TestInstallTemplate_PrintsTemplateNotes(t *testing.T) {
+	newAutoCLI(t)
+	out, err := runAutomations(t, "templates", "--json")
+	require.NoError(t, err, out)
+	var entries []templateJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &entries), out)
+	require.Equal(t, "new-mail-summary", entries[0].Name)
+	require.Len(t, entries[0].Notes, 1)
+	assert.Contains(t, entries[0].Notes[0], "event triggers ship (P4)")
+	assert.Contains(t, entries[0].Description, "event triggers ship (P4)")
+	assert.NotNil(t, entries[1].Notes, "notes is [] when a template has none")
+
+	raw, err := runAutomations(t, "install-template", "new-mail-summary", "--json")
+	require.NoError(t, err, raw)
+	var got installJSON
+	require.NoError(t, json.Unmarshal([]byte(raw), &got), raw)
+	require.Len(t, got.Notes, 1)
+	assert.Contains(t, got.Notes[0], "event triggers ship (P4)")
+
+	newAutoCLI(t)
+	text, err := runAutomations(t, "install-template", "new-mail-summary")
+	require.NoError(t, err, text)
+	assert.Contains(t, text, "Note: Its mail-sync event trigger fires once event triggers ship (P4).")
 }
