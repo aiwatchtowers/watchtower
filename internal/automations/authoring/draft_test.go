@@ -241,6 +241,20 @@ func TestDraftAutomation_WideningAgainstSaved(t *testing.T) {
 	}
 }
 
+// draft and save agree: an unconfirmed edit's permissions are not the base.
+func TestDraftAutomation_WideningAgainstConfirmedNotUnconfirmedEdit(t *testing.T) {
+	f := newDraftFixture(t)
+	confirmed := recipeText([]string{"llm:light"}, "", `return 1`)
+	a := automationstest.SeedAutomation(t, f.d, confirmed, automationstest.SeedOptions{Slug: "digest", Now: draftNow})
+	insertRunSnapshot(t, f.d, a.ID, a.ConfirmedHash, confirmed)
+	widened := recipeText([]string{"llm:light", "jira:read@PAY"}, "", `return 1`)
+	automationstest.SeedAutomation(t, f.d, widened, automationstest.SeedOptions{Slug: "digest", Now: draftNow, Unconfirmed: true})
+	res, _ := f.call(t, map[string]any{"recipe_text": widened, "slug": "digest"})
+	if !slices.Equal(res.Widening, []string{"jira:read@PAY"}) {
+		t.Errorf("widening = %v; want [jira:read@PAY] over the confirmed {llm:light}", res.Widening)
+	}
+}
+
 func TestDraftAutomation_EmptyArraysNotNull(t *testing.T) {
 	f := newDraftFixture(t)
 	res, raw := f.call(t, map[string]any{"recipe_text": recipeText(nil, "", `return 1`)})

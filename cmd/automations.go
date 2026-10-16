@@ -323,11 +323,9 @@ func newAutomationJSON(database *db.DB, a *db.Automation, grants []db.Automation
 // automationChanges is the Changed block's diff of a (parsed as current)
 // against the text the owner confirmed (spec §12.2, D26). Confirmed: nothing
 // changed, known. Never confirmed: nothing to compare, unknown ("First
-// confirmation"). Otherwise the confirmed text is the first candidate — the
-// newest run snapshot at confirmed_hash, then the previous_recipe_text of the
-// newest applied save_automation of a's file — whose approval hash computed
-// now is confirmed_hash; none (no candidate, or a hash-format change such as
-// D26's re-hash) leaves the diff unknown. changes is never nil.
+// confirmation"). Otherwise the confirmed text is automations.ConfirmedRecipe's
+// (the run snapshot or save_automation candidate whose approval hash is
+// confirmed_hash); none leaves the diff unknown. changes is never nil.
 func automationChanges(database *db.DB, a *db.Automation, current *automations.Recipe) ([]automationChangeJSON, bool, error) {
 	if automationConfirmed(a) {
 		return []automationChangeJSON{}, true, nil
@@ -335,26 +333,14 @@ func automationChanges(database *db.DB, a *db.Automation, current *automations.R
 	if a.ConfirmedHash == "" {
 		return []automationChangeJSON{}, false, nil
 	}
-	snapshot, err := database.AutomationRunSnapshotAt(a.ID, a.ConfirmedHash)
+	confirmed, err := automations.ConfirmedRecipe(database, a)
 	if err != nil {
 		return nil, false, err
 	}
-	candidates := []string{snapshot}
-	save, err := database.LatestAppliedAutomationSave(a.Path, automationScopeOf(a).String(), "")
-	if err != nil {
-		return nil, false, err
+	if confirmed == nil {
+		return []automationChangeJSON{}, false, nil
 	}
-	if save != nil {
-		candidates = append(candidates, save.PreviousRecipeText)
-	}
-	for _, text := range candidates {
-		confirmed, err := automations.ParseRecipe(a.Slug, []byte(text), automationScopeOf(a))
-		if err != nil || automations.ApprovalHash(confirmed) != a.ConfirmedHash {
-			continue // not the confirmed text (or none): try the next candidate
-		}
-		return diffApprovalFields(confirmed, current), true, nil
-	}
-	return []automationChangeJSON{}, false, nil
+	return diffApprovalFields(confirmed, current), true, nil
 }
 
 // diffApprovalFields lists the hashed fields that differ between the

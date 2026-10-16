@@ -215,9 +215,12 @@ func triggerText(t automations.Trigger) string {
 	return string(t.Kind)
 }
 
-// widening is what perms add over the saved automation at (scope, slug)
-// (R-P3-1); with no slug, or no saved (or only a removed) automation there,
-// a draft widens from nothing: every permission.
+// widening is what perms add over the permissions the owner last confirmed
+// for the saved automation at (scope, slug) (R-P3-1,
+// automations.ConfirmedRecipe) — never over an unconfirmed edit's. With no
+// slug, no saved (or only a removed) automation there, one never confirmed,
+// or one whose confirmed text is unknown, a draft widens from nothing: every
+// permission.
 func widening(d *db.DB, scope automations.Scope, slug string, perms []string) ([]string, error) {
 	if slug == "" {
 		return automations.Covers(nil, perms), nil
@@ -232,11 +235,18 @@ func widening(d *db.DB, scope automations.Scope, slug string, perms []string) ([
 	if saved.RemovedAt != nil {
 		return automations.Covers(nil, perms), nil
 	}
-	var old []string
-	if err := json.Unmarshal([]byte(saved.PermissionsJSON), &old); err != nil {
-		return nil, fmt.Errorf("automation %d permissions_json: %w", saved.ID, err)
+	confirmed, err := automations.ConfirmedRecipe(d, saved)
+	if err != nil {
+		return nil, fmt.Errorf("reading the confirmed text of automation %d: %w", saved.ID, err)
 	}
-	return automations.Covers(old, perms), nil
+	if confirmed == nil {
+		return automations.Covers(nil, perms), nil
+	}
+	m, err := automations.ParseManifest(confirmed.Permissions, confirmed.Outputs, confirmed.Scope)
+	if err != nil { // ParseRecipe validated the manifest already
+		return nil, fmt.Errorf("automation %d confirmed manifest: %w", saved.ID, err)
+	}
+	return automations.Covers(m.Normalized(), perms), nil
 }
 
 // isUnconfirmedRecipe reports whether hash is the approval hash of an

@@ -226,8 +226,13 @@ func executeSave(ctx context.Context, d Deps, raw json.RawMessage) (*SaveResult,
 	if path != p.Path {
 		return nil, errors.New(msgRecipePathChanged)
 	}
+	// Not atomic with the write below: a hand edit landing in between is
+	// overwritten — the same accepted window as `save --expect-content-hash`.
 	_, hash, _, err := recipeFileNow(path)
-	if err != nil || hash != p.ExistingContentHash {
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", msgRecipeFileChanged, err)
+	}
+	if hash != p.ExistingContentHash {
 		return nil, errors.New(msgRecipeFileChanged)
 	}
 	clock := d.Clock

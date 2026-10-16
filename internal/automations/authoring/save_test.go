@@ -57,19 +57,33 @@ func (f *saveFixture) existing(t *testing.T, slug, text string) db.Automation {
 	if err := os.MkdirAll(automations.PersonalDir(f.ws), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	a := f.unconfirmed(t, slug, text)
+	if err := f.d.ConfirmAutomation(a.ID, a.ApprovalHash, draftNow); err != nil {
+		t.Fatal(err)
+	}
+	return f.automation(t, slug)
+}
+
+// unconfirmed writes slug's recipe file by hand and indexes it without
+// confirming it.
+func (f *saveFixture) unconfirmed(t *testing.T, slug, text string) db.Automation {
+	t.Helper()
 	f.writeFile(t, slug, text)
 	ix := automations.NewIndexer(f.d, f.ws, automationstest.NewFakeClock(draftNow))
 	if _, err := ix.RescanPersonal(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	a, err := f.d.GetAutomationBySlug("personal", 0, slug)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.d.ConfirmAutomation(a.ID, a.ApprovalHash, draftNow); err != nil {
-		t.Fatal(err)
-	}
 	return f.automation(t, slug)
+}
+
+// insertRunSnapshot records a finished run of automationID that ran text
+// under hash — a confirmed-text candidate (automations.ConfirmedRecipe).
+func insertRunSnapshot(t *testing.T, d *db.DB, automationID int64, hash, text string) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, recipe_hash, recipe_snapshot)
+		VALUES (?, 'manual', 'succeeded', ?, ?)`, automationID, hash, text); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *saveFixture) writeFile(t *testing.T, slug, text string) {
@@ -184,7 +198,7 @@ func TestSaveAutomation_AlwaysAskAndPinsHash(t *testing.T) {
 	if want := parsedHash(t, "foo", text); p.ApprovalHash != want {
 		t.Errorf("approval_hash = %q; want %q", p.ApprovalHash, want)
 	}
-	if !slices.Equal(p.Widening, []string{"jira:read@PAY", "llm:light"}) && !slices.Equal(p.Widening, []string{"llm:light", "jira:read@PAY"}) {
+	if !slices.Equal(p.Widening, []string{"jira:read@PAY", "llm:light"}) {
 		t.Errorf("widening = %v; want every permission of a new recipe", p.Widening)
 	}
 	if p.ExistingContentHash != "" || !p.IsNew || p.PreviousRecipeText != "" {
@@ -395,5 +409,40 @@ func TestSaveAutomation_FeatureOffRefused(t *testing.T) {
 	var ve *tools.ValidationError
 	if !errors.As(err, &ve) || ve.Msg != msgFeatureOff {
 		t.Fatalf("propose = %v; want %q", err, msgFeatureOff)
+	}
+}
+
+// An unconfirmed edit's permissions are not a widening base: the card widens
+// against what the owner last confirmed.
+func TestSaveAutomation_WideningAgainstConfirmedNotUnconfirmedEdit(t *testing.T) {
+	f := newSaveFixture(t)
+	confirmed := recipeText([]string{"llm:light"}, "", `return 1`)
+	a := f.existing(t, "foo", confirmed)
+	insertRunSnapshot(t, f.d, a.ID, a.ConfirmedHash, confirmed)
+	widened := recipeText([]string{"llm:light", "jira:read@PAY"}, "", `return 1`)
+	f.unconfirmed(t, "foo", widened)
+	p := f.pinned(t, f.propose(t, "foo", widened))
+	if !slices.Equal(p.Widening, []string{"jira:read@PAY"}) {
+		t.Errorf("widening = %v; want [jira:read@PAY] over the confirmed {llm:light}", p.Widening)
+	}
+}
+
+func TestSaveAutomation_WideningNeverConfirmedIsEverything(t *testing.T) {
+	f := newSaveFixture(t)
+	f.unconfirmed(t, "foo", recipeText([]string{"llm:light"}, "", `return 1`))
+	p := f.pinned(t, f.propose(t, "foo", recipeText([]string{"llm:light", "jira:read@PAY"}, "", `return 1`)))
+	if !slices.Equal(p.Widening, []string{"jira:read@PAY", "llm:light"}) {
+		t.Errorf("widening = %v; want every permission of a never-confirmed recipe", p.Widening)
+	}
+}
+
+func TestSaveAutomation_WideningUnknownConfirmedTextIsEverything(t *testing.T) {
+	f := newSaveFixture(t)
+	f.existing(t, "foo", recipeText([]string{"llm:light"}, "", `return 1`))
+	widened := recipeText([]string{"llm:light", "jira:read@PAY"}, "", `return 1`)
+	f.unconfirmed(t, "foo", widened) // no run snapshot, no applied save: no candidate counts
+	p := f.pinned(t, f.propose(t, "foo", widened))
+	if !slices.Equal(p.Widening, []string{"jira:read@PAY", "llm:light"}) {
+		t.Errorf("widening = %v; want every permission when the confirmed text is unknown", p.Widening)
 	}
 }
