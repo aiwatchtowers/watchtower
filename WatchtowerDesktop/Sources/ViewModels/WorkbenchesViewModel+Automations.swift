@@ -28,12 +28,27 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// The feature came on (or its state loaded, on): the rescans asked
+    /// for meanwhile run now, once each.
+    func automationsFeatureTurnedOn() {
+        let deferred = automationRescansDeferred
+        automationRescansDeferred = []
+        for workbenchID in deferred.sorted() {
+            startAutomationRescan(workbenchID: workbenchID)
+        }
+    }
+
     /// Best effort, logged: a failed rescan leaves the index as it was.
-    /// Only while the feature is on; one at a time per workbench — an ask
+    /// Only while the feature is on — asked for before, it waits for
+    /// `automationsFeatureTurnedOn`; one at a time per workbench — an ask
     /// while one runs becomes one more rescan after it, which sees a change
     /// the running one may have missed.
     private func startAutomationRescan(workbenchID: Int64) {
-        guard let rescanAutomations, isAutomationsFeatureOn() else { return }
+        guard let rescanAutomations else { return }
+        guard isAutomationsFeatureOn() else {
+            automationRescansDeferred.insert(workbenchID)
+            return
+        }
         guard !automationRescansInFlight.contains(workbenchID) else {
             automationRescansAgain.insert(workbenchID)
             return

@@ -4,48 +4,49 @@ import WatchtowerCore
 /// The workbench's `trigger.button` automations in its header (spec §12.4):
 /// up to four buttons, the rest in "More". What a click does is
 /// `WorkbenchAutomationButtonsModel`'s; a runnable click only queues a run
-/// (AUTO-09). Hidden while the `automations` feature is off.
+/// (AUTO-09). Hidden while the `automations` feature is off. Built by the
+/// page from `AppState` (its view model, the feature state, the run opener),
+/// so the header needs no `AppState` in the environment.
 struct WorkbenchAutomationButtons: View {
     let project: Workbench
-    @Environment(AppState.self) private var appState
+    let vm: AutomationsViewModel
+    let featureEnabled: Bool
+    /// Opens an automation's card, with one run open when given.
+    let openRun: (_ automationID: Int64, _ runID: Int64?) -> Void
     /// The `confirm: true` button whose "Run <label>?" is up.
     @State private var confirming: AutomationHeaderButton?
     /// A failed run call: its label and the CLI's stderr.
     @State private var failure: (label: String, message: String)?
 
     var body: some View {
-        if let vm = appState.automationsViewModel {
-            let shown = WorkbenchAutomationButtonsModel.shown(
-                vm.headerButtons(projectID: project.id), featureEnabled: appState.isAutomationsFeatureEnabled
-            )
-            let layout = WorkbenchAutomationButtonsModel.layout(shown)
-            HStack(spacing: 4) {
-                ForEach(layout.visible) { button in
-                    headerButton(button, vm: vm)
-                }
-                if !layout.overflow.isEmpty {
-                    overflowMenu(layout.overflow, vm: vm)
-                }
+        let shown = WorkbenchAutomationButtonsModel.shown(vm.headerButtons(projectID: project.id), featureEnabled: featureEnabled)
+        let layout = WorkbenchAutomationButtonsModel.layout(shown)
+        HStack(spacing: 4) {
+            ForEach(layout.visible) { button in
+                headerButton(button, vm: vm)
             }
-            // The poll is slow off the Automations tab: opening a workbench
-            // reads now, so a new recipe or a finished run shows at once.
-            .onAppear { vm.refresh() }
-            .alert(
-                WorkbenchAutomationButtonsModel.confirmTitle(label: confirming?.label ?? ""),
-                isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
-                presenting: confirming
-            ) { button in
-                Button("Run") { click(.run, on: button, vm: vm) }
-                Button("Cancel", role: .cancel) {}
+            if !layout.overflow.isEmpty {
+                overflowMenu(layout.overflow, vm: vm)
             }
-            .alert(
-                "Could not run \(failure?.label ?? "the automation")",
-                isPresented: Binding(get: { failure != nil }, set: { if !$0 { dismissFailure(vm) } })
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(failure?.message ?? "")
-            }
+        }
+        // The poll is slow off the Automations tab: opening a workbench
+        // reads now, so a new recipe or a finished run shows at once.
+        .onAppear { vm.refresh() }
+        .alert(
+            WorkbenchAutomationButtonsModel.confirmTitle(label: confirming?.label ?? ""),
+            isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+            presenting: confirming
+        ) { button in
+            Button("Run") { click(.run, on: button, vm: vm) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert(
+            "Could not run \(failure?.label ?? "the automation")",
+            isPresented: Binding(get: { failure != nil }, set: { if !$0 { dismissFailure(vm) } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(failure?.message ?? "")
         }
     }
 
@@ -106,9 +107,7 @@ struct WorkbenchAutomationButtons: View {
             return
         }
         Task {
-            let ok = await WorkbenchAutomationButtonsModel.perform(action, on: button, vm: vm) { id, runID in
-                appState.openAutomationRun(automationID: id, runID: runID)
-            }
+            let ok = await WorkbenchAutomationButtonsModel.perform(action, on: button, vm: vm, open: openRun)
             if !ok { failure = (button.label, vm.lastError ?? "The automation did not start.") }
         }
     }

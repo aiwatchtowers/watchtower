@@ -137,7 +137,8 @@ struct WorkbenchPageView: View {
                 WorkbenchInstallStatusIcons(vm: vm, project: project)
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
                 Spacer(minLength: 8)
-                WorkbenchHeaderControls(vm: vm, project: project, onDelete: confirmDelete) { sweeping = true }
+                WorkbenchHeaderControls(vm: vm, project: project, automationButtons: automationButtons(project),
+                                        onDelete: confirmDelete) { sweeping = true }
             }
             if let installError = vm.installErrors[project.id] {
                 Text(installError)
@@ -156,6 +157,13 @@ struct WorkbenchPageView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
+    }
+
+    private func automationButtons(_ project: Workbench) -> WorkbenchAutomationButtons? {
+        guard let automations = appState.automationsViewModel else { return nil }
+        return WorkbenchAutomationButtons(
+            project: project, vm: automations, featureEnabled: appState.isAutomationsFeatureEnabled
+        ) { [appState] id, runID in appState.openAutomationRun(automationID: id, runID: runID) }
     }
 
     private func confirmDelete() {

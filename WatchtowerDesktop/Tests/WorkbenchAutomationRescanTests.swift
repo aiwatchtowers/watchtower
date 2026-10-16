@@ -169,26 +169,46 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     }
 
     /// Off, or before the Feature Manager's first successful load, no
-    /// rescan runs: the view model asks AppState's loaded-and-on predicate.
-    func testNoRescanUnlessTheFeatureIsLoadedOn() async throws {
+    /// rescan runs: the pages opened meanwhile are rescanned once each when
+    /// the feature state loads on, or the feature is turned on.
+    func testRescansAskedBeforeTheFeatureIsOnRunWhenItComesOn() async throws {
         let runner = FakeCLIRunner()
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
                                  sessionNotifier: RecordingSessionNotifier())
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
-        defer { vm.asks.stop() }
+        defer { stopWiring(appState) }
 
         vm.workbenchPageOpened(projectID: 7)
+        // A load that finds the feature off (what onDisabledChanged does).
         appState.featureVisibility.isLoaded = true
         appState.featureVisibility.disabledFeatureIDs = ["automations"]
-        vm.workbenchPageOpened(projectID: 7)
+        appState.syncAutomationSessionCenter()
+        vm.workbenchPageOpened(projectID: 9)
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertTrue(rescans(runner).isEmpty, "not loaded, then off")
 
+        // Turned on: each waiting workbench once.
         appState.featureVisibility.disabledFeatureIDs = []
+        appState.syncAutomationSessionCenter()
+        await waitUntil { self.rescans(runner).count == 2 }
+        XCTAssertEqual(Set(rescans(runner).map { $0.last }), ["7", "9"])
+        appState.syncAutomationSessionCenter()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(rescans(runner).count, 2, "a later load rescans nothing again")
+
         vm.workbenchPageOpened(projectID: 7)
-        await waitUntil { self.rescans(runner).count == 1 }
+        await waitUntil { self.rescans(runner).count == 3 }
+    }
+
+    private func stopWiring(_ appState: AppState) {
+        appState.automationSessionCenter?.stop()
+        appState.sessionReportCenter?.stop()
+        appState.sessionAgentStateCenter?.stop()
+        appState.workbenchNotificationCenter?.stop()
+        appState.workbenchesViewModel?.asks.stop()
+        appState.ownerPresenceCenter?.stop()
     }
 
     /// One rescan per workbench at a time: asks while it runs collapse into

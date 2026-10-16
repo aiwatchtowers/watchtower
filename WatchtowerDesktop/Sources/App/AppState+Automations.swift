@@ -108,10 +108,13 @@ extension AppState {
 
     /// Polls while the `automations` feature is on per a successful load;
     /// off, or before one (a failed load leaves it so), requests stay
-    /// pending (their run waits, bounded by its pause timeout).
+    /// pending (their run waits, bounded by its pause timeout). On, the
+    /// workbench rescans asked for meanwhile run too.
     func syncAutomationSessionCenter() {
+        let on = isAutomationsFeatureLoadedOn
+        if on { workbenchesViewModel?.automationsFeatureTurnedOn() }
         guard let center = automationSessionCenter else { return }
-        if isAutomationsFeatureLoadedOn { center.start() } else { center.stop() }
+        if on { center.start() } else { center.stop() }
     }
 
     // MARK: - Tray "Run automation ▸" (spec §12.7)

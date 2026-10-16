@@ -450,6 +450,9 @@ final class WorkbenchesViewModel {
     /// meanwhile (one follow-up rescan, not one per ask).
     @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
     @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The workbenches asked for a rescan while the feature was not on
+    /// (or its state not loaded yet): rescanned once it comes on.
+    @ObservationIgnored var automationRescansDeferred: Set<Int64> = []
     /// The `automations` feature is on per a successful Feature Manager
     /// load (`AppState.isAutomationsFeatureLoadedOn`); off, no rescan runs.
     @ObservationIgnored var isAutomationsFeatureOn: () -> Bool = { false }

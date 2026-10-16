@@ -188,9 +188,9 @@ func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // --automation-run N --automation-tools a,b,c` (spec 2026-10-14 §6.5): the
 // server an automation's agent() claude/codex child talks to. It starts only
 // in that run's own child (RunEnvMarker = N, never a borrowed binding, and
-// no WATCHTOWER_TERMINAL_SESSION_ID) while run N is running. It mounts EffectiveAgentTools — the flag's tools ∩ what
-// the run's manifest admits ∩ the automation surface, no writes in a dry run
-// — plus get_action, shows get_action only the run's own rows, and passes
+// no WATCHTOWER_TERMINAL_SESSION_ID) while run N is running. It mounts
+// EffectiveAgentTools — the flag's tools ∩ what the run's manifest admits ∩
+// the automation surface, no writes in a dry run — plus get_action, shows get_action only the run's own rows, and passes
 // every call through GateAgentCall and every result through
 // CheckAgentResult. A write is a proposal stamped with the run, always
 // pending (AutomationAgent). The chat flags (--conversation, --turn,
