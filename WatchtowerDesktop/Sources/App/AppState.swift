@@ -549,6 +549,57 @@ final class AppState {
         automationsViewModel?.open(automationID: automationID, runID: runID)
     }
 
+    /// "Change it in words" for one automation: its engine comes from
+    /// `embeddedChatCenter`, so a turn outlives the sheet. Nil while the
+    /// database is not open or the automation is gone.
+    func automationEditorChat(automationID: Int64) throws -> AutomationEditorChat? {
+        guard let pool = databaseManager?.dbPool,
+              let automation = try pool.read({ db in try AutomationQueries.fetchAutomation(db, id: automationID) })
+        else { return nil }
+        let provider = Constants.aiProviderID()
+        let conversationID = try AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+        return makeAutomationEditorChat(
+            conversationID: conversationID, pool: pool, provider: provider,
+            onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
+            makeSpec: { outcomes in
+                AutomationEditorChatSurface.spec(automation: automation, provider: provider,
+                                                 conversationID: conversationID, dbPool: pool, outcomes: outcomes)
+            }
+        )
+    }
+
+    /// The "New automation" sheet's chat, keyed by the draft id
+    /// `automationsViewModel` keeps, so a half-written draft survives the
+    /// sheet. Once its save lands, the next **+ New** starts a fresh draft.
+    func newAutomationEditorChat() throws -> AutomationEditorChat? {
+        guard let pool = databaseManager?.dbPool, let draftID = automationsViewModel?.newDraftID else { return nil }
+        let provider = Constants.aiProviderID()
+        let conversationID = try AutomationEditorChatSurface.newConversationID(draftID: draftID, dbPool: pool)
+        let onSaved: () -> Void = { [weak self] in
+            self?.automationsViewModel?.refresh()
+            self?.automationsViewModel?.startNewDraft()
+        }
+        return makeAutomationEditorChat(conversationID: conversationID, pool: pool, provider: provider,
+                                        onSaved: onSaved) { outcomes in
+            AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID,
+                                                conversationID: conversationID, outcomes: outcomes)
+        }
+    }
+
+    private func makeAutomationEditorChat(
+        conversationID: Int64,
+        pool: DatabasePool,
+        provider: String,
+        onSaved: @escaping () -> Void,
+        makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
+    ) -> AutomationEditorChat {
+        AutomationEditorChat(
+            conversationID: conversationID, dbPool: pool,
+            toolsAvailable: AutomationEditorChatSurface.toolsAvailable(provider: provider),
+            center: embeddedChatCenter, onSaved: onSaved, makeSpec: makeSpec
+        )
+    }
+
     private var isInitializing = false
     /// `initialize()`'s launch work and its daemon (re)start — held so tests
     /// can await them.

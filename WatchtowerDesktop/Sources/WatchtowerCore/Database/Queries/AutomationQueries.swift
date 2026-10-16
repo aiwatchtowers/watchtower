@@ -43,6 +43,11 @@ package enum AutomationQueries {
         }
     }
 
+    /// One indexed recipe, removed or not; nil when the row is gone.
+    package static func fetchAutomation(_ db: Database, id: Int64) throws -> Automation? {
+        try Automation.fetchOne(db, sql: "SELECT * FROM automations WHERE id = ?", arguments: [id])
+    }
+
     private static let activeStatuses = "('queued','running','waiting')"
 
     private static func newestRunPerAutomation(_ db: Database, active: Bool) throws -> [Int64: AutomationRun] {

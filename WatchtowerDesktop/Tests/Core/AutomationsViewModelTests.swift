@@ -134,6 +134,16 @@ final class AutomationsViewModelTests: XCTestCase {
 
     // MARK: - Reads
 
+    /// The "New automation" chat is keyed by `newDraftID`: it stays the same
+    /// until a draft is saved, so closing the sheet keeps the draft.
+    func testNewDraftIDIsStableUntilANewDraftStarts() {
+        let vm = makeViewModel()
+        let first = vm.newDraftID
+        XCTAssertEqual(vm.newDraftID, first)
+        vm.startNewDraft()
+        XCTAssertNotEqual(vm.newDraftID, first)
+    }
+
     func testListAndBadgesFromDatabase() throws {
         try pool.write { db in
             try TestDatabase.insertAutomation(db, slug: "mail", name: "Mail triage", approvalHash: "h2",

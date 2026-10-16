@@ -12,6 +12,9 @@ struct AutomationFormView: View {
     @Bindable var vm: AutomationsViewModel
     let automationID: Int64
     let onChangeInWords: ((Int64) -> Void)?
+    /// Set for the "New automation" sheet's **Form** tab: the directory a new
+    /// personal recipe is saved in (`automationID` is then `newRecipeID`).
+    var newRecipeDir: String?
     let onClose: () -> Void
 
     @State private var confirmingDiscard = false
@@ -43,7 +46,13 @@ struct AutomationFormView: View {
                     .frame(width: 720, height: 300)
             }
         }
-        .task { await editor.beginEdit(automationID) }
+        .task {
+            if let newRecipeDir {
+                editor.beginNew(automationsDir: newRecipeDir)
+            } else {
+                await editor.beginEdit(automationID)
+            }
+        }
         .onChange(of: saveState) { _, new in
             if new == .done { onClose() }
         }
@@ -126,7 +135,7 @@ private struct AutomationFormContent: View {
                         mayDoSection
                     }
                     .disabled(!controlsEnabled || isBusy)
-                    stateSection
+                    if !form.detail.isNewRecipe { stateSection }
                     scriptSection
                     messages
                 }
@@ -159,9 +168,9 @@ private struct AutomationFormContent: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Edit “\(form.detail.name)”")
+            Text(form.detail.isNewRecipe ? "New automation" : "Edit “\(form.detail.name)”")
                 .font(.title2.weight(.semibold))
-            Text((form.detail.path as NSString).abbreviatingWithTildeInPath)
+            Text((form.detail.isNewRecipe ? "Saved in " : "") + (form.detail.path as NSString).abbreviatingWithTildeInPath)
                 .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -564,13 +573,17 @@ private struct AutomationFormContent: View {
             }
             Button("Cancel", action: onCancel)
                 .keyboardShortcut(.cancelAction)
-            Button("Dry run") { Task { await vm.dryRun(id) } }
-                .disabled(form.buffer.isDirty || vm.busy[id] != nil)
-                .help(form.buffer.isDirty ? "Save first: a dry run runs the saved recipe" : "")
+            if !form.detail.isNewRecipe {
+                Button("Dry run") { Task { await vm.dryRun(id) } }
+                    .disabled(form.buffer.isDirty || vm.busy[id] != nil)
+                    .help(form.buffer.isDirty ? "Save first: a dry run runs the saved recipe" : "")
+            }
             Button("Save and confirm") { Task { await editor.save(id) } }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(!form.isEditable || !form.buffer.isDirty || !form.problems.isEmpty || isBusy)
+                // A new recipe saves as it is too: there is no file yet.
+                .disabled(!form.isEditable || !(form.buffer.isDirty || form.detail.isNewRecipe)
+                    || !form.problems.isEmpty || isBusy)
         }
     }
 

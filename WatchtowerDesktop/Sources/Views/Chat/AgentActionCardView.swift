@@ -199,9 +199,13 @@ struct AgentActionCardView: View {
     }
 
     var body: some View {
+        // One args decode per render for a save_automation card.
+        let save = action.tool == SaveAutomationCardModel.tool ? SaveAutomationCardModel(action: action) : nil
         VStack(alignment: .leading, spacing: 8) {
-            header
-            if let slack = SlackSendProposal(action: action) {
+            header(title: save?.title ?? Self.title(for: action))
+            if let save {
+                SaveAutomationCardDetails(model: save)
+            } else if let slack = SlackSendProposal(action: action) {
                 SlackRecipientLine(proposal: slack)
                 // The text is in the editor while the row can still be edited.
                 if !(action.isPending && editableSlack != nil) {
@@ -281,11 +285,11 @@ struct AgentActionCardView: View {
         return message
     }
 
-    private var header: some View {
+    private func header(title: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: action.external ? "arrow.up.right.square" : "checklist")
                 .foregroundStyle(Color.accentColor)
-            Text(Self.title(for: action)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Spacer()
             Text(statusLabel)
                 .font(.caption)
@@ -378,5 +382,49 @@ struct AgentActionCardView: View {
             }
         }
         .disabled(inFlight)
+    }
+}
+
+/// The `save_automation` card's body (spec §11): trigger, permissions with
+/// the widening ones marked "+", outputs, budget, the assistant's dry-run
+/// summary, and for an edit the diff against the saved file.
+private struct SaveAutomationCardDetails: View {
+    let model: SaveAutomationCardModel
+
+    var body: some View {
+        ForEach(model.lines, id: \.self) { line in
+            Text(line)
+                .font(.callout)
+                .foregroundStyle(line.hasPrefix("+ ") ? Color.orange : Color.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let summary = model.dryRunSummary {
+            Text(summary).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        if let diff = model.diff {
+            DisclosureGroup(diff.isIdentical ? "No change to the recipe text" : "Show changes") {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in row(line) }
+                }
+            }
+            .font(.callout)
+            .disabled(diff.isIdentical)
+        }
+    }
+
+    private func row(_ line: OwnerAskSnapshotDiff.Line) -> some View {
+        let (mark, text, tint): (String, String, Color?) = switch line {
+        case let .same(text): (" ", text, nil)
+        case let .added(text): ("+", text, .green)
+        case let .removed(text): ("−", text, .red)
+        }
+        return HStack(alignment: .top, spacing: 6) {
+            Text(mark).foregroundStyle(tint ?? .secondary).frame(width: 10)
+            Text(text.isEmpty ? " " : text).foregroundStyle(tint == nil ? .secondary : .primary)
+        }
+        .font(.system(.caption, design: .monospaced))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.map { $0.opacity(0.12) } ?? .clear)
+        .textSelection(.enabled)
     }
 }

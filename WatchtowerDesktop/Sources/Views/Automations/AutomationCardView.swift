@@ -134,6 +134,7 @@ struct AutomationCardView: View {
 
             Button("Change in words") { actions.onChangeInWords?(automation.id) }
                 .disabled(actions.onChangeInWords == nil)
+                .help(actions.changeInWordsDisabledHelp ?? "")
             Button("Edit") { actions.onEdit?(automation.id) }
                 .disabled(actions.onEdit == nil)
 

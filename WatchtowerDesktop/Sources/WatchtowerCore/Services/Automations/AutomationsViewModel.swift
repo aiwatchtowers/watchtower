@@ -54,6 +54,10 @@ package final class AutomationsViewModel {
     package private(set) var busy: [Int64: Operation] = [:]
     /// The last failed CLI call's stderr, or a failed read.
     package var lastError: String?
+    /// The "New automation" chat's draft: its conversation is keyed by this
+    /// id, so a half-written draft survives closing the sheet. A new one
+    /// starts after a draft is saved (`startNewDraft`).
+    package private(set) var newDraftID = UUID().uuidString
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: AutomationsCLI
@@ -74,6 +78,11 @@ package final class AutomationsViewModel {
         self.cli = cli
         self.now = now
         self.sleep = sleep
+    }
+
+    /// The next **+ New** opens a fresh chat; the saved draft's stays on disk.
+    package func startNewDraft() {
+        newDraftID = UUID().uuidString
     }
 
     // MARK: - Poll

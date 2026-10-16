@@ -36,6 +36,10 @@ package final class AutomationEditorCenter {
         case failed(String)
     }
 
+    /// The draft key of the "New automation" sheet's **Form** tab: a recipe
+    /// not saved yet has no automation id.
+    nonisolated package static let newRecipeID: Int64 = 0
+
     nonisolated package static let changedOnDisk =
         "The recipe changed on disk since you opened it — reload it and review again."
     nonisolated package static let changedAgain = "The recipe changed again — review it once more."
@@ -103,6 +107,17 @@ package final class AutomationEditorCenter {
         }
     }
 
+    /// The **Form** tab of "New automation": an empty personal recipe that
+    /// saves into `automationsDir` (`<workspace>/automations`) under a slug
+    /// made from its name. A draft already open is kept.
+    package func beginNew(automationsDir: String) {
+        let id = Self.newRecipeID
+        if drafts[id] != nil || saving[id] == .saving { return }
+        saving[id] = nil
+        loadErrors[id] = nil
+        drafts[id] = EditDraft(form: AutomationFormModel(detail: AutomationDetail(newRecipeIn: automationsDir)))
+    }
+
     /// Drops the draft and anything the form left in flight.
     package func discard(_ id: Int64) {
         guard saving[id] != .saving else { return }
@@ -135,15 +150,16 @@ package final class AutomationEditorCenter {
         guard let draft = drafts[id] else { return nil }
         saving[id] = .validating
         do {
+            let isNew = id == Self.newRecipeID
             let validated = try await withTempRecipe(text, slug: draft.form.detail.slug) { file in
-                try await cli.validate(file: file, against: id)
+                try await cli.validate(file: file, against: isNew ? nil : id)
             }
             guard validated.ok else {
                 saving[id] = .failed("The recipe has errors:\n" + validated.errors.joined(separator: "\n"))
                 return nil
             }
             let plan = AutomationSavePlan.make(validated: validated, current: draft.form.detail,
-                                               grants: try await grants(id))
+                                               grants: isNew ? [] : try await grants(id))
             validatedTexts[id] = text
             saving[id] = nil
             return plan
@@ -165,12 +181,18 @@ package final class AutomationEditorCenter {
     package func commit(_ id: Int64, plan: AutomationSavePlan) async {
         guard let draft = drafts[id], let text = validatedTexts[id] else { return }
         saving[id] = .saving
+        // A new recipe is saved at a slug made from its name, and only where
+        // no file exists yet (an empty expected hash).
+        let isNew = id == Self.newRecipeID
+        let slug = isNew ? Self.slug(forName: draft.form.fields.name) : draft.form.detail.slug
+        let path = isNew ? (draft.form.detail.path as NSString).appendingPathComponent("\(slug).md")
+                         : draft.form.detail.path
         let saved: AutomationsCLI.SaveResult
         do {
-            saved = try await withTempRecipe(text, slug: draft.form.detail.slug) { file in
-                try await cli.save(file: file, path: draft.form.detail.path,
+            saved = try await withTempRecipe(text, slug: slug) { file in
+                try await cli.save(file: file, path: path,
                                    confirmHash: plan.validated.approvalHash,
-                                   expectContentHash: draft.form.buffer.baseContentHash)
+                                   expectContentHash: isNew ? "" : draft.form.buffer.baseContentHash)
             }
         } catch {
             saving[id] = .failed(Self.saveMessage(for: error))
@@ -246,6 +268,21 @@ package final class AutomationEditorCenter {
 
     // MARK: - Helpers
 
+    /// A recipe slug (`^[a-z0-9][a-z0-9-]{0,63}$`) from a name: lowercase
+    /// ASCII letters and digits, every other run as one hyphen.
+    nonisolated package static func slug(forName name: String) -> String {
+        var out = ""
+        for scalar in name.lowercased().unicodeScalars {
+            if ("a"..."z").contains(scalar) || ("0"..."9").contains(scalar) {
+                out.unicodeScalars.append(scalar)
+            } else if !out.isEmpty, !out.hasSuffix("-") {
+                out += "-"
+            }
+        }
+        let trimmed = String(out.prefix(64)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return trimmed.isEmpty ? "automation" : trimmed
+    }
+
     /// Runs `body` on `text` written to `<private dir>/<slug>.md` (dir 0700,
     /// file 0600); the directory is removed on every path.
     private func withTempRecipe<T>(_ text: String, slug: String, _ body: (URL) async throws -> T) async throws -> T {
@@ -273,4 +310,46 @@ package final class AutomationEditorCenter {
         }
         return error.localizedDescription
     }
+}
+
+extension AutomationDetail {
+    /// The **Form** tab's starting point: a personal manual recipe with a
+    /// description and a script to replace. `path` holds the directory the
+    /// recipe will be saved in; the file name comes from the name at save.
+    package init(newRecipeIn automationsDir: String) {
+        let fields = RecipeFrontmatter(name: "New automation", trigger: .manual)
+        id = AutomationEditorCenter.newRecipeID
+        slug = "new-automation"
+        scope = "personal"
+        projectID = 0
+        path = automationsDir
+        name = fields.name
+        description = "What it does, in a sentence."
+        script = "return \"done\""
+        recipeText = RecipeFrontmatter.render(fields) + "\(description)\n\n```js\n\(script)\n```\n"
+        triggerKind = "manual"
+        triggerSpec = #"{"manual":true}"#
+        permissions = []
+        outputs = []
+        budgetTokens = fields.budgetTokens
+        budgetMinutes = fields.budgetMinutes
+        concurrency = fields.concurrency
+        missedPolicy = fields.missed
+        pauseTimeoutHours = fields.pauseTimeoutHours
+        enabled = false
+        runnable = false
+        needsConfirmation = true
+        parseError = ""
+        contentHash = ""
+        approvalHash = ""
+        confirmedHash = ""
+        widening = []
+        changes = []
+        changesKnown = false
+        changedBy = ""
+        changedAt = nil
+        autoTools = []
+    }
+
+    package var isNewRecipe: Bool { id == AutomationEditorCenter.newRecipeID }
 }

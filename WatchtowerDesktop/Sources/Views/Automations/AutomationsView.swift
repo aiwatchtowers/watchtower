@@ -9,10 +9,25 @@ struct AutomationsTabActions {
     var onTemplates: (() -> Void)?
     var onEdit: ((Int64) -> Void)?
     var onChangeInWords: ((Int64) -> Void)?
+    /// Why **Change in words** is off though the chat exists (R-P3-12: under
+    /// ollama the editor chat cannot draft).
+    var changeInWordsDisabledHelp: String?
     /// The card's "Needs your confirmation" → the confirmation sheet.
     var onConfirm: ((Int64) -> Void)?
     /// A step's proposal → the Inbox.
     var onOpenInbox: ((Int64) -> Void)?
+}
+
+/// How the tab opens the editor chats ("Change in words", the "New
+/// automation" sheet); `AppState` builds them on `embeddedChatCenter`.
+struct AutomationEditorChatHooks {
+    let open: (Int64) throws -> AutomationEditorChat?
+    let openNew: () throws -> AutomationEditorChat?
+    /// `<workspace>/automations`, where the New sheet's **Form** tab saves.
+    let automationsDir: String?
+    /// Non-nil when the provider has no tools (ollama): Change in words is
+    /// disabled with this help.
+    let unavailableHelp: String?
 }
 
 /// The Automations tab (spec §12.1, approved mockup 1): a header with
@@ -28,6 +43,7 @@ struct AutomationsView: View {
     var workbenchName: (Int64) -> String? = { _ in nil }
     var emptyStateContext: EmptyStateContext = .neutral
     var editor: AutomationEditorCenter?
+    var chats: AutomationEditorChatHooks?
 
     /// A sheet shown for one automation.
     private struct SheetTarget: Identifiable {
@@ -37,12 +53,26 @@ struct AutomationsView: View {
     @State private var searchText = ""
     @State private var editing: SheetTarget?
     @State private var confirming: SheetTarget?
+    @State private var changingInWords: SheetTarget?
+    @State private var creating = false
 
     private var cardActions: AutomationsTabActions {
         var out = actions
         if editor != nil {
             out.onEdit = { editing = SheetTarget(id: $0) }
             out.onConfirm = { confirming = SheetTarget(id: $0) }
+        }
+        if let chats {
+            out.onNew = { creating = true }
+            if let help = chats.unavailableHelp {
+                out.changeInWordsDisabledHelp = help
+            } else {
+                out.onChangeInWords = { id in
+                    // From the edit form: the form sheet closes first.
+                    editing = nil
+                    changingInWords = SheetTarget(id: id)
+                }
+            }
         }
         return out
     }
@@ -62,7 +92,7 @@ struct AutomationsView: View {
                 errorBanner(message)
             }
             if vm.items.isEmpty {
-                TabEmptyState(.automations, context: emptyStateContext, onTabAction: { actions.onNew?() }, extra: {
+                TabEmptyState(.automations, context: emptyStateContext, onTabAction: { cardActions.onNew?() }, extra: {
                     if actions.onTemplates != nil {
                         Button("Browse templates") { actions.onTemplates?() }
                             .buttonStyle(.link)
@@ -91,13 +121,30 @@ struct AutomationsView: View {
                     editor: editor,
                     vm: vm,
                     automationID: target.id,
-                    onChangeInWords: actions.onChangeInWords
+                    onChangeInWords: cardActions.onChangeInWords
                 ) { editing = nil }
             }
         }
         .sheet(item: $confirming) { target in
             if let editor {
                 AutomationConfirmSheet(vm: vm, editor: editor, automationID: target.id) { confirming = nil }
+            }
+        }
+        .sheet(item: $changingInWords) { target in
+            if let chats {
+                AutomationChangeInWordsSheet(
+                    name: vm.items.first { $0.id == target.id }?.automation.name ?? "automation",
+                    make: { try chats.open(target.id) },
+                    onClose: { changingInWords = nil }
+                )
+            }
+        }
+        .sheet(isPresented: $creating) {
+            if let chats {
+                NewAutomationSheet(vm: vm, editor: editor, makeChat: chats.openNew,
+                                   automationsDir: chats.automationsDir, onTemplates: actions.onTemplates) {
+                    creating = false
+                }
             }
         }
     }
@@ -140,9 +187,9 @@ struct AutomationsView: View {
                 Spacer()
                 Button("Templates") { actions.onTemplates?() }
                     .disabled(actions.onTemplates == nil)
-                Button("+ New") { actions.onNew?() }
+                Button("+ New") { cardActions.onNew?() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(actions.onNew == nil)
+                    .disabled(cardActions.onNew == nil)
             }
             .padding(.horizontal, 14)
             .padding(.top, 16)

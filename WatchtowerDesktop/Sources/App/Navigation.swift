@@ -194,6 +194,18 @@ struct MainNavigationView: View {
         return actions
     }
 
+    private var automationEditorChatHooks: AutomationEditorChatHooks {
+        // Personal recipes live in <workspace>/automations, beside the database.
+        let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent
+        return AutomationEditorChatHooks(
+            open: { try appState.automationEditorChat(automationID: $0) },
+            openNew: { try appState.newAutomationEditorChat() },
+            automationsDir: (workspaceDir as NSString?)?.appendingPathComponent("automations"),
+            unavailableHelp: AutomationEditorChatSurface.toolsAvailable(provider: nil)
+                ? nil : AutomationEditorChatSurface.unavailableHelp
+        )
+    }
+
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
@@ -290,7 +302,8 @@ struct MainNavigationView: View {
                         appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
                     },
                     emptyStateContext: appState.emptyStateContext,
-                    editor: appState.automationEditorCenter
+                    editor: appState.automationEditorCenter,
+                    chats: automationEditorChatHooks
                 )
             } else {
                 Text("Automations unavailable")

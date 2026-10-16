@@ -30,6 +30,10 @@ package final class AgentActionFeed {
     /// Failures that belong to no single row: the observation, a refresh, the
     /// outcomes read.
     package var lastError: String?
+    /// Runs after every Approve/Reject/Retry with the row as re-read from
+    /// disk (nil when it is gone) — the automation editor refreshes the
+    /// Automations list once a `save_automation` lands.
+    @ObservationIgnored package var onDecision: ((Int64, AgentAction?) -> Void)?
 
     private let dbPool: DatabasePool
     private let cliRunner: CLIRunnerProtocol?
@@ -221,5 +225,6 @@ package final class AgentActionFeed {
         // The CLI wrote on its own connection; the observation will never fire
         // for it (TargetWatchesViewModel.refreshEvents precedent).
         refresh()
+        onDecision?(id, rows.first { $0.id == id })
     }
 }

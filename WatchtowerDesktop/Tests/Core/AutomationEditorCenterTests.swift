@@ -150,6 +150,46 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(try tempEntries(), [])
     }
 
+    /// The New sheet's **Form** tab: validated with no `--against`, saved at
+    /// a slug made from the name into the automations directory, only where
+    /// no file exists yet, and always through the Save sheet (never confirmed).
+    func testNewRecipeSavesAtItsSlugWithAnEmptyExpectedHash() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "hn") }
+        runner.on("save") { _ in Self.saveJSON(approval: "hn") }
+        let center = makeCenter()
+        let id = AutomationEditorCenter.newRecipeID
+        center.beginNew(automationsDir: "/acme/automations")
+        let form = try XCTUnwrap(center.drafts[id]?.form)
+        XCTAssertTrue(form.detail.isNewRecipe)
+        form.fields.name = "Morning Mail digest!"
+
+        await center.save(id)
+        guard case let .review(plan) = center.saving[id] else {
+            return XCTFail("a new recipe is saved through the Save sheet, got \(String(describing: center.saving[id]))")
+        }
+        await center.commit(id, plan: plan)
+
+        XCTAssertEqual(runner.invocations.first { $0[1] == "validate" }?.suffix(1), ["--json"])
+        XCTAssertFalse(runner.invocations.first { $0[1] == "validate" }?.contains("--against") ?? true)
+        let save = try XCTUnwrap(runner.invocations.first { $0[1] == "save" })
+        let pathFlag = try XCTUnwrap(save.firstIndex(of: "--path"))
+        XCTAssertEqual(save[pathFlag + 1], "/acme/automations/morning-mail-digest.md")
+        let hashFlag = try XCTUnwrap(save.firstIndex(of: "--expect-content-hash"))
+        XCTAssertEqual(save[hashFlag + 1], "")
+        let confirmFlag = try XCTUnwrap(save.firstIndex(of: "--confirm-hash"))
+        XCTAssertEqual(save[confirmFlag + 1], "hn")
+        XCTAssertEqual(center.saving[id], .done)
+        XCTAssertEqual(refreshed, [7])
+        XCTAssertFalse(runner.invocations.contains { $0[1] == "show" }, "a new recipe has nothing to load")
+    }
+
+    func testSlugForName() {
+        XCTAssertEqual(AutomationEditorCenter.slug(forName: "Morning Mail digest!"), "morning-mail-digest")
+        XCTAssertEqual(AutomationEditorCenter.slug(forName: "  --Q4 plan--  "), "q4-plan")
+        XCTAssertEqual(AutomationEditorCenter.slug(forName: "Почта"), "automation")
+        XCTAssertEqual(AutomationEditorCenter.slug(forName: String(repeating: "a", count: 80)).count, 64)
+    }
+
     func testQuietSaveSavesInTheSameGesture() async throws {
         runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
         runner.on("save") { _ in Self.saveJSON(approval: "h1") }

@@ -435,7 +435,7 @@ package enum AutomationCardPresentation {
         return "\(Int((Double(s) / 86400).rounded())) d"
     }
 
-    private static func number(_ value: Int64) -> String {
+    package static func number(_ value: Int64) -> String {
         decimal.string(from: NSNumber(value: value)) ?? String(value)
     }
 
