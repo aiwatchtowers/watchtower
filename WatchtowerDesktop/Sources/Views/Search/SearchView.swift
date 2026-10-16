@@ -27,7 +27,7 @@ struct SearchView: View {
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                SearchField(text: $vm.query, placeholder: "Search messages...")
+                SearchField(text: $vm.query, placeholder: "Search Slack messages…")
                     .frame(height: 22)
                     .onChange(of: vm.query) { vm.search() }
 
@@ -56,7 +56,7 @@ struct SearchView: View {
                     Image(systemName: "text.magnifyingglass")
                         .font(.title)
                         .foregroundStyle(.secondary)
-                    Text("Type to search across all messages")
+                    Text("Type to search across all Slack messages")
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
