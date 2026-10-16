@@ -1,0 +1,165 @@
+{
+  "workbench_id": 1,
+  "enabled": true,
+  "since": "2026-10-01T00:00:00Z",
+  "until": "2026-10-08T00:00:00Z",
+  "totals": {
+    "sessions": 2,
+    "active_ms": 1650000,
+    "away_ms": 1900000,
+    "cost_usd": 12.5,
+    "cost_estimated_calls": 3,
+    "tokens": {
+      "input": 1000,
+      "output": 500,
+      "cache_read": 20000,
+      "cache_write_5m": 300,
+      "cache_write_1h": 40
+    }
+  },
+  "time": {
+    "model_ms": 600000,
+    "tools": {
+      "build_test": 300000,
+      "git": 20000,
+      "read_search": 40000,
+      "edit": 60000,
+      "mcp": 5000,
+      "subagents_fg": 120000,
+      "other": 15000
+    },
+    "background_ms": 90000,
+    "owner_ms": 400000,
+    "away_ms": 1900000,
+    "active_ms": 1650000,
+    "wall_ms": 3800000
+  },
+  "subagents": {
+    "count": 4,
+    "foreground": 3,
+    "background": 1,
+    "peak": 2,
+    "serial": 2,
+    "busy_ms": 500000,
+    "union_ms": 400000,
+    "blocked_ms": 120000,
+    "avg_parallel": 1.25
+  },
+  "commands": [
+    {
+      "verb": "make test",
+      "class": "build_test",
+      "runs": 4,
+      "errors": 1,
+      "total_ms": 720000,
+      "avg_ms": 180000
+    }
+  ],
+  "models": [
+    {
+      "model": "claude-opus-5-5",
+      "main_cost_usd": 8,
+      "sub_cost_usd": 4.5,
+      "tokens": 21840,
+      "cache_read_share": 0.91
+    }
+  ],
+  "hints": [
+    {
+      "id": "H1",
+      "finding": "make test ran 4 times in target #7, 12m 0s in all; the runs after the first took 9m 0s",
+      "estimate_ms": 540000,
+      "estimate_usd": 0,
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make test",
+          "label": "4 runs, 12m 0s"
+        },
+        {
+          "kind": "target",
+          "ref": "#7",
+          "label": "Add widget"
+        },
+        {
+          "kind": "session",
+          "ref": "11111111-aaaa-bbbb-cccc-000000000001",
+          "label": "11111111"
+        }
+      ]
+    },
+    {
+      "id": "H6",
+      "finding": "Session 11111111 cost $9.00 with a 20% cache read share; its context was expensive",
+      "estimate_ms": 0,
+      "estimate_usd": 9,
+      "evidence": []
+    }
+  ],
+  "tasks": [
+    {
+      "target_id": 7,
+      "text": "Add widget",
+      "status": "in_review",
+      "calendar_ms": 7200000,
+      "phases": {
+        "blocked": 0,
+        "in_progress": 5000000,
+        "in_review": 2200000,
+        "todo": 0
+      },
+      "agent_ms": 1650000,
+      "time": {
+        "model_ms": 600000,
+        "tools": {
+          "build_test": 300000,
+          "git": 20000,
+          "read_search": 40000,
+          "edit": 60000,
+          "mcp": 5000,
+          "subagents_fg": 120000,
+          "other": 15000
+        },
+        "background_ms": 90000,
+        "owner_ms": 400000,
+        "away_ms": 1900000,
+        "active_ms": 1650000,
+        "wall_ms": 3800000
+      },
+      "cost_usd": 12.5,
+      "sessions": [
+        "11111111-aaaa-bbbb-cccc-000000000001"
+      ],
+      "shared": true
+    }
+  ],
+  "sessions": [
+    {
+      "session_uuid": "11111111-aaaa-bbbb-cccc-000000000001",
+      "started_at": "2026-10-01T10:00:00Z",
+      "ended_at": "2026-10-01T11:03:00Z",
+      "model": "claude-opus-5-5",
+      "branch": "feature/widget",
+      "active_ms": 1650000,
+      "cost_usd": 12.5,
+      "avg_parallel": 1.25,
+      "old_format": false,
+      "prs": [
+        "https://example.com/acme/app/pull/1"
+      ]
+    },
+    {
+      "session_uuid": "22222222-aaaa-bbbb-cccc-000000000002",
+      "started_at": "2026-09-30T10:00:00Z",
+      "ended_at": "2026-09-30T10:05:00Z",
+      "model": "claude-opus-5-5",
+      "branch": "",
+      "active_ms": 0,
+      "cost_usd": 0,
+      "avg_parallel": 0,
+      "old_format": true,
+      "prs": []
+    }
+  ],
+  "old_format_sessions": 1
+}

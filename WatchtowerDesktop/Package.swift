@@ -95,7 +95,8 @@ let package = Package(
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
-            path: "Tests/Core"
+            path: "Tests/Core",
+            exclude: ["Fixtures"]
         ),
         .testTarget(
             name: "OCRKitTests",
