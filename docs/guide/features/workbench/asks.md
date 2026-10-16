@@ -31,9 +31,11 @@ Watchtower is careful not to talk over you:
 
 ### The ask guard
 
-In a workbench session, Claude Code's own question dialog is turned off. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The same check reminds an agent that says its work is done to mark the session **Finished** with a short summary.
+By default (ask guard **strict**, finish check **on**), Claude Code's own question dialog is turned off in a workbench session. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The finish check reminds an agent that says its work is done to mark the session **Finished** with a short summary.
 
-One short question may stay in the terminal while you are in that session. If you don't answer it, Watchtower files it for you as a Quick ask marked **From chat · N min**, or as a regular ask when it has four options:
+The methodology can change this; see [Methodology](methodology.md) and **Agent Settings…**. With **soft**, Claude Code's question dialog works while you are in the session, and plain-text questions are recorded instead of bounced back. With **off**, nothing is checked. The finish check can be switched off on its own.
+
+One short question may stay in the terminal while you are in that session. If you don't answer it, Watchtower files it for you as a Quick ask marked **From chat · N min**. It becomes a regular ask when it does not fit a Quick ask (four options, or an option label over 40 characters), and so does a request recorded under **soft**. It is filed:
 
 - after 10 minutes unanswered;
 - after you have been away from the session for 90 seconds;

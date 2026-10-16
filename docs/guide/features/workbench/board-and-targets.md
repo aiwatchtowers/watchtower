@@ -8,13 +8,19 @@ A plan kept in a chat disappears with the session. On the board it stays, with s
 
 ## How it works
 
-A **target** is one unit of work with a number such as `#163`, the number the agent uses in chat and the terminal. A target with sub-targets is a **feature** (the panel tags it **GROUP**). Its status is not set by hand: it follows its tasks. A written plan becomes one sub-target per task.
+A **target** is one unit of work with a number such as `#163`, the number the agent uses in chat and the terminal. A target with sub-targets is a **feature** (the panel tags it **GROUP**). Its status is not set by hand: it follows its tasks.
 
-Statuses are To Do, In Progress, In Review, Blocked, Done and Dismissed. The agent files targets itself. Before it files a new one it looks for targets on the same topic and files the new one in their group, creating the group if there is none.
+With the default methodology (the `watchtower-flow` preset), a written plan becomes one sub-target per task.
+
+Statuses are To Do, In Progress, In Review, Blocked, Done and Dismissed. The agent files targets itself. With the default methodology it first looks for targets on the same topic and files the new one in their group, creating the group if there is none.
+
+You can also talk to the agent on a target: write in its comment thread. Agents use comments for a blocker or a short summary when a task is done, and what they need from you arrives as an [ask](asks.md).
 
 **Archive.** A done or dismissed target leaves the board once it has been closed longer than the workbench's setting, 14 days by default. A feature leaves only when everything under it is closed and the last of it closed that long ago. Nothing is deleted, and a feature's task counter keeps counting archived tasks.
 
-**Board drift.** The check compares each target with the folder's git branches and pull requests. It reads local git state only and never fetches, so a merge made on GitHub appears once the folder has fetched it. It reports, for example, a target still in progress whose branch is merged, a done target whose branch is not merged, a branch that no longer exists, and in-progress work that has not moved for three days. The agent sees the same list at the end of each turn and is asked to bring the board in step with git.
+**Board drift.** The check compares each target with the folder's git branches and pull requests. It reads local git state only and never fetches, so a merge made on GitHub appears once the folder has fetched it.
+
+It reports, for example, a target still in progress whose branch is merged, a done target whose branch is not merged, a branch that no longer exists, and in-progress work that has not moved for three days. The agent sees the same list at the end of each turn and is asked to bring the board in step with git.
 
 ## Using it
 
@@ -26,15 +32,23 @@ The search field in the Board header matches title or intent. `#163` finds targe
 
 ### Switch to Kanban
 
-The **List | Kanban** switch lays tasks out as columns. By default each top-level feature is a lane. The **Lanes** menu switches between **By group** and **None** (flat columns). Drag a card to another column to change its status. In lanes a card moves only between the columns of its own lane; use **Move to…** to change its feature.
+The **List | Kanban** switch lays tasks out as columns. By default each top-level feature is a lane. The **Lanes** menu switches between **By group** and **None** (flat columns).
+
+Drag a card to another column to change its status. In lanes a card moves only between the columns of its own lane; use **Move to…** to change its feature.
 
 ### Open a target
 
-Click a card to open it in the panel on the right. The board stays live behind it. You can rename the title, change status and priority from the chips, edit the description, and read **Comments | History**. Its **Asks** section lists every ask about this target. Drag the panel's edge to resize it (360 to 720 points).
+Click a card to open it in the panel on the right. The board stays live behind it.
+
+You can rename the title, change status and priority from the chips, edit the description, and read **Comments | History**. Its **Asks** section lists every ask about this target.
+
+Drag the panel's edge to resize it (360 to 720 points).
 
 ### Start work
 
-**Work on It** (the play button on a card, or in the panel) starts a session of the default agent named after the target. A target in To Do moves to In Progress once the session runs. On a feature, the agent works its sub-tasks one after another and skips blocked ones, ones waiting for you, or ones already in progress or in review. If the target already has a session, the button opens it instead.
+**Work on It** (the play button on a card, or in the panel) starts a session of the default agent named after the target. A target in To Do moves to In Progress once the session runs. If the target already has a session, the button opens it instead.
+
+On a feature, the agent works its sub-tasks one after another. With the default methodology it skips blocked ones, ones waiting for you, and ones already in progress or in review.
 
 ### Group and move targets
 
@@ -54,12 +68,16 @@ In the page header's **…** menu:
 
 ### Read the drift line
 
-When something disagrees, a line under the Board header reads **Board drift: N out of step with git**, with findings that are only worth a look listed as "to review". Click it for the list and click an entry to open that target. **Refresh** checks again; while the Board is open it re-checks by itself, at most every 30 seconds.
+When something disagrees, a line under the Board header reads **Board drift: N out of step with git**, with findings that are only worth a look listed as "to review". Click it for the list and click an entry to open that target. The refresh button checks again; while the Board is open it re-checks by itself, at most every 30 seconds.
+
+### Get notified
+
+Watchtower notifies you when an agent asks something in a target comment, finishes a target, or proposes something only you can approve. Several at once in one workbench arrive as one summary.
 
 ## When it's empty or wrong
 
 - **A closed target is missing.** It was archived. Turn on **Archive (K)**, or reopen it.
-- **The drift line says it could not cover the board.** The folder is not a git repository, or the check ran out of time.
+- **The drift line says Drift check incomplete, Drift check skipped or Drift check failed.** The check could not cover the board: the folder is not a git repository, it ran out of time, or git failed. Hover the line for the reason.
 - **No drift line on an old workbench.** A workbench set up before the check existed shows an orange install icon once. **Repair install** in the **…** menu adds it.
 - **The description edit did not save.** The message names the target and keeps your text. If the agent changed the description while you typed, nothing is overwritten.
 

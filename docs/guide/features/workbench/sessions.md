@@ -8,7 +8,9 @@ With several sessions running, the terminals tell you nothing until you open eac
 
 ## How it works
 
-A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs. Quitting Watchtower closes every terminal, and nothing starts by itself on the next launch.
+A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs.
+
+Quitting Watchtower closes every terminal, and nothing starts by itself on the next launch.
 
 ### Session states
 
@@ -19,7 +21,7 @@ A caption under the session name says what the agent is doing. When several appl
 | **Needs approval** | orange | The agent asks for a permission. It returns to working once you allow it. |
 | **Error: …** | red | The turn stopped on an error. The caption names it, for example "Error: rate limit". |
 | **Working** | green | The agent works on your prompt. |
-| **Agents working** | green, pulsing | The agent finished its turn but helper agents or teammates it started are still busy. |
+| **Agents working** (or **N agents working**) | green, pulsing | The agent finished its turn but helper agents or teammates it started are still busy. |
 | **Ready to check · ask #N** | purple | Its open asks are only checks or reviews for you (**Ready for review** when all are reviews). |
 | **Finished** | blue | The agent said it is done. Orange while an ask is still open. |
 | **Waiting for you · ask #N** | orange | A question of the agent waits for your answer. |
@@ -74,7 +76,7 @@ It refreshes every 30 seconds while on screen, and when the session's state chan
 
 - A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers whether it is open. A session you are looking at never jumps.
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.
-- Hover a session whose agent is not working to get a **✕**. One click deletes it without a dialog. A working, waiting or permission-asking session needs **Delete…**.
+- Hover a session that is finished, stopped, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session (working, agents working, ready to check, waiting, asking for a permission, or running with no state yet) needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
 - When you delete a workbench session the dialog first checks what it left behind and may offer **Delete and Clean Up**. See [Worktrees and cleanup](worktrees-and-cleanup.md).
 

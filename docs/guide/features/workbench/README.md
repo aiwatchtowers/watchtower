@@ -6,7 +6,9 @@ A workbench is a folder on your Mac, usually a code repository, that a coding ag
 
 Coding agents are good at a task and bad at remembering the plan. A workbench gives the agent a shared place for the plan, and gives you one screen that answers "where are we, and is anything waiting on me?"
 
-Picture a feature that takes a week and a dozen agent sessions. The board holds the feature and its tasks. Each session picks up a task, and the agent files an ask when it needs your review or a decision. You come back to the Workbench tab and see the state without reading any terminal history.
+Picture a feature that takes a week and a dozen agent sessions. The board holds the feature and its tasks, and each session picks up a task.
+
+The agent files an ask when it needs your review or a decision. You come back to the Workbench tab and see the state without reading any terminal history.
 
 ## How it works
 
