@@ -44,9 +44,30 @@ func Catalog() string {
 	return string(b)
 }
 
-// BaseURL is the GitHub location of the guide for a released version.
+// BaseURL is the GitHub location of the guide: the release tag for a clean
+// X.Y.Z version (a leading "v" allowed), main for anything else — a dev
+// build ("dev", "0.19.0-12-gabc-dirty"), whose tag may not exist or may
+// predate docs/guide.
 func BaseURL(version string) string {
-	return "https://github.com/aiwatchtowers/watchtower/blob/v" + version + "/docs/guide/"
+	ref := "main"
+	if v := strings.TrimPrefix(version, "v"); isReleaseVersion(v) {
+		ref = "v" + v
+	}
+	return "https://github.com/aiwatchtowers/watchtower/blob/" + ref + "/docs/guide/"
+}
+
+// isReleaseVersion reports whether v is exactly X.Y.Z (digits only).
+func isReleaseVersion(v string) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || strings.Trim(p, "0123456789") != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // Anchor builds the GitHub heading slug; seen counts repeats within a page.

@@ -91,7 +91,21 @@ func TestSearchPrefersHeadings(t *testing.T) {
 }
 
 func TestBaseURL(t *testing.T) {
-	if got := BaseURL("1.2.3"); got != "https://github.com/aiwatchtowers/watchtower/blob/v1.2.3/docs/guide/" {
-		t.Fatal(got)
+	const prefix = "https://github.com/aiwatchtowers/watchtower/blob/"
+	for version, ref := range map[string]string{
+		"1.2.3":                 "v1.2.3",
+		"v0.19.0":               "v0.19.0",
+		"v0.19.0-12-gabc-dirty": "main",
+		"0.19.0-dirty":          "main",
+		"dev":                   "main",
+		"":                      "main",
+		"0.2":                   "main",
+		"1.2.3.4":               "main",
+		"vv1.2.3":               "main",
+		"1.x.3":                 "main",
+	} {
+		if got, want := BaseURL(version), prefix+ref+"/docs/guide/"; got != want {
+			t.Errorf("BaseURL(%q) = %q, want %q", version, got, want)
+		}
 	}
 }
