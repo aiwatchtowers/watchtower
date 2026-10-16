@@ -68,6 +68,7 @@ func (s *agentMCP) running(t *testing.T, trigger string) int64 {
 func (s *agentMCP) options(t *testing.T, run int64, requested ...string) ([]internalmcp.ServerOption, error) {
 	t.Helper()
 	t.Setenv(automations.RunEnvMarker, strconv.FormatInt(run, 10))
+	t.Setenv(terminalSessionEnv, "") // agent()'s allowlisted env never carries it
 	mcpFlagChat, mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools = true, tools.AutomationSurface, run, requested
 	return mcpModeOptions(s.cfg, s.d, "", nil)
 }
@@ -112,6 +113,19 @@ func TestAgentMCPServer_RefusesWithoutMatchingMarkerOrRunningRun(t *testing.T) {
 	require.NoError(t, s.d.FinishAutomationRun(run, db.RunFinish{Status: db.RunSucceeded, Now: time.Now()}, nil))
 	_, err = s.options(t, run, "list_jira_issues")
 	require.ErrorContains(t, err, "not running", "a finished run")
+}
+
+// A terminal session's agent that sets the run's marker does not get the
+// run-bound server: agent() children never carry the session variable.
+func TestAgentMCPServer_RefusedInsideATerminalSession(t *testing.T) {
+	s := newAgentMCP(t)
+	run := s.running(t, db.TriggerManual)
+	_, err := s.options(t, run, "list_jira_issues")
+	require.NoError(t, err, "agent()-style env: the marker alone")
+
+	t.Setenv(terminalSessionEnv, "12")
+	_, err = mcpModeOptions(s.cfg, s.d, "", nil)
+	require.ErrorContains(t, err, terminalSessionEnv)
 }
 
 func TestAgentMCPServer_MountsOnlyEffectiveSet(t *testing.T) {
@@ -225,6 +239,7 @@ func TestAgentMCPServer_ReadyFileOnlyOnAcceptedStart(t *testing.T) {
 		t.Helper()
 		ready := filepath.Join(t.TempDir(), "ready")
 		t.Setenv(automations.RunEnvMarker, strconv.FormatInt(run, 10))
+		t.Setenv(terminalSessionEnv, "")
 		mcpFlagChat, mcpFlagSurface, mcpFlagAutomationRun = true, tools.AutomationSurface, run
 		mcpFlagAutomationTools, mcpFlagAutomationReadyFile = []string{"list_jira_issues"}, ready
 		// The client disconnects at once: stdin is a closed pipe.

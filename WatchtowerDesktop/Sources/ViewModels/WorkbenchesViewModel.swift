@@ -441,6 +441,24 @@ final class WorkbenchesViewModel {
     /// Find Repeats' model per workbench, made on first use.
     @ObservationIgnored var reviewLessonModels: [Int64: ReviewLessonsModel] = [:]
 
+    /// `automations rescan --workbench N` (spec §13.4); nil without a CLI.
+    /// A seam for tests.
+    @ObservationIgnored var rescanAutomations: ((_ workbenchID: Int64) async throws -> Void)?
+    /// How long recipe-folder changes settle before one rescan runs.
+    @ObservationIgnored var automationRescanDelay: Duration = .seconds(1)
+    /// The debounced rescan waiting per workbench (`automationRecipesChanged`).
+    @ObservationIgnored var automationRescanTimers: [Int64: Task<Void, Never>] = [:]
+    /// The workbenches with a rescan running, and those asked for again
+    /// meanwhile (one follow-up rescan, not one per ask).
+    @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
+    @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The workbenches asked for a rescan while the feature was not on
+    /// (or its state not loaded yet): rescanned once it comes on.
+    @ObservationIgnored var automationRescansDeferred: Set<Int64> = []
+    /// The `automations` feature is on per a successful Feature Manager
+    /// load (`AppState.isAutomationsFeatureLoadedOn`); off, no rescan runs.
+    @ObservationIgnored var isAutomationsFeatureOn: () -> Bool = { false }
+
     let dbPool: DatabasePool
     /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.
     let cli: WorkbenchCLI?
@@ -469,7 +487,11 @@ final class WorkbenchesViewModel {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
+            let automations = AutomationsCLI(runner: cli.runner)
+            asks.wakeAutomations = { try await automations.wake() }
+            rescanAutomations = { try await automations.rescan(workbenchID: $0) }
         }
+        codeFiles.onAutomationRecipesChanged = { [weak self] in self?.automationRecipesChanged(workbenchID: $0) }
         terminalCenter?.onSessionExit = { [weak self] id, code, closedByApp in
             self?.sessionExited(id, code: code, closedByApp: closedByApp)
         }

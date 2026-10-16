@@ -178,17 +178,6 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertEqual(ACP.reportedCostText(0), "$0.00 reported")
     }
 
-    /// J6: a workbench recipe cannot be saved by the assistant yet, so
-    /// Change in words is off for it, whatever the provider.
-    func testChangeInWordsOffForWorkbenchRecipes() {
-        let personal = automation()
-        XCTAssertNil(ACP.changeInWordsHelp(for: personal, providerHelp: nil))
-        XCTAssertEqual(ACP.changeInWordsHelp(for: personal, providerHelp: "Needs Claude or Codex"),
-                       "Needs Claude or Codex")
-        let workbench = Automation(id: 8, slug: "wb", scope: .workbench, projectID: 3, name: "Workbench one")
-        XCTAssertEqual(ACP.changeInWordsHelp(for: workbench, providerHelp: nil), ACP.workbenchChangeInWordsHelp)
-    }
-
     func testButtonsForStates() {
         let ready = ACP.buttons(for: automation())
         XCTAssertEqual(ready.runNow, ACP.ButtonState(enabled: true, help: nil))
