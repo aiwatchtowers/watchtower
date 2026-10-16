@@ -240,7 +240,8 @@ final class RecordingIndicatorViewTests: XCTestCase {
                        90 + RecordingIndicatorInset.outerPadding)
     }
 
-    /// The inset clears every screen at once (#397): the root pads its whole
+    /// The inset clears every screen at once (#397): the per-window host
+    /// (`RecordingIndicatorHost`, the main window's root) pads its whole
     /// content on the pills' edge, and no screen opts in on its own — the
     /// per-view `.clearsRecordingIndicator()` it replaced is gone, and the
     /// shared `ChatComposerField` (which also serves sheets, onboarding and
@@ -256,10 +257,13 @@ final class RecordingIndicatorViewTests: XCTestCase {
             let lines = Self.codeLines(try String(contentsOf: url, encoding: .utf8))
             XCTAssertFalse(lines.contains { $0.contains("clearsRecordingIndicator") },
                            "\(url.lastPathComponent) opts into the pills' inset; the root already pads every screen")
-            let pads = lines.filter { $0.contains(".padding(recordingIndicatorCorner.insetEdge") }.count
+            let pads = lines.filter { $0.contains(".padding(corner.insetEdge") }.count
             if pads > 0 { padders[url.lastPathComponent, default: 0] += pads }
         }
-        XCTAssertEqual(padders, ["WatchtowerApp.swift": 1])
+        XCTAssertEqual(padders, ["RecordingIndicatorHost.swift": 1])
+        let app = try String(contentsOf: sources.appendingPathComponent("App/WatchtowerApp.swift"), encoding: .utf8)
+        XCTAssertTrue(Self.codeLines(app).contains { $0.contains("RecordingIndicatorHost {") },
+                      "the main window's root wraps its content in the host")
     }
 
     // MARK: - Corner
@@ -295,9 +299,10 @@ final class RecordingIndicatorViewTests: XCTestCase {
         }
     }
 
-    /// The stored corner survives launches under a stable key and raw
-    /// values; an unknown stored value falls back to the default corner.
-    func testCornerStorageIsStable() {
+    /// The stored corner's key, raw values and default stay stable across
+    /// releases, and a raw value no corner has decodes to none (the
+    /// `@AppStorage` default then applies).
+    func testCornerKeyRawValuesAndDefaultAreStable() {
         XCTAssertEqual(RecordingIndicatorCorner.storageKey, "recordingIndicator.corner")
         XCTAssertEqual(RecordingIndicatorCorner.allCases.map(\.rawValue),
                        ["topLeading", "topTrailing", "bottomLeading", "bottomTrailing"])
@@ -305,13 +310,63 @@ final class RecordingIndicatorViewTests: XCTestCase {
         XCTAssertNil(RecordingIndicatorCorner(rawValue: "middle"))
     }
 
+    /// The stack is listed top to bottom from the interior to the edge in a
+    /// bottom corner and mirrored in a top one: the download pills always
+    /// sit on the edge side, the recording next to them, and the chevrons
+    /// point toward the interior to open and back to the edge to close.
+    func testSectionOrderAndChevronsFollowTheCorner() {
+        let interiorToEdge: [RecordingIndicatorCorner.Section] = [.interrupted, .jobs, .recording, .downloads]
+        for corner in RecordingIndicatorCorner.allCases {
+            let edgeSide = corner.isTop ? corner.sections.first : corner.sections.last
+            XCTAssertEqual(edgeSide, .downloads, "\(corner)")
+            XCTAssertEqual(corner.sections, corner.isTop ? interiorToEdge.reversed() : interiorToEdge, "\(corner)")
+            XCTAssertEqual(corner.expandChevron, corner.isTop ? "chevron.down" : "chevron.up", "\(corner)")
+            XCTAssertEqual(corner.collapseChevron, corner.isTop ? "chevron.up" : "chevron.down", "\(corner)")
+        }
+    }
+
+    /// The extract pill (always bottom-trailing) clears the whole stack,
+    /// expanded panel included, only when they share the corner; the meeting
+    /// banner (always top) drops below the reserved band only when the stack
+    /// sits in a top corner. An empty stack moves neither.
+    func testNeighboursStepAsideOnlyInTheSharedEdge() {
+        for corner in RecordingIndicatorCorner.allCases {
+            for (reserved, occupied) in [(CGFloat(0), CGFloat(0)), (56, 56), (0, 340)] {
+                XCTAssertEqual(corner.extractPillLift(occupiedHeight: occupied),
+                               corner == .bottomTrailing ? occupied : 0, "\(corner) occupied \(occupied)")
+                XCTAssertEqual(corner.bannerDrop(reservedInset: reserved),
+                               corner.isTop ? reserved : 0, "\(corner) reserved \(reserved)")
+            }
+        }
+    }
+
+    /// The occupied extent counts the whole stack, expanded panel included,
+    /// while the reserved band leaves the panel out.
+    func testOccupiedHeightCountsTheExpandedPanel() {
+        XCTAssertEqual(RecordingIndicatorInset.occupiedHeight(stackHeight: 0), 0)
+        XCTAssertEqual(RecordingIndicatorInset.occupiedHeight(stackHeight: 310),
+                       310 + RecordingIndicatorInset.outerPadding)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 310, expandedPanelShown: true), 0)
+    }
+
+    /// A release snaps to the nearest corner; before the window has been
+    /// measured the stack stays where it is.
+    func testReleaseKeepsTheCornerUntilTheWindowIsMeasured() {
+        let topRight = CGPoint(x: 900, y: 50)
+        for corner in RecordingIndicatorCorner.allCases {
+            XCTAssertEqual(corner.snapped(releasedAt: topRight, in: .zero), corner)
+            XCTAssertEqual(corner.snapped(releasedAt: topRight, in: CGSize(width: 1000, height: 0)), corner)
+            XCTAssertEqual(corner.snapped(releasedAt: topRight, in: CGSize(width: 1000, height: 600)), .topTrailing)
+        }
+    }
+
     func testCodeLinesSkipsCommentLines() {
         let text = """
-        // .padding(recordingIndicatorCorner.insetEdge) in a comment
-        /// .padding(recordingIndicatorCorner.insetEdge) in a doc comment
-          .padding(recordingIndicatorCorner.insetEdge, inset)
+        // .padding(corner.insetEdge) in a comment
+        /// .padding(corner.insetEdge) in a doc comment
+          .padding(corner.insetEdge, inset)
         """
-        XCTAssertEqual(Self.codeLines(text), ["  .padding(recordingIndicatorCorner.insetEdge, inset)"])
+        XCTAssertEqual(Self.codeLines(text), ["  .padding(corner.insetEdge, inset)"])
     }
 
     /// Source lines minus `//` / `///` comment lines.

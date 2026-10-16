@@ -29,6 +29,23 @@ enum RecordingIndicatorInset {
         let covered = expandedPanelShown ? belowPanelHeight : stackHeight
         return covered > 0 ? covered + outerPadding : 0
     }
+
+    /// The whole stack's extent from the window's edge, the expanded panel
+    /// included — what a neighbour in the same corner must stay clear of.
+    static func occupiedHeight(stackHeight: CGFloat) -> CGFloat {
+        stackHeight > 0 ? stackHeight + outerPadding : 0
+    }
+}
+
+/// What the indicator reports to its host (`RecordingIndicatorHost`) after
+/// every layout change.
+struct RecordingIndicatorLayout: Equatable {
+    /// Space the content keeps free on the corner's edge.
+    var reservedInset: CGFloat
+    /// The stack's full extent from the edge (`occupiedHeight`).
+    var occupiedHeight: CGFloat
+
+    static let empty = Self(reservedInset: 0, occupiedHeight: 0)
 }
 
 /// The window corner the recorder pills sit in (#397). The owner drags the
@@ -58,6 +75,41 @@ enum RecordingIndicatorCorner: String, CaseIterable {
 
     /// The content edge that reserves the pills' height.
     var insetEdge: Edge.Set { isTop ? .top : .bottom }
+
+    /// The stack's parts, top to bottom: from the window's interior to its
+    /// edge in a bottom corner, mirrored in a top one. The download pills
+    /// stay between the recorder pills and the edge (what `reservedHeight`
+    /// counts), and the live panel opens toward the interior.
+    enum Section: CaseIterable { case interrupted, jobs, recording, downloads }
+
+    var sections: [Section] {
+        let interiorToEdge: [Section] = [.interrupted, .jobs, .recording, .downloads]
+        return isTop ? interiorToEdge.reversed() : interiorToEdge
+    }
+
+    /// The capsule's chevron points where the live panel opens — toward the
+    /// interior — and the panel's points back to the edge.
+    var expandChevron: String { isTop ? "chevron.down" : "chevron.up" }
+    var collapseChevron: String { isTop ? "chevron.up" : "chevron.down" }
+
+    /// How far the extract pill (always bottom-trailing) moves up: above the
+    /// whole stack, expanded panel included, when they share the corner.
+    func extractPillLift(occupiedHeight: CGFloat) -> CGFloat {
+        self == .bottomTrailing ? occupiedHeight : 0
+    }
+
+    /// How far the meeting banner (always top-centre) moves down: below the
+    /// reserved band when the stack sits in a top corner.
+    func bannerDrop(reservedInset: CGFloat) -> CGFloat {
+        isTop ? reservedInset : 0
+    }
+
+    /// The corner a drag released at `point` leaves the stack in; with no
+    /// measured window yet, the stack stays where it was.
+    func snapped(releasedAt point: CGPoint, in size: CGSize) -> Self {
+        guard size.width > 0, size.height > 0 else { return self }
+        return Self.nearest(to: point, in: size)
+    }
 
     /// The corner of the quadrant `point` falls in. The midlines go to the
     /// trailing and bottom sides, so the exact centre is the default corner,
