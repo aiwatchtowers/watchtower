@@ -161,7 +161,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 	out := cmd.OutOrStdout()
 	if flagAgentsSession != "" {
-		det, err := agentreport.BuildSession(database, flagAgentsWorkbench, flagAgentsSession)
+		det, err := agentreport.BuildSession(database, flagAgentsWorkbench, flagAgentsSession, now)
 		if err != nil {
 			return err
 		}

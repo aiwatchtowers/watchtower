@@ -211,8 +211,9 @@ func BuildOverview(d *db.DB, workbenchID int64, since, now time.Time) (*Overview
 	return ov, nil
 }
 
-// BuildSession drills into one session of the workbench.
-func BuildSession(d *db.DB, workbenchID int64, sessionUUID string) (*SessionDetail, error) {
+// BuildSession drills into one session of the workbench as of now. Its lanes
+// start with the main agent's (AgentID "") unless the session is old-format.
+func BuildSession(d *db.DB, workbenchID int64, sessionUUID string, now time.Time) (*SessionDetail, error) {
 	all, err := d.AgentReportSessions(workbenchID, "")
 	if err != nil {
 		return nil, err
@@ -232,8 +233,11 @@ func BuildSession(d *db.DB, workbenchID int64, sessionUUID string) (*SessionDeta
 	by := eventsByUUID(events)
 	b := assemble(all[i:i+1], by)
 	det := &SessionDetail{Session: b.rows[0], Time: b.time[sessionUUID], Subagents: b.subs[sessionUUID],
-		Lanes: nonNil(b.lanes[sessionUUID]), Commands: nonNil(Commands(b.events[sessionUUID]))}
-	now := time.Now().UTC()
+		Lanes: []Lane{}, Commands: nonNil(Commands(b.events[sessionUUID]))}
+	if segs, ok := b.segments[sessionUUID]; ok {
+		det.Lanes = append(det.Lanes, Lane{AgentID: "", Segments: nonNil(segs)})
+		det.Lanes = append(det.Lanes, b.lanes[sessionUUID]...)
+	}
 	tasks := Tasks(targets, b.segments, b.events, now)
 	det.Hints = nonNil(Hints(HintInput{Sessions: b.views, Tasks: tasks, Targets: targets, Events: b.events, Now: now}))
 	return det, nil

@@ -111,13 +111,40 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 func TestBuildSession_UnknownIsError(t *testing.T) {
 	d, wb := buildDB(t)
 	putSession(t, d, wb, "s1", 8, 2)
-	det, err := BuildSession(d, wb, "s1")
+	det, err := BuildSession(d, wb, "s1", t0)
 	require.NoError(t, err)
 	assert.Equal(t, "s1", det.Session.UUID)
-	_, err = BuildSession(d, wb, "nope")
+	_, err = BuildSession(d, wb, "nope", t0)
 	assert.Error(t, err)
-	_, err = BuildSession(d, wb+1, "s1")
+	_, err = BuildSession(d, wb+1, "s1", t0)
 	assert.Error(t, err)
+}
+
+func TestBuildSession_MainLaneFirst(t *testing.T) {
+	d, wb := buildDB(t)
+	at := func(s int) string { return t0.Add(time.Duration(s) * time.Second).Format(tsLayout) }
+	extra := []db.AgentLogEvent{
+		{Kind: "tool", Name: "Agent", Target: "general", Outcome: "ok", SpawnedAgentID: "a1", TS: at(2)},
+		{Kind: "api_call", Name: "claude-opus-5-5", AgentID: "a1", TS: at(3)},
+		{Kind: "api_call", Name: "claude-opus-5-5", AgentID: "a1", TS: at(5)},
+	}
+	putSessionWith(t, d, wb, "new", 8, 2, extra)
+	putSessionWith(t, d, wb, "old", 8, 1, extra)
+
+	det, err := BuildSession(d, wb, "new", t0)
+	require.NoError(t, err)
+	require.Len(t, det.Lanes, 2)
+	assert.Empty(t, det.Lanes[0].AgentID, "the main agent's lane comes first")
+	evs, err := d.AgentReportEvents([]string{"new"})
+	require.NoError(t, err)
+	_, mainSegs := SessionTime(evs)
+	require.NotEmpty(t, mainSegs)
+	assert.Equal(t, mainSegs, det.Lanes[0].Segments)
+	assert.Equal(t, "a1", det.Lanes[1].AgentID)
+
+	old, err := BuildSession(d, wb, "old", t0)
+	require.NoError(t, err)
+	assert.Empty(t, old.Lanes, "an old-format session has no lanes")
 }
 
 func TestBuildOverview_Performance(t *testing.T) {
