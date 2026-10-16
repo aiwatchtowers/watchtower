@@ -19,12 +19,13 @@ package enum ReviewQueries {
         endLine: Int,
         anchor: CommentAnchor,
         treeSHA: String,
-        body: String
+        body: String,
+        lens: String = ""
     ) throws -> Int64 {
         try db.execute(sql: """
-            INSERT INTO review_comments (round_id, path, side, start_line, end_line, quote, quote_prefix, quote_suffix, tree_sha, body)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [roundID, path, side, startLine, endLine, anchor.quote, anchor.prefix, anchor.suffix, treeSHA, body])
+            INSERT INTO review_comments (round_id, path, side, start_line, end_line, quote, quote_prefix, quote_suffix, tree_sha, lens, body)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [roundID, path, side, startLine, endLine, anchor.quote, anchor.prefix, anchor.suffix, treeSHA, lens, body])
         return db.lastInsertedRowID
     }
 
@@ -103,5 +104,51 @@ package enum ReviewQueries {
         } else {
             try db.execute(sql: "DELETE FROM review_viewed WHERE round_id = ? AND path = ?", arguments: [roundID, path])
         }
+    }
+
+    package static func checks(_ db: Database, roundID: Int64) throws -> [ReviewCheck] {
+        try ReviewCheck.fetchAll(db, sql: """
+            SELECT chapter_key, lens, item_key, state FROM review_checks WHERE round_id = ?
+            ORDER BY chapter_key, lens, item_key
+            """, arguments: [roundID])
+    }
+
+    /// Ticks (or re-marks) a checklist item; nil unticks. A round that is not open is read-only.
+    package static func setCheck(
+        _ db: Database,
+        roundID: Int64,
+        chapterKey: String,
+        lens: String,
+        itemKey: String,
+        state: ReviewCheck.State?
+    ) throws {
+        guard try Bool.fetchOne(db, sql: "SELECT status = 'open' FROM review_rounds WHERE id = ?", arguments: [roundID]) == true else { return }
+        if let state {
+            try db.execute(sql: """
+                INSERT INTO review_checks (round_id, chapter_key, lens, item_key, state) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (round_id, chapter_key, lens, item_key)
+                DO UPDATE SET state = excluded.state, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                """, arguments: [roundID, chapterKey, lens, itemKey, state.rawValue])
+        } else {
+            try db.execute(sql: """
+                DELETE FROM review_checks WHERE round_id = ? AND chapter_key = ? AND lens = ? AND item_key = ?
+                """, arguments: [roundID, chapterKey, lens, itemKey])
+        }
+    }
+
+    /// Saves the Deep-mode position of an open round; false when the round is not open.
+    package static func saveRoundState(
+        _ db: Database,
+        roundID: Int64,
+        mode: String,
+        phase: ReviewPhase,
+        chapterKey: String,
+        activeSeconds: Int
+    ) throws -> Bool {
+        try db.execute(sql: """
+            UPDATE review_rounds SET mode = ?, phase = ?, chapter_key = ?, active_seconds = ?
+            WHERE id = ? AND status = 'open'
+            """, arguments: [mode, phase.rawValue, chapterKey, max(0, activeSeconds), roundID])
+        return db.changesCount == 1
     }
 }
