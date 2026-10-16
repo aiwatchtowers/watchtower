@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -147,11 +148,54 @@ func Exec(ctx context.Context, dir string, stdin []byte, name string, args ...st
 	return ExecEnv(ctx, dir, nil, stdin, name, args...)
 }
 
+// fetchConfig keeps a background fetch from running a credential helper,
+// on top of readConfig: an empty value clears every helper configured
+// before it — the folder's, the owner's global osxkeychain or gh, which
+// read the Keychain and can raise a system dialog. (A remote's
+// uploadpack, which for a path remote runs here, is not overridable by -c:
+// the caller passes --upload-pack.)
+var fetchConfig = []string{"-c", "credential.helper="}
+
+// FetchArgs is a background `git fetch` argv: ReadArgs plus fetchConfig.
+func FetchArgs(args ...string) []string {
+	return append(append(slices.Clone(readConfig), fetchConfig...), args...)
+}
+
+// fetchEnv keeps the network side of a fetch from ever asking anyone:
+// ssh in batch mode (a key under a passphrase fails instead of prompting)
+// with a connect timeout, no askpass program from anywhere (an empty
+// GIT_ASKPASS outranks core.askPass and SSH_ASKPASS), no proxy command,
+// and only the plain transports (an `ext::` URL or a remote helper the
+// folder's config allows would run a command).
+var fetchEnv = []string{
+	"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10",
+	"GIT_ASKPASS=", "SSH_ASKPASS=", "SSH_ASKPASS_REQUIRE=never",
+	"GIT_PROXY_COMMAND=",
+	"GIT_ALLOW_PROTOCOL=file:git:http:https:ssh",
+}
+
+// ExecFetch runs a background fetch argv (FetchArgs) like Exec, with
+// fetchEnv on top, in its own process group: when ctx ends the whole group
+// is killed — git's ssh or remote-http child included — not git alone.
+func ExecFetch(ctx context.Context, dir, name string, args ...string) (stdout, stderr []byte, err error) {
+	return run(ctx, dir, fetchEnv, nil, true, name, args...)
+}
+
 // ExecEnv is Exec with extraEnv appended after the inherited repository
 // variables are dropped: a caller's own GIT_INDEX_FILE (the reviewer's
 // temporary index) reaches git, an inherited one never does.
 func ExecEnv(ctx context.Context, dir string, extraEnv []string, stdin []byte, name string, args ...string) (stdout, stderr []byte, err error) {
+	return run(ctx, dir, extraEnv, stdin, false, name, args...)
+}
+
+// run is ExecEnv; group puts the process in its own process group, killed
+// whole when ctx ends.
+func run(ctx context.Context, dir string, extraEnv []string, stdin []byte, group bool, name string, args ...string) (stdout, stderr []byte, err error) {
 	c := exec.CommandContext(ctx, name, args...)
+	if group {
+		c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
+	}
 	c.Dir = dir
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		key, _, _ := strings.Cut(kv, "=")

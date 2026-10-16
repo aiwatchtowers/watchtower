@@ -21,12 +21,16 @@ const (
 	// workbenchGitWriteBudget bounds switch and create (a stash and a
 	// checkout of a large tree take a while).
 	workbenchGitWriteBudget = 60 * time.Second
+	// workbenchGitFetchBudget bounds fetch: the fetch's own
+	// workbenchgit.FetchTimeout plus resolving the folder and the remote.
+	workbenchGitFetchBudget = workbenchgit.FetchTimeout + 5*time.Second
 )
 
 var workbenchGitCmd = &cobra.Command{
 	Use:   "git",
 	Short: "Read the workbench folder's git branch and switch it (the Desktop's workbench header)",
-	Long: "Local branches only; no fetch, pull or push. git is the developer tools' or\n" +
+	Long: "Local branches, plus origin's remote-only ones to check out; `fetch` updates origin's\n" +
+		"remote-tracking refs and nothing else — no pull, no push. git is the developer tools' or\n" +
 		"Homebrew's binary, never /usr/bin/git (which could pop the install dialog),\n" +
 		"and no git process runs outside a repository. Every command exits 0 once the\n" +
 		"workbench and its folder resolve; a refusal is in the output, not the exit code.\n" +
@@ -62,6 +66,28 @@ var workbenchGitSwitchCmd = &cobra.Command{
 	RunE: runWorkbenchGitSwitch,
 }
 
+var workbenchGitFetchCmd = &cobra.Command{
+	Use:   "fetch",
+	Short: "Fetch origin (git fetch --prune origin); the work tree and local branches stay as they are",
+	Long: "Updates origin's remote-tracking refs only, within 20 s. Never asks for anything: no\n" +
+		"credential helper, askpass or ssh prompt runs (ssh in batch mode), so a remote that needs\n" +
+		"a password or an unlocked key fails with git's words in `error`. A repository without an\n" +
+		"origin remote answers `no_remote`. Exit 0 once the workbench resolves.",
+	Args: cobra.NoArgs,
+	RunE: runWorkbenchGitFetch,
+}
+
+var workbenchGitCheckoutCmd = &cobra.Command{
+	Use:   "checkout",
+	Short: "Check out one of origin's remote-only branches as a local tracking branch and switch to it",
+	Long: "--branch is the name without origin/ (one of `branches`' remote_only). The same guards\n" +
+		"and confirmations as switch: a local branch of that name or an operation in progress is\n" +
+		"refused; uncommitted changes need --stash, an agent session in the folder\n" +
+		"(--agent-running) needs --confirm-agent. Fetches nothing; never forces or discards.",
+	Args: cobra.NoArgs,
+	RunE: runWorkbenchGitCheckout,
+}
+
 var workbenchGitCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a branch from the current commit and switch to it (changes come along)",
@@ -81,18 +107,23 @@ var (
 )
 
 func init() {
-	for _, c := range []*cobra.Command{workbenchGitStatusCmd, workbenchGitBranchesCmd, workbenchGitSwitchCmd, workbenchGitCreateCmd} {
+	for _, c := range []*cobra.Command{
+		workbenchGitStatusCmd, workbenchGitBranchesCmd, workbenchGitSwitchCmd, workbenchGitCreateCmd,
+		workbenchGitFetchCmd, workbenchGitCheckoutCmd,
+	} {
 		addWorkbenchIDFlag(c, &workbenchGitFlagWorkbench, "workbench id")
 		c.Flags().BoolVar(&workbenchGitFlagJSON, "json", false, "output JSON")
 		c.Flags().StringVar(&workbenchGitFlagFolder, "folder", "",
 			"an absolute folder in one of the repository's worktrees (a session's); default the workbench folder")
 		workbenchGitCmd.AddCommand(c)
 	}
-	sw := workbenchGitSwitchCmd.Flags()
-	sw.StringVar(&workbenchGitFlagBranch, "branch", "", "the local branch to switch to")
-	sw.BoolVar(&workbenchGitFlagStash, "stash", false, "stash uncommitted changes (untracked files included) before switching")
-	sw.BoolVar(&workbenchGitFlagAgentRunning, "agent-running", false, "an agent session (Claude Code or Codex) is working in the folder")
-	sw.BoolVar(&workbenchGitFlagConfirmAgent, "confirm-agent", false, "switch even though an agent session (Claude Code or Codex) is working in the folder")
+	for _, c := range []*cobra.Command{workbenchGitSwitchCmd, workbenchGitCheckoutCmd} {
+		sw := c.Flags()
+		sw.StringVar(&workbenchGitFlagBranch, "branch", "", "the local branch to switch to (checkout: origin's branch, without origin/)")
+		sw.BoolVar(&workbenchGitFlagStash, "stash", false, "stash uncommitted changes (untracked files included) before switching")
+		sw.BoolVar(&workbenchGitFlagAgentRunning, "agent-running", false, "an agent session (Claude Code or Codex) is working in the folder")
+		sw.BoolVar(&workbenchGitFlagConfirmAgent, "confirm-agent", false, "switch even though an agent session (Claude Code or Codex) is working in the folder")
+	}
 	workbenchGitCreateCmd.Flags().StringVar(&workbenchGitFlagName, "name", "", "the new branch's name")
 	workbenchCmd.AddCommand(workbenchGitCmd)
 }
@@ -186,7 +217,7 @@ func runWorkbenchGitBranches(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	l := workbenchgit.BranchList{Branches: []workbenchgit.Branch{}}
+	l := workbenchgit.BranchList{Branches: []workbenchgit.Branch{}, RemoteOnly: []workbenchgit.RemoteBranch{}}
 	if l.Refused, l.RefusedDetail = folderRefusal(folder, resolveErr); l.Refused == "" {
 		l = workbenchgit.ListBranches(ctx, o)
 	}
@@ -220,6 +251,12 @@ func printGitBranches(w io.Writer, l workbenchgit.BranchList) {
 		}
 		fmt.Fprintln(w, line)
 	}
+	if l.RemoteOnlyError != "" {
+		fmt.Fprintf(w, "remote-only error: %s\n", l.RemoteOnlyError)
+	}
+	for _, b := range l.RemoteOnly {
+		fmt.Fprintf(w, "  %s %s %s (remote only)\n", b.Ref, b.Head, b.CommittedAt.Format(time.RFC3339))
+	}
 }
 
 func runWorkbenchGitSwitch(cmd *cobra.Command, _ []string) error {
@@ -240,6 +277,59 @@ func runWorkbenchGitSwitch(cmd *cobra.Command, _ []string) error {
 	}
 	res.Status.ResolvedFolder = folder
 	return writeSwitchResult(cmd.OutOrStdout(), id, res)
+}
+
+func runWorkbenchGitCheckout(cmd *cobra.Command, _ []string) error {
+	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
+	defer cancel()
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	res := refusedSwitch(workbenchGitFlagBranch, folder, resolveErr)
+	if res.Refused == "" {
+		res = workbenchgit.Checkout(ctx, o, workbenchgit.SwitchRequest{
+			Branch:       workbenchGitFlagBranch,
+			Stash:        workbenchGitFlagStash,
+			AgentRunning: workbenchGitFlagAgentRunning,
+			ConfirmAgent: workbenchGitFlagConfirmAgent,
+		})
+	}
+	res.Status.ResolvedFolder = folder
+	return writeSwitchResult(cmd.OutOrStdout(), id, res)
+}
+
+func runWorkbenchGitFetch(cmd *cobra.Command, _ []string) error {
+	ctx, cancel := workbenchGitContext(cmd, workbenchGitFetchBudget)
+	defer cancel()
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	res := workbenchgit.FetchResult{Remote: workbenchgit.Remote}
+	if res.Refused, res.RefusedDetail = folderRefusal(folder, resolveErr); res.Refused == "" {
+		res = workbenchgit.Fetch(ctx, o)
+	}
+	res.WorkbenchID = id
+	if workbenchGitFlagJSON {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "workbench: %d\ngit: %t\nfetched: %t\n", res.WorkbenchID, res.Git, res.Fetched)
+	for _, f := range []struct{ key, value string }{
+		{"note", res.Note},
+		{"refused", strings.TrimSpace(res.Refused + " " + res.RefusedDetail)},
+		{"no remote", boolField(res.NoRemote)},
+		{"timed out", boolField(res.TimedOut)},
+		{"error", res.Error},
+	} {
+		if f.value != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", f.key, f.value)
+		}
+	}
+	if res.FetchedAt != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "fetched at: %s\n", res.FetchedAt.Format(time.RFC3339))
+	}
+	return nil
 }
 
 func runWorkbenchGitCreate(cmd *cobra.Command, _ []string) error {

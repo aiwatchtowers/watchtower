@@ -44,17 +44,37 @@ type BranchList struct {
 	Branches      []Branch `json:"branches"` // newest commit first
 	BranchesOK    bool     `json:"branches_ok"`
 	BranchesError string   `json:"branches_error"`
+	// RemoteOnly are origin's branches (as of the last fetch) that no local
+	// branch is named after or tracks, newest commit first. A failed
+	// listing leaves it empty and says why in RemoteOnlyError; the local
+	// list stands.
+	RemoteOnly      []RemoteBranch `json:"remote_only"`
+	RemoteOnlyError string         `json:"remote_only_error"`
 	// Refused is RefusedFolderNotAWorktree or RefusedGitFailed when the
 	// folder asked for could not be used; nothing was listed.
 	Refused       string `json:"refused"`
 	RefusedDetail string `json:"refused_detail"`
 }
 
-// ListBranches lists the local branches, newest commit first. It never
-// fails: a folder without git says so in Git, a failed listing in
-// BranchesOK.
+// RemoteBranch is one of origin's branches with no local copy.
+type RemoteBranch struct {
+	Name        string    `json:"name"` // without "origin/"
+	Ref         string    `json:"ref"`  // "origin/<name>"
+	Head        string    `json:"head"`
+	CommittedAt time.Time `json:"committed_at"` // UTC
+}
+
+// remoteFormat is one remote-tracking ref per record, NUL-terminated
+// fields as in branchFormat.
+const remoteFormat = "%(refname)%00%(objectname)%00%(committerdate:unix)%00%(symref)%00"
+
+const remoteFields = 4
+
+// ListBranches lists the local branches, newest commit first, and origin's
+// remote-only ones. It never fails: a folder without git says so in Git, a
+// failed listing in BranchesOK (or RemoteOnlyError).
 func ListBranches(ctx context.Context, o Options) BranchList {
-	l := BranchList{Branches: []Branch{}}
+	l := BranchList{Branches: []Branch{}, RemoteOnly: []RemoteBranch{}}
 	r, p, available, note, err := probe(ctx, o)
 	l.GitAvailable, l.Note = available, note
 	if r == nil {
@@ -75,7 +95,70 @@ func ListBranches(ctx context.Context, o Options) BranchList {
 			l.Current = b.Name
 		}
 	}
+	if remote, err := r.remoteOnly(ctx, branches); err != nil {
+		l.RemoteOnlyError = gitError(err)
+	} else {
+		l.RemoteOnly = remote
+	}
 	return l
+}
+
+// remoteOnly lists origin's remote-tracking branches that no local branch
+// is named after or has as its upstream; origin/HEAD (a symref) is not a
+// branch.
+func (r *repo) remoteOnly(ctx context.Context, local []Branch) ([]RemoteBranch, error) {
+	out, err := r.git(ctx, "for-each-ref", "--sort=-committerdate", "--format="+remoteFormat, "refs/remotes/"+Remote+"/")
+	if err != nil {
+		return nil, err
+	}
+	all, err := parseRemoteBranches(out)
+	if err != nil {
+		return nil, err
+	}
+	covered := map[string]bool{}
+	for _, b := range local {
+		covered[Remote+"/"+b.Name] = true
+		if b.Upstream != "" {
+			covered[b.Upstream] = true
+		}
+	}
+	remote := []RemoteBranch{}
+	for _, b := range all {
+		if !covered[b.Ref] {
+			remote = append(remote, b)
+		}
+	}
+	return remote, nil
+}
+
+// parseRemoteBranches reads for-each-ref output in remoteFormat; symrefs
+// are skipped.
+func parseRemoteBranches(out []byte) ([]RemoteBranch, error) {
+	fields := bytes.Split(out, []byte{0})
+	if len(fields)%remoteFields != 1 {
+		return nil, fmt.Errorf("git for-each-ref: %d fields is not a whole number of remote branches", len(fields)-1)
+	}
+	branches := []RemoteBranch{}
+	for i := 0; i+remoteFields < len(fields); i += remoteFields {
+		ref := strings.TrimLeft(string(fields[i]), "\n")
+		name, ok := strings.CutPrefix(ref, "refs/remotes/"+Remote+"/")
+		if !ok || name == "" {
+			return nil, fmt.Errorf("git for-each-ref: unexpected ref %q", ref)
+		}
+		if len(fields[i+3]) > 0 { // origin/HEAD
+			continue
+		}
+		sec, err := strconv.ParseInt(string(fields[i+2]), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("git for-each-ref: bad commit time %q of %s", fields[i+2], ref)
+		}
+		head := string(fields[i+1])
+		branches = append(branches, RemoteBranch{
+			Name: name, Ref: Remote + "/" + name,
+			Head: head[:min(len(head), shortHash)], CommittedAt: time.Unix(sec, 0).UTC(),
+		})
+	}
+	return branches, nil
 }
 
 func (r *repo) branches(ctx context.Context, topLevel string) ([]Branch, error) {
