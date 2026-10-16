@@ -115,6 +115,10 @@ package enum EmptyStateCopyTable {
             icon: "folder.badge.gearshape", title: "No workbenches yet",
             landsHere: "Boards bound to a folder, where Claude Code or Codex works.",
             feature: nil, primaryAction: .tabAction(label: "Add a folder")),
+        "automations": EmptyStateCopy(
+            icon: "gearshape.2", title: "No automations yet",
+            landsHere: "Recipes the assistant runs for you on a schedule, on an event or at a click.",
+            feature: nil, primaryAction: .tabAction(label: "New automation")),
         "digests": EmptyStateCopy(
             icon: "doc.text.magnifyingglass", title: "No digests yet",
             landsHere: "Per-channel summaries after each sync.",

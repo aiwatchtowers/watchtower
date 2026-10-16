@@ -305,6 +305,10 @@ final class AppState {
     /// Workbench tab (spec §6). Owned here so create/repair and the selection
     /// survive navigation.
     private(set) var workbenchesViewModel: WorkbenchesViewModel?
+    /// Automations tab and its sidebar badge (spec §12.1). Owned here so a
+    /// run, a dry run or a delete survives navigation; built with the
+    /// sidebar on both paths that reveal it (launch, `completeOnboarding()`).
+    private(set) var automationsViewModel: AutomationsViewModel?
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
@@ -535,6 +539,13 @@ final class AppState {
         selectedDestination = .workbench
     }
 
+    /// Opens an automation's card, with one run's steps open when given
+    /// (a run notification, an Inbox card's label).
+    func openAutomationRun(automationID: Int64, runID: Int64?) {
+        selectedDestination = .automations
+        automationsViewModel?.open(automationID: automationID, runID: runID)
+    }
+
     private var isInitializing = false
     /// `initialize()`'s launch work and its daemon (re)start — held so tests
     /// can await them.
@@ -653,6 +664,7 @@ final class AppState {
                     // Sessions waiting in the Undo batch are deleted now (PROJ-17).
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
+                    self?.automationsViewModel?.stop()
                     self?.homeCenter.endReading()
                     self?.readinessCenter.stop()
                 }
@@ -729,6 +741,7 @@ final class AppState {
                 // Pre-load sidebar badge counts so they're already visible when the splash hides.
                 // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
                 if !needsOnboarding {
+                    initAutomations(dbPool: manager.dbPool)
                     await initSidebarCounts(dbPool: manager.dbPool)
                 }
                 isLoading = false
@@ -1254,6 +1267,9 @@ final class AppState {
         if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
             Task { await initSidebarCounts(dbPool: pool) }
         }
+        if let pool = databaseManager?.dbPool {
+            initAutomations(dbPool: pool)
+        }
         // Sources onboarding connected (its account sheets may write through
         // the CLI without a VM reload) must reach the sidebar now — as a new
         // baseline: onboarding picked their features, so they raise no
@@ -1276,6 +1292,17 @@ final class AppState {
         guard databaseManager == nil else { return }
         isInitializing = false
         initialize()
+    }
+
+    /// Builds the Automations view model once and starts its poll (the
+    /// sidebar badge reads it). Once: a second call (a setup re-run) keeps
+    /// the in-flight runs and dry runs.
+    private func initAutomations(dbPool: DatabasePool) {
+        guard automationsViewModel == nil else { return }
+        let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
+        let vm = AutomationsViewModel(dbPool: dbPool, cli: AutomationsCLI(runner: runner))
+        vm.start()
+        automationsViewModel = vm
     }
 
     /// Builds the sidebar counts view model, pre-loads counts, and starts observing.

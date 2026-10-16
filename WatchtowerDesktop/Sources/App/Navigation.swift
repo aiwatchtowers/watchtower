@@ -272,6 +272,20 @@ struct MainNavigationView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        case .automations:
+            // A placeholder until the tab's list and card land (plan Task 8);
+            // it already drives the poll's visible-tab cadence.
+            if let vm = appState.automationsViewModel {
+                Text("Automations")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onAppear { vm.setTabVisible(true) }
+                    .onDisappear { vm.setTabVisible(false) }
+            } else {
+                Text("Automations unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .digests:
             DigestListView()
         case .people:

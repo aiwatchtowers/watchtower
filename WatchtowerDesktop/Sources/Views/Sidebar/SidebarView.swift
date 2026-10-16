@@ -280,6 +280,9 @@ struct SidebarView: View {
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
         case .tracks: updatedTrackCount
         case .workbench: appState.workbenchesViewModel?.badgeCount ?? 0
+        // Polled by its own view model: the daemon writes these rows from
+        // another process, which the counts VM's observation never sees.
+        case .automations: appState.automationsViewModel?.attentionCount ?? 0
         case .digests: digestsBadgeCount
         case .memory: memoryDisputedCount
         case .statistics: recommendationCount
@@ -470,7 +473,7 @@ struct SidebarView: View {
     /// in the rail. Targets turn red once anything is overdue.
     static func badgeColor(for item: SidebarDestination, overdue: Bool) -> Color {
         switch item {
-        case .tracks, .memory, .ideas: .orange
+        case .tracks, .memory, .ideas, .automations: .orange
         case .inbox, .workbench: .blue
         case .targets: overdue ? .red : .blue
         default: .red
