@@ -64,7 +64,9 @@ func TestPhaseKnowledgeIndex_EnabledIndexesAndTracks(t *testing.T) {
 
 	d.phaseKnowledgeIndex(context.Background())
 
-	assert.Equal(t, 1, countKBDocuments(t, database), "the seeded Jira issue must be indexed")
+	var jira int
+	require.NoError(t, database.QueryRow(`SELECT count(*) FROM kb_documents WHERE source <> 'guide'`).Scan(&jira))
+	assert.Equal(t, 1, jira, "the seeded Jira issue must be indexed")
 	assert.Equal(t, 1, countPipelineRuns(t, database, "knowledge-index"), "a knowledge-index pipeline_runs row must be written")
 }
 
@@ -77,8 +79,27 @@ func TestPhaseKnowledgeIndex_DisabledWritesNothing(t *testing.T) {
 
 	d.phaseKnowledgeIndex(context.Background())
 
-	assert.Equal(t, 0, countKBDocuments(t, database), "a disabled feature must never index")
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT count(*) FROM kb_documents WHERE source <> 'guide'`).Scan(&n))
+	assert.Equal(t, 0, n, "a disabled feature must never index owner data (the built-in guide excepted)")
 	assert.Equal(t, 0, countPipelineRuns(t, database, "knowledge-index"), "a disabled feature must write zero pipeline_runs rows")
+}
+
+// TestPhaseKnowledgeIndexGuideRunsWhenKnowledgeOff pins that the built-in
+// guide is indexed with the switch off, alone, and survives a later cycle.
+func TestPhaseKnowledgeIndexGuideRunsWhenKnowledgeOff(t *testing.T) {
+	d, database := newKnowledgeTestDaemon(t)
+	d.config.Knowledge.Enabled = false
+	seedOneJiraIssue(t, database)
+
+	d.phaseKnowledgeIndex(context.Background())
+	d.phaseKnowledgeIndex(context.Background())
+
+	var guide, other int
+	require.NoError(t, database.QueryRow(`SELECT count(*) FROM kb_documents WHERE source = 'guide'`).Scan(&guide))
+	require.NoError(t, database.QueryRow(`SELECT count(*) FROM kb_documents WHERE source <> 'guide'`).Scan(&other))
+	assert.Positive(t, guide, "the guide must be indexed while knowledge search is off")
+	assert.Zero(t, other, "no other source may be indexed while knowledge search is off")
 }
 
 // TestPhaseKnowledgeIndex_NilDBIsANoOp mirrors every other phase's
