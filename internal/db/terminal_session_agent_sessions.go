@@ -13,7 +13,7 @@ type TerminalAgentSession struct {
 
 // ListTerminalAgentSessions returns every agent session id the terminal tab
 // terminalSessionID has had, oldest first. The ledger
-// (terminal_session_agent_sessions, migration 00124) is filled by triggers on
+// (terminal_session_agent_sessions, migration 00125) is filled by triggers on
 // terminal_sessions, so the row's creation, SetTerminalClaudeSessionID and
 // SetTerminalAgentSessionID need no ledger code of their own.
 func (db *DB) ListTerminalAgentSessions(terminalSessionID int64) ([]TerminalAgentSession, error) {

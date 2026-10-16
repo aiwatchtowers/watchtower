@@ -2634,7 +2634,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     PRIMARY KEY (session_id, root, branch)
 );
 
--- Every agent session id a terminal tab has had (00124); the tab's own
+-- Every agent session id a terminal tab has had (00125); the tab's own
 -- claude_session_id holds only the latest. Filled by AFTER INSERT / AFTER UPDATE
 -- OF claude_session_id triggers on terminal_sessions; ids and times only.
 CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
@@ -2978,4 +2978,14 @@ CREATE TABLE IF NOT EXISTS review_viewed (
   path        TEXT NOT NULL,
   content_sha TEXT NOT NULL, -- file content hash when marked Viewed
   PRIMARY KEY (round_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS review_checks (
+  round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  chapter_key TEXT NOT NULL,
+  lens        TEXT NOT NULL,
+  item_key    TEXT NOT NULL, -- first 16 hex of sha256 of the question text
+  state       TEXT NOT NULL CHECK (state IN ('checked','commented','done','partial','not_done')), -- unticking deletes the row
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (round_id, chapter_key, lens, item_key)
 );

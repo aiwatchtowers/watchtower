@@ -28,6 +28,7 @@ extension SessionLineDelivery: ReviewLineSink {
 final class ReviewChangesModel {
     enum Load: Equatable { case idle, loading, failed(String), ready }
     enum View: Equatable { case all, sinceLastRound }
+    enum Mode: String { case quick, deep }
 
     enum ModelError: Error, Equatable, LocalizedError {
         case noRound
@@ -35,11 +36,13 @@ final class ReviewChangesModel {
         case unknownFile(String)
         case oldSideInSinceView
         case roundNotOpen
+        case roundClosed
 
         var errorDescription: String? {
             switch self {
             case .noRound: "No review round is open."
             case .roundNotOpen: "This round was sent. Refresh to open the next round."
+            case .roundClosed: "This round was already sent, so it cannot change."
             case .fileNotLoaded(let path): "The file \(path) is not open, so its lines cannot be anchored."
             case .unknownFile(let path): "The file \(path) is not part of this diff."
             case .oldSideInSinceView: "Switch to All changes to comment on removed lines"
@@ -69,13 +72,31 @@ final class ReviewChangesModel {
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
 
+    // Deep mode (spec §10): persisted through `saveRoundState` on an open round.
+    private(set) var mode: Mode = .quick
+    private(set) var phase: ReviewPhase = .meaning
+    private(set) var chapters: [ReviewChapter] = []
+    private(set) var currentChapterKey: String?
+    private(set) var lenses: [ReviewLens] = []
+    private(set) var lensNotes: [String] = []
+    private(set) var checks: [ReviewCheck] = []
+    private(set) var pace = ReviewPace(activeSeconds: 0)
+    var breakHintDismissed = false
+    /// The active seconds the round row holds.
+    private var savedActiveSeconds = 0
+
+    var intentItems: [ReviewIntentItem] { ReviewWrapUp.intentItems(context) }
+    var progress: ReviewProgress {
+        ReviewProgress.make(files: files, chapters: chapters) { isViewed($0) }
+    }
+
     /// The base..tree diff: the Viewed keys always come from it, whatever view is shown.
     private var allFiles: [ReviewDiffFile] = []
 
     private let projectID: Int64
     private let sessionID: Int64
-    private let cli: WorkbenchCLI
     private let db: DatabasePool
+    private let cli: WorkbenchCLI
     private let lineDelivery: any ReviewLineSink
 
     private struct Failure: Error { let message: String }
@@ -137,7 +158,16 @@ final class ReviewChangesModel {
             round = info
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
             view = info.prevRoundId > 0 && !previousTreeLost ? .sinceLastRound : .all
-            context = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID)).items ?? []
+            let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
+            context = ctx.items ?? []
+            lenses = ctx.lenses ?? []
+            lensNotes = ctx.lensNotes ?? []
+            mode = Mode(rawValue: info.mode) ?? .quick
+            phase = ReviewPhase(stored: info.phase)
+            currentChapterKey = info.chapterKey.isEmpty ? nil : info.chapterKey
+            pace = ReviewPace(activeSeconds: info.activeSeconds)
+            breakHintDismissed = false
+            savedActiveSeconds = info.activeSeconds
             try await loadDiff(info)
             let roundID = info.id
             var rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
@@ -149,7 +179,9 @@ final class ReviewChangesModel {
             }
             comments = rows
             viewed = marks
+            checks = try await db.read { try ReviewQueries.checks($0, roundID: roundID) }
             load = .ready
+            noteInteraction()
             // The next round after a Send keeps the file on screen: its sides come from the new tree.
             if selectedPath != nil { await reloadSides() }
         } catch {
@@ -188,6 +220,10 @@ final class ReviewChangesModel {
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
             round = info
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
+            let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
+            context = ctx.items ?? []
+            lenses = ctx.lenses ?? []
+            lensNotes = ctx.lensNotes ?? []
             try await loadDiff(info)
             let roundID = info.id
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
@@ -236,7 +272,7 @@ final class ReviewChangesModel {
     // MARK: - Comments and Viewed
 
     /// A draft on lines of the open file `path` (anchored by its text on `side`).
-    func addComment(path: String, side: String, startLine: Int, endLine: Int, body: String) throws {
+    func addComment(path: String, side: String, startLine: Int, endLine: Int, body: String, lens: String = "") throws {
         try run {
             guard let info = round else { throw ModelError.noRound }
             // A sent round is closed: a draft written into it would never be sent.
@@ -248,7 +284,7 @@ final class ReviewChangesModel {
             let anchor = ReviewCommentAnchor.anchor(text: text, startLine: startLine, endLine: endLine)
             _ = try db.write {
                 try ReviewQueries.addDraft($0, roundID: info.id, path: path, side: side, startLine: startLine,
-                                           endLine: endLine, anchor: anchor, treeSHA: info.treeSha, body: body)
+                                           endLine: endLine, anchor: anchor, treeSHA: info.treeSha, body: body, lens: lens)
             }
             try reloadComments()
         }
@@ -302,6 +338,7 @@ final class ReviewChangesModel {
         sending = true
         defer { sending = false }
         lastError = nil
+        flushState()
         do {
             let env = try Self.checked(await cli.reviewSend(projectID: projectID, roundID: info.id))
             // Either way the round is closed now: sent by this call, or already before it.
@@ -319,7 +356,185 @@ final class ReviewChangesModel {
         }
     }
 
+    /// Wrap-up marks live under this chapter key and the `intent` lens.
+    static let wrapupChapter = "wrapup"
+    static let intentLens = "intent"
+    /// Unsaved active seconds that trigger a save.
+    private static let saveEverySeconds = 30
+
+    // MARK: - Deep
+
+    // Mode, phase, chapter
+
+    func setMode(_ m: Mode) throws {
+        try run {
+            try saveState(mode: m, phase: phase, chapterKey: currentChapterKey)
+            mode = m
+        }
+    }
+
+    func setPhase(_ p: ReviewPhase) throws {
+        try run {
+            // A sent round only moves on screen; the position is saved while it is open.
+            if round?.status == "open" { try saveState(mode: mode, phase: p, chapterKey: currentChapterKey) }
+            phase = p
+        }
+    }
+
+    /// Makes `key` the current chapter and opens its first non-collapsed file.
+    func selectChapter(_ key: String) async throws {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return }
+        try run {
+            // A sent round only moves on screen; the position is saved while it is open.
+            if round?.status == "open" { try saveState(mode: mode, phase: phase, chapterKey: key) }
+            currentChapterKey = key
+        }
+        let first = chapter.paths.first { path in files.first { $0.path == path }?.collapsedReason == nil } ?? chapter.paths.first
+        if let first { await select(first) }
+    }
+
+    /// Chapters from the current view's files, and a current chapter that
+    /// still exists (the first one otherwise); checks of a vanished chapter stay in the DB.
+    private func refreshChapters() {
+        chapters = ReviewChapters.mechanical(files)
+        if let key = currentChapterKey, chapters.contains(where: { $0.key == key }) { return }
+        currentChapterKey = chapters.first?.key
+    }
+
+    // MARK: - Checks and comments
+
+    func checks(forChapter key: String) -> [ReviewCheck] {
+        checks.filter { $0.chapterKey == key }
+    }
+
+    func setCheck(chapterKey: String, lens: String, itemKey: String, checked: Bool) throws {
+        try run {
+            let info = try openRound()
+            try writeInOpenRound {
+                try ReviewQueries.setCheck($0, roundID: info.id, chapterKey: chapterKey, lens: lens, itemKey: itemKey,
+                                           state: checked ? .checked : nil)
+            }
+            try reloadChecks()
+        }
+    }
+
+    /// A design comment for a checklist question, and the question marked `commented`.
+    func commentOnCheck(chapterKey: String, lens: String, item: ReviewLens.Item, body: String) throws {
+        try run {
+            let info = try openRound()
+            try writeInOpenRound { db in
+                _ = try Self.addDesign(db, info: info, body: body, lens: lens)
+                try ReviewQueries.setCheck(db, roundID: info.id, chapterKey: chapterKey, lens: lens, itemKey: item.key,
+                                           state: .commented)
+            }
+            try reloadComments()
+            try reloadChecks()
+        }
+    }
+
+    func addDesignComment(body: String, lens: String) throws {
+        try run {
+            let info = try openRound()
+            try db.write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
+            try reloadComments()
+        }
+    }
+
+    /// Marks a Wrap-up intent item; partial and not done also leave a design comment.
+    func markIntent(_ item: ReviewIntentItem, state: ReviewCheck.State, note: String) throws {
+        try run {
+            let info = try openRound()
+            try writeInOpenRound { db in
+                // An earlier mark of this item (this round's draft, or a carried one) is replaced.
+                let heads = [false, true].map { ReviewWrapUp.intentCommentBody(partial: $0, item: item, note: "") }
+                let earlier = try ReviewQueries.comments(db, roundID: info.id).filter { c in
+                    c.lens == Self.intentLens && c.path == nil
+                        && heads.contains { c.body == $0 || c.body.hasPrefix($0 + " — ") }
+                }
+                for c in earlier {
+                    switch c.status {
+                    case .draft: try ReviewQueries.deleteDraft(db, id: c.id)
+                    case .carried: try ReviewQueries.resolve(db, id: c.id)
+                    default: break
+                    }
+                }
+                if state == .partial || state == .notDone {
+                    let body = ReviewWrapUp.intentCommentBody(partial: state == .partial, item: item, note: note)
+                    _ = try Self.addDesign(db, info: info, body: body, lens: Self.intentLens)
+                }
+                try ReviewQueries.setCheck(db, roundID: info.id, chapterKey: Self.wrapupChapter, lens: Self.intentLens,
+                                           itemKey: item.key, state: state)
+            }
+            try reloadComments()
+            try reloadChecks()
+        }
+    }
+
+    // MARK: - Active time
+
+    func noteInteraction(at date: Date = .now) {
+        pace.noteInteraction(at: date)
+    }
+
+    func tick(at date: Date = .now, isKey: Bool) {
+        pace.tick(at: date, isKey: isKey)
+        if pace.activeSeconds - savedActiveSeconds >= Self.saveEverySeconds { flushState() }
+    }
+
+    /// Saves the position and active time now (on disappear and before Send).
+    func flushState() {
+        guard round?.status == "open" else { return }
+        do {
+            try saveState(mode: mode, phase: phase, chapterKey: currentChapterKey)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     // MARK: - Private
+
+    private func openRound() throws -> ReviewRoundInfo {
+        guard let info = round else { throw ModelError.noRound }
+        guard info.status == "open" else { throw ModelError.roundClosed }
+        return info
+    }
+
+    /// A write in the open round: a row that is no longer open rolls the whole
+    /// write back and closes the round here, as `saveState` does.
+    private func writeInOpenRound(_ body: (Database) throws -> Void) throws {
+        do {
+            try db.write(body)
+        } catch ReviewQueries.ReviewQueryError.roundNotOpen {
+            round?.status = "sent"
+            throw ModelError.roundClosed
+        }
+    }
+
+    private func saveState(mode: Mode, phase: ReviewPhase, chapterKey: String?) throws {
+        let info = try openRound()
+        let seconds = pace.activeSeconds
+        let saved = try db.write {
+            try ReviewQueries.saveRoundState($0, roundID: info.id, mode: mode.rawValue, phase: phase,
+                                             chapterKey: chapterKey ?? "", activeSeconds: seconds)
+        }
+        guard saved else {
+            // The row is no longer open: stop writing to it.
+            round?.status = "sent"
+            throw ModelError.roundClosed
+        }
+        savedActiveSeconds = seconds
+    }
+
+    private func reloadChecks() throws {
+        guard let info = round else { return }
+        checks = try db.read { try ReviewQueries.checks($0, roundID: info.id) }
+    }
+
+    private static func addDesign(_ db: Database, info: ReviewRoundInfo, body: String, lens: String) throws -> Int64 {
+        try ReviewQueries.addDraft(db, roundID: info.id, path: nil, side: "new", startLine: 0, endLine: 0,
+                                   anchor: CommentAnchor(quote: "", prefix: "", suffix: "", heading: ""),
+                                   treeSHA: info.treeSha, body: body, lens: lens)
+    }
 
     /// Records a failure of a throwing action in `lastError` and rethrows it.
     private func run(_ body: () throws -> Void) throws {
@@ -345,6 +560,7 @@ final class ReviewChangesModel {
         allFiles = all.files
         files = diff.files
         truncated = diff.truncated
+        refreshChapters()
         if let selectedPath, !diff.files.contains(where: { $0.path == selectedPath }) {
             self.selectedPath = nil
         }

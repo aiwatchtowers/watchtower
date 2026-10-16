@@ -1,8 +1,8 @@
 import Foundation
 
 /// The app's keyboard shortcuts by area (issue #288): the one list behind
-/// Help › Keyboard Shortcuts, and the source of the guide's "Keyboard
-/// Shortcuts" section (`markdown`, kept identical by a test). Display only:
+/// Help › Keyboard Shortcuts, and the source of the guide's keyboard-shortcuts page ("By
+/// area" section, `markdown`, kept identical by a test). Display only:
 /// each chord stays bound where its action lives, so a new or moved chord
 /// is added here by hand. Pure.
 package enum KeyboardShortcutCatalog {

@@ -1985,6 +1985,15 @@ CREATE TABLE IF NOT EXISTS review_viewed (
   content_sha TEXT NOT NULL,
   PRIMARY KEY (round_id, path)
 );
+CREATE TABLE IF NOT EXISTS review_checks (
+  round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  chapter_key TEXT NOT NULL,
+  lens        TEXT NOT NULL,
+  item_key    TEXT NOT NULL,
+  state       TEXT NOT NULL CHECK (state IN ('checked','commented','done','partial','not_done')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (round_id, chapter_key, lens, item_key)
+);
 CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
     terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     agent_session_id    TEXT NOT NULL,

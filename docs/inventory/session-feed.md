@@ -9,7 +9,7 @@
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/sessionfeed/` + `internal/db/terminal_session_agent_sessions.go` + `internal/db/migrations/00124_*.sql` + `cmd/workbench_session_feed.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionFeed.swift,Services/SessionFeedStore.swift,Services/SessionFeedPoller.swift}` + `WatchtowerDesktop/Sources/Views/Workbench/SessionChat*.swift`
+**Module:** `internal/sessionfeed/` + `internal/db/terminal_session_agent_sessions.go` + `internal/db/migrations/00125_*.sql` + `cmd/workbench_session_feed.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionFeed.swift,Services/SessionFeedStore.swift,Services/SessionFeedPoller.swift}` + `WatchtowerDesktop/Sources/Views/Workbench/SessionChat*.swift`
 **Last full audit:** 2026-10-16
 
 ## FEED-01 — No transcript text in SQLite; transcripts are read-only
@@ -23,7 +23,7 @@
 **Test guards:**
 - `internal/sessionfeed/feed_test.go::TestFeed01_ReaderLeavesTranscriptUntouched`
 - `internal/db/terminal_session_agent_sessions_test.go::TestTerminalAgentSessions_RecordsEachID`
-- `internal/db/terminal_session_agent_sessions_test.go::TestMigration00124_Backfill`
+- `internal/db/terminal_session_agent_sessions_test.go::TestMigration00125_Backfill`
 
 **Locked since:** 2026-10-16
 
