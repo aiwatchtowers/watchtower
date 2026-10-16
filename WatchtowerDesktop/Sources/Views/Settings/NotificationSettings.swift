@@ -4,10 +4,12 @@ import WatchtowerCore
 
 struct NotificationSettings: View {
     @AppStorage("notifyDecisions") private var notifyDecisions = true
-    @AppStorage("notifyDailySummary") private var notifyDailySummary = true
+    @AppStorage(NotificationPreferences.briefingKey) private var notifyBriefing = true
     @AppStorage(WorkbenchNotificationCenter.enabledKey) private var notifyWorkbenches = true
     @AppStorage(PlanUsageNoticePolicy.enabledKey) private var notifyPlanUsage = true
-    @AppStorage("quietHoursEnabled") private var quietHoursEnabled = false
+    @AppStorage(NotificationPreferences.pausedKey) private var paused = false
+    @AppStorage("transcription.voiceRecognition") private var voiceRecognition = true
+    @AppStorage("transcription.voiceNotifications") private var notifyUnknownVoices = true
     @AppStorage(MeetingReminderCenter.remindersEnabledKey) private var notifyMeetingReminders = true
     @AppStorage(MeetingReminderCenter.reminderMinutesKey) private var reminderMinutes = MeetingReminderCenter.defaultReminderMinutes
     @State private var testSent = false
@@ -32,16 +34,20 @@ struct NotificationSettings: View {
                 }
             }
 
-            Section("Notification Types") {
+            Section("Notifications") {
+                Toggle("Pause notifications", isOn: $paused)
+                    .help("Silences every Watchtower notification until you turn this off")
                 Toggle("Decision notifications", isOn: $notifyDecisions)
-                Toggle("Daily summary notifications", isOn: $notifyDailySummary)
+                Toggle("Briefing notifications", isOn: $notifyBriefing)
+                    .help("Tells you when a new briefing is ready")
                 Toggle("Workbench notifications", isOn: $notifyWorkbenches)
                     .help("Agent questions and asks, finished targets, proposals awaiting approval")
                 Toggle("Claude plan limits", isOn: $notifyPlanUsage)
                     .help("Warns when a session or weekly limit will be hit before it resets, and at 90%")
-            }
-
-            Section("Meeting Reminders") {
+                Toggle("Notify about unknown voices", isOn: $notifyUnknownVoices)
+                    .disabled(!voiceRecognition)
+                    .help("Get a notification when a recording has voices to label "
+                        + "(needs Voice recognition in Settings → Meetings).")
                 Toggle("Meeting reminders", isOn: $notifyMeetingReminders)
                 Stepper(value: $reminderMinutes, in: 0...60) {
                     HStack {
@@ -56,14 +62,10 @@ struct NotificationSettings: View {
 
                 // Owner decision: the stop-recording safety push is always
                 // on — neither the toggle above nor "Off" minutes silence
-                // it; only Quiet Hours (and the OS permission) do.
-                Text("The \u{201C}meeting ended — still recording\u{201D} alert is always on and is silenced only by Quiet Hours.")
+                // it; only Pause notifications (and the OS permission) do.
+                Text("The \u{201C}meeting ended — still recording\u{201D} alert is always on and is silenced only by Pause notifications.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            Section("Quiet Hours") {
-                Toggle("Enable quiet hours", isOn: $quietHoursEnabled)
             }
 
             Section("Test") {
