@@ -55,11 +55,7 @@ func evidence(h Hint, kind string) []string {
 }
 
 func eventsInput(s evset) HintInput {
-	var all []db.AgentReportEvent
-	for _, evs := range s {
-		all = append(all, evs...)
-	}
-	return HintInput{Events: s, Commands: Commands(all), Models: Models(all)}
+	return HintInput{Events: s, Now: t0.Add(2 * time.Hour)}
 }
 
 func TestHintH1_RepeatedHeavyCommand(t *testing.T) {
@@ -68,13 +64,17 @@ func TestHintH1_RepeatedHeavyCommand(t *testing.T) {
 	for i := range 3 {
 		s.add("s1", time.Duration(i)*5*mn, tl("Bash", "go test", 2*mn, "ok"))
 	}
-	// s2 works #7 between its two update_target calls; three runs inside, one after
+	// #7 is in progress 2m-18m; s2 names it at 0 and 30m, a wider span than the
+	// window: the 25m run is outside the window and stays with the session
 	s.add("s2", 0, tl("mcp__watchtower-workbench__update_target", "#7", sec, "ok"))
 	for i := range 3 {
 		s.add("s2", time.Duration(i+1)*5*mn, tl("Bash", "swift test", time.Duration(i+1)*mn, "ok"))
 	}
-	s.add("s2", 20*mn, tl("mcp__watchtower-workbench__update_target", "#7", sec, "ok"))
-	s.add("s2", 30*mn, tl("Bash", "swift test", 10*mn, "ok"))
+	s.add("s2", 25*mn, tl("Bash", "swift test", 10*mn, "ok"))
+	s.add("s2", 30*mn, tl("mcp__watchtower-workbench__update_target", "#7", sec, "ok"))
+	// s5 names #7 only after the window; its run inside the window still counts
+	s.add("s5", 12*mn, tl("Bash", "swift test", mn, "ok"))
+	s.add("s5", 50*mn, tl("mcp__watchtower-workbench__get_target", "#7", sec, "ok"))
 	// below the thresholds: three short runs, two long runs
 	for i := range 3 {
 		s.add("s3", time.Duration(i)*mn, tl("Bash", "go test", 30*sec, "ok"))
@@ -82,7 +82,7 @@ func TestHintH1_RepeatedHeavyCommand(t *testing.T) {
 	s.add("s4", 0, tl("Bash", "go build", 4*mn, "ok"))
 	s.add("s4", 5*mn, tl("Bash", "go build", 4*mn, "ok"))
 	in := eventsInput(s)
-	in.Tasks = []TaskRow{{TargetID: 7, Text: "ship it", Sessions: []string{"s2"}}}
+	in.Targets = []db.AgentReportTarget{target(7, nil, sc("in_progress", 2*mn), sc("done", 18*mn))}
 
 	hs := hintsOf(Hints(in), "H1")
 	require.Len(t, hs, 2)
@@ -96,10 +96,10 @@ func TestHintH1_RepeatedHeavyCommand(t *testing.T) {
 	}
 	assert.Equal(t, ms(4*mn), byScope["s1"].EstimateMS)
 	assert.Equal(t, []string{"go test"}, evidence(byScope["s1"], "command"))
-	assert.Equal(t, ms(5*mn), byScope["#7"].EstimateMS, "runs after the first, inside the window only")
-	assert.Equal(t, []string{"s2"}, evidence(byScope["#7"], "session"))
-	assert.Contains(t, byScope["#7"].Finding, "swift test")
-	assert.Contains(t, byScope["#7"].Finding, "6m 0s")
+	assert.Equal(t, ms(6*mn), byScope["#7"].EstimateMS, "runs after the first, inside the status window only")
+	assert.Equal(t, []string{"s2", "s5"}, evidence(byScope["#7"], "session"))
+	assert.Contains(t, byScope["#7"].Finding, "swift test ran 4 times")
+	assert.Contains(t, byScope["#7"].Finding, "7m 0s")
 }
 
 func TestHintH2_SlowCheapCommands(t *testing.T) {
@@ -115,6 +115,7 @@ func TestHintH2_SlowCheapCommands(t *testing.T) {
 	assert.Equal(t, ms(6500*time.Millisecond)*4, hs[0].EstimateMS) // median 7.5s
 	assert.ElementsMatch(t, []string{"Read", "Grep", "git status", "git diff"}, evidence(hs[0], "command"))
 	assert.Contains(t, hs[0].Finding, "/fewer-permission-prompts")
+	assert.Contains(t, hs[0].Finding, "median of 7.5s")
 
 	fast := evset{}
 	fast.add("s1", 0, tl("Read", "/tmp/x/a", sec, "ok"))
@@ -160,12 +161,15 @@ func TestHintH4_OwnerShare(t *testing.T) {
 	assert.Equal(t, ms(40*mn), hs[0].EstimateMS)
 	assert.Equal(t, []string{"s1"}, evidence(hs[0], "session"))
 	assert.Equal(t, []string{"#3"}, evidence(hs[0], "target"))
+	assert.Contains(t, hs[0].Finding, "in 1 session and 1 task,")
 
 	// only a task over the line: its waiting time
 	in.Sessions["s1"] = SessionView{UUID: "s1", Time: TimeSplit{OwnerMS: ms(20 * mn), ActiveMS: ms(100 * mn)}}
 	hs = hintsOf(Hints(in), "H4")
 	require.Len(t, hs, 1)
 	assert.Equal(t, ms(20*mn), hs[0].EstimateMS)
+	assert.Contains(t, hs[0].Finding, "in 1 task,")
+	assert.NotContains(t, hs[0].Finding, "session")
 
 	in.Tasks = in.Tasks[1:]
 	assert.Empty(t, hintsOf(Hints(in), "H4"))
@@ -181,6 +185,13 @@ func TestHintH5_FailingToolLoop(t *testing.T) {
 	s.add("s2", mn, tl("Bash", "go vet", sec, "error"))
 	s.add("s2", 2*mn, tl("Bash", "go vet", sec, "ok"))
 	s.add("s2", 3*mn, tl("Bash", "go vet", sec, "error"))
+	// main agent and subagent failures are separate lanes and never join
+	s.add("s3", 0, tl("Bash", "go build", sec, "error"))
+	sub := tl("Bash", "go build", sec, "error")
+	sub.AgentID = "a1"
+	s.add("s3", mn, sub)
+	s.add("s3", 2*mn, tl("Bash", "go build", sec, "error"))
+	s.add("s3", 3*mn, sub)
 	hs := hintsOf(Hints(eventsInput(s)), "H5")
 	require.Len(t, hs, 1)
 	assert.Equal(t, ms(6*sec), hs[0].EstimateMS)
@@ -205,19 +216,37 @@ func TestHintH6_ExpensiveContext(t *testing.T) {
 }
 
 func TestHintH7_TopModelOnSubagents(t *testing.T) {
-	top, next := agentlog.ModelTiers()[0], "claude-opus-4-6"
+	rate := func(m string) float64 { usd, _ := agentlog.Cost(m, "", 0, 1e6, 0, 0, 0); return usd }
+	tiers := agentlog.ModelTiers()
+	top, tie, next := tiers[0], "", ""
+	for _, m := range tiers[1:] {
+		switch {
+		case rate(m) == rate(top) && tie == "":
+			tie = m
+		case rate(m) < rate(top) && next == "":
+			next = m
+		}
+	}
+	require.NotEmpty(t, tie, "the price table has a tie at the top")
+	require.NotEmpty(t, next)
+
 	s := evset{}
-	sub := apiEv("a1", top, 40, 1e6, 0, 0, 0)
-	sub.OutputTokens = 1e6
-	s.add("s1", 0, sub)
-	s.add("s1", mn, apiEv("", "claude-opus-5-5", 60, 0, 0, 0, 0))
+	for i, m := range []string{top, tie} {
+		e := apiEv("a1", m, 0, 1e6, 0, 0, 0)
+		e.OutputTokens = 1e6
+		e.CostUSD, _ = agentlog.Cost(m, "", 1e6, 1e6, 0, 0, 0)
+		s.add("s1", time.Duration(i)*mn, e)
+	}
+	s.add("s1", 2*mn, apiEv("", "claude-opus-5-5", 60, 0, 0, 0, 0))
 	hs := hintsOf(Hints(eventsInput(s)), "H7")
 	require.Len(t, hs, 1)
 	repriced, ok := agentlog.Cost(next, "", 1e6, 1e6, 0, 0, 0)
 	require.True(t, ok)
-	assert.InDelta(t, 40-repriced, hs[0].EstimateUSD, 1e-9)
+	stored := s["s1"][0].CostUSD + s["s1"][1].CostUSD
+	assert.InDelta(t, stored-2*repriced, hs[0].EstimateUSD, 1e-9)
 	assert.Equal(t, []string{"s1"}, evidence(hs[0], "session"))
 	assert.Contains(t, hs[0].Finding, next)
+	assert.Contains(t, hs[0].Finding, tie)
 
 	low := evset{}
 	low.add("s1", 0, apiEv("a1", top, 20, 1e6, 0, 0, 0))
@@ -243,6 +272,7 @@ func TestHints_CiteEvidence(t *testing.T) {
 	}
 	s.add("s2", 40*mn, apiEv("", "claude-opus-5-5", 10, 0, 0, 0, 0))
 	in := eventsInput(s)
+	in.Targets = []db.AgentReportTarget{target(7, nil, sc("in_progress", 2*mn), sc("done", 29*mn))}
 	in.Tasks = []TaskRow{{TargetID: 7, Text: "t", Sessions: []string{"s1"},
 		Time: TimeSplit{OwnerMS: ms(30 * mn), ActiveMS: ms(60 * mn)}}}
 	in.Sessions = map[string]SessionView{
@@ -256,8 +286,12 @@ func TestHints_CiteEvidence(t *testing.T) {
 	}
 	assert.Equal(t, map[string]bool{"H1": true, "H2": true, "H3": true, "H4": true, "H5": true, "H6": true, "H7": true}, ids)
 
+	var all []db.AgentReportEvent
+	for _, evs := range s {
+		all = append(all, evs...)
+	}
 	verbs := map[string]bool{}
-	for _, c := range in.Commands {
+	for _, c := range Commands(all) {
 		verbs[c.Verb] = true
 	}
 	for _, h := range hs {
@@ -271,7 +305,7 @@ func TestHints_CiteEvidence(t *testing.T) {
 				_, inEvents := in.Events[e.Ref]
 				assert.True(t, inSessions || inEvents, "%s cites unknown session %q", h.ID, e.Ref)
 			case "target":
-				assert.True(t, slices.ContainsFunc(in.Tasks, func(r TaskRow) bool { return "#"+strconv.FormatInt(r.TargetID, 10) == e.Ref }),
+				assert.True(t, slices.ContainsFunc(in.Targets, func(r db.AgentReportTarget) bool { return "#"+strconv.FormatInt(r.ID, 10) == e.Ref }),
 					"%s cites unknown target %q", h.ID, e.Ref)
 			case "command":
 				assert.True(t, verbs[e.Ref], "%s cites unknown command %q", h.ID, e.Ref)

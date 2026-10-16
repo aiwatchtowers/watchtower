@@ -57,12 +57,14 @@ type SessionView struct {
 }
 
 // HintInput is the period the hints judge; Events are keyed by session uuid.
+// Targets (with their status history) and Now give H1 the targets' windows,
+// as in Tasks.
 type HintInput struct {
 	Sessions map[string]SessionView
 	Tasks    []TaskRow
-	Commands []CommandRow
-	Models   []ModelRow
+	Targets  []db.AgentReportTarget
 	Events   map[string][]db.AgentReportEvent
+	Now      time.Time
 }
 
 // Hints runs the rules H1–H7 over the period and ranks what fired by the
@@ -106,33 +108,37 @@ func sessionEv(sid, label string) Evidence { return Evidence{Kind: "session", Re
 
 func short(sid string) string { return sid[:min(len(sid), 8)] }
 
-// H1: one build & test verb run RepeatRuns+ times inside one target window
-// (the span between the session's first and last calls naming the target; the
-// narrowest one holding a run wins) or, outside every window, in one session.
+// H1: one build & test verb run RepeatRuns+ times inside one leaf target's
+// in_progress/in_review window (from any session naming the target; the
+// narrowest window holding a run wins) or, outside every window, in one session.
 func repeatedHeavy(in HintInput, sessions []string) []Hint {
+	now := in.Now.UTC()
+	parents := map[int64]bool{}
+	for _, t := range in.Targets {
+		if t.ParentID != nil {
+			parents[*t.ParentID] = true
+		}
+	}
 	text := map[int64]string{}
-	for _, t := range in.Tasks {
-		text[t.TargetID] = t.Text
+	wins := map[int64][]window{}
+	for _, t := range in.Targets {
+		if !parents[t.ID] {
+			text[t.ID] = t.Text
+			wins[t.ID] = windows(t.History, now)
+		}
 	}
 	type key struct{ scope, verb string }
 	runs := map[key][]timedEvent{}
 	inSessions := map[key]map[string]bool{}
 	for _, sid := range sessions {
 		evs := sortEvents(in.Events[sid], func(e db.AgentReportEvent) bool { return e.Kind == "tool" })
-		spans := map[int64]span{}
+		linked := map[int64]bool{}
 		for _, e := range evs {
-			id, ok := targetID(e.Target)
-			if _, tracked := text[id]; !ok || !tracked {
-				continue
-			}
-			if s, seen := spans[id]; seen {
-				s.end = e.at
-				spans[id] = s
-			} else {
-				spans[id] = span{e.at, e.at}
+			if id, ok := targetID(e.Target); ok && len(wins[id]) > 0 {
+				linked[id] = true
 			}
 		}
-		ids := slices.Sorted(maps.Keys(spans))
+		ids := slices.Sorted(maps.Keys(linked))
 		for _, e := range evs {
 			if ToolClass(e.Name, e.Target) != ClassBuildTest {
 				continue
@@ -140,12 +146,13 @@ func repeatedHeavy(in HintInput, sessions []string) []Hint {
 			scope := sid
 			var best time.Duration = -1
 			for _, id := range ids {
-				s := spans[id]
-				if e.at.Before(s.start) || e.at.After(s.end) {
-					continue
-				}
-				if w := s.end.Sub(s.start); best < 0 || w < best {
-					best, scope = w, fmt.Sprintf("#%d", id)
+				for _, w := range wins[id] {
+					if !w.has(e.at) {
+						continue
+					}
+					if d := w.end.Sub(w.start); best < 0 || d < best {
+						best, scope = d, fmt.Sprintf("#%d", id)
+					}
 				}
 			}
 			k := key{scope, verb(e.AgentReportEvent)}
@@ -240,7 +247,7 @@ func slowCheap(in HintInput) []Hint {
 		h.Evidence = append(h.Evidence, Evidence{Kind: "command", Ref: v, Label: fmt.Sprintf("%d calls, %s", count[v], fmtDur(total[v]))})
 	}
 	h.Finding = fmt.Sprintf("%d read, search and git status/log/diff calls took a median of %s each, likely permission prompts; allow rules would help (/fewer-permission-prompts)",
-		n, fmtDur(median))
+		n, fmtSec(median))
 	return []Hint{h}
 }
 
@@ -310,38 +317,47 @@ func ownerShare(in HintInput, sessions []string) []Hint {
 	if nSessions == 0 {
 		h.EstimateMS = largest
 	}
-	h.Finding = fmt.Sprintf("Waiting for you took over %d%% of active time in %d sessions and %d tasks, %s in all",
-		int(OwnerShareMax*100), nSessions, nTasks, fmtDur(h.EstimateMS))
+	var where []string
+	if nSessions > 0 {
+		where = append(where, plural(nSessions, "session"))
+	}
+	if nTasks > 0 {
+		where = append(where, plural(nTasks, "task"))
+	}
+	h.Finding = fmt.Sprintf("Waiting for you took over %d%% of active time in %s, %s in all",
+		int(OwnerShareMax*100), strings.Join(where, " and "), fmtDur(h.EstimateMS))
 	return []Hint{h}
 }
 
-// H5: one verb failing FailLoop+ times in a row in a session (calls of other
-// verbs in between do not break the run).
+// H5: one verb failing FailLoop+ times in a row in one agent lane of a
+// session: a successful run of that verb breaks the streak, calls of other
+// verbs in between do not.
 func failingLoops(in HintInput, sessions []string) []Hint {
+	type lane struct{ agent, verb string }
 	var out []Hint
 	for _, sid := range sessions {
-		streak := map[string][]int64{}
+		streak := map[lane][]int64{}
 		lost := map[string]int64{}
 		failed := map[string]int{}
-		flush := func(v string) {
-			if len(streak[v]) >= FailLoop {
-				failed[v] += len(streak[v])
-				for _, ms := range streak[v] {
-					lost[v] += ms
+		flush := func(l lane) {
+			if len(streak[l]) >= FailLoop {
+				failed[l.verb] += len(streak[l])
+				for _, ms := range streak[l] {
+					lost[l.verb] += ms
 				}
 			}
-			streak[v] = nil
+			delete(streak, l)
 		}
 		for _, e := range sortEvents(in.Events[sid], func(e db.AgentReportEvent) bool { return e.Kind == "tool" }) {
-			v := verb(e.AgentReportEvent)
+			l := lane{e.AgentID, verb(e.AgentReportEvent)}
 			if e.Outcome == "error" {
-				streak[v] = append(streak[v], durMS(e.AgentReportEvent))
+				streak[l] = append(streak[l], durMS(e.AgentReportEvent))
 				continue
 			}
-			flush(v)
+			flush(l)
 		}
-		for _, v := range slices.Sorted(maps.Keys(streak)) {
-			flush(v)
+		for l := range streak {
+			flush(l)
 		}
 		for _, v := range slices.Sorted(maps.Keys(failed)) {
 			out = append(out, Hint{ID: "H5", EstimateMS: lost[v],
@@ -449,6 +465,21 @@ func fmtDur(ms int64) string {
 		return fmt.Sprintf("%dm %ds", m, s)
 	}
 	return fmt.Sprintf("%ds", s)
+}
+
+// fmtSec renders ms under a minute with one decimal ("7.5s"), else as fmtDur.
+func fmtSec(ms int64) string {
+	if ms < time.Minute.Milliseconds() {
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	}
+	return fmtDur(ms)
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func fmtUSD(v float64) string { return fmt.Sprintf("$%.2f", v) }
