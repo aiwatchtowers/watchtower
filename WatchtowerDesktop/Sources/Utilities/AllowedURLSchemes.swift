@@ -29,13 +29,6 @@ enum AllowedURLSchemes {
         MemoryMarkdown.linkScheme
     ]
 
-    /// Schemes the app opens itself and never hands to the system:
-    /// `watchtower-nav` (`NavLink.scheme`) opens a screen of the app. Chat
-    /// markdown renders them (`MarkdownView`, as `renderOnly`); only the main
-    /// window's gate opens them (`openURLAction(navigate:)`), every other
-    /// surface discards them.
-    static let inAppSchemes: Set<String> = [NavLink.scheme]
-
     /// Whether `url` may be handed to the system. A URL with no scheme
     /// (relative, or a bare path) is rejected.
     ///
@@ -73,11 +66,20 @@ enum AllowedURLSchemes {
     /// itself and never hands to the system (a code answer's
     /// `watchtower-code` links in the code question popover); `permits`
     /// never includes them.
-    static func strippingDisallowedLinks(_ attributed: AttributedString, renderOnly: Set<String> = []) -> AttributedString {
+    ///
+    /// `navScreens` keeps an in-app screen link (`watchtower-nav://<screen>`,
+    /// Ask Watchtower) only when its screen is listed — the screens visible
+    /// in the main window's sidebar, which alone opens them
+    /// (`openURLAction(navigate:)`). An unknown or hidden screen's link is
+    /// stripped like a disallowed scheme: plain text, never a dead link.
+    static func strippingDisallowedLinks(
+        _ attributed: AttributedString, renderOnly: Set<String> = [], navScreens: Set<String> = []
+    ) -> AttributedString {
         var result = attributed
         let disallowed = result.runs.compactMap { run -> Range<AttributedString.Index>? in
             guard let link = run.link, !permits(link),
-                  !renderOnly.contains(link.scheme?.lowercased() ?? "") else { return nil }
+                  !renderOnly.contains(link.scheme?.lowercased() ?? ""),
+                  NavLink.destination(from: link, allowed: navScreens) == nil else { return nil }
             return run.range
         }
         for range in disallowed {

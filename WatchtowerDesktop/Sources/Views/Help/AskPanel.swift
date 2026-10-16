@@ -46,6 +46,7 @@ struct AskPanel: View {
     @State private var query = ""
     @State private var selectedIndex = 0
     @State private var engine: EmbeddedChatEngine?
+    @State private var asking = false
     @State private var previousResponder = PreviousFirstResponder()
     @FocusState private var searchFocused: Bool
 
@@ -282,19 +283,29 @@ struct AskPanel: View {
 
     // MARK: - The conversation
 
+    /// Waits for the guide index first (a cold first ⌘/ may still be
+    /// loading it); a failed load asks anyway, with no sections.
     private func ask(_ text: String) {
-        let spec = HelpChatSurface.spec(
-            center: center,
-            currentPage: { [appState] in appState.selectedDestination.title },
-            screens: { [appState] in appState.visibleHelpScreens }
-        )
-        let engine = appState.embeddedChatCenter.engine(for: spec)
-        self.engine = engine
-        engine.send(text)
+        guard !asking else { return }
+        asking = true
+        Task {
+            await center.loadIfNeeded()
+            let spec = HelpChatSurface.spec(
+                center: center,
+                currentPage: { [appState] in appState.selectedDestination.title },
+                screens: { [appState] in appState.visibleHelpScreens }
+            )
+            let engine = appState.embeddedChatCenter.engine(for: spec)
+            center.history = { [weak engine] in engine?.messages.map(\.message) ?? [] }
+            self.engine = engine
+            engine.send(text)
+        }
     }
 
     private func conversation(_ engine: EmbeddedChatEngine) -> some View {
-        EmbeddedChatView(engine: engine, density: .compact, placeholder: "Ask a follow-up…", onEscape: close,
+        // Esc closes through the hidden button below (a key equivalent runs
+        // before the composer sees the key), so the composer gets no onEscape.
+        EmbeddedChatView(engine: engine, density: .compact, placeholder: "Ask a follow-up…",
                          accessory: { item in source(for: item) }, footer: { EmptyView() })
             .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
             .frame(height: 420)

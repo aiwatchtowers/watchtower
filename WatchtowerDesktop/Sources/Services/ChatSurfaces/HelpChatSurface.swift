@@ -7,6 +7,8 @@ import WatchtowerCore
 ///   retrieved in Swift from the loaded index and put into its prompt, so it
 ///   works on every provider and never reads the owner's data.
 /// - `.memory`: no conversation row; closing the panel releases the engine.
+/// - Screen links (`watchtower-nav://`) to a hidden or unknown screen render
+///   as plain text (`MarkdownView`'s `markdownNavScreens`).
 /// - The light tier of the configured provider.
 @MainActor
 enum HelpChatSurface {
@@ -38,36 +40,21 @@ enum HelpChatSurface {
                 } ?? []
                 center.previousQuestion = input.text
                 center.pendingSource = sections.first
-                return HelpPrompt.turn(question: input.text, previousQuestion: previous, currentPage: currentPage(),
-                                       screens: screens(), sections: sections)
+                let turn = HelpPrompt.turn(question: input.text, previousQuestion: previous,
+                                           currentPage: currentPage(), screens: screens(), sections: sections)
+                // A run that resumes no provider session (Codex, Ollama,
+                // Claude without one) gets the earlier turns replayed.
+                guard !input.isResumed else { return turn }
+                let replay = EmbeddedChatReplay.block(messages: center.history(), before: input.turnID,
+                                                      prompt: input.text)
+                return (replay ?? "") + turn
             },
             postTurn: { input in
                 center.recordSource(messageID: input.messageID)
-                let allowed = Set(screens().map(\.rawValue))
-                return ChatPostTurnResult(displayText: unlinkingNavLinks(input.reply, allowed: allowed))
+                return .identity(input)
             },
             emptyHint: "Ask how to do something in Watchtower.",
             runOptions: runOptions
         )
-    }
-
-    private static let navLinkPattern: NSRegularExpression? = try? NSRegularExpression(
-        pattern: #"\[([^\]]*)\]\(\#(NavLink.scheme)://([^)\s]*)\)"#)
-
-    /// A markdown link to a screen not in `allowed` (unknown, or hidden from
-    /// the sidebar) becomes its plain label, never a dead link.
-    static func unlinkingNavLinks(_ text: String, allowed: Set<String>) -> String {
-        guard let pattern = navLinkPattern else { return text }
-        let source = text as NSString
-        var result = ""
-        var cursor = 0
-        for match in pattern.matches(in: text, range: NSRange(location: 0, length: source.length)) {
-            let destination = source.substring(with: match.range(at: 2))
-            guard !allowed.contains(destination) else { continue }
-            result += source.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
-            result += source.substring(with: match.range(at: 1))
-            cursor = match.range.location + match.range.length
-        }
-        return result + source.substring(from: cursor)
     }
 }

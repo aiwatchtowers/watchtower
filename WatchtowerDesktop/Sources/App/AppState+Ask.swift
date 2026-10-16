@@ -33,11 +33,13 @@ extension AppState {
             .map { HelpScreen(rawValue: $0.rawValue, title: $0.title) }
     }
 
+    var visibleHelpScreenIDs: Set<String> { Set(visibleHelpScreens.map(\.rawValue)) }
+
     /// A `watchtower-nav://<screen>` link from the panel or AI Chat: opens a
     /// visible screen and closes the panel. An unknown or hidden screen is
     /// ignored (the link does nothing).
     func openNavLink(_ url: URL) {
-        guard let raw = NavLink.destination(from: url, allowed: Set(visibleHelpScreens.map(\.rawValue))),
+        guard let raw = NavLink.destination(from: url, allowed: visibleHelpScreenIDs),
               let destination = SidebarDestination(rawValue: raw) else { return }
         selectedDestination = destination
         isAskPanelShown = false

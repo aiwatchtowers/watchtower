@@ -402,6 +402,8 @@ struct WatchtowerApp: App {
             // It also opens in-app screen links (`watchtower-nav://`) from
             // the Ask panel and AI Chat.
             .environment(\.openURL, appState.mainWindowOpenURL)
+            // Screen links render only for the screens visible right now.
+            .environment(\.markdownNavScreens, appState.visibleHelpScreenIDs)
             .environment(\.dictationCenter, appState.dictationCenter)
             .onAppear {
                 // Both lines are duplicates of the delegate's launch bootstrap

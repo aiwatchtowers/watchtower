@@ -109,14 +109,37 @@ final class AskCenterTests: XCTestCase {
         XCTAssertTrue(followUp.contains("Get a recap"), followUp)
     }
 
-    func testPostTurnRecordsSourceAndUnlinksHiddenScreens() async {
+    func testPostTurnRecordsSourceAndKeepsReply() async {
         let center = await loadedCenter()
         let spec = HelpChatSurface.spec(center: center, currentPage: { "Calendar" }, screens: { [self.calendar] })
         _ = spec.turnPrompt(input("how do I get a recap"))
-        let reply = "Open [Calendar](watchtower-nav://calendar), not [Workbench](watchtower-nav://projects)."
+        let reply = "Open [Calendar](watchtower-nav://calendar)."
         let result = spec.postTurn(ChatPostTurnInput(reply: reply, turnID: "t1", messageID: 42))
-        XCTAssertEqual(result.displayText, "Open [Calendar](watchtower-nav://calendar), not Workbench.")
+        XCTAssertEqual(result.displayText, reply)
         XCTAssertEqual(center.sources[42]?.heading, "Get a recap")
+    }
+
+    /// A provider that resumes no session gets the earlier turns replayed;
+    /// a resumed Claude session does not.
+    func testFollowUpReplaysEarlierTurnsWhenNotResumed() async {
+        let center = await loadedCenter()
+        center.history = {
+            [
+                ChatMessageRecord(id: 1, conversationID: 0, role: "user", text: "how do I get a recap",
+                                  createdAt: 1, turnID: "t1"),
+                ChatMessageRecord(id: 2, conversationID: 0, role: "assistant", text: "Open the recording's Recap tab.",
+                                  createdAt: 2, turnID: "t1"),
+                ChatMessageRecord(id: 3, conversationID: 0, role: "user", text: "and then?", createdAt: 3, turnID: "t2")
+            ]
+        }
+        let spec = HelpChatSurface.spec(center: center, currentPage: { "Calendar" }, screens: { [self.calendar] })
+        let fresh = spec.turnPrompt(ChatTurnInput(text: "and then?", isResumed: false, previousOwnerMessageAt: nil,
+                                                  turnID: "t2"))
+        XCTAssertTrue(fresh.contains("Open the recording's Recap tab."), fresh)
+        XCTAssertTrue(fresh.contains("Question: and then?"), fresh)
+        let resumed = spec.turnPrompt(ChatTurnInput(text: "and then?", isResumed: true, previousOwnerMessageAt: nil,
+                                                    turnID: "t2"))
+        XCTAssertFalse(resumed.contains("Open the recording's Recap tab."), resumed)
     }
 
     func testNewConversationForgetsTheLastOne() async {

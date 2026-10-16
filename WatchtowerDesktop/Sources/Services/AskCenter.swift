@@ -37,6 +37,9 @@ final class AskCenter {
     @ObservationIgnored var previousQuestion: String?
     /// The top section of the turn in flight, recorded for its reply.
     @ObservationIgnored var pendingSource: GuideSection?
+    /// The open conversation's rows, replayed to a provider that resumes no
+    /// session; the panel points it at its engine.
+    @ObservationIgnored var history: @MainActor () -> [ChatMessageRecord] = { [] }
 
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private var loading: Task<Void, Never>?
@@ -89,6 +92,7 @@ final class AskCenter {
         conversationID = UUID()
         previousQuestion = nil
         pendingSource = nil
+        history = { [] }
         sources = [:]
     }
 
