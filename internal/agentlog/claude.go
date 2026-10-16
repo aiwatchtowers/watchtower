@@ -109,7 +109,7 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 	br := bufio.NewReaderSize(r, 64<<10)
 	off := startOffset
 	for {
-		raw, n, complete, err := nextLine(br, maxLineBytes)
+		raw, n, complete, err := NextLine(br, maxLineBytes)
 		if !complete {
 			break // EOF mid-line, or plain EOF: the rest waits for the next scan
 		}
@@ -131,10 +131,10 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 	return p.res, nil
 }
 
-// nextLine returns one '\n'-terminated line without the newline, the bytes
+// NextLine returns one '\n'-terminated line without the newline, the bytes
 // consumed, and complete=false when the input ended before a newline. A line
 // longer than limit comes back as nil (consumed and complete).
-func nextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
+func NextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
 	var buf []byte
 	var n int64
 	tooLong := false
