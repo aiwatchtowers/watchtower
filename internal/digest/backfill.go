@@ -81,14 +81,9 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 			return res, usage, err
 		}
 		if len(windows) == 0 {
-			// A channel that failed in this call is not re-sent; with nothing
-			// else left the chunk takes the failure and is retried next cycle.
-			if len(scope.failed) > 0 {
-				return res, usage, fmt.Errorf("digest backfill [%.0f,%.0f]: %d channel(s) failed: %w",
-					from, to, len(scope.failed), scope.lastErr)
-			}
-			res.Complete = true
-			return res, usage, nil
+			err := scope.failure(from, to)
+			res.Complete = err == nil
+			return res, usage, err
 		}
 		// advancesWindow's invariant, asserted per pass: a pass that moved no
 		// channel would repeat itself forever.
@@ -102,11 +97,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 
 		n, u, err := p.runChannelWindows(ctx, windows, to)
 		res.Digests += n
-		if u != nil {
-			usage.InputTokens += u.InputTokens
-			usage.OutputTokens += u.OutputTokens
-			usage.TotalAPITokens += u.TotalAPITokens
-		}
+		addBackfillUsage(usage, u)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return res, usage, ctxErr
 		}
@@ -116,6 +107,27 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 	}
 	p.logger.Printf("digest backfill: [%.0f,%.0f] still has work after %d passes — resuming next cycle", from, to, maxBackfillPasses)
 	return res, usage, nil
+}
+
+// failure is the outcome of a chunk with no windows left. A channel that
+// failed in this call is not re-sent; with nothing else left the chunk takes
+// the failure and is retried next cycle. nil means the chunk is complete.
+func (b *backfillScope) failure(from, to float64) error {
+	if len(b.failed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("digest backfill [%.0f,%.0f]: %d channel(s) failed: %w",
+		from, to, len(b.failed), b.lastErr)
+}
+
+// addBackfillUsage adds one pass's token usage to the call's own sum.
+func addBackfillUsage(sum, u *Usage) {
+	if u == nil {
+		return
+	}
+	sum.InputTokens += u.InputTokens
+	sum.OutputTokens += u.OutputTokens
+	sum.TotalAPITokens += u.TotalAPITokens
 }
 
 // backfillWindows resolves the chunk-scoped window of every digestable channel
