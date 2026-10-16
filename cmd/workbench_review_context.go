@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/reviewdiff"
+	"watchtower/internal/tools"
 )
 
 type reviewContextItem struct {
@@ -38,7 +39,7 @@ func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkSessionOnWorkbench(database, p, reviewFlagSession); err != nil {
+	if err := tools.CheckSessionOnWorkbench(database, p, reviewFlagSession); err != nil {
 		return failReview(cmd, err)
 	}
 	items, err := reviewContextItems(cmd.Context(), database, p, reviewFlagSession)

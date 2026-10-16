@@ -40,6 +40,7 @@ func workbenchTools(files workbenchfiles.Store, sessionEnv func() string) []*Too
 		NewCreateTargets(files, sessionEnv), NewUpdateTarget(files, sessionEnv),
 		NewListComments(), NewAddComment(sessionEnv), NewResolveComment(sessionEnv),
 		NewAskOwner(sessionEnv), NewGetAsk(), NewGetReview(),
+		NewAnnotateChanges(sessionEnv), NewReplyReviewComment(),
 		NewListAsks(sessionEnv), NewWithdrawAsk(),
 		NewFinishSession(sessionEnv),
 	}

@@ -120,3 +120,124 @@ func TestReviewRounds_SendIncludesCarried(t *testing.T) {
 		t.Fatalf("statuses = %v", got)
 	}
 }
+
+func TestReplyReviewComment_RepliesResolvesAndFollowsTheOpenCopy(t *testing.T) {
+	d := openTestDB(t)
+	pid, sid := seedReviewSession(t, d)
+	sent, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.Exec(`INSERT INTO review_comments (round_id, path, body) VALUES (?, 'a.go', 'fix')`, sent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cid, _ := res.LastInsertId()
+	if _, ok, err := d.SendReviewRound(pid, sent); err != nil || !ok {
+		t.Fatalf("send = %v %v", ok, err)
+	}
+	open, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyOf := func(status string) int64 {
+		res, err := d.Exec(`INSERT INTO review_comments (round_id, path, body, status, carried_from) VALUES (?, 'a.go', 'fix', ?, ?)`, open, status, cid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+	carried, outdated, ownerResolved := copyOf("carried"), copyOf("outdated"), copyOf("resolved")
+	state := func(id int64) (status, reply string, at sql.NullString) {
+		if err := d.QueryRow(`SELECT status, agent_reply, agent_reply_at FROM review_comments WHERE id = ?`, id).Scan(&status, &reply, &at); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	ok, err := d.ReplyReviewComment(pid, cid, "looked at it", false)
+	if err != nil || !ok {
+		t.Fatalf("reply = %v %v", ok, err)
+	}
+	for _, id := range []int64{cid, carried, outdated} {
+		st, reply, at := state(id)
+		if reply != "looked at it" || !at.Valid {
+			t.Fatalf("comment %d reply = %q %v", id, reply, at)
+		}
+		if st == "resolved" {
+			t.Fatalf("comment %d resolved by an unresolved reply", id)
+		}
+	}
+	if st, reply, _ := state(ownerResolved); st != "resolved" || reply != "" {
+		t.Fatalf("owner-resolved copy touched: %q %q", st, reply)
+	}
+
+	ok, err = d.ReplyReviewComment(pid, cid, "fixed", true)
+	if err != nil || !ok {
+		t.Fatalf("resolve = %v %v", ok, err)
+	}
+	for _, id := range []int64{cid, carried, outdated} {
+		if st, reply, _ := state(id); st != "resolved" || reply != "fixed" {
+			t.Fatalf("comment %d = %q %q", id, st, reply)
+		}
+	}
+	if st, reply, _ := state(ownerResolved); st != "resolved" || reply != "" {
+		t.Fatalf("owner-resolved copy touched: %q %q", st, reply)
+	}
+
+	// resolved:false never reopens an agent- or owner-resolved comment.
+	if ok, err = d.ReplyReviewComment(pid, cid, "one more word", false); err != nil || !ok {
+		t.Fatalf("second reply = %v %v", ok, err)
+	}
+	if st, reply, _ := state(cid); st != "resolved" || reply != "one more word" {
+		t.Fatalf("comment = %q %q", st, reply)
+	}
+}
+
+func TestReplyReviewComment_RefusesDraftsOpenRoundsAndOtherWorkbenches(t *testing.T) {
+	d := openTestDB(t)
+	pid, sid := seedReviewSession(t, d)
+	other, err := d.CreateWorkbench("other", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	round, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.Exec(`INSERT INTO review_comments (round_id, body, status) VALUES (?, 'draft one', 'draft')`, round)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, _ := res.LastInsertId()
+	res, err = d.Exec(`INSERT INTO review_comments (round_id, body, status) VALUES (?, 'sent one', 'sent')`, round)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inOpen, _ := res.LastInsertId()
+	for name, c := range map[string]struct {
+		project, id int64
+	}{"draft in open round": {pid, draft}, "sent status in an open round": {pid, inOpen}, "unknown": {pid, 9999}} {
+		ok, err := d.ReplyReviewComment(c.project, c.id, "x", true)
+		if err != nil || ok {
+			t.Fatalf("%s: ok=%v err=%v", name, ok, err)
+		}
+	}
+	if _, ok, err := d.SendReviewRound(pid, round); err != nil || !ok {
+		t.Fatalf("send = %v %v", ok, err)
+	}
+	if ok, err := d.ReplyReviewComment(other, inOpen, "x", true); err != nil || ok {
+		t.Fatalf("other workbench: ok=%v err=%v", ok, err)
+	}
+	if _, err := d.Exec(`UPDATE review_comments SET status = 'draft' WHERE id = ?`, draft); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.ReplyReviewComment(pid, draft, "x", true); err != nil || ok {
+		t.Fatalf("draft: ok=%v err=%v", ok, err)
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM review_comments WHERE agent_reply <> ''`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("replies written = %d %v", n, err)
+	}
+}

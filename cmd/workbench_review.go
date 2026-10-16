@@ -12,7 +12,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/reviewdiff"
-	"watchtower/internal/workbenchgit"
+	"watchtower/internal/tools"
 )
 
 const workbenchReviewBudget = 30 * time.Second
@@ -176,37 +176,6 @@ func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, 
 	return writeReview(cmd, reviewEnvelope{OK: true, Round: out})
 }
 
-// checkSessionOnWorkbench refuses a session of another workbench.
-func checkSessionOnWorkbench(database *db.DB, p *db.Workbench, sessionID int64) error {
-	row, err := database.GetTerminalSession(sessionID)
-	if err != nil {
-		return err
-	}
-	if !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != p.ID {
-		return fmt.Errorf("session %d is not on workbench %d", sessionID, p.ID)
-	}
-	return nil
-}
-
-// sessionFolder: the root of the folder the session's agent works in.
-func sessionFolder(ctx context.Context, database *db.DB, p *db.Workbench, sessionID int64) (string, error) {
-	if err := checkSessionOnWorkbench(database, p, sessionID); err != nil {
-		return "", err
-	}
-	cwd, err := database.TerminalAgentCwd(sessionID)
-	if err != nil {
-		return "", err
-	}
-	folder, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: p.FolderPath}, cwd.Path)
-	if err != nil {
-		return "", err
-	}
-	if folder.Root == "" {
-		return p.FolderPath, nil
-	}
-	return folder.Root, nil
-}
-
 func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	database, p, err := reviewTarget(cmd)
 	if err != nil {
@@ -224,7 +193,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	folder := ""
 	if open != nil {
 		folder = open.FolderRoot
-	} else if folder, err = sessionFolder(ctx, database, p, reviewFlagSession); err != nil {
+	} else if folder, err = tools.ReviewSessionFolder(ctx, database, p, reviewFlagSession); err != nil {
 		return failReview(cmd, err)
 	}
 	repo, err := reviewdiff.Open(folder, nil)

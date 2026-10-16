@@ -121,19 +121,20 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 }
 
 // Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
-// finishing a session (pack v3); the marker is now v10 (v4: spec 2026-10-08,
+// finishing a session (pack v3); the marker is now v11 (v4: spec 2026-10-08,
 // Working a target / Working a group; v5: board #499, in_progress from the
 // first prompt; v6: spec 2026-10-10-owner-asks-v2 Part 7, Asking the owner;
 // v7: spec 2026-10-12-codex-workbench-agent §6.5, both agents' tool spellings;
 // v8: spec 2026-10-12-session-cleanup §11, clean up before finishing;
 // v9: board #328, Review rounds and get_review;
 // v10: spec 2026-10-15-workbench-configurable-methodology §4, the core split
-// from the watchtower-flow preset).
+// from the watchtower-flow preset;
+// v11: board #328 plan 3, annotate_changes and reply_review_comment).
 func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v10\n") {
-		t.Fatalf("the skill must carry %s: v10", MarkerKey)
+	if !strings.Contains(content, "\n"+MarkerKey+": v11\n") {
+		t.Fatalf("the skill must carry %s: v11", MarkerKey)
 	}
 	start := strings.Index(content, "## Finishing a session")
 	if start < 0 {
@@ -243,11 +244,11 @@ func TestWorkbenchSkill_AskingTheOwnerTeachesLevelsAndDiscipline(t *testing.T) {
 	}
 }
 
-// DEV-04 across every previous version (v1..v9 → v10): a copy we wrote
+// DEV-04 across every previous version (v1..v10 → v11): a copy we wrote
 // and the owner never touched is upgraded; an edited one is kept,
 // byte-identical, as drifted.
 func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
-	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md", "watchtower-workbench-v8.md", "watchtower-workbench-v9.md"} {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md", "watchtower-workbench-v8.md", "watchtower-workbench-v9.md", "watchtower-workbench-v10.md"} {
 		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
 		if err != nil {
 			t.Fatal(err)
@@ -285,6 +286,11 @@ func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *
 				if tc.want == StateUpdated {
 					if rep.Flow.State != StateInstalled || rep.SingleFileLayout {
 						t.Fatalf("unedited %s: flow %+v single=%v, want the preset installed", fixture, rep.Flow, rep.SingleFileLayout)
+					}
+				} else if fixture == "watchtower-workbench-v10.md" {
+					// An edited v10 core is already the split layout: kept, and the preset is not its concern.
+					if rep.SingleFileLayout {
+						t.Fatalf("edited %s: reported as the single-file layout", fixture)
 					}
 				} else if exists(filepath.Dir(flowSkillFile(folder))) || !rep.SingleFileLayout {
 					t.Fatalf("edited %s: a preset was written beside the single file (single=%v)", fixture, rep.SingleFileLayout)
