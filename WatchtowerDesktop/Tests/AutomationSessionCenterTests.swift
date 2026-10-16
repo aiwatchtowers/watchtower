@@ -86,6 +86,8 @@ private struct LaunchFailure: LocalizedError {
 private final class FakeStarter {
     private let pool: DatabasePool
     var calls: [PendingSessionRequest] = []
+    /// The rows written so far (a call cancelled before its write has none).
+    var created: [Int64] = []
     var failure: String?
     var gate: AsyncGate?
     var live: Set<Int64> = []
@@ -102,6 +104,7 @@ private final class FakeStarter {
                 claudeSessionID: UUID().uuidString.lowercased(), automationRunID: r.runID
             ))
         }
+        created.append(row.id)
         if let gate { await gate.wait() }
         // As GRDB and the CLI runner do once the launch is cancelled.
         try Task.checkCancellation()
@@ -383,7 +386,9 @@ final class AutomationSessionCenterTests: XCTestCase {
         center.onDisowned = { disowned += $0 }
 
         center.start()
-        await waitUntil { self.starter.calls.count == 1 }
+        // The row is written and the launch is held: a stop before the
+        // write would cancel the write itself, and leave nothing to adopt.
+        await waitUntil { self.starter.created.count == 1 }
         center.stop()
         gate.release()
         await waitUntil { center.launching.isEmpty }
@@ -392,7 +397,8 @@ final class AutomationSessionCenterTests: XCTestCase {
         XCTAssertTrue(disowned.isEmpty)
         XCTAssertNil(center.lastError)
         let left = try await sessions(run: r.run)
-        XCTAssertEqual(left.count, 1, "the row keeps its run marker")
+        XCTAssertEqual(left.map(\.id), starter.created, "the row keeps its run marker")
+        let row = try XCTUnwrap(left.first)
 
         starter.gate = nil
         center.start()
@@ -400,7 +406,7 @@ final class AutomationSessionCenterTests: XCTestCase {
         center.stop()
 
         XCTAssertEqual(starter.calls.count, 1, "adopted, not launched again")
-        XCTAssertEqual(go.invocations.filter { $0[1] == "session-launched" }, [launched(r.step, left[0].id)])
+        XCTAssertEqual(go.invocations.filter { $0[1] == "session-launched" }, [launched(r.step, row.id)])
         XCTAssertFalse(go.invocations.contains { $0.contains("launch_failed") })
     }
 
