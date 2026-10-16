@@ -73,3 +73,30 @@ struct SearchViewModelHelperTests {
         #expect(vm.results.isEmpty)
     }
 }
+
+@Suite("SearchViewModel guide hits")
+@MainActor
+struct SearchViewModelGuideTests {
+    @Test("guideHits follow the query and clear on an empty one")
+    func guideHitsFollowQuery() async throws {
+        let (manager, _) = try TestDatabase.createDatabaseManager()
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO kb_documents (id, source, title, chunk_count)
+                VALUES ('guide:features/inbox.md', 'guide', 'Inbox', 1)
+                """)
+            try db.execute(sql: """
+                INSERT INTO kb_chunks (doc_id, idx, title, body, anchor)
+                VALUES ('guide:features/inbox.md', 0, 'Inbox', 'Why use it\nThe inbox gathers items.', 'why-use-it')
+                """)
+        }
+        let vm = SearchViewModel(dbManager: manager)
+        vm.query = "inbox"
+        vm.search()
+        try await Task.sleep(for: .milliseconds(900))
+        #expect(!vm.guideHits.isEmpty)
+        vm.query = ""
+        vm.search()
+        #expect(vm.guideHits.isEmpty)
+    }
+}

@@ -107,6 +107,7 @@ struct HelpCommands: Commands {
         CommandGroup(after: .help) {
             Button("Ask Watchtower…") { appState.askWatchtower() }
                 .keyboardShortcut("/", modifiers: .command)
+            Button("Watchtower User Guide") { NSWorkspace.shared.open(GuideLinks.readme) }
             Button("Keyboard Shortcuts") { openWindow(id: KeyboardShortcutsView.sceneID) }
         }
     }

@@ -7,6 +7,13 @@ extension AppState {
         isHelpChatShown.toggle()
     }
 
+    /// Opens the popup with `prefill` typed into its composer (Search's Ask in chat).
+    func openHelpChat(prefill: String) {
+        ensureChatViewModels()
+        chatViewModel?.draft = prefill
+        isHelpChatShown = true
+    }
+
     /// ⌘/ (Help → Ask Watchtower…).
     func askWatchtower() {
         let webView = Self.webViewWithKeyboard()
