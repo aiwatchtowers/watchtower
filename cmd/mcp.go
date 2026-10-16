@@ -104,24 +104,8 @@ func mcpTurnBinding(chatMode bool, turn, turnFile string) (string, func() string
 // mcpModeOptions sets up project mode, chat mode (the write-tool registry) or
 // dev mode (the read-only fence) on the opened database.
 func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
-	if mcpFlagChatProject != 0 && !mcpFlagChat {
-		return nil, errors.New("--chat-project requires --chat")
-	}
-	if mcpFlagWorkbench != 0 && (mcpFlagSurface == tools.AutomationSurface || mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil || mcpFlagAutomationReadyFile != "") {
-		// Never a workbench DirectApply server for an automation's agent.
-		return nil, errors.New("--workbench and the automation flags (--surface automation, --automation-run, --automation-tools, --automation-ready-file) are mutually exclusive")
-	}
-	if mcpFlagAutomationReadyFile != "" && (!mcpFlagChat || mcpFlagSurface != tools.AutomationSurface) {
-		return nil, errors.New("--automation-ready-file requires --chat --surface automation")
-	}
-	if (mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil) && !mcpFlagChat {
-		return nil, errors.New("--automation-run and --automation-tools require --chat --surface automation")
-	}
-	if mcpFlagAgent != "" && mcpFlagWorkbench == 0 {
-		return nil, errors.New("--agent requires --workbench")
-	}
-	if mcpFlagChatProject < 0 {
-		return nil, fmt.Errorf("--chat-project must be a chat project id, got %d", mcpFlagChatProject)
+	if err := checkMCPModeFlags(); err != nil {
+		return nil, err
 	}
 	if mcpFlagWorkbench == 0 && !mcpFlagChat {
 		// The MCP surface is read-only; enforce it at the connection level so even
@@ -144,6 +128,40 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	// write domain data on propose (AGENT-01). Dev mode above keeps the
 	// query_only fence (AGENT-02 / DEV-01).
 	return mcpChatOptions(cfg, database, turn, turnFunc)
+}
+
+// checkMCPModeFlags refuses the flag combinations no mode accepts, before
+// anything touches the database.
+func checkMCPModeFlags() error {
+	if mcpFlagChatProject != 0 && !mcpFlagChat {
+		return errors.New("--chat-project requires --chat")
+	}
+	if err := checkMCPAutomationFlags(); err != nil {
+		return err
+	}
+	if mcpFlagAgent != "" && mcpFlagWorkbench == 0 {
+		return errors.New("--agent requires --workbench")
+	}
+	if mcpFlagChatProject < 0 {
+		return fmt.Errorf("--chat-project must be a chat project id, got %d", mcpFlagChatProject)
+	}
+	return nil
+}
+
+// checkMCPAutomationFlags refuses the automation flags outside `--chat
+// --surface automation`.
+func checkMCPAutomationFlags() error {
+	if mcpFlagWorkbench != 0 && (mcpFlagSurface == tools.AutomationSurface || mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil || mcpFlagAutomationReadyFile != "") {
+		// Never a workbench DirectApply server for an automation's agent.
+		return errors.New("--workbench and the automation flags (--surface automation, --automation-run, --automation-tools, --automation-ready-file) are mutually exclusive")
+	}
+	if mcpFlagAutomationReadyFile != "" && (!mcpFlagChat || mcpFlagSurface != tools.AutomationSurface) {
+		return errors.New("--automation-ready-file requires --chat --surface automation")
+	}
+	if (mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil) && !mcpFlagChat {
+		return errors.New("--automation-run and --automation-tools require --chat --surface automation")
+	}
+	return nil
 }
 
 // mcpChatOptions is `watchtower mcp --chat`: the write-tool registry bound to
@@ -325,13 +343,22 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		}
 	}
 	srv := internalmcp.NewServer(database, opts...)
-	if mcpFlagAutomationReadyFile != "" {
-		// mcpAutomationOptions accepted the binding (the run's own marker,
-		// the run running) and the server is built: record the start for the
-		// agent() runner, which fails a child whose server never got here.
-		if err := os.WriteFile(mcpFlagAutomationReadyFile, nil, 0o600); err != nil {
-			return fmt.Errorf("writing the automation ready file: %w", err)
-		}
+	if err := writeAutomationReadyFile(); err != nil {
+		return err
 	}
 	return srv.ServeStdio(cmd.Context())
+}
+
+// writeAutomationReadyFile writes --automation-ready-file, when given, once
+// the server is built: mcpAutomationOptions accepted the binding (the run's
+// own marker, the run running), so record the start for the agent() runner,
+// which fails a child whose server never got here.
+func writeAutomationReadyFile() error {
+	if mcpFlagAutomationReadyFile == "" {
+		return nil
+	}
+	if err := os.WriteFile(mcpFlagAutomationReadyFile, nil, 0o600); err != nil {
+		return fmt.Errorf("writing the automation ready file: %w", err)
+	}
+	return nil
 }

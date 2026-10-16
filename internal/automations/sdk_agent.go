@@ -189,6 +189,57 @@ func positiveInt(v any) (int, bool) {
 }
 
 func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
+	m, err := authorizeAgent(env, b, step, req)
+	if err != nil {
+		return nil, err
+	}
+	floor, err := b.DB.MaxAgentActionID()
+	if err != nil {
+		return nil, err
+	}
+	binding := env.Binding()
+	binding.AutomationAgent = true
+	var spent agentSpend // what the hooks reported
+	ar := AgentRequest{
+		Instruction: req.instruction, Tools: req.effective, DryRun: env.DryRun, Tier: req.tier,
+		Budget: req.budget, Deadline: req.deadline, Binding: binding, RunID: binding.AutomationRunID, Manifest: m,
+		BeforeModelCall: func() error {
+			if spent.in+spent.out >= int64(req.budget.Tokens) {
+				return &SDKError{Name: ErrNameBudget, Message: "agent(): its token budget is spent"}
+			}
+			return env.Meter.BeforeCall()
+		},
+		AfterModelCall: func(in, out int) {
+			spent.in, spent.out = spent.in+int64(in), spent.out+int64(out)
+			env.Meter.Debit(int64(in), int64(out))
+			step.Usage(int64(in), int64(out), false, nil)
+		},
+	}
+	// The carve's own minutes, when they end before the run's deadline, are
+	// the agent's budget: running out of them is a catchable BudgetExceeded.
+	// The run's deadline stays the sandbox's interrupt.
+	localDeadline := req.minutes > 0 && req.deadline.Before(env.Meter.Deadline())
+	var res AgentResult
+	err = env.MeteredModelCall(step, func(ctx context.Context) (ModelUsage, error) {
+		r, u, err := runAgentChild(ctx, b.Agent, ar, req, localDeadline, &spent)
+		res = r
+		return u, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	actions, err := b.DB.AgentActionIDsAfter(tools.AutomationContextType, binding.ContextID, floor)
+	if err != nil {
+		return nil, err
+	}
+	step.Finish(db.StepFinish{Status: StepOK,
+		ResultSummary: marshalForStep(map[string]any{"text": clipUTF8(res.Text, agentStepClip), "actions": actions})})
+	return map[string]any{"text": res.Text, "actions": actions}, nil
+}
+
+// authorizeAgent checks the manifest admits agent() and its tier, records
+// the permission on the step, and refuses when no runner is configured.
+func authorizeAgent(env *Env, b Backends, step *Step, req agentCall) (*Manifest, error) {
 	m, err := manifestOf(env)
 	if err != nil {
 		return nil, err
@@ -204,69 +255,40 @@ func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 	if b.Agent == nil || b.DB == nil || b.Registry == nil {
 		return nil, notAvailable("no agent runner is configured")
 	}
-	floor, err := b.DB.MaxAgentActionID()
-	if err != nil {
-		return nil, err
+	return m, nil
+}
+
+// agentSpend is the tokens the runner's hooks reported during one agent().
+type agentSpend struct{ in, out int64 }
+
+// runAgentChild runs the agent under the carve's local deadline (when it
+// ends first) and returns its result, the usage the hooks did not report,
+// and the script-facing error: a spent time or token budget is a
+// BudgetExceeded.
+func runAgentChild(ctx context.Context, runner AgentRunner, ar AgentRequest, req agentCall, localDeadline bool, spent *agentSpend) (AgentResult, ModelUsage, error) {
+	runCtx := ctx
+	if localDeadline {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithDeadline(ctx, req.deadline)
+		defer cancel()
 	}
-	binding := env.Binding()
-	binding.AutomationAgent = true
-	var spentIn, spentOut int64 // what the hooks reported
-	ar := AgentRequest{
-		Instruction: req.instruction, Tools: req.effective, DryRun: env.DryRun, Tier: req.tier,
-		Budget: req.budget, Deadline: req.deadline, Binding: binding, RunID: binding.AutomationRunID, Manifest: m,
-		BeforeModelCall: func() error {
-			if spentIn+spentOut >= int64(req.budget.Tokens) {
-				return &SDKError{Name: ErrNameBudget, Message: "agent(): its token budget is spent"}
-			}
-			return env.Meter.BeforeCall()
-		},
-		AfterModelCall: func(in, out int) {
-			spentIn, spentOut = spentIn+int64(in), spentOut+int64(out)
-			env.Meter.Debit(int64(in), int64(out))
-			step.Usage(int64(in), int64(out), false, nil)
-		},
+	r, err := runner.Run(runCtx, ar)
+	if err != nil && localDeadline && errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		err = &SDKError{Name: ErrNameBudget, Message: "agent(): its time budget is spent"}
 	}
-	// The carve's own minutes, when they end before the run's deadline, are
-	// the agent's budget: running out of them is a catchable BudgetExceeded.
-	// The run's deadline stays the sandbox's interrupt.
-	localDeadline := req.minutes > 0 && req.deadline.Before(env.Meter.Deadline())
-	var res AgentResult
-	err = env.MeteredModelCall(step, func(ctx context.Context) (ModelUsage, error) {
-		runCtx := ctx
-		if localDeadline {
-			var cancel context.CancelFunc
-			runCtx, cancel = context.WithDeadline(ctx, req.deadline)
-			defer cancel()
-		}
-		r, err := b.Agent.Run(runCtx, ar)
-		if err != nil && localDeadline && errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			err = &SDKError{Name: ErrNameBudget, Message: "agent(): its time budget is spent"}
-		}
-		res = r
-		// Debit what the hooks did not report (a CLI child's usage, an
-		// estimate) once.
-		u := ModelUsage{InputTokens: max(r.InputTokens-spentIn, 0), OutputTokens: max(r.OutputTokens-spentOut, 0)}
-		if u.InputTokens+u.OutputTokens > 0 {
-			u.Estimated, u.ReportedUSD = r.Estimated, r.ReportedCostUSD
-		}
-		// A runner metered only after the fact (a CLI child) can overshoot
-		// the carve: its reply is then not returned.
-		if spent := spentIn + spentOut + u.InputTokens + u.OutputTokens; err == nil && spent > int64(req.budget.Tokens) {
-			err = &SDKError{Name: ErrNameBudget,
-				Message: fmt.Sprintf("agent(): it spent %d tokens, over its budget of %d", spent, req.budget.Tokens)}
-		}
-		return u, agentError(err)
-	})
-	if err != nil {
-		return nil, err
+	// Debit what the hooks did not report (a CLI child's usage, an
+	// estimate) once.
+	u := ModelUsage{InputTokens: max(r.InputTokens-spent.in, 0), OutputTokens: max(r.OutputTokens-spent.out, 0)}
+	if u.InputTokens+u.OutputTokens > 0 {
+		u.Estimated, u.ReportedUSD = r.Estimated, r.ReportedCostUSD
 	}
-	actions, err := b.DB.AgentActionIDsAfter(tools.AutomationContextType, binding.ContextID, floor)
-	if err != nil {
-		return nil, err
+	// A runner metered only after the fact (a CLI child) can overshoot
+	// the carve: its reply is then not returned.
+	if total := spent.in + spent.out + u.InputTokens + u.OutputTokens; err == nil && total > int64(req.budget.Tokens) {
+		err = &SDKError{Name: ErrNameBudget,
+			Message: fmt.Sprintf("agent(): it spent %d tokens, over its budget of %d", total, req.budget.Tokens)}
 	}
-	step.Finish(db.StepFinish{Status: StepOK,
-		ResultSummary: marshalForStep(map[string]any{"text": clipUTF8(res.Text, agentStepClip), "actions": actions})})
-	return map[string]any{"text": res.Text, "actions": actions}, nil
+	return r, u, agentError(err)
 }
 
 // agentError is a runner failure as the script sees it: an SDK error (a

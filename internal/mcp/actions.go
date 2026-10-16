@@ -60,48 +60,65 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 			InputSchema: spellSchema(binding, tool.Name, tool.InputSchema),
 		}
 		if tool.Access == tools.AccessRead {
-			s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-				args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments, binding)
-				if refused != nil {
-					return refused, nil
-				}
-				data, err := reg.CallRead(ctx, tool.Name, args, binding)
-				if err != nil {
-					var verr *tools.ValidationError
-					if errors.As(err, &verr) {
-						return errResult(binding.Spell(verr.Msg)), nil
-					}
-					return errResult(binding.Spell(err.Error())), nil
-				}
-				return hooks.result(data)
-			})
+			s.AddTool(listed, readToolHandler(reg, tool, binding, hooks))
 			continue
 		}
 		if !mountWrites {
 			continue
 		}
-		s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-			args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments, binding)
-			if refused != nil {
-				return refused, nil
-			}
-			rc, err := reg.Propose(ctx, tool.Name, args, binding)
-			if err != nil {
-				var verr *tools.ValidationError
-				if errors.As(err, &verr) {
-					return errResult(binding.Spell(verr.Msg)), nil
-				}
-				return errResult(binding.Spell(fmt.Sprintf("recording proposal: %v", err))), nil
-			}
-			rc.Tool, rc.Message, rc.Error = binding.Spell(rc.Tool), binding.Spell(rc.Message), binding.Spell(rc.Error)
-			return hooks.result(rc)
-		})
+		s.AddTool(listed, writeToolHandler(reg, tool, binding, hooks))
 	}
 
 	if !mountWrites {
 		return
 	}
+	registerGetAction(s, database, reg, binding)
+}
 
+// readToolHandler serves a read tool: the call gate, CallRead, then the
+// result check.
+func readToolHandler(reg *tools.Registry, tool *tools.Tool, binding tools.Binding, hooks callHooks) mcpsdk.ToolHandler {
+	return func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments, binding)
+		if refused != nil {
+			return refused, nil
+		}
+		data, err := reg.CallRead(ctx, tool.Name, args, binding)
+		if err != nil {
+			var verr *tools.ValidationError
+			if errors.As(err, &verr) {
+				return errResult(binding.Spell(verr.Msg)), nil
+			}
+			return errResult(binding.Spell(err.Error())), nil
+		}
+		return hooks.result(data)
+	}
+}
+
+// writeToolHandler serves a write tool: the call gate, Propose, then the
+// result check over the spelled receipt.
+func writeToolHandler(reg *tools.Registry, tool *tools.Tool, binding tools.Binding, hooks callHooks) mcpsdk.ToolHandler {
+	return func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments, binding)
+		if refused != nil {
+			return refused, nil
+		}
+		rc, err := reg.Propose(ctx, tool.Name, args, binding)
+		if err != nil {
+			var verr *tools.ValidationError
+			if errors.As(err, &verr) {
+				return errResult(binding.Spell(verr.Msg)), nil
+			}
+			return errResult(binding.Spell(fmt.Sprintf("recording proposal: %v", err))), nil
+		}
+		rc.Tool, rc.Message, rc.Error = binding.Spell(rc.Tool), binding.Spell(rc.Message), binding.Spell(rc.Error)
+		return hooks.result(rc)
+	}
+}
+
+// registerGetAction mounts get_action (chat mode only): one proposal by id,
+// visible only when binding may see it.
+func registerGetAction(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "get_action",
 		Description: "Look up one proposed action by id: its status (pending, approved, rejected, applied, " +

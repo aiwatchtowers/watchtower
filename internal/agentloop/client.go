@@ -170,24 +170,9 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 	var lastContent string
 
 	for i := 0; i < c.maxIter; i++ {
-		if c.opts.BeforeModelCall != nil {
-			if err := c.opts.BeforeModelCall(); err != nil {
-				return "", usage, err
-			}
-		}
-		resp, err := c.chat(ctx, msgs, oaTools)
+		resp, err := c.meteredChat(ctx, msgs, oaTools)
 		if err != nil {
 			return "", usage, err
-		}
-		if c.opts.AfterModelCall != nil {
-			var in, out int
-			if resp.Usage != nil {
-				in, out = resp.Usage.PromptTokens, resp.Usage.CompletionTokens
-			}
-			c.opts.AfterModelCall(in, out)
-		}
-		if len(resp.Choices) == 0 {
-			return "", usage, fmt.Errorf("model returned no choices")
 		}
 		usage = addUsage(usage, resp.Usage)
 		m := resp.Choices[0].Message
@@ -228,6 +213,31 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 	const note = "I couldn't complete that within the tool-call limit."
 	emitText(note)
 	return note, usage, nil
+}
+
+// meteredChat is one model call between the BeforeModelCall and
+// AfterModelCall hooks; a response with no choices is an error.
+func (c *Client) meteredChat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (*oaResponse, error) {
+	if c.opts.BeforeModelCall != nil {
+		if err := c.opts.BeforeModelCall(); err != nil {
+			return nil, err
+		}
+	}
+	resp, err := c.chat(ctx, msgs, oaTools)
+	if err != nil {
+		return nil, err
+	}
+	if c.opts.AfterModelCall != nil {
+		var in, out int
+		if resp.Usage != nil {
+			in, out = resp.Usage.PromptTokens, resp.Usage.CompletionTokens
+		}
+		c.opts.AfterModelCall(in, out)
+	}
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("model returned no choices")
+	}
+	return resp, nil
 }
 
 // emitTool forwards a tool start/end chunk when tool events are on.
