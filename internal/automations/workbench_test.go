@@ -247,3 +247,72 @@ func TestWorkbenchResolver_ResolvesFolderProtectionAndAgent(t *testing.T) {
 		t.Fatalf("unknown workbench err = %v; want ErrWorkbenchNotFound", err)
 	}
 }
+
+// Review focus 4, symlink-resolved: a recipe path that links into a
+// protected folder — the bound folder itself, its .watchtower or its
+// automations folder — is never followed by the scheduler. The target is
+// made unreadable, so any access through the link fails the tick; the
+// workbench is skipped and its rows stay as the Desktop indexed them.
+func TestScheduler_NeverFollowsALinkIntoAProtectedFolder(t *testing.T) {
+	text := wbRecipeText("Drafts release notes.", `log("v1")`)
+	for _, tc := range []struct {
+		name string
+		link func(t *testing.T, folder, target string) // replaces a path under folder with a link to target
+	}{
+		{"folder", func(t *testing.T, folder, target string) {
+			mustReplaceWithLink(t, folder, target)
+		}},
+		{".watchtower", func(t *testing.T, folder, target string) {
+			mustReplaceWithLink(t, filepath.Join(folder, ".watchtower"), target)
+		}},
+		{"automations", func(t *testing.T, folder, target string) {
+			mustReplaceWithLink(t, automations.WorkbenchDir(folder), target)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSchedFixture(t, exStart)
+			wb, folder := newWorkbench(t, f.d)
+			writeWorkbenchRecipe(t, folder, "release", text)
+			rescanWorkbench(t, f.ix, wb, folder) // the Desktop's pass
+			target, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeWorkbenchRecipe(t, target, "release", text)
+			if err := os.WriteFile(filepath.Join(target, "release.md"), []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tc.link(t, folder, target)
+			if err := os.Chmod(target, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(target, 0o755) })
+
+			var touched []string
+			automations.SetIndexerProbe(f.ix, func(path string) { touched = append(touched, path) })
+			automations.SetSchedulerProtected(f.s, func(p string) bool { return strings.HasPrefix(p, target) })
+			for i := range 2 {
+				f.tick(t, exStart.Add(time.Duration(i)*time.Minute))
+			}
+			for _, p := range touched {
+				if strings.HasPrefix(p, target) {
+					t.Fatalf("the scheduler touched the protected target: %s", p)
+				}
+			}
+			if a := workbenchRow(t, f.d, wb, "release"); a.RemovedAt != nil {
+				t.Fatal("the linked workbench's row was rescanned (marked removed)")
+			}
+		})
+	}
+}
+
+// mustReplaceWithLink replaces path (a directory) with a symlink to target.
+func mustReplaceWithLink(t *testing.T, path, target string) {
+	t.Helper()
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+}

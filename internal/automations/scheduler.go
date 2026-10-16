@@ -134,8 +134,10 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 // before any filesystem call — the daemon never stats, lists or reads it (a
 // background read there raises a macOS privacy prompt attributed to
 // Watchtower, a dead network mount can block it); its rows stay as the
-// Desktop indexed them. A workbench whose folder is gone is skipped quietly,
-// its rows kept.
+// Desktop indexed them. A workbench whose folder is gone, or whose folder,
+// .watchtower or automations folder is a symlink, is skipped the same way: a
+// link is never followed, since it could lead into a protected folder (the
+// Desktop's rescan indexes such a workbench).
 func (s *Scheduler) rescanWorkbenches(ctx context.Context) []error {
 	wbs, err := s.db.ListWorkbenches()
 	if err != nil {
@@ -146,7 +148,7 @@ func (s *Scheduler) rescanWorkbenches(ctx context.Context) []error {
 		if ctx.Err() != nil {
 			break // the schedule loop reports ctx's end
 		}
-		if s.protected(wb.FolderPath) || s.ix.folderMissing(wb.FolderPath) {
+		if s.protected(wb.FolderPath) || !s.ix.workbenchPathPlain(wb.FolderPath) {
 			continue
 		}
 		dir := WorkbenchDir(wb.FolderPath)

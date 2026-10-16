@@ -69,7 +69,7 @@ type Indexer struct {
 	seen map[string]folderState // canonical folder → its state at the last scan
 	big  map[string]bigFileHash // oversized recipe path → its hash at the last read
 	// probe, when set (tests), is called with each folder Changed,
-	// RescanFolder or folderMissing is about to touch on disk, before it does.
+	// RescanFolder or workbenchPathPlain is about to touch on disk, before it does.
 	probe func(path string)
 }
 
@@ -161,12 +161,24 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 	return scan.report, nil
 }
 
-// folderMissing reports whether folder does not exist (any other stat error
-// is left to the rescan to report).
-func (ix *Indexer) folderMissing(folder string) bool {
-	ix.touch(folder)
-	_, err := os.Stat(folder)
-	return errors.Is(err, fs.ErrNotExist)
+// workbenchPathPlain reports whether the scheduler may rescan folder's
+// recipe folder: folder is a directory, not a symlink, and neither
+// .watchtower nor .watchtower/automations is a symlink (either may be
+// absent). It only lstats, so no link is ever followed — one into a
+// privacy-protected folder (a git repo can carry such a link) would make the
+// background pass read there. Any other lstat failure answers false too.
+func (ix *Indexer) workbenchPathPlain(folder string) bool {
+	for i, p := range []string{folder, filepath.Join(folder, ".watchtower"), WorkbenchDir(folder)} {
+		ix.touch(p)
+		fi, err := os.Lstat(p)
+		if i > 0 && errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+		if err != nil || !fi.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 func (ix *Indexer) touch(path string) {

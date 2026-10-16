@@ -290,6 +290,8 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	}
 	err := e.db.FinishAutomationRun(runID, f, commit)
 	switch {
+	case errors.Is(err, db.ErrAutomationRunNotFound):
+		return // deleted with its workbench meanwhile (runGone): nothing to record or disable
 	case errors.Is(err, db.ErrRunNotActive):
 		// Ended by someone else; still record the active time measured here.
 		if f.ActiveMS > 0 {
