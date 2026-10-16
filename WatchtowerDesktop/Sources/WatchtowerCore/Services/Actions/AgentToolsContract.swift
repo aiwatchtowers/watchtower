@@ -3,26 +3,32 @@ import Foundation
 package enum AgentSurface: String, Sendable {
     case main
     case target
+    /// `tools.AutomationEditorSurface`: the "change it in words" chat bound to
+    /// one automation (spec 2026-10-14 §14.5).
+    case automationEditor = "automation_editor"
 }
 
 /// The system-prompt block that teaches an action surface how write tools
 /// work: they create PROPOSALS the owner approves in the chat, unless the
-/// owner pre-approved the tool. Shared by the main AI Chat and the target
-/// chat (the two action surfaces, AGENT-04).
+/// owner pre-approved the tool. Shared by the main AI Chat, the target chat
+/// and the automation editor chat (the action surfaces, AGENT-04).
 package enum AgentToolsContract {
     /// Byte-identical to Go `chat.ActionsContract` (`internal/chat/actions_contract.go`),
-    /// pinned on both sides by `internal/chat/testdata/actions_contract_{main,target}.txt`.
+    /// pinned on both sides by
+    /// `internal/chat/testdata/actions_contract_{main,target,automation_editor}.txt`.
     /// Change both copies and the fixture together.
     package static func promptBlock(surface: AgentSurface) -> String {
-        let tools: [String]
+        let lines: [String]
         switch surface {
-        case .main: tools = mainTools
-        case .target: tools = targetTools
+        case .main:
+            lines = header + mainTools + Array(rules.dropLast()) + [slackSendRule] + [rules[rules.count - 1]]
+        case .target:
+            lines = header + targetTools + rules
+        case .automationEditor:
+            lines = header + automationEditorTools + Array(rules.prefix(3)) + [draftFirstRule]
+                + [rules[rules.count - 1]]
         }
-        let surfaceRules = surface == .main
-            ? Array(rules.dropLast()) + [slackSendRule] + [rules[rules.count - 1]]
-            : rules
-        var text = (header + tools + surfaceRules).joined(separator: "\n")
+        var text = lines.joined(separator: "\n")
         if surface == .target {
             text += "\n\n" + targetCoexistence
         }
@@ -64,8 +70,26 @@ package enum AgentToolsContract {
         "- remind_me — set a reminder that resurfaces in the Inbox at a chosen time; pass message_ref when it is "
             + "about one Slack message.",
         "- send_slack_message — propose a Slack message sent as the owner to a channel, a thread (pass a message "
-            + "link), or a person (DM)."
+            + "link), or a person (DM).",
+        saveAutomationTool
     ]
+
+    /// save_automation's line on main and automation_editor (Automations P3, spec 2026-10-14 §11).
+    private static let saveAutomationTool = "- save_automation — propose saving an automation recipe: draft and "
+        + "dry-run it first with draft_automation, which writes nothing; Save is the owner's Approve on the card, and "
+        + "the automation never runs before it. Always needs the owner's approval."
+
+    /// The editor chat's pair (spec §14.5, D11): the draft read beside the one write.
+    private static let automationEditorTools = [
+        "- draft_automation — check a recipe draft and dry-run it in memory: parse errors, the permissions it asks "
+            + "for and widens, and what the dry run did. It writes nothing and records no proposal.",
+        saveAutomationTool
+    ]
+
+    /// The editor chat's rule, placed before the closing get_action line.
+    private static let draftFirstRule = "- Always draft and dry-run first; Save is the owner's Approve on the card. "
+        + "Call draft_automation with the whole recipe_text and its slug, fix every error it reports, tell the owner "
+        + "in plain words what the dry run did, then propose save_automation with the same recipe_text and slug."
 
     /// The main surface's Slack send rule, placed before the closing get_action line.
     private static let slackSendRule = "- To write to Slack, call get_writing_style FIRST and draft the message in "

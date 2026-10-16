@@ -3,7 +3,10 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,4 +128,57 @@ func capabilityParses(entry string) bool {
 	_, bare := automations.ParsePermission(entry)
 	_, star := automations.ParsePermission(entry + "@*")
 	return (bare == nil) != (star == nil)
+}
+
+// The authoring tools' dry run (draft_automation) sees exactly the tools a
+// run sees: its backends use buildAutomationRegistry, memory tools included.
+func TestAutomationAuthoringDeps_UseTheAutomationRegistry(t *testing.T) {
+	cfg, database := newAutomationRegistryEnv(t)
+	deps := automationAuthoringDeps(cfg, database)
+	assert.Equal(t, cfg.WorkspaceDir(), deps.WorkspaceDir)
+	assert.False(t, deps.Enabled(), "off while automations.enabled is off")
+	cfg.Automations.Enabled = true
+	assert.True(t, deps.Enabled(), "read per call, not captured at build")
+	b := deps.Backends()
+	require.NotNil(t, b.Generator)
+	reg, ok := b.Registry.(*tools.Registry)
+	require.True(t, ok, "the registry is a *tools.Registry")
+	for _, name := range automationMemoryTools {
+		_, found := reg.Get(name)
+		assert.True(t, found, "%s missing from the dry run's registry", name)
+	}
+}
+
+// The chat MCP server runs under claude, so it inherits CLAUDECODE (and in a
+// workbench terminal or Codex, their markers): the authoring generator's
+// child carries none of AGENT-07's agent markers. A fake claude records its
+// environment; the real CLI is never invoked.
+func TestAutomationsGenerator_ChildEnvHasNoAgentMarkers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	reply, err := json.Marshal(map[string]any{"type": "result", "result": "ok", "is_error": false})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "reply"), append(reply, '\n'), 0o600))
+	script := filepath.Join(dir, "fake-claude")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n"+
+		"env > '"+dir+"/env'\n"+
+		"cat > /dev/null\n"+
+		"cat '"+dir+"/reply'\n"), 0o755))
+	markers := []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "WATCHTOWER_TERMINAL_SESSION_ID"}
+	for _, m := range markers {
+		t.Setenv(m, "1")
+	}
+	cfg, err := config.Load(fakeModelConfig(t, dir, "claude", script))
+	require.NoError(t, err)
+
+	out, _, _, err := automationsAuthoringGenerator(cfg).Generate(context.Background(), "system", "user", "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "ok", out)
+	env, err := os.ReadFile(filepath.Join(dir, "env"))
+	require.NoError(t, err)
+	for _, line := range strings.Split(string(env), "\n") {
+		name, _, _ := strings.Cut(line, "=")
+		assert.NotContains(t, markers, name, "the generator's child carries %s", name)
+	}
 }

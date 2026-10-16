@@ -14,6 +14,7 @@ package enum AssistantToolSurface {
         case "reaction": "Slack reactions"
         case "project": "Workbench" // tools.WorkbenchSurface keeps the pre-rename id
         case "automation": "Automations" // tools.AutomationSurface
+        case "automation_editor": "Automation editor" // tools.AutomationEditorSurface
         default: surface
         }
     }

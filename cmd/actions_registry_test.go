@@ -102,7 +102,63 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 
 	project := pinProjectSurface(t, reg, main, target, reaction)
 	pinAutomationSurface(t, reg, main, target, reaction, project)
+	pinAuthoringTools(t, reg, main, target, reaction, project)
 	assert.Equal(t, []string{"main", "target"}, get.Surfaces, "get_confluence_page's surfaces are unchanged")
+}
+
+// pinAuthoringTools pins draft_automation and save_automation (Automations P3,
+// spec 2026-10-14 §11): both on main and automation_editor only; save is an
+// AlwaysAsk write, draft a read that stays out of tools.ReadTools() (DEV-01).
+func pinAuthoringTools(t *testing.T, reg *tools.Registry, main, target, reaction, project map[string]bool) {
+	t.Helper()
+	want := []string{"main", tools.AutomationEditorSurface}
+	save, ok := reg.Get("save_automation")
+	require.True(t, ok, "save_automation missing")
+	assert.Equal(t, tools.AccessWrite, save.Access)
+	assert.True(t, save.AlwaysAsk, "Save is the owner's Approve: never execute trust")
+	assert.Equal(t, want, save.Surfaces)
+	draft, ok := reg.Get("draft_automation")
+	require.True(t, ok, "draft_automation missing")
+	assert.Equal(t, tools.AccessRead, draft.Access)
+	assert.Equal(t, want, draft.Surfaces)
+	for _, name := range []string{"draft_automation", "save_automation"} {
+		assert.True(t, main[name], "%s missing on main", name)
+		assert.False(t, target[name] || reaction[name] || project[name], "%s is main + automation_editor only", name)
+		assert.False(t, surfaceToolNames(reg, tools.AutomationSurface)[name], "%s is never offered to automations", name)
+		for _, rt := range tools.ReadTools() {
+			assert.NotEqual(t, name, rt.Name, "dev-mode MCP never mounts %s (DEV-01)", name)
+		}
+	}
+}
+
+// The editor chat (spec 2026-10-14 §14.5, D11) is narrow: as the chat MCP
+// server mounts it — buildToolRegistry plus the dependency-carrying reads —
+// the only write tool on automation_editor is save_automation; every other
+// tool there is a read, and no surface-less write tool leaks onto it.
+func TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	reg := buildToolRegistry(&config.Config{ActiveWorkspace: "test-ws"}, database)
+	for _, dt := range tools.DependentReadTools(tools.ReadDeps{}) {
+		require.NoError(t, reg.Register(dt))
+	}
+
+	listed := surfaceToolNames(reg, tools.AutomationEditorSurface)
+	for _, tool := range reg.List(tools.AutomationEditorSurface) {
+		if tool.Name == "save_automation" {
+			assert.Equal(t, tools.AccessWrite, tool.Access)
+			continue
+		}
+		assert.Equal(t, tools.AccessRead, tool.Access, "%s is a write tool on automation_editor", tool.Name)
+	}
+	for _, name := range []string{"save_automation", "draft_automation", "load_skill"} {
+		assert.True(t, listed[name], "%s missing on automation_editor", name)
+	}
+	for _, rt := range tools.ReadTools() {
+		assert.True(t, listed[rt.Name], "read tool %s missing on automation_editor", rt.Name)
+	}
 }
 
 func surfaceToolNames(reg *tools.Registry, surface string) map[string]bool {

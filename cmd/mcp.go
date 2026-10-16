@@ -57,7 +57,7 @@ func init() {
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.Flags().StringVar(&mcpFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 	mcpCmd.Flags().BoolVar(&mcpFlagChat, "chat", false, "assistant chat mode: mount write tools as proposals (never for external clients)")
-	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target")
+	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target|automation_editor")
 	mcpCmd.Flags().Int64Var(&mcpFlagConversation, "conversation", 0, "chat conversation id for --chat")
 	mcpCmd.Flags().StringVar(&mcpFlagTurn, "turn", "", "turn id for --chat (proposals attach to it)")
 	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
@@ -122,8 +122,8 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // mcpChatOptions is `watchtower mcp --chat`: the write-tool registry bound to
 // the chat surface, conversation, turn and context the flags name.
 func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
-	if mcpFlagSurface != "main" && mcpFlagSurface != "target" {
-		return nil, fmt.Errorf("--surface must be main or target")
+	if mcpFlagSurface != "main" && mcpFlagSurface != "target" && mcpFlagSurface != tools.AutomationEditorSurface {
+		return nil, fmt.Errorf("--surface must be main, target or %s", tools.AutomationEditorSurface)
 	}
 	if mcpFlagContextType == tools.AutomationContextType {
 		// Only the automations executor binds a run (Binding.AutomationRunID);

@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"watchtower/internal/automations"
+	"watchtower/internal/automations/authoring"
+	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
@@ -181,8 +185,21 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	before := countRows(t, database, guardTables)
-	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main", ConversationID: 7})
+	// The automation tables a draft's dry run would write if it wrote at all.
+	tables := append(slices.Clone(guardTables),
+		"automations", "automation_runs", "automation_run_steps", "automation_state", "automation_outputs")
+	before := countRows(t, database, tables)
+	reg := chatRegistry(t, database)
+	gen := &automationstest.FakeGenerator{Replies: []string{"done"}}
+	if err := reg.Register(authoring.NewDraftAutomation(authoring.Deps{
+		DB:       database,
+		Backends: func() automations.Backends { return automations.Backends{Generator: gen, Registry: reg} },
+		Enabled:  func() bool { return true },
+		Clock:    automations.RealClock{},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	cs := newChatSession(t, database, reg, tools.Binding{Surface: "main", ConversationID: 7})
 	// The chat connection really is writable — otherwise this guard would be
 	// measuring the query_only pragma all over again instead of the handlers.
 	if _, err := database.Exec(`INSERT INTO users (id, name, is_stub) VALUES ('WCHAT', 'w', 1)`); err != nil {
@@ -195,6 +212,7 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	ctx := context.Background()
 	calls := append(readOnlyGuardCalls(),
 		mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": actionID}})
+	calls = append(calls, chatOnlyReadGuardCalls()...)
 	for _, c := range calls {
 		res, err := cs.CallTool(ctx, &c)
 		if err != nil {
@@ -203,10 +221,16 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 		if res.IsError {
 			t.Errorf("call %s returned an error result: %s", c.Name, textContent(t, res))
 		}
+		if c.Name == "draft_automation" {
+			assertDraftDryRunSucceeded(t, textContent(t, res))
+		}
+	}
+	if gen.CallCount() == 0 {
+		t.Error("draft_automation never reached its dry run's llm() — the guard measured nothing")
 	}
 
-	after := countRows(t, database, guardTables)
-	for _, tbl := range guardTables {
+	after := countRows(t, database, tables)
+	for _, tbl := range tables {
 		if before[tbl] != after[tbl] {
 			t.Errorf("table %s row count changed %d -> %d after read tools ran on the chat session", tbl, before[tbl], after[tbl])
 		}
@@ -214,6 +238,40 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	rows, _ := database.ListAgentActions(db.AgentActionFilter{})
 	if len(rows) != 1 {
 		t.Errorf("read tools wrote agent_actions rows: %d (want the 1 seeded)", len(rows))
+	}
+}
+
+// chatOnlyReadGuardCalls are the read tools mounted on the chat surfaces but
+// not on the dev surface, so they are not in readOnlyGuardCalls (shared with
+// DEV-01's TestNoToolMutatesDatabase): draft_automation (Automations P3),
+// with a recipe whose dry run calls llm(), a write tool, state.set and
+// output.inbox — each of which must answer without a row.
+func chatOnlyReadGuardCalls() []mcpsdk.CallToolParams {
+	recipe := "---\nname: Guard draft\ntrigger:\n  manual: true\npermissions:\n  - llm:light\n  - tool:create_target\n" +
+		"outputs: [inbox]\n---\nA guard recipe.\n\n```js\nvar s = llm(\"x\"); tool(\"create_target\", {text: \"t\"});\n" +
+		"state.set(\"k\", 1); output.inbox({title: \"t\", body: s}); return 1\n```\n"
+	return []mcpsdk.CallToolParams{
+		{Name: "draft_automation", Arguments: map[string]any{"recipe_text": recipe}},
+	}
+}
+
+// assertDraftDryRunSucceeded keeps the draft guard call from degenerating
+// into a parse error that never reaches the dry run.
+func assertDraftDryRunSucceeded(t *testing.T, text string) {
+	t.Helper()
+	var res struct {
+		OK     bool     `json:"ok"`
+		Errors []string `json:"errors"`
+		DryRun *struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		} `json:"dry_run"`
+	}
+	if err := json.Unmarshal([]byte(text), &res); err != nil {
+		t.Fatalf("draft_automation result: %v: %s", err, text)
+	}
+	if !res.OK || res.DryRun == nil || res.DryRun.Status != db.RunSucceeded {
+		t.Fatalf("draft_automation did not dry-run the guard recipe: %s", text)
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 // chat. Both sides compare against the SAME fixture files, so an edit to one
 // copy without the other fails on the side that drifted.
 func TestActionsContract_MatchesSharedFixtures(t *testing.T) {
-	for _, surface := range []string{"main", "target"} {
+	for _, surface := range []string{"main", "target", "automation_editor"} {
 		raw, err := os.ReadFile("testdata/actions_contract_" + surface + ".txt")
 		require.NoError(t, err)
 		want := strings.TrimSuffix(string(raw), "\n")
@@ -27,7 +27,7 @@ func TestActionsContract_ListsEveryWriteToolOfTheSurface(t *testing.T) {
 	main := ActionsContract("main")
 	for _, tool := range []string{"create_target", "create_jira_issue", "connect_jira_board", "add_jira_comment",
 		"transition_jira_issue", "assign_jira_issue", "update_jira_issue", "edit_confluence_page", "create_track", "dismiss_tracks", "create_idea", "remind_me",
-		"send_slack_message"} {
+		"send_slack_message", "save_automation"} {
 		assert.Contains(t, main, "- "+tool+" — ", tool)
 	}
 	target := ActionsContract("target")
@@ -48,4 +48,25 @@ func TestActionsContract_ListsEveryWriteToolOfTheSurface(t *testing.T) {
 		assert.Contains(t, block, "Keep every ⟦…⟧ marker you do not mean to delete, verbatim")
 		assert.Contains(t, block, `After a "page changed" error, read the page again`)
 	}
+}
+
+// The editor chat (spec 2026-10-14 §14.5, D11) names exactly the authoring
+// pair and the draft-first rule; draft_automation and save_automation are
+// not offered on the target surface.
+func TestActionsContract_AutomationEditorNamesOnlyDraftAndSave(t *testing.T) {
+	block := ActionsContract("automation_editor")
+	var named []string
+	for _, line := range strings.Split(block, "\n") {
+		if name, _, ok := strings.Cut(strings.TrimPrefix(line, "- "), " — "); ok && strings.HasPrefix(line, "- ") {
+			named = append(named, name)
+		}
+	}
+	assert.Equal(t, []string{"draft_automation", "save_automation"}, named)
+	assert.Contains(t, block, "draft and dry-run first; Save is the owner's Approve on the card")
+	for _, other := range []string{"jira", "Jira", "Confluence", "Slack", "watchtower-action"} {
+		assert.NotContains(t, block, other)
+	}
+	target := ActionsContract("target")
+	assert.NotContains(t, target, "draft_automation")
+	assert.NotContains(t, target, "save_automation")
 }
