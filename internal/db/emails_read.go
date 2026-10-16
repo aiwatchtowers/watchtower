@@ -38,13 +38,15 @@ type LocalEmail struct {
 	Permalink    string
 }
 
-// LocalEmailQuery filters ListLocalEmails. Since is an RFC 3339 UTC instant
-// ("" = no lower bound), compared inclusively to internal_date, which both
-// syncers store as UTC RFC 3339. Limit must be positive.
+// LocalEmailQuery filters ListLocalEmails. Since and Before are RFC 3339 UTC
+// instants ("" = no bound) compared to internal_date, which both syncers
+// store as UTC RFC 3339: Since inclusively, Before exclusively (paging older:
+// Before = the oldest date of the previous page). Limit must be positive.
 type LocalEmailQuery struct {
 	Store      EmailStore
 	AccountID  int64
 	Since      string
+	Before     string
 	Limit      int
 	UnreadOnly bool
 }
@@ -73,6 +75,10 @@ func (db *DB) ListLocalEmails(ctx context.Context, q LocalEmailQuery) ([]LocalEm
 	if q.Since != "" {
 		query += ` AND internal_date >= ?`
 		args = append(args, q.Since)
+	}
+	if q.Before != "" {
+		query += ` AND internal_date < ?`
+		args = append(args, q.Before)
 	}
 	if q.UnreadOnly {
 		query += ` AND is_unread = 1`

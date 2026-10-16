@@ -114,6 +114,17 @@ func TestManifest_PermissionStringNormalises(t *testing.T) {
 	}
 }
 
+// A template placeholder left in a scope (jira:read@<PROJECT>, spec §15 #3)
+// is a parse error naming it, never a grant on a project called "<PROJECT>".
+func TestManifest_PlaceholderScopeIsRefused(t *testing.T) {
+	for _, s := range []string{"jira:read@<PROJECT>", "gmail:read@<ACCOUNT>", "slack:read@a>b"} {
+		_, err := ParsePermission(s)
+		if err == nil || !strings.Contains(err.Error(), "placeholder") {
+			t.Errorf("ParsePermission(%q) = %v; want a placeholder refusal", s, err)
+		}
+	}
+}
+
 func TestManifest_PersonalRefusesShellSessionAsk(t *testing.T) {
 	for _, e := range []string{`shell:"make release"`, "session:start", "session:start@claude", "ask:owner"} {
 		if _, err := ParseManifest([]string{e}, nil, personalScope); err == nil {

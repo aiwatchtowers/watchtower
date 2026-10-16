@@ -305,6 +305,15 @@ func resolveSaveTarget(cfg *config.Config, database *db.DB, file, target string)
 		return saveTarget{}, fmt.Errorf("cannot save to %s: a recipe lives in the personal folder (%s) or a workbench's .watchtower/automations folder",
 			target, automations.PersonalDir(cfg.WorkspaceDir()))
 	}
+	if scope.Kind == automations.ScopeWorkbench {
+		w, err := database.GetWorkbench(scope.WorkbenchID)
+		if err != nil {
+			return saveTarget{}, err
+		}
+		if err := refuseLinkedRecipeDir(automations.WorkbenchDir(w.FolderPath)); err != nil {
+			return saveTarget{}, fmt.Errorf("cannot save to %s: %w", target, err)
+		}
+	}
 	return saveTarget{scope: scope, dir: dir, path: path, slug: slug}, nil
 }
 

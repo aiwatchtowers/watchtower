@@ -32,6 +32,13 @@ func (ix *Indexer) IndexedRecipeAt(ctx context.Context, scope Scope, dir, path s
 	if err != nil {
 		return nil, err
 	}
+	return ix.RecipeInReport(scope, report, path)
+}
+
+// RecipeInReport is the index row of the recipe file at path (canonical)
+// after the rescan that produced report, or an error naming why it is not
+// indexed.
+func (ix *Indexer) RecipeInReport(scope Scope, report RescanReport, path string) (*db.Automation, error) {
 	for _, s := range report.Skipped {
 		if s.Path == path {
 			return nil, fmt.Errorf("%s is not indexed: %s", path, s.Reason)

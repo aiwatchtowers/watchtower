@@ -16,7 +16,7 @@ import (
 	"watchtower/internal/db"
 )
 
-// The workbench recipes (spec §15 #2 and #5) in testdata/workbench, run end
+// The workbench recipes (spec §15 #2 and #5) in templates/, run end
 // to end through the executor: FakeShell answers shell(), FakeSessionDesk
 // plays the Desktop for session().
 
@@ -33,7 +33,7 @@ var workbenchRecipeSlugs = []string{"pr-review-rounds", "release", "deploy-test"
 
 func readWorkbenchRecipe(t *testing.T, slug string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "workbench", slug+".md"))
+	data, err := os.ReadFile(filepath.Join("templates", slug+".md"))
 	if err != nil {
 		t.Fatal(err)
 	}

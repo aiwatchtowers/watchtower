@@ -206,6 +206,9 @@ func checkScopePresence(capability string, rule scopeRule, scope string, hasScop
 		return fmt.Errorf("%s: empty @scope", capability)
 	case strings.ContainsFunc(scope, unicode.IsSpace):
 		return fmt.Errorf("%s: the @scope cannot contain whitespace", capability)
+	case strings.ContainsAny(scope, "<>"):
+		// A template placeholder left as installed (jira:read@<PROJECT>, spec §15).
+		return fmt.Errorf("%s: @%s is a template placeholder; replace it with the real account, project or space", capability, scope)
 	}
 	return nil
 }
