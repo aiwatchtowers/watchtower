@@ -392,7 +392,7 @@ private struct SaveAutomationCardDetails: View {
     let model: SaveAutomationCardModel
 
     var body: some View {
-        ForEach(model.lines, id: \.self) { line in
+        ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
             Text(line)
                 .font(.callout)
                 .foregroundStyle(line.hasPrefix("+ ") ? Color.orange : Color.primary)

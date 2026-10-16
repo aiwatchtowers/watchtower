@@ -170,7 +170,10 @@ private struct AutomationFormContent: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(form.detail.isNewRecipe ? "New automation" : "Edit “\(form.detail.name)”")
                 .font(.title2.weight(.semibold))
-            Text((form.detail.isNewRecipe ? "Saved in " : "") + (form.detail.path as NSString).abbreviatingWithTildeInPath)
+            Text(form.detail.isNewRecipe
+                ? "Saved as " + ((form.detail.path as NSString).abbreviatingWithTildeInPath as NSString)
+                    .appendingPathComponent(AutomationEditorCenter.slug(forName: form.fields.name) + ".md")
+                : (form.detail.path as NSString).abbreviatingWithTildeInPath)
                 .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)

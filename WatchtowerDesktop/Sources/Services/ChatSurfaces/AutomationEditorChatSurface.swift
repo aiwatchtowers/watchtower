@@ -171,8 +171,9 @@ final class AutomationEditorChat {
     let conversationID: Int64
     let toolsAvailable: Bool
     private(set) var draft: AutomationDraftPanelModel
-    /// A `save_automation` of this chat landed while it was open.
-    private(set) var saved = false
+    /// What to say once a `save_automation` of this chat landed while it
+    /// was open (`SaveAutomationCardModel.appliedNote`); nil before.
+    private(set) var savedNote: String?
 
     @ObservationIgnored private let databasePath: String
     @ObservationIgnored private let center: EmbeddedChatCenter
@@ -236,7 +237,7 @@ final class AutomationEditorChat {
 
     private func decided(_ row: AgentAction?) {
         guard let row, row.tool == SaveAutomationCardModel.tool, row.status == "applied" else { return }
-        saved = true
+        savedNote = SaveAutomationCardModel(action: row).appliedNote
         onSaved()
     }
 }

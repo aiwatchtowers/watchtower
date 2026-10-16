@@ -77,7 +77,9 @@ struct AutomationDraftPanel: View {
     private var errorsBox: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("The draft has errors").font(.caption.weight(.semibold)).foregroundStyle(.red)
-            ForEach(model.errors, id: \.self) { Text($0).font(.callout).textSelection(.enabled) }
+            ForEach(Array(model.errors.enumerated()), id: \.offset) { _, error in
+                Text(error).font(.callout).textSelection(.enabled)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)

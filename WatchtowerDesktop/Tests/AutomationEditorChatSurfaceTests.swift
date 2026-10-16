@@ -209,12 +209,14 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         let chat = controller(center(MockClaudeService()), spec: spec) { saves += 1 }
         let conversationID = chat.conversationID
         let id = try await pool.write { db in
-            try TestDatabase.insertAgentAction(db, tool: "save_automation", surface: "automation_editor",
-                                               conversationID: conversationID, status: "applied")
+            try TestDatabase.insertAgentAction(db, tool: "save_automation", argsJSON: #"{"is_new":true}"#,
+                                               surface: "automation_editor", conversationID: conversationID,
+                                               status: "applied")
         }
+        XCTAssertNil(chat.savedNote)
         await chat.actionFeed.retry(id)
         XCTAssertEqual(saves, 1)
-        XCTAssertTrue(chat.saved)
+        XCTAssertEqual(chat.savedNote, SaveAutomationCardModel.appliedNewNote)
         chat.close()
     }
 }

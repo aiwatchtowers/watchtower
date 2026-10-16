@@ -54,6 +54,9 @@ struct AutomationsView: View {
     @State private var editing: SheetTarget?
     @State private var confirming: SheetTarget?
     @State private var changingInWords: SheetTarget?
+    /// "Change it in words instead" from the edit form: shown once the form
+    /// sheet has finished closing (two sheets in one transaction can drop one).
+    @State private var pendingChangeInWords: SheetTarget?
     @State private var creating = false
 
     private var cardActions: AutomationsTabActions {
@@ -68,9 +71,13 @@ struct AutomationsView: View {
                 out.changeInWordsDisabledHelp = help
             } else {
                 out.onChangeInWords = { id in
-                    // From the edit form: the form sheet closes first.
-                    editing = nil
-                    changingInWords = SheetTarget(id: id)
+                    if editing != nil {
+                        // From the edit form: its sheet's onDismiss opens the chat.
+                        pendingChangeInWords = SheetTarget(id: id)
+                        editing = nil
+                    } else {
+                        changingInWords = SheetTarget(id: id)
+                    }
                 }
             }
         }
@@ -115,7 +122,7 @@ struct AutomationsView: View {
         }
         .onDisappear { vm.setTabVisible(false) }
         .onChange(of: vm.items.map(\.id)) { _, _ in selectFirstIfNeeded() }
-        .sheet(item: $editing) { target in
+        .sheet(item: $editing, onDismiss: openPendingChangeInWords) { target in
             if let editor {
                 AutomationFormView(
                     editor: editor,
@@ -147,6 +154,13 @@ struct AutomationsView: View {
                 }
             }
         }
+    }
+
+    /// The edit form's sheet finished closing: open the chat it handed off to.
+    private func openPendingChangeInWords() {
+        guard let pending = pendingChangeInWords else { return }
+        pendingChangeInWords = nil
+        changingInWords = pending
     }
 
     /// The card is never blank while there are automations to show.

@@ -16,6 +16,13 @@ package struct SaveAutomationCardModel {
     package let dryRunSummary: String?
     /// The saved file → the proposed text; nil for a new recipe.
     package let diff: OwnerAskSnapshotDiff?
+    /// What the editor says once this save is applied. Approving the card is
+    /// the confirmation (`Execute` writes, indexes and confirms — spec §11);
+    /// it never enables: a new recipe is indexed off, an edit keeps its state.
+    package let appliedNote: String
+
+    package static let appliedNewNote = "Saved and confirmed. It's off until you turn it on in Automations."
+    package static let appliedEditNote = "Saved and confirmed. Whether it runs is still set by its switch in Automations."
 
     private struct Args: Decodable {
         var name = ""
@@ -79,6 +86,7 @@ package struct SaveAutomationCardModel {
         let summary = args.dryRunSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         dryRunSummary = summary.isEmpty ? nil : "\(Self.dryRunSummaryLabel): \(summary)"
         diff = args.isNew ? nil : OwnerAskSnapshotDiff(previous: args.previousRecipeText, current: args.recipeText)
+        appliedNote = args.isNew ? Self.appliedNewNote : Self.appliedEditNote
     }
 
     /// "40,000 tokens · 5 min".

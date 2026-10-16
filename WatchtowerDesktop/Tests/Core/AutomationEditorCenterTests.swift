@@ -183,6 +183,21 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertFalse(runner.invocations.contains { $0[1] == "show" }, "a new recipe has nothing to load")
     }
 
+    func testNewRecipeNameClashSaysSo() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "hn") }
+        runner.on("save") { _ in
+            throw CLIRunnerError.nonZeroExit(code: 1, stderr: "the recipe changed on disk since you opened it")
+        }
+        let center = makeCenter()
+        let id = AutomationEditorCenter.newRecipeID
+        center.beginNew(automationsDir: "/acme/automations")
+        center.drafts[id]?.form.fields.name = "Digest"
+        await center.save(id)
+        guard case let .review(plan) = center.saving[id] else { return XCTFail("expected the Save sheet") }
+        await center.commit(id, plan: plan)
+        XCTAssertEqual(center.saving[id], .failed("A recipe named digest.md already exists — pick another name."))
+    }
+
     func testSlugForName() {
         XCTAssertEqual(AutomationEditorCenter.slug(forName: "Morning Mail digest!"), "morning-mail-digest")
         XCTAssertEqual(AutomationEditorCenter.slug(forName: "  --Q4 plan--  "), "q4-plan")

@@ -42,6 +42,9 @@ package final class AutomationEditorCenter {
 
     nonisolated package static let changedOnDisk =
         "The recipe changed on disk since you opened it — reload it and review again."
+    nonisolated package static func nameTaken(_ slug: String) -> String {
+        "A recipe named \(slug).md already exists — pick another name."
+    }
     nonisolated package static let changedAgain = "The recipe changed again — review it once more."
 
     package private(set) var drafts: [Int64: EditDraft] = [:]
@@ -195,7 +198,9 @@ package final class AutomationEditorCenter {
                                    expectContentHash: isNew ? "" : draft.form.buffer.baseContentHash)
             }
         } catch {
-            saving[id] = .failed(Self.saveMessage(for: error))
+            let message = Self.saveMessage(for: error)
+            // A new recipe was never opened: a file at its slug is a name clash.
+            saving[id] = .failed(isNew && message == Self.changedOnDisk ? Self.nameTaken(slug) : message)
             return
         }
         validatedTexts[id] = nil

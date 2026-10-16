@@ -47,6 +47,15 @@ final class SaveAutomationCardModelTests: XCTestCase {
         XCTAssertNil(new.diff)
     }
 
+    /// Approving the card confirms the recipe (spec §11) and never enables
+    /// it: the note after the save says exactly that.
+    func testAppliedNoteSaysConfirmedNotEnabled() throws {
+        XCTAssertEqual(SaveAutomationCardModel(action: try action(["is_new": true])).appliedNote,
+                       "Saved and confirmed. It's off until you turn it on in Automations.")
+        XCTAssertEqual(SaveAutomationCardModel(action: try action()).appliedNote,
+                       "Saved and confirmed. Whether it runs is still set by its switch in Automations.")
+    }
+
     func testDryRunSummaryLabelled() throws {
         let model = SaveAutomationCardModel(action: try action())
         XCTAssertEqual(model.dryRunSummary, "Assistant's dry-run summary: Read 17 messages, 4 need a reply.")

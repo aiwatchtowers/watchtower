@@ -24,7 +24,7 @@ struct AutomationEditorChatView: View {
                 model: chat.draft,
                 canAct: chat.toolsAvailable && !chat.engine.isBusy,
                 actionHelp: chat.toolsAvailable ? nil : AutomationEditorChatSurface.unavailableHelp,
-                savedNote: chat.saved ? "Saved. It won't run until you confirm it in Automations." : nil,
+                savedNote: chat.savedNote,
                 onCancel: onCancel,
                 onDryRunAgain: { chat.dryRunAgain() },
                 onSave: { chat.askToSave() }
