@@ -223,7 +223,7 @@ func escalateQuestion(database *db.DB, a escalateArgs, now time.Time) (escalateR
 // the stored options, the question clipped to the title on one line, the
 // full question then the reason's line as the summary, the session's single
 // linked target (none for none or several), origin chat asked at a.at;
-// validated with origin chat, its level classified.
+// validated with origin chat, its level classified (Full for a recorded full request).
 func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion, now time.Time) (db.OwnerAsk, string, error) {
 	opts := make([]asks.Option, 0, len(q.Options))
 	for _, o := range q.Options {
@@ -252,6 +252,9 @@ func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion
 		target = sql.NullInt64{Int64: linked[0], Valid: true}
 	}
 	level := asks.Level(asks.KindQuestion, payload, asks.OriginChat)
+	if q.Level == asks.LevelFull {
+		level = asks.LevelFull // a full request the soft guard recorded (spec 2026-10-15 §7.1)
+	}
 	return db.OwnerAsk{
 		WorkbenchID: a.workbenchID,
 		SessionID:   sql.NullInt64{Int64: a.sessionID, Valid: true},

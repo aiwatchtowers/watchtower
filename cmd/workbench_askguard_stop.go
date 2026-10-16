@@ -15,11 +15,13 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/asks"
 	"watchtower/internal/claude"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/digest"
+	"watchtower/internal/workbenchmethod"
 )
 
 // The Stop ask guard (spec 2026-10-10-owner-asks-v2 Part 4, PROJ-13): a Stop
@@ -211,11 +213,14 @@ type askGuardResolution struct {
 
 // stopDecision is decideStop's outcome: Reason is the block reason ("" =
 // pass); Record asks to record the verdict's question; Clear asks to clear
-// the session's older question.
+// the session's older question. Full: the recorded question is a full
+// request the soft guard keeps with the message's own text, raised as a Full
+// ask (spec 2026-10-15 §7.1).
 type stopDecision struct {
 	Reason string
 	Record bool
 	Clear  bool
+	Full   bool
 }
 
 // decideStop is the Part 4.5 table. verdict nil is a model failure (pass,
@@ -280,6 +285,155 @@ func stopFinishPhase(v askGuardVerdict, candidate bool) stopDecision {
 		return stopDecision{Record: true}
 	}
 	return stopDecision{Clear: true}
+}
+
+// askGuardModes are the workbench's ask guard mode and finish check for
+// this session (spec 2026-10-15 §7, PROJ-13).
+type askGuardModes struct {
+	askGuard    string
+	finishCheck bool
+}
+
+// strictModes are the built-in defaults, and what any failure to read the
+// modes resolves to.
+var strictModes = askGuardModes{askGuard: workbenchmethod.AskGuardStrict, finishCheck: true}
+
+// askGuardModesFor resolves target's modes from its session row's folder (a
+// session worktree reads its own workflow.md) through a read-only open
+// (never creating or migrating, reads under askGuardBusyTimeout). Any
+// failure reads as strictModes, silently: the guard's stderr is pinned by
+// the PROJ-13 diagnostics. A var for tests.
+var askGuardModesFor = func(dbPath string, target askGuardTarget) askGuardModes {
+	if _, ok, err := terminalSessionRowID(); ok && err != nil {
+		return strictModes // a present but unreadable session variable: never a weaker mode
+	}
+	database, err := db.OpenExisting(dbPath, askGuardBusyTimeout)
+	if err != nil {
+		return strictModes
+	}
+	defer database.Close()
+	e := workbenchmethod.ResolveSession(database, target.workbenchID, target.rowID)
+	if e.Err != nil {
+		return strictModes
+	}
+	return askGuardModes{askGuard: e.AskGuard, finishCheck: e.FinishOn()}
+}
+
+// decideStopMode is decideStop under the workbench's modes (spec 2026-10-15
+// §7.1). strict with the finish check on — and any unknown mode with it — is
+// decideStop unchanged. soft never sends a request back: a chat or full
+// request is recorded whenever the session can record it, whatever the
+// presence. off checks no request and records or clears nothing. The finish
+// phase runs only with the finish check on. stop_hook_active never blocks.
+func decideStopMode(m askGuardModes, stopHookActive, empty bool, verdict *askGuardVerdict, r askGuardResolution) stopDecision {
+	switch {
+	case m.askGuard == workbenchmethod.AskGuardOff:
+		return decideStopOff(m.finishCheck, stopHookActive, verdict)
+	case m.askGuard != workbenchmethod.AskGuardSoft && m.finishCheck:
+		return decideStop(stopHookActive, empty, verdict, r)
+	case empty:
+		return stopDecision{Clear: true}
+	case verdict == nil:
+		return stopDecision{}
+	case stopHookActive:
+		return continuedStop(m.askGuard, *verdict, r)
+	}
+	var reason string
+	var candidate, full bool
+	if m.askGuard == workbenchmethod.AskGuardSoft {
+		candidate, full = softRequestPhase(*verdict, r)
+	} else {
+		reason, candidate = stopRequestPhase(*verdict, r)
+	}
+	if reason != "" {
+		return stopDecision{Reason: reason, Clear: true}
+	}
+	if !m.finishCheck {
+		if candidate {
+			return stopDecision{Record: true, Full: full}
+		}
+		return stopDecision{Clear: true}
+	}
+	d := stopFinishPhase(*verdict, candidate)
+	d.Full = d.Record && full
+	return d
+}
+
+// decideStopOff is the off mode: no request is checked and nothing is
+// recorded or cleared; with the finish check on, a message that reports the
+// work complete without finish_session is still sent back (never on a
+// continued turn).
+func decideStopOff(finishCheck, stopHookActive bool, v *askGuardVerdict) stopDecision {
+	if finishCheck && !stopHookActive && v != nil && v.CompleteUnreported {
+		return stopDecision{Reason: askGuardReasonFinish}
+	}
+	return stopDecision{}
+}
+
+// softRequestPhase is soft's request phase: nothing is sent back; a chat
+// request, or a full one, is a candidate whenever the session can record it.
+func softRequestPhase(v askGuardVerdict, r askGuardResolution) (candidate, full bool) {
+	switch {
+	case !r.Recordable:
+		return false, false
+	case v.chatAsk():
+		return true, false
+	case v.fullAsk():
+		return true, true
+	}
+	return false, false
+}
+
+// continuedStop is a continued turn (stop_hook_active) under strict with the
+// finish check off, or soft: it never blocks; a chat request is recorded on a
+// recordable session as in Part 4.5, and under soft a full request too. It
+// mirrors decideStop's stopHookActive branch, the source of truth: keep the
+// two in step.
+func continuedStop(mode string, v askGuardVerdict, r askGuardResolution) stopDecision {
+	switch {
+	case v.chatAsk() && r.Recordable:
+		return stopDecision{Record: true}
+	case mode == workbenchmethod.AskGuardSoft && v.fullAsk() && r.Recordable:
+		return stopDecision{Record: true, Full: true}
+	}
+	return stopDecision{Clear: true}
+}
+
+// fullAsk: a full request that is neither the named ask itself nor a
+// closing summary's list.
+func (v askGuardVerdict) fullAsk() bool {
+	return v.Request == askRequestFull && !v.covered() && !v.ClosingSummary
+}
+
+// askGuardFullQuestionRunes bounds a recorded full request so the raised
+// ask's summary (the text, a newline and the reason line) stays within
+// asks' 2000 runes.
+const askGuardFullQuestionRunes = 1800
+
+// askGuardFullText is a full request's text as the soft guard records it,
+// at most askGuardFullQuestionRunes runes: the message trimmed, or "…" and
+// its last askGuardFullQuestionRunes-1 runes (a closing request sits at the
+// end).
+func askGuardFullText(message string) string {
+	s := strings.TrimSpace(message)
+	r := []rune(s)
+	if len(r) <= askGuardFullQuestionRunes {
+		return s
+	}
+	return "…" + strings.TrimSpace(string(r[len(r)-askGuardFullQuestionRunes+1:]))
+}
+
+// recordedQuestion is what d records: the classifier's chat question, or
+// for a soft full request (the classifier gives no question for one) the
+// message's own text, marked Full so the escalation raises a Full ask.
+func recordedQuestion(d stopDecision, v *askGuardVerdict, message string) db.ChatQuestion {
+	switch {
+	case !d.Record || v == nil:
+		return db.ChatQuestion{}
+	case d.Full:
+		return db.ChatQuestion{Question: askGuardFullText(message), Level: asks.LevelFull}
+	}
+	return db.ChatQuestion{Question: v.Question, Options: v.Options}
 }
 
 // askGuardGeneratorFactory builds the classifier's model client; the seam
@@ -387,6 +541,10 @@ func decideAskGuardStop(ctx context.Context, stdout, stderr io.Writer, cfg *conf
 	if in.StopHookActive && !target.inSession {
 		return // a continued turn with nothing to record or clear: no model call
 	}
+	modes := askGuardModesFor(cfg.DBPath(), target)
+	if modes.askGuard == workbenchmethod.AskGuardOff && !modes.finishCheck {
+		return // PROJ-13: no check is on, so no model call and nothing recorded or cleared
+	}
 	empty := strings.TrimSpace(in.LastAssistantMessage) == ""
 	verdict, ok := askGuardVerdictFor(ctx, stderr, cfg, in, empty)
 	if !ok || askGuardCancelled(ctx, stderr) {
@@ -399,11 +557,13 @@ func decideAskGuardStop(ctx context.Context, stdout, stderr io.Writer, cfg *conf
 	if gone {
 		return // a deleted workbench's leftover hook: nothing to say
 	}
-	d := decideStop(in.StopHookActive, empty, verdict, r)
+	d := decideStopMode(modes, in.StopHookActive, empty, verdict, r)
 	if askGuardCancelled(ctx, stderr) {
 		return
 	}
-	reason := g.apply(stderr, d, verdict, at, in.StopHookActive)
+	// Only strict sends a failed record back; soft never sends a request back.
+	sendBack := !in.StopHookActive && modes.askGuard != workbenchmethod.AskGuardSoft
+	reason := g.apply(stderr, d, recordedQuestion(d, verdict, in.LastAssistantMessage), at, sendBack)
 	if askGuardCancelled(ctx, stderr) || reason == "" {
 		return
 	}
@@ -611,16 +771,17 @@ func (g *askGuardSession) hasStateHooks() (bool, error) {
 	return workbenchHasStateHooks(g.database, g.workbenchID)
 }
 
-// apply carries out d for the Stop of time at and returns the block reason
-// to print ("" = pass). A record that fails is a failure of row 9: the
-// question is sent back (R-away; never on a continued turn) and the older
-// one cleared. A failed clear is one stderr line.
-func (g *askGuardSession) apply(stderr io.Writer, d stopDecision, v *askGuardVerdict, at time.Time, stopHookActive bool) string {
+// apply carries out d for the Stop of time at, recording q, and returns the
+// block reason to print ("" = pass). A record that fails is a failure of row
+// 9: with sendBack (strict, not a continued turn) the question is sent back
+// (R-away) and the older one cleared; under soft it only clears. A failed
+// clear is one stderr line.
+func (g *askGuardSession) apply(stderr io.Writer, d stopDecision, q db.ChatQuestion, at time.Time, sendBack bool) string {
 	if d.Record {
-		if err := g.record(v, at); err != nil {
+		if err := g.record(q, at); err != nil {
 			fmt.Fprintf(stderr, "watchtower: chat question not recorded: %v\n", err)
 			d = stopDecision{Clear: true}
-			if !stopHookActive {
+			if sendBack {
 				d.Reason = askGuardReasonAway
 			}
 		}
@@ -633,16 +794,15 @@ func (g *askGuardSession) apply(stderr io.Writer, d stopDecision, v *askGuardVer
 	return d.Reason
 }
 
-// record stores the verdict's question, asked at the Stop's time at.
-func (g *askGuardSession) record(v *askGuardVerdict, at time.Time) error {
+// record stores q, asked at the Stop's time at.
+func (g *askGuardSession) record(q db.ChatQuestion, at time.Time) error {
 	if g.database == nil || g.readFailed || !g.matched {
 		return errors.New("no session to record on")
 	}
 	if err := g.database.SetBusyTimeout(askGuardRecordBusyTimeout); err != nil {
 		return err
 	}
-	return g.database.SetChatQuestion(g.rowID, g.workbenchID, g.claudeID,
-		db.ChatQuestion{Question: v.Question, Options: v.Options}, at)
+	return g.database.SetChatQuestion(g.rowID, g.workbenchID, g.claudeID, q, at)
 }
 
 // clear drops the session's chat question recorded before at; outside a

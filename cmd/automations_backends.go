@@ -278,12 +278,22 @@ func ownerCodexHome() string {
 	return filepath.Join(home, ".codex")
 }
 
+// automationAgentPassthrough is the env an agent() child inherits from this
+// process when set: identity plus network plumbing (proxy, CA bundle, TMPDIR;
+// owner ask #185). Never an API key or token.
+var automationAgentPassthrough = []string{
+	"HOME", "LANG", "USER",
+	"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
+	"ALL_PROXY", "all_proxy",
+	"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "TMPDIR",
+}
+
 // automationAgentEnv is an agent() child's environment besides PATH (the
-// clients append the rich PATH): HOME, LANG and USER from this process when
-// set, and the run marker (AGENT-07).
+// clients append the rich PATH): automationAgentPassthrough from this process
+// when set (absent ones omitted), and the run marker (AGENT-07).
 func automationAgentEnv(runID int64) []string {
 	var env []string
-	for _, k := range []string{"HOME", "LANG", "USER"} {
+	for _, k := range automationAgentPassthrough {
 		if v := os.Getenv(k); v != "" {
 			env = append(env, k+"="+v)
 		}

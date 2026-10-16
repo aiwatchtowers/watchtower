@@ -654,6 +654,10 @@ const chatQuestionStateTolerance = 30 * time.Second
 type ChatQuestion struct {
 	Question string               `json:"question"`
 	Options  []ChatQuestionOption `json:"options"`
+	// Level is "full" for a full request the soft ask guard recorded with
+	// the message's own text (spec 2026-10-15 §7.1): the escalation raises it
+	// as a Full ask whatever its shape. "" (omitted) for a chat question.
+	Level string `json:"level,omitempty"`
 }
 
 // ChatQuestionOption is one option the agent's message itself named.

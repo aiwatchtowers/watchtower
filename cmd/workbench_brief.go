@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/reviewdiff"
 	"watchtower/internal/tools"
 	"watchtower/internal/workbenchcheck"
+	"watchtower/internal/workbenchmethod"
 )
 
 const (
@@ -48,6 +49,11 @@ const (
 
 var briefRules = []string{
 	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; a short clarification may be asked in plain text while the owner is in the session; anything else that waits on the owner (a decision, a check, a review) is an ask_owner call — several decisions in one ask — never a comment, and you keep working; comments are for blockers and done summaries.",
+}
+
+// briefRulesNoPreset is briefRules for the preset none (briefRulesFor).
+var briefRulesNoPreset = []string{
+	"Board rules: set a target in_progress (update_target) before you work on it and done once it is finished; a short clarification may be asked in plain text while the owner is in the session; anything else that waits on the owner (a decision, a check, a review) is an ask_owner call — several decisions in one ask — never a comment, and you keep working.",
 }
 
 var workbenchBriefCmd = &cobra.Command{
@@ -202,8 +208,12 @@ func briefFromDB(database *db.DB, p *db.Workbench, vocab vocabulary) string {
 	defer cancel()
 	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath})
 	now := time.Now()
+	// The mismatch check reads the workbench folder, which resync updates; a
+	// session worktree's own copy follows on its next worktree install.
+	e := workbenchmethod.ResolveSession(database, p.ID, briefSessionRow())
+	method := briefMethodSection(e, briefPresetMismatch(e, p.FolderPath, p.ID))
 	return renderSessionBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now, vocab,
-		joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)))
+		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)))
 }
 
 // briefAsks is the answered-asks input: the asks for the brief's own session
@@ -337,17 +347,22 @@ const briefLegacyLine = "This folder's Watchtower setup predates the Workbench r
 // board: archived targets (PROJ-15) leave the counts and the tree, and are
 // only counted in the header; comments on them keep their titles. Pure.
 func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary) string {
-	return renderSessionBrief(board, p, comments, drift, recent, answered, now, vocab, "")
+	return renderSessionBrief(board, p, comments, drift, recent, answered, now, vocab, briefRules, "", "")
 }
 
-// renderSessionBrief is renderWorkbenchBrief with the session's cleanup line
-// (briefCleanupLine) after the rules when cleanup is not "": like the rules,
-// its room is set aside before anything else is fitted. Pure.
-func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary, cleanup string) string {
+// renderSessionBrief is renderWorkbenchBrief with the board rules for the
+// session's preset (briefRulesFor), the folder rules slot
+// (briefMethodSection) and the session's cleanup line (briefCleanupLine) after
+// the rules when not "": like the rules, their room is set aside before
+// anything else is fitted. Pure.
+func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary, boardRules []string, method, cleanup string) string {
 	shown := db.WithoutArchived(board)
 	header := briefHeader(p, shown, db.CountArchived(board), len(comments), vocab)
 	head := header
-	rules := strings.Join(briefRules, "\n")
+	rules := strings.Join(boardRules, "\n")
+	if method != "" {
+		rules += "\n" + method
+	}
 	if cleanup != "" {
 		rules += "\n" + cleanup
 	}

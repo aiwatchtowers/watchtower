@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/workbenchmethod"
 )
 
 // workbenchCommandRunner runs the claude CLI for the workbench install; tests
@@ -55,6 +56,31 @@ func workbenchInstallOptions(p *db.Workbench) (devpack.WorkbenchInstallOptions, 
 		return devpack.WorkbenchInstallOptions{}, fmt.Errorf("determining the watchtower binary path: %w", err)
 	}
 	return devpack.WorkbenchInstallOptions{WorkbenchID: p.ID, Folder: p.FolderPath, Bin: bin, Run: workbenchCommandRunner}, nil
+}
+
+// workbenchSetupOptions is workbenchInstallOptions for an install or resync
+// into p's folder (the workbench's, or a session worktree's): the preset
+// resolved the way the hooks resolve it — the owner's setting, else that
+// folder's workflow.md, else watchtower-flow (spec 2026-10-15 §4.3).
+func workbenchSetupOptions(p *db.Workbench) (devpack.WorkbenchInstallOptions, error) {
+	o, err := workbenchInstallOptions(p)
+	if err != nil {
+		return o, err
+	}
+	o.PresetNone = installPreset(p.ID, p.FolderPath) == workbenchmethod.PresetNone
+	return o, nil
+}
+
+// installPreset is workbench id's effective preset with folder's
+// workflow.md; a database that cannot be opened installs the default
+// preset. A var for tests.
+var installPreset = func(id int64, folder string) string {
+	database, err := openDBFromConfig()
+	if err != nil {
+		return workbenchmethod.PresetFlow
+	}
+	defer func() { _ = database.Close() }()
+	return workbenchmethod.Resolve(database, id, folder).Preset
 }
 
 // removeWorkbenchInstall is `workbench delete`'s folder cleanup (PROJ-02),
@@ -117,7 +143,7 @@ func codexStatusSources(ctx context.Context, cfg *config.Config, o devpack.Workb
 // exclude line, the imported duplicates out, and the hook trust. No codex
 // binary is reported, not an error (D5).
 func runCodexInstall(ctx context.Context, w io.Writer, p *db.Workbench) error {
-	o, err := workbenchInstallOptions(p)
+	o, err := workbenchSetupOptions(p)
 	if err != nil {
 		return err
 	}
@@ -137,6 +163,9 @@ func runCodexInstall(ctx context.Context, w io.Writer, p *db.Workbench) error {
 func printCodexInstallBody(w io.Writer, st devpack.CodexStatus, err error) {
 	if st.SkillState != "" {
 		fmt.Fprintf(w, "  skill    %s%s (.agents/skills/%s)\n", st.SkillState, skillStateNote(st.SkillState), devpack.WorkbenchSkillName)
+	}
+	if st.FlowState != "" {
+		fmt.Fprintf(w, "  preset   %s%s (.agents/skills/%s)\n", st.FlowState, skillStateNote(st.FlowState), devpack.FlowSkillName)
 	}
 	switch {
 	case st.DuplicatesRemoved:
@@ -232,7 +261,7 @@ func loadIntegrateWorkbench(id int64) (*db.Workbench, error) {
 }
 
 func runWorkbenchInstall(ctx context.Context, w io.Writer, p *db.Workbench) error {
-	o, err := workbenchInstallOptions(p)
+	o, err := workbenchSetupOptions(p)
 	if err != nil {
 		return err
 	}
@@ -257,6 +286,12 @@ func printWorkbenchInstallReport(w io.Writer, p *db.Workbench, rep devpack.Workb
 func printWorkbenchInstallBody(w io.Writer, rep devpack.WorkbenchInstallReport, err error) {
 	if rep.Skill.Path != "" {
 		fmt.Fprintf(w, "  skill    %s%s\n", rep.Skill.State, skillStateNote(rep.Skill.State))
+	}
+	if rep.Flow.Path != "" {
+		fmt.Fprintf(w, "  preset   %s %s%s\n", devpack.FlowSkillName, rep.Flow.State, skillStateNote(rep.Flow.State))
+	}
+	if rep.SingleFileLayout {
+		fmt.Fprintf(w, "  preset   %s\n", singleFileLayoutNote)
 	}
 	fmt.Fprintf(w, "  hook     %s\n", hookReportLine(rep.HookChanged, err))
 	fmt.Fprintf(w, "  cleanup  allow rule %s\n", hookReportLine(rep.CleanupPermissionChanged, err))
@@ -295,6 +330,10 @@ func printLegacyMigration(w io.Writer, rep devpack.WorkbenchInstallReport) {
 // edited by the owner, or not ours at all (PROJ-04).
 var legacySkillKeptNote = "Your own copy of the old " + devpack.LegacySkillName + " skill was kept — delete .claude/skills/" +
 	devpack.LegacySkillName + " yourself once you no longer need it; until then Claude Code sees both skills."
+
+// singleFileLayoutNote is the one line for a core skill the owner edited
+// before the v10 split (spec 2026-10-15 §4.3): kept, with no preset beside it.
+const singleFileLayoutNote = "Your edited skill keeps the old single-file layout; delete it to take the v10 core and preset."
 
 // legacyPermissionNote is the suggestion for the owner's allow rules that
 // still name the old server; "" when there are none. The rules are never

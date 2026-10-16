@@ -822,7 +822,7 @@ two tails together would still serialise over §4's 256 KiB result limit, both a
 each stream at most half of the limit, a shorter stream's unused share going to the other) until the result fits;
 the result says so (`truncated: true`) and the step row records the exit code and which stream was cut. `shell()` never throws `ResultTooLarge`. Environment: `PATH` (the daemon's resolved rich PATH, `claude.RichPATH` — a Desktop-started daemon's own is launchd's minimal one), `HOME`, `LANG`, `USER` from the daemon plus
 `WATCHTOWER_AUTOMATION_RUN_ID=<run>`; nothing else (no tokens, no `WATCHTOWER_TERMINAL_SESSION_ID`). Only exact
-manifest commands (AUTO-13). In a privacy-protected folder (`privacyProtected`, see §13.4) `shell()` is refused with `NotAvailable`
+manifest commands (AUTO-13). *Amendment 2026-10-16 (owner, ask #185): an `agent()` CLI child (not `shell()`) also gets, when the daemon has them set, `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`ALL_PROXY` (and lowercase forms), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `TMPDIR`; never an API key or token.* In a privacy-protected folder (`privacyProtected`, see §13.4) `shell()` is refused with `NotAvailable`
 ("this workbench is in a protected folder; use session() or move the folder") — §20 D9; the folder is never
 touched.
 

@@ -440,7 +440,8 @@ func TestIntegrateCodex_InstallReportsAndIsIdempotent(t *testing.T) {
 	if err := runCodexInstall(context.Background(), &out, p); err != nil {
 		t.Fatalf("install: %v\n%s", err, out.String())
 	}
-	want := fmt.Sprintf("Workbench 7 (%s), codex:\n  skill    installed (.agents/skills/watchtower-workbench)\n  trust    hooks trusted\n", p.FolderPath)
+	want := fmt.Sprintf("Workbench 7 (%s), codex:\n  skill    installed (.agents/skills/watchtower-workbench)\n"+
+		"  preset   installed (.agents/skills/watchtower-flow)\n  trust    hooks trusted\n", p.FolderPath)
 	if out.String() != want {
 		t.Fatalf("report:\n%s\nwant:\n%s", out.String(), want)
 	}
@@ -606,7 +607,7 @@ func TestWorkbenchResync_RefreshesTheCodexPart(t *testing.T) {
 		t.Fatalf("codex found: the part is installed; got %+v, err %v", res.Codex, err)
 	}
 	b, _ := json.Marshal(res)
-	if !strings.Contains(string(b), `"codex":{"ok":true,"error":"","found":true,"skill":"installed","hooks_trusted":true,"duplicates_removed":false}`) {
+	if !strings.Contains(string(b), `"codex":{"ok":true,"error":"","found":true,"skill":"installed","flow":"installed","hooks_trusted":true,"duplicates_removed":false}`) {
 		t.Fatalf("resync JSON: %s", b)
 	}
 }

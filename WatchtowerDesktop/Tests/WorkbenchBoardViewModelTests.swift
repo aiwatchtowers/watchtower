@@ -700,4 +700,121 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.archivedCount, 0)
         XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(open), Int(closed)])
     }
+
+    // MARK: - New target (board #411)
+
+    /// New Task opens under the scope; New Sub-task under its card.
+    func testBeginNewTargetUsesTheScopeOrTheNamedParent() throws {
+        let (pid, group) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let group = try Self.insertTarget(db, project: pid, text: "Group")
+            _ = try Self.insertTarget(db, project: pid, text: "Child", parent: group)
+            return (pid, group)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.beginNewTarget()
+        XCTAssertNil(vm.newTargetRequest?.parentID, "outside a scope: the top level")
+        XCTAssertTrue(vm.enterScope(Int(group)))
+        vm.beginNewTarget()
+        XCTAssertEqual(vm.newTargetRequest?.parentID, Int(group))
+        vm.beginNewTarget(under: 42)
+        XCTAssertEqual(vm.newTargetRequest?.parentID, 42)
+    }
+
+    /// The writer gets the trimmed fields; the new target and every parent
+    /// whose status moved are reported as the owner's, the parent expands,
+    /// the sheet closes and the new target opens.
+    func testCreateTargetWritesReportsAndOpensTheNewTarget() async throws {
+        let (pid, parent, other) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let parent = try Self.insertTarget(db, project: pid, text: "Feature", status: "done")
+            return (pid, parent, try Self.insertTarget(db, project: pid, text: "Unrelated"))
+        }
+        let vm = makeVM(project: pid)
+        var calls: [(String, String, String, Int64?)] = []
+        let pool = dbManager.dbPool
+        vm.addTarget = { title, intent, priority, parentID in
+            calls.append((title, intent, priority, parentID))
+            // Stands in for Go's writer: the new open child reopens its parent
+            // (PROJ-05); meanwhile an agent closes an unrelated target.
+            return try await pool.write { db in
+                let id = try Self.insertTarget(db, project: pid, text: title, parent: parentID)
+                try db.execute(sql: "UPDATE targets SET status = 'in_progress' WHERE id = ?", arguments: [parentID])
+                try db.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [other])
+                return id
+            }
+        }
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+        vm.collapsed.insert(Int(parent))
+        vm.beginNewTarget(under: Int(parent))
+
+        let created = await vm.createTarget(title: "  Write docs ", intent: " why \n", priority: "high", parentID: Int(parent))
+
+        XCTAssertTrue(created)
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.0, "Write docs")
+        XCTAssertEqual(calls.first?.1, "why")
+        XCTAssertEqual(calls.first?.2, "high")
+        XCTAssertEqual(calls.first?.3, parent)
+        let newID = try XCTUnwrap(vm.selectedTargetID)
+        XCTAssertEqual(reported, [.target(Int64(newID)), .target(parent)],
+                       "an agent's change elsewhere on the board is not the owner's")
+        XCTAssertFalse(vm.collapsed.contains(Int(parent)))
+        XCTAssertNil(vm.newTargetRequest)
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertNotNil(WorkbenchBoardOutline.find(newID, in: vm.roots))
+    }
+
+    /// A blank title or an unknown priority never reaches the writer; a
+    /// writer failure or a missing CLI says so and keeps the sheet open.
+    func testCreateTargetRefusalsKeepTheSheet() async throws {
+        let pid = try await dbManager.dbPool.write { db in try Self.insertWorkbench(db) }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.beginNewTarget()
+
+        let noCLI = await vm.createTarget(title: "Task", intent: "", priority: "medium", parentID: nil)
+        XCTAssertFalse(noCLI)
+        XCTAssertNotNil(vm.errorMessage)
+
+        var calls = 0
+        vm.addTarget = { _, _, _, _ in
+            calls += 1
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let blank = await vm.createTarget(title: "   ", intent: "", priority: "medium", parentID: nil)
+        let badPriority = await vm.createTarget(title: "Task", intent: "", priority: "urgent", parentID: nil)
+        let tooLong = await vm.createTarget(
+            title: String(repeating: "a", count: WorkbenchNewTargetRequest.titleLimit + 1),
+            intent: "", priority: "medium", parentID: nil
+        )
+        XCTAssertFalse(blank || badPriority || tooLong)
+        XCTAssertEqual(calls, 0)
+
+        // Exit 0 with unreadable output: the target may exist, so the sheet
+        // closes rather than invite a duplicate.
+        vm.addTarget = { _, _, _, _ in
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad json"))
+        }
+        let unknown = await vm.createTarget(title: "Task", intent: "", priority: "medium", parentID: nil)
+        XCTAssertFalse(unknown)
+        XCTAssertNil(vm.newTargetRequest)
+        XCTAssertNotNil(vm.errorMessage)
+
+        vm.beginNewTarget()
+        vm.addTarget = { _, _, _, _ in
+            calls += 1
+            throw CocoaError(.fileWriteUnknown)
+        }
+        vm.dismissError()
+        let failed = await vm.createTarget(title: "Task", intent: "", priority: "medium", parentID: nil)
+        XCTAssertFalse(failed)
+        XCTAssertEqual(calls, 1)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertNotNil(vm.newTargetRequest, "a failed create keeps the sheet and the owner's text")
+        XCTAssertFalse(vm.isCreatingTarget)
+    }
 }
