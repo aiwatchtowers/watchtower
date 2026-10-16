@@ -350,8 +350,6 @@ final class RecordingIndicatorViewTests: XCTestCase {
         XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 310, expandedPanelShown: true), 0)
     }
 
-    /// A release snaps to the nearest corner; before the window has been
-    /// measured the stack stays where it is.
     /// Verify finding (round 2): in a top corner with the live panel open
     /// the band reserves nothing, yet the banner still drops below the panel.
     func testBannerClearsTheExpandedPanelInATopCorner() {
@@ -362,6 +360,8 @@ final class RecordingIndicatorViewTests: XCTestCase {
         XCTAssertEqual(RecordingIndicatorCorner.bottomLeading.bannerDrop(occupiedHeight: expanded), 0)
     }
 
+    /// A release snaps to the nearest corner; before the window has been
+    /// measured the stack stays where it is.
     func testReleaseKeepsTheCornerUntilTheWindowIsMeasured() {
         let topRight = CGPoint(x: 900, y: 50)
         for corner in RecordingIndicatorCorner.allCases {
