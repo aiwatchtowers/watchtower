@@ -268,18 +268,7 @@ func SessionTime(events []db.AgentReportEvent) (TimeSplit, []Segment) {
 	var ts TimeSplit
 	for _, p := range pieces {
 		ms := p.end.Sub(p.start).Milliseconds()
-		switch p.cat {
-		case CatTool:
-			ts.Tools.add(p.class, ms)
-		case CatBackground:
-			ts.BackgroundMS += ms
-		case CatOwner:
-			ts.OwnerMS += ms
-		case CatAway:
-			ts.AwayMS += ms
-		default:
-			ts.ModelMS += ms
-		}
+		ts.add(p.cat, p.class, ms)
 	}
 	ts.WallMS = evs[len(evs)-1].at.Sub(evs[0].at).Milliseconds()
 	ts.ActiveMS = ts.WallMS - ts.AwayMS

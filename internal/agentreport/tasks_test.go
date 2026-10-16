@@ -158,3 +158,77 @@ func TestTasks_GroupSumsLeaves(t *testing.T) {
 	assert.Equal(t, []string{"s1"}, g.Sessions)
 	assert.False(t, g.Shared)
 }
+
+func TestTasks_OddMSSplitRemainderToLowestID(t *testing.T) {
+	f := &fixture{}
+	f.apiCost(time.Millisecond, 0)
+	f.tool(1*mn, "mcp__wt__update_target", "#1", d(sec))
+	f.tool(2*mn, "mcp__wt__update_target", "#2", d(sec))
+	f.apiCost(20*mn, 0)
+	rows := run(f, []db.AgentReportTarget{
+		target(2, nil, sc("in_progress", 0), sc("done", 10*mn)),
+		target(1, nil, sc("in_progress", 0), sc("done", 10*mn)),
+	}, t0.Add(time.Hour))
+	assert.Equal(t, ms(10*mn)-1, rows[1].Time.WallMS+rows[2].Time.WallMS)
+	assert.Equal(t, ms(5*mn), rows[1].Time.WallMS, "the odd ms goes to the lowest id")
+	assert.Equal(t, ms(5*mn)-1, rows[2].Time.WallMS)
+}
+
+func TestTasks_GroupCallLinksSessionOnly(t *testing.T) {
+	f := &fixture{}
+	f.apiCost(0, 1)
+	f.tool(3*mn, "mcp__wt__update_target", "#10", d(sec))
+	f.apiCost(20*mn, 2)
+	p := int64(10)
+	rows := run(f, []db.AgentReportTarget{
+		target(10, nil, sc("in_progress", 0), sc("done", 10*mn)),
+		target(11, &p, sc("in_progress", 0), sc("done", 10*mn)),
+	}, t0.Add(time.Hour))
+	assert.Equal(t, []string{"s1"}, rows[10].Sessions)
+	assert.Equal(t, int64(0), rows[10].Time.WallMS)
+	assert.Zero(t, rows[10].CostUSD)
+	assert.Empty(t, rows[11].Sessions)
+}
+
+func TestTasks_GrandchildCallLinksAncestors(t *testing.T) {
+	f := &fixture{}
+	f.apiCost(0, 1)
+	f.tool(3*mn, "mcp__wt__update_target", "#12", d(sec))
+	f.apiCost(20*mn, 2)
+	g, c := int64(10), int64(11)
+	rows := run(f, []db.AgentReportTarget{
+		target(10, nil, sc("in_progress", 0), sc("done", 10*mn)),
+		target(11, &g, sc("in_progress", 0), sc("done", 10*mn)),
+		target(12, &c, sc("in_progress", 0), sc("done", 10*mn)),
+	}, t0.Add(time.Hour))
+	for _, id := range []int64{10, 11, 12} {
+		assert.Equal(t, []string{"s1"}, rows[id].Sessions, "target %d", id)
+	}
+	assert.Equal(t, ms(10*mn), rows[10].Time.WallMS)
+}
+
+func TestTasks_SingleCallFallbackIsZero(t *testing.T) {
+	f := &fixture{}
+	f.apiCost(0, 1)
+	f.tool(3*mn, "mcp__wt__update_target", "#1", d(sec))
+	f.apiCost(20*mn, 2)
+	rows := run(f, []db.AgentReportTarget{target(1, nil, sc("done", -time.Hour))}, t0.Add(time.Hour))
+	assert.Equal(t, []string{"s1"}, rows[1].Sessions)
+	assert.Zero(t, rows[1].Time.WallMS)
+	assert.Zero(t, rows[1].CostUSD)
+}
+
+func TestTasks_CostOnlySplit(t *testing.T) {
+	evs := []db.AgentReportEvent{
+		{Kind: "tool", Name: "mcp__wt__update_target", Target: "#1", TS: t0.Add(mn).Format(tsLayout)},
+		{Kind: "tool", Name: "mcp__wt__update_target", Target: "#2", TS: t0.Add(mn).Format(tsLayout)},
+		{Kind: "api_call", CostUSD: 3, TS: t0.Add(2 * mn).Format(tsLayout)},
+	}
+	rows := Tasks([]db.AgentReportTarget{
+		target(1, nil, sc("in_progress", 0), sc("done", 10*mn)),
+		target(2, nil, sc("in_progress", 0), sc("done", 10*mn)),
+	}, nil, map[string][]db.AgentReportEvent{"s1": evs}, t0.Add(time.Hour))
+	assert.InDelta(t, 1.5, rows[0].CostUSD, 1e-9)
+	assert.InDelta(t, 1.5, rows[1].CostUSD, 1e-9)
+	assert.True(t, rows[0].Shared && rows[1].Shared)
+}

@@ -122,47 +122,13 @@ type taskAcc struct {
 	shared   bool
 }
 
-func (a *taskAcc) addMS(cat, class string, ms int64) {
-	switch cat {
-	case CatTool:
-		a.time.Tools.add(class, ms)
-	case CatBackground:
-		a.time.BackgroundMS += ms
-	case CatOwner:
-		a.time.OwnerMS += ms
-	case CatAway:
-		a.time.AwayMS += ms
-	default:
-		a.time.ModelMS += ms
-	}
-}
-
 func (a *taskAcc) merge(b *taskAcc) {
-	t, u := &a.time, b.time
-	t.ModelMS += u.ModelMS
-	t.Tools.BuildTest += u.Tools.BuildTest
-	t.Tools.Git += u.Tools.Git
-	t.Tools.ReadSearch += u.Tools.ReadSearch
-	t.Tools.Edit += u.Tools.Edit
-	t.Tools.MCP += u.Tools.MCP
-	t.Tools.SubagentsFG += u.Tools.SubagentsFG
-	t.Tools.Other += u.Tools.Other
-	t.BackgroundMS += u.BackgroundMS
-	t.OwnerMS += u.OwnerMS
-	t.AwayMS += u.AwayMS
+	a.time.plus(b.time)
 	a.cost += b.cost
 	a.shared = a.shared || b.shared
 	for s := range b.sessions {
 		a.sessions[s] = true
 	}
-}
-
-func (a *taskAcc) finish() TimeSplit {
-	t := a.time
-	t.WallMS = t.ModelMS + t.Tools.BuildTest + t.Tools.Git + t.Tools.ReadSearch + t.Tools.Edit +
-		t.Tools.MCP + t.Tools.SubagentsFG + t.Tools.Other + t.BackgroundMS + t.OwnerMS + t.AwayMS
-	t.ActiveMS = t.WallMS - t.AwayMS
-	return t
 }
 
 // Tasks attributes the sessions' main-lane segments and api_call costs to the
@@ -284,6 +250,7 @@ func Tasks(targets []db.AgentReportTarget, sessions map[string][]Segment, events
 			ids := open(at)
 			for _, id := range ids {
 				accs[id].cost += e.CostUSD / float64(len(ids))
+				accs[id].shared = accs[id].shared || len(ids) > 1
 			}
 		}
 	}
@@ -308,7 +275,8 @@ func Tasks(targets []db.AgentReportTarget, sessions map[string][]Segment, events
 			}
 		}
 		cal, ph := phases(t.History, now)
-		tm := sum.finish()
+		tm := sum.time
+		tm.seal()
 		sessionsOut := make([]string, 0, len(sum.sessions))
 		for s := range sum.sessions {
 			sessionsOut = append(sessionsOut, s)
@@ -334,7 +302,7 @@ func attribute(accs map[int64]*taskAcc, open []int64, seg Segment, a, b time.Tim
 		if i == 0 {
 			share += ms % k
 		}
-		accs[id].addMS(seg.Category, seg.ToolClass, share)
+		accs[id].time.add(seg.Category, seg.ToolClass, share)
 		accs[id].shared = accs[id].shared || k > 1
 	}
 }

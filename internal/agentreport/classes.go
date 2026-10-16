@@ -90,3 +90,48 @@ func (t *ToolTimes) add(class string, ms int64) {
 		t.Other += ms
 	}
 }
+
+func (t ToolTimes) total() int64 {
+	return t.BuildTest + t.Git + t.ReadSearch + t.Edit + t.MCP + t.SubagentsFG + t.Other
+}
+
+func (t *ToolTimes) plus(u ToolTimes) {
+	t.BuildTest += u.BuildTest
+	t.Git += u.Git
+	t.ReadSearch += u.ReadSearch
+	t.Edit += u.Edit
+	t.MCP += u.MCP
+	t.SubagentsFG += u.SubagentsFG
+	t.Other += u.Other
+}
+
+// add counts ms of one category (class names the tool class of a tool stretch).
+func (ts *TimeSplit) add(cat, class string, ms int64) {
+	switch cat {
+	case CatTool:
+		ts.Tools.add(class, ms)
+	case CatBackground:
+		ts.BackgroundMS += ms
+	case CatOwner:
+		ts.OwnerMS += ms
+	case CatAway:
+		ts.AwayMS += ms
+	default:
+		ts.ModelMS += ms
+	}
+}
+
+// plus adds the category fields of u; WallMS and ActiveMS are left to seal.
+func (ts *TimeSplit) plus(u TimeSplit) {
+	ts.ModelMS += u.ModelMS
+	ts.Tools.plus(u.Tools)
+	ts.BackgroundMS += u.BackgroundMS
+	ts.OwnerMS += u.OwnerMS
+	ts.AwayMS += u.AwayMS
+}
+
+// seal sets WallMS to the category sum and ActiveMS to WallMS - AwayMS.
+func (ts *TimeSplit) seal() {
+	ts.WallMS = ts.ModelMS + ts.Tools.total() + ts.BackgroundMS + ts.OwnerMS + ts.AwayMS
+	ts.ActiveMS = ts.WallMS - ts.AwayMS
+}
