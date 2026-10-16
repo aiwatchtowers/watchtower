@@ -1,6 +1,7 @@
 package ideas
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -243,8 +244,18 @@ func alreadyMiningError(path string) error {
 			owner = o
 		}
 	}
-	return fmt.Errorf("ideas: the %s is mining right now (%s)", owner, path)
+	return lockHeldError{msg: fmt.Sprintf("ideas: the %s is mining right now (%s)", owner, path)}
 }
+
+// ErrBackfillLockHeld matches (errors.Is) the error a losing
+// AcquireBackfillLock call returns: another live holder has the lock. Any
+// other acquire error (an unwritable workspace) does not match it.
+var ErrBackfillLockHeld = errors.New("ideas: backfill lock held")
+
+type lockHeldError struct{ msg string }
+
+func (e lockHeldError) Error() string      { return e.msg }
+func (lockHeldError) Is(target error) bool { return target == ErrBackfillLockHeld }
 
 // BackfillLockFresh reports whether workspaceDir holds a backfill lock less
 // than backfillLockFreshWindow old — used by callers that only need a cheap

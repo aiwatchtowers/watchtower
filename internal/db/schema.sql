@@ -2609,7 +2609,36 @@ SELECT session_uuid,
   SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed
 FROM agent_log_events GROUP BY session_uuid;
 
--- Diff reviewer rounds (00117, spec 2026-10-16-workbench-diff-reviewer-design.md)
+-- The owner's per-(automation, tool) auto grant (00117, Automations P2). Active
+-- only while grant_hash = automations.approval_hash = the run's recipe_hash.
+CREATE TABLE IF NOT EXISTS automation_tool_grants (
+    automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    tool          TEXT NOT NULL,
+    grant_hash    TEXT NOT NULL,                             -- approval_hash the owner granted
+    granted_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (automation_id, tool)
+);
+
+-- One row per source that started a history backfill after its first sync; reached_ts only moves down from upper_ts to floor_ts.
+CREATE TABLE IF NOT EXISTS history_backfill (
+    id             INTEGER PRIMARY KEY,
+    source_kind    TEXT    NOT NULL CHECK (source_kind IN ('slack', 'gmail', 'imap', 'jira')),
+    account_id     INTEGER NOT NULL,
+    floor_ts       REAL    NOT NULL,
+    upper_ts       REAL    NOT NULL,
+    reached_ts     REAL    NOT NULL,
+    status         TEXT    NOT NULL DEFAULT 'running'
+                   CHECK (status IN ('running', 'paused', 'done', 'off')),
+    waiting        TEXT    NOT NULL DEFAULT '' CHECK (waiting IN ('', 'plan_limit')),
+    chunk_failures INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT    NOT NULL DEFAULT '',
+    started_at     TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL,
+    done_at        TEXT,
+    UNIQUE (source_kind, account_id)
+);
+
+-- Diff reviewer rounds (00119, spec 2026-10-16-workbench-diff-reviewer-design.md)
 CREATE TABLE IF NOT EXISTS review_rounds (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

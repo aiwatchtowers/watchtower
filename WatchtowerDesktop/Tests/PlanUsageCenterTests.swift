@@ -83,6 +83,23 @@ final class PlanUsageCenterTests: XCTestCase {
         }
     }
 
+    /// The tray's backfill line rides this poll; it reads even with no plan status row.
+    func testReloadReadsTheBackfillLine() async throws {
+        let center = PlanUsageCenter(dbPool: pool, runner: nil, defaults: defaults)
+        await center.reload()
+        XCTAssertNil(center.backfillLine)
+        try await pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO history_backfill
+                (source_kind, account_id, floor_ts, upper_ts, reached_ts, status, waiting, started_at, updated_at)
+                VALUES ('slack', 1, 0, 2592000, 1555200, 'running', '', '2026-10-15T08:00:00Z', '2026-10-15T08:00:00Z')
+                """)
+        }
+        await center.reload()
+        XCTAssertNil(center.status)
+        XCTAssertEqual(center.backfillLine, "Loading history: 12 of 30 days")
+    }
+
     func testCalmStatusHasNoWarningMark() async throws {
         try await insertStatus(state: "ok", fetchedAt: "2026-10-15T09:59:00Z", percent: 4)
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-15T10:00:00Z"))

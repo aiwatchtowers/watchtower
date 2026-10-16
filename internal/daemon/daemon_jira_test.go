@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
@@ -213,6 +214,7 @@ type stubJiraSyncer struct {
 	outTok       int
 	apiTok       int
 	resolveCalls int
+	firstSync    time.Time
 }
 
 func (s *stubJiraSyncer) Sync(context.Context) (int, error) { return s.issues, s.err }
@@ -224,6 +226,7 @@ func (s *stubJiraSyncer) AccountID() int64 { return s.accountID }
 func (s *stubJiraSyncer) BoardAnalyzerUsage() (int, int, int) {
 	return s.inTok, s.outTok, s.apiTok
 }
+func (s *stubJiraSyncer) FirstSyncFrom() (time.Time, bool) { return s.firstSync, !s.firstSync.IsZero() }
 
 // revokedErr is shaped like the error client.do returns for a 401 that survives
 // a token refresh.

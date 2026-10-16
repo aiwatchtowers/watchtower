@@ -91,6 +91,13 @@ func TestToolCapabilities_CoversEveryAutomationTool(t *testing.T) {
 	cfg, database := newAutomationRegistryEnv(t)
 	visible := buildAutomationRegistry(cfg, database).List(tools.AutomationSurface)
 	require.NotEmpty(t, visible)
+	// The ten write tools (Automations P2) are visible, so the coverage loop
+	// below checks their capability rows too.
+	for name := range automationWriteSurfaces {
+		if !slices.ContainsFunc(visible, func(tool *tools.Tool) bool { return tool.Name == name }) {
+			t.Errorf("write tool %s is not visible on the automation surface", name)
+		}
+	}
 	for _, tool := range visible {
 		_, has := automations.ToolCapabilities[tool.Name]
 		if !has && !slices.Contains(toolOnlyTools, tool.Name) {

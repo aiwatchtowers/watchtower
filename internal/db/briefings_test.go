@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -108,4 +109,33 @@ func TestMarkBriefingRead(t *testing.T) {
 func TestMarkBriefingRead_NoOpForNonexistent(t *testing.T) {
 	db := openTestDB(t)
 	require.NoError(t, db.MarkBriefingRead(99999), "missing id should not error")
+}
+
+func TestLastBriefingCreatedAtBefore_LatestEarlierDateOfThatUser(t *testing.T) {
+	d := openTestDB(t)
+	day := time.Now()
+	date := func(back int) string { return day.AddDate(0, 0, -back).Format("2006-01-02") }
+	seed := func(user, d0, created string) {
+		t.Helper()
+		if _, err := d.UpsertBriefing(makeBriefing(user, d0)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`UPDATE briefings SET created_at = ? WHERE user_id = ? AND date = ?`, created, user, d0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok, err := d.LastBriefingCreatedAtBefore("U1", date(0)); err != nil || ok {
+		t.Fatalf("no briefing = (%v, %v); want (false, nil)", ok, err)
+	}
+	seed("U1", date(5), "2020-01-01T08:00:00Z")
+	seed("U1", date(3), "2020-01-03T17:00:00Z")
+	seed("U1", date(0), "2020-01-06T08:00:00Z") // today's own row is not "before"
+	seed("U2", date(1), "2020-01-05T08:00:00Z") // another user
+	got, ok, err := d.LastBriefingCreatedAtBefore("U1", date(0))
+	if err != nil || !ok {
+		t.Fatalf("LastBriefingCreatedAtBefore = (%v, %v)", ok, err)
+	}
+	if want := time.Date(2020, 1, 3, 17, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("created = %v; want %v", got, want)
+	}
 }

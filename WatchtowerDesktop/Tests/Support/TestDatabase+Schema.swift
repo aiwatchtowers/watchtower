@@ -1775,6 +1775,30 @@ CREATE TABLE IF NOT EXISTS agent_log_events (
   src_path       TEXT NOT NULL,
   src_offset     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS automation_tool_grants (
+    automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    tool          TEXT NOT NULL,
+    grant_hash    TEXT NOT NULL,                             -- approval_hash the owner granted
+    granted_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (automation_id, tool)
+);
+CREATE TABLE IF NOT EXISTS history_backfill (
+    id             INTEGER PRIMARY KEY,
+    source_kind    TEXT    NOT NULL CHECK (source_kind IN ('slack', 'gmail', 'imap', 'jira')),
+    account_id     INTEGER NOT NULL,
+    floor_ts       REAL    NOT NULL,
+    upper_ts       REAL    NOT NULL,
+    reached_ts     REAL    NOT NULL,
+    status         TEXT    NOT NULL DEFAULT 'running'
+                   CHECK (status IN ('running', 'paused', 'done', 'off')),
+    waiting        TEXT    NOT NULL DEFAULT '' CHECK (waiting IN ('', 'plan_limit')),
+    chunk_failures INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT    NOT NULL DEFAULT '',
+    started_at     TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL,
+    done_at        TEXT,
+    UNIQUE (source_kind, account_id)
+);
 CREATE TABLE IF NOT EXISTS review_rounds (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

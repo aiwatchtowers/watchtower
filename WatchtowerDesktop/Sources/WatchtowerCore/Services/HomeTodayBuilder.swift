@@ -17,12 +17,12 @@ package enum HomeTodayBuilder {
     ) -> [TodayCard] {
         TodayCardKind.allCases.filter(allowed.contains).compactMap { kind in
             switch kind {
-            case .waitingOnYou: waitingOnYou(data)
+            case .sinceYouWereAway: sinceYouWereAway(data, calendar: calendar)
             case .nextMeeting: nextMeeting(data, now: now, calendar: calendar)
+            case .waitingOnYou: waitingOnYou(data)
             case .briefing: briefing(data)
             case .myTargets: myTargets(data, today: dayString(now, calendar: calendar))
             case .agentsWaiting: agentsWaiting(data)
-            case .sinceYouWereAway: sinceYouWereAway(data, calendar: calendar)
             }
         }
     }

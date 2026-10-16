@@ -142,6 +142,7 @@ name. A fresh install starts from the first macOS preferred language
 Whisper codes, English always included) while the key is absent on a launch
 that lands in onboarding. Goals' Continue writes `sync.initial_history_days
 = 3` (the old onboarding's default) when the config had none.
+That 3 days is only the first cycle's depth: new sources are then backfilled to `sync.backfill_days` (30) in the background, see [history-backfill.md](history-backfill.md).
 
 **Run setup again.** Seeded from what is in effect: goals mapped back from
 the enabled features (`OnboardingFeatureSelection.current`, closest to the

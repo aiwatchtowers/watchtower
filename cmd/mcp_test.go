@@ -300,3 +300,22 @@ func TestMCPWorkbenchMode_AgentFlagLabelsComments(t *testing.T) {
 	require.NoError(t, database.QueryRow(`SELECT agent_label FROM project_comments WHERE project_id = ?`, pid).Scan(&label))
 	assert.Equal(t, "codex-cli", label)
 }
+
+// Only the automations executor binds a run: a chat-mode server started with
+// --context-type automation_run is refused, so a chat can never record rows
+// that read as a run's proposals (AGENT-01).
+func TestMCPChatMode_RefusesAutomationRunContext(t *testing.T) {
+	resetMCPFlags(t)
+	ctxType, ctxID, surface := mcpFlagContextType, mcpFlagContextID, mcpFlagSurface
+	t.Cleanup(func() { mcpFlagContextType, mcpFlagContextID, mcpFlagSurface = ctxType, ctxID, surface })
+	database := openMCPTestDB(t)
+	mcpFlagChat, mcpFlagSurface = true, "main"
+	mcpFlagContextType = tools.AutomationContextType
+	mcpFlagContextID = "7"
+	_, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "t1", nil)
+	require.ErrorContains(t, err, "reserved for automation runs")
+
+	mcpFlagContextType = "target"
+	_, err = mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "t1", nil)
+	require.NoError(t, err, "an ordinary chat context still starts")
+}
