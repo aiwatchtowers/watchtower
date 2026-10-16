@@ -34,7 +34,10 @@ struct ReviewFileListView: View {
     private var shown: [ReviewDiffFile] { model.files.filter { $0.collapsedReason == nil } }
     private var folded: [ReviewDiffFile] { model.files.filter { $0.collapsedReason != nil } }
 
-    private func row(_ file: ReviewDiffFile) -> some View {
+    private func row(_ file: ReviewDiffFile) -> some View { Self.row(file, model: model) }
+
+    /// A file's row with the model's Viewed mark and comment count (Chapters reuses it).
+    static func row(_ file: ReviewDiffFile, model: ReviewChangesModel) -> some View {
         ReviewFileRow(
             file: file,
             selected: model.selectedPath == file.path,
@@ -46,7 +49,7 @@ struct ReviewFileListView: View {
     }
 }
 
-private struct ReviewFileRow: View {
+struct ReviewFileRow: View {
     let file: ReviewDiffFile
     let selected: Bool
     let viewed: Bool

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/reviewdiff"
 )
 
 type reviewContextItem struct {
@@ -51,7 +52,8 @@ func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
 		}
 		items = append(items, contextItem(p.FolderPath, t))
 	}
-	return writeReview(cmd, reviewEnvelope{OK: true, Items: items})
+	lenses, notes := reviewdiff.LoadLenses(p.FolderPath)
+	return writeReview(cmd, reviewEnvelope{OK: true, Items: items, Lenses: lenses, LensNotes: notes})
 }
 
 func contextItem(folder string, t *db.Target) reviewContextItem {
