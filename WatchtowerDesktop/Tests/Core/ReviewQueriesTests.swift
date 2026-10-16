@@ -101,6 +101,61 @@ final class ReviewQueriesTests: XCTestCase {
         XCTAssertEqual(try db.read { try ReviewQueries.comments($0, roundID: roundID) }.first?.status, .resolved)
     }
 
+    func testSetCheckUpsertsAndDeletes() throws {
+        let db = try TestDatabase.create()
+        let roundID = try db.write { try Self.seedRound($0) }
+        try db.write { try ReviewQueries.setCheck($0, roundID: roundID, chapterKey: "dir:cmd", lens: "tests", itemKey: "k1", state: .checked) }
+        try db.write { try ReviewQueries.setCheck($0, roundID: roundID, chapterKey: "dir:cmd", lens: "tests", itemKey: "k1", state: .commented) }
+        let rows = try db.read { try ReviewQueries.checks($0, roundID: roundID) }
+        XCTAssertEqual(rows, [ReviewCheck(chapterKey: "dir:cmd", lens: "tests", itemKey: "k1", state: .commented)])
+        try db.write { try ReviewQueries.setCheck($0, roundID: roundID, chapterKey: "dir:cmd", lens: "tests", itemKey: "k1", state: nil) }
+        XCTAssertEqual(try db.read { try ReviewQueries.checks($0, roundID: roundID) }, [])
+    }
+
+    func testSetCheckAndRoundStateRefusedOnSentRound() throws {
+        let db = try TestDatabase.create()
+        let roundID = try db.write { try Self.seedRound($0) }
+        try db.write { try $0.execute(sql: "UPDATE review_rounds SET status='sent' WHERE id=?", arguments: [roundID]) }
+        XCTAssertThrowsError(try db.write {
+            try ReviewQueries.setCheck($0, roundID: roundID, chapterKey: "c", lens: "tests", itemKey: "k", state: .checked)
+        }) { XCTAssertEqual($0 as? ReviewQueries.ReviewQueryError, .roundNotOpen) }
+        XCTAssertEqual(try db.read { try ReviewQueries.checks($0, roundID: roundID) }, [])
+        let changed = try db.write {
+            try ReviewQueries.saveRoundState($0, roundID: roundID, mode: "deep", phase: .wrapup, chapterKey: "x", activeSeconds: 9)
+        }
+        XCTAssertFalse(changed)
+        let row = try XCTUnwrap(try db.read { try Row.fetchOne($0, sql: "SELECT * FROM review_rounds WHERE id=?", arguments: [roundID]) })
+        XCTAssertEqual(row["mode"] as String, "quick")
+        XCTAssertEqual(row["phase"] as String, "")
+        XCTAssertEqual(row["active_seconds"] as Int, 0)
+    }
+
+    func testSaveRoundStatePersists() throws {
+        let db = try TestDatabase.create()
+        let roundID = try db.write { try Self.seedRound($0) }
+        let changed = try db.write {
+            try ReviewQueries.saveRoundState($0, roundID: roundID, mode: "deep", phase: .wrapup, chapterKey: "dir:cmd", activeSeconds: 125)
+        }
+        XCTAssertTrue(changed)
+        let row = try XCTUnwrap(try db.read { try Row.fetchOne($0, sql: "SELECT * FROM review_rounds WHERE id=?", arguments: [roundID]) })
+        XCTAssertEqual(row["mode"] as String, "deep")
+        XCTAssertEqual(row["phase"] as String, "wrapup")
+        XCTAssertEqual(row["chapter_key"] as String, "dir:cmd")
+        XCTAssertEqual(row["active_seconds"] as Int, 125)
+    }
+
+    func testAddDraftDesignCommentWithLens() throws {
+        let db = try TestDatabase.create()
+        let roundID = try db.write { try Self.seedRound($0) }
+        _ = try db.write {
+            try ReviewQueries.addDraft($0, roundID: roundID, path: nil, side: "new", startLine: 0, endLine: 0,
+                                       anchor: anchor, treeSHA: "t", body: "why", lens: "intent")
+        }
+        let row = try XCTUnwrap(try db.read { try ReviewQueries.comments($0, roundID: roundID) }.first)
+        XCTAssertNil(row.path)
+        XCTAssertEqual(row.lens, "intent")
+    }
+
     private func draft(_ db: DatabaseQueue, _ round: Int64, _ path: String, tree: String = "t", body: String = "b") throws -> Int64 {
         try db.write {
             try ReviewQueries.addDraft($0, roundID: round, path: path, side: "new", startLine: 1, endLine: 1,

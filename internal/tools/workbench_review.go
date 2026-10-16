@@ -100,6 +100,9 @@ func reviewText(v reviewView) string {
 				where += " (old side)"
 			}
 		}
+		if c.Lens != "" {
+			where += " [" + c.Lens + "]"
+		}
 		fmt.Fprintf(&b, "\n#%d %s\n", c.ID, where)
 		if quote := strings.TrimRight(c.Quote, "\n"); quote != "" {
 			for _, l := range strings.Split(quote, "\n") {
