@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -92,6 +93,24 @@ type reviewEnvelope struct {
 	Items            []reviewContextItem `json:"items,omitempty"`
 	Lenses           []reviewdiff.Lens   `json:"lenses,omitempty"`
 	LensNotes        []string            `json:"lens_notes,omitempty"`
+	Revert           *reviewRevertJSON   `json:"revert,omitempty"`
+	Overview         json.RawMessage     `json:"overview,omitempty"`
+	OverviewCached   bool                `json:"overview_cached,omitempty"`
+	Lessons          []reviewLessonJSON  `json:"lessons,omitempty"`
+	Written          string              `json:"written,omitempty"`
+}
+
+type reviewRevertJSON struct {
+	HunkID string `json:"hunk_id"`
+	Path   string `json:"path"`
+}
+
+type reviewLessonJSON struct {
+	ID               int64   `json:"id"`
+	Lens             string  `json:"lens"`
+	Text             string  `json:"text"`
+	SourceCommentIDs []int64 `json:"source_comment_ids"`
+	Status           string  `json:"status"`
 }
 
 // reviewTarget resolves --workbench to its row and an open DB; a bad id or a
