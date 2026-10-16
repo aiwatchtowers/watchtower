@@ -37,8 +37,8 @@ enum HelpChatSurface {
             turnPrompt: { input in
                 let previous = center.previousQuestion
                 let query = [input.text, previous].compactMap { $0 }.joined(separator: " ")
-                let sections = center.index.map {
-                    GuideSearch.rank(query, in: $0.sections, limit: AskCenter.turnSectionLimit)
+                let sections = center.searchable.map {
+                    GuideSearch.rank(query, in: $0, limit: AskCenter.turnSectionLimit)
                 } ?? []
                 center.previousQuestion = input.text
                 center.pendingSource = sections.first

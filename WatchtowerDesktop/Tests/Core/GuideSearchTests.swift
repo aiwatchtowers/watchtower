@@ -56,9 +56,9 @@ struct GuideSearchTests {
 }
 
 extension GuideSearchTests {
-    @Test("a word scores once, by its best match, and query words split on whitespace")
-    func exclusiveScoringAndWhitespaceWords() {
-        // "calendar" is a heading word (3) and a title word (2) of the same section: still 3, not 5.
+    @Test("a word adds every field it prefixes, however often, and query words split on whitespace")
+    func additiveScoringAndWhitespaceWords() {
+        // "calendar" is a heading word (3) and a title word (2) of a: 5; twice in b's text: still 1.
         let a = GuideSection(page: "a/", pageTitle: "Calendar", heading: "Calendar basics", anchor: "a", level: 2, text: "x")
         let b = GuideSection(page: "b/", pageTitle: "Other", heading: "Misc", anchor: "b", level: 2, text: "calendar calendar")
         #expect(GuideSearch.rank("calendar", in: [b, a], limit: 5).map(\.anchor) == ["a", "b"])
@@ -71,5 +71,54 @@ extension GuideSearchTests {
     func trimsPunctuation() {
         #expect(GuideSearch.rank("recap?", in: Self.sections, limit: 5).first?.anchor == "get-a-recap")
         #expect(GuideSearch.rank("how do I get a recap?", in: Self.sections, limit: 5).first?.anchor == "get-a-recap")
+    }
+}
+
+/// internal/userguide/testdata/queries.json, shared with the Go ranker's tests: the same
+/// stopwords, and each natural question's top section on its snapshot of real guide sections.
+extension GuideSearchTests {
+    private struct Fixture: Decodable {
+        struct Query: Decodable {
+            let query: String
+            let top: String
+        }
+        let stopwords: [String]
+        let queries: [Query]
+        let sections: [GuideSection]
+    }
+
+    private static func fixture() throws -> Fixture {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests/Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // the repository
+            .appendingPathComponent("internal/userguide/testdata/queries.json")
+        return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+    }
+
+    @Test("the stopwords are Go's")
+    func stopwordsMatchGo() throws {
+        #expect(GuideSearch.stopwords == Set(try Self.fixture().stopwords))
+    }
+
+    @Test("natural questions find the section Go finds")
+    func naturalQuestionsMatchGo() throws {
+        let fixture = try Self.fixture()
+        for query in fixture.queries {
+            let top = GuideSearch.rank(query.query, in: fixture.sections, limit: 1).first?.id ?? ""
+            #expect(top == query.top, "\(query.query)")
+        }
+    }
+
+    @Test("text words match by prefix, not substring; a possessive matches the bare word")
+    func wordPrefixNotSubstring() {
+        let a = GuideSection(page: "a.md", pageTitle: "Alpha", heading: "Why use it", anchor: "", level: 1,
+                             text: "Show the item.")
+        let b = GuideSection(page: "b.md", pageTitle: "Beta", heading: "Reminders", anchor: "", level: 1,
+                             text: "A reminder fires before the event.")
+        #expect(GuideSearch.rank("how do I set a remind", in: [a, b], limit: 5).map(\.page) == ["b.md"])
+        #expect(GuideSearch.rank("tem", in: [a, b], limit: 5).isEmpty)
+        #expect(GuideSearch.rank("event\u{2019}s", in: [a, b], limit: 5).map(\.page) == ["b.md"])
     }
 }

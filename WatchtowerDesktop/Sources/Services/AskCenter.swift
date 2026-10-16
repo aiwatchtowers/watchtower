@@ -23,7 +23,11 @@ final class AskCenter {
     /// Sections put into each help turn's prompt.
     static let turnSectionLimit = 4
 
-    private(set) var index: GuideIndex?
+    private(set) var index: GuideIndex? {
+        didSet { searchable = index.map { GuideSearch.Searchable($0.sections) } }
+    }
+    /// The index's sections split into words once, for ranking per keystroke.
+    @ObservationIgnored private(set) var searchable: GuideSearch.Searchable?
 
     /// The User Guide's front page (Help menu).
     var guideHomeURL: URL? {
@@ -87,7 +91,7 @@ final class AskCenter {
     func matches(for query: String, screens: [HelpScreen]) -> AskMatches {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return AskMatches(guide: [], screens: []) }
-        let guide = index.map { GuideSearch.rank(trimmed, in: $0.sections, limit: Self.guideLimit) } ?? []
+        let guide = searchable.map { GuideSearch.rank(trimmed, in: $0, limit: Self.guideLimit) } ?? []
         let needle = trimmed.lowercased()
         let prefixed = screens.filter { $0.title.lowercased().hasPrefix(needle) }
         let containing = screens.filter {
