@@ -39,9 +39,10 @@ type validateJSON struct {
 }
 
 // validateRecipe parses data as the recipe slug in scope. A parse error is a
-// result (ok:false), not an error. widening is every normalised permission
-// (a recipe validated on its own widens from nothing).
-func validateRecipe(slug string, data []byte, contentHash string, scope automations.Scope) validateJSON {
+// result (ok:false), not an error. widening is what the normalised
+// permissions add to baseline — every one of them for a recipe validated on
+// its own (nil baseline).
+func validateRecipe(slug string, data []byte, contentHash string, scope automations.Scope, baseline []string) validateJSON {
 	v := validateJSON{Errors: []string{}, Slug: slug, Scope: scope.String(), ContentHash: contentHash,
 		Permissions: []string{}, Outputs: []string{}, Widening: []string{}}
 	r, err := automations.ParseRecipe(slug, data, scope)
@@ -57,7 +58,7 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 	v.OK, v.Name, v.ApprovalHash = true, r.Name, automations.ApprovalHash(r)
 	v.Permissions = append(v.Permissions, m.Normalized()...)
 	v.Outputs = append(v.Outputs, slices.Compact(slices.Sorted(slices.Values(r.Outputs)))...)
-	v.Widening = automations.Covers(nil, v.Permissions)
+	v.Widening = automations.Covers(baseline, v.Permissions)
 	return v
 }
 
@@ -67,7 +68,7 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
-	scope, _, err := workbenchScope(database, autoFlags.Workbench)
+	scope, baseline, err := validateScope(database)
 	if err != nil {
 		return err
 	}
@@ -75,7 +76,7 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	v := validateRecipe(recipeSlugOf(args[0]), data, contentHash, scope)
+	v := validateRecipe(recipeSlugOf(args[0]), data, contentHash, scope, baseline)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, v) // ok:false exits 0: the Desktop decodes it
@@ -86,6 +87,31 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "%s: ok — %s (%s), approval hash %s\n", args[0], v.Name, v.Scope, v.ApprovalHash)
 	fmt.Fprintf(w, "  permissions: %v\n  outputs:     %v\n", v.Permissions, v.Outputs)
 	return nil
+}
+
+// validateScope is the scope validate parses in and the permissions its
+// widening starts from: with --against, that automation's scope and current
+// permissions; otherwise --workbench's scope (personal by default) and none.
+func validateScope(database *db.DB) (automations.Scope, []string, error) {
+	if autoFlags.Against == 0 {
+		scope, _, err := workbenchScope(database, autoFlags.Workbench)
+		return scope, nil, err
+	}
+	if autoFlags.Workbench != 0 {
+		return automations.Scope{}, nil, errors.New("--against and --workbench are mutually exclusive: --against takes the automation's scope")
+	}
+	if autoFlags.Against < 0 {
+		return automations.Scope{}, nil, fmt.Errorf("invalid --against %d: want a positive automation id", autoFlags.Against)
+	}
+	a, err := database.GetAutomation(autoFlags.Against)
+	if err != nil {
+		return automations.Scope{}, nil, err
+	}
+	perms, err := decodeAutomationList("permissions_json", a.PermissionsJSON)
+	if err != nil {
+		return automations.Scope{}, nil, fmt.Errorf("automation %d: %w", a.ID, err)
+	}
+	return automationScopeOf(a), perms, nil
 }
 
 // rescanFolderJSON is one folder of `rescan --json`.
@@ -306,6 +332,11 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 	if err := checkConfirmHash(t, data, autoFlags.ConfirmHash); err != nil {
 		return err
 	}
+	if cmd.Flags().Changed(expectContentHashFlag) {
+		if err := checkExpectedContentHash(t.path, autoFlags.ExpectContentHash); err != nil {
+			return err
+		}
+	}
 	a, err := writeAndIndexRecipe(cmd.Context(), cfg, database, t, data)
 	if err != nil {
 		return err
@@ -337,6 +368,39 @@ func checkConfirmHash(t saveTarget, data []byte, hash string) error {
 	}
 	if got := automations.ApprovalHash(r); got != hash {
 		return fmt.Errorf("not saved: the recipe's approval hash is %s, not %s — review it again: %w", got, hash, db.ErrHashMismatch)
+	}
+	return nil
+}
+
+// expectContentHashFlag is save's --expect-content-hash: the content hash of
+// the file the Desktop loaded ("" = it had no file), so a recipe changed on
+// disk since is refused instead of overwritten.
+const expectContentHashFlag = "expect-content-hash"
+
+// checkExpectedContentHash refuses, before anything is written, a save over
+// a target whose current content hash is not want ("" = the target must not
+// exist; anything at the path, even a symlink, is a change).
+func checkExpectedContentHash(path, want string) error {
+	changed := fmt.Errorf("not saved: the recipe changed on disk since you opened it (%s) — reload it and review again", path)
+	_, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		if want != "" {
+			return changed
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking %s: %w", path, err)
+	}
+	if want == "" {
+		return changed
+	}
+	_, got, err := automations.ReadRecipeFile(path)
+	if err != nil {
+		return fmt.Errorf("not saved: %w", err)
+	}
+	if got != want {
+		return changed
 	}
 	return nil
 }

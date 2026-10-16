@@ -540,3 +540,36 @@ func TestRecipe_LoneCRNormalised(t *testing.T) {
 		t.Errorf("lone-CR twin parses differently:\nlf: %+v\ncr: %+v", a, b)
 	}
 }
+
+// TestApprovalFields_OrderAndCanonicalValues: the Changed block's fields come
+// in the pinned order, in the hash's canonical forms, and a button's label is
+// not part of the trigger (D26).
+func TestApprovalFields_OrderAndCanonicalValues(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal}
+	fm := func(label string) []byte {
+		return recipeWith("name: A\ntrigger:\n  button: {label: "+label+"}\npermissions: [Jira:READ@pay, llm:light]\n"+
+			"outputs: [report, inbox]\nbudget:\n  tokens: 1000\n  minutes: 2\n", "log(1);\n")
+	}
+	got := ApprovalFields(mustParse(t, fm("Go"), personal))
+	var names []string
+	values := map[string]string{}
+	for _, f := range got {
+		names = append(names, f.Name)
+		values[f.Name] = f.Value
+	}
+	want := []string{"trigger", "missed", "budget_tokens", "budget_minutes", "concurrency", "outputs", "permissions", "scope", "script"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+	for name, v := range map[string]string{
+		"trigger": `{"button":{"confirm":false}}`, "budget_tokens": "1000", "budget_minutes": "2",
+		"outputs": `["inbox","report"]`, "permissions": `["jira:read@PAY","llm:light"]`, "scope": "personal", "script": "log(1);\n",
+	} {
+		if values[name] != v {
+			t.Errorf("%s = %q, want %q", name, values[name], v)
+		}
+	}
+	if relabelled := ApprovalFields(mustParse(t, fm("Run it now"), personal)); !reflect.DeepEqual(relabelled, got) {
+		t.Errorf("a label rename changed the fields: %v", relabelled)
+	}
+}
