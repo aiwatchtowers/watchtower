@@ -726,19 +726,22 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     /// whose status moved are reported as the owner's, the parent expands,
     /// the sheet closes and the new target opens.
     func testCreateTargetWritesReportsAndOpensTheNewTarget() async throws {
-        let (pid, parent) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
+        let (pid, parent, other) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
-            return (pid, try Self.insertTarget(db, project: pid, text: "Feature", status: "done"))
+            let parent = try Self.insertTarget(db, project: pid, text: "Feature", status: "done")
+            return (pid, parent, try Self.insertTarget(db, project: pid, text: "Unrelated"))
         }
         let vm = makeVM(project: pid)
         var calls: [(String, String, String, Int64?)] = []
         let pool = dbManager.dbPool
         vm.addTarget = { title, intent, priority, parentID in
             calls.append((title, intent, priority, parentID))
-            // Stands in for Go's writer: the new open child reopens its parent (PROJ-05).
+            // Stands in for Go's writer: the new open child reopens its parent
+            // (PROJ-05); meanwhile an agent closes an unrelated target.
             return try await pool.write { db in
                 let id = try Self.insertTarget(db, project: pid, text: title, parent: parentID)
                 try db.execute(sql: "UPDATE targets SET status = 'in_progress' WHERE id = ?", arguments: [parentID])
+                try db.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [other])
                 return id
             }
         }
@@ -757,7 +760,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(calls.first?.2, "high")
         XCTAssertEqual(calls.first?.3, parent)
         let newID = try XCTUnwrap(vm.selectedTargetID)
-        XCTAssertEqual(reported, [.target(Int64(newID)), .target(parent)])
+        XCTAssertEqual(reported, [.target(Int64(newID)), .target(parent)],
+                       "an agent's change elsewhere on the board is not the owner's")
         XCTAssertFalse(vm.collapsed.contains(Int(parent)))
         XCTAssertNil(vm.newTargetRequest)
         XCTAssertNil(vm.errorMessage)
@@ -790,6 +794,21 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertFalse(blank || badPriority || tooLong)
         XCTAssertEqual(calls, 0)
 
+        // Exit 0 with unreadable output: the target may exist, so the sheet
+        // closes rather than invite a duplicate.
+        vm.addTarget = { _, _, _, _ in
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad json"))
+        }
+        let unknown = await vm.createTarget(title: "Task", intent: "", priority: "medium", parentID: nil)
+        XCTAssertFalse(unknown)
+        XCTAssertNil(vm.newTargetRequest)
+        XCTAssertNotNil(vm.errorMessage)
+
+        vm.beginNewTarget()
+        vm.addTarget = { _, _, _, _ in
+            calls += 1
+            throw CocoaError(.fileWriteUnknown)
+        }
         vm.dismissError()
         let failed = await vm.createTarget(title: "Task", intent: "", priority: "medium", parentID: nil)
         XCTAssertFalse(failed)
