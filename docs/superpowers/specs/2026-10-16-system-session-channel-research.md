@@ -8,8 +8,8 @@ captured on 2.1.295 for board #411) and its fixtures in `internal/claudesession/
 
 ## 0. Recommendation
 
-**Don't build the system session.** It would be a second, always-on Claude Code process that sends exactly
-the same socket frame Watchtower could send itself, but with a model turn in the middle of every message,
+**Don't build the system session.** It would be a second, always-on Claude Code process that sends the same
+kind of socket frame Watchtower could send itself (plus an `auth` line, a `from` and its mode), but with a model turn in the middle of every message,
 a stricter acceptance rule on the receiving side (permission-mode parity, as the tool documents it), a public presence in every
 session's `ListAgents`, an inbound injection surface into a Watchtower-owned agent, and no help at all for
 Codex sessions. Its one real gain — a message that never types into the terminal — is a property of the
