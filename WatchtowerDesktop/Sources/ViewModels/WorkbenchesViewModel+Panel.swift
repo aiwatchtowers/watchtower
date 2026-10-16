@@ -196,6 +196,8 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.board)
         case .files:
             updated.showWorkbenchView(.files)
+        case .analytics:
+            updated.showWorkbenchView(.analytics)
         case .report, .changes, .chat:
             guard let id = sessionViewTarget(projectID: project.id) else { return }
             let pane: WorkspacePane = switch view {

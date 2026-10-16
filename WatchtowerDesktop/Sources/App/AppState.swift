@@ -333,6 +333,8 @@ final class AppState {
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
+    /// The Analytics pane's `agents report` runs and Turn On (#298).
+    private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
@@ -711,6 +713,8 @@ final class AppState {
                     self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    // An agents report / enable child gets SIGTERM.
+                    self?.agentAnalyticsCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
                     // An escalate-question child gets SIGTERM.
@@ -1571,6 +1575,7 @@ final class AppState {
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
         initWorkbenches(dbPool: manager.dbPool)
+        if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
@@ -1853,6 +1858,14 @@ final class AppState {
             automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)
         }
         syncAutomationSessionCenter()
+    }
+
+    /// Agent analytics (#298): the previous center stopped, a new one built.
+    private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
+        let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
+        analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
+        agentAnalyticsCenter?.stop()
+        (agentAnalyticsCenter, vm.agentAnalytics) = (analytics, analytics)
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.

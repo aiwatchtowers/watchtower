@@ -9,7 +9,7 @@ A workbench session's transcript holds hundreds of tool calls; the owner wants t
 | Piece | Where |
 |---|---|
 | Reader | `internal/sessionfeed/` (`parse.go` record rules, `feed.go` `Build`/`LocateAll`/cursor, `subagent.go` subagent markers and feeds, `entry.go` types) |
-| Ledger | migration `00125_*` `terminal_session_agent_sessions`, `internal/db/terminal_session_agent_sessions.go` (`ListTerminalAgentSessions`) |
+| Ledger | migration `00127_*` `terminal_session_agent_sessions`, `internal/db/terminal_session_agent_sessions.go` (`ListTerminalAgentSessions`) |
 | CLI | `watchtower workbench session-feed --session N [--after C] [--subagent TOOL_USE_ID] [--json]` (`cmd/workbench_session_feed.go`) |
 | Desktop model/store/poller | `WatchtowerCore` `Models/SessionFeed.swift`, `Services/SessionFeedStore.swift`, `Services/SessionFeedPoller.swift` |
 | Desktop views | `Views/Workbench/SessionChatView.swift`, `SessionChatSubagentSheet.swift` |
@@ -36,13 +36,13 @@ The cursor is `<agent session id>:<byte offset after the last complete line>`. `
 
 `--subagent T` prints the feed of the subagent started by tool call `T`, read whole (empty cursor): its task as the first entry, its text replies, then the final report. A foreground subagent's report is the parent's `tool_result` for the `Agent` call; a background one reports through its `SubagentHandback` call (text in `input.message`). A background subagent without a hand-back has no report (the parent's result is only a launch notice). Nested subagents open the same way: the Desktop shows the feed in a sheet, and a nested marker inside it opens a further sheet.
 
-## The ledger (migration 00125)
+## The ledger (migration 00127)
 
 `terminal_sessions.claude_session_id` holds only the latest id (`/clear` and resume swap it). `terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)` keeps every id the tab had, so the feed stitches the tab's transcripts in time order with a `separator` entry where a new conversation starts. Ids and times only, no text (FEED-01); rows cascade with the tab.
 
 The rows are written by **SQL triggers on `terminal_sessions`** (`AFTER INSERT` and `AFTER UPDATE OF claude_session_id`), not by Go code: the creating INSERT is in Swift (`TerminalSessionQueries.create`), and a trigger is the one place that sees every write path. Consequences:
 - A future migration that **recreates `terminal_sessions`** (the SQLite table-recreation dance) must recreate both triggers (`terminal_session_agent_sessions_ai`, `_au`), or the ledger silently stops filling.
-- `internal/db/schema.sql` mirrors the table but not the triggers (only a comment points at 00125).
+- `internal/db/schema.sql` mirrors the table but not the triggers (only a comment points at 00127).
 - The migration backfills one row per existing tab with an id (`created_at` as `first_seen_at`).
 
 Locating transcripts: `LocateAll` lists the workbench's candidate directories (`agentlog.CandidateDirs`, worktrees included) under `<claude dir>/projects` once per call and resolves every ledger id from that one listing. A missing transcript is skipped, not an error.

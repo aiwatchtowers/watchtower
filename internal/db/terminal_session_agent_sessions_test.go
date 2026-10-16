@@ -70,13 +70,13 @@ func TestTerminalAgentSessions_CascadeOnDelete(t *testing.T) {
 	assert.Zero(t, n, "a deleted workbench leaves no ledger rows (PROJ-02)")
 }
 
-func TestMigration00125_Backfill(t *testing.T) {
+func TestMigration00127_Backfill(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "ledger.db"))
 	require.NoError(t, err)
 	defer d.Close()
 	wb := newTestWorkbench(t, d)
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 124))
+	require.NoError(t, goose.DownTo(d.DB, "migrations", 126))
 	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, created_at)
 		VALUES (?, 'claude', 'T', '/tmp/acme', 's-old', '2026-10-01T10:00:00Z')`, wb)
 	require.NoError(t, err)

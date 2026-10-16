@@ -49,6 +49,24 @@ package enum ProcessPipes {
         return Task { await read.value }
     }
 
+    /// Writes `data` to a launched child's stdin `pipe` and closes it, on a
+    /// thread of its own. Not awaited: the child may answer before reading
+    /// its input. A child that exits unread must not SIGPIPE the app, and a
+    /// failed write is logged — the child's exit code tells the caller.
+    /// Call it after the output drains have started.
+    package static func feed(_ pipe: Pipe, _ data: Data) {
+        let writer = pipe.fileHandleForWriting
+        _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
+        Thread.detachNewThread {
+            do {
+                try writer.write(contentsOf: data)
+            } catch {
+                NSLog("[ProcessPipes] writing the child's stdin failed: %@", String(describing: error))
+            }
+            try? writer.close()
+        }
+    }
+
     /// Runs blocking `work` on its own thread and awaits its result, leaving
     /// the Swift-concurrency pool free meanwhile.
     package static func offPool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
@@ -89,20 +107,7 @@ package enum ProcessPipes {
         let stderrRead = drain(stderrPipe)
 
         if let stdin, let inputPipe = process.standardInput as? Pipe {
-            // Not awaited: the child may answer before reading its input. A
-            // child that exits unread must not SIGPIPE the app, and a failed
-            // write is logged — the child's exit code tells the caller.
-            let writer = inputPipe.fileHandleForWriting
-            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
-            let data = Data(stdin.utf8)
-            Thread.detachNewThread {
-                do {
-                    try writer.write(contentsOf: data)
-                } catch {
-                    NSLog("[ProcessPipes] writing the child's stdin failed: %@", String(describing: error))
-                }
-                try? writer.close()
-            }
+            feed(inputPipe, Data(stdin.utf8))
         }
 
         let stdoutData = await stdoutRead.value

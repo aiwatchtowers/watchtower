@@ -14,6 +14,10 @@ import WatchtowerCore
 final class WorkbenchBoardViewModel {
     let projectID: Int64
     private(set) var roots: [WorkbenchBoardNode] = []
+    /// The workbench's stored board column definition (board #267), read
+    /// with the board. Only the stored one ever reaches the Kanban — the
+    /// Board Columns… sheet's unsaved draft never does.
+    private(set) var boardColumns: WorkbenchBoardColumns = .empty
     var collapsed: Set<Int> = []
     var showDone = false
     /// The toolbar's "Archive (K)" (board #301): archived targets back on
@@ -110,7 +114,8 @@ final class WorkbenchBoardViewModel {
 
     var kanban: WorkbenchBoardKanban {
         WorkbenchBoardKanban(
-            roots, scopeID: boardScopeID, showDone: showDone, showArchived: showArchived, query: searchText
+            roots, scopeID: boardScopeID, showDone: showDone, showArchived: showArchived, query: searchText,
+            columns: boardColumns
         )
     }
 
@@ -209,7 +214,7 @@ final class WorkbenchBoardViewModel {
         do {
             let pid = projectID
             let requestedPath = panelPath
-            let (board, path, comments, images, asks, history, stamp) = try dbPool.read { db in
+            let (board, columns, path, comments, images, asks, history, stamp) = try dbPool.read { db in
                 let board = try WorkbenchQueries.board(db, projectID: pid)
                 // A target gone from the board leaves the path: the panel
                 // falls back to the nearest surviving entry, or closes.
@@ -217,6 +222,7 @@ final class WorkbenchBoardViewModel {
                 let selected = path.last.map(Int64.init)
                 return (
                     board,
+                    try WorkbenchQueries.boardColumns(db, projectID: pid),
                     path,
                     try selected.map { try WorkbenchQueries.comments(db, targetID: $0) } ?? [],
                     try selected.map { try WorkbenchQueries.images(db, targetID: $0) } ?? [],
@@ -226,6 +232,7 @@ final class WorkbenchBoardViewModel {
                 )
             }
             roots = board
+            boardColumns = columns
             panelPath = path
             dropDescriptionDrafts(notOn: board)
             selectedComments = comments
@@ -325,9 +332,22 @@ final class WorkbenchBoardViewModel {
             arguments: [projectID]
         )
         let archive = try Row.fetchOne(
-            db, sql: "SELECT archive_after_days, archived_through FROM projects WHERE id = ?", arguments: [projectID]
+            db,
+            sql: "SELECT archive_after_days, archived_through, board_hidden_statuses FROM projects WHERE id = ?",
+            arguments: [projectID]
         )
-        return [targets, comments, images, asks, archive].map { $0?.description ?? "" }.joined(separator: "|")
+        // The column definition (board #267, at most 20 rows): a Save in
+        // the Board Columns… sheet, from this window or another, re-lays
+        // the Kanban.
+        let columns = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT group_concat(id || ':' || position || ':' || title || ':' || description, char(31))
+                FROM (SELECT * FROM workbench_board_columns WHERE project_id = ? ORDER BY id)
+                """,
+            arguments: [projectID]
+        )
+        return [targets, comments, images, asks, archive, columns].map { $0?.description ?? "" }.joined(separator: "|")
     }
 
     // MARK: - Selection
@@ -519,6 +539,41 @@ final class WorkbenchBoardViewModel {
             rolledUp = try WorkbenchOwnerWrites.setStatus(db, targetID: Int64(id), status: status).rolledUp
         }
         return write("change the status", target: id, alsoTouched: { rolledUp }, body)
+    }
+
+    /// A Kanban drop on `column`, or the panel's column menu (board #267):
+    /// an implicit column is a plain status move (`setStatus`, today's
+    /// path); a defined one writes its status and column together. A drop
+    /// on the card's own column, a group and a target not on this board
+    /// write nothing.
+    /// - Returns: whether the card moved (a failed write sets `errorMessage`).
+    @discardableResult
+    func moveCard(_ id: Int, to column: WorkbenchBoardKanban.Column) -> Bool {
+        moveCard(id, status: column.status, columnID: column.columnID)
+    }
+
+    @discardableResult
+    func moveCard(_ id: Int, status: String, columnID: Int64?) -> Bool {
+        guard let columnID else { return setStatus(status, for: id) }
+        guard WorkbenchBoardCard.editableStatuses.contains(status),
+              let current = WorkbenchBoardOutline.find(id, in: roots), current.children.isEmpty else { return false }
+        let shown = BoardColumnLayout.effectiveColumn(
+            status: current.target.status, columnID: current.boardColumnID, def: boardColumns
+        )
+        guard current.target.status != status || shown?.id != columnID else { return false }
+        var rolledUp: [Int64] = []
+        let body: (Database) throws -> Void = { db in
+            rolledUp = try WorkbenchOwnerWrites.moveToColumn(
+                db, targetID: Int64(id), status: status, columnID: columnID
+            ).rolledUp
+        }
+        return write("move the card", target: id, alsoTouched: { rolledUp }, body)
+    }
+
+    /// The defined column `node` shows in, nil for its status's implicit
+    /// one (the panel's status label and its column menu's check).
+    func shownColumn(of node: WorkbenchBoardNode) -> WorkbenchBoardColumnDef? {
+        BoardColumnLayout.effectiveColumn(status: node.target.status, columnID: node.boardColumnID, def: boardColumns)
     }
 
     /// Nests a target under another one, or moves it to the top level when

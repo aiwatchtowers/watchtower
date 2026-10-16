@@ -22,6 +22,10 @@ type BoardNode struct {
 	// ArchivedChildren counts the direct children WithoutArchived dropped;
 	// always 0 on GetWorkbenchBoard's full forest.
 	ArchivedChildren int
+	// Column is a leaf's effective board column title (its stored column,
+	// else its status's first column) when the workbench defines columns
+	// (PROJ-19); "" otherwise and on every parent.
+	Column string
 }
 
 // boardSiblingOrder sorts siblings by priority (high, medium, low), then by
@@ -57,7 +61,11 @@ func (db *DB) GetWorkbenchBoard(workbenchID int64) ([]BoardNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	ix := boardIndex{children: map[int64][]Target{}, counts: counts, seen: map[int64]bool{}, since: since, archived: archived}
+	columns, err := db.boardLeafColumns(workbenchID, targets)
+	if err != nil {
+		return nil, err
+	}
+	ix := boardIndex{children: map[int64][]Target{}, counts: counts, seen: map[int64]bool{}, since: since, archived: archived, columns: columns}
 	return ix.assemble(targets), nil
 }
 
@@ -148,6 +156,7 @@ type boardIndex struct {
 	seen     map[int64]bool
 	since    map[int64]string
 	archived map[int64]bool
+	columns  map[int64]string
 }
 
 func (ix boardIndex) assemble(targets []Target) []BoardNode {
@@ -178,7 +187,7 @@ func (ix boardIndex) build(level []Target) []BoardNode {
 		ix.seen[id] = true
 		c := ix.counts[id]
 		nodes = append(nodes, BoardNode{Target: t, NewForAgent: c.newForAgent, UnreadForOwner: c.unreadForOwner,
-			StatusSince: ix.since[id], Archived: ix.archived[id], Children: ix.build(ix.children[id])})
+			StatusSince: ix.since[id], Archived: ix.archived[id], Column: ix.columns[id], Children: ix.build(ix.children[id])})
 	}
 	return nodes
 }

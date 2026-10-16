@@ -49,6 +49,13 @@ struct CLIRunnerTests {
         #expect(out.contains("hello"))
     }
 
+    @Test("ProcessCLIRunner writes stdin to the child and closes it")
+    func processRunnerStdin() async throws {
+        let runner = ProcessCLIRunner(binaryPath: "/bin/cat")
+        let data = try await runner.run(args: [], stdin: Data(#"{"columns":[],"hidden":[]}"#.utf8))
+        #expect(data == Data(#"{"columns":[],"hidden":[]}"#.utf8))
+    }
+
     @Test("ProcessCLIRunner surfaces non-zero exit")
     func processRunnerNonZero() async {
         let runner = ProcessCLIRunner(binaryPath: "/bin/sh")

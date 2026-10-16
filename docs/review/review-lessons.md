@@ -1711,16 +1711,14 @@ Entry format:
 - rule-gap (candidate, dim 6): *when a change adds a second consent path for the same act (a form sheet and an assistant card both confirming a recipe), both compute "what's new" from one shared baseline helper, and a test runs the same unconfirmed hand edit through both and asserts that they agree.*
 - outcome: TBD
 
-## 2026-10-16 — feature/session-chat-feed (session chat feed: sessionfeed package, `workbench session-feed`, migration 00125 triggers, Desktop chat pane + subagent sheet; panel: prosecutor + codex, specialists unavailable) — verdict: changes-needed
+## 2026-10-16 — feature/267-board-columns (workbench board columns: migration 00125 (00124 at review time) `workbench_board_columns`/`targets.board_column_id`/`projects.board_hidden_statuses` + match/clear triggers, `workbench columns [--json] [--set -]`, `update_target column`, `column` in `workbench_board`/`get_target`, brief Board columns + Turned off lines, skill pack v11, Desktop Kanban columns + Board Columns… sheet, Kit/phone `column`; PROJ-19; panel: prosecutor F1–F10 + codex (no findings), 3 specialists DOWN (not installed); judge verified by reading, grep and cached targeted `go test` of db/tools/cmd, all green; judge synthesis, round 1) — verdict: approve
 
-- contested: prosecutor F2 (earlier conversation's tail lost when a later conversation appears) [ac-correctness]. Dismissed: Build parses the cursor conversation from `after.Offset` (i == afterIdx) before moving on, so the tail is emitted; only the unknown-`after.Conv` re-emit remains, already logged as deferred.
-- false-positive: prosecutor F2 as above (read the loop before trusting a cursor-loss claim) [ac-correctness].
-- miss: codex alone caught the nested subagent marker being a dead button in the subagent sheet (SessionChatRow built without `openSubagent`) [ac-correctness].
-- weak-dimension: 6 (UI reachability of a spec'd "opens the same way" path was untested).
-- rule-gap (candidate): *a recursive UI affordance (sheet inside sheet) needs a test or a manual check that the nested callback is wired.*
-- outcome: TBD
-
-## 2026-10-16 — feature/328-diff-reviewer-p2 (diff reviewer Plan 2, Deep mode: `internal/reviewdiff` lenses + `.watchtower/review.md` lstat/O_NOFOLLOW read, migration 00125 `review_checks`, round `phase`/`chapter_key`/`active_seconds`, mode inherit, `get_review` lens tag; WatchtowerCore `ReviewChapters`/`ReviewPace`/`ReviewWrapUp`, `ReviewChangesModel` Deep state, phase strip/chapter list/checklist/Meaning/Wrap-up views; 39 files +2.2k; panel: prosecutor + codex (1 finding visible) + 2 stand-in specialists (tests, silent), code-reviewer DOWN; judge verified against 23080d264 by reading, no runs; judge synthesis, round 1) — verdict: changes-needed
+- contested (cut major → minor + Needs human, prosecutor F1): the PROJ-15 supporting guard `TestMigration00105_ArchivedThroughStartsNull` dropped its board-reader half at the Down(104) step. The dropped check ran HEAD code against a v104 schema (a state `db.Open` never produces), and the full `requireArchived` (view + board) still runs after Up, so the contract is still guarded. What is wrong is the changelog's "No guard relaxed". **A forced narrowing of an inventory guard is named as one in the changelog and acknowledged by the owner, even when it is mechanical.** [7]
+- contested (held minor, F2): `boardLeafColumns` decodes `board_hidden_statuses`, which it never uses, so an undecodable value fails `GetWorkbenchBoard` and with it the drift check, the Stop hook and the brief. The only writer is Go's validated `ReplaceBoardColumns`, so this needs a hand edit. Still, a new optional enrichment on a shared reader should degrade, not fail the reader. [8]
+- false-positive (dismissed): F10 (the default `run(args:stdin:)` throws at runtime). It is documented, refuses loudly, and the only production runner overrides it. F3/F4 (extra queries per board read) were cut to nits: at most 20 column rows and one JOIN per read.
+- miss: none codex-only; codex returned no findings again. Every substantive item came from the prosecutor.
+- weak-dimension: 9. The `--set` decoder accepts unknown keys, so a misspelled `columns` key deletes the whole definition and every card's column. Two task reviews deferred this as minor.
+- rule-gap (candidate, dim 9): *a CLI that replaces a whole stored definition from stdin JSON uses `DisallowUnknownFields`. A missing or misspelled key must never read as "empty" on a replace-all write.*
 ## 2026-10-16 — feature/automations-p5-part2 (P5 part 2: workbench saves + the PROJ-03 amendment (asks #272/#188), Desktop `AutomationSessionCenter`, header automation buttons, automation asks in the stack and closed lists, debounced `automations rescan --workbench N`, docs; 68 files +3.3k; panel: prosecutor + codex (one finding, already fixed), 3 specialists DOWN (not installed); judge verified against 6a342d905 by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
 
 - contested (held major, prosecutor F1): `isAutomationsFeatureEnabled` is `!disabledFeatureIDs.contains(...)` over a set that stays empty until `featureManager.load()` succeeds. `initWorkbenches` starts the session center right away, so on a launch with the feature off, a run still waiting from before the switch can get its `session()` launched. The daemon does not cancel runs when the feature turns off, so such a run can exist. **A gate read from a lazily loaded "disabled" set fails open until the first load. An automatic actor that launches processes waits for a loaded state, and a failed load keeps it stopped.** [6/9]
@@ -1741,4 +1739,13 @@ Entry format:
 - weak-dimension: 7. Every chapter test used unique stems; markIntent's replace was tested within one round; no test drives a Deep write against a round sent behind the model.
 - rule-gap (candidate, review process): *deferrals marked "fix in final wave" in the SDD ledger are applied (or explicitly re-deferred) before the final panel is dispatched, so the panel reviews the branch the controller meant to ship.*
 - rule-gap (candidate, Swift dim 9): *a Swift query that refuses a write on a non-open row throws (inside the caller's write transaction) instead of returning silently, so a multi-statement write rolls back as one; a `guard … else { return }` in a write query is the tell.*
+- outcome: TBD
+
+## 2026-10-16 — feature/session-chat-feed (session chat feed: sessionfeed package, `workbench session-feed`, migration 00126 triggers, Desktop chat pane + subagent sheet; panel: prosecutor + codex, specialists unavailable) — verdict: changes-needed
+
+- contested: prosecutor F2 (earlier conversation's tail lost when a later conversation appears) [ac-correctness]. Dismissed: Build parses the cursor conversation from `after.Offset` (i == afterIdx) before moving on, so the tail is emitted; only the unknown-`after.Conv` re-emit remains, already logged as deferred.
+- false-positive: prosecutor F2 as above (read the loop before trusting a cursor-loss claim) [ac-correctness].
+- miss: codex alone caught the nested subagent marker being a dead button in the subagent sheet (SessionChatRow built without `openSubagent`) [ac-correctness].
+- weak-dimension: 6 (UI reachability of a spec'd "opens the same way" path was untested).
+- rule-gap (candidate): *a recursive UI affordance (sheet inside sheet) needs a test or a manual check that the nested callback is wired.*
 - outcome: TBD

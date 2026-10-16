@@ -20,6 +20,7 @@ struct WorkbenchHeaderControls: View {
     @State private var chevronHovered = false
     @State private var showsWorktreeSetup = false
     @State private var showsAgentSettings = false
+    @State private var showsBoardColumns = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -33,6 +34,9 @@ struct WorkbenchHeaderControls: View {
         }
         .sheet(isPresented: $showsAgentSettings) {
             AgentSettingsSheet(vm: vm, project: project)
+        }
+        .sheet(isPresented: $showsBoardColumns) {
+            BoardColumnsSheet(vm: vm, project: project)
         }
     }
 
@@ -181,6 +185,12 @@ struct WorkbenchHeaderControls: View {
                 Label("Agent Settings…", systemImage: "slider.horizontal.3")
             }
             .help("The methodology, the ask guard and the finish check this workbench's agents run under")
+            Button {
+                showsBoardColumns = true
+            } label: {
+                Label("Board Columns…", systemImage: "rectangle.split.3x1")
+            }
+            .help("Name the board's columns inside each status, and hide In Review or Blocked")
             Divider()
             Button {
                 onCleanUpOldWorktrees()
@@ -363,6 +373,7 @@ private extension WorkspaceView {
         case .report: "Show the session's report (in a split, beside its session's terminal)"
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
+        case .analytics: "Agent time, cost and hints for this workbench"
         case .changes: "Review the session's changes"
         case .chat: "Show the session's dialog as a chat (in a split, beside its session's terminal)"
         }
