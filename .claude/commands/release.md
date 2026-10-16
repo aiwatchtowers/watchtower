@@ -115,6 +115,36 @@ and stays as is. Never pass `SKIP_CLOUDKIT_CHECK=1` without the user's go-ahead.
 On success, tell the user the uploaded version and build number; the build
 appears in TestFlight after Apple finishes processing it.
 
+## Step 9: Reply on the GitHub issues this release ships
+
+Issue fixes reference their issue with `Refs #N` (not `Closes`), so the
+issue stays open until the fix reaches a release. Close the loop here:
+
+1. List the PRs merged since the previous tag and the issues they name:
+   ```bash
+   gh pr list --state merged --base main --limit 200 \
+       --search "merged:>=$(git log -1 --format=%cI <previous_tag>)" \
+       --json number,title,body \
+       --jq '.[] | select(.body | test("(?i)(refs|closes|fixes) #[0-9]+")) | "\(.number) \(.title)"'
+   ```
+   Pull the `#N` numbers out of each body. Keep only issues that are still
+   open, and skip PR numbers.
+2. For each issue, read its thread (`gh issue view N --comments`) — the triage
+   comment says what was accepted — and every PR in this release that names it.
+   Decide:
+   - **Done:** everything the triage comment accepted has shipped → reply and
+     close.
+   - **Partly done:** some accepted parts are still pending → reply with what
+     shipped and what is still coming, and leave it open.
+3. Draft each reply in English, short, addressed to the author: what shipped
+   in `v<version>`, with the PR links, and a thank-you. Show all drafts with
+   the close / keep-open decision to the user and wait for confirmation —
+   these comments are public.
+4. Post them: `gh issue comment N --body "..."`, then for the done ones
+   `gh issue close N --reason completed`. List the issue URLs to the user.
+
+If no PR in the range names an issue, say so and skip this step.
+
 ## Important
 
 - Always confirm version and release notes with user before proceeding
@@ -126,3 +156,5 @@ appears in TestFlight after Apple finishes processing it.
 - All three artifacts MUST be attached to every release
 - The iPhone app goes to TestFlight with the same version (Step 8); a failure
   there does not undo the Mac release — report it and leave the rest as is
+- Issues shipped in the release get a reply and are closed (Step 9); post
+  only after the user confirms the drafts

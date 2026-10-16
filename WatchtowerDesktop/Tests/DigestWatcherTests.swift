@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Testing
+@testable import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
 
@@ -33,6 +34,7 @@ struct DigestWatcherTests {
         UserDefaults.standard.removeObject(forKey: "lastCheckedBriefingID")
         UserDefaults.standard.removeObject(forKey: "notifyDecisions")
         UserDefaults.standard.removeObject(forKey: "quietHoursEnabled")
+        UserDefaults.standard.removeObject(forKey: NotificationPreferences.briefingKey)
     }
 
     @Test("init seeds lastChecked from UserDefaults defaults")
@@ -204,5 +206,41 @@ struct DigestWatcherTests {
         watcher.poll()
 
         #expect(spy.decisionCalls.isEmpty)
+    }
+
+    /// "Briefing notifications" off consumes new briefings without a banner,
+    /// like `notifyDecisions` — turning it back on never replays them.
+    @Test("notifyDailySummary=false suppresses the briefing banner but advances the watermark")
+    func pollSuppressesBriefingWhenBriefingNotificationsOff() throws {
+        resetDefaults()
+        UserDefaults.standard.set(false, forKey: NotificationPreferences.briefingKey)
+        defer { UserDefaults.standard.removeObject(forKey: NotificationPreferences.briefingKey) }
+
+        let pool = try makePool()
+        try pool.write { try TestDatabase.insertBriefing($0) }
+
+        let spy = SpyNotifier()
+        let watcher = DigestWatcher(dbPool: pool, notificationService: spy)
+        watcher.poll()
+
+        #expect(spy.briefingCalls.isEmpty)
+        #expect(UserDefaults.standard.integer(forKey: "lastCheckedBriefingID") > 0)
+
+        UserDefaults.standard.set(true, forKey: NotificationPreferences.briefingKey)
+        watcher.poll()
+        #expect(spy.briefingCalls.isEmpty, "turning the switch back on does not replay the briefing")
+    }
+
+    @Test("an unset notifyDailySummary key still sends the briefing banner")
+    func pollNotifiesBriefingWhenKeyUnset() throws {
+        resetDefaults()
+        let pool = try makePool()
+        try pool.write { try TestDatabase.insertBriefing($0) }
+
+        let spy = SpyNotifier()
+        let watcher = DigestWatcher(dbPool: pool, notificationService: spy)
+        watcher.poll()
+
+        #expect(spy.briefingCalls.count == 1)
     }
 }
