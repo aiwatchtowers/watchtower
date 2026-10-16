@@ -251,6 +251,15 @@ extension WorkbenchesViewModel {
         return model
     }
 
+    /// The workbench's Find Repeats model, made once; nil without the watchtower CLI.
+    func reviewLessonsModel(projectID: Int64) -> ReviewLessonsModel? {
+        if let model = reviewLessonModels[projectID] { return model }
+        guard let cli else { return nil }
+        let model = ReviewLessonsModel(projectID: projectID, cli: cli, db: dbPool)
+        reviewLessonModels[projectID] = model
+        return model
+    }
+
     /// A session's report or Changes beside its own session's terminal
     /// (board #357): a split showing that terminal swaps its other pane;
     /// otherwise the page becomes the terminal and `pane` side by side, so a

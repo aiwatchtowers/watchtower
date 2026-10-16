@@ -109,6 +109,8 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var askAIs: [String] = []
     /// The diff page's `comment {startLine, endLine, side}` posts.
     var comments: [[String: Any]] = []
+    /// The diff page's `undo {hunkId}` posts.
+    var undos: [String] = []
     var errors: [String] = []
     var loadError: String?
 
@@ -190,6 +192,13 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 return
             }
             comments.append(body)
+        case "undo":
+            // Decoded as MonacoDiffView.Coordinator does: a string hunk id.
+            guard let id = body["hunkId"] as? String else {
+                errors.append("malformed undo message: \(body)")
+                return
+            }
+            undos.append(id)
         case "error":
             errors.append((body["message"] as? String) ?? "error without a message")
         default:
@@ -1104,7 +1113,53 @@ func diffPageChecks(root: URL) async {
     check("Comment: posts the selection's lines and side",
           posted && first?["startLine"] as? Int == 1 && first?["endLine"] as? Int == 3 && first?["side"] as? String == "new",
           "\(page.comments)")
+    await diffNotesAndHunksChecks(page)
     check("diff page: no error posted during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
+}
+
+/// `wt.setNotes` / `wt.setHunks` and the `undo` post on the loaded diff page:
+/// text only, replaced by the next call, cleared by `showDiff`, a disabled
+/// Undo posts nothing and carries its reason.
+@MainActor
+func diffNotesAndHunksChecks(_ page: Page) async {
+    let hostile = "<img src=x onerror=\"window.__pwned=1\">note"
+    await page.call("wt.setNotes", [["startLine": 3, "endLine": 3, "text": hostile] as [String: Any]])
+    await pause(0.2)
+    let note = await page.eval(
+        "(function () { var n = document.querySelector('.wt-note');"
+            + " return n ? [n.textContent, n.querySelectorAll('img').length, window.__pwned === undefined] : null; })()"
+    ) as? [Any]
+    check("setNotes: the note shows as text under an Agent note label, not as HTML",
+          (note?.first as? String)?.contains(hostile) == true && (note?[1] as? Int) == 0 && (note?[2] as? Bool) == true,
+          "\(String(describing: note))")
+    await page.call("wt.setNotes", [["startLine": 1, "endLine": 1, "text": "second"] as [String: Any]])
+    let replaced = await page.evalInt("document.querySelectorAll('.wt-note').length")
+    check("setNotes: a new set replaces the last one", replaced == 1, "\(String(describing: replaced))")
+    await page.call("wt.setHunks", [
+        ["id": "0123456789abcdef", "newStart": 3, "canUndo": true, "reason": ""] as [String: Any],
+        ["id": "fedcba9876543210", "newStart": 1, "canUndo": false, "reason": "Round already sent"] as [String: Any],
+    ])
+    await pause(0.2)
+    let hunks = await page.eval(
+        "(function () { return Array.prototype.map.call(document.querySelectorAll('.wt-undo'),"
+            + " function (b) { return [b.textContent, b.disabled, b.title]; }); })()"
+    ) as? [[Any]]
+    check("setHunks: an Undo button per hunk, the disabled one carries its reason",
+          hunks?.count == 2 && hunks?.contains { $0[1] as? Bool == true && $0[2] as? String == "Round already sent" } == true
+              && hunks?.contains { $0[1] as? Bool == false && $0[0] as? String == "Undo" } == true,
+          "\(String(describing: hunks))")
+    _ = await page.eval(
+        "(function () { document.querySelectorAll('.wt-undo').forEach(function (b) { b.click(); }); return true; })()"
+    )
+    let undone = await wait(3) { !page.undos.isEmpty }
+    check("Undo: only the enabled button posts, with its hunk id",
+          undone && page.undos == ["0123456789abcdef"], "\(page.undos)")
+    await page.call("wt.showDiff", [
+        "path": "main.go", "original": "a\n", "modified": "b\n", "inline": false, "comments": [Any](),
+    ] as [String: Any])
+    await pause(0.2)
+    let cleared = await page.evalInt("document.querySelectorAll('.wt-note, .wt-undo').length")
+    check("showDiff: clears the notes and hunk zones", cleared == 0, "\(String(describing: cleared))")
 }
 
 // MARK: - Main

@@ -9,6 +9,8 @@ struct ReviewChangesHeader: View {
     /// Refresh: re-reads the tree of an open round, or opens the next round
     /// once this one was sent.
     let refresh: () -> Void
+    /// Find Repeats…: nil = no lessons model (no CLI), the item is off.
+    var findRepeats: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,6 +53,17 @@ struct ReviewChangesHeader: View {
                     .help("One column instead of side by side")
                 Button("Refresh", action: refresh)
                     .disabled(model.load != .ready || model.sending || model.refreshing)
+                Menu {
+                    Button("Find Repeats…") { findRepeats?() }
+                        .disabled(findRepeats == nil)
+                        .help("Propose house rules from comments you keep repeating")
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("More")
                 Button("Send review (\(model.draftCount))") { Task { await model.send() } }
                     .disabled(!Self.canSend(model))
                     .help("Send the drafts (and the comments carried from the last round) to the agent")

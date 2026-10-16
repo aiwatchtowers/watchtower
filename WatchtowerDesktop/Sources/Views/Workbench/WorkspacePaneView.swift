@@ -153,7 +153,8 @@ struct WorkspacePaneView: View {
             if let model = vm.reviewModel(sessionID: id, projectID: project.id) {
                 ReviewChangesPaneView(
                     model: model,
-                    agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind }
+                    agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind },
+                    lessons: vm.reviewLessonsModel(projectID: project.id)
                 )
                 .id(id)
             } else {
