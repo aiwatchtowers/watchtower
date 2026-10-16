@@ -3,8 +3,7 @@ import GRDB
 import Observation
 
 /// Posts the finish notice of a run started from the "Run Automation…"
-/// palette or the tray (spec §12.7). Implemented over `NotificationService`
-/// in plan Task 15; `NoopAutomationRunNotifier` until then.
+/// palette or the tray (spec §12.7).
 @MainActor
 package protocol AutomationRunNotifying {
     func runFinished(
@@ -15,19 +14,6 @@ package protocol AutomationRunNotifying {
         automationID: Int64,
         runID: Int64
     )
-}
-
-package struct NoopAutomationRunNotifier: AutomationRunNotifying {
-    package init() {}
-
-    package func runFinished(
-        name: String,
-        status: AutomationRunStatus,
-        summary: String,
-        error: String,
-        automationID: Int64,
-        runID: Int64
-    ) {}
 }
 
 /// Quick run (spec §12.7): the rows of the "Run Automation…" palette (⌃⌘R)

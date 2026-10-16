@@ -54,6 +54,10 @@ package final class AutomationEditorCenter {
     package private(set) var loadErrors: [Int64: String] = [:]
     /// Why the last Auto toggle failed, keyed by automation id.
     package private(set) var autoErrors: [Int64: String] = [:]
+    /// The text the owner had in the form when they reloaded a recipe that
+    /// changed on disk (`reloadFromDisk`), so a reload never loses it; kept
+    /// until the draft is discarded or saved.
+    package private(set) var keptAside: [Int64: String] = [:]
 
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let grants: @MainActor (Int64) async throws -> [AutomationToolGrant]
@@ -128,6 +132,28 @@ package final class AutomationEditorCenter {
         saving[id] = nil
         validatedTexts[id] = nil
         loadErrors[id] = nil
+        keptAside[id] = nil
+    }
+
+    /// **Reload** after a save was refused because the recipe changed on
+    /// disk: the form reloads the file as it is now, and the owner's text is
+    /// kept aside (`keptAside`) to copy back — `beginEdit` alone never
+    /// replaces a dirty draft, so without this only Discard would help.
+    package func reloadFromDisk(_ id: Int64) async {
+        guard id != Self.newRecipeID, let draft = drafts[id],
+              saving[id] != .saving, saving[id] != .validating else { return }
+        await draft.form.buffer.flush()
+        let aside = draft.form.renderedText()
+        do {
+            let detail = try await cli.show(id)
+            keptAside[id] = aside
+            drafts[id] = EditDraft(form: AutomationFormModel(detail: detail))
+            saving[id] = nil
+            validatedTexts[id] = nil
+            loadErrors[id] = nil
+        } catch {
+            saving[id] = .failed(Self.message(for: error))
+        }
     }
 
     // MARK: - Save
@@ -204,6 +230,7 @@ package final class AutomationEditorCenter {
             return
         }
         validatedTexts[id] = nil
+        keptAside[id] = nil
         var autoFailures: [String] = []
         for tool in plan.keepAuto.sorted() {
             do {

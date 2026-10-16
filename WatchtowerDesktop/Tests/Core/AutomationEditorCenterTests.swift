@@ -255,6 +255,11 @@ final class AutomationEditorCenterTests: XCTestCase {
         await waitUntil { self.runner.isHolding }
         XCTAssertEqual(center.saving[7], .saving)
         // The form view is gone: nothing holds the draft but the center.
+        // Closing it (Discard on the way out) and reopening it mid-flight
+        // drop neither the draft nor the save state.
+        center.discard(7)
+        XCTAssertNotNil(center.drafts[7], "a save in flight keeps its draft")
+        XCTAssertEqual(center.saving[7], .saving)
         await center.beginEdit(7)
         XCTAssertEqual(center.saving[7], .saving, "reopening the form does not disturb a save in flight")
         runner.release()
@@ -345,6 +350,75 @@ final class AutomationEditorCenterTests: XCTestCase {
         guard case let .failed(message) = center.saving[7] else { return XCTFail("not failed") }
         XCTAssertTrue(message.hasPrefix("The recipe changed on disk since you opened it"), message)
         XCTAssertTrue(center.drafts[7]?.form.renderedText().contains("Weekly digest") ?? false, "the draft is kept")
+    }
+
+    /// J7: after "changed on disk", Reload brings in the file as it is now
+    /// and keeps the owner's text aside — a retry is no longer refused forever.
+    func testReloadAfterChangedOnDiskKeepsTheOwnersTextAside() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
+        runner.on("save") { _ in
+            throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: not saved: the recipe changed on disk since you "
+                + "opened it (/acme/automations/digest.md) — reload it and review again\n")
+        }
+        let center = makeCenter()
+        await center.beginEdit(7)
+        center.drafts[7]?.form.fields.name = "Weekly digest"
+        await center.save(7)
+        XCTAssertEqual(center.saving[7], .failed(AutomationEditorCenter.changedOnDisk))
+        let typed = try XCTUnwrap(center.drafts[7]?.form.renderedText())
+
+        runner.on("show") { _ in try Fixtures.showJSON(contentHash: "c9") }
+        await center.reloadFromDisk(7)
+        XCTAssertNil(center.saving[7])
+        XCTAssertEqual(center.keptAside[7], typed, "the owner's text is kept aside")
+        XCTAssertEqual(center.drafts[7]?.form.buffer.baseContentHash, "c9", "the file as it is now")
+        XCTAssertFalse(center.drafts[7]?.form.buffer.isDirty ?? true)
+
+        center.discard(7)
+        XCTAssertNil(center.keptAside[7])
+    }
+
+    /// J10: `save --confirm-hash` refuses when the saved bytes no longer hash
+    /// to the validated hash; the form shows it and keeps the draft.
+    func testSaveHashMismatchIsRefusedAndKeepsTheDraft() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
+        runner.on("save") { _ in
+            throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: not saved: the recipe's approval hash is h9, not "
+                + "h1 — review it again: approval hash does not match\n")
+        }
+        let center = makeCenter()
+        await center.beginEdit(7)
+        center.drafts[7]?.form.fields.name = "Weekly digest"
+        await center.save(7)
+        guard case let .failed(message) = center.saving[7] else {
+            return XCTFail("got \(String(describing: center.saving[7]))")
+        }
+        XCTAssertTrue(message.contains("approval hash does not match"), message)
+        XCTAssertNotNil(center.drafts[7], "the draft is kept")
+        XCTAssertFalse(runner.invocations.contains { $0[1] == "confirm" || $0[1] == "auto" })
+    }
+
+    /// J10: text typed while the Save sheet is up is not saved under the hash
+    /// validated for the earlier text — the commit writes the validated bytes.
+    func testTextTypedWhileTheSheetIsUpIsNotSavedUnderTheValidatedHash() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "hv") }
+        runner.on("save") { _ in Self.saveJSON(approval: "hv") }
+        let center = makeCenter()
+        await center.beginEdit(7)
+        let form = try XCTUnwrap(center.drafts[7]?.form)
+        form.fields.trigger = .schedule("0 16 * * 1-5")
+        let validated = form.renderedText()
+        await center.save(7)
+        guard case let .review(plan) = center.saving[7] else { return XCTFail("expected the Save sheet") }
+
+        form.fields.name = "Typed while the sheet was up"
+        XCTAssertNotEqual(form.renderedText(), validated)
+        await center.commit(7, plan: plan)
+
+        XCTAssertEqual(runner.fileTexts["save"], validated, "only the validated bytes carry the validated hash")
+        let save = try XCTUnwrap(runner.invocations.first { $0[1] == "save" })
+        let confirmFlag = try XCTUnwrap(save.firstIndex(of: "--confirm-hash"))
+        XCTAssertEqual(save[confirmFlag + 1], "hv")
     }
 
     func testBeginEditKeepsAnUnsavedDraft() async throws {

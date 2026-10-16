@@ -27,7 +27,40 @@ final class SaveAutomationCardModelTests: XCTestCase {
     func testTitleAndTrigger() throws {
         let model = SaveAutomationCardModel(action: try action())
         XCTAssertEqual(model.title, "Save automation Mail digest")
-        XCTAssertEqual(model.lines.first, "When: Every weekday at 09:00")
+        XCTAssertEqual(model.lines.prefix(2), ["File: mail-digest.md (replaces the saved one)",
+                                               "When: Every weekday at 09:00"])
+    }
+
+    /// J1: approving a NEW recipe confirms a script the owner must be able to
+    /// see — the card carries the whole text; an edit shows the diff instead.
+    func testNewRecipeDisclosesTheWholeText() throws {
+        let text = "---\nname: Mail digest\n---\nnew line\n"
+        let new = SaveAutomationCardModel(action: try action(["is_new": true, "previous_recipe_text": "",
+                                                              "recipe_text": text]))
+        XCTAssertEqual(new.newRecipeText, text)
+        XCTAssertEqual(new.lines.first, "File: mail-digest.md (new)")
+        XCTAssertNil(SaveAutomationCardModel(action: try action()).newRecipeText, "an edit shows the diff")
+        XCTAssertEqual(SaveAutomationCardModel.recipeDisclosureTitle(text), "Show the whole recipe (4 lines)")
+        XCTAssertEqual(SaveAutomationCardModel.recipeDisclosureTitle("one"), "Show the whole recipe (1 line)")
+    }
+
+    /// Every hashed field (D26) is on the card: missed and concurrency too.
+    func testMissedAndConcurrencyLines() throws {
+        let model = SaveAutomationCardModel(action: try action(["missed": "skip", "concurrency": 2]))
+        XCTAssertTrue(model.lines.contains("Missed: skip a time the Mac was asleep"), "\(model.lines)")
+        XCTAssertTrue(model.lines.contains("Concurrency: up to 2 runs at a time"), "\(model.lines)")
+        let defaults = SaveAutomationCardModel(action: try action(["missed": "run_once", "concurrency": 1]))
+        XCTAssertTrue(defaults.lines.contains("Missed: run once when the Mac wakes"), "\(defaults.lines)")
+        XCTAssertTrue(defaults.lines.contains("Concurrency: one run at a time"), "\(defaults.lines)")
+    }
+
+    /// The editor chat ties the card to the Draft panel: a text that differs
+    /// from the newest draft shown warns; no draft (main chat) never warns.
+    func testDiffersFromDraft() throws {
+        let model = SaveAutomationCardModel(action: try action())
+        XCTAssertFalse(model.differsFromDraft(nil))
+        XCTAssertFalse(model.differsFromDraft("---\nname: Mail digest\n---\nnew line\n"))
+        XCTAssertTrue(model.differsFromDraft("---\nname: Mail digest\n---\nanother line\n"))
     }
 
     func testWideningEntriesMarked() throws {

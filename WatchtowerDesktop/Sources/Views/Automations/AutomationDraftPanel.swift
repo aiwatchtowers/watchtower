@@ -11,6 +11,8 @@ struct AutomationDraftPanel: View {
     let actionHelp: String?
     /// Shown above the footer once a save of this chat landed.
     var savedNote: String?
+    /// Why the last footer action was not sent (`AutomationEditorChat.sendNote`).
+    var sendNote: String?
     let onCancel: () -> Void
     let onDryRunAgain: () -> Void
     let onSave: () -> Void
@@ -19,13 +21,18 @@ struct AutomationDraftPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if model.isEmpty {
+            if model.isEmpty || model.isUnreadable {
                 Text("Draft")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
-                Text(AutomationDraftPanelModel.emptyHint)
-                    .foregroundStyle(.secondary)
+                if model.isUnreadable {
+                    Label(AutomationDraftPanelModel.unreadableHint, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(AutomationDraftPanelModel.emptyHint)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             } else {
                 ScrollView {
@@ -147,6 +154,11 @@ struct AutomationDraftPanel: View {
                     .font(.callout)
                     .foregroundStyle(.green)
             }
+            if let sendNote {
+                Label(sendNote, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
             HStack(alignment: .center, spacing: 12) {
                 Text(AutomationDraftPanelModel.footer)
                     .font(.callout)
@@ -160,7 +172,7 @@ struct AutomationDraftPanel: View {
                     .help(actionHelp ?? "")
                 Button("Save…", action: onSave)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canAct || model.isEmpty || !model.errors.isEmpty)
+                    .disabled(!canAct || model.isEmpty || model.isUnreadable || !model.errors.isEmpty)
                     .help(actionHelp ?? "")
             }
         }

@@ -1,11 +1,12 @@
 import Foundation
 
 /// One line of the editor's draft cache: `draft_automation` on the
-/// `automation_editor` surface appends `{recipe_text, result, at}` to
+/// `automation_editor` surface appends `{recipe_text, result, error?, at}` to
 /// `<workspace>/automation-drafts/<conversation id>.jsonl` and keeps the last
 /// five (`internal/automations/authoring/draftcache.go`). A UI cache of the
-/// tool's own result, not a store of record. Go writes every key (no
-/// `omitempty`), so the synthesized decoders need no defaults.
+/// tool's own result, not a store of record. A draft whose evaluation failed
+/// is a line with `result: null` and its `error`; every other key is always
+/// written.
 package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
     package struct Manifest: Decodable, Equatable, Sendable {
         package var name = ""
@@ -55,10 +56,20 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
     }
 
     package let recipeText: String
-    package let result: Result
+    /// nil when the evaluation failed (`error` says why).
+    package let result: Result?
+    package let error: String?
 
     enum CodingKeys: String, CodingKey {
-        case recipeText = "recipe_text", result
+        case recipeText = "recipe_text", result, error
+    }
+
+    /// The newest line of a cache file: none (no line yet), a decoded entry,
+    /// or a line that does not decode — never an older line in its place.
+    package enum Newest: Equatable, Sendable {
+        case none
+        case entry(AutomationDraftEntry)
+        case undecodable
     }
 
     /// `<workspace>/automation-drafts/<conversation id>.jsonl`; the workspace
@@ -69,13 +80,16 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
             .appendingPathComponent("\(conversationID).jsonl")
     }
 
-    /// The newest entry of a cache file's text (its last line that decodes).
-    package static func newest(inCache text: String) -> Self? {
-        let decoder = JSONDecoder()
-        for line in text.split(whereSeparator: \.isNewline).reversed() {
-            if let entry = try? decoder.decode(Self.self, from: Data(line.utf8)) { return entry }
+    /// The newest line of a cache file's text: its last non-blank line,
+    /// decoded. A last line that does not decode is `.undecodable`, never a
+    /// silent fall-back to the line before it.
+    package static func newest(inCache text: String) -> Newest {
+        let last = text.split(whereSeparator: \.isNewline).last {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
         }
-        return nil
+        guard let last else { return .none }
+        guard let entry = try? JSONDecoder().decode(Self.self, from: Data(last.utf8)) else { return .undecodable }
+        return .entry(entry)
     }
 }
 
@@ -89,10 +103,14 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     }
 
     package static let emptyHint = "Describe what it should do — the draft shows up here."
+    package static let unreadableHint = "Couldn't read the draft. Ask the assistant to draft it again."
     package static let footer = "Saving asks for your confirmation. It won't run until you confirm."
 
     /// No draft yet.
     package let isEmpty: Bool
+    /// The cache file exists but could not be read, or its newest line does
+    /// not decode: the panel says so instead of showing an older draft.
+    package let isUnreadable: Bool
     package let name: String
     package let recipeText: String
     /// Parse errors of a draft that did not validate.
@@ -108,17 +126,40 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     package let dryRunNote: String?
 
     package static let empty = Self(entry: nil)
+    package static let unreadable = Self(entry: nil, unreadable: true)
 
-    /// Reads the newest entry of the conversation's cache; empty when there is none.
+    /// The text the panel shows as the current draft (its "Show recipe");
+    /// nil when it shows none (empty or unreadable).
+    package var shownRecipeText: String? { isEmpty || isUnreadable ? nil : recipeText }
+
+    /// Reads the newest entry of the conversation's cache: empty when there
+    /// is no file (or no line yet), unreadable when the file cannot be read
+    /// or its newest line does not decode.
     package static func load(databasePath: String, conversationID: Int64) -> Self {
         let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: conversationID)
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return .empty }
-        return Self(entry: AutomationDraftEntry.newest(inCache: text))
+        let text: String
+        do {
+            text = try String(contentsOf: url, encoding: .utf8)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return .empty
+        } catch {
+            return .unreadable
+        }
+        return Self(newest: AutomationDraftEntry.newest(inCache: text))
     }
 
-    package init(entry: AutomationDraftEntry?) {
+    package init(newest: AutomationDraftEntry.Newest) {
+        switch newest {
+        case .none: self.init(entry: nil)
+        case let .entry(entry): self.init(entry: entry)
+        case .undecodable: self.init(entry: nil, unreadable: true)
+        }
+    }
+
+    package init(entry: AutomationDraftEntry?, unreadable: Bool = false) {
+        isUnreadable = entry == nil && unreadable
         guard let entry else {
-            isEmpty = true
+            isEmpty = !unreadable
             name = ""
             recipeText = ""
             errors = []
@@ -132,11 +173,25 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
             dryRunNote = nil
             return
         }
-        let manifest = entry.result.manifest
         isEmpty = false
-        name = manifest.name.isEmpty ? "Untitled draft" : manifest.name
         recipeText = entry.recipeText
-        errors = entry.result.errors
+        guard let result = entry.result else {
+            // The evaluation failed: the text and why, nothing else to show.
+            name = "Untitled draft"
+            errors = [entry.error.map { "Couldn't check this draft: \($0)" } ?? "Couldn't check this draft."]
+            when = ""
+            whenDetail = nil
+            budget = ""
+            lastDryRunTokens = nil
+            permissions = []
+            cantLine = nil
+            dryRunLines = []
+            dryRunNote = nil
+            return
+        }
+        let manifest = result.manifest
+        name = manifest.name.isEmpty ? "Untitled draft" : manifest.name
+        errors = result.errors
         when = AutomationTriggerText.sentence(kind: manifest.triggerKind,
                                               specJSON: Self.triggerSpecJSON(kind: manifest.triggerKind,
                                                                              text: manifest.trigger))
@@ -147,8 +202,8 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
         } + manifest.outputs.map {
             Permission(manifest: "output: \($0)", plain: AutomationCardPresentation.outputLine($0))
         }
-        cantLine = entry.result.ok ? Self.cantLine(permissions: manifest.permissions, outputs: manifest.outputs) : nil
-        let dryRun = entry.result.dryRun
+        cantLine = result.ok ? Self.cantLine(permissions: manifest.permissions, outputs: manifest.outputs) : nil
+        let dryRun = result.dryRun
         if let dryRun, dryRun.status == "refused" {
             dryRunLines = []
             dryRunNote = dryRun.error

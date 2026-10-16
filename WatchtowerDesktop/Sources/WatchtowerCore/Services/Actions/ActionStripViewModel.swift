@@ -47,11 +47,22 @@ package final class ActionStripViewModel {
 
     /// The Inbox sidebar badge: what the strip waits on the owner for —
     /// proposals awaiting a decision, due reminders and unread inbox outputs.
-    /// Each source tolerates a schema that predates it.
-    nonisolated package static func badgeCount(_ db: Database, nowUTC: String) -> Int {
-        ((try? AgentActionQueries.awaitingOwnerCount(db)) ?? 0)
-            + ((try? ReminderQueries.dueCount(db, nowUTC: nowUTC)) ?? 0)
-            + ((try? AutomationQueries.inboxOutputCount(db)) ?? 0)
+    /// Each source tolerates a schema that predates it (its table missing
+    /// counts 0); any other read error is thrown, never folded into 0.
+    nonisolated package static func badgeCount(_ db: Database, nowUTC: String) throws -> Int {
+        try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
+            + zeroIfTableMissing { try ReminderQueries.dueCount(db, nowUTC: nowUTC) }
+            + zeroIfTableMissing { try AutomationQueries.inboxOutputCount(db) }
+    }
+
+    /// `count()`, or 0 when its table does not exist yet (an older schema).
+    nonisolated package static func zeroIfTableMissing(_ count: () throws -> Int) throws -> Int {
+        do {
+            return try count()
+        } catch let error as DatabaseError
+            where error.resultCode == .SQLITE_ERROR && (error.message ?? "").hasPrefix("no such table") {
+            return 0
+        }
     }
 
     /// The card labels for `rows`: an automation run's row gets its run's

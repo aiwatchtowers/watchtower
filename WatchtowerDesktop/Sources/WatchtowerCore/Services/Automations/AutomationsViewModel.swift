@@ -61,6 +61,9 @@ package final class AutomationsViewModel {
     package private(set) var busy: [Int64: Operation] = [:]
     /// The last failed CLI call's stderr, or a failed read.
     package var lastError: String?
+    /// `lastError` came from the list's own read: the next read that works
+    /// clears it (a CLI failure stays until dismissed).
+    @ObservationIgnored private var lastErrorIsRead = false
     /// The "New automation" chat's draft: its conversation is keyed by this
     /// id, so a half-written draft survives closing the sheet. A new one
     /// starts after a draft is saved (`startNewDraft`).
@@ -182,8 +185,13 @@ package final class AutomationsViewModel {
                 try Snapshot.read(db, now: date, selected: selected, expanded: expanded)
             }
             apply(snapshot)
+            if lastErrorIsRead {
+                lastError = nil
+                lastErrorIsRead = false
+            }
         } catch {
             lastError = "Could not read automations: \(error.localizedDescription)"
+            lastErrorIsRead = true
         }
     }
 
@@ -347,13 +355,21 @@ package final class AutomationsViewModel {
         dryRuns[id] = .running
         do {
             let result = try await cli.dryRun(id)
-            let runSteps = try await dbPool.read { db in try AutomationQueries.fetchSteps(db, runID: result.runID) }
-            dryRuns[id] = .done(
-                runID: result.runID,
-                lines: DryRunPresentation.lines(steps: runSteps),
-                tokens: result.inputTokens + result.outputTokens,
-                status: result.status
-            )
+            // The run already happened (and spent its tokens): a failed read
+            // of its steps says so, so the owner does not pay for a retry.
+            do {
+                let runSteps = try await dbPool.read { db in try AutomationQueries.fetchSteps(db, runID: result.runID) }
+                dryRuns[id] = .done(
+                    runID: result.runID,
+                    lines: DryRunPresentation.lines(steps: runSteps),
+                    tokens: result.inputTokens + result.outputTokens,
+                    status: result.status
+                )
+            } catch {
+                dryRuns[id] = .failed(Self.stepsUnreadable(status: result.status,
+                                                           tokens: result.inputTokens + result.outputTokens,
+                                                           error: error))
+            }
         } catch {
             dryRuns[id] = .failed(Self.message(for: error))
         }
@@ -409,6 +425,7 @@ package final class AutomationsViewModel {
             try await body(cli)
         } catch {
             lastError = Self.message(for: error)
+            lastErrorIsRead = false
             succeeded = false
         }
         afterCLICall()
@@ -426,6 +443,12 @@ package final class AutomationsViewModel {
     private func afterCLICall() {
         refresh()
         if pollTask != nil { schedulePoll() }
+    }
+
+    /// A dry run that finished but whose steps could not be read.
+    package static func stepsUnreadable(status: String, tokens: Int64, error: Error) -> String {
+        "Dry run finished (\(status), \(AutomationCardPresentation.number(tokens)) tokens); could not load its steps: "
+            + error.localizedDescription
     }
 
     /// A failed CLI call in words: its stderr, else the exit code.

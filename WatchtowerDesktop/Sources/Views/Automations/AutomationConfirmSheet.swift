@@ -12,9 +12,6 @@ struct AutomationConfirmSheet: View {
     let automationID: Int64
     let onClose: () -> Void
 
-    @State private var scriptBuffer: RecipeBufferModel?
-    @State private var scriptShown = false
-
     private var detail: AutomationDetail? { vm.details[automationID] }
     private var state: AutomationEditorCenter.ConfirmState? { editor.confirmations[automationID] }
     private var isConfirming: Bool { state == .confirming }
@@ -43,21 +40,8 @@ struct AutomationConfirmSheet: View {
         .frame(width: 600)
         .frame(minHeight: 360, idealHeight: 560)
         .task { await vm.loadDetail(automationID) }
-        .task(id: detail?.contentHash) { syncScriptBuffer() }
         .onChange(of: state) { _, new in
             if new == .done { close() }
-        }
-    }
-
-    private func syncScriptBuffer() {
-        guard let detail else { return }
-        if let scriptBuffer {
-            if scriptBuffer.baseContentHash != detail.contentHash {
-                scriptBuffer.reset(text: detail.recipeText, contentHash: detail.contentHash)
-            }
-        } else {
-            scriptBuffer = RecipeBufferModel(automationID: detail.id, text: detail.recipeText,
-                                             contentHash: detail.contentHash)
         }
     }
 
@@ -142,23 +126,12 @@ struct AutomationConfirmSheet: View {
         }
     }
 
-    @ViewBuilder private func script(_ detail: AutomationDetail) -> some View {
+    private func script(_ detail: AutomationDetail) -> some View {
         let count = detail.script.split(separator: "\n", omittingEmptySubsequences: false).count
             - (detail.script.hasSuffix("\n") ? 1 : 0)
-        DisclosureGroup("Show the script (\(count) \(count == 1 ? "line" : "lines"))", isExpanded: $scriptShown) {
-            if let scriptBuffer {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let error = scriptBuffer.pageError {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                    RecipeEditorView(buffer: scriptBuffer, readOnly: true, slug: detail.slug)
-                        .frame(height: 260)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            }
-        }
+        return RecipeTextDisclosure(title: "Show the script (\(count) \(count == 1 ? "line" : "lines"))",
+                                    text: detail.recipeText, modelID: detail.id,
+                                    contentHash: detail.contentHash, slug: detail.slug)
     }
 
     private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {

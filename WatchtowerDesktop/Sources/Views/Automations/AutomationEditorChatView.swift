@@ -25,6 +25,7 @@ struct AutomationEditorChatView: View {
                 canAct: chat.toolsAvailable && !chat.engine.isBusy,
                 actionHelp: chat.toolsAvailable ? nil : AutomationEditorChatSurface.unavailableHelp,
                 savedNote: chat.savedNote,
+                sendNote: chat.sendNote,
                 onCancel: onCancel,
                 onDryRunAgain: { chat.dryRunAgain() },
                 onSave: { chat.askToSave() }
@@ -67,7 +68,8 @@ struct AutomationEditorChatView: View {
             onApprove: { Task { await chat.actionFeed.approve(action.id, shownArgs: action.argsJSON) } },
             onReject: { Task { await chat.actionFeed.reject(action.id) } },
             onRetry: { Task { await chat.actionFeed.retry(action.id) } },
-            gestureError: chat.actionFeed.rowErrors[action.id]
+            gestureError: chat.actionFeed.rowErrors[action.id],
+            latestDraftText: chat.draft.shownRecipeText
         )
     }
 }

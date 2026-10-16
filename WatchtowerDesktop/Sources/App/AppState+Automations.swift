@@ -1,5 +1,8 @@
 import AppKit
+import OSLog
 import WatchtowerCore
+
+private let automationsLog = Logger(subsystem: Constants.bundleID, category: "automations")
 
 /// Navigation into the Automations tab, and quick run's entry point (spec
 /// §12.7): the "Run Automation…" menu item (⌃⌘R) opens the palette here.
@@ -22,6 +25,7 @@ extension AppState {
             else { return }
             openAutomationRun(automationID: automationID, runID: runID)
         } catch {
+            automationsLog.error("opening the automation of run \(runID): \(error.localizedDescription, privacy: .public)")
             selectedDestination = .automations
         }
     }

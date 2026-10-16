@@ -178,7 +178,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         vm.refresh()
 
         XCTAssertTrue(vm.outputRows.isEmpty)
-        let badge = try await pool.read { db in ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
+        let badge = try await pool.read { db in try ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
         XCTAssertEqual(badge, 0)
     }
 
@@ -199,9 +199,30 @@ final class ActionStripAutomationOutputTests: XCTestCase {
                 """)
         }
 
-        let badge = try await pool.read { db in ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
+        let badge = try await pool.read { db in try ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
 
         // 1 proposal + 1 due reminder + 2 unread inbox outputs.
         XCTAssertEqual(badge, 4)
+    }
+
+    /// J13: a source whose table is missing (an older schema) counts 0; any
+    /// other read error is thrown, not folded into 0.
+    func testBadgeCountToleratesOnlyAMissingTable() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, status: "pending")
+            try db.execute(sql: "DROP TABLE automation_outputs")
+        }
+        let badge = try await pool.read { db in try ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
+        XCTAssertEqual(badge, 1, "the missing automation_outputs table counts 0")
+
+        XCTAssertEqual(try ActionStripViewModel.zeroIfTableMissing { 3 }, 3)
+        XCTAssertThrowsError(try ActionStripViewModel.zeroIfTableMissing {
+            throw DatabaseError(resultCode: .SQLITE_CORRUPT, message: "database disk image is malformed")
+        })
+        XCTAssertThrowsError(try ActionStripViewModel.zeroIfTableMissing {
+            throw DatabaseError(resultCode: .SQLITE_ERROR, message: "no such column: read_at")
+        })
     }
 }

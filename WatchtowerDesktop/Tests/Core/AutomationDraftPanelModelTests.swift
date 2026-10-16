@@ -43,7 +43,7 @@ final class AutomationDraftPanelModelTests: XCTestCase {
     }
 
     private func model(_ cache: String) -> AutomationDraftPanelModel {
-        AutomationDraftPanelModel(entry: AutomationDraftEntry.newest(inCache: cache))
+        AutomationDraftPanelModel(newest: AutomationDraftEntry.newest(inCache: cache))
     }
 
     func testPanelFromLatestDraftResult() throws {
@@ -98,9 +98,49 @@ final class AutomationDraftPanelModelTests: XCTestCase {
 
     func testNoDraftYetEmptyState() throws {
         XCTAssertTrue(model("").isEmpty)
-        XCTAssertTrue(model("not json\n").isEmpty)
+        XCTAssertTrue(model("\n  \n").isEmpty)
+        XCTAssertNil(model("").shownRecipeText)
         let missing = AutomationDraftPanelModel.load(databasePath: "/nonexistent-acme/watchtower.db", conversationID: 9)
         XCTAssertEqual(missing, .empty)
+    }
+
+    /// A newest line that does not decode is the third state: the panel says
+    /// it could not read the draft, never shows the older line as current.
+    func testUndecodableNewestLineIsUnreadableNotTheOlderDraft() throws {
+        let panel = model(try line(name: "Old draft") + "\n{\"recipe_text\": 42}\n")
+        XCTAssertTrue(panel.isUnreadable)
+        XCTAssertFalse(panel.isEmpty)
+        XCTAssertNotEqual(panel.name, "Old draft")
+        XCTAssertNil(panel.shownRecipeText)
+        XCTAssertTrue(model("not json\n").isUnreadable)
+    }
+
+    /// A draft whose evaluation failed (Go caches `result: null` + `error`)
+    /// is the newest draft, shown with its error — not the one before it.
+    func testEvaluationErrorEntryShowsItsError() throws {
+        let failing: [String: Any] = ["recipe_text": "---\nname: Broken\n---\n", "result": NSNull(),
+                                      "error": "workbench_id must be a workbench id", "at": "2026-10-14T12:01:00Z"]
+        let data = try JSONSerialization.data(withJSONObject: failing, options: [.sortedKeys])
+        let failingLine = try XCTUnwrap(String(bytes: data, encoding: .utf8))
+        let panel = model(try line(name: "Old draft") + "\n" + failingLine + "\n")
+        XCTAssertFalse(panel.isEmpty)
+        XCTAssertFalse(panel.isUnreadable)
+        XCTAssertEqual(panel.recipeText, "---\nname: Broken\n---\n")
+        XCTAssertEqual(panel.shownRecipeText, "---\nname: Broken\n---\n")
+        XCTAssertEqual(panel.errors, ["Couldn't check this draft: workbench_id must be a workbench id"])
+        XCTAssertEqual(panel.dryRunLines, [])
+        XCTAssertNil(panel.cantLine)
+    }
+
+    /// A cache path that exists but cannot be read as text is unreadable,
+    /// not "no draft yet".
+    func testUnreadableCacheFileIsUnreadable() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("draft-panel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbPath = dir.appendingPathComponent("watchtower.db").path
+        let url = AutomationDraftEntry.cacheURL(databasePath: dbPath, conversationID: 5)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) // a directory, not a file
+        XCTAssertEqual(AutomationDraftPanelModel.load(databasePath: dbPath, conversationID: 5), .unreadable)
     }
 
     func testLoadReadsTheConversationCacheBesideTheDatabase() throws {

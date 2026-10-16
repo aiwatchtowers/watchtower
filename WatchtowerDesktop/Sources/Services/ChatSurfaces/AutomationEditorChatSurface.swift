@@ -1,7 +1,10 @@
 import Foundation
 import GRDB
 import Observation
+import OSLog
 import WatchtowerCore
+
+private let editorChatLog = Logger(subsystem: Constants.bundleID, category: "automation-editor-chat")
 
 // MARK: - Surface
 
@@ -20,6 +23,7 @@ enum AutomationEditorChatSurface {
     static let saveText = "Save this draft: propose save_automation with the exact text you last drafted, "
         + "and copy your dry run's summary into dry_run_summary."
     static let unavailableHelp = "Needs Claude or Codex"
+    static let sendRefusedNote = "The assistant is still answering — try again when the reply finishes."
 
     static func toolsAvailable(provider: String?) -> Bool {
         (provider ?? Constants.aiProviderID()) != "ollama"
@@ -58,9 +62,7 @@ enum AutomationEditorChatSurface {
             toolAccess: tools ? .actions(surface: surface) : .draftOnly,
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
-                let current = try? dbPool.read { db in try AutomationQueries.fetchAutomation(db, id: automation.id) }
-                let recipe = current.map { recipeBlock($0) }
-                    ?? "=== CURRENT RECIPE ===\nThis automation is no longer in the index (its file may be gone)."
+                let recipe = currentRecipeBlock(automationID: automation.id, dbPool: dbPool)
                 let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) + "\n\n" : ""
                 return compose(outcomes(input.previousOwnerMessageAt), resumed + recipe, input.text)
             },
@@ -147,6 +149,23 @@ enum AutomationEditorChatSurface {
         return rulesBlock(context: context, tools: tools) + skills + "\n\n" + ChatQuestionsContract.promptBlock
     }
 
+    static let goneRecipeBlock = "=== CURRENT RECIPE ===\nThis automation is no longer in the index (its file may be gone)."
+
+    /// The per-turn recipe block, re-read from the index. A row that is gone
+    /// and a read that failed are told apart: a failed read is logged and the
+    /// model is told the recipe could not be read now, never that it is gone.
+    static func currentRecipeBlock(automationID: Int64, dbPool: DatabasePool) -> String {
+        do {
+            guard let current = try dbPool.read({ db in try AutomationQueries.fetchAutomation(db, id: automationID) })
+            else { return goneRecipeBlock }
+            return recipeBlock(current)
+        } catch {
+            editorChatLog.error("reading automation \(automationID) for the editor chat: \(error.localizedDescription, privacy: .public)")
+            return "=== CURRENT RECIPE ===\nThe recipe could not be read from the index just now "
+                + "(\(error.localizedDescription)). Do not assume it is gone; tell the owner and ask them to retry."
+        }
+    }
+
     static func recipeBlock(_ automation: Automation) -> String {
         "=== CURRENT RECIPE (as saved now — re-read every turn) ===\n```markdown\n\(automation.recipeText)\n```"
     }
@@ -174,6 +193,9 @@ final class AutomationEditorChat {
     /// What to say once a `save_automation` of this chat landed while it
     /// was open (`SaveAutomationCardModel.appliedNote`); nil before.
     private(set) var savedNote: String?
+    /// Why the last **Dry run again** / **Save…** was not sent (the engine
+    /// refused it: a turn is still running); nil once one is sent.
+    private(set) var sendNote: String?
 
     @ObservationIgnored private let databasePath: String
     @ObservationIgnored private let center: EmbeddedChatCenter
@@ -221,13 +243,18 @@ final class AutomationEditorChat {
     }
 
     func dryRunAgain() {
-        _ = engine.send(AutomationEditorChatSurface.dryRunAgainText)
+        send(AutomationEditorChatSurface.dryRunAgainText)
     }
 
     /// **Save…**: the assistant proposes `save_automation`; its card's
     /// Approve is the save (spec §11).
     func askToSave() {
-        _ = engine.send(AutomationEditorChatSurface.saveText)
+        send(AutomationEditorChatSurface.saveText)
+    }
+
+    /// A refused send is said, never dropped silently.
+    private func send(_ text: String) {
+        sendNote = engine.send(text) ? nil : AutomationEditorChatSurface.sendRefusedNote
     }
 
     private func turnFinished() {

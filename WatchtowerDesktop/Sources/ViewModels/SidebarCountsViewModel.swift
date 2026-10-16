@@ -154,9 +154,10 @@ final class SidebarCountsViewModel {
                 let waitingRecap = hasWaitingRecap ? 1 : 0
                 // The Inbox tab's strip: pending/failed proposals + due reminders
                 // + unread automation inbox outputs, user-independent and
-                // tolerant of a schema predating any of them.
+                // tolerant of a schema predating any of them (a missing table
+                // counts 0; any other read error fails the fetch).
                 let nowUTC = ISO8601DateFormatter().string(from: Date())
-                let stripCount = ActionStripViewModel.badgeCount(db, nowUTC: nowUTC)
+                let stripCount = try ActionStripViewModel.badgeCount(db, nowUTC: nowUTC)
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
                 // Ideas awaiting review, tolerant of a pre-ideas-registry schema.

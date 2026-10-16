@@ -219,4 +219,66 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertEqual(chat.savedNote, SaveAutomationCardModel.appliedNewNote)
         chat.close()
     }
+
+    /// J12: a recipe gone from the index and a failed read are told apart.
+    func testCurrentRecipeBlockTellsGoneFromUnreadable() throws {
+        let automation = try makeAutomation()
+        XCTAssertTrue(AutomationEditorChatSurface.currentRecipeBlock(automationID: automation.id, dbPool: pool)
+            .contains("first text"))
+        XCTAssertEqual(AutomationEditorChatSurface.currentRecipeBlock(automationID: 999_999, dbPool: pool),
+                       AutomationEditorChatSurface.goneRecipeBlock)
+        try pool.write { db in try db.execute(sql: "ALTER TABLE automations RENAME TO automations_away") }
+        let unreadable = AutomationEditorChatSurface.currentRecipeBlock(automationID: automation.id, dbPool: pool)
+        XCTAssertNotEqual(unreadable, AutomationEditorChatSurface.goneRecipeBlock)
+        XCTAssertTrue(unreadable.contains("could not be read"), unreadable)
+        try pool.write { db in try db.execute(sql: "ALTER TABLE automations_away RENAME TO automations") }
+    }
+
+    /// J13: Save… while a turn is still running is refused by the engine —
+    /// the panel says so instead of dropping the click.
+    func testRefusedSendIsSaid() async throws {
+        let mock = MockClaudeService(events: [.text("drafting…")], thenAwaitsRelease: true)
+        let chat = controller(center(mock), spec: try newSpec())
+        chat.engine.send("a digest of my mail")
+        let streaming = await eventually { chat.engine.isStreaming }
+        XCTAssertTrue(streaming)
+
+        chat.askToSave()
+        XCTAssertEqual(chat.sendNote, AutomationEditorChatSurface.sendRefusedNote)
+
+        mock.release()
+        let finished = await eventually { !chat.engine.isStreaming }
+        XCTAssertTrue(finished)
+        chat.dryRunAgain()
+        XCTAssertNil(chat.sendNote, "a sent action clears the note")
+        chat.close()
+    }
+
+    /// J9: the owner leaves while a turn drafts; the draft cached meanwhile
+    /// is what the reopened chat's panel shows.
+    func testReturnShowsTheDraftCachedWhileAway() async throws {
+        let mock = MockClaudeService(events: [.text("drafting…")], thenAwaitsRelease: true)
+        let center = center(mock)
+        let spec = try newSpec()
+        let open = controller(center, spec: spec)
+        open.engine.send("a digest of my mail")
+        let streaming = await eventually { open.engine.isStreaming }
+        XCTAssertTrue(streaming)
+        open.close()
+
+        let url = AutomationDraftEntry.cacheURL(databasePath: pool.path, conversationID: open.conversationID)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let line = #"{"recipe_text":"r","result":{"ok":true,"errors":[],"widening":[],"manifest":{"name":"Away","#
+            + #""slug":"","scope":"personal","trigger_kind":"manual","trigger":"manual","permissions":[],"#
+            + #""outputs":[],"budget_tokens":1000,"budget_minutes":1,"approval_hash":"h"},"dry_run":null},"at":"x"}"#
+        try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+        mock.release()
+        let finished = await eventually { !open.engine.isStreaming }
+        XCTAssertTrue(finished)
+
+        let reopened = controller(center, spec: spec)
+        XCTAssertTrue(reopened.engine === open.engine)
+        XCTAssertEqual(reopened.draft.name, "Away")
+        reopened.close()
+    }
 }

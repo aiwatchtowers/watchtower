@@ -34,6 +34,9 @@ struct AgentActionCardView: View {
     /// Opens what `contextLabel` names (the automation's card, run open).
     /// Nil renders the label as plain text.
     var onOpenContext: (() -> Void)?
+    /// The editor chat's newest draft text (the Draft panel's); a pending
+    /// `save_automation` card whose text differs warns. nil elsewhere.
+    var latestDraftText: String?
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
@@ -214,7 +217,8 @@ struct AgentActionCardView: View {
             }
             header(title: save?.title ?? Self.title(for: action))
             if let save {
-                SaveAutomationCardDetails(model: save)
+                SaveAutomationCardDetails(model: save, actionID: action.id,
+                                          differsFromDraft: action.isPending && save.differsFromDraft(latestDraftText))
             } else if let slack = SlackSendProposal(action: action) {
                 SlackRecipientLine(proposal: slack)
                 // The text is in the editor while the row can still be edited.
@@ -411,13 +415,23 @@ struct AgentActionCardView: View {
     }
 }
 
-/// The `save_automation` card's body (spec §11): trigger, permissions with
-/// the widening ones marked "+", outputs, budget, the assistant's dry-run
-/// summary, and for an edit the diff against the saved file.
+/// The `save_automation` card's body (spec §11): file, trigger, permissions
+/// with the widening ones marked "+", outputs, budget, missed runs,
+/// concurrency, the assistant's dry-run summary, and the code it confirms —
+/// the whole recipe for a new one, the diff against the saved file for an
+/// edit.
 private struct SaveAutomationCardDetails: View {
     let model: SaveAutomationCardModel
+    let actionID: Int64
+    let differsFromDraft: Bool
 
     var body: some View {
+        if differsFromDraft {
+            Label(SaveAutomationCardModel.draftMismatchWarning, systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
             Text(line)
                 .font(.callout)
@@ -426,6 +440,13 @@ private struct SaveAutomationCardDetails: View {
         }
         if let summary = model.dryRunSummary {
             Text(summary).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        if let text = model.newRecipeText {
+            // A new recipe has nothing to diff against: its whole text is
+            // what Approve confirms (Review Focus #2).
+            RecipeTextDisclosure(title: SaveAutomationCardModel.recipeDisclosureTitle(text), text: text,
+                                 modelID: -actionID, contentHash: "save-\(actionID)", slug: "recipe")
+                .font(.callout)
         }
         if let diff = model.diff {
             DisclosureGroup(diff.isIdentical ? "No change to the recipe text" : "Show changes") {

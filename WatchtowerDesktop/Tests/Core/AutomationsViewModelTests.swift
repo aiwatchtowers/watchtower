@@ -304,6 +304,56 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertNil(vm.busy[id])
     }
 
+    /// Lifecycle rule (J9): Run now started, the owner leaves the tab and the
+    /// card closes, the call finishes in the AppState-owned view model, and
+    /// coming back shows the queued run with nothing left busy.
+    func testRunNowSurvivesNavigation() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        let pool = try XCTUnwrap(self.pool)
+        runner.on("run") { _ in
+            try pool.write { db in _ = try TestDatabase.insertAutomationRun(db, automationID: id, status: "queued") }
+            return Self.json(#"{"run_id":9,"coalesced":false,"daemon_running":true}"#)
+        }
+        runner.hold("run")
+        let vm = makeViewModel()
+        vm.setTabVisible(true)
+        vm.select(id)
+
+        let task = Task { await vm.runNow(id) }
+        await waitUntil { self.runner.isHolding }
+        XCTAssertEqual(vm.busy[id], .running)
+
+        vm.setTabVisible(false)
+        vm.select(nil)
+        runner.release()
+        await task.value
+
+        vm.setTabVisible(true)
+        vm.select(id)
+        XCTAssertNil(vm.busy[id])
+        XCTAssertEqual(vm.items.first?.activeRun?.status, .queued)
+        XCTAssertNil(vm.lastError)
+    }
+
+    /// J13: a failed read of the list is cleared by the next read that
+    /// works; a CLI failure is not cleared by the refresh after it.
+    func testReadErrorClearsOnTheNextGoodReadCLIErrorStays() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        let vm = makeViewModel()
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE automations RENAME TO automations_away") }
+        vm.refresh()
+        XCTAssertTrue(vm.lastError?.hasPrefix("Could not read automations") ?? false, "\(String(describing: vm.lastError))")
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE automations_away RENAME TO automations") }
+        vm.refresh()
+        XCTAssertNil(vm.lastError, "the next good read clears a read error")
+
+        runner.on("run") { _ in throw Self.failure }
+        await vm.runNow(id)
+        XCTAssertEqual(vm.lastError, "automation 7 is not runnable: disabled")
+        vm.refresh()
+        XCTAssertEqual(vm.lastError, "automation 7 is not runnable: disabled", "a CLI failure stays")
+    }
+
     // MARK: - Dry run
 
     private func seedDryRun() throws -> Int64 {
@@ -349,6 +399,26 @@ final class AutomationsViewModelTests: XCTestCase {
         await vm.dryRun(id)
 
         XCTAssertEqual(vm.dryRuns[id], .failed("automation 7 is not runnable: disabled"))
+        XCTAssertNil(vm.busy[id])
+    }
+
+    /// J11: the dry run ran (and spent tokens) but its steps could not be
+    /// read: the card says it finished, not that it failed.
+    func testDryRunStepsReadFailureSaysTheRunFinished() async throws {
+        let id = try seedDryRun()
+        let pool = try XCTUnwrap(self.pool)
+        runner.on("dry-run") { _ in
+            try pool.write { db in try db.execute(sql: "ALTER TABLE automation_run_steps RENAME TO steps_away") }
+            return Self.json(#"{"run_id":12,"status":"succeeded","error":"","input_tokens":100,"output_tokens":20}"#)
+        }
+        let vm = makeViewModel()
+
+        await vm.dryRun(id)
+
+        guard case let .failed(message) = vm.dryRuns[id] else {
+            return XCTFail("got \(String(describing: vm.dryRuns[id]))")
+        }
+        XCTAssertTrue(message.hasPrefix("Dry run finished (succeeded, 120 tokens); could not load its steps: "), message)
         XCTAssertNil(vm.busy[id])
     }
 

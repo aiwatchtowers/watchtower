@@ -28,6 +28,8 @@ struct AutomationFormView: View {
                 AutomationFormContent(form: form, editor: editor, vm: vm, onChangeInWords: onChangeInWords) {
                     cancel(form)
                 }
+                // A reload replaces the form: start its view state afresh.
+                .id(ObjectIdentifier(form))
             case let .loadFailed(message), let .finished(message):
                 VStack(spacing: 12) {
                     Label(message, systemImage: "exclamationmark.triangle")
@@ -516,7 +518,7 @@ private struct AutomationFormContent: View {
                 Text("Script")
                     .font(.headline)
                 Spacer()
-                if let onChangeInWords {
+                if let onChangeInWords, form.isEditable {
                     Button("Change it in words instead") { onChangeInWords(id) }
                         .buttonStyle(.link)
                 }
@@ -541,6 +543,20 @@ private struct AutomationFormContent: View {
             Label(message, systemImage: "xmark.octagon")
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
+            if message == AutomationEditorCenter.changedOnDisk, !form.detail.isNewRecipe {
+                Button("Reload the recipe (keeps your text aside)") { Task { await editor.reloadFromDisk(id) } }
+                    .disabled(isBusy)
+            }
+        }
+        if let aside = editor.keptAside[id] {
+            HStack(spacing: 8) {
+                Label("Reloaded from disk. Your previous text is kept aside.", systemImage: "doc.on.clipboard")
+                    .foregroundStyle(.secondary)
+                Button("Copy your text") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(aside, forType: .string)
+                }
+            }
         }
         switch vm.dryRuns[id] {
         case .running:
