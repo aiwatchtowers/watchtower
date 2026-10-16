@@ -16,10 +16,13 @@ type Side struct {
 
 // File returns path's content in tree (Exists false when the path is not
 // there). Over MaxFileBytes → TooLarge, no text; a NUL in the first 8 KB →
-// Binary, no text.
+// Binary, no text. A done context is an error, never "not in the tree".
 func (r *Repo) File(ctx context.Context, tree, path string) (Side, error) {
 	spec := tree + ":" + path
 	if _, err := r.git(ctx, nil, "cat-file", "-e", spec); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Side{}, ctxErr
+		}
 		return Side{}, nil //nolint:nilerr // a failing cat-file -e means the path is not in the tree
 	}
 	sizeOut, err := r.git(ctx, nil, "cat-file", "-s", spec)

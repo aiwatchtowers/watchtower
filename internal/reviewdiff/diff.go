@@ -24,6 +24,8 @@ type File struct {
 	Deletions       int    `json:"deletions"`
 	Binary          bool   `json:"binary"`
 	CollapsedReason string `json:"collapsed_reason,omitempty"` // lockfile|generated|too_large
+	NewBlob         string `json:"new_blob"`                   // the new side's blob id; "" for a deleted file
+	NewMode         string `json:"new_mode"`                   // the new side's mode; "" for a deleted file
 	Hunks           []Hunk `json:"hunks"`
 
 	typeChange bool // name-status T: the patch holds a deletion and a creation section
@@ -39,17 +41,17 @@ type Hunk struct {
 	Lines    []string `json:"lines"` // each with its ' ', '+' or '-' prefix
 }
 
-// Diff lists from → to: paths and statuses from `diff-tree -z --name-status`
-// (NUL-separated, so any path is exact), hunks from `diff-tree -p` matched
+// Diff lists from → to: paths, statuses, new-side blobs and modes from
+// `diff-tree -z --raw` (NUL-separated, so any path is exact), hunks from `diff-tree -p` matched
 // to the files in the same order git emits both. The patch call keeps the
 // subcommand first so gitbin blanks the folder's filter drivers; its quoted
 // "diff --git" headers are only used to cut sections.
 func (r *Repo) Diff(ctx context.Context, from, to string) (Diff, error) {
-	names, err := r.git(ctx, nil, "diff-tree", "-r", "-M", "-z", "--name-status", "--no-commit-id", from, to)
+	raw, err := r.git(ctx, nil, "diff-tree", "-r", "-M", "-z", "--raw", "--no-abbrev", "--no-commit-id", from, to)
 	if err != nil {
 		return Diff{}, err
 	}
-	files := parseNameStatus(names)
+	files := parseRaw(raw)
 	patch, err := r.git(ctx, nil, "diff-tree", "-r", "-M", "-p",
 		"--no-commit-id", "--no-color", "--no-ext-diff", "--no-textconv", "--full-index", from, to)
 	if err != nil {
@@ -92,34 +94,44 @@ func (r *Repo) Diff(ctx context.Context, from, to string) (Diff, error) {
 	return d, nil
 }
 
-func parseNameStatus(b []byte) []File {
+// parseRaw reads `diff-tree -z --raw` records: ":<old mode> <new mode>
+// <old sha> <new sha> <status>" NUL path NUL (a rename or copy: old path NUL
+// new path NUL).
+func parseRaw(b []byte) []File {
 	fields := strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00")
 	var files []File
 	for i := 0; i < len(fields); {
-		st := fields[i]
-		if st == "" {
+		meta := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+		if len(meta) != 5 || meta[4] == "" {
 			break
 		}
-		switch st[0] {
-		case 'R', 'C':
+		f := File{}
+		if mode, blob := meta[1], meta[3]; strings.Trim(blob, "0") != "" {
+			f.NewMode, f.NewBlob = mode, blob
+		}
+		st := meta[4][0]
+		if st == 'R' || st == 'C' {
 			if i+2 >= len(fields) {
 				return files
 			}
-			files = append(files, File{Status: "renamed", OldPath: fields[i+1], Path: fields[i+2]})
+			f.Status, f.OldPath, f.Path = "renamed", fields[i+1], fields[i+2]
+			files = append(files, f)
 			i += 3
 			continue
 		}
 		if i+1 >= len(fields) {
 			return files
 		}
-		switch st[0] {
+		f.Path = fields[i+1]
+		switch st {
 		case 'A':
-			files = append(files, File{Status: "added", Path: fields[i+1]})
+			f.Status = "added"
 		case 'D':
-			files = append(files, File{Status: "deleted", Path: fields[i+1]})
+			f.Status = "deleted"
 		default: // M, T
-			files = append(files, File{Status: "modified", Path: fields[i+1], typeChange: st[0] == 'T'})
+			f.Status, f.typeChange = "modified", st == 'T'
 		}
+		files = append(files, f)
 		i += 2
 	}
 	return files
@@ -166,6 +178,8 @@ func parseSection(f *File, lines []string) {
 			h := Hunk{Header: l}
 			h.OldStart, h.OldLines, h.NewStart, h.NewLines = parseRange(l)
 			cur = &h
+		case cur != nil && l == "":
+			cur.Lines = append(cur.Lines, " ") // diff.suppressBlankEmpty prints a blank context line bare
 		case cur != nil && (strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") || strings.HasPrefix(l, " ")):
 			cur.Lines = append(cur.Lines, l)
 			if l[0] == '+' {

@@ -13,9 +13,14 @@ type Base struct {
 // Base is the merge-base of HEAD with the default branch, found as
 // workbenchcheck finds it: origin/HEAD's target, else main, else master,
 // each tried as refs/remotes/origin/<n> then refs/heads/<n>. No commit, no
-// default branch or no merge-base → the empty tree, Label "".
+// default branch or no merge-base → the empty tree, Label "". A done context
+// is an error, never the empty tree.
 func (r *Repo) Base(ctx context.Context) (Base, error) {
-	if !r.hasHead(ctx) {
+	head, err := r.hasHead(ctx)
+	if err != nil {
+		return Base{}, err
+	}
+	if !head {
 		return Base{SHA: EmptyTree}, nil
 	}
 	for _, ref := range r.defaultRefs(ctx) {
@@ -24,6 +29,9 @@ func (r *Repo) Base(ctx context.Context) (Base, error) {
 			label := strings.TrimPrefix(strings.TrimPrefix(ref, "refs/remotes/"), "refs/heads/")
 			return Base{SHA: strings.TrimSpace(string(out)), Label: label}, nil
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return Base{}, err
 	}
 	return Base{SHA: EmptyTree}, nil
 }

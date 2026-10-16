@@ -166,3 +166,69 @@ func TestSplitSections_LineOverMaxIsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestDiff_SuppressBlankEmptyKeepsBlankContext: with diff.suppressBlankEmpty
+// git prints a blank context line bare; it stays a context line.
+func TestDiff_SuppressBlankEmptyKeepsBlankContext(t *testing.T) {
+	dir := newRepo(t)
+	gitIn(t, dir, "config", "diff.suppressBlankEmpty", "true")
+	r := openRepo(t, dir)
+	base := strings.TrimSpace(gitIn(t, dir, "rev-parse", "HEAD"))
+	writeFile(t, dir, "a.go", "package a\n\nfunc A() int { return 2 }\n")
+	tree, err := r.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Diff(context.Background(), base, tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Files) != 1 || len(d.Files[0].Hunks) != 1 {
+		t.Fatalf("diff = %+v", d.Files)
+	}
+	h := d.Files[0].Hunks[0]
+	want := []string{" package a", " ", "-func A() int { return 1 }", "+func A() int { return 2 }"}
+	if strings.Join(h.Lines, "|") != strings.Join(want, "|") {
+		t.Fatalf("lines = %q, want %q", h.Lines, want)
+	}
+	if h.OldLines != 3 || h.NewLines != 3 {
+		t.Fatalf("hunk = %+v", h)
+	}
+}
+
+// TestDiff_NewBlobAndMode: each file carries its new side's blob id and
+// mode; a deleted file carries neither.
+func TestDiff_NewBlobAndMode(t *testing.T) {
+	dir := newRepo(t)
+	writeFile(t, dir, "gone.txt", "bye\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "more")
+	r := openRepo(t, dir)
+	base := strings.TrimSpace(gitIn(t, dir, "rev-parse", "HEAD"))
+	writeFile(t, dir, "a.go", "package a // new\n")
+	writeFile(t, dir, "img.bin", "\x00\x01")
+	if err := os.Remove(filepath.Join(dir, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	tree, _ := r.Snapshot(context.Background())
+	d, err := r.Diff(context.Background(), base, tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range d.Files {
+		switch f.Path {
+		case "a.go", "img.bin":
+			want := strings.TrimSpace(gitIn(t, dir, "rev-parse", tree+":"+f.Path))
+			if f.NewBlob != want || f.NewMode != "100644" {
+				t.Fatalf("%s = blob %q mode %q, want %q 100644", f.Path, f.NewBlob, f.NewMode, want)
+			}
+		case "gone.txt":
+			if f.NewBlob != "" || f.NewMode != "" {
+				t.Fatalf("deleted file = %+v", f)
+			}
+		}
+	}
+	if len(d.Files) != 3 {
+		t.Fatalf("files = %+v", d.Files)
+	}
+}
