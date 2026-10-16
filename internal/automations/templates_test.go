@@ -28,14 +28,16 @@ func scheduleTrigger(expr string) automations.Trigger {
 	return automations.Trigger{Kind: automations.TriggerSchedule, Schedule: expr}
 }
 
-// specTemplates is spec §15, in gallery order: template name → scope and its
-// recipes (slug → frontmatter).
-var specTemplates = []struct {
+type specTemplate struct {
 	name    string
 	scope   automations.ScopeKind
 	files   []string
 	recipes map[string]wantTemplateRecipe
-}{
+}
+
+// specTemplates is spec §15, in gallery order: template name → scope and its
+// recipes (slug → frontmatter).
+var specTemplates = []specTemplate{
 	{"new-mail-summary", automations.ScopePersonal, []string{"new-mail-summary"}, map[string]wantTemplateRecipe{
 		"new-mail-summary": {
 			trigger:     automations.Trigger{Kind: automations.TriggerEvent, Event: &automations.EventTrigger{Type: "gmail.new_messages"}},
@@ -92,48 +94,62 @@ func TestTemplates_AllParseAndValidate(t *testing.T) {
 		t.Fatalf("Templates() = %d entries; want %d", len(got), len(specTemplates))
 	}
 	for i, want := range specTemplates {
-		tpl := got[i]
-		if tpl.Name != want.name || tpl.Scope != want.scope || !slices.Equal(tpl.Files, want.files) {
-			t.Errorf("template %d = %s %s %v; want %s %s %v", i, tpl.Name, tpl.Scope, tpl.Files, want.name, want.scope, want.files)
-			continue
-		}
-		if tpl.Title == "" || tpl.Description == "" || tpl.TriggerText == "" {
-			t.Errorf("%s: title, description and trigger text must be set: %+v", tpl.Name, tpl)
-		}
-		files, err := automations.RenderTemplate(tpl.Name, exampleParams(tpl))
-		if err != nil {
-			t.Fatalf("RenderTemplate(%s): %v", tpl.Name, err)
-		}
-		if len(files) != len(want.files) {
-			t.Errorf("%s renders %d files; want %d", tpl.Name, len(files), len(want.files))
-		}
-		for slug, w := range want.recipes {
-			r, err := automations.ParseRecipe(slug, files[slug], templateScope(want.scope))
-			if err != nil {
-				t.Errorf("%s/%s does not parse: %v", tpl.Name, slug, err)
-				continue
-			}
-			if !triggersEqual(r.Trigger, w.trigger) {
-				t.Errorf("%s trigger = %+v; want %+v", slug, r.Trigger, w.trigger)
-			}
-			if !slices.Equal(r.Permissions, w.permissions) {
-				t.Errorf("%s permissions = %q; want %q", slug, r.Permissions, w.permissions)
-			}
-			if !slices.Equal(r.Outputs, w.outputs) {
-				t.Errorf("%s outputs = %q; want %q", slug, r.Outputs, w.outputs)
-			}
-		}
-		// The gallery's permissions and outputs are the first recipe's, as written.
-		first := want.recipes[want.files[0]]
-		wantPerms := first.permissions
-		if tpl.Name == "jira-state-report" {
-			wantPerms = []string{"jira:read@<PROJECT>", "llm:strong"}
-		}
-		if !slices.Equal(tpl.Permissions, wantPerms) || !slices.Equal(tpl.Outputs, first.outputs) {
-			t.Errorf("%s gallery permissions/outputs = %q %q; want %q %q", tpl.Name, tpl.Permissions, tpl.Outputs, wantPerms, first.outputs)
-		}
+		checkTemplateEntry(t, i, got[i], want)
 	}
+	checkTemplateIndex(t)
+	checkJiraWithoutParams(t)
+}
 
+func checkTemplateEntry(t *testing.T, i int, tpl automations.Template, want specTemplate) {
+	t.Helper()
+	if tpl.Name != want.name || tpl.Scope != want.scope || !slices.Equal(tpl.Files, want.files) {
+		t.Errorf("template %d = %s %s %v; want %s %s %v", i, tpl.Name, tpl.Scope, tpl.Files, want.name, want.scope, want.files)
+		return
+	}
+	if tpl.Title == "" || tpl.Description == "" || tpl.TriggerText == "" {
+		t.Errorf("%s: title, description and trigger text must be set: %+v", tpl.Name, tpl)
+	}
+	files, err := automations.RenderTemplate(tpl.Name, exampleParams(tpl))
+	if err != nil {
+		t.Fatalf("RenderTemplate(%s): %v", tpl.Name, err)
+	}
+	if len(files) != len(want.files) {
+		t.Errorf("%s renders %d files; want %d", tpl.Name, len(files), len(want.files))
+	}
+	for slug, w := range want.recipes {
+		checkTemplateRecipe(t, tpl.Name, slug, files[slug], want.scope, w)
+	}
+	// The gallery's permissions and outputs are the first recipe's, as written.
+	first := want.recipes[want.files[0]]
+	wantPerms := first.permissions
+	if tpl.Name == "jira-state-report" {
+		wantPerms = []string{"jira:read@<PROJECT>", "llm:strong"}
+	}
+	if !slices.Equal(tpl.Permissions, wantPerms) || !slices.Equal(tpl.Outputs, first.outputs) {
+		t.Errorf("%s gallery permissions/outputs = %q %q; want %q %q", tpl.Name, tpl.Permissions, tpl.Outputs, wantPerms, first.outputs)
+	}
+}
+
+func checkTemplateRecipe(t *testing.T, tplName, slug string, file []byte, scope automations.ScopeKind, w wantTemplateRecipe) {
+	t.Helper()
+	r, err := automations.ParseRecipe(slug, file, templateScope(scope))
+	if err != nil {
+		t.Errorf("%s/%s does not parse: %v", tplName, slug, err)
+		return
+	}
+	if !triggersEqual(r.Trigger, w.trigger) {
+		t.Errorf("%s trigger = %+v; want %+v", slug, r.Trigger, w.trigger)
+	}
+	if !slices.Equal(r.Permissions, w.permissions) {
+		t.Errorf("%s permissions = %q; want %q", slug, r.Permissions, w.permissions)
+	}
+	if !slices.Equal(r.Outputs, w.outputs) {
+		t.Errorf("%s outputs = %q; want %q", slug, r.Outputs, w.outputs)
+	}
+}
+
+func checkTemplateIndex(t *testing.T) {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("templates", "index.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +178,10 @@ func TestTemplates_AllParseAndValidate(t *testing.T) {
 	if !slices.Equal(indexed, want) || !slices.Equal(onDisk, want) {
 		t.Errorf("index.json names %v and templates/ holds %v; want exactly %v", indexed, onDisk, want)
 	}
+}
 
+func checkJiraWithoutParams(t *testing.T) {
+	t.Helper()
 	// Without its param, jira-state-report keeps <PROJECT> and does not parse.
 	files, err := automations.RenderTemplate("jira-state-report", nil)
 	if err != nil {

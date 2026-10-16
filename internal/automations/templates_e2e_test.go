@@ -127,83 +127,87 @@ var personalDryRuns = []personalDryRun{
 // llm() calls run for real.
 func TestTemplates_DryRunE2E(t *testing.T) {
 	for _, c := range personalDryRuns {
-		t.Run(c.name, func(t *testing.T) {
-			gen := &automationstest.FakeGenerator{Replies: []string{"- a summary"}, Usage: []digest.Usage{{InputTokens: 120, OutputTokens: 30}}}
-			f := newTplFixture(t, gen)
-			a := f.installTemplate(t, c.name, c.params)
-			req := db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerDryRun}
-			if c.event {
-				req.EventJSON = workEvent(t, "c1")
-			}
-			id := f.enqueueReq(t, req)
-			stateBefore := f.stateDump(t)
-
-			r, err := f.e.ExecuteInline(context.Background(), id)
-			wantDrySucceeded(t, r, err)
-			steps := f.steps(t, id)
-			if got := stepsLine(steps); got != c.steps {
-				t.Fatalf("steps =\n  %s\nwant\n  %s", got, c.steps)
-			}
-			for _, s := range steps {
-				if want, ok := c.toolArg[s.Name]; ok && s.Kind == automations.StepKindTool {
-					mustContain(t, s.Name+" args", s.ArgsJSON, want)
-				}
-			}
-			calls := gen.Snapshot()
-			for _, want := range c.read {
-				mustContain(t, "llm() input", calls[0].UserMessage, want)
-			}
-			strong := 0
-			for _, call := range calls {
-				if call.Source == automations.SourceLLMStrong {
-					strong++
-				}
-			}
-			if strong != c.strong {
-				t.Fatalf("%d llm() calls tagged %s; want %d", strong, automations.SourceLLMStrong, c.strong)
-			}
-			if calls := gen.CallCount(); calls == 0 || r.InputTokens != int64(120*calls) || r.OutputTokens != int64(30*calls) {
-				t.Fatalf("run tokens = %d+%d over %d llm() calls; want 120+30 each counted (AUTO-12)", r.InputTokens, r.OutputTokens, calls)
-			}
-			wantNothingWritten(t, f, r, stateBefore)
-		})
+		t.Run(c.name, func(t *testing.T) { runPersonalDryRun(t, c) })
 	}
 	for _, slug := range workbenchRecipeSlugs {
-		t.Run(slug, func(t *testing.T) {
-			w := newWbE2E(t, automations.ShellResult{Stdout: prList})
-			files, err := automations.RenderTemplate(templateOf(t, slug), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeWorkbenchRecipe(t, w.folder, slug, string(files[slug]))
-			rescanWorkbench(t, w.ix, w.wb, w.folder)
-			id := w.enqueue(t, workbenchRow(t, w.d, w.wb, slug), db.TriggerDryRun)
-			stateBefore := w.stateDump(t)
-
-			r, err := w.e.ExecuteInline(context.Background(), id)
-			wantDrySucceeded(t, r, err)
-			if n := len(w.shell.Calls()); n != 0 {
-				t.Fatalf("shell ran %d commands in a dry run", n)
-			}
-			for _, s := range w.steps(t, id) {
-				switch s.Kind {
-				case automations.StepKindShell, automations.StepKindSession, automations.StepKindOutput:
-					if s.Status != automations.StepDryRun {
-						t.Fatalf("%s(%s) step is %s; want dry_run", s.Kind, s.Name, s.Status)
-					}
-				}
-				if s.Status == automations.StepWaiting {
-					t.Fatalf("%s(%s) step is waiting in a dry run", s.Kind, s.Name)
-				}
-			}
-			for _, table := range []string{"terminal_sessions", "owner_asks"} {
-				if n := w.count(t, table); n != 0 {
-					t.Fatalf("%s = %d rows after a dry run; want none", table, n)
-				}
-			}
-			wantNothingWritten(t, w.exFixture, r, stateBefore)
-		})
+		t.Run(slug, func(t *testing.T) { runWorkbenchDryRun(t, slug) })
 	}
+}
+
+func runPersonalDryRun(t *testing.T, c personalDryRun) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- a summary"}, Usage: []digest.Usage{{InputTokens: 120, OutputTokens: 30}}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, c.name, c.params)
+	req := db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerDryRun}
+	if c.event {
+		req.EventJSON = workEvent(t, "c1")
+	}
+	id := f.enqueueReq(t, req)
+	stateBefore := f.stateDump(t)
+
+	r, err := f.e.ExecuteInline(context.Background(), id)
+	wantDrySucceeded(t, r, err)
+	steps := f.steps(t, id)
+	if got := stepsLine(steps); got != c.steps {
+		t.Fatalf("steps =\n  %s\nwant\n  %s", got, c.steps)
+	}
+	for _, s := range steps {
+		if want, ok := c.toolArg[s.Name]; ok && s.Kind == automations.StepKindTool {
+			mustContain(t, s.Name+" args", s.ArgsJSON, want)
+		}
+	}
+	calls := gen.Snapshot()
+	for _, want := range c.read {
+		mustContain(t, "llm() input", calls[0].UserMessage, want)
+	}
+	strong := 0
+	for _, call := range calls {
+		if call.Source == automations.SourceLLMStrong {
+			strong++
+		}
+	}
+	if strong != c.strong {
+		t.Fatalf("%d llm() calls tagged %s; want %d", strong, automations.SourceLLMStrong, c.strong)
+	}
+	if calls := gen.CallCount(); calls == 0 || r.InputTokens != int64(120*calls) || r.OutputTokens != int64(30*calls) {
+		t.Fatalf("run tokens = %d+%d over %d llm() calls; want 120+30 each counted (AUTO-12)", r.InputTokens, r.OutputTokens, calls)
+	}
+	wantNothingWritten(t, f, r, stateBefore)
+}
+
+func runWorkbenchDryRun(t *testing.T, slug string) {
+	w := newWbE2E(t, automations.ShellResult{Stdout: prList})
+	files, err := automations.RenderTemplate(templateOf(t, slug), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeWorkbenchRecipe(t, w.folder, slug, string(files[slug]))
+	rescanWorkbench(t, w.ix, w.wb, w.folder)
+	id := w.enqueue(t, workbenchRow(t, w.d, w.wb, slug), db.TriggerDryRun)
+	stateBefore := w.stateDump(t)
+
+	r, err := w.e.ExecuteInline(context.Background(), id)
+	wantDrySucceeded(t, r, err)
+	if n := len(w.shell.Calls()); n != 0 {
+		t.Fatalf("shell ran %d commands in a dry run", n)
+	}
+	for _, s := range w.steps(t, id) {
+		switch s.Kind {
+		case automations.StepKindShell, automations.StepKindSession, automations.StepKindOutput:
+			if s.Status != automations.StepDryRun {
+				t.Fatalf("%s(%s) step is %s; want dry_run", s.Kind, s.Name, s.Status)
+			}
+		}
+		if s.Status == automations.StepWaiting {
+			t.Fatalf("%s(%s) step is waiting in a dry run", s.Kind, s.Name)
+		}
+	}
+	for _, table := range []string{"terminal_sessions", "owner_asks"} {
+		if n := w.count(t, table); n != 0 {
+			t.Fatalf("%s = %d rows after a dry run; want none", table, n)
+		}
+	}
+	wantNothingWritten(t, w.exFixture, r, stateBefore)
 }
 
 // templateOf is the gallery template that installs recipe slug.

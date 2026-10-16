@@ -15,115 +15,123 @@ import (
 // answering llm(). The workbench templates' real runs are pinned by
 // TestPRReviewRounds_E2E and TestRelease_E2E.
 func TestTemplates_RunE2E(t *testing.T) {
-	t.Run("new-mail-summary", func(t *testing.T) {
-		f := newTplFixture(t, &automationstest.FakeGenerator{Replies: []string{"- colleague C wants a contract review by Friday"}})
-		a := f.installTemplate(t, "new-mail-summary", nil)
-
-		first := f.mailEvent(t, a, "c1")
-		f.step(t, 1)
-		f.wantRun(t, first, db.RunSucceeded, "")
-		outs := f.outputs(t)
-		if len(outs) != 1 || outs[0].Kind != "inbox" || outs[0].Title != "New mail in work: 3 messages" ||
-			outs[0].Body != "- colleague C wants a contract review by Friday" {
-			t.Fatalf("outputs = %+v; want one inbox summary of the 3 messages", outs)
-		}
-		newest := f.newestMail(t)
-		if got := f.mailCursor(t, a); got != newest {
-			t.Fatalf("work cursor = %q; want the newest message's date %q", got, newest)
-		}
-		state := f.stateDump(t)
-
-		second := f.mailEvent(t, a, "c2")
-		f.step(t, 1)
-		f.wantRun(t, second, db.RunSucceeded, "")
-		if n := len(f.outputs(t)); n != 1 {
-			t.Fatalf("outputs after a run without newer mail = %d; want still 1", n)
-		}
-		if got := f.stateDump(t); got != state {
-			t.Fatalf("state after a run without newer mail = %q; want unchanged %q", got, state)
-		}
-		reads := f.toolSteps(t, second, "list_emails")
-		if len(reads) != 1 || !strings.Contains(reads[0].ArgsJSON, `"since":"`+newest+`"`) {
-			t.Fatalf("second list_emails steps = %+v; want one with since = the cursor %s", reads, newest)
-		}
-	})
+	t.Run("new-mail-summary", testRunNewMailSummary)
 
 	// A burst over list_emails' page: the newest 200 are summed up, the
 	// summary says older new messages were left out, and the cursor is the
 	// newest message.
-	t.Run("new-mail-summary burst", func(t *testing.T) {
-		gen := &automationstest.FakeGenerator{Replies: []string{"- a burst"}}
-		f := newTplFixture(t, gen)
-		if _, err := f.d.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 205)
-			INSERT INTO gmail_messages (account_id, id, from_email, subject, internal_date)
-			SELECT 1, 'burst-' || i, 'bot@example.com', 'Alert ' || i, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || (i + 10) || ' minutes')
-			FROM n`); err != nil {
-			t.Fatal(err)
-		}
-		a := f.installTemplate(t, "new-mail-summary", nil)
-		id := f.mailEvent(t, a, "c1")
-		f.step(t, 1)
-		f.wantRun(t, id, db.RunSucceeded, "")
+	t.Run("new-mail-summary burst", testRunNewMailBurst)
 
-		reads := f.toolSteps(t, id, "list_emails")
-		if len(reads) != 1 || !strings.Contains(reads[0].ArgsJSON, `"limit":200`) {
-			t.Fatalf("list_emails steps = %+v; want one asking for list_emails' largest page (200)", reads)
-		}
-		outs := f.outputs(t)
-		if len(outs) != 1 || outs[0].Title != "New mail in work: 200+ messages" {
-			t.Fatalf("outputs = %+v; want one summary titled 200+ messages", outs)
-		}
-		mustContain(t, "summary body", outs[0].Body, "Only the newest 200 new messages are summed up; older new messages were left out.")
-		var input []map[string]any
-		if err := json.Unmarshal([]byte(llmInputOf(t, gen.Snapshot()[0].UserMessage)), &input); err != nil || len(input) != 200 {
-			t.Fatalf("llm() input = %d messages (%v); want 200", len(input), err)
-		}
-		if got, newest := f.mailCursor(t, a), f.newestMail(t); got != newest {
-			t.Fatalf("work cursor = %q; want the newest message's date %q", got, newest)
-		}
-	})
+	t.Run("jira-state-report", testRunJiraStateReport)
 
-	t.Run("jira-state-report", func(t *testing.T) {
-		gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nPAY-5 is blocked.", "- PAY-5 blocked"}}
-		f := newTplFixture(t, gen)
-		a := f.installTemplate(t, "jira-state-report", map[string]string{"PROJECT": "PAY"})
-		id := f.enqueue(t, a, db.TriggerSchedule)
-		f.step(t, 1)
-		f.wantRun(t, id, db.RunSucceeded, "")
+	t.Run("team-performance-report", testRunTeamPerformanceReport)
+}
 
-		outs := f.outputs(t)
-		if len(outs) != 2 || outs[0].Kind != "report" || outs[0].Title != "Jira PAY state" || outs[0].Body != "## Summary\nPAY-5 is blocked." ||
-			outs[1].Kind != "briefing" || outs[1].Title != "Jira PAY this week" || outs[1].Body != "- PAY-5 blocked" {
-			t.Fatalf("outputs = %+v; want the PAY report and its briefing", outs)
-		}
-		calls := gen.Snapshot()
-		if len(calls) != 2 || calls[0].Source != automations.SourceLLMStrong {
-			t.Fatalf("llm() calls = %+v; want two, the report on the strong tier", calls)
-		}
-		mustContain(t, "report input", calls[0].UserMessage, "PAY-5")
-		mustContain(t, "briefing input", calls[1].UserMessage, "PAY-5 is blocked.")
-	})
+func testRunNewMailSummary(t *testing.T) {
+	f := newTplFixture(t, &automationstest.FakeGenerator{Replies: []string{"- colleague C wants a contract review by Friday"}})
+	a := f.installTemplate(t, "new-mail-summary", nil)
 
-	t.Run("team-performance-report", func(t *testing.T) {
-		gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nA steady week."}}
-		f := newTplFixture(t, gen)
-		a := f.installTemplate(t, "team-performance-report", nil)
-		id := f.enqueue(t, a, db.TriggerSchedule)
-		f.step(t, 1)
-		f.wantRun(t, id, db.RunSucceeded, "")
+	first := f.mailEvent(t, a, "c1")
+	f.step(t, 1)
+	f.wantRun(t, first, db.RunSucceeded, "")
+	outs := f.outputs(t)
+	if len(outs) != 1 || outs[0].Kind != "inbox" || outs[0].Title != "New mail in work: 3 messages" ||
+		outs[0].Body != "- colleague C wants a contract review by Friday" {
+		t.Fatalf("outputs = %+v; want one inbox summary of the 3 messages", outs)
+	}
+	newest := f.newestMail(t)
+	if got := f.mailCursor(t, a); got != newest {
+		t.Fatalf("work cursor = %q; want the newest message's date %q", got, newest)
+	}
+	state := f.stateDump(t)
 
-		outs := f.outputs(t)
-		if len(outs) != 1 || outs[0].Kind != "report" || outs[0].Title != "Team week" || outs[0].Body != "## Summary\nA steady week." {
-			t.Fatalf("outputs = %+v; want one Team week report", outs)
-		}
-		calls := gen.Snapshot()
-		if len(calls) != 1 || calls[0].Source != automations.SourceLLMStrong {
-			t.Fatalf("llm() calls = %+v; want one on the strong tier", calls)
-		}
-		for _, want := range []string{"PAY-3", "Owns payouts", "Rolling 1.4 to production tomorrow"} {
-			mustContain(t, "report input", calls[0].UserMessage, want)
-		}
-	})
+	second := f.mailEvent(t, a, "c2")
+	f.step(t, 1)
+	f.wantRun(t, second, db.RunSucceeded, "")
+	if n := len(f.outputs(t)); n != 1 {
+		t.Fatalf("outputs after a run without newer mail = %d; want still 1", n)
+	}
+	if got := f.stateDump(t); got != state {
+		t.Fatalf("state after a run without newer mail = %q; want unchanged %q", got, state)
+	}
+	reads := f.toolSteps(t, second, "list_emails")
+	if len(reads) != 1 || !strings.Contains(reads[0].ArgsJSON, `"since":"`+newest+`"`) {
+		t.Fatalf("second list_emails steps = %+v; want one with since = the cursor %s", reads, newest)
+	}
+}
+
+func testRunNewMailBurst(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- a burst"}}
+	f := newTplFixture(t, gen)
+	if _, err := f.d.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 205)
+		INSERT INTO gmail_messages (account_id, id, from_email, subject, internal_date)
+		SELECT 1, 'burst-' || i, 'bot@example.com', 'Alert ' || i, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || (i + 10) || ' minutes')
+		FROM n`); err != nil {
+		t.Fatal(err)
+	}
+	a := f.installTemplate(t, "new-mail-summary", nil)
+	id := f.mailEvent(t, a, "c1")
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunSucceeded, "")
+
+	reads := f.toolSteps(t, id, "list_emails")
+	if len(reads) != 1 || !strings.Contains(reads[0].ArgsJSON, `"limit":200`) {
+		t.Fatalf("list_emails steps = %+v; want one asking for list_emails' largest page (200)", reads)
+	}
+	outs := f.outputs(t)
+	if len(outs) != 1 || outs[0].Title != "New mail in work: 200+ messages" {
+		t.Fatalf("outputs = %+v; want one summary titled 200+ messages", outs)
+	}
+	mustContain(t, "summary body", outs[0].Body, "Only the newest 200 new messages are summed up; older new messages were left out.")
+	var input []map[string]any
+	if err := json.Unmarshal([]byte(llmInputOf(t, gen.Snapshot()[0].UserMessage)), &input); err != nil || len(input) != 200 {
+		t.Fatalf("llm() input = %d messages (%v); want 200", len(input), err)
+	}
+	if got, newest := f.mailCursor(t, a), f.newestMail(t); got != newest {
+		t.Fatalf("work cursor = %q; want the newest message's date %q", got, newest)
+	}
+}
+
+func testRunJiraStateReport(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nPAY-5 is blocked.", "- PAY-5 blocked"}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "jira-state-report", map[string]string{"PROJECT": "PAY"})
+	id := f.enqueue(t, a, db.TriggerSchedule)
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunSucceeded, "")
+
+	outs := f.outputs(t)
+	if len(outs) != 2 || outs[0].Kind != "report" || outs[0].Title != "Jira PAY state" || outs[0].Body != "## Summary\nPAY-5 is blocked." ||
+		outs[1].Kind != "briefing" || outs[1].Title != "Jira PAY this week" || outs[1].Body != "- PAY-5 blocked" {
+		t.Fatalf("outputs = %+v; want the PAY report and its briefing", outs)
+	}
+	calls := gen.Snapshot()
+	if len(calls) != 2 || calls[0].Source != automations.SourceLLMStrong {
+		t.Fatalf("llm() calls = %+v; want two, the report on the strong tier", calls)
+	}
+	mustContain(t, "report input", calls[0].UserMessage, "PAY-5")
+	mustContain(t, "briefing input", calls[1].UserMessage, "PAY-5 is blocked.")
+}
+
+func testRunTeamPerformanceReport(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nA steady week."}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "team-performance-report", nil)
+	id := f.enqueue(t, a, db.TriggerSchedule)
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunSucceeded, "")
+
+	outs := f.outputs(t)
+	if len(outs) != 1 || outs[0].Kind != "report" || outs[0].Title != "Team week" || outs[0].Body != "## Summary\nA steady week." {
+		t.Fatalf("outputs = %+v; want one Team week report", outs)
+	}
+	calls := gen.Snapshot()
+	if len(calls) != 1 || calls[0].Source != automations.SourceLLMStrong {
+		t.Fatalf("llm() calls = %+v; want one on the strong tier", calls)
+	}
+	for _, want := range []string{"PAY-3", "Owns payouts", "Rolling 1.4 to production tomorrow"} {
+		mustContain(t, "report input", calls[0].UserMessage, want)
+	}
 }
 
 // mailEvent queues an event run of a for one gmail.new_messages{account:
