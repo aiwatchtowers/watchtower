@@ -404,7 +404,9 @@ extension WorkbenchesViewModel {
         // A blank brief is no brief: the work-on prompt goes instead.
         let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
         let brief = given.flatMap { $0.isEmpty ? nil : $0 } ?? TerminalLaunch.workOnPrompt(
-            targetID: targetID, isGroup: found.isGroup, vocabulary: vocabulary(projectID: found.project.id)
+            targetID: targetID, isGroup: found.isGroup,
+            skillKnowsGroups: skillKnowsGroupPrompt(projectID: found.project.id, agent: agent),
+            vocabulary: vocabulary(projectID: found.project.id)
         )
         return try await createAndActivate(
             .init(projectID: found.project.id, kind: TerminalSession.Kind(agent),

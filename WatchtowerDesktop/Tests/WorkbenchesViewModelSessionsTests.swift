@@ -345,6 +345,30 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
                        "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnGroupPrompt(targetID: group, vocabulary: .legacy))")
     }
 
+    /// Board #476: a folder whose skill does not know the group prompt (the
+    /// old skill here) gets the target prompt for a group; its "Working a
+    /// target" rules are what it has.
+    func testWorkOnAGroupSendsTheTargetPromptWhenTheSkillDoesNotKnowGroups() async throws {
+        let p = try await workbenchWithFolder()
+        let group = try await pool.write { db -> Int64 in
+            let g = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Group")
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Leaf", parentID: g)
+            return g
+        }
+        let status = #"{"skill":"missing","hook":true,"stop_hook":true,"mcp":true,"legacy":true,"legacy_skill":"unchanged","group_prompt":false}"#
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner(stdout: Data(status.utf8))),
+                                      defaults: defaults, terminalCenter: center)
+        vm.titleService = { _ in .init(title: "", written: false) }
+        await vm.reload()
+        await vm.refreshInstallStatus(projectID: p)
+        XCTAssertFalse(vm.skillKnowsGroupPrompt(projectID: p, agent: .claude))
+
+        await vm.workOn(targetID: group, targetText: "Group")
+
+        XCTAssertEqual(launches.last?.environment.last,
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: group, vocabulary: .legacy))")
+    }
+
     /// Board #160: `/clear` moved Claude Code to a new session id, which the
     /// project's SessionStart hook stored on the row from another process.
     /// Opening it from a list loaded before that resumes the new id, not the
