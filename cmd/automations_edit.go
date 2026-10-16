@@ -16,13 +16,10 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/fsutil"
 )
 
 // recipeSlugOf is the slug a recipe file's name gives (its stem).
-func recipeSlugOf(path string) string {
-	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-}
+func recipeSlugOf(path string) string { return automations.RecipeSlugOf(path) }
 
 // validateJSON is `validate --json` — the pinned key set of plan Task 12.
 type validateJSON struct {
@@ -302,7 +299,7 @@ func resolveSaveTarget(cfg *config.Config, database *db.DB, file, target string)
 }
 
 // runAutomationsSave writes --file's recipe atomically to its recipe folder
-// (fsutil.WriteFileAtomic — the one helper P3's save_automation and P6's
+// (automations.Indexer.WriteRecipe — the one path P3's save_automation and P6's
 // install-template reuse), indexes the folder and, with --confirm-hash,
 // confirms it. --confirm-hash is refused under an AI agent's markers
 // (AGENT-07) before anything is written, and a hash that is not the saved
@@ -407,38 +404,17 @@ func checkExpectedContentHash(path, want string) error {
 
 // writeAndIndexRecipe writes data to t atomically, rescans t's folder and
 // returns the file's index row; a file the indexer skipped is an error
-// carrying its reason.
+// carrying its reason (automations.Indexer.WriteRecipe).
 func writeAndIndexRecipe(ctx context.Context, cfg *config.Config, database *db.DB, t saveTarget, data []byte) (*db.Automation, error) {
-	if err := os.MkdirAll(t.dir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", t.dir, err)
-	}
-	if err := fsutil.WriteFileAtomic(t.path, data, 0o644); err != nil {
-		return nil, fmt.Errorf("writing %s: %w", t.path, err)
-	}
-	return indexedRecipeAt(ctx, cfg, database, t.scope, t.dir, t.path)
+	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
+	return ix.WriteRecipe(ctx, t.scope, t.dir, t.path, data)
 }
 
 // indexedRecipeAt rescans dir under scope and returns the index row of the
 // recipe file at path (canonical), or an error naming why it is not indexed.
 func indexedRecipeAt(ctx context.Context, cfg *config.Config, database *db.DB, scope automations.Scope, dir, path string) (*db.Automation, error) {
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
-	report, err := ix.RescanFolder(ctx, scope, dir)
-	if err != nil {
-		return nil, err
-	}
-	for _, s := range report.Skipped {
-		if s.Path == path {
-			return nil, fmt.Errorf("%s is not indexed: %s", path, s.Reason)
-		}
-	}
-	a, err := database.GetAutomationBySlug(string(scope.Kind), scope.WorkbenchID, recipeSlugOf(path))
-	if err != nil {
-		return nil, fmt.Errorf("%s is not indexed: %w", path, err)
-	}
-	if a.Path != path || a.RemovedAt != nil {
-		return nil, fmt.Errorf("%s is not indexed (its slug belongs to automation %d at %s)", path, a.ID, a.Path)
-	}
-	return a, nil
+	return ix.IndexedRecipeAt(ctx, scope, dir, path)
 }
 
 // runAutomationsDelete removes an automation's index row — which cascades

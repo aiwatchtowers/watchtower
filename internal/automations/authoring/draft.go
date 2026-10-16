@@ -227,14 +227,14 @@ func widening(d *db.DB, scope automations.Scope, slug string, perms []string) ([
 		return automations.Covers(nil, perms), nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("draft_automation: %w", err)
+		return nil, fmt.Errorf("reading the saved automation %s: %w", slug, err)
 	}
 	if saved.RemovedAt != nil {
 		return automations.Covers(nil, perms), nil
 	}
 	var old []string
 	if err := json.Unmarshal([]byte(saved.PermissionsJSON), &old); err != nil {
-		return nil, fmt.Errorf("draft_automation: automation %d permissions_json: %w", saved.ID, err)
+		return nil, fmt.Errorf("automation %d permissions_json: %w", saved.ID, err)
 	}
 	return automations.Covers(old, perms), nil
 }
