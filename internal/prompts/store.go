@@ -57,6 +57,7 @@ const (
 	InboxStyleSample           = "inbox.style_sample"
 	ChatTitle                  = "chat.title"
 	TerminalTitle              = "terminal.title"
+	ReviewOverview             = "review.overview"
 )
 
 // Store loads, caches, and persists prompt templates.

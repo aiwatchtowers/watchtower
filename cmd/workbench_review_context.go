@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -40,9 +41,20 @@ func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
 	if err := checkSessionOnWorkbench(database, p, reviewFlagSession); err != nil {
 		return failReview(cmd, err)
 	}
-	ids, err := database.SessionLinkedTargets(reviewFlagSession)
+	items, err := reviewContextItems(cmd.Context(), database, p, reviewFlagSession)
 	if err != nil {
 		return failReview(cmd, err)
+	}
+	lenses, notes := reviewdiff.LoadLenses(p.FolderPath)
+	return writeReview(cmd, reviewEnvelope{OK: true, Items: items, Lenses: lenses, LensNotes: notes})
+}
+
+// reviewContextItems: the session's linked targets that belong to workbench p,
+// each with its plan task when the intent names one.
+func reviewContextItems(_ context.Context, database *db.DB, p *db.Workbench, sessionID int64) ([]reviewContextItem, error) {
+	ids, err := database.SessionLinkedTargets(sessionID)
+	if err != nil {
+		return nil, err
 	}
 	items := []reviewContextItem{}
 	for _, id := range ids {
@@ -52,8 +64,7 @@ func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
 		}
 		items = append(items, contextItem(p.FolderPath, t))
 	}
-	lenses, notes := reviewdiff.LoadLenses(p.FolderPath)
-	return writeReview(cmd, reviewEnvelope{OK: true, Items: items, Lenses: lenses, LensNotes: notes})
+	return items, nil
 }
 
 func contextItem(folder string, t *db.Target) reviewContextItem {

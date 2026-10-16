@@ -1,0 +1,17 @@
+{
+  "summary": "Adds the greeting endpoint and its test; the docs update is missing.",
+  "coverage": [
+    {"item": "Add a greeting endpoint", "status": "done", "where": ["server/greet.go"]},
+    {"item": "Document the endpoint", "status": "not_found", "where": []}
+  ],
+  "out_of_scope": ["scripts/cleanup.sh"],
+  "risk": [
+    {"path": "server/greet.go", "level": "medium", "why": "new public handler"},
+    {"path": "server/greet_test.go", "level": "low", "why": "test only"},
+    {"path": "scripts/cleanup.sh", "level": "high", "why": "deletes files"}
+  ],
+  "chapters": [
+    {"title": "Greeting endpoint", "paths": ["server/greet.go", "server/greet_test.go"], "core": true, "lenses": ["correctness", "tests"]},
+    {"title": "Housekeeping", "paths": ["scripts/cleanup.sh"], "core": false, "lenses": []}
+  ]
+}
