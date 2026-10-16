@@ -180,7 +180,9 @@ struct TrayMenuContent: View {
                 runAutomationMenu(runAutomationSections)
             }
             Divider()
+            // Shows the global ⌃⌥D (`GlobalHotKey`) beside the item (issue #288).
             Button("New Voice Idea", action: quickCaptureAction)
+                .keyboardShortcut("d", modifiers: [.control, .option])
             Divider()
             if voicesPendingCount > 0 {
                 Button("Voices to label (\(voicesPendingCount))", action: voicesAction)

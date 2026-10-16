@@ -74,8 +74,11 @@ final class RunAutomationShortcutTests: XCTestCase {
     func testCommandKUnchangedOnWorkbenchAndChat() throws {
         let files = try Self.swiftSources()
         let commandK = files.filter { $0.text.contains(#".keyboardShortcut("k", modifiers: .command)"#) }
-        XCTAssertEqual(commandK.map(\.path).sorted(), ["Views/Chat/ChatView.swift", "Views/Workbench/WorkbenchesView.swift"])
-        let workbench = try XCTUnwrap(commandK.first { $0.path.hasSuffix("WorkbenchesView.swift") }).text
+        // Workbench's ⌘K is the Workbench menu's Go to… since issue #288.
+        XCTAssertEqual(commandK.map(\.path).sorted(), ["App/WorkbenchCommands.swift", "Views/Chat/ChatView.swift"])
+        let menu = try XCTUnwrap(commandK.first { $0.path.hasSuffix("WorkbenchCommands.swift") }).text
+        XCTAssertTrue(menu.contains(#"Button("Go to…")"#))
+        let workbench = try XCTUnwrap(files.first { $0.path == "Views/Workbench/WorkbenchesView.swift" }).text
         XCTAssertTrue(workbench.contains(#".help("Go to… (⌘K)")"#))
         let chat = try XCTUnwrap(commandK.first { $0.path.hasSuffix("ChatView.swift") }).text
         XCTAssertTrue(chat.contains(#".help("Search Chats (⌘K)")"#))
