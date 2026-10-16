@@ -13,9 +13,10 @@ import (
 	"watchtower/internal/db"
 )
 
-// Ruling R-P5-6: deleting a workbench automation withdraws its runs' open
-// asks (a run that ended before the executor's sweep saw it), so no open ask
-// of no run and no session is left behind.
+// Ruling R-P5-6: deleting a workbench automation deletes its runs' asks —
+// open (a run that ended before the executor's sweep saw it), answered and
+// delivered — so none is left behind with no run, looking like an external
+// terminal's ask that every session would see.
 func TestAutomationsCLI_DeleteWithdrawsOpenAsks(t *testing.T) {
 	c := newAutoCLI(t)
 	folder, err := filepath.EvalSymlinks(t.TempDir())
@@ -33,20 +34,28 @@ func TestAutomationsCLI_DeleteWithdrawsOpenAsks(t *testing.T) {
 	ok, err := c.d.ClaimAutomationRun(runID, "h", "snapshot", 50000, 5, now)
 	require.NoError(t, err)
 	require.True(t, ok)
-	var askID int64
-	require.NoError(t, c.d.WithTx(func(tx *sql.Tx) error {
-		askID, _, err = c.d.InsertOwnerAsk(tx, db.OwnerAsk{WorkbenchID: wbID, Kind: "question", Title: "Ship it?",
-			AutomationRunID: sql.NullInt64{Int64: runID, Valid: true}})
-		return err
-	}))
+	var askIDs []int64
+	for _, title := range []string{"Ship it?", "Answered", "Delivered"} {
+		require.NoError(t, c.d.WithTx(func(tx *sql.Tx) error {
+			id, _, err := c.d.InsertOwnerAsk(tx, db.OwnerAsk{WorkbenchID: wbID, Kind: "question", Title: title,
+				AutomationRunID: sql.NullInt64{Int64: runID, Valid: true}})
+			askIDs = append(askIDs, id)
+			return err
+		}))
+	}
+	_, err = c.d.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{"note":"ok"}' WHERE id IN (?, ?)`, askIDs[1], askIDs[2])
+	require.NoError(t, err)
+	delivered, err := c.d.MarkOwnerAskDelivered(wbID, askIDs[2])
+	require.NoError(t, err)
+	require.True(t, delivered)
 	ok, err = c.d.CancelAutomationRun(runID, now)
 	require.NoError(t, err)
 	require.True(t, ok)
 
 	out, err := runAutomations(t, "delete", idArg(a.ID))
 	require.NoError(t, err, out)
-	ask, err := c.d.GetOwnerAsk(wbID, askID)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"withdrawn", db.WithdrawnByAgent}, []string{ask.Status, ask.WithdrawnReason})
-	assert.False(t, ask.AutomationRunID.Valid, "the run went with the automation")
+	for _, id := range askIDs {
+		_, err := c.d.GetOwnerAsk(wbID, id)
+		assert.ErrorIs(t, err, db.ErrAskNotFound, "ask %d went with the automation", id)
+	}
 }

@@ -164,6 +164,9 @@ func waitForAnswer(env *Env, d *db.DB, wb, id int64) (*db.OwnerAsk, error) {
 		return false, fmt.Errorf("ask #%d is %s", id, a.Status)
 	})
 	if err != nil {
+		// An ask answered just before the wait ended (a cancel while the
+		// resume waited for a slot) is not open: it stays answered, never
+		// delivered, and only the owner-facing readers show it.
 		_ = d.WithdrawOwnerAsk(wb, id, db.WithdrawnByAgent)
 		return nil, err
 	}

@@ -29,8 +29,14 @@ func TestAutomationAsks_InvisibleToSessionReaders(t *testing.T) {
 
 	auto := mustInsertAsk(t, d, automationAsk(wb, run, "Deploy now?"))
 	external := mustInsertAsk(t, d, questionAsk(wb, "External terminal ask"))
+	// An automation ask bound to another session (a shape ask() never files)
+	// would otherwise be counted in the brief's "others".
+	otherSession := automationAsk(wb, run, "Pick a zone")
+	otherSession.SessionID = nullID(newTestSession(t, d, wb))
+	boundAnswered := mustInsertAsk(t, d, otherSession)
 	markAskAnswered(t, d, auto)
 	markAskAnswered(t, d, external)
+	markAskAnswered(t, d, boundAnswered)
 
 	for _, session := range []int64{sid, 0} {
 		list, others, err := d.AnsweredAsksForBrief(wb, session)
@@ -46,7 +52,7 @@ func TestAutomationAsks_InvisibleToSessionReaders(t *testing.T) {
 	assert.Equal(t, external, sessionSide[0].ID)
 	ownerSide, err := d.ListOwnerAsks(wb, OwnerAskFilter{})
 	require.NoError(t, err)
-	assert.Len(t, ownerSide, 2, "the owner-facing list keeps automation asks")
+	assert.Len(t, ownerSide, 3, "the owner-facing list keeps automation asks")
 
 	// A session-bound automation ask (a shape ask() never files) is still no
 	// series ask.
@@ -98,21 +104,58 @@ func TestAutomationAsks_WithdrawnWhenTheirRunEnded(t *testing.T) {
 	assert.Equal(t, 0, n, "a second sweep finds nothing")
 }
 
-// Deleting an automation withdraws its runs' open asks in the same
-// transaction (the run's FK would otherwise leave an open ask of no run and
-// no session); a refused delete withdraws nothing.
-func TestAutomationAsks_DeleteIdleAutomationWithdrawsOpenAsks(t *testing.T) {
+// runAsks files an open, an answered and a delivered ask of run on wb.
+func runAsks(t *testing.T, d *DB, wb, run int64) []int64 {
+	t.Helper()
+	open := mustInsertAsk(t, d, automationAsk(wb, run, "Open"))
+	answered := mustInsertAsk(t, d, automationAsk(wb, run, "Answered"))
+	markAskAnswered(t, d, answered)
+	delivered := mustInsertAsk(t, d, automationAsk(wb, run, "Delivered"))
+	markAskAnswered(t, d, delivered)
+	ok, err := d.MarkOwnerAskDelivered(wb, delivered)
+	require.NoError(t, err)
+	require.True(t, ok)
+	return []int64{open, answered, delivered}
+}
+
+func askCount(t *testing.T, d *DB, ids []int64) int {
+	t.Helper()
+	n := 0
+	for _, id := range ids {
+		var c int
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM owner_asks WHERE id = ?`, id).Scan(&c))
+		n += c
+	}
+	return n
+}
+
+// Deleting an automation deletes its runs' asks in every status in the same
+// transaction: the run's FK would otherwise null automation_run_id and make
+// them look like an external terminal's asks, which every session sees. A
+// refused delete keeps them; another ask stays.
+func TestAutomationAsks_DeleteIdleAutomationDeletesItsAsks(t *testing.T) {
 	d := openTestDB(t)
 	wb := newTestWorkbench(t, d)
 	a, run := seedRunningAutomationRun(t, d)
-	ask := mustInsertAsk(t, d, automationAsk(wb, run, "Ship it?"))
+	ids := runAsks(t, d, wb, run)
+	plain := mustInsertAsk(t, d, questionAsk(wb, "Plain"))
 
 	wantErrIs(t, "delete with an active run", d.DeleteIdleAutomation(a), ErrAutomationActive)
-	status, _ := askStatus(t, d, ask)
-	assert.Equal(t, "open", status, "a refused delete withdraws nothing")
+	assert.Equal(t, 3, askCount(t, d, ids), "a refused delete deletes nothing")
 
 	mustFinishAutomationRun(t, d, run, RunFinish{Status: RunFailed, ErrorKind: ErrKindInterrupted}, nil)
 	require.NoError(t, d.DeleteIdleAutomation(a))
-	status, reason := askStatus(t, d, ask)
-	assert.Equal(t, [2]string{"withdrawn", WithdrawnByAgent}, [2]string{status, reason})
+	assert.Equal(t, 0, askCount(t, d, ids))
+	assert.Equal(t, 1, askCount(t, d, []int64{plain}))
+}
+
+func TestAutomationAsks_DeleteAutomationDeletesItsAsks(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	a, run := seedRunningAutomationRun(t, d)
+	ids := runAsks(t, d, wb, run)
+	plain := mustInsertAsk(t, d, questionAsk(wb, "Plain"))
+	require.NoError(t, d.DeleteAutomation(a))
+	assert.Equal(t, 0, askCount(t, d, ids))
+	assert.Equal(t, 1, askCount(t, d, []int64{plain}))
 }
