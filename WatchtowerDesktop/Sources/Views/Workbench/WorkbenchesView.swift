@@ -98,6 +98,8 @@ struct WorkbenchesView: View {
             }
         }
         .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession, cleaning: $cleaningSession)
+        // The Workbench menu (issue #288): on while this tab is in the key window.
+        .focusedSceneValue(\.workbenchMenu, WorkbenchMenuContext(vm: vm, paletteOpen: goToOpen) { goToOpen = true })
         .onAppear {
             consumeRoute()
             Task { await vm.tabAppeared() }
@@ -314,9 +316,9 @@ struct WorkbenchesView: View {
 /// It stays visible with the panel hidden: its toggle is the way back, and
 /// then on a workbench page it carries `▦ <workbench> ▾ › ● <session> ▾`
 /// (board #251, variant H) instead of the plain title. At its right, Go
-/// to… opens the go-to palette (⌘K, board #252). It also holds the tab's
-/// shortcuts, so they exist on the Workbench tab only, and not under the
-/// open palette (they would change the page behind it).
+/// to… opens the go-to palette (⌘K, board #252). The tab's chords are the
+/// Workbench menu's (`WorkbenchCommands`, issue #288), on through the scene
+/// value `WorkbenchesView` publishes.
 struct WorkbenchTitleRow: View {
     @Bindable var vm: WorkbenchesViewModel
     let switcherActions: WorkbenchSwitcherActions
@@ -328,7 +330,6 @@ struct WorkbenchTitleRow: View {
             Button { vm.panelVisible.toggle() } label: {
                 Image(systemName: "sidebar.leading")
             }
-            .keyboardShortcut("s", modifiers: [.command, .option])
             .disabled(paletteOpen)
             .help(vm.panelVisible ? "Hide Sessions Panel (⌥⌘S)" : "Show Sessions Panel (⌥⌘S)")
             .accessibilityLabel(vm.panelVisible ? "Hide Sessions Panel" : "Show Sessions Panel")
@@ -356,14 +357,12 @@ struct WorkbenchTitleRow: View {
                     Text("⌘K").foregroundStyle(.secondary)
                 }
             }
-            .keyboardShortcut("k", modifiers: .command)
             .help("Go to… (⌘K)")
             .accessibilityLabel("Go to…")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background { shortcuts }
         // A, with no field focused: "Waiting for you" takes the keyboard
         // (board #412); never under the open palette. Labelled: a trailing
         // closure would be `onKey`.
@@ -373,37 +372,12 @@ struct WorkbenchTitleRow: View {
         }))
     }
 
-    static let backShortcutID = "workbench.back-shortcut"
-
     /// A bare key the page's catcher offers (board #412): A opens the stack,
     /// never under the open palette; anything else stays the window's.
     static func pressOnPage(_ press: OwnerAskKeyMap.Press, vm: WorkbenchesViewModel, paletteOpen: Bool) -> Bool {
         !paletteOpen && OwnerAskKeyMap.mappedAction(for: press, at: .page) == .openStack && vm.openStackFromKeyboard()
     }
 
-    /// ⌘T and ⌘1…⌘9 (the session switcher shows them) as hidden buttons;
-    /// they need a workbench page. ⇧⌘O is Open Quickly's (ruling R26).
-    /// ⌘[ goes back to the workbench list (board #743); like ⌘K, Monaco
-    /// keeps it (Outdent) while the cursor is in the Files editor.
-    private var shortcuts: some View {
-        Group {
-            Button("") { switcherActions.showAll() }
-                .keyboardShortcut("[", modifiers: .command)
-                .disabled(!vm.canShowAllWorkbenches)
-                .accessibilityIdentifier(Self.backShortcutID)
-            Group {
-                Button("") { Task { await vm.newSessionOnPage() } }
-                    .keyboardShortcut("t", modifiers: .command)
-                ForEach(1...SessionSwitcherPresentation.maxShortcut, id: \.self) { n in
-                    Button("") { Task { await vm.openSession(atShortcut: n) } }
-                        .keyboardShortcut(KeyEquivalent(Character(String(n))), modifiers: .command)
-                }
-            }
-            .disabled(!vm.hasWorkbenchPage)
-        }
-        .disabled(paletteOpen)
-        .hidden()
-    }
 }
 
 /// The worktrees a workbench delete kept because work was in them: a
