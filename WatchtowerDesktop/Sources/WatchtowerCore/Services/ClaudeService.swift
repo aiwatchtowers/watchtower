@@ -38,7 +38,7 @@ package protocol AIServiceProtocol: Sendable {
     /// chat), so it can reach none of the owner's data. Only
     /// `WatchtowerAIService` runs either; a test double that does not model
     /// them falls back to the plain run.
-    func stream(
+    func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
         sessionID: String?,
@@ -52,6 +52,7 @@ package protocol AIServiceProtocol: Sendable {
 }
 
 extension AIServiceProtocol {
+    // swiftlint:disable:next function_parameter_count
     package func stream(
         prompt: String,
         systemPrompt: String?,

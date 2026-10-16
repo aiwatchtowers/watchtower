@@ -20,6 +20,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                model: model, provider: provider, toolMode: toolMode, readFolder: nil, noTools: false)
     }
 
+    // swiftlint:disable:next function_parameter_count
     package func stream(
         prompt: String,
         systemPrompt: String?,

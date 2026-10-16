@@ -62,12 +62,12 @@ package enum GuideSearch {
         """.split(whereSeparator: \.isWhitespace).map(String.init))
 
     fileprivate static func words(_ s: String) -> [String] {
-        s.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
-            .split(whereSeparator: \.isWhitespace).compactMap { raw in
-                var word = trimEdges(raw)
-                if word.hasSuffix("'s") { word.removeLast(2) }
-                return word.count >= 2 ? word : nil
-            }
+        let normalized = s.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        return normalized.split(whereSeparator: \.isWhitespace).compactMap { raw in
+            var word = trimEdges(raw)
+            if word.hasSuffix("'s") { word.removeLast(2) }
+            return word.count >= 2 ? word : nil
+        }
     }
 
     private static func trimEdges(_ raw: Substring) -> String {
