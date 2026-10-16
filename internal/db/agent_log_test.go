@@ -152,3 +152,20 @@ func TestApplyAgentLogBatch_ToolResultSetsSpawnedAgent(t *testing.T) {
 	assert.Equal(t, "a1", id)
 	assert.True(t, bg)
 }
+
+func TestApplyAgentLogBatch_AsyncResultWithoutAgentIDSetsBackground(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	use := AgentLogEvent{SessionUUID: "s1", Key: "tool:t1", Kind: "tool", TS: "2026-10-01T10:00:00Z", Name: "Agent", Outcome: "pending", SrcPath: "/x/a.jsonl"}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: []AgentLogEvent{use}})
+	require.NoError(t, err)
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 20}, ExpectOffset: 10,
+		ToolResults: []AgentToolResult{{ToolUseID: "t1", TS: "2026-10-01T10:00:02Z", Outcome: "ok", Background: true}}})
+	require.NoError(t, err)
+	var id string
+	var bg bool
+	require.NoError(t, d.QueryRow(`SELECT spawned_agent_id, background FROM agent_log_events WHERE key='tool:t1'`).Scan(&id, &bg))
+	assert.Equal(t, "", id)
+	assert.True(t, bg)
+}

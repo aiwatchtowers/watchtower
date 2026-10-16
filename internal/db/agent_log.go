@@ -205,6 +205,10 @@ func (db *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 					r.SpawnedAgentID, r.Background, "tool:"+r.ToolUseID); err != nil {
 					return fmt.Errorf("pairing spawned agent: %w", err)
 				}
+			} else if r.Background {
+				if _, err := tx.Exec(`UPDATE agent_log_events SET background = 1 WHERE key = ?`, "tool:"+r.ToolUseID); err != nil {
+					return fmt.Errorf("pairing background flag: %w", err)
+				}
 			}
 		}
 		applied = true
@@ -271,6 +275,7 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		  cache_write_1h_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cache_write_1h_tokens ELSE agent_log_events.cache_write_1h_tokens END,
 		  cost_usd = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cost_usd ELSE agent_log_events.cost_usd END,
 		  output_tokens = MAX(agent_log_events.output_tokens, excluded.output_tokens),
+		  trigger = CASE WHEN excluded.trigger <> '' THEN excluded.trigger ELSE agent_log_events.trigger END,
 		  target = CASE WHEN excluded.target <> '' THEN excluded.target ELSE agent_log_events.target END,
 		  background = MAX(agent_log_events.background, excluded.background),
 		  outcome = CASE WHEN agent_log_events.outcome IN ('', 'pending') THEN excluded.outcome ELSE agent_log_events.outcome END`,
