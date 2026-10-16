@@ -51,6 +51,11 @@ const (
 	AutomationContextType = "automation_run"
 )
 
+// AutomationEditorSurface is the "change it in words" chat bound to one
+// automation (spec 2026-10-14-automations-design §11, §14.5): it carries only
+// draft_automation, save_automation and the read tools.
+const AutomationEditorSurface = "automation_editor"
+
 // Binding is where a proposal came from: the chat surface, conversation and
 // turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
 // read at propose time and wins over TurnID — a warm `ai session` spans many
