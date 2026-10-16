@@ -329,6 +329,25 @@ package enum WorkbenchQueries {
         return WorkbenchBoardColumns(columns: columns, hidden: hidden)
     }
 
+    /// Per defined column of workbench `projectID`, the leaf targets that
+    /// show in it (`BoardColumnLayout.effectiveColumn`: a NULL or foreign
+    /// column counts for its status's first column) — what deleting the
+    /// column moves (the Board Columns… sheet). A parent is no card.
+    package static func boardColumnCardCounts(_ db: Database, projectID: Int64) throws -> [Int64: Int] {
+        let def = try boardColumns(db, projectID: projectID)
+        guard !def.columns.isEmpty else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT t.status, t.board_column_id FROM targets t
+            WHERE t.project_id = ? AND NOT EXISTS (SELECT 1 FROM targets c WHERE c.parent_id = t.id)
+            """, arguments: [projectID])
+        var counts: [Int64: Int] = [:]
+        for row in rows {
+            let column = BoardColumnLayout.effectiveColumn(status: row["status"], columnID: row["board_column_id"], def: def)
+            if let id = column?.id { counts[id, default: 0] += 1 }
+        }
+        return counts
+    }
+
     /// Work on It took the target up (board #499): a workbench task still
     /// `todo` moves to `in_progress` as the owner's write
     /// (`updateTargetStatus`). The status is read here, inside the caller's

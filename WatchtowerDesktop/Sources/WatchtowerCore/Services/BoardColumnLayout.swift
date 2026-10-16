@@ -56,11 +56,17 @@ package enum BoardColumnLayout {
 
     /// The key of the slot a card of `status` stored in `columnID` shows in.
     package static func slotKey(status: String, columnID: Int64?, def: WorkbenchBoardColumns) -> String {
-        guard !def.isHidden(status) else { return status }
+        effectiveColumn(status: status, columnID: columnID, def: def).map { key($0.id) } ?? status
+    }
+
+    /// The defined column a card of `status` stored in `columnID` shows in;
+    /// nil when it shows in the status's implicit column.
+    package static func effectiveColumn(
+        status: String, columnID: Int64?, def: WorkbenchBoardColumns
+    ) -> WorkbenchBoardColumnDef? {
+        guard !def.isHidden(status) else { return nil }
         let defined = def.columns(of: status)
-        guard let first = defined.first else { return status }
-        let column = defined.first { $0.id != nil && $0.id == columnID } ?? first
-        return key(column.id)
+        return defined.first { $0.id != nil && $0.id == columnID } ?? defined.first
     }
 
     private static func key(_ columnID: Int64?) -> String {

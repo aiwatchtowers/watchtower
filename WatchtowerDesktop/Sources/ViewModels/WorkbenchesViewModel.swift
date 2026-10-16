@@ -1089,6 +1089,34 @@ final class WorkbenchesViewModel {
         }
     }
 
+    /// The Board Columns… sheet's read (board #267): the stored definition
+    /// through `watchtower workbench columns` and, per defined column, the
+    /// cards that show in it (what deleting it moves).
+    func loadBoardColumns(projectID: Int64) async throws -> (WorkbenchBoardColumns, [Int64: Int]) {
+        guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
+        let def = try await cli.boardColumns(projectID: projectID)
+        let counts = try await dbPool.read { try WorkbenchQueries.boardColumnCardCounts($0, projectID: projectID) }
+        return (def, counts)
+    }
+
+    /// The sheet's Save: Go replaces the whole definition or refuses it
+    /// (nothing written). The board picks a saved definition up through its
+    /// fingerprint.
+    func saveBoardColumns(_ def: WorkbenchBoardColumns, projectID: Int64) async throws -> WorkbenchBoardColumns {
+        guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
+        return try await cli.setBoardColumns(projectID: projectID, def)
+    }
+
+    /// A refused definition's own message (Go prints it alone on stderr);
+    /// anything else as the error describes itself.
+    static func boardColumnsMessage(_ error: Error) -> String {
+        if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
+            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? "watchtower exited with code \(code)" : text
+        }
+        return error.localizedDescription
+    }
+
     /// The header menu's "Archive Closed Targets Now" (board #415): every
     /// target closed by now leaves the board. The board picks the stamp up
     /// through its fingerprint; the reload shows "Undo Archive Now".
@@ -1119,5 +1147,14 @@ final class WorkbenchesViewModel {
     func dismissResync(projectID: Int64) {
         resyncResults[projectID] = nil
         resyncErrors[projectID] = nil
+    }
+}
+
+/// Why the Board Columns… sheet could not run its CLI call.
+enum WorkbenchBoardColumnsError: LocalizedError {
+    case cliUnavailable
+
+    var errorDescription: String? {
+        "The watchtower command-line tool is not available."
     }
 }

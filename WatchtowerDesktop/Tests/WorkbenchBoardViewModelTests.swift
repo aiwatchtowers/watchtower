@@ -451,6 +451,57 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertNil(other.boardScopeID)
     }
 
+    /// Board #267: a drop on a defined column writes its status and column
+    /// together; a drop on its own column writes nothing; an implicit column
+    /// is a plain status move (NULL column).
+    func testDropOnColumnMovesStatusAndColumn() throws {
+        let (pid, tid, code) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            for (title, position) in [("Spec", 0), ("Code", 1)] {
+                try db.execute(
+                    sql: """
+                        INSERT INTO workbench_board_columns (project_id, status, title, description, position, created_at)
+                        VALUES (?, 'in_progress', ?, 'what coding means', ?, '2026-10-16T10:00:00Z')
+                        """,
+                    arguments: [pid, title, position]
+                )
+            }
+            let code = db.lastInsertedRowID
+            return (pid, try Self.insertTarget(db, project: pid, text: "Task"), code)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.mode = .kanban
+        vm.lanesMode = .none
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        XCTAssertEqual(vm.boardColumns.columns.map(\.title), ["Spec", "Code"], "loaded with the board")
+        let codeColumn = try XCTUnwrap(vm.kanban.columns.first { $0.title == "Code" })
+        XCTAssertEqual(codeColumn.columnID, code)
+
+        XCTAssertTrue(vm.moveCard(Int(tid), to: codeColumn))
+
+        let placed = try dbManager.dbPool.read { db in
+            try Row.fetchOne(db, sql: "SELECT status, board_column_id FROM targets WHERE id = ?", arguments: [tid])
+        }
+        XCTAssertEqual(placed?["status"] as String?, "in_progress")
+        XCTAssertEqual(placed?["board_column_id"] as Int64?, code)
+        XCTAssertEqual(reported, [.target(tid)])
+        XCTAssertEqual(vm.kanban.columns.first { $0.columnID == code }?.cards.map(\.id), [Int(tid)])
+
+        XCTAssertFalse(vm.moveCard(Int(tid), to: try XCTUnwrap(vm.kanban.columns.first { $0.columnID == code })),
+                       "a drop on its own column writes nothing")
+        XCTAssertEqual(reported.count, 1)
+
+        let done = try XCTUnwrap(vm.kanban.columns.first { $0.status == "done" })
+        XCTAssertTrue(vm.moveCard(Int(tid), to: done))
+        let closed = try dbManager.dbPool.read { db in
+            try Row.fetchOne(db, sql: "SELECT status, board_column_id FROM targets WHERE id = ?", arguments: [tid])
+        }
+        XCTAssertEqual(closed?["status"] as String?, "done")
+        XCTAssertNil(closed?["board_column_id"] as Int64?)
+    }
+
     // MARK: - Mark read
 
     func testSelectingATargetMarksItsAgentCommentsRead() throws {

@@ -346,7 +346,23 @@ package enum TargetQueries {
     /// trigger; a move between columns of one status writes no history
     /// (PROJ-06 fires on a status change only). Twin of Go
     /// `SetTargetColumnTx` (internal/db/board_columns.go).
+    ///
+    /// With the status unchanged it is no status write: only the column
+    /// (and `updated_at`, so the board polls see the move) — the progress,
+    /// the status claim and the closing follow-ups stay as they were.
     package static func updateStatus(_ db: Database, id: Int, status: String, boardColumnID: Int64?) throws {
+        let current = try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [id])
+        guard let current else { throw TargetNotFoundError(id: id) }
+        if current == status {
+            try db.execute(
+                sql: """
+                    UPDATE targets SET board_column_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    WHERE id = ?
+                    """,
+                arguments: [boardColumnID, id]
+            )
+            return
+        }
         try db.execute(
             sql: """
                 UPDATE targets SET status = ?, board_column_id = ?, status_actor = 'owner',

@@ -86,6 +86,58 @@ final class WorkbenchBoardColumnWritesTests: XCTestCase {
         }
     }
 
+    /// A move between two columns of one status is not a status write: the
+    /// progress the agent set, the status and its claim stay as they were.
+    func testMoveWithinOneStatusKeepsProgress() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let pid = try TestDatabase.insertWorkbench(db)
+            let spec = try insertColumn(db, projectID: pid, status: "in_progress", title: "Spec", position: 0)
+            let code = try insertColumn(db, projectID: pid, status: "in_progress", title: "Code", position: 1)
+            let target = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, status: "in_progress")
+            try db.execute(
+                sql: "UPDATE targets SET progress = 0.7, board_column_id = ?, updated_at = '2026-10-01T00:00:00Z' WHERE id = ?",
+                arguments: [spec, target]
+            )
+
+            _ = try WorkbenchOwnerWrites.moveToColumn(db, targetID: target, status: "in_progress", columnID: code)
+
+            let row = try XCTUnwrap(Row.fetchOne(
+                db, sql: "SELECT status, progress, status_actor, board_column_id, updated_at FROM targets WHERE id = ?",
+                arguments: [target]
+            ))
+            XCTAssertEqual(row["board_column_id"] as Int64?, code)
+            XCTAssertEqual(row["status"] as String?, "in_progress")
+            XCTAssertEqual(row["progress"] as Double?, 0.7, "a column move keeps the progress")
+            XCTAssertNil(row["status_actor"] as String?, "no status claim left behind")
+            XCTAssertNotEqual(row["updated_at"] as String?, "2026-10-01T00:00:00Z", "the board's poll sees the move")
+
+            _ = try WorkbenchOwnerWrites.moveToColumn(db, targetID: target, status: "done", columnID: nil)
+            XCTAssertEqual(
+                try Double.fetchOne(db, sql: "SELECT progress FROM targets WHERE id = ?", arguments: [target]), 1.0,
+                "a status change still sets the status's progress"
+            )
+        }
+    }
+
+    func testCardCountsFollowTheEffectiveColumn() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let pid = try TestDatabase.insertWorkbench(db)
+            let spec = try insertColumn(db, projectID: pid, status: "in_progress", title: "Spec", position: 0)
+            let code = try insertColumn(db, projectID: pid, status: "in_progress", title: "Code", position: 1)
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, status: "in_progress")
+            let coded = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, status: "in_progress")
+            _ = try WorkbenchOwnerWrites.moveToColumn(db, targetID: coded, status: "in_progress", columnID: code)
+            let parent = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, status: "in_progress")
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, status: "todo", parentID: parent)
+
+            let counts = try WorkbenchQueries.boardColumnCardCounts(db, projectID: pid)
+
+            XCTAssertEqual(counts, [spec: 1, code: 1], "NULL → the first column; a parent is no card")
+        }
+    }
+
     func testMismatchedColumnIsRefusedByTheTrigger() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

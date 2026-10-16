@@ -218,17 +218,44 @@ struct WorkbenchTargetPanel: View {
         }
     }
 
+    /// The statuses, or with board columns defined (board #267) the
+    /// columns grouped by status — a status without columns its one
+    /// implicit column.
     private var statusMenu: some View {
-        Menu {
-            ForEach(WorkbenchBoardCard.editableStatuses, id: \.self) { status in
-                Toggle(WorkbenchBoardCard.statusLabel(status), isOn: Binding(
-                    get: { target.status == status },
-                    set: { if $0 { vm.setStatus(status) } }
-                ))
+        let columns = vm.boardColumns
+        let shown = vm.shownColumn(of: node)
+        return Menu {
+            if columns.columns.isEmpty {
+                ForEach(WorkbenchBoardCard.editableStatuses, id: \.self) { status in
+                    Toggle(WorkbenchBoardCard.statusLabel(status), isOn: Binding(
+                        get: { target.status == status },
+                        set: { if $0 { vm.setStatus(status) } }
+                    ))
+                }
+            } else {
+                ForEach(WorkbenchBoardCard.editableStatuses, id: \.self) { status in
+                    let defined = columns.columns(of: status)
+                    if defined.isEmpty {
+                        Toggle(WorkbenchBoardCard.statusLabel(status), isOn: Binding(
+                            get: { target.status == status },
+                            set: { if $0 { vm.setStatus(status) } }
+                        ))
+                    } else {
+                        Section(WorkbenchBoardCard.statusLabel(status)) {
+                            ForEach(defined) { column in
+                                Toggle(column.title, isOn: Binding(
+                                    get: { target.status == status && shown?.id == column.id },
+                                    set: { if $0 { vm.moveCard(target.id, status: status, columnID: column.id) } }
+                                ))
+                                .help(column.description)
+                            }
+                        }
+                    }
+                }
             }
         } label: {
             WorkbenchDetailMenuLabel(
-                text: WorkbenchBoardCard.statusLabel(target.status),
+                text: shown?.title ?? WorkbenchBoardCard.statusLabel(target.status),
                 systemImage: target.statusIcon,
                 color: WorkbenchBoardColors.status(target.statusColor)
             )
