@@ -223,6 +223,26 @@ final class OwnerAskQueriesTests: XCTestCase {
         }
     }
 
+    /// An automation run's closed asks (session-less, as Go files them) are
+    /// not counted or listed as filed outside the app: they have their own.
+    func testClosedAutomationAsksAreNotOutsideTheApp() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let a = try TestDatabase.insertAutomation(d, slug: "review", name: "Review", workbenchID: p)
+            let run = try TestDatabase.insertAutomationRun(d, automationID: a, status: "succeeded")
+            let fromRun = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}",
+                                                          automationRunID: run)
+            try TestDatabase.insertOwnerAsk(d, projectID: p, automationRunID: run)
+            let outside = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}")
+
+            XCTAssertEqual(try OwnerAskQueries.closedCounts(d, projectID: p), [nil: 1])
+            XCTAssertEqual(try OwnerAskQueries.closedAutomationCount(d, projectID: p), 1, "open asks are not counted")
+            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil).asks.map(\.id), [outside])
+            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil, automations: true).asks.map(\.id),
+                           [fromRun])
+        }
+    }
+
     func testReplacementsMapASupersededAskToItsNewRound() throws {
         try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)

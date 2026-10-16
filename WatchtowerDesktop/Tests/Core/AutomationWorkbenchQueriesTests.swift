@@ -218,14 +218,21 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
         let queue = try TestDatabase.create()
         let (asks, run) = try queue.write { db -> ([Int64], Int64) in
             let p = try TestDatabase.insertWorkbench(db)
+            let other = try TestDatabase.insertAutomation(db, slug: "other", name: "Other", workbenchID: p)
+            try TestDatabase.insertAutomationRun(db, automationID: other, status: "succeeded")
             let a = try TestDatabase.insertAutomation(db, slug: "review", name: "Nightly review", workbenchID: p)
+            // The automation's first run, but not run 1: the label carries the
+            // run id, as Go's runLabel and the Inbox's run labels do.
             let run = try TestDatabase.insertAutomationRun(db, automationID: a, status: "waiting", waitingReason: "ask")
             let fromRun = try TestDatabase.insertOwnerAsk(db, projectID: p, automationRunID: run)
             let fromAgent = try TestDatabase.insertOwnerAsk(db, projectID: p)
             return ([fromRun, fromAgent, 999], run)
         }
+        XCTAssertNotEqual(run, 1)
         XCTAssertEqual(try queue.read { try AutomationQueries.askLabels($0, askIDs: asks) },
                        [asks[0]: "⚙ Nightly review · run #\(run)"])
+        XCTAssertEqual(try queue.read { try AutomationQueries.runLabels($0, runIDs: [run]) },
+                       [run: "⚙ Nightly review · run #\(run)"], "the same label as the Inbox's")
         XCTAssertEqual(try queue.read { try AutomationQueries.askLabels($0, askIDs: []) }, [:])
     }
 }

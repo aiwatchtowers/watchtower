@@ -126,10 +126,11 @@ final class OwnerAsksViewModel {
     static let defaultDrawerWidth: Double = 440
 
     /// One session's closed list, or (`sessionID` nil) the asks filed from
-    /// outside the app.
+    /// outside the app — with `automations`, the automation runs' asks.
     struct ClosedListKey: Hashable {
         let projectID: Int64
         let sessionID: Int64?
+        var automations = false
     }
 
     /// Never written to the DB; answering is what persists a draft.
@@ -155,8 +156,12 @@ final class OwnerAsksViewModel {
     /// Each workbench's closed asks per session (nil = outside the app), as
     /// the session rows count them.
     private(set) var closedCounts: [Int64: [Int64?: Int]] = [:]
+    /// Each workbench's closed automation asks, as the stack's automations
+    /// line counts them (`OwnerAskQueries.closedAutomationCount`).
+    private(set) var closedAutomationCounts: [Int64: Int] = [:]
     /// Each workbench's automation asks → "⚙ <automation> · run #N"
-    /// (`AutomationQueries.askLabels`), as last read.
+    /// (`AutomationQueries.askLabels`) — the open ones, the drawer's and
+    /// those of the automations' closed list — as last read.
     private(set) var automationLabels: [Int64: [Int64: String]] = [:]
     /// Each workbench's superseded ask id → the round that replaced it.
     private(set) var replacements: [Int64: [Int64: Int64]] = [:]
@@ -279,6 +284,7 @@ final class OwnerAsksViewModel {
         let open: OwnerAskRows
         let fingerprint: String
         let closedCounts: [Int64?: Int]
+        let closedAutomationCount: Int
         let replacements: [Int64: Int64]
         /// The drawer's ask when it is no longer open.
         let shown: OwnerAsk?
@@ -287,17 +293,20 @@ final class OwnerAsksViewModel {
 
     func load(projectID: Int64) async {
         let drawerID = drawerAskIDs[projectID]
+        let closedAutomationAsks = closedLists[ClosedListKey(projectID: projectID, sessionID: nil, automations: true)] ?? []
         do {
             let snapshot = try await dbPool.read { db in
                 let open = try OwnerAskQueries.openAsks(db, projectID: projectID)
                 let shown = try drawerID.flatMap { id in
                     open.asks.contains { $0.id == id } ? nil : try OwnerAskQueries.ask(db, id: id, projectID: projectID)
                 }
-                let automationAsks = (open.asks + [shown].compactMap(\.self)).filter { $0.automationRunID != nil }
+                let automationAsks = (open.asks + [shown].compactMap(\.self) + closedAutomationAsks)
+                    .filter { $0.automationRunID != nil }
                 return Snapshot(
                     open: open,
                     fingerprint: try Self.fingerprint(db, projectID: projectID),
                     closedCounts: try OwnerAskQueries.closedCounts(db, projectID: projectID),
+                    closedAutomationCount: try OwnerAskQueries.closedAutomationCount(db, projectID: projectID),
                     replacements: try OwnerAskQueries.replacements(db, projectID: projectID),
                     shown: shown,
                     automationLabels: try AutomationQueries.askLabels(db, askIDs: automationAsks.map(\.id))
@@ -307,6 +316,7 @@ final class OwnerAsksViewModel {
             openAsks[projectID] = snapshot.open.asks
             fingerprints[projectID] = snapshot.fingerprint
             closedCounts[projectID] = snapshot.closedCounts
+            closedAutomationCounts[projectID] = snapshot.closedAutomationCount
             replacements[projectID] = snapshot.replacements
             automationLabels[projectID] = snapshot.automationLabels
             if let shown = snapshot.shown { shownAsks[shown.id] = shown }
@@ -378,21 +388,29 @@ final class OwnerAsksViewModel {
         try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID)?.docSnapshot }
     }
 
-    /// A session's (nil: outside the app) answered, delivered and withdrawn
-    /// asks, newest first, for its "N closed" list.
-    func loadClosed(projectID: Int64, sessionID: Int64?) async {
-        let key = ClosedListKey(projectID: projectID, sessionID: sessionID)
+    /// A session's (nil: outside the app; with `automations`, the automation
+    /// runs') answered, delivered and withdrawn asks, newest first, for its
+    /// "N closed" list.
+    func loadClosed(projectID: Int64, sessionID: Int64?, automations: Bool = false) async {
+        let key = ClosedListKey(projectID: projectID, sessionID: sessionID, automations: automations)
         do {
             // The counts come with the list, so "N closed" matches what it opens.
-            let (asks, replaced, counts) = try await dbPool.read { db in
-                (try OwnerAskQueries.closedAsks(db, projectID: projectID, sessionID: sessionID),
-                 try OwnerAskQueries.replacements(db, projectID: projectID),
-                 try OwnerAskQueries.closedCounts(db, projectID: projectID))
+            let read = try await dbPool.read { db in
+                let asks = try OwnerAskQueries.closedAsks(db, projectID: projectID, sessionID: sessionID,
+                                                          automations: automations)
+                return (asks: asks,
+                        replaced: try OwnerAskQueries.replacements(db, projectID: projectID),
+                        counts: try OwnerAskQueries.closedCounts(db, projectID: projectID),
+                        automationCount: try OwnerAskQueries.closedAutomationCount(db, projectID: projectID),
+                        labels: try AutomationQueries.askLabels(
+                            db, askIDs: asks.asks.filter { $0.automationRunID != nil }.map(\.id)))
             }
-            closedLists[key] = asks.asks
-            replacements[projectID] = replaced
-            closedCounts[projectID] = counts
-            closedErrors[key] = asks.problem
+            closedLists[key] = read.asks.asks
+            replacements[projectID] = read.replaced
+            closedCounts[projectID] = read.counts
+            closedAutomationCounts[projectID] = read.automationCount
+            automationLabels[projectID, default: [:]].merge(read.labels) { $1 }
+            closedErrors[key] = read.asks.problem
         } catch {
             closedErrors[key] = "Could not load the closed asks: \(error.localizedDescription)"
         }

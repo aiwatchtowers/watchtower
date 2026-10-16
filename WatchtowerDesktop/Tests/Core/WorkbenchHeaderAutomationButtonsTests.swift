@@ -108,7 +108,7 @@ final class WorkbenchHeaderAutomationButtonsTests: XCTestCase {
         let cases: [(AutomationHeaderButton, Model.Action, Bool, String?)] = [
             (button(confirm: true), .confirmThenRun(label: "Deploy"), false, nil),
             (button(), .run, false, nil),
-            (button(activeRunID: 42), .openRun(42), false, nil),
+            (button(activeRunID: 42), .openRun(42), false, "Running — show the run"),
             (button(state: .needsConfirmation), .openConfirmSheet, true, "Needs your confirmation"),
             (button(state: .disabled), .openCard, true, "Disabled"),
             (button(state: .parseError), .openCard, true, "Parse error")
@@ -117,6 +117,16 @@ final class WorkbenchHeaderAutomationButtonsTests: XCTestCase {
             XCTAssertEqual(Model.action(for: b), action, "\(b.state)")
             XCTAssertEqual(Model.isDimmed(b), dimmed, "\(b.state)")
             XCTAssertEqual(Model.help(for: b), help, "\(b.state)")
+        }
+    }
+
+    /// An active run wins the help text as it wins the click, in any state:
+    /// the help says what the click does.
+    func testActiveRunHelpWinsOverState() {
+        for state in [AutomationHeaderButton.State.runnable, .needsConfirmation, .disabled, .parseError] {
+            let b = button(state: state, activeRunID: 7)
+            XCTAssertEqual(Model.action(for: b), .openRun(7), "\(state)")
+            XCTAssertEqual(Model.help(for: b), "Running — show the run", "\(state)")
         }
     }
 

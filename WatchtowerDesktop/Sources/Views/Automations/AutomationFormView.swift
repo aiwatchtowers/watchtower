@@ -514,9 +514,7 @@ private struct AutomationFormContent: View {
                 Text("Script")
                     .font(.headline)
                 Spacer()
-                // Off for a workbench recipe, as on its card
-                // (`AutomationCardPresentation.changeInWordsHelp`).
-                if let onChangeInWords, form.detail.scope == "personal" {
+                if let onChangeInWords {
                     Button("Change it in words instead") { onChangeInWords(id) }
                         .buttonStyle(.link)
                 }

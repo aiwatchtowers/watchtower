@@ -44,9 +44,12 @@ package enum WorkbenchAutomationButtonsModel {
         button.state != .runnable
     }
 
-    /// Why a button is dimmed; nil for a runnable one.
+    /// What a click does instead of a run, or why the button is dimmed; nil
+    /// for a runnable one (the view says "Run <label>"). An active run wins,
+    /// as it does in `action(for:)`.
     package static func help(for button: AutomationHeaderButton) -> String? {
-        switch button.state {
+        if button.activeRunID != nil { return "Running — show the run" }
+        return switch button.state {
         case .runnable: nil
         case .needsConfirmation: "Needs your confirmation"
         case .disabled: "Disabled"

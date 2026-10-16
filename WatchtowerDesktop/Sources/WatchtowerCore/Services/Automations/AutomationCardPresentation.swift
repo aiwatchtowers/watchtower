@@ -261,20 +261,6 @@ package enum AutomationCardPresentation {
         }
     }
 
-    package static let workbenchChangeInWordsHelp =
-        "Workbench automations are changed in words from the workbench (coming in a later update)"
-
-    /// Why **Change in words** is off for `automation`; nil when it is on.
-    /// A workbench recipe stays off here: `save_automation` saves workbench
-    /// recipes since P5 part 2 (R-P3-5 lifted), but the editor chat is the
-    /// Automations tab's, not the workbench's, and the edit form is where a
-    /// workbench recipe is changed for now. The provider's own reason
-    /// (`providerHelp`, ollama) applies to every recipe.
-    package static func changeInWordsHelp(for automation: Automation, providerHelp: String?) -> String? {
-        if automation.scope == .workbench { return workbenchChangeInWordsHelp }
-        return providerHelp
-    }
-
     /// Run now and Dry run for the card. Run now follows Go's `Runnable()`
     /// (the CLI refuses anything else, `notRunnableReason`); Dry run is the
     /// owner's click and works for an unconfirmed or disabled recipe (ask #271).

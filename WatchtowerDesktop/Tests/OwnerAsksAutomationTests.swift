@@ -211,4 +211,27 @@ final class OwnerAsksAutomationTests: XCTestCase {
         XCTAssertEqual(wakes, 0, "an agent's ask wakes no automation")
         XCTAssertEqual(vm.asks.noticeText(.delivered(.submitted), ask: ask), OwnerAsksViewModel.answerSentNote)
     }
+
+    /// A closed automation ask is not one "Outside the app": it counts and
+    /// lists under the automations' line, its row named by its run.
+    func testClosedAutomationAskNamesItsRun() async throws {
+        let s = try await seed()
+        let outside = try await pool.write { d in
+            try d.execute(sql: "UPDATE owner_asks SET status = 'answered', answer = '{}' WHERE id = ?",
+                          arguments: [s.automationAsk])
+            return try TestDatabase.insertOwnerAsk(d, projectID: s.project, status: "answered", answer: "{}")
+        }
+        let vm = makeVM()
+        await vm.asks.load(projectID: s.project)
+        XCTAssertEqual(vm.asks.closedCounts[s.project]?[nil], 1, "only the ask filed outside the app")
+        XCTAssertEqual(vm.asks.closedAutomationCounts[s.project], 1)
+
+        await vm.asks.loadClosed(projectID: s.project, sessionID: nil)
+        XCTAssertEqual(vm.asks.closedLists[.init(projectID: s.project, sessionID: nil)]?.map(\.id), [outside])
+        await vm.asks.loadClosed(projectID: s.project, sessionID: nil, automations: true)
+        let closed = try XCTUnwrap(vm.asks.closedLists[.init(projectID: s.project, sessionID: nil, automations: true)])
+        XCTAssertEqual(closed.map(\.id), [s.automationAsk])
+        XCTAssertEqual(vm.asks.automationLabel(closed[0]), "⚙ Release check · run #\(s.run)")
+        XCTAssertEqual(vm.askSessionTitle(closed[0]), "⚙ Release check · run #\(s.run)")
+    }
 }

@@ -40,7 +40,7 @@ struct WorkbenchAutomationButtons: View {
             }
             .alert(
                 "Could not run \(failure?.label ?? "the automation")",
-                isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })
+                isPresented: Binding(get: { failure != nil }, set: { if !$0 { dismissFailure(vm) } })
             ) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -68,7 +68,7 @@ struct WorkbenchAutomationButtons: View {
         .opacity(WorkbenchAutomationButtonsModel.isDimmed(button) ? 0.6 : 1)
         // The run call in flight: a second click would only be refused.
         .disabled(busy)
-        .help(WorkbenchAutomationButtonsModel.help(for: button) ?? helpText(button))
+        .help(WorkbenchAutomationButtonsModel.help(for: button) ?? "Run \(button.label)")
     }
 
     private func overflowMenu(_ buttons: [AutomationHeaderButton], vm: AutomationsViewModel) -> some View {
@@ -89,8 +89,11 @@ struct WorkbenchAutomationButtons: View {
         .help("More automations of this workbench")
     }
 
-    private func helpText(_ button: AutomationHeaderButton) -> String {
-        button.activeRunID != nil ? "Running — show the run" : "Run \(button.label)"
+    /// The alert showed `vm.lastError`; dismissing it clears it, so the
+    /// Automations tab does not show the same failure again.
+    private func dismissFailure(_ vm: AutomationsViewModel) {
+        failure = nil
+        vm.lastError = nil
     }
 
     private func click(

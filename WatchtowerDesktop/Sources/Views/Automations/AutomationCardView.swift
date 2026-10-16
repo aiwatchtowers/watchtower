@@ -140,11 +140,9 @@ struct AutomationCardView: View {
             .disabled(!buttons.dryRun.enabled || isBusy)
             .help(buttons.dryRun.help ?? "")
 
-            let wordsHelp = AutomationCardPresentation.changeInWordsHelp(
-                for: automation, providerHelp: actions.changeInWordsDisabledHelp)
             Button("Change in words") { actions.onChangeInWords?(automation.id) }
-                .disabled(actions.onChangeInWords == nil || automation.scope == .workbench)
-                .help(wordsHelp ?? "")
+                .disabled(actions.onChangeInWords == nil)
+                .help(actions.changeInWordsDisabledHelp ?? "")
             Button("Edit") { actions.onEdit?(automation.id) }
                 .disabled(actions.onEdit == nil)
 
