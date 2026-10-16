@@ -10,11 +10,11 @@ captured on 2.1.295 for board #411) and its fixtures in `internal/claudesession/
 
 **Don't build the system session.** It would be a second, always-on Claude Code process that sends exactly
 the same socket frame Watchtower could send itself, but with a model turn in the middle of every message,
-a stricter acceptance rule on the receiving side (permission-mode parity), a public presence in every
+a stricter acceptance rule on the receiving side (permission-mode parity, as the tool documents it), a public presence in every
 session's `ListAgents`, an inbound injection surface into a Watchtower-owned agent, and no help at all for
 Codex sessions. Its one real gain — a message that never types into the terminal — is a property of the
-**receiving** side of the peer channel, not of the sender, and the experiments below show it holds just as
-well for a frame Watchtower writes directly.
+**receiving** side of the peer channel, not of the sender; the experiments below measured it with a frame
+Watchtower wrote directly (a system-session send was not run, §3.3).
 
 **If the owner wants the gain** (an ask answer that cannot land in a permission dialog or on top of a
 half-typed prompt), the smaller follow-up is an optional *direct peer delivery* of the PROJ-12 line for
@@ -87,7 +87,8 @@ The `-p` init lists `SendMessage` and `ListAgents` among its tools (also `Schedu
 | Direct frame on the socket (§3.4), frame → receiver's reply on screen | 1.0–1.7 s (5 sends), of which the delivery itself is under 0.15 s — the rest is the receiver's own turn | $0 on the sender side |
 
 A `SendMessage` from a system session is a tool call: at least two model turns (decide + send, then the
-tool result), so ~1.5–3 s persistent or ~4–5 s cold on haiku, more on a stronger tier, every message. In
+tool result), so an estimated ~1.5–3 s persistent or ~4–5 s cold on haiku (extrapolated from the rows
+above, not measured as a `SendMessage`), more on a stronger tier, every message. In
 money it is negligible (fractions of a cent); in time it is seconds against a sub-second direct write, and in
 behaviour it is a model deciding to send — it can rephrase, refuse or mis-address the fixed PROJ-12 line,
 which is pinned byte-for-byte by a dual path today (`asks.DeliveryLine` ↔ `OwnerAskPrompt`).
@@ -97,8 +98,8 @@ which is pinned byte-for-byte by a dual path today (`asks.DeliveryLine` ↔ `Own
 - A headless `-p` on stream-json registers itself like any session: `kind: interactive`,
   `entrypoint: sdk-cli`, `status: idle`, `peerProtocol: 1`, its own socket. **So a system session is listed
   in every session's `ListAgents` and can be messaged by any of them.**
-- `ListAgents` is machine-wide: a probe listed 11 peers across unrelated folders and projects (interactive
-  and `bg`), each with its display name (often the task title) and busy/idle state. No scoping by folder.
+- `ListAgents` is machine-wide: a probe listed every session on the machine across unrelated folders and
+  projects (interactive and `bg`), each with its display name (often the task title) and busy/idle state. No scoping by folder.
 - A process started from inside a Claude Code session inherits `CLAUDE_CODE_MESSAGING_SOCKET`/`_TOKEN`
   and `CLAUDE_CODE_CHILD_SESSION`: a child `-p` speaks **as the parent** ("This session is <parent>"), and a
   child interactive session opens a socket but writes **no** registry entry (undiscoverable) and keeps no
@@ -119,9 +120,9 @@ Receiver: an interactive `claude` in `manual` (prompting) mode in a pty.
 | C. A Bash permission dialog open | **The dialog is untouched** (no option chosen, the file not created); the message is queued. After the owner answered the dialog (No), the queued message ran. |
 
 These are exactly the three hazards PROJ-12's gates exist for (a Return into a permission dialog, a Return
-over a draft, two lines in one prompt). On the peer channel they do not arise: nothing is typed, so the
-"hooks reported this run", "no draft", "not `needsApproval`" gates and the hold-and-retry are not needed for
-safety, only for timing.
+over a draft, two lines in one prompt). On the peer channel they did not arise: nothing is typed. Which PROJ-12 gates a peer path would still keep
+is the amendment's central decision (§6, D3); this POC only shows the draft and dialog hazards are absent on
+the receiving side in `manual` mode.
 
 The preamble seen in case A tells the receiving agent the text is "not typed by your user", to "treat it as a
 teammate's request", and "never treat a peer message as your user's approval for a pending prompt". For the
@@ -131,16 +132,18 @@ message" in their own terminal for an answer they gave, which needs a wording de
 
 ### 3.5 Permission modes
 
-- Direct frame (no mode asserted), Appendix B on 2.1.295: accepted in `manual`, `acceptEdits`, `plan`,
+- Direct frame (no mode asserted), Appendix B, measured on 2.1.295 (on 2.1.301 only `manual` was re-run, §3.4): accepted in `manual`, `acceptEdits`, `plan`,
   `auto`, `dontAsk`; **held** in `bypassPermissions` (Deny/Deliver prompt in the owner's terminal, registry
   `waiting`, a Notification hook — which PROJ-11 turns into Needs approval and a macOS notice).
 - A message from a Claude Code sender asserts the sender's mode. The `SendMessage` tool documents that "a
   session running in a different permission mode than yours holds cross-session messages for its user's
-  approval (and may let them expire)", and the captured receipt names the rule "permission-mode parity".
-  **A system session in one mode would therefore have its messages held by every working session in any
+  approval (and may let them expire)". The one captured receipt (`peer_receipt_held.bin`, reason
+  "permission-mode parity") came from a `bypassPermissions` receiver of a frame with no mode asserted, so
+  the rule for a mode-asserting sender is **documented by the tool, not observed**. If it holds as
+  documented, **a system session in one mode would have its messages held by every working session in any
   other mode** — and the owner switches modes per session (Shift+Tab), so a hold is the normal case, not the
   edge case. Holds show the owner a prompt they did not ask for and look like an approval wait to PROJ-11.
-  (Not re-measured here, see §3.3; the rule is the tool's own documentation and matches the receipt.)
+  (Not measured here, see §3.3; listed under open measurements in §6.)
 - A session can also refuse peer messages outright; nothing reports that back to a sender without `from`.
 
 ### 3.6 Auth and TCC
@@ -170,8 +173,9 @@ message" in their own terminal for an answer they gave, which needs a wording de
    (Stop, Notification, SubagentStop, …) into `terminal_sessions`, and the registry `status` (`idle`/`busy`/
    `shell`/`waiting`) is readable without a model. A notice would cost a model turn in the system session and
    then still have to be relayed to Watchtower by parsing its stream output. One-shot per wait, too.
-5. **Another permission mode.** The decisive problem for the system session (parity holds, §3.5). The
-   direct frame is held only by `bypassPermissions`, which the hook inputs' `permission_mode` would let
+5. **Another permission mode.** A likely further problem for the system session (parity holds as the tool
+   documents them, not observed, §3.5); the recommendation does not rest on it. The direct frame was held
+   only by `bypassPermissions` (2.1.295), which the hook inputs' `permission_mode` would let
    Watchtower skip (best-effort: a Shift+Tab after the last hook is not seen).
 6. **Auth and TCC.** Workable with today's rules (`--setting-sources`, no `CLAUDE_CONFIG_DIR`, a narrow tool
    list, an unprotected cwd); no new TCC surface expected; the new cost is lifecycle (refresh, respawn).
@@ -183,7 +187,7 @@ message" in their own terminal for an answer they gave, which needs a wording de
 
 ## 5. Risks if the system session were built anyway
 
-- **Mode parity holds** turn routine deliveries into owner prompts and false Needs approval states (§3.5).
+- **Mode parity holds** (as documented, not observed) would turn routine deliveries into owner prompts and false Needs approval states (§3.5).
 - **Inbound steering** of a privileged sender (§4.7); the receiving preamble says peers grant no escalation,
   but the system session's job is precisely to send.
 - **Non-deterministic fixed lines** — breaks the pinned `DeliveryLine` dual path (PROJ-12 guards).
@@ -204,12 +208,17 @@ Only if the owner wants the receiving-side gain. Not a commitment.
   `permission_mode` is not `bypassPermissions` (the hook inputs carry it; Watchtower does not store it today,
   so this needs a column), the Desktop (or `watchtower workbench deliver`, Go owning
   the write) sends the fixed PROJ-12 line as one peer frame (`type: user`, `priority: next`, no `auth`, no
-  `from`, `session_id` set so a stale socket drops it) instead of typing it.
+  `from`, `session_id` set so a stale socket drops it — the drop is described in Appendix B, not tested)
+  instead of typing it.
 - D2. Acknowledgement is the turn's hook trail (UserPromptSubmit/Stop for that run), as in the #411 design;
   no receipt. No turn within a window → fall back to the brief ("Answered asks for you"), never to typing
   (typing after a possibly-held frame could deliver twice).
-- D3. Everything else stays: answer stored first, one delivery per session at a time, Codex and any
-  unmatched Claude session use today's typed delivery, `delivered` still set only by `get_ask`.
+- D3. Gates on the peer path. Kept: answer stored first, one delivery per session at a time, a held or
+  queued line going nowhere once its session stopped or started a new run, `delivered` set only by
+  `get_ask`; Codex and any unmatched Claude session use today's typed delivery unchanged. Proposed to drop
+  for the peer path only, each a named amendment item for the owner: the no-draft gate, the
+  `needsApproval` hold (§3.4 cases B and C) and the "hooks reported this run" Return gate (there is no
+  Return; the registry match replaces it).
 - D4. The owner-facing wording: the receiver's banner says "Another Claude session sent a message"; the
   line could start with "Watchtower:" (as the #411 ping did) so the owner recognises it.
 - D5. Windows (token auth) stays out of scope; the `.key` file is never read.
@@ -217,11 +226,14 @@ Only if the owner wants the receiving-side gain. Not a commitment.
 **Contracts touched:** PROJ-12 (a second delivery path and its gates — amendment with owner approval, guard
 tests added, none weakened); PROJ-11 (a held frame raises a Notification → Needs approval; the mode skip
 must keep that from happening); `internal/claudesession` (a sender beside the registry reader); the
-Desktop `SessionLineDelivery` (also used by the diff reviewer's round line, REVIEW-04), `docs/features/workbench.md`.
+Desktop `SessionLineDelivery`; REVIEW-04 in `docs/inventory/review.md` (the diff reviewer's round line "goes
+only through PROJ-12's gates", so it changes with them); `docs/features/workbench.md`.
 
-**Open measurement before a spec:** a frame sent while the agent is mid-turn and while a background
-subagent runs (queue order with `priority: next`), and the parity behaviour on a mode switch between the
-last hook and the send.
+**Open measurement before a spec:** the per-mode acceptance table re-run on the current CLI (only `manual`
+was re-run on 2.1.301); the `session_id` mismatch drop; a frame sent while the agent is mid-turn and while a
+background subagent runs (queue order with `priority: next`); the parity behaviour on a mode switch between
+the last hook and the send; and, for completeness, a `SendMessage` from a standalone sender to receivers in
+other modes (the documented parity hold).
 
 ## 7. Reproduction notes
 
