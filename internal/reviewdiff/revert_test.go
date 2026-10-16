@@ -336,3 +336,67 @@ func TestRevertHunk_OddPathRoundTrips(t *testing.T) {
 		t.Fatalf("content = %q", got)
 	}
 }
+
+// A workbench bound to a subfolder: the round's paths are top-relative, so
+// Undo runs from the repository top — inside the subfolder and outside it.
+func TestRevertHunk_FromASubfolderWorksAtTheTop(t *testing.T) {
+	dir := newRepo(t)
+	commitFile(t, dir, "sub/in.txt", "in\n")
+	commitFile(t, dir, "out.txt", "out\n")
+	commitFile(t, dir, "gone.txt", "gone\n")
+	writeFile(t, dir, "sub/in.txt", "IN\n")
+	writeFile(t, dir, "out.txt", "OUT\n")
+	if err := os.Remove(filepath.Join(dir, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	d := roundDiff(t, openRepo(t, dir), dir) // the round's diff, from the top
+	sub, err := Open(filepath.Join(dir, "sub"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"sub/in.txt": "in\n", "out.txt": "out\n", "gone.txt": "gone\n"} {
+		f := fileOf(t, d, path)
+		if _, err := sub.RevertHunk(context.Background(), d, f.Hunks[0].ID); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if got := readFile(t, dir, path); got != want {
+			t.Fatalf("%s = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// A parent swapped for a symlink never lets apply reach outside the repository.
+func TestRevertHunk_RefusesASymlinkedParent(t *testing.T) {
+	dir := newRepo(t)
+	commitFile(t, dir, "p/f.txt", "keep\n")
+	commitFile(t, dir, "q/g.txt", "g\n")
+	if err := os.Remove(filepath.Join(dir, "p", "f.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "q/g.txt", "G\n")
+	r := openRepo(t, dir)
+	d := roundDiff(t, r, dir)
+	outside := t.TempDir()
+	writeFile(t, outside, "g.txt", "G\n")
+	for _, p := range []string{"p", "q"} {
+		if err := os.RemoveAll(filepath.Join(dir, p)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{"p/f.txt", "q/g.txt"} {
+		f := fileOf(t, d, path)
+		_, err := r.RevertHunk(context.Background(), d, f.Hunks[0].ID)
+		if got := refusal(t, err); got != "undo is not available for a symlink file" {
+			t.Fatalf("%s refusal = %q", path, got)
+		}
+	}
+	if got := readFile(t, outside, "g.txt"); got != "G\n" {
+		t.Fatalf("outside file = %q", got)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "f.txt")); !os.IsNotExist(err) {
+		t.Fatalf("a file was written outside: %v", err)
+	}
+}

@@ -38,7 +38,17 @@ func (r *Repo) RevertHunk(ctx context.Context, d Diff, hunkID string) (Reverted,
 	if kind := undoUnsupported(f); kind != "" {
 		return Reverted{}, UndoRefused{"undo is not available for a " + kind + " file"}
 	}
-	if err := r.checkUnchanged(ctx, f); err != nil {
+	// The round's paths are top-relative and a workbench folder can be a
+	// subdirectory: from there apply skips a path outside it and exits 0.
+	out, err := r.git(ctx, nil, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return Reverted{}, err
+	}
+	top := strings.TrimSpace(string(out))
+	if err := checkParents(top, f.Path); err != nil {
+		return Reverted{}, err
+	}
+	if err := r.checkUnchanged(ctx, top, f); err != nil {
 		return Reverted{}, err
 	}
 	patch := HunkPatch(f, h)
@@ -51,14 +61,18 @@ func (r *Repo) RevertHunk(ctx context.Context, d Diff, hunkID string) (Reverted,
 	if err := os.WriteFile(file, []byte(patch), 0o600); err != nil {
 		return Reverted{}, err
 	}
+	// Accepted window: the agent-state read (the CLI's) and the blob check
+	// precede the apply, so a write landing in between is not seen here;
+	// apply --check -R and apply's own context check against the file bound
+	// what such a race can do to one hunk's lines.
 	// --whitespace=nowarn: a folder's apply.whitespace=fix would rewrite the lines.
-	if _, err := r.git(ctx, nil, "apply", "--check", "-R", "--whitespace=nowarn", file); err != nil {
+	if _, err := r.run(ctx, top, nil, r.bin, "apply", "--check", "-R", "--whitespace=nowarn", file); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Reverted{}, ctxErr
 		}
 		return Reverted{}, UndoRefused{"this hunk no longer applies to the file"}
 	}
-	if _, err := r.git(ctx, nil, "apply", "-R", "--whitespace=nowarn", file); err != nil {
+	if _, err := r.run(ctx, top, nil, r.bin, "apply", "-R", "--whitespace=nowarn", file); err != nil {
 		return Reverted{}, err
 	}
 	return Reverted{Path: f.Path, HunkID: h.ID, Header: h.Header, Patch: patch}, nil
@@ -94,10 +108,32 @@ func undoUnsupported(f File) string {
 	return ""
 }
 
+// checkParents refuses a path whose parent directory under top is a
+// symlink: apply -R could otherwise write or unlink outside the repository.
+// A missing parent is left to checkUnchanged.
+func checkParents(top, path string) error {
+	dir := top
+	parts := strings.Split(path, "/")
+	for _, p := range parts[:len(parts)-1] {
+		dir = filepath.Join(dir, p)
+		info, err := os.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return UndoRefused{"undo is not available for a symlink file"}
+		}
+	}
+	return nil
+}
+
 // checkUnchanged: a deleted file is still absent; any other is still a
-// regular file whose blob is the round tree's.
-func (r *Repo) checkUnchanged(ctx context.Context, f File) error {
-	info, err := os.Lstat(filepath.Join(r.dir, filepath.FromSlash(f.Path)))
+// regular file whose blob is the round tree's. path is top-relative.
+func (r *Repo) checkUnchanged(ctx context.Context, top string, f File) error {
+	info, err := os.Lstat(filepath.Join(top, filepath.FromSlash(f.Path)))
 	if f.Status == "deleted" {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -113,7 +149,7 @@ func (r *Repo) checkUnchanged(ctx context.Context, f File) error {
 	if err != nil {
 		return err
 	}
-	out, err := r.git(ctx, nil, "hash-object", "--", f.Path)
+	out, err := r.run(ctx, top, nil, r.bin, "hash-object", "--", f.Path)
 	if err != nil {
 		return err
 	}
