@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Migration 00125: per-workbench board columns inside the status categories
+// Migration 00126: per-workbench board columns inside the status categories
 // (PROJ-19, board #267). Triggers keep a target's column inside its
 // workbench and its current status; column moves write no status history.
 
@@ -372,7 +372,7 @@ func TestGetWorkbenchBoard_ColumnOnLeavesOnly(t *testing.T) {
 	assert.Equal(t, map[int64]string{parent: "", inCode: "Code", inTodo: "Backlog"}, columnsOf())
 }
 
-func TestMigration00125_DownUp(t *testing.T) {
+func TestMigration00126_DownUp(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "cols.db"))
 	require.NoError(t, err)
 	defer d.Close()
