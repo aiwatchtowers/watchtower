@@ -14,7 +14,7 @@ import (
 	"watchtower/internal/tools"
 )
 
-// newWorkbenchSaveFixture is newSaveFixture with Backends().Workbench the
+// newWorkbenchSaveFixture is newSaveFixture with Deps.Workbench the
 // real resolver over a workbench whose folder is a fresh (resolved) temp dir.
 func newWorkbenchSaveFixture(t *testing.T) (f *saveFixture, wbID int64, folder string) {
 	t.Helper()

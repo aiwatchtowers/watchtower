@@ -228,18 +228,11 @@ package final class AutomationsViewModel {
                 steps[runID] = try AutomationQueries.fetchSteps(db, runID: runID)
             }
             let items = try AutomationQueries.fetchList(db, now: now)
-            let buttonProjects = Set(items.compactMap { item in
-                item.automation.triggerKind == "button" ? item.automation.projectID : nil
-            })
-            var headerButtons: [Int64: [AutomationHeaderButton]] = [:]
-            for projectID in buttonProjects {
-                headerButtons[projectID] = try AutomationQueries.headerButtons(db, projectID: projectID)
-            }
             return Self(
                 items: items,
                 attentionCount: try AutomationQueries.attentionCount(db),
                 inboxOutputCount: try AutomationQueries.inboxOutputCount(db),
-                headerButtons: headerButtons,
+                headerButtons: AutomationQueries.headerButtonsByProject(items),
                 card: card,
                 steps: steps
             )

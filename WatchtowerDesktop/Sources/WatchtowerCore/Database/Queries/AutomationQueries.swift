@@ -247,13 +247,18 @@ package enum AutomationQueries {
         return (requests, unreadable)
     }
 
+    /// `terminal_sessions s` rows of run `?` that no step names.
+    private static let unattachedSessionsWhere = """
+        s.automation_run_id = ?
+          AND NOT EXISTS (SELECT 1 FROM automation_run_steps st WHERE st.session_id = s.id)
+        """
+
     /// A session of run `runID` that no step names: the app created it but
     /// did not attach it (a crash between the two), so it is adopted rather
     /// than a second one launched. The oldest such row.
     package static func unattachedSession(_ db: Database, runID: Int64) throws -> TerminalSession? {
         try TerminalSession.fetchOne(db, sql: """
-            SELECT * FROM terminal_sessions s WHERE s.automation_run_id = ?
-              AND NOT EXISTS (SELECT 1 FROM automation_run_steps st WHERE st.session_id = s.id)
+            SELECT * FROM terminal_sessions s WHERE \(unattachedSessionsWhere)
             ORDER BY s.id LIMIT 1
             """, arguments: [runID])
     }
@@ -265,8 +270,7 @@ package enum AutomationQueries {
     @discardableResult
     package static func disownUnattachedSessions(_ db: Database, runID: Int64) throws -> [Int64] {
         let ids = try Int64.fetchAll(db, sql: """
-            SELECT s.id FROM terminal_sessions s WHERE s.automation_run_id = ?
-              AND NOT EXISTS (SELECT 1 FROM automation_run_steps st WHERE st.session_id = s.id)
+            SELECT s.id FROM terminal_sessions s WHERE \(unattachedSessionsWhere)
             ORDER BY s.id
             """, arguments: [runID])
         guard !ids.isEmpty else { return [] }
@@ -321,13 +325,26 @@ package enum AutomationQueries {
             """, arguments: [projectID])
         guard !automations.isEmpty else { return [] }
         let active = try newestRunPerAutomation(db, active: true)
-        return automations.map { a in
-            let spec = try? JSONDecoder().decode(ButtonSpec.self, from: Data(a.triggerSpecJSON.utf8))
-            let label = spec?.button?.label.flatMap { $0.isEmpty ? nil : $0 } ?? (a.name.isEmpty ? a.slug : a.name)
-            return AutomationHeaderButton(
-                automationID: a.id, slug: a.slug, label: label, confirm: spec?.button?.confirm ?? false,
-                state: AutomationHeaderButton.state(of: a), activeRunID: active[a.id]?.id
-            )
-        }
+        return automations.map { headerButton($0, activeRunID: active[$0.id]?.id) }
+    }
+
+    /// The same buttons as `headerButtons(_:projectID:)` for every workbench
+    /// at once, built from the list's items (their active run included), so
+    /// a list read costs no query per workbench.
+    package static func headerButtonsByProject(_ items: [AutomationListItem]) -> [Int64: [AutomationHeaderButton]] {
+        let buttons = items.filter { $0.automation.scope == .workbench && $0.automation.triggerKind == "button" }
+            .sorted { ($0.automation.slug, $0.automation.id) < ($1.automation.slug, $1.automation.id) }
+        return Dictionary(grouping: buttons.compactMap { item in
+            item.automation.projectID.map { ($0, headerButton(item.automation, activeRunID: item.activeRun?.id)) }
+        }, by: \.0).mapValues { $0.map(\.1) }
+    }
+
+    private static func headerButton(_ a: Automation, activeRunID: Int64?) -> AutomationHeaderButton {
+        let spec = try? JSONDecoder().decode(ButtonSpec.self, from: Data(a.triggerSpecJSON.utf8))
+        let label = spec?.button?.label.flatMap { $0.isEmpty ? nil : $0 } ?? (a.name.isEmpty ? a.slug : a.name)
+        return AutomationHeaderButton(
+            automationID: a.id, slug: a.slug, label: label, confirm: spec?.button?.confirm ?? false,
+            state: AutomationHeaderButton.state(of: a), activeRunID: activeRunID
+        )
     }
 }

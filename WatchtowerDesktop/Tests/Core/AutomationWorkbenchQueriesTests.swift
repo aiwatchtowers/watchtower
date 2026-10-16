@@ -167,7 +167,7 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
         let button = { (label: String, confirm: Bool) in
             #"{"button":{"label":"\#(label)","confirm":\#(confirm)}}"#
         }
-        let (p, ids, active) = try queue.write { db -> (Int64, [String: Int64], Int64) in
+        let (p, other, ids, active) = try queue.write { db -> (Int64, Int64, [String: Int64], Int64) in
             let p = try TestDatabase.insertWorkbench(db)
             let other = try TestDatabase.insertWorkbench(db, name: "other", folder: "/tmp/other")
             var ids: [String: Int64] = [:]
@@ -196,9 +196,16 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
             let release = try XCTUnwrap(ids["release"])
             try TestDatabase.insertAutomationRun(db, automationID: release, status: "succeeded")
             let active = try TestDatabase.insertAutomationRun(db, automationID: release, status: "running")
-            return (p, ids, active)
+            return (p, other, ids, active)
         }
         let buttons = try queue.read { try AutomationQueries.headerButtons($0, projectID: p) }
+        // The list read's in-memory build gives the same buttons per workbench.
+        let byProject = try queue.read { db in
+            AutomationQueries.headerButtonsByProject(try AutomationQueries.fetchList(db, now: Date()))
+        }
+        XCTAssertEqual(Set(byProject.keys), [p, other], "the personal button recipe belongs to no workbench")
+        XCTAssertEqual(byProject[p], buttons)
+        XCTAssertEqual(byProject[other], try queue.read { try AutomationQueries.headerButtons($0, projectID: other) })
         let id = { (slug: String) throws -> Int64 in try XCTUnwrap(ids[slug]) }
         XCTAssertEqual(buttons, try [
             AutomationHeaderButton(automationID: id("broken"), slug: "broken", label: "Broken", confirm: false,
