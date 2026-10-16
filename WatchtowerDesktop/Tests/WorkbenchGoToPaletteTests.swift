@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 import SwiftUI
 import GRDB
@@ -379,6 +380,16 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(open.first { label($0) == "Hide Sessions Panel" }).isDisabled())
         XCTAssertFalse(try XCTUnwrap(open.first { label($0) == "Go to…" }).isDisabled())
         XCTAssertFalse(try XCTUnwrap(closed.first { label($0) == "Hide Sessions Panel" }).isDisabled())
+    }
+
+    /// The Workbench menu's chords act only with the page's window itself
+    /// key: no window, a panel (Open Quickly) or a sheet over it keeps them.
+    func testTheWorkbenchMenuActsOnlyWhileThePageWindowIsKey() {
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
+        let panel = NSPanel(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
+        XCTAssertTrue(WorkbenchCommands.pageTakesKeys(window))
+        XCTAssertFalse(WorkbenchCommands.pageTakesKeys(nil))
+        XCTAssertFalse(WorkbenchCommands.pageTakesKeys(panel))
     }
 
     /// The Workbench menu (issue #288): nothing that changes the page works

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WatchtowerCore
 
@@ -38,24 +39,38 @@ struct WorkbenchCommands: Commands {
     @FocusedValue(\.workbenchMenu) private var context
     let appState: AppState
 
+    /// The page's chords act only while its window itself is key: a sheet
+    /// or alert over it, or a panel (Open Quickly, a popover), keeps them —
+    /// as the title row's hidden buttons did. Checked when the chord fires:
+    /// the menu's enabled state is not re-read on key-window changes.
+    static func pageTakesKeys(_ keyWindow: NSWindow?) -> Bool {
+        guard let keyWindow else { return false }
+        return !keyWindow.isSheet && keyWindow.attachedSheet == nil && !(keyWindow is NSPanel)
+    }
+
+    private func onPage(_ action: (WorkbenchMenuContext) -> Void) {
+        guard let context, Self.pageTakesKeys(NSApp.keyWindow) else { return }
+        action(context)
+    }
+
     var body: some Commands {
         CommandMenu("Workbench") {
             Button("New Session") {
-                if let vm = context?.vm { Task { await vm.newSessionOnPage() } }
+                onPage { context in Task { await context.vm.newSessionOnPage() } }
             }
             .keyboardShortcut("t", modifiers: .command)
             .disabled(context?.canUseSessionKeys != true)
             // Inside the Files editor Monaco keeps ⌘K and ⌘[ (the page
             // consumes them before the menu sees them).
-            Button("Go to…") { context?.openGoTo() }
+            Button("Go to…") { onPage { $0.openGoTo() } }
                 .keyboardShortcut("k", modifiers: .command)
                 .disabled(context == nil)
             Button(context?.panelToggleTitle ?? "Show Sessions Panel") {
-                if let vm = context?.vm { vm.panelVisible.toggle() }
+                onPage { $0.vm.panelVisible.toggle() }
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
             .disabled(context?.canTogglePanel != true)
-            Button("Back to Workbenches") { context?.vm.showAllWorkbenches() }
+            Button("Back to Workbenches") { onPage { $0.vm.showAllWorkbenches() } }
                 .keyboardShortcut("[", modifiers: .command)
                 .disabled(context?.canGoBack != true)
             Divider()
@@ -73,7 +88,7 @@ struct WorkbenchCommands: Commands {
             Menu("Sessions") {
                 ForEach(1...SessionSwitcherPresentation.maxShortcut, id: \.self) { n in
                     Button("Session \(n)") {
-                        if let vm = context?.vm { Task { await vm.openSession(atShortcut: n) } }
+                        onPage { context in Task { await context.vm.openSession(atShortcut: n) } }
                     }
                     .keyboardShortcut(KeyEquivalent(Character(String(n))), modifiers: .command)
                     .disabled(context?.canUseSessionKeys != true)

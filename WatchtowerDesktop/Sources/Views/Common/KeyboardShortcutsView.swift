@@ -9,7 +9,7 @@ struct KeyboardShortcutsView: View {
     var body: some View {
         List {
             ForEach(KeyboardShortcutCatalog.areas) { area in
-                Section {
+                Section(area.title) {
                     if let note = area.note {
                         Text(note)
                             .font(.caption)
@@ -25,8 +25,6 @@ struct KeyboardShortcutsView: View {
                         }
                         .accessibilityElement(children: .combine)
                     }
-                } header: {
-                    Text(area.title)
                 }
             }
         }
