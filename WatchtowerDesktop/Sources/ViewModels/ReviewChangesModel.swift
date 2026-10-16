@@ -29,6 +29,7 @@ final class ReviewChangesModel {
     enum Load: Equatable { case idle, loading, failed(String), ready }
     enum View: Equatable { case all, sinceLastRound }
     enum Mode: String { case quick, deep }
+    enum OverviewState: Equatable { case idle, loading, ready(ReviewOverview), failed(String) }
 
     enum ModelError: Error, Equatable, LocalizedError {
         case noRound
@@ -85,7 +86,28 @@ final class ReviewChangesModel {
     /// The active seconds the round row holds.
     private var savedActiveSeconds = 0
 
-    var intentItems: [ReviewIntentItem] { ReviewWrapUp.intentItems(context) }
+    // The overview, the agent's notes, undo and answers (Plan 3).
+    private(set) var overview: OverviewState = .idle
+    /// The overview's load; awaited by tests, replaced when another one starts.
+    @ObservationIgnored private(set) var overviewTask: Task<Void, Never>?
+    /// The session's notes and chapters from the agent (`annotate_changes`).
+    private(set) var notes: [ReviewNote] = []
+    /// Where the selected file's notes sit on its new side; an unplaced note is absent.
+    private(set) var notePlacements: [Int64: ReviewCommentAnchor.Placement] = [:]
+    /// AI chapters arrived while the owner had checks in the shown chapters: kept until `useAIChapters()`.
+    private(set) var aiChaptersPending = false
+    private(set) var reverts: [ReviewRevert] = []
+    /// Comments the agent answered and resolved (previous and open round), each with Reopen.
+    private(set) var agentResolved: [ReviewComment] = []
+    /// The AI chapters in use (empty = none chosen yet).
+    private var appliedAIChapters: [ReviewChapterSpec] = []
+    /// The previous round's agent replies by comment id, for the carried copies.
+    private var sourceReplies: [Int64: String] = [:]
+
+    var intentItems: [ReviewIntentItem] {
+        guard case .ready(let ready) = overview else { return ReviewWrapUp.intentItems(context) }
+        return ReviewWrapUp.intentItems(context, coverage: ready.coverage.map { (item: $0.item, status: $0.status.rawValue) })
+    }
     var progress: ReviewProgress {
         ReviewProgress.make(files: files, chapters: chapters) { isViewed($0) }
     }
@@ -98,17 +120,32 @@ final class ReviewChangesModel {
     private let db: DatabasePool
     private let cli: WorkbenchCLI
     private let lineDelivery: any ReviewLineSink
+    private let isAgentWorking: @MainActor () -> Bool
 
     private struct Failure: Error { let message: String }
     private typealias Sides = (old: ReviewFileSide, new: ReviewFileSide)
 
-    init(projectID: Int64, sessionID: Int64, cli: WorkbenchCLI, db: DatabasePool, lineDelivery: any ReviewLineSink) {
+    /// `isAgentWorking`: the session is working or Agents working
+    /// (`agentWorkingKinds`); Undo is off meanwhile (REVIEW-02).
+    init(
+        projectID: Int64,
+        sessionID: Int64,
+        cli: WorkbenchCLI,
+        db: DatabasePool,
+        lineDelivery: any ReviewLineSink,
+        isAgentWorking: @escaping @MainActor () -> Bool
+    ) {
         self.projectID = projectID
         self.sessionID = sessionID
         self.cli = cli
         self.db = db
         self.lineDelivery = lineDelivery
+        self.isAgentWorking = isAgentWorking
     }
+
+    /// The session states in which the agent may still edit the folder.
+    static let agentWorkingKinds: Set<SessionSwitcherPresentation.State.Kind> = [.working, .background]
+    static let agentWorkingMessage = "The agent is working in this session — undo when it stops."
 
     /// A file's two sides as `review file` returned them for `path` on `treeSHA` in `view`.
     struct LoadedSides: Equatable {
@@ -168,20 +205,26 @@ final class ReviewChangesModel {
             pace = ReviewPace(activeSeconds: info.activeSeconds)
             breakHintDismissed = false
             savedActiveSeconds = info.activeSeconds
+            overviewTask?.cancel()
+            overview = .idle
+            aiChaptersPending = false
+            appliedAIChapters = []
+            try reloadNotes()
             try await loadDiff(info)
             let roundID = info.id
-            var rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
+            let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             var marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
             if rows.isEmpty, marks.isEmpty, info.prevRoundId > 0 {
                 try await carryOver(from: info.prevRoundId, into: info)
-                rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
                 marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
             }
-            comments = rows
+            try reloadComments()
             viewed = marks
             checks = try await db.read { try ReviewQueries.checks($0, roundID: roundID) }
+            try reloadReverts()
             load = .ready
             noteInteraction()
+            startOverview()
             // The next round after a Send keeps the file on screen: its sides come from the new tree.
             if selectedPath != nil { await reloadSides() }
         } catch {
@@ -218,13 +261,16 @@ final class ReviewChangesModel {
         do {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: true))
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
+            let treeChanged = round?.treeSha != info.treeSha
             round = info
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
             let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
             context = ctx.items ?? []
             lenses = ctx.lenses ?? []
             lensNotes = ctx.lensNotes ?? []
+            try reloadNotes()
             try await loadDiff(info)
+            if treeChanged { startOverview() }
             let roundID = info.id
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
@@ -241,6 +287,7 @@ final class ReviewChangesModel {
                 }
             }
             try reloadComments()
+            try reloadReverts()
             await reloadSides()
         } catch {
             lastError = Self.message(error)
@@ -393,10 +440,11 @@ final class ReviewChangesModel {
         if let first { await select(first) }
     }
 
-    /// Chapters from the current view's files, and a current chapter that
-    /// still exists (the first one otherwise); checks of a vanished chapter stay in the DB.
+    /// Chapters from the current view's files (the agent's, else the AI's in
+    /// use, else mechanical), and a current chapter that still exists (the
+    /// first one otherwise); checks of a vanished chapter stay in the DB.
     private func refreshChapters() {
-        chapters = ReviewChapters.mechanical(files)
+        chapters = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: appliedAIChapters)
         if let key = currentChapterKey, chapters.contains(where: { $0.key == key }) { return }
         currentChapterKey = chapters.first?.key
     }
@@ -467,6 +515,95 @@ final class ReviewChangesModel {
             }
             try reloadComments()
             try reloadChecks()
+        }
+    }
+
+    // MARK: - Overview and notes
+
+    /// Loads the AI overview of the open round; an answer for a round or tree
+    /// no longer shown is dropped. A failure keeps the chapters as they are.
+    func loadOverview() async {
+        guard let info = round else { return }
+        overview = .loading
+        aiChaptersPending = false
+        let state: OverviewState
+        do {
+            let env = try Self.checked(await cli.reviewOverview(projectID: projectID, roundID: info.id))
+            guard let ready = env.overview else { throw Failure(message: "The overview is missing from the answer.") }
+            state = .ready(ready)
+        } catch {
+            state = .failed(Self.message(error))
+        }
+        guard !Task.isCancelled, round?.id == info.id, round?.treeSha == info.treeSha else { return }
+        overview = state
+        if case .ready(let ready) = state { offerAIChapters(ready) }
+    }
+
+    func retryOverview() {
+        startOverview()
+    }
+
+    /// Switches to the AI chapters held back by `aiChaptersPending`.
+    func useAIChapters() {
+        guard case .ready(let ready) = overview else { return }
+        appliedAIChapters = Self.specs(ready)
+        aiChaptersPending = false
+        refreshChapters()
+    }
+
+    func risk(for path: String) -> ReviewOverview.Risk? {
+        guard case .ready(let ready) = overview else { return nil }
+        return ready.risk.first { $0.path == path }
+    }
+
+    /// Reading time of the shown diff's changed lines (generated and lock files excluded).
+    var estimateMinutes: Int {
+        ReviewChapters.estimateMinutes(changedLines: progress.totalLines)
+    }
+
+    // MARK: - Undo
+
+    var canUndo: Bool {
+        round?.status == "open" && !sending && !isAgentWorking()
+    }
+
+    /// Undoes one hunk of the shown diff in the work tree (Go checks the blob
+    /// and `apply --check -R`); refused here while the agent works.
+    func undo(hunkID: String) async {
+        guard !isAgentWorking() else {
+            lastError = Self.agentWorkingMessage
+            return
+        }
+        guard let info = round, info.status == "open", !sending else {
+            lastError = ModelError.roundClosed.errorDescription
+            return
+        }
+        lastError = nil
+        do {
+            _ = try Self.checked(await cli.reviewRevertHunk(projectID: projectID, roundID: info.id, hunkID: hunkID,
+                                                            since: view == .sinceLastRound))
+            try reloadReverts()
+        } catch {
+            lastError = Self.message(error)
+            return
+        }
+        await refresh()
+    }
+
+    // MARK: - The agent's answers
+
+    /// The reply shown under a comment: its own, else its source's (a carried copy).
+    func agentReply(for comment: ReviewComment) -> String {
+        guard comment.agentReply.isEmpty, let source = comment.carriedFrom else { return comment.agentReply }
+        return sourceReplies[source] ?? ""
+    }
+
+    /// Takes a comment the agent resolved back into the open round.
+    func reopen(_ id: Int64) throws {
+        try run {
+            let info = try openRound()
+            try writeInOpenRound { try ReviewQueries.reopen($0, commentID: id, openRoundID: info.id) }
+            try reloadComments()
         }
     }
 
@@ -549,7 +686,65 @@ final class ReviewChangesModel {
 
     private func reloadComments() throws {
         guard let info = round else { return }
-        comments = try db.read { try ReviewQueries.comments($0, roundID: info.id) }
+        let (rows, resolved, previous) = try db.read { db in
+            (try ReviewQueries.comments(db, roundID: info.id),
+             try ReviewQueries.agentResolved(db, previousRoundID: info.prevRoundId, openRoundID: info.id),
+             info.prevRoundId > 0 ? try ReviewQueries.comments(db, roundID: info.prevRoundId) : [])
+        }
+        comments = rows
+        agentResolved = resolved
+        sourceReplies = previous.reduce(into: [:]) { if !$1.agentReply.isEmpty { $0[$1.id] = $1.agentReply } }
+    }
+
+    private func reloadReverts() throws {
+        guard let info = round else { return }
+        reverts = try db.read { try ReviewQueries.reverts($0, roundID: info.id) }
+    }
+
+    private func reloadNotes() throws {
+        let (project, session) = (projectID, sessionID)
+        notes = try db.read { try ReviewQueries.notes($0, projectID: project, sessionID: session) }
+    }
+
+    private var agentChapterSpecs: [ReviewChapterSpec] {
+        notes.filter { $0.kind == .chapter }.map { ReviewChapterSpec(title: $0.text, paths: $0.paths, core: $0.core, lenses: nil) }
+    }
+
+    private static func specs(_ overview: ReviewOverview) -> [ReviewChapterSpec] {
+        overview.chapters.map { ReviewChapterSpec(title: $0.title, paths: $0.paths, core: $0.core, lenses: $0.lenses) }
+    }
+
+    /// Starts the overview's load, dropping the one running.
+    private func startOverview() {
+        overviewTask?.cancel()
+        overviewTask = Task { [weak self] in await self?.loadOverview() }
+    }
+
+    /// Switches to the overview's chapters, unless they would replace
+    /// chapters the owner already checked in the Chapters phase.
+    private func offerAIChapters(_ ready: ReviewOverview) {
+        let specs = Self.specs(ready)
+        let shown = Set(chapters.map(\.key))
+        let candidate = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: specs)
+        if candidate != chapters, phase == .chapters, checks.contains(where: { shown.contains($0.chapterKey) }) {
+            aiChaptersPending = true
+            return
+        }
+        appliedAIChapters = specs
+        refreshChapters()
+    }
+
+    /// Places the selected file's notes on its loaded new side.
+    private func placeNotes() {
+        guard let sides = currentSides else {
+            notePlacements = [:]
+            return
+        }
+        let mine = notes.filter { $0.kind == .note && $0.path == sides.path }
+        notePlacements = ReviewNotePlacement.place(
+            mine.map { (id: $0.id, quote: $0.quote, startLine: $0.startLine, endLine: $0.endLine, treeSHA: $0.treeSHA) },
+            currentTree: sides.treeSHA
+        ) { _ in sides.new.text }
     }
 
     private func loadDiff(_ info: ReviewRoundInfo) async throws {
@@ -575,6 +770,7 @@ final class ReviewChangesModel {
     /// Loads the sides of the selected file; a stale answer (another file or
     /// view picked meanwhile) is dropped.
     private func reloadSides() async {
+        defer { placeNotes() }
         guard let info = round, let path = selectedPath else {
             sides = nil
             return

@@ -241,7 +241,11 @@ extension WorkbenchesViewModel {
         guard let cli else { return nil }
         let model = ReviewChangesModel(
             projectID: projectID, sessionID: sessionID, cli: cli, db: dbPool, lineDelivery: lineDelivery
-        )
+        ) { [weak self] in
+            // The dot's state: a session that is not live does not work, whatever its last hook said.
+            guard let self, let session = self.session(sessionID, projectID: projectID) else { return false }
+            return ReviewChangesModel.agentWorkingKinds.contains(self.sessionState(session).kind)
+        }
         reviewModels[sessionID] = model
         return model
     }
