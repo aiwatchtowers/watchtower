@@ -1,12 +1,18 @@
 package cmd
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/automations"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -47,6 +53,11 @@ var (
 	mcpFlagChatProject  int64
 	mcpFlagWorkbench    int64
 	mcpFlagAgent        string
+	// mcpFlagAutomationRun / mcpFlagAutomationTools bind `--chat --surface
+	// automation` to one automation run's agent() call and the tools it asked
+	// for (mcpAutomationOptions).
+	mcpFlagAutomationRun   int64
+	mcpFlagAutomationTools []string
 	// mcpFlagWorkbenchLegacy reports an `mcp --project N` invocation: the
 	// registration a pre-rename install wrote, whose session lists the
 	// renamed workbench tools under their old names (spec 2026-10-02 §5.2).
@@ -57,13 +68,15 @@ func init() {
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.Flags().StringVar(&mcpFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 	mcpCmd.Flags().BoolVar(&mcpFlagChat, "chat", false, "assistant chat mode: mount write tools as proposals (never for external clients)")
-	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target")
+	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target|automation")
 	mcpCmd.Flags().Int64Var(&mcpFlagConversation, "conversation", 0, "chat conversation id for --chat")
 	mcpCmd.Flags().StringVar(&mcpFlagTurn, "turn", "", "turn id for --chat (proposals attach to it)")
 	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
 	mcpCmd.Flags().StringVar(&mcpFlagContextType, "context-type", "", "chat context type for --chat (e.g. target)")
 	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
 	mcpCmd.Flags().Int64Var(&mcpFlagChatProject, "chat-project", 0, "chat project for --chat: search_knowledge prefers its pinned sources")
+	mcpCmd.Flags().Int64Var(&mcpFlagAutomationRun, "automation-run", 0, "--surface automation: the running automation run whose agent() child this server serves")
+	mcpCmd.Flags().StringSliceVar(&mcpFlagAutomationTools, "automation-tools", nil, "--surface automation: the tools the agent() call asked for (comma-separated)")
 	mcpCmd.Flags().StringVar(&mcpFlagAgent, "agent", "", "workbench mode: the coding agent of the session (claude|codex); labels its comments when no terminal session names it")
 	mcpFlagWorkbenchLegacy = addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
@@ -89,6 +102,9 @@ func mcpTurnBinding(chatMode bool, turn, turnFile string) (string, func() string
 func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
 	if mcpFlagChatProject != 0 && !mcpFlagChat {
 		return nil, errors.New("--chat-project requires --chat")
+	}
+	if (mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil) && !mcpFlagChat {
+		return nil, errors.New("--automation-run and --automation-tools require --chat --surface automation")
 	}
 	if mcpFlagAgent != "" && mcpFlagWorkbench == 0 {
 		return nil, errors.New("--agent requires --workbench")
@@ -122,8 +138,11 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // mcpChatOptions is `watchtower mcp --chat`: the write-tool registry bound to
 // the chat surface, conversation, turn and context the flags name.
 func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
+	if mcpFlagSurface == tools.AutomationSurface || mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil {
+		return mcpAutomationOptions(cfg, database)
+	}
 	if mcpFlagSurface != "main" && mcpFlagSurface != "target" {
-		return nil, fmt.Errorf("--surface must be main or target")
+		return nil, fmt.Errorf("--surface must be main, target or automation")
 	}
 	if mcpFlagContextType == tools.AutomationContextType {
 		// Only the automations executor binds a run (Binding.AutomationRunID);
@@ -134,6 +153,71 @@ func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 		Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: turn, TurnIDFunc: turnFunc,
 		ContextType: mcpFlagContextType, ContextID: mcpFlagContextID, ChatProjectID: mcpFlagChatProject,
 	})}, nil
+}
+
+// mcpAutomationOptions is `watchtower mcp --chat --surface automation
+// --automation-run N --automation-tools a,b,c` (spec 2026-10-14 §6.5): the
+// server an automation's agent() claude/codex child talks to. It starts only
+// in that run's own child (RunEnvMarker = N, never a borrowed binding) while
+// run N is running. It mounts EffectiveAgentTools — the flag's tools ∩ what
+// the run's manifest admits ∩ the automation surface, no writes in a dry run
+// — plus get_action, shows get_action only the run's own rows, and passes
+// every call through GateAgentCall and every result through
+// CheckAgentResult. A write is a proposal stamped with the run, always
+// pending (AutomationAgent). The chat flags (--conversation, --turn,
+// --context-*) do not apply here.
+func mcpAutomationOptions(cfg *config.Config, database *db.DB) ([]internalmcp.ServerOption, error) {
+	runID := mcpFlagAutomationRun
+	switch {
+	case mcpFlagSurface != tools.AutomationSurface:
+		return nil, errors.New("--automation-run and --automation-tools require --surface automation")
+	case runID <= 0:
+		return nil, errors.New("--surface automation requires --automation-run N")
+	case os.Getenv(automations.RunEnvMarker) != strconv.FormatInt(runID, 10):
+		return nil, fmt.Errorf("--automation-run %d serves only that run's own agent (%s=%d)", runID, automations.RunEnvMarker, runID)
+	}
+	run, err := database.GetAutomationRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("automation run %d: %w", runID, err)
+	}
+	if run.Status != db.RunRunning {
+		return nil, fmt.Errorf("automation run %d is %s, not running", runID, run.Status)
+	}
+	a, err := database.GetAutomation(run.AutomationID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the automation of run %d: %w", runID, err)
+	}
+	r, err := automations.ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), automations.Scope{Kind: automations.ScopeKind(a.Scope), WorkbenchID: a.ProjectID})
+	if err != nil {
+		return nil, fmt.Errorf("automation run %d: the recipe does not parse: %w", runID, err)
+	}
+	m, err := automations.ParseManifest(r.Permissions, r.Outputs, r.Scope)
+	if err != nil {
+		return nil, fmt.Errorf("automation run %d: the permission manifest does not parse: %w", runID, err)
+	}
+	requested := []string{}
+	for _, name := range mcpFlagAutomationTools {
+		if name != "" {
+			requested = append(requested, name)
+		}
+	}
+	dryRun := run.Trigger == db.TriggerDryRun
+	reg := buildToolRegistry(cfg, database)
+	return []internalmcp.ServerOption{
+		internalmcp.WithRegistry(reg, tools.Binding{
+			Surface: tools.AutomationSurface, ContextType: tools.AutomationContextType, ContextID: strconv.FormatInt(runID, 10),
+			AutomationRunID: runID, WorkbenchID: a.ProjectID, AutomationAgent: true,
+		}),
+		// Computed per tool at mount time: the memory and skill tools join the
+		// registry inside NewServer, after these options are built.
+		internalmcp.WithToolFilter(func(t *tools.Tool) bool {
+			return slices.Contains(automations.EffectiveAgentTools(reg, m, requested, dryRun), t.Name)
+		}),
+		internalmcp.WithCallGate(func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error) {
+			return automations.GateAgentCall(ctx, database, m, runID, t, args)
+		}),
+		internalmcp.WithResultCheck(automations.CheckAgentResult),
+	}, nil
 }
 
 // mcpWorkbenchOptions is `watchtower mcp --workbench N` (DEV-06): the connection
@@ -219,7 +303,8 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	opts = append(opts, modeOpts...)
 	if cfg.Memory.Enabled {
 		opts = append(opts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))
-		if cfg.Memory.Retrieve.RecallCompare {
+		// An automation's reads write nothing: no recall shadow row (D23).
+		if cfg.Memory.Retrieve.RecallCompare && mcpFlagAutomationRun == 0 {
 			shadowDB, err := db.Open(dbPath)
 			if err != nil {
 				return fmt.Errorf("opening retrieve-compare shadow handle: %w", err)
