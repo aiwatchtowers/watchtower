@@ -10,7 +10,8 @@ outputs: [inbox]
 After each mail sync that brings new mail, sums up the new messages of every
 mailbox that got some and puts one summary per mailbox in your Inbox. The
 first run looks back one day; after that each mailbox remembers the newest
-message it summed up, so nothing is summed up twice.
+message it summed up, so nothing is summed up twice. A sync that brings one
+mailbox more than 200 new messages sums up the newest 200 and says so.
 
 To get one summary on a schedule instead, replace the trigger with, for
 example:
@@ -40,12 +41,17 @@ const since = state.get("since") || {};
 const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 let summed = 0;
 
+// list_emails' largest page. It lists the newest messages first, so a full
+// page of new mail may leave older new messages out.
+const limit = 200;
+
 for (const account of accounts) {
   const cursor = since[account];
-  const res = tool("list_emails", { account: account, since: cursor || dayAgo, limit: 50 });
+  const res = tool("list_emails", { account: account, since: cursor || dayAgo, limit: limit });
   // since is inclusive: drop the message the cursor points at.
   const fresh = res.messages.filter((m) => !cursor || Date.parse(m.date) > Date.parse(cursor));
   if (fresh.length === 0) continue;
+  const leftOut = res.messages.length === limit && fresh.length === limit;
 
   const summary = llm(
     "Summarise these new emails for their owner in a few short bullet points: who wrote, " +
@@ -53,8 +59,10 @@ for (const account of accounts) {
     { input: fresh.map((m) => ({ from: m.from, subject: m.subject, snippet: m.snippet, date: m.date })) },
   );
   output.inbox({
-    title: "New mail in " + res.account + ": " + fresh.length + " message" + (fresh.length === 1 ? "" : "s"),
-    body: summary,
+    title: "New mail in " + res.account + ": " + fresh.length + (leftOut ? "+" : "") + " message" +
+      (fresh.length === 1 ? "" : "s"),
+    body: (leftOut ? "Only the newest " + limit + " new messages are summed up; older new messages were left out.\n\n" : "") +
+      summary,
   });
 
   let newest = cursor;
@@ -66,6 +74,7 @@ for (const account of accounts) {
 }
 
 if (accounts.length === 0) return "no mailbox to sum up";
+if (summed === 0) return "no new mail";
 state.set("since", since);
 return summed + " summed up";
 ```
