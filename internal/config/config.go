@@ -220,6 +220,13 @@ type JiraFeatureToggles struct {
 	WithoutJiraDetection bool `mapstructure:"without_jira_detection" json:"without_jira_detection"`
 }
 
+// LinearConfig holds Linear integration settings.
+type LinearConfig struct {
+	Enabled          bool `mapstructure:"enabled"`
+	SyncIntervalMins int  `mapstructure:"sync_interval_mins"`
+	BackfillDays     int  `mapstructure:"backfill_days"`
+}
+
 // JiraConfig holds Jira Cloud integration settings.
 type JiraConfig struct {
 	Enabled          bool               `mapstructure:"enabled"`
@@ -396,6 +403,7 @@ type Config struct {
 	Gmail            GmailConfig                 `mapstructure:"gmail"`
 	Imap             ImapConfig                  `mapstructure:"imap"`
 	Jira             JiraConfig                  `mapstructure:"jira"`
+	Linear           LinearConfig                `mapstructure:"linear"`
 	Analysis         AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan          DayPlanConfig               `mapstructure:"day_plan"`
 	Memory           MemoryConfig                `mapstructure:"memory"`
@@ -494,6 +502,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("imap.initial_history_days", DefaultImapInitialHistoryDays)
 	v.SetDefault("imap.max_messages_per_sync", DefaultImapMaxMessagesPerSync)
 	v.SetDefault("imap.max_body_bytes", DefaultImapMaxBodyBytes)
+	v.SetDefault("linear.enabled", DefaultLinearEnabled)
+	v.SetDefault("linear.sync_interval_mins", DefaultLinearSyncIntervalMins)
+	v.SetDefault("linear.backfill_days", DefaultLinearBackfillDays)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
 	v.SetDefault("jira.changelog_issues_per_sync", DefaultJiraChangelogIssuesPerSync)

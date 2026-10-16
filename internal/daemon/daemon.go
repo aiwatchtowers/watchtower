@@ -31,6 +31,7 @@ import (
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
 	"watchtower/internal/kb"
+	"watchtower/internal/linear"
 	"watchtower/internal/memory"
 
 	"watchtower/internal/customtracks"
@@ -48,6 +49,12 @@ type DayPlanRunner interface {
 	DetectConflicts(ctx context.Context, userID, date string) error
 	SyncCalendarItemsForDate(ctx context.Context, userID, date string) error
 	AccumulatedUsage() (int, int, float64, int)
+}
+
+// linearAccountSyncer is the slice of *linear.Syncer behaviour phaseLinearSync uses.
+type linearAccountSyncer interface {
+	Sync(ctx context.Context) (int, error)
+	AccountID() int64
 }
 
 // jiraAccountSyncer is the slice of *jira.Syncer behaviour phaseJiraSync uses.
@@ -129,6 +136,8 @@ type Daemon struct {
 	externalSync        ExternalSyncRunner
 	dayPlanPipeline     DayPlanRunner
 	lastJira            time.Time
+	linearSyncers       []linearAccountSyncer
+	lastLinear          time.Time
 	lastPeople          time.Time // when people cards last ran (once per day)
 	lastBriefing        time.Time // when briefing last ran (once per day)
 	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
@@ -306,6 +315,16 @@ func (d *Daemon) SetJiraSyncers(s []*jira.Syncer) {
 	}
 }
 
+// SetLinearSyncers sets the per-account Linear syncers — one per enabled
+// linear_accounts row with a token file. An empty or nil slice disables the
+// Linear sync phase.
+func (d *Daemon) SetLinearSyncers(s []*linear.Syncer) {
+	d.linearSyncers = make([]linearAccountSyncer, len(s))
+	for i, syncer := range s {
+		d.linearSyncers[i] = syncer
+	}
+}
+
 // ExternalSyncRunner is the slice of *extsync.Engine behaviour
 // phaseExternalSync uses. The daemon holds ONE runner across cycles: the
 // engine keeps its source-rotation state in memory.
@@ -477,6 +496,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseGmailSync(ctx)
 	d.phaseImapSync(ctx)
 	d.phaseJiraSync(ctx)
+	d.phaseLinearSync(ctx)
 	d.phaseExternalSync(ctx)
 	d.phaseAgentAnalytics(ctx)
 
@@ -920,6 +940,48 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			d.logger.Printf("jira target status sync warning: %v", serr)
 		} else if synced > 0 {
 			d.logger.Printf("jira-targets: synced %d target status(es)", synced)
+		}
+	}
+}
+
+// phaseLinearSync pulls Linear issues for every connected account respecting
+// the configured interval. One account's error is logged and confined to that
+// account. A pass never writes a blanket "ok" back (a nil error does not prove
+// health; only a login clears the state); the one failure it persists is
+// linear.ErrAuthRevoked, which needs status "revoked" for the Re-login button.
+// Other errors (rate limit, network) say nothing about the grant and are only
+// logged, and a cancelled context is daemon shutdown, checked first.
+func (d *Daemon) phaseLinearSync(ctx context.Context) {
+	if len(d.linearSyncers) == 0 {
+		return
+	}
+	interval := time.Duration(d.config.Linear.SyncIntervalMins) * time.Minute
+	if interval <= 0 {
+		interval = time.Duration(config.DefaultLinearSyncIntervalMins) * time.Minute
+	}
+	if !d.lastLinear.IsZero() && time.Since(d.lastLinear) < interval {
+		return
+	}
+	d.lastLinear = time.Now()
+
+	for _, s := range d.linearSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("linear: account %d: sync error: %v", s.AccountID(), err)
+			switch {
+			case ctx.Err() != nil:
+				d.logger.Printf("linear: account %d: sync cancelled, leaving auth state untouched", s.AccountID())
+			case errors.Is(err, linear.ErrAuthRevoked):
+				if d.db != nil {
+					if dbErr := d.db.SetLinearAccountAuthState(s.AccountID(), "revoked", err.Error()); dbErr != nil {
+						d.logger.Printf("linear: account %d: record auth state: %v", s.AccountID(), dbErr)
+					}
+				}
+			}
+			continue
+		}
+		if n > 0 {
+			d.logger.Printf("linear: account %d: %d issues synced", s.AccountID(), n)
 		}
 	}
 }
