@@ -148,8 +148,8 @@ func TestBuildSession_MainLaneFirst(t *testing.T) {
 }
 
 func TestBuildOverview_Performance(t *testing.T) {
-	if testing.Short() || raceEnabled {
-		t.Skip("wall-clock budget: skipped under -short and the race detector")
+	if testing.Short() || raceEnabled || testing.CoverMode() != "" {
+		t.Skip("wall-clock budget: skipped under -short, the race detector and coverage instrumentation")
 	}
 	d, wb := buildDB(t)
 	now := time.Now().UTC()
