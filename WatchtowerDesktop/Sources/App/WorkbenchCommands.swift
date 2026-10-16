@@ -105,6 +105,9 @@ struct HelpCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .help) {
+            // Inside a Monaco editor (Files, diff review, automation editor)
+            // ⌘/ stays its toggle comment: the page consumes it before the
+            // menu sees it, as with ⌘K above. The menu item still opens the panel.
             Button("Ask Watchtower…") { appState.showAskPanel() }
                 .keyboardShortcut("/", modifiers: .command)
             Button("Watchtower User Guide") {

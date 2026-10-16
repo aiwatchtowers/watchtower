@@ -10,15 +10,15 @@ You wonder why the Briefings tab is empty, or where the Claude sign-in lives. Pr
 
 **Instant matches.** While you type, the panel lists matching guide sections (**Guide**) and screens (**Go to**) without calling any AI. The guide is read once per launch from the copy built into the app.
 
-**The answer.** **Ask** sends your question to the assistant with the few best-matching guide sections. It uses the light model of your configured provider, has no tools and reads none of your data. If the guide doesn't cover the question, it says so and suggests AI Chat.
+**The answer.** **Ask** sends your question to the assistant with the few best-matching guide sections. It uses the light model of your configured provider and runs with no tools at all, so it cannot read any of your data: no messages, mail, meetings or targets. If the guide doesn't cover the question, it says so and suggests AI Chat.
 
-**Nothing is kept.** The conversation lives only while the panel is open. Closing it ends the conversation and stores nothing, and no memory is used.
+**Nothing is kept.** The conversation lives only while the panel is open. Closing it ends the conversation and stores nothing. No long-term memory (the **Memory** tab) is read.
 
 **Screen links.** An answer can link to a screen. The link opens only screens that are visible in the sidebar right now; a hidden one shows as plain text. The main AI Chat answers app questions from the same guide and can use the same links.
 
 ## Using it
 
-1. Press ⌘/, or choose **Ask Watchtower…** in the Help menu.
+1. Press ⌘/, or choose **Ask Watchtower…** in the Help menu. In a code editor (the Files pane, a diff review, the automation editor) ⌘/ comments out the line instead; use the Help menu there.
 2. Type a question. Press Return on the **Ask** row to ask it, or pick a **Guide** row to open that section in your browser.
 3. Pick a **Go to** row, or press ⌘Return, to open that screen.
 4. Type a follow-up in the answer view. **Open in AI Chat** repeats your first question there when you need your own data.
