@@ -93,21 +93,9 @@ type installedRecipeJSON struct {
 // enabled (an insert never sets either, AUTO-06), so it stays open under
 // AI-agent markers like a plain save.
 func runAutomationsInstallTemplate(cmd *cobra.Command, args []string) error {
-	all := automations.Templates()
-	i := slices.IndexFunc(all, func(t automations.Template) bool { return t.Name == args[0] })
-	if i < 0 {
-		names := make([]string, 0, len(all))
-		for _, t := range all {
-			names = append(names, t.Name)
-		}
-		return fmt.Errorf("no template %q (have: %s)", args[0], strings.Join(names, ", "))
-	}
-	tpl := all[i]
-	switch {
-	case tpl.Scope == automations.ScopeWorkbench && autoFlags.Workbench == 0:
-		return fmt.Errorf("%s is a workbench template: pass --workbench <id>", tpl.Name)
-	case tpl.Scope == automations.ScopePersonal && autoFlags.Workbench != 0:
-		return fmt.Errorf("%s is a personal template: it installs into the personal folder, without --workbench", tpl.Name)
+	tpl, err := templateForInstall(args[0])
+	if err != nil {
+		return err
 	}
 	params, err := parseTemplateParams(autoFlags.Params)
 	if err != nil {
@@ -136,7 +124,33 @@ func runAutomationsInstallTemplate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	out.Notes = tpl.Notes
-	w := cmd.OutOrStdout()
+	return printInstalledTemplate(cmd.OutOrStdout(), out)
+}
+
+// templateForInstall finds the named template and checks --workbench against
+// its scope.
+func templateForInstall(name string) (automations.Template, error) {
+	all := automations.Templates()
+	i := slices.IndexFunc(all, func(t automations.Template) bool { return t.Name == name })
+	if i < 0 {
+		names := make([]string, 0, len(all))
+		for _, t := range all {
+			names = append(names, t.Name)
+		}
+		return automations.Template{}, fmt.Errorf("no template %q (have: %s)", name, strings.Join(names, ", "))
+	}
+	tpl := all[i]
+	switch {
+	case tpl.Scope == automations.ScopeWorkbench && autoFlags.Workbench == 0:
+		return tpl, fmt.Errorf("%s is a workbench template: pass --workbench <id>", tpl.Name)
+	case tpl.Scope == automations.ScopePersonal && autoFlags.Workbench != 0:
+		return tpl, fmt.Errorf("%s is a personal template: it installs into the personal folder, without --workbench", tpl.Name)
+	}
+	return tpl, nil
+}
+
+// printInstalledTemplate writes the install result as JSON or text.
+func printInstalledTemplate(w io.Writer, out installJSON) error {
 	if autoFlags.JSON {
 		return writeJSON(w, out)
 	}
