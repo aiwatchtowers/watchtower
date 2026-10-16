@@ -619,10 +619,19 @@ func automationBindingGate(b Binding) error {
 // workbench session's row. A run that no longer exists fails closed
 // (ErrAutomationRunGone): deleting a workbench cascades its automations and
 // runs, so a missing run may have been a workbench one. A binding naming
-// another workbench than its run's is refused. Bindings off the automation
-// surface or without a run pass untouched.
+// another workbench than its run's is refused. A run context whose id does not
+// parse fails closed the same way. Bindings off the automation surface or
+// without a run pass untouched.
 func (r *Registry) automationWorkbench(b Binding) (Binding, error) {
-	if b.Surface != AutomationSurface || b.AutomationRunID == 0 {
+	if b.Surface != AutomationSurface {
+		return b, nil
+	}
+	if b.AutomationRunID == 0 {
+		if b.ContextType == AutomationContextType {
+			// bindingOf leaves the run id 0 for a context id that does not
+			// parse: no run to resolve a workbench from, so fail closed.
+			return b, fmt.Errorf("automation run %q: %w", b.ContextID, ErrAutomationRunGone)
+		}
 		return b, nil
 	}
 	run, err := r.db.GetAutomationRun(b.AutomationRunID)

@@ -313,11 +313,9 @@ func TestRelease_E2E(t *testing.T) {
 			if n := len(w.desk.Launches()); n != 0 || len(w.stepsOfKind(t, id, automations.StepKindSession)) != 0 {
 				t.Fatalf("%d sessions launched; want none after a failed command", n)
 			}
-			outs := w.stepsOfKind(t, id, automations.StepKindOutput)
-			if len(outs) != 1 || outs[0].Name != "report" {
-				t.Fatalf("output steps = %+v; want the failure report", outs)
+			if outs := w.stepsOfKind(t, id, automations.StepKindOutput); len(outs) != 0 {
+				t.Fatalf("output steps = %+v; want none after the throw", outs)
 			}
-			mustContain(t, "failure report", outs[0].ArgsJSON, "error: the tag v1.2.3 exists")
 			if n := w.count(t, "automation_outputs"); n != 0 {
 				t.Fatalf("automation_outputs = %d; a failed run commits none (AUTO-04)", n)
 			}

@@ -603,3 +603,32 @@ func TestSetTrust_AutomationSurfaceIsATrustPlace(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []string{"main", "target", tools.AutomationSurface}, tools.TrustSurfaces(tl))
 }
+
+// A stored automation_run row whose context id does not parse (or is not a
+// positive id) has no run to resolve a workbench from: Approve and Apply fail
+// closed (ErrAutomationRunGone) instead of applying with no workbench check.
+func TestWorkbenchAutomation_UnparsableRunContextFailsClosed(t *testing.T) {
+	f := newAutoFixture(t)
+	f.wbWrite(t)
+	for _, ctxID := range []string{"not-a-number", "", "0"} {
+		id, err := f.d.InsertAgentAction(db.AgentAction{
+			Tool: "wb_write", ArgsJSON: autoCallArgs, Reason: "scheduled", Surface: tools.AutomationSurface,
+			ContextType: tools.AutomationContextType, ContextID: ctxID, Status: "approved",
+		})
+		require.NoError(t, err)
+		applied, err := f.reg.Apply(context.Background(), id)
+		require.NoError(t, err, ctxID)
+		assert.Equal(t, "failed", applied.Status, ctxID)
+		assert.Contains(t, applied.Error, "the automation run no longer exists", ctxID)
+
+		pid, err := f.d.InsertAgentAction(db.AgentAction{
+			Tool: "wb_write", ArgsJSON: autoCallArgs, Reason: "scheduled", Surface: tools.AutomationSurface,
+			ContextType: tools.AutomationContextType, ContextID: ctxID, Status: "pending",
+		})
+		require.NoError(t, err)
+		_, err = f.reg.Approve(context.Background(), pid, nil)
+		require.ErrorIs(t, err, tools.ErrAutomationRunGone, ctxID)
+	}
+	calls, _ := f.executed()
+	assert.Empty(t, calls)
+}

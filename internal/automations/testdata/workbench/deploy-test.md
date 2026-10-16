@@ -24,10 +24,6 @@ const tail = (text) => (text || "").slice(-4000);
 // A dry run starts no process: shell() returns {status: "dry_run"}.
 if (r.status !== "dry_run" && r.exit_code !== 0) {
   const out = tail(r.stderr) || tail(r.stdout);
-  output.report({
-    title: "Deploy to test failed",
-    body: "`" + cmd + "` exited " + r.exit_code + ".\n\n```\n" + out + "\n```",
-  });
   throw new Error(cmd + " exited " + r.exit_code + ":\n" + out);
 }
 
