@@ -27,7 +27,7 @@ type AgentReportEvent struct {
 // AgentReportSession is one session of the report window.
 type AgentReportSession struct {
 	SessionUUID, StartedAt, EndedAt, Model, GitBranch string
-	OldFormat                                         bool // every source file missing_at with parser_version < 2
+	OldFormat                                         bool // some source file has parser_version < 2 (a present one clears on its next scan)
 }
 
 // AgentReportSessions lists a workbench's sessions that started or ended at or
@@ -35,18 +35,17 @@ type AgentReportSession struct {
 func (db *DB) AgentReportSessions(projectID int64, since string) ([]AgentReportSession, error) {
 	out := []AgentReportSession{}
 	err := db.agentLogRows(`WITH files AS (
-			SELECT s.session_uuid, f.missing_at, f.parser_version
+			SELECT s.session_uuid, f.parser_version
 			FROM agent_log_sessions s JOIN agent_log_files f ON f.path = s.source_path
 			WHERE s.project_id = ?
 			UNION
-			SELECT e.session_uuid, f.missing_at, f.parser_version
+			SELECT e.session_uuid, f.parser_version
 			FROM agent_log_events e JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
 			JOIN agent_log_files f ON f.path = e.src_path
 			WHERE s.project_id = ?)
 		SELECT s.session_uuid, s.started_at, s.ended_at, s.model, s.git_branch,
-			EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid)
-			AND NOT EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid
-				AND (files.missing_at IS NULL OR files.parser_version >= ?))
+			EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid
+				AND files.parser_version < ?)
 		FROM agent_log_sessions s
 		WHERE s.project_id = ? AND (s.started_at >= ? OR s.ended_at >= ?)
 		ORDER BY s.started_at, s.session_uuid`,
@@ -69,7 +68,7 @@ func (db *DB) AgentReportSessions(projectID int64, since string) ([]AgentReportS
 const agentReportChunk = 500
 
 // AgentReportEvents returns the events of the given sessions, ordered by
-// session, ts, src_path, src_offset.
+// session, ts, src_path, src_offset, key.
 func (db *DB) AgentReportEvents(sessionUUIDs []string) ([]AgentReportEvent, error) {
 	out := []AgentReportEvent{}
 	ids := slices.Clone(sessionUUIDs)
@@ -87,7 +86,7 @@ func (db *DB) AgentReportEvents(sessionUUIDs []string) ([]AgentReportEvent, erro
 			input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
 			src_path, src_offset
 			FROM agent_log_events WHERE session_uuid IN (?`+strings.Repeat(",?", len(chunk)-1)+`)
-			ORDER BY session_uuid, ts, src_path, src_offset`, args,
+			ORDER BY session_uuid, ts, src_path, src_offset, key`, args,
 			func(r *sql.Rows) error {
 				var e AgentReportEvent
 				var dur sql.NullInt64
