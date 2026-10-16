@@ -105,7 +105,7 @@ final class MeetingReminderCenter {
     /// `@AppStorage("notifyMeetingReminders")`; absent = true. Gates the
     /// pre-meeting push only — the in-app banner stays on while minutes > 0,
     /// and the stop-recording push is always on (owner decision): it respects
-    /// only quiet hours and the OS notification permission.
+    /// only "Pause notifications" and the OS notification permission.
     static let remindersEnabledKey = "notifyMeetingReminders"
     static let defaultReminderMinutes = 5
 
@@ -167,19 +167,21 @@ final class MeetingReminderCenter {
         defaults.object(forKey: Self.reminderMinutesKey) as? Int ?? Self.defaultReminderMinutes
     }
 
-    /// The user's quiet-hours setting — the only user setting that also
-    /// silences the stop-recording safety push.
-    private var quietHoursActive: Bool {
-        defaults.bool(forKey: "quietHoursEnabled")
+    /// "Pause notifications" — the only user setting that also silences the
+    /// stop-recording safety push. `NotificationService` enforces it for
+    /// every push; checking it here also leaves a held reminder undelivered,
+    /// so one still due fires once the pause ends.
+    private var paused: Bool {
+        NotificationPreferences.isPaused(defaults)
     }
 
     /// The pre-meeting push respects the "Meeting reminders" toggle (absent =
-    /// enabled, the DigestWatcher convention) and the quiet-hours setting.
+    /// enabled, the DigestWatcher convention) and the pause.
     /// The in-app banner is exempt from both.
     private var preMeetingPushesEnabled: Bool {
         let enabled = defaults.object(forKey: Self.remindersEnabledKey) == nil
             || defaults.bool(forKey: Self.remindersEnabledKey)
-        return enabled && !quietHoursActive
+        return enabled && !paused
     }
 
     /// One decision tick — called every 30 s and directly from tests.
@@ -237,9 +239,9 @@ final class MeetingReminderCenter {
 
         // Stop-recording push: ALWAYS ON (owner decision) — independent of
         // the "Meeting reminders" toggle and the minutes stepper; it respects
-        // only quiet hours here and the OS notification permission inside
+        // only the pause here and the OS notification permission inside
         // NotificationService.
-        if !quietHoursActive {
+        if !paused {
             pollStopReminder(now: now)
         }
     }
