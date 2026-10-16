@@ -123,7 +123,7 @@ func TestTimeModel_EveryCategorySumsToWall(t *testing.T) {
 // AGENTLOG-06 guard: the trigger of the turn closing a wait decides it. A
 // notification closes background work even with no subagent span stored; a
 // hook record answers at once, so its gap is model; only the owner's turn
-// (or a v1 row's '') makes "waiting for you".
+// (or a v1 row's empty trigger) makes "waiting for you".
 func TestTimeModel_WaitClosedByTrigger(t *testing.T) {
 	var f fixture
 	f.owner(0)
