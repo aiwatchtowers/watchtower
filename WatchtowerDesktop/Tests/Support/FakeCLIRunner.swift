@@ -45,7 +45,15 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         return recordedTextFiles
     }
 
+    /// What each `run(args:stdin:)` call sent on stdin, in order.
+    package var stdinInputs: [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedStdin
+    }
+
     private let lock = NSLock()
+    private var recordedStdin: [Data] = []
     private var recordedInvocations: [[String]] = []
     private var recordedTextFiles: [String?] = []
     private var cancelWaiter: CheckedContinuation<Void, Never>?
@@ -66,6 +74,11 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         }
         if let shouldThrow { throw shouldThrow }
         return stdoutData
+    }
+
+    package func run(args: [String], stdin: Data) async throws -> Data {
+        lock.withLock { recordedStdin.append(stdin) }
+        return try await run(args: args)
     }
 
     private func record(_ args: [String]) {

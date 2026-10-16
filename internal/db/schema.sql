@@ -428,6 +428,7 @@ CREATE TABLE IF NOT EXISTS targets (
                         CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')),
     branch              TEXT NOT NULL DEFAULT '',  -- project targets: the git branch carrying the work (00089)
     pr                  TEXT NOT NULL DEFAULT '',  -- project targets: the pull request, a number or URL (00089)
+    board_column_id     INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL, -- workbench targets: the board column, of the same workbench and status; NULL = the status's first column (00125)
     CHECK(status != 'in_review' OR project_id IS NOT NULL)  -- in_review exists only on a project board (00086)
 );
 CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
@@ -451,6 +452,11 @@ CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
 -- A parent's own update is never rolled up. Full bodies: the migration file.
 -- (00086: an in_review child counts as started like in_progress; a rollup
 -- write sets status_actor = 'system'.)
+-- Triggers targets_board_column_check_{ai,bu} and targets_board_column_clear_au
+-- (00125, PROJ-19): writing a board_column_id that is not a column of the
+-- target's workbench and current status aborts with 'board column does not
+-- match the target'; a status or project_id change that leaves the column's
+-- category sets board_column_id = NULL (no status history row).
 
 -- Status history of project targets (00086, PROJ-06): one row per status
 -- transition and one at creation (from_status NULL), written by the triggers
@@ -2446,8 +2452,24 @@ CREATE TABLE IF NOT EXISTS projects (
     agent_analytics INTEGER NOT NULL DEFAULT 0 CHECK (agent_analytics IN (0, 1)), -- 1 = Agent analytics reads this workbench's Claude Code logs (00116)
     methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00123)
     ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00123)
-    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')) -- the owner's finish check; NULL = the folder file, else on (00123)
+    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), -- the owner's finish check; NULL = the folder file, else on (00123)
+    board_hidden_statuses TEXT NULL -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
 );
+
+-- Workbench board columns (00125, PROJ-19): named columns inside one status
+-- category of one workbench, ordered by position. A status with no rows has
+-- one implicit column, its standard label (To Do, In Progress, In Review,
+-- Blocked, Done, Dismissed). Written only by `watchtower workbench columns`.
+CREATE TABLE IF NOT EXISTS workbench_board_columns (
+    id          INTEGER PRIMARY KEY,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed')),
+    title       TEXT NOT NULL,           -- 1-40 chars, unique per workbench case-insensitively
+    description TEXT NOT NULL DEFAULT '', -- up to 500 chars
+    position    INTEGER NOT NULL,         -- 0..n within (project_id, status)
+    created_at  TEXT NOT NULL             -- UTC ISO-8601
+);
+CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 
 -- Board archive (00103, amended 00105, PROJ-15): one row per workbench target;
 -- archived = 1 iff the target and every descendant on the same board are

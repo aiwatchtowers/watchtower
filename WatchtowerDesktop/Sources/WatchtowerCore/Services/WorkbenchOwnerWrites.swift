@@ -28,6 +28,17 @@ package enum WorkbenchOwnerWrites {
         return WorkbenchOwnerWrite(target: targetID, rolledUp: rolledUp)
     }
 
+    /// A card dragged to board column `columnID` of `status` (nil = the
+    /// status's first column, PROJ-19): status and column in one UPDATE,
+    /// claimed by the owner, with the parents the rollup moved. A move
+    /// between columns of one status writes no status history.
+    package static func moveToColumn(
+        _ db: Database, targetID: Int64, status: String, columnID: Int64?
+    ) throws -> WorkbenchOwnerWrite {
+        let rolledUp = try WorkbenchQueries.updateTargetColumn(db, targetID: targetID, status: status, columnID: columnID)
+        return WorkbenchOwnerWrite(target: targetID, rolledUp: rolledUp)
+    }
+
     package static func setPriority(_ db: Database, targetID: Int64, priority: String) throws -> WorkbenchOwnerWrite {
         try TargetQueries.updatePriority(db, id: Int(targetID), priority: priority)
         return WorkbenchOwnerWrite(target: targetID, rolledUp: [])

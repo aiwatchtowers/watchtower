@@ -9,6 +9,18 @@ package protocol CLIRunnerProtocol {
     /// Runs `watchtower <args>` and returns its stdout as Data.
     /// Throws on nonzero exit or launch failure.
     func run(args: [String]) async throws -> Data
+    /// `run(args:)` with `stdin` written to the child's standard input (a
+    /// payload too large or too structured for argv, such as
+    /// `workbench columns --set -`).
+    func run(args: [String], stdin: Data) async throws -> Data
+}
+
+extension CLIRunnerProtocol {
+    /// A runner that cannot feed stdin refuses rather than run the command
+    /// without its input.
+    package func run(args: [String], stdin: Data) async throws -> Data {
+        throw CLIRunnerError.launchFailed(underlying: CocoaError(.featureUnsupported))
+    }
 }
 
 // MARK: - CLIRunnerError
@@ -108,11 +120,16 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         try await run(args: args, environment: Constants.resolvedEnvironment())
     }
 
+    package func run(args: [String], stdin: Data) async throws -> Data {
+        try await run(args: args, environment: Constants.resolvedEnvironment(), stdin: stdin)
+    }
+
     /// `run(args:)` with the child's whole environment given: a caller that
     /// must keep a variable of the app's own environment from the child
     /// (session cleanup drops `WATCHTOWER_TERMINAL_SESSION_ID`) passes the
-    /// environment it built.
-    package func run(args: [String], environment: [String: String]) async throws -> Data {
+    /// environment it built. `stdin`, when given, is written to the child's
+    /// standard input and closed (`ProcessPipes.feed`).
+    package func run(args: [String], environment: [String: String], stdin: Data? = nil) async throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = args
@@ -123,6 +140,8 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        let stdinPipe = stdin.map { _ in Pipe() }
+        if let stdinPipe { process.standardInput = stdinPipe }
 
         do {
             try process.run()
@@ -148,6 +167,7 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         return try await withTaskCancellationHandler {
             let stdoutRead = ProcessPipes.drain(stdoutPipe)
             let stderrRead = ProcessPipes.drain(stderrPipe)
+            if let stdin, let stdinPipe { ProcessPipes.feed(stdinPipe, stdin) }
             let stdoutData = await stdoutRead.value
             let stderrData = await stderrRead.value
             await ProcessPipes.offPool { process.waitUntilExit() }

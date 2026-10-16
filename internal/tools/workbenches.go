@@ -144,6 +144,10 @@ type workbenchInfoView struct {
 	// Methodology is what this workbench's sessions run under (spec
 	// 2026-10-15 §8), read-only: no tool changes the agent's own checks.
 	Methodology methodologyView `json:"methodology"`
+	// Columns and HiddenStatuses are the owner's board columns (PROJ-19),
+	// left out when the board defines none and hides nothing.
+	Columns        []db.BoardColumn `json:"columns,omitempty"`
+	HiddenStatuses []string         `json:"hidden_statuses,omitempty"`
 }
 
 // NewWorkbenchInfo describes the bound workbench: what it is, its sources and
@@ -154,7 +158,9 @@ func NewWorkbenchInfo() *Tool {
 		Description: "Describe this Watchtower workbench: name, folder, description, board language, sources, target counts by " +
 			"status (the whole board), how many targets are archived and owner comments waiting for you. An empty description means the " +
 			"workbench is not set up yet (run the setup of the Watchtower skill in this folder). It also shows the methodology this " +
-			"workbench runs under (preset, ask guard, finish check and where each comes from); only the owner changes it.",
+			"workbench runs under (preset, ask guard, finish check and where each comes from); only the owner changes it. When the " +
+			"owner defined board columns, it lists them (columns, each with the description of when a card goes there) and the " +
+			"statuses turned off on this board (hidden_statuses).",
 		InputSchema: mustSchema[emptyArgs](WorkbenchInfoTool),
 		Access:      AccessRead,
 		Surfaces:    workbenchSurfaces,
@@ -192,6 +198,11 @@ func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 		v.Sources = append(v.Sources, sourceView{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})
 	}
 	countStatuses(board, v.Targets)
+	columns, err := d.GetBoardColumns(p.ID)
+	if err != nil {
+		return nil, fmt.Errorf("reading board columns: %w", err)
+	}
+	v.Columns, v.HiddenStatuses = columns.Columns, columns.Hidden // empty ones are left out
 	return v, nil
 }
 

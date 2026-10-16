@@ -216,6 +216,10 @@ package struct WorkbenchBoardNode: Identifiable, Equatable {
     package var archived = false
 
     package var id: Int { target.id }
+    /// The target's stored board column (PROJ-19); nil or a column the
+    /// definition no longer shows = its status's first column
+    /// (`BoardColumnLayout.slotKey`). Readers ignore it on a parent.
+    package var boardColumnID: Int64? { target.boardColumnID }
 }
 
 /// A project list row.

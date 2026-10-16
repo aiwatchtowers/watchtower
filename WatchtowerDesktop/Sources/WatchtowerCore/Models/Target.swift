@@ -141,6 +141,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     package let workbenchID: Int64?     // non-nil = lives only on that project's board (PROJ-01)
     package let branch: String          // git branch the work happens on (PROJ-07), "" = not linked
     package let pr: String              // pull request, a number or a URL (PROJ-07), "" = not linked
+    package let boardColumnID: Int64?   // workbench board column (PROJ-19), nil = the status's first column
 
     package enum CodingKeys: String, CodingKey {
         case id
@@ -172,6 +173,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         case workbenchID      = "project_id"
         case branch
         case pr
+        case boardColumnID = "board_column_id"
     }
 
     package init(row: Row) {
@@ -204,6 +206,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         workbenchID      = row["project_id"]
         branch           = row["branch"] ?? ""
         pr               = row["pr"] ?? ""
+        boardColumnID    = row["board_column_id"]
     }
 
     // Equatable/Hashable are synthesized on purpose: a `Target` is a stored

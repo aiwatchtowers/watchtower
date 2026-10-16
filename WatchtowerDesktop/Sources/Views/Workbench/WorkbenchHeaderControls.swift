@@ -20,6 +20,7 @@ struct WorkbenchHeaderControls: View {
     @State private var chevronHovered = false
     @State private var showsWorktreeSetup = false
     @State private var showsAgentSettings = false
+    @State private var showsBoardColumns = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -33,6 +34,9 @@ struct WorkbenchHeaderControls: View {
         }
         .sheet(isPresented: $showsAgentSettings) {
             AgentSettingsSheet(vm: vm, project: project)
+        }
+        .sheet(isPresented: $showsBoardColumns) {
+            BoardColumnsSheet(vm: vm, project: project)
         }
     }
 
@@ -181,6 +185,12 @@ struct WorkbenchHeaderControls: View {
                 Label("Agent Settings…", systemImage: "slider.horizontal.3")
             }
             .help("The methodology, the ask guard and the finish check this workbench's agents run under")
+            Button {
+                showsBoardColumns = true
+            } label: {
+                Label("Board Columns…", systemImage: "rectangle.split.3x1")
+            }
+            .help("Name the board's columns inside each status, and hide In Review or Blocked")
             Divider()
             Button {
                 onCleanUpOldWorktrees()

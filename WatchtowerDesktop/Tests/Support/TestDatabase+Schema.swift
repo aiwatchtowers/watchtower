@@ -1341,7 +1341,7 @@ CREATE TABLE IF NOT EXISTS projects (
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
     CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
     CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
-  CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')));
+  CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL);
 CREATE TABLE IF NOT EXISTS project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1403,7 +1403,7 @@ CREATE TABLE IF NOT EXISTS "targets" (
     next_step_attempted_at TEXT NOT NULL DEFAULT '',
     project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE,
     status_actor        TEXT DEFAULT NULL
-                        CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branch TEXT NOT NULL DEFAULT '', pr TEXT NOT NULL DEFAULT '',
+                        CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branch TEXT NOT NULL DEFAULT '', pr TEXT NOT NULL DEFAULT '', board_column_id INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL,
     CHECK(status != 'in_review' OR project_id IS NOT NULL)
 );
 CREATE TABLE IF NOT EXISTS target_status_history (
@@ -1994,6 +1994,15 @@ CREATE TABLE IF NOT EXISTS review_checks (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   PRIMARY KEY (round_id, chapter_key, lens, item_key)
 );
+CREATE TABLE IF NOT EXISTS workbench_board_columns (
+    id          INTEGER PRIMARY KEY,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed')),
+    title       TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    position    INTEGER NOT NULL,
+    created_at  TEXT NOT NULL
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2315,6 +2324,7 @@ CREATE INDEX IF NOT EXISTS idx_linear_user_map_slack ON linear_user_map(slack_us
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
 CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id);
+CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
@@ -2545,6 +2555,34 @@ BEGIN
         SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
     ) AS r
     WHERE targets.id = r.id AND targets.status != r.st;
+END;
+CREATE TRIGGER IF NOT EXISTS targets_board_column_check_ai BEFORE INSERT ON targets
+WHEN NEW.board_column_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+                 WHERE c.id = NEW.board_column_id
+                   AND c.project_id IS NEW.project_id
+                   AND c.status = NEW.status)
+BEGIN
+    SELECT RAISE(ABORT, 'board column does not match the target');
+END;
+CREATE TRIGGER IF NOT EXISTS targets_board_column_check_bu BEFORE UPDATE OF board_column_id ON targets
+WHEN NEW.board_column_id IS NOT OLD.board_column_id
+ AND NEW.board_column_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+                 WHERE c.id = NEW.board_column_id
+                   AND c.project_id IS NEW.project_id
+                   AND c.status = NEW.status)
+BEGIN
+    SELECT RAISE(ABORT, 'board column does not match the target');
+END;
+CREATE TRIGGER IF NOT EXISTS targets_board_column_clear_au AFTER UPDATE OF status, project_id ON targets
+WHEN NEW.board_column_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+                 WHERE c.id = NEW.board_column_id
+                   AND c.project_id IS NEW.project_id
+                   AND c.status = NEW.status)
+BEGIN
+    UPDATE targets SET board_column_id = NULL WHERE id = NEW.id;
 END;
 """#
 }
