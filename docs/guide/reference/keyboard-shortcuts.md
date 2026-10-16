@@ -1,93 +1,147 @@
 # Keyboard shortcuts
 
-Every key equivalent in the app. Some work only on a given tab or while a window is in front; that is noted per row.
+Every key equivalent in the app. **Help → Keyboard Shortcuts** opens this list in a window. On a workbench page the **Workbench** menu in the menu bar shows the workbench's chords, and the **Navigate** menu shows the Files editor's; the tray's **New Voice Idea** shows ⌃⌥D. Some rows work only on a given tab or while a window is in front; that is noted per area.
 
-## Everywhere
-
-| Keys | Action |
-|---|---|
-| ⌘B | Collapse or expand the sidebar menu |
-| ⌃⌘R | **Run Automation…** (only while the Automations feature is on) |
-| ⌘S | **Save** on Settings tabs that have a Save bar |
-| ⌘Q | **Quit Watchtower** |
-| ⌃⌥D | Global hotkey: voice dictation / quick capture, from any app |
-| ↩ / esc | Default / cancel button in sheets |
-
-## Chat
+## Global
 
 | Keys | Action |
 |---|---|
-| ⌘N | New chat |
-| ⌘K | Search chats |
-| ⌘↩ | **Save & Send** while editing a sent message |
+| **⌘B** | Collapse or expand the menu |
+| **⌃⌘R** | Run Automation… (with Automations turned on) |
+| **⌃⌥D** | New Voice Idea, from anywhere in macOS |
+| **⌘,** | Settings |
+| **⌘Q** | Quit Watchtower |
 
-## Targets and ideas
+## AI Chat
 
 | Keys | Action |
 |---|---|
-| ⌘N | New target (Targets tab) |
-| ⌘↩ | In the **New Target** sheet: just create, without briefing the assistant (↩ briefs the assistant). In the idea sheet: **Create** |
+| **⌘N** | New chat |
+| **⌘K** | Search chats |
+| **Return** | Send the message |
+| **⇧Return** | New line |
+| **Esc** | Stop the answer |
+| **↑** | Edit your last message (in an empty field) |
+| **⌘Return** | Save & Send an edited message |
+| **↑ / ↓** | Previous / next chat (in the chat list) |
+
+## Targets
+
+| Keys | Action |
+|---|---|
+| **⌘N** | New target |
+| **Return** | Brief the assistant (new target) |
+| **⌘Return** | Just create (new target) |
+| **⇧Return** | New line (new target) |
+| **⌘Return / ⌃Return** | Send a comment, or save the text you are editing (target comments) |
+| **Esc** | Cancel editing |
+
+## Ideas
+
+| Keys | Action |
+|---|---|
+| **⌘Return** | Create (new idea) |
 
 ## Workbench
 
-| Keys | Action |
-|---|---|
-| ⌘K | **Go to…** palette (↑ ↓ move, ↩ open, ⌘↩ open in split, esc close) |
-| ⌥⌘S | Show or hide the sessions panel |
-| ⌘[ | Back to the workbench list |
-| ⌘T | New session |
-| ⌘1 … ⌘9 | Switch to that session (numbers shown in the session switcher) |
-| ⌥⌘↩ | **Hand to Session** from a code question |
-| ⌃⌘A | **Show Waiting for You** (Navigate menu; works even when the terminal has the keyboard) |
-
-### Sessions panel
-
-These keys work only while the panel has the keyboard: after a click on the list's empty space, or after a click on its label, a group header, a ✕ or the Undo toast.
+The Workbench menu lists most of these.
 
 | Keys | Action |
 |---|---|
-| ↑ / ↓ | Move the cursor over sessions |
-| ↩ | Open the session under the cursor |
-| esc | Give the keyboard back |
-| ⌘⌫ | Delete the session under the cursor (deferred, with an Undo bar) |
-| ⌘Z | Undo that delete |
-| Tab / ⇧Tab | Move focus on / back out of the panel |
+| **⌘T** | New session |
+| **⌘1–⌘9** | Open session 1–9 of the sessions list |
+| **⌘K** | Go to… (the Files editor keeps ⌘K) |
+| **⌥⌘S** | Show or hide the sessions panel |
+| **⌘[** | Back to the workbench list (the Files editor keeps ⌘[) |
+| **⌃⌘A** | Waiting for you, from anywhere in the window, the terminal included |
+| **A** | Waiting for you (nothing focused) |
+| **Esc** | Board: close the target panel, then leave the group |
 
-## Workbench code viewer
+## Sessions Panel
 
-The **Navigate** menu is enabled only while a workbench window is in front.
+After a click on the panel's empty space, the SESSIONS label or the group header.
 
 | Keys | Action |
 |---|---|
-| ⇧⌘O | **Open Quickly…** |
-| ⇧⌘F | **Find in Workbench…** |
-| ⌃⌘J | **Go to Definition** |
-| ⇧⌘U | **Show All Usages** |
-| ⌘I | **Ask AI** about the selection |
-| ⌃6 | **File Symbols…** |
-| ⌃⌘← / ⌃⌘→ | **Back** / **Forward** |
+| **↑ / ↓** | Move the highlight |
+| **Return** | Open the highlighted session |
+| **⌘⌫** | Delete the highlighted session |
+| **⌘Z** | Undo the delete |
+| **Esc** | Back to the terminal |
+| **Tab / ⇧Tab** | Move focus on / back out of the panel |
+
+## Go to… Palette
+
+| Keys | Action |
+|---|---|
+| **↑ / ↓** | Move |
+| **Return** | Open |
+| **⌘Return** | Open a session of this workbench beside the one on screen |
+| **Esc** | Close |
+
+## Waiting for You
+
+Single keys work while no field, terminal or editor has the keyboard.
+
+| Keys | Action |
+|---|---|
+| **J / K** | Next / previous ask (↓ / ↑ on a card) |
+| **Return** | Open the ask in the drawer; in the drawer, write in the outlined field |
+| **1–3** | Answer a Quick ask with that button |
+| **Tab / ⇧Tab** | Next / previous question or step (drawer) |
+| **1–9** | Pick that option, or mark a check step (drawer) |
+| **N / P** | Next / previous margin comment (review) |
+| **⌘Return** | Answer, Send or Approve |
+| **⌘⇧Return** | Request changes (review) |
+
+## Files Editor
+
+With a workbench page on screen; the Navigate menu lists most of these.
+
+| Keys | Action |
+|---|---|
+| **⇧⌘O / ⇧⇧** | Open Quickly |
+| **⇧⌘F** | Find in Workbench |
+| **⌃⌘J** | Go to definition (or ⌘-click) |
+| **⇧⌘U** | Show all usages |
+| **⌘I** | Ask AI |
+| **⌃6** | File symbols |
+| **⌃⌘← / ⌃⌘→** | Back / forward |
+| **⌘S** | Save now |
+| **⌥⌘Return** | Hand to Session (an Ask AI answer) |
+| **⌥⌘M** | Comment on the selected lines (Changes pane) |
+
+## Open Quickly
+
+| Keys | Action |
+|---|---|
+| **↑ / ↓** | Move |
+| **Return** | Open in a preview tab |
+| **⌥Return** | Open beside the pane on screen |
+| **⌘Return** | Ask AI about what you typed |
+| **Space** | Quick Look |
+| **Esc** | Close |
+
+## Run Automation
+
+| Keys | Action |
+|---|---|
+| **↑ / ↓** | Move |
+| **Return** | Run the highlighted automation |
+| **Esc** | Close |
 
 ## Voices
 
-On the active card of the voice-labelling window.
+On the active card.
 
 | Keys | Action |
 |---|---|
-| Space | Play or stop the first clip |
-| 1–9 | Pick that candidate in the list |
-| ↩ | **Confirm** |
+| **Space** | Play the first clip |
+| **Return** | Confirm |
+| **1–9** | Pick that candidate |
 
-## Owner asks (no field focused)
-
-Bare keys; they work only while no text field, terminal or editor has the keyboard. See [Asks](../features/workbench/asks.md).
+## Settings
 
 | Keys | Action |
 |---|---|
-| A | On the workbench page: open **Waiting for you** |
-| J / K, ↓ / ↑ | Next / previous ask |
-| Tab / ⇧Tab | Next / previous question or step in the drawer |
-| 1–9 | Pick that option; on a step, 1 Works, 2 Doesn't work, 3 Didn't check |
-| 1–3 | Answer a Quick ask with that option |
-| ↩ | Write in the field, or open the ask from a banner or card |
-| N / P | In a review: next / previous margin comment |
-| ⌘↩ / ⌘⇧↩ | Primary / secondary answer button (the button's tooltip shows its key) |
+| **⌘S** | Save |

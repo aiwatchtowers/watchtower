@@ -66,7 +66,7 @@ Click one of the option buttons on the banner. The option the agent recommends c
 
 ### Use the keyboard
 
-Press **⌃⌘A** (Navigate › **Show Waiting for You**) anywhere in the workbench window to put the keyboard on the oldest ask. It is the only key that takes the keyboard from the terminal. After that:
+Press **⌃⌘A** (Workbench › **Show Waiting for You**) anywhere in the workbench window to put the keyboard on the oldest ask. It is the only key that takes the keyboard from the terminal. After that:
 
 - **J** / **K** move between asks. **Return** opens one.
 - **1**–**3** answer a Quick ask with that button.
