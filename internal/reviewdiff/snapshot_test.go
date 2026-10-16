@@ -3,8 +3,11 @@ package reviewdiff
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -34,6 +37,72 @@ func TestReview01_SnapshotWritesNoRefNoIndex(t *testing.T) {
 	}
 	if st := gitIn(t, dir, "status", "--porcelain"); !strings.Contains(st, "?? new/") {
 		t.Fatalf("untracked file got staged in the owner's index:\n%s", st)
+	}
+}
+
+// gitDirFiles lists every file under .git except objects/, sorted.
+func gitDirFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	root := filepath.Join(dir, ".git")
+	var files []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		if d.IsDir() {
+			if rel == "objects" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		files = append(files, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	return files
+}
+
+func TestReview01_SnapshotWritesNoSharedIndex(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+	}{
+		{"split index configured", func(t *testing.T, dir string) {
+			gitIn(t, dir, "config", "core.splitIndex", "true")
+		}},
+		{"owner index already split, expire set", func(t *testing.T, dir string) {
+			gitIn(t, dir, "config", "core.splitIndex", "true")
+			gitIn(t, dir, "config", "splitIndex.sharedIndexExpire", "now")
+			gitIn(t, dir, "update-index", "--split-index")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			tc.setup(t, dir)
+			writeFile(t, dir, "a.go", "package a\n\nfunc A() int { return 2 }\n")
+			writeFile(t, dir, "new/b.go", "package new\n")
+			filesBefore := gitDirFiles(t, dir)
+			indexBefore, _ := os.ReadFile(filepath.Join(dir, ".git", "index"))
+
+			tree, err := openRepo(t, dir).Snapshot(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ls := gitIn(t, dir, "ls-tree", "-r", "--name-only", tree); !strings.Contains(ls, "new/b.go") {
+				t.Fatalf("snapshot tree misses the untracked file:\n%s", ls)
+			}
+			if after := gitDirFiles(t, dir); !slices.Equal(filesBefore, after) {
+				t.Fatalf("snapshot changed files in .git:\nbefore %v\nafter  %v", filesBefore, after)
+			}
+			indexAfter, _ := os.ReadFile(filepath.Join(dir, ".git", "index"))
+			if !bytes.Equal(indexBefore, indexAfter) {
+				t.Fatal("snapshot wrote the owner's index")
+			}
+		})
 	}
 }
 

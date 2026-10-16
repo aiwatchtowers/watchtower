@@ -25,7 +25,14 @@ func (r *Repo) snapshot(ctx context.Context, seedFromOwner bool) (string, error)
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	index := filepath.Join(tmp, "index")
-	env := []string{"GIT_INDEX_FILE=" + index}
+	// The temp index is always written unsplit: a split index would write a
+	// sharedindex.<sha> into the owner's $GIT_DIR. Env config outranks the
+	// repo config and, unlike a leading -c, keeps the subcommand visible to
+	// gitbin.
+	env := []string{
+		"GIT_INDEX_FILE=" + index,
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.splitIndex", "GIT_CONFIG_VALUE_0=false",
+	}
 	if !seedFromOwner || !r.copyOwnerIndex(ctx, index) {
 		head, err := r.hasHead(ctx)
 		if err != nil {

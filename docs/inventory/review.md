@@ -33,6 +33,8 @@ temporary index (`GIT_INDEX_FILE` in a fresh temp directory, removed
 afterwards): seeded from a copy of the owner's index (read, never written —
 copied into the temp directory; `read-tree HEAD` instead for a split index or a
 failed copy), then `add -A`, `write-tree`; both seeds give the same tree. The
+repo's split-index config is overridden for the temp index (`core.splitIndex=false` through
+`GIT_CONFIG_*` env), so no `sharedindex.*` file appears in the owner's `$GIT_DIR`. The
 only things written are git objects; no ref is created or moved, the owner's
 `.git/index` keeps its bytes, and no work-tree file changes. The diff and the file sides are read
 from tree objects (`diff-tree`, `cat-file`), never from the work tree. A folder
@@ -45,6 +47,7 @@ hands is a loss they cannot see coming; a temporary index and loose objects
 
 **Test guards:**
 - `internal/reviewdiff/snapshot_test.go::TestReview01_SnapshotWritesNoRefNoIndex` (untracked files are in the tree; the index bytes and every ref are unchanged)
+- `internal/reviewdiff/snapshot_test.go::TestReview01_SnapshotWritesNoSharedIndex` (`core.splitIndex=true`, and an already split owner index with `sharedIndexExpire`: the files in `.git` outside `objects/` and the index bytes are unchanged)
 - supporting: `TestSnapshot_NoCommitYet`, `TestSnapshot_OwnerIndexSeedMatchesReadTree` (both seeds, the owner's index bytes unchanged, split index falls back), `TestSnapshot_DoneContextIsAnError`, `TestTreeExists`, `TestBase_MergeBaseWithDefaultBranch` (`internal/reviewdiff`); `internal/gitbin/run_test.go::TestExecEnv_KeepsCallerIndexDropsInherited`
 
 **Locked since:** 2026-10-16
@@ -155,3 +158,4 @@ agent (or a cloned repository) planted, with no owner action.
 
 - 2026-10-16 (board #328, diff reviewer Plan 1, spec review ask #179): file created with REVIEW-01, 03, 04, 05. REVIEW-02 (Undo) reserved for Plan 3. PROJ-12 amended to cover the round line (see `workbench.md`).
 - 2026-10-16 (board #328, final review fix wave): REVIEW-01 — the temp index is seeded from a read-only copy of the owner's index (read-tree HEAD fallback). REVIEW-03 — outdated rows are carried as outdated; a sent round takes no comment and only `open()` opens the next round (`start --refresh` never creates one). REVIEW-04 — Go's `sent: false` now shows "This round was already sent"; `get_review` marks delivered only after the comments read.
+- 2026-10-16 (board #328, owner ask #183): REVIEW-01 — the temp index is forced unsplit (`core.splitIndex=false` via `GIT_CONFIG_*` env); no `sharedindex.*` is written into the owner's `$GIT_DIR`.
