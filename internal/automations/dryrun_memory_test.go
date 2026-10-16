@@ -2,6 +2,7 @@ package automations_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"watchtower/internal/automations"
@@ -93,5 +94,36 @@ func TestDryRunInMemory_StepResultIsJSON(t *testing.T) {
 	}
 	if got := rep.Steps[1].ResultSummary; got != `"done"` {
 		t.Errorf("llm step result = %q; want the JSON of the reply", got)
+	}
+}
+
+func TestDryRunInMemory_AgentIsNotRun(t *testing.T) {
+	d := db.OpenTestDB(t)
+	gen := usageGen(10, 5)
+	agent := &automationstest.FakeAgent{}
+	b := automations.Backends{DB: d, Generator: gen, Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart), Agent: agent}
+	text := strings.Replace(exRecipeText(`var r = agent("triage"); return r.status`, ""),
+		"  - llm:light\n", "  - llm:light\n  - agent:run\n", 1)
+	r, err := automations.ParseRecipe("draft", []byte(text), automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := automations.DryRunInMemory(context.Background(), b, r, automations.DryRunOptions{})
+	if err != nil {
+		t.Fatalf("DryRunInMemory: %v", err)
+	}
+
+	if rep.Status != db.RunSucceeded || stepStatusesOf(rep.Steps) != "agent:dry_run" {
+		t.Fatalf("status %s (%s), steps %s; want one agent:dry_run step", rep.Status, rep.Error, stepStatusesOf(rep.Steps))
+	}
+	if n := len(agent.Requests()); n != 0 {
+		t.Errorf("the runner was called %d times; want 0", n)
+	}
+	if rep.InputTokens+rep.OutputTokens != 0 {
+		t.Errorf("tokens spent: %+v", rep)
+	}
+	if !strings.Contains(rep.Steps[0].ResultSummary, "not previewed in a draft") {
+		t.Errorf("summary = %s; want the draft note", rep.Steps[0].ResultSummary)
 	}
 }

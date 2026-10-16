@@ -36,17 +36,17 @@ func buildAutomationRegistry(cfg *config.Config, database *db.DB) *tools.Registr
 
 // automationAuthoringDeps wires draft_automation and save_automation (spec
 // 2026-10-14 §11). The dry run's backends are built per call: the
-// automation registry, so a draft sees exactly the tools a run sees, and the
-// authoring generator. The feature switch is read per call too.
+// same automationBackends a run gets (registry, MCP caller, agent runner)
+// around the authoring generator. The agent runner's children get an
+// allowlisted env (automationAgentEnv), so no agent marker reaches them.
+// agent() itself is not previewed in a draft (no run row to bind to).
+// The feature switch is read per call too.
 func automationAuthoringDeps(cfg *config.Config, database *db.DB) authoring.Deps {
 	return authoring.Deps{
 		DB:           database,
 		WorkspaceDir: cfg.WorkspaceDir(),
 		Backends: func() automations.Backends {
-			return automations.Backends{
-				Generator: automationsAuthoringGenerator(cfg),
-				Registry:  buildAutomationRegistry(cfg, database),
-			}
+			return automationBackends(cfg, database, automationsAuthoringGenerator(cfg))
 		},
 		Enabled: func() bool { return cfg.Automations.Enabled },
 		Clock:   automations.RealClock{},
