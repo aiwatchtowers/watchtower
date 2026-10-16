@@ -3,9 +3,11 @@ import WatchtowerCore
 
 /// The ⌘/ panel's help chat (spec 2026-10-16 "Asking (the help chat)").
 ///
-/// - No tools (AGENT-04 `.draftOnly`): the guide sections a turn needs are
-///   retrieved in Swift from the loaded index and put into its prompt, so it
-///   works on every provider and never reads the owner's data.
+/// - No tools at all: `.draftOnly` (AGENT-04, no write tools) plus
+///   `ChatRunOptions.noTools` (`ai query --no-tools`: no MCP server, no
+///   built-ins), so it can reach none of the owner's data. The guide sections
+///   a turn needs are retrieved in Swift from the loaded index and put into
+///   its prompt, so it works on every provider.
 /// - `.memory`: no conversation row; closing the panel releases the engine.
 /// - Screen links (`watchtower-nav://`) to a hidden or unknown screen render
 ///   as plain text (`MarkdownView`'s `markdownNavScreens`).
@@ -24,7 +26,7 @@ enum HelpChatSurface {
             let config = ConfigService()
             let provider = AIProvider.fromConfig(config.aiProvider).rawValue
             let light = config.aiModelLight.flatMap { $0.isEmpty ? nil : $0 } ?? center.resolvedLightModel(provider)
-            return ChatRunOptions(provider: provider, model: light)
+            return ChatRunOptions(provider: provider, model: light, noTools: true)
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType, contextID: center.conversationID.uuidString,

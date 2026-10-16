@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Records every argv and answers a fixed output, or throws. No process is spawned.
 private final class StubGuideRunner: CLIRunnerProtocol, @unchecked Sendable {
@@ -95,6 +96,24 @@ final class AskCenterTests: XCTestCase {
         XCTAssertNil(spec.key.conversationID)
         XCTAssertEqual(spec.key.contextType, "help")
         XCTAssertTrue(spec.systemPrompt().contains("features/calendar.md — Calendar"))
+    }
+
+    /// No tools and no MCP server on any provider (`ai query --no-tools`):
+    /// `.draftOnly` alone would still mount the read-only data server.
+    func testHelpTurnRunsWithNoTools() async throws {
+        let center = await loadedCenter()
+        let spec = HelpChatSurface.spec(center: center, currentPage: { "Calendar" }, screens: { [self.calendar] })
+        XCTAssertTrue(spec.runOptions().noTools)
+        let ai = ScriptedAIService()
+        let engine = EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai,
+                                        gate: EmbeddedStreamGate(limit: 1))
+        engine.send("how do I get a recap")
+        for _ in 0..<200 where ai.calls.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let call = try XCTUnwrap(ai.calls.first)
+        XCTAssertTrue(call.noTools)
+        XCTAssertNil(call.toolMode)
+        XCTAssertNil(call.dbPath)
+        engine.stop()
     }
 
     func testTurnPromptCarriesCurrentPageAndSections() async {

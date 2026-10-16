@@ -32,11 +32,12 @@ package protocol AIServiceProtocol: Sendable {
     ) -> AsyncThrowingStream<StreamEvent, Error>
 
     /// The same run with `readFolder` set: `ai query --read-folder`, which
-    /// checks the folder is a workbench (spec 2026-10-02 §9.1). No provider
-    /// reads files in it yet (rulings R42/R44): Claude runs as without the
-    /// flag and Codex only turns web search off. Only `WatchtowerAIService`
-    /// runs it; a test double that does not model it falls back to the run
-    /// without a folder.
+    /// checks the folder is a workbench (spec 2026-10-02 §9.1), the provider
+    /// reading files in it (ruling R55). With `noTools`: `ai query
+    /// --no-tools`, a run with no tool and no MCP server at all (the ⌘/ help
+    /// chat), so it can reach none of the owner's data. Only
+    /// `WatchtowerAIService` runs either; a test double that does not model
+    /// them falls back to the plain run.
     func stream(
         prompt: String,
         systemPrompt: String?,
@@ -45,7 +46,8 @@ package protocol AIServiceProtocol: Sendable {
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
-        readFolder: String?
+        readFolder: String?,
+        noTools: Bool
     ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
@@ -58,7 +60,8 @@ extension AIServiceProtocol {
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
-        readFolder: String?
+        readFolder: String?,
+        noTools: Bool
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(
             prompt: prompt,
