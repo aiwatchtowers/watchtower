@@ -156,6 +156,9 @@ func parseTemplateParams(flags []string) (map[string]string, error) {
 	return params, nil
 }
 
+// writeTemplateFile is swapped by tests to fail a write.
+var writeTemplateFile = fsutil.WriteFileAtomic
+
 // installTemplateFiles refuses, before writing anything, a slug that already
 // has a file in dir or an index row in scope (a removed one included); then
 // writes every file atomically, rescans dir once and returns the rows.
@@ -169,11 +172,16 @@ func installTemplateFiles(ctx context.Context, cfg *config.Config, database *db.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return installJSON{}, fmt.Errorf("creating %s: %w", dir, err)
 	}
+	var written []string
 	for _, slug := range slugs {
 		path := filepath.Join(dir, slug+".md")
-		if err := fsutil.WriteFileAtomic(path, files[slug], 0o644); err != nil {
+		if err := writeTemplateFile(path, files[slug], 0o644); err != nil {
+			for _, p := range written {
+				_ = os.Remove(p) // only what this call wrote, so a retry is not refused
+			}
 			return installJSON{}, fmt.Errorf("writing %s: %w", path, err)
 		}
+		written = append(written, path)
 	}
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
 	report, err := ix.RescanFolder(ctx, scope, dir)

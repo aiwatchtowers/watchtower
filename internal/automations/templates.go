@@ -5,10 +5,10 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -109,10 +109,14 @@ func templateByName(name string) (Template, bool) {
 	return all[i], true
 }
 
+// templateParamValue is what a --param value may hold: it lands in YAML and
+// in JS strings, so anything else could break a copy.
+var templateParamValue = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // RenderTemplate returns the recipe files of template name (slug → bytes)
 // with each given param's "<KEY>" placeholder replaced. A param the template
-// does not declare, or a value that is empty or holds whitespace, `"`, `@`,
-// `<` or `>`, is an error naming it; a declared param left out keeps its
+// does not declare, or a value outside letters, digits, `_`, `.` and `-`, is
+// an error naming it; a declared param left out keeps its
 // placeholder, so the installed copy does not parse until the owner fills it.
 func RenderTemplate(name string, params map[string]string) (map[string][]byte, error) {
 	t, ok := templateByName(name)
@@ -123,8 +127,8 @@ func RenderTemplate(name string, params map[string]string) (map[string][]byte, e
 		if !slices.ContainsFunc(t.Params, func(p TemplateParam) bool { return p.Key == key }) {
 			return nil, fmt.Errorf("template %s has no param %s", name, key)
 		}
-		if value == "" || strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsAny(value, `"@<>`) {
-			return nil, fmt.Errorf("param %s: %q is not a valid value (it must be non-empty, without whitespace, \", @, < or >)", key, value)
+		if !templateParamValue.MatchString(value) {
+			return nil, fmt.Errorf("param %s: %q is not a valid value (allowed: letters, digits, _ . and -)", key, value)
 		}
 	}
 	out := make(map[string][]byte, len(t.Files))

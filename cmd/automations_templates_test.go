@@ -67,7 +67,7 @@ func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
 	assert.Contains(t, a.PermissionsJSON, "jira:read@PAY")
 
 	c3 := newAutoCLI(t)
-	for _, param := range []string{"PROJECT=a b", "X=1", "PROJECT"} {
+	for _, param := range []string{"PROJECT=a b", "X=1", "PROJECT", "PROJECT=PAY:", `PROJECT=PAY\`} {
 		out, err := runAutomations(t, "install-template", "jira-state-report", "--param", param)
 		require.Error(t, err, "--param %s: %s", param, out)
 	}
@@ -75,6 +75,32 @@ func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
 	rows, err := c3.d.ListAutomations(db.AutomationFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, rows)
+}
+
+func TestInstallTemplate_FailedWriteRollsBack(t *testing.T) {
+	c := newAutoCLI(t)
+	wb, folder := templateWorkbench(t, c)
+	calls := 0
+	orig := writeTemplateFile
+	writeTemplateFile = func(path string, data []byte, perm os.FileMode) error {
+		calls++
+		if calls == 2 {
+			return os.ErrPermission
+		}
+		return orig(path, data, perm)
+	}
+	t.Cleanup(func() { writeTemplateFile = orig })
+
+	_, err := runAutomations(t, "install-template", "release-buttons", "--workbench", idArg(wb))
+	require.Error(t, err)
+	dir := automations.WorkbenchDir(folder)
+	for _, slug := range []string{"release", "deploy-test", "deploy-stage"} {
+		assert.NoFileExists(t, filepath.Join(dir, slug+".md"))
+	}
+
+	writeTemplateFile = orig
+	got := installTemplate(t, "release-buttons", "--workbench", idArg(wb))
+	assert.Len(t, got.Installed, 3, "a retry is not refused")
 }
 
 func TestInstallTemplate_InstalledUnconfirmedAndDisabled(t *testing.T) {
