@@ -97,6 +97,8 @@ func TestWorkbenchColumns_SetRefusesUnknownKeyAndTrailingData(t *testing.T) {
 	for name, in := range map[string]string{
 		"misspelled key":  `{"colums":[],"hidden":[]}`,
 		"hidden_statuses": `{"columns":[],"hidden_statuses":["blocked"]}`,
+		"extra brace":     good + `}`,
+		"extra bracket":   good + `]`,
 		"trailing data":   good + ` {"columns":[]}`,
 	} {
 		_, _, err = runColumns(t, in, id, "--set", "-", "--json")

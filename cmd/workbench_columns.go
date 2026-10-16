@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -47,7 +48,7 @@ func runWorkbenchColumns(cmd *cobra.Command, args []string) error {
 		if err := dec.Decode(&in); err != nil {
 			return fmt.Errorf("reading the column definition from stdin: %w", err)
 		}
-		if dec.More() {
+		if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return fmt.Errorf("reading the column definition from stdin: unexpected data after the JSON object")
 		}
 	}
