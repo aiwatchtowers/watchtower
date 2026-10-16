@@ -272,6 +272,15 @@ func resolveSaveTarget(cfg *config.Config, database *db.DB, file, target string)
 		return saveTarget{}, fmt.Errorf("cannot save to %s: a recipe lives in the personal folder (%s) or a workbench's .watchtower/automations folder",
 			target, automations.PersonalDir(cfg.WorkspaceDir()))
 	}
+	if scope.Kind == automations.ScopeWorkbench {
+		w, err := database.GetWorkbench(scope.WorkbenchID)
+		if err != nil {
+			return saveTarget{}, err
+		}
+		if err := refuseLinkedRecipeDir(automations.WorkbenchDir(w.FolderPath)); err != nil {
+			return saveTarget{}, fmt.Errorf("cannot save to %s: %w", target, err)
+		}
+	}
 	return saveTarget{scope: scope, dir: dir, path: path, slug: slug}, nil
 }
 
@@ -362,6 +371,13 @@ func indexedRecipeAt(ctx context.Context, cfg *config.Config, database *db.DB, s
 	if err != nil {
 		return nil, err
 	}
+	return recipeInReport(database, scope, report, path)
+}
+
+// recipeInReport is the index row of the recipe file at path (canonical)
+// after the rescan that produced report, or an error naming why it is not
+// indexed.
+func recipeInReport(database *db.DB, scope automations.Scope, report automations.RescanReport, path string) (*db.Automation, error) {
 	for _, s := range report.Skipped {
 		if s.Path == path {
 			return nil, fmt.Errorf("%s is not indexed: %s", path, s.Reason)

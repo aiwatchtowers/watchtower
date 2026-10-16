@@ -119,7 +119,9 @@ func pauseTimeout(r *Recipe) time.Duration {
 }
 
 // triggerInfo builds the script's trigger object. An event run's event_json
-// must decode as db.AutomationEventPayload with every event an object (S5).
+// must decode as db.AutomationEventPayload with every event an object (S5);
+// so must a dry run's, when it carries one (the events an event recipe's dry
+// run plays).
 func triggerInfo(run *db.AutomationRun, r *Recipe) (TriggerInfo, error) {
 	t := TriggerInfo{
 		Kind: run.Trigger, RunID: run.ID, ScheduledFor: run.ScheduledFor,
@@ -128,7 +130,7 @@ func triggerInfo(run *db.AutomationRun, r *Recipe) (TriggerInfo, error) {
 	if run.Trigger == db.TriggerButton && r.Trigger.Button != nil {
 		t.Button = r.Trigger.Button.Label
 	}
-	if run.Trigger != db.TriggerEvent {
+	if run.Trigger != db.TriggerEvent && (run.Trigger != db.TriggerDryRun || run.EventJSON == "") {
 		return t, nil
 	}
 	var p db.AutomationEventPayload

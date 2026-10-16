@@ -385,3 +385,55 @@ func TestListEmails_QualifiedRefBeatsLookalikeLabel(t *testing.T) {
 	require.ErrorAs(t, err, &ve)
 	assert.Contains(t, ve.Msg, "gmail is not enabled for this account", "the disabled Google account, not the lookalike")
 }
+
+// before is exclusive and keeps the newest-first order, so paging older with
+// before = the previous page's oldest date walks a mailbox without overlap;
+// a bad before is a ValidationError. IMAP mail pages the same way.
+func TestListEmails_BeforePagesOlder(t *testing.T) {
+	f := newEmailFixture(t)
+	for i := range 250 {
+		f.seedGmail(t, fmt.Sprintf("m%03d", i), f.recent.Add(-time.Duration(i)*time.Minute), false, "")
+	}
+	seen := map[string]bool{}
+	before := ""
+	for page := 0; ; page++ {
+		require.Less(t, page, 10, "paging never ends")
+		args := `{"account":"work","limit":100`
+		if before != "" {
+			args += `,"before":"` + before + `"`
+		}
+		got := f.list(t, args+`}`).Messages
+		if len(got) == 0 {
+			break
+		}
+		for i, m := range got {
+			assert.False(t, seen[m.ID], "message %s listed twice", m.ID)
+			seen[m.ID] = true
+			if i > 0 {
+				assert.Less(t, m.Date, got[i-1].Date, "newest first")
+			}
+			if before != "" {
+				assert.Less(t, m.Date, before, "before is exclusive")
+			}
+		}
+		before = got[len(got)-1].Date
+	}
+	assert.Len(t, seen, 250)
+
+	window := f.list(t, `{"account":"work","since":"`+f.recent.Add(-9*time.Minute).Format(time.RFC3339)+
+		`","before":"`+f.recent.Add(-4*time.Minute).Format(time.RFC3339)+`"}`).Messages
+	require.Len(t, window, 5, "since inclusive, before exclusive")
+	assert.Equal(t, "m005", window[0].ID)
+	assert.Equal(t, "m009", window[4].ID)
+
+	_, err := f.reg.CallRead(context.Background(), "list_emails", json.RawMessage(`{"account":"work","before":"soon"}`), Binding{})
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Contains(t, ve.Msg, "before")
+
+	f.seedIMAP(t, 1, f.recent.Add(-time.Hour), "")
+	f.seedIMAP(t, 2, f.recent, "")
+	imap := f.list(t, `{"account":"home","before":"`+f.recent.Format(time.RFC3339)+`"}`).Messages
+	require.Len(t, imap, 1)
+	assert.Equal(t, "7-1", imap[0].ID)
+}
