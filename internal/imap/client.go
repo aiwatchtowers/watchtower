@@ -126,6 +126,17 @@ func (cl *Client) SearchSince(since time.Time) ([]uint32, error) {
 	return uidsToUint32s(data.AllUIDs()), nil
 }
 
+// SearchRange returns the UIDs of messages received in [since, before) —
+// IMAP SINCE/BEFORE are day-granular, SINCE inclusive and BEFORE exclusive.
+// It is the history backfill's cheap listing phase.
+func (cl *Client) SearchRange(since, before time.Time) ([]uint32, error) {
+	data, err := cl.c.UIDSearch(&imap.SearchCriteria{Since: since, Before: before}, nil).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("imap: search %s..%s: %w", since.Format("2006-01-02"), before.Format("2006-01-02"), err)
+	}
+	return uidsToUint32s(data.AllUIDs()), nil
+}
+
 // FetchUIDs fetches full envelope+flags+internaldate+body for exactly the
 // given UIDs — the expensive phase, called only after the caller has already
 // sorted and capped a cheap SearchNewSince/SearchSince result, so a large

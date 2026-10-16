@@ -12,7 +12,7 @@ import (
 var ErrLinearAccountNotFound = errors.New("linear account not found")
 
 // LinearAccount is one connected Linear workspace (linear_accounts, migration
-// 00116). Every other linear_* row references it via account_id.
+// 00119). Every other linear_* row references it via account_id.
 type LinearAccount struct {
 	ID               int64
 	OrgID            string

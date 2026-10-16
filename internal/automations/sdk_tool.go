@@ -14,8 +14,8 @@ import (
 // ToolModule defines tool(name, args) (spec §5): the manifest check
 // (AllowTool), then for a read tool Registry.CallRead with the run's
 // binding and the list limit injected or clamped (ClampListLimit). A write
-// tool throws NotAvailable in P1; P2's ToolWriteModule replaces the path and
-// delegates reads to readTool.
+// tool throws NotAvailable here; ToolWriteModule (installed after it in
+// DefaultModules) replaces the path and delegates reads to readTool.
 func ToolModule(b Backends) Module {
 	return sdkModule{name: "tool", fns: map[string]SDKFunc{"tool": func(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 		req, reqErr := parseToolCall(env, rt, call)
@@ -104,12 +104,8 @@ func admitTool(env *Env, b Backends, step *Step, req toolCall) (*tools.Tool, err
 // the script; every other failure is a ToolError.
 func readTool(env *Env, b Backends, t *tools.Tool, args json.RawMessage) (any, error) {
 	res, err := b.Registry.CallRead(env.Ctx, t.Name, ClampListLimit(t, args), env.Binding())
-	if err == nil {
-		return jsonValue(res), nil
+	if err != nil {
+		return nil, registryError(t, err)
 	}
-	var ve *tools.ValidationError
-	if errors.As(err, &ve) {
-		return nil, &SDKError{Name: ErrNameValidation, Message: ve.Msg}
-	}
-	return nil, &SDKError{Name: ErrNameTool, Message: fmt.Sprintf("%s: %v", t.Name, err)}
+	return jsonValue(res), nil
 }

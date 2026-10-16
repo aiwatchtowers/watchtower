@@ -190,6 +190,42 @@ func TestManifest_SlackWriteScopeByAccountLabel(t *testing.T) {
 	expectAdmit(t, d, work, send, `{}`)
 }
 
+func TestManifest_AllowOutputToolSlackNeedsWriteScope(t *testing.T) {
+	d := openManifestTestDB(t)
+	mustExec(t, d, `INSERT INTO slack_accounts (id, label, team_domain) VALUES (1, 'work', 'acme-work'), (2, 'home', 'acme-home')`)
+	send, target := autoWriteTool("send_slack_message"), autoWriteTool("create_target")
+	cases := []struct {
+		name, args, wantEntry, wantNeeded string
+		entries, outputs                  []string
+	}{
+		{"no outputs slack", `{"account_id":1}`, "", "output:slack", []string{"slack:write@work"}, nil},
+		{"outputs slack, no slack:write, no account", `{}`, "", "slack:write@*", nil, []string{"slack"}},
+		{"outputs slack, no slack:write", `{"account_id":1}`, "", "slack:write@work", nil, []string{"slack"}},
+		{"outputs slack, slack:write@work, work", `{"account_id":1}`, "output:slack, slack:write@work", "", []string{"slack:write@work"}, []string{"slack"}},
+		{"outputs slack, slack:write@work, home", `{"account_id":2}`, "", "slack:write@home", []string{"slack:write@work"}, []string{"slack"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := mustManifest(t, c.entries, c.outputs...)
+			checkAllowOutputTool(t, d, m, "slack", send, c.args, c.wantEntry, c.wantNeeded)
+		})
+	}
+	// outputs is the whole gate of output.target.
+	checkAllowOutputTool(t, d, mustManifest(t, nil, "target"), "target", target, `{"text":"x"}`, "output:target", "")
+}
+
+func checkAllowOutputTool(t *testing.T, d *db.DB, m *Manifest, kind string, tl *tools.Tool, args, wantEntry, wantNeeded string) {
+	t.Helper()
+	entry, err := m.AllowOutputTool(context.Background(), d, kind, tl, json.RawMessage(args))
+	var pd *PermissionDenied
+	switch {
+	case wantNeeded == "" && (err != nil || entry != wantEntry):
+		t.Fatalf("AllowOutputTool = %q, %v; want %q", entry, err, wantEntry)
+	case wantNeeded != "" && (!errors.As(err, &pd) || pd.Needed != wantNeeded):
+		t.Fatalf("AllowOutputTool = %q, %v; want PermissionDenied needing %s", entry, err, wantNeeded)
+	}
+}
+
 func TestManifest_ScopeOfErrorIsADeniedNotAPanic(t *testing.T) {
 	d := openManifestTestDB(t)
 	m := mustManifest(t, []string{"slack:write@work"})
@@ -528,4 +564,86 @@ func TestApprovalHash_UsesNormalisedPermissions(t *testing.T) {
 	if ApprovalHash(a) != ApprovalHash(b) {
 		t.Error("case and duplicate variants of the same entries hash differently")
 	}
+}
+
+// autoWriteTool is a fake registry write tool visible on the automation
+// surface (the real write tools join the surface in P2 Task 4).
+func autoWriteTool(name string) *tools.Tool {
+	t := autoTool(name)
+	t.Access = tools.AccessWrite
+	return t
+}
+
+// admitsCase is one AdmitsTool/AdmitsWrite row: a manifest (entries and
+// outputs), a tool, and the expected verdict.
+type admitsCase struct {
+	name    string
+	entries []string
+	outputs []string
+	tool    *tools.Tool
+	want    bool
+}
+
+func runAdmitsCases(t *testing.T, cases []admitsCase, admits func(*Manifest, *tools.Tool) bool) {
+	t.Helper()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := mustManifest(t, c.entries, c.outputs...)
+			if got := admits(m, c.tool); got != c.want {
+				t.Errorf("%v outputs %v, %s: got %v, want %v", c.entries, c.outputs, c.tool.Name, got, c.want)
+			}
+		})
+	}
+}
+
+func TestManifest_AdmitsTool(t *testing.T) {
+	jiraRead := []string{"jira:read@PAY"}
+	allReads := everyCapability
+	cases := []admitsCase{
+		{"jira read admits list_jira_issues", jiraRead, nil, autoTool("list_jira_issues"), true},
+		{"jira read admits get_jira_issue", jiraRead, nil, autoTool("get_jira_issue"), true},
+		{"jira read does not admit create_jira_issue", jiraRead, nil, autoWriteTool("create_jira_issue"), false},
+		{"jira read admits list_jira_sprints by name", jiraRead, nil, autoTool("list_jira_sprints"), true},
+		{"targets read admits list_targets", []string{"targets:read"}, nil, autoTool("list_targets"), true},
+		{"targets read does not admit create_target", []string{"targets:read"}, nil, autoWriteTool("create_target"), false},
+		{"meetings read admits get_meeting_recap", []string{"meetings:read"}, nil, autoTool("get_meeting_recap"), true},
+		{"tool entry off the surface", []string{"tool:get_confluence_page"}, nil, tools.NewGetConfluencePage(nil), false},
+		{"outputs slack admits no tool() send_slack_message", nil, []string{"slack"}, autoWriteTool("send_slack_message"), false},
+		{"outputs target admits no tool() create_target", nil, []string{"target"}, autoWriteTool("create_target"), false},
+		{"unscoped call: slack read of one account", []string{"slack:read@work"}, nil, autoTool("list_messages"), false},
+		{"unscoped call: slack read star", []string{"slack:read@*"}, nil, autoTool("list_messages"), true},
+		{"unscoped call: calendar read of one account", []string{"calendar:read@work"}, nil, autoTool("list_upcoming_events"), false},
+		{"unscoped call: jira read star", []string{"jira:read@*"}, nil, autoTool("list_jira_projects"), true},
+		{"unscoped call: jira read of one project", jiraRead, nil, autoTool("list_jira_projects"), false},
+		{"unscoped call: tool entry", []string{"tool:list_messages"}, nil, autoTool("list_messages"), true},
+		{"empty manifest", nil, nil, autoTool("list_targets"), false},
+		{"every capability: search_knowledge", allReads, nil, tools.NewSearchKnowledge(), false},
+		{"every capability: get_knowledge_document", allReads, nil, tools.NewGetKnowledgeDocument(), false},
+		{"every capability: get_task_context", allReads, nil, tools.NewGetTaskContext(), false},
+		{"tool:search_knowledge admits it", []string{"tool:search_knowledge"}, nil, tools.NewSearchKnowledge(), true},
+		{"tool:search_knowledge admits no sibling", []string{"tool:search_knowledge"}, nil, tools.NewGetKnowledgeDocument(), false},
+	}
+	runAdmitsCases(t, cases, (*Manifest).AdmitsTool)
+}
+
+func TestManifest_AdmitsWrite(t *testing.T) {
+	alwaysAsk := autoWriteTool("dismiss_tracks")
+	alwaysAsk.AlwaysAsk = true
+	cases := []admitsCase{
+		{"tool:create_target", []string{"tool:create_target"}, nil, autoWriteTool("create_target"), true},
+		{"outputs target", nil, []string{"target"}, autoWriteTool("create_target"), true},
+		{"outputs slack alone admits no grant (D28)", nil, []string{"slack"}, autoWriteTool("send_slack_message"), false},
+		{"outputs slack with slack:write", []string{"slack:write@work"}, []string{"slack"}, autoWriteTool("send_slack_message"), true},
+		{"slack:write without outputs slack", []string{"slack:write@work"}, nil, autoWriteTool("send_slack_message"), true},
+		{"outputs slack does not cover create_target", nil, []string{"slack"}, autoWriteTool("create_target"), false},
+		{"outputs inbox report briefing cover no tool", nil, []string{"inbox", "report", "briefing"}, autoWriteTool("create_target"), false},
+		{"outputs target, tool off the surface", nil, []string{"target"}, &tools.Tool{Name: "create_target", Access: tools.AccessWrite, Surfaces: []string{"chat"}}, false},
+		{"jira write admits create_jira_issue", []string{"jira:write@PAY"}, nil, autoWriteTool("create_jira_issue"), true},
+		{"jira read star does not admit create_jira_issue", []string{"jira:read@*"}, nil, autoWriteTool("create_jira_issue"), false},
+		{"real dismiss_tracks: AlwaysAsk, not on the surface", []string{"tool:dismiss_tracks"}, nil, tools.NewDismissTracks(), false},
+		{"AlwaysAsk on the surface", []string{"tool:dismiss_tracks"}, nil, alwaysAsk, false},
+		{"read tool admitted by name is not a write", []string{"tool:list_targets", "targets:read"}, nil, autoTool("list_targets"), false},
+		{"write tool not admitted", []string{"targets:read"}, nil, autoWriteTool("create_target"), false},
+	}
+	runAdmitsCases(t, cases, (*Manifest).AdmitsWrite)
 }

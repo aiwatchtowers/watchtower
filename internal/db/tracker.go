@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// TrackerIssue is one row of the tracker_issues view (migration 00117): a Jira
+// TrackerIssue is one row of the tracker_issues view (migration 00120): a Jira
 // or Linear issue in tracker-neutral terms. Column names are a contract for
 // the consumers (briefing, inbox, day plan).
 type TrackerIssue struct {

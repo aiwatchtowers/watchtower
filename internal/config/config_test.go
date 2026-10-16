@@ -783,3 +783,16 @@ func TestLoad_LinearDefaults(t *testing.T) {
 	assert.Equal(t, 15, cfg.Linear.SyncIntervalMins)
 	assert.Equal(t, 90, cfg.Linear.BackfillDays)
 }
+
+func TestConfig_BackfillAndCalendarDefaults(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, "active_workspace: acme\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 30, cfg.Sync.BackfillDays)
+	assert.Equal(t, 30, cfg.Calendar.HistoryDays)
+}
+
+func TestConfig_BackfillZeroIsKept(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, "active_workspace: acme\nsync:\n  backfill_days: 0\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 0, cfg.Sync.BackfillDays, "0 turns new backfills off, never re-defaulted")
+}

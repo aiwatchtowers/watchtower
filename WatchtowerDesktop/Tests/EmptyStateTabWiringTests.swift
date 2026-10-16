@@ -131,7 +131,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
     func testCatchUpEmptyKeepsFirstSyncLine() throws {
         var built = false
         let view = CatchUpView.emptyPane(
-            firstSync: (title: "Syncing Slack…", detail: "Messages · 3/10 channels"),
+            firstSync: FirstSyncLine(title: "Syncing Slack…", detail: "Messages · 3/10 channels"),
             context: context
         ) { built = true }
         try assertSharedState(view, .catchUp)

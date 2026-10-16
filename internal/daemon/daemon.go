@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -66,6 +67,17 @@ type jiraAccountSyncer interface {
 	ResolveUsers(ctx context.Context, manualMap map[string]string) error
 	AccountID() int64
 	BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int)
+	FirstSyncFrom() (time.Time, bool)
+}
+
+// mailSyncer is the slice of *gmail.Syncer and *imap.Syncer behaviour the
+// mail sync phases and the history backfill use — an interface, like
+// jiraAccountSyncer, so a test can stage a first sync without a mail server.
+type mailSyncer interface {
+	Sync(ctx context.Context) (int, error)
+	FetchRange(ctx context.Context, from, to time.Time) (int, error)
+	AccountID() int64
+	FirstSyncFrom() (time.Time, bool)
 }
 
 // minPollInterval is the minimum allowed poll interval. Values below this
@@ -108,13 +120,18 @@ type Daemon struct {
 	memoryOpen          func() (*memory.Pipeline, error)
 	memoryOpenFailed    memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
 	memoryNow           func() time.Time  // its clock, nil = time.Now; a seam for tests
+	// backfillResume is where a held Gmail/Jira history-backfill chunk's
+	// stage-1 drain got to, so its retry starts there (backfillStreams).
+	// In memory only: a restart re-drains the chunk once. Touched only by
+	// the sequential history-backfill phase.
+	backfillResume      map[backfillResumeKey]time.Time
 	nextStepPipe        *targets.Pipeline
 	customTracksPipe    *customtracks.Pipeline
 	reactionCmdPipe     *reactioncmd.Pipeline
 	calendarSyncers     []*calendar.Syncer
 	calDAVSyncers       []*caldav.Syncer
-	gmailSyncers        []*gmail.Syncer
-	imapSyncers         []*imap.Syncer
+	gmailSyncers        []mailSyncer
+	imapSyncers         []mailSyncer
 	jiraSyncers         []jiraAccountSyncer
 	externalSync        ExternalSyncRunner
 	dayPlanPipeline     DayPlanRunner
@@ -151,6 +168,8 @@ type Daemon struct {
 	noOwnerLoggedDay map[string]string
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
+
+	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -270,14 +289,20 @@ func (d *Daemon) SetCalDAVSyncers(s []*caldav.Syncer) {
 // google_accounts row with gmail enabled and a live token (mirrors
 // SetCalendarSyncers/SetImapSyncers).
 func (d *Daemon) SetGmailSyncers(s []*gmail.Syncer) {
-	d.gmailSyncers = s
+	d.gmailSyncers = make([]mailSyncer, len(s))
+	for i, syncer := range s {
+		d.gmailSyncers[i] = syncer
+	}
 }
 
 // SetImapSyncers sets the per-account IMAP/Outlook syncers for post-sync mail
 // fetch — one per connected email_accounts row, unlike Gmail's single syncer,
 // since a workspace can have any number of connected mailboxes.
 func (d *Daemon) SetImapSyncers(s []*imap.Syncer) {
-	d.imapSyncers = s
+	d.imapSyncers = make([]mailSyncer, len(s))
+	for i, syncer := range s {
+		d.imapSyncers[i] = syncer
+	}
 }
 
 // SetJiraSyncers sets the per-account Jira syncers — one per connected,
@@ -454,6 +479,7 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 }
 
 func (d *Daemon) runSync(ctx context.Context) {
+	d.sampleLockStats(ctx)
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
 	syncStart := time.Now()
@@ -472,6 +498,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseJiraSync(ctx)
 	d.phaseLinearSync(ctx)
 	d.phaseExternalSync(ctx)
+	d.phaseAgentAnalytics(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
 	// partial fetch). The DB still has messages that need processing.
@@ -523,6 +550,19 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseBriefing(ctx)
 
 	d.runDayPlanPhases(ctx, time.Now())
+
+	// Last, and alone: it shares the digest pipeline and the ideas lock with
+	// the forward phases above, so it must stay out of any parallel group.
+	d.phaseHistoryBackfill(ctx)
+}
+
+// sampleLockStats writes this cycle's WAL and connection-pool wait sample to
+// the lock-metrics sink (db.SampleLockStats). Never on a cancelled ctx.
+func (d *Daemon) sampleLockStats(ctx context.Context) {
+	if d.db == nil || ctx.Err() != nil {
+		return
+	}
+	d.lockStats = d.db.SampleLockStats(ctx, d.lockStats)
 }
 
 // pipelineRunStats are the bookkeeping metrics recorded for a daemon-managed
@@ -658,6 +698,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
+			if from, ok := o.FirstSyncFrom(); ok {
+				d.startHistoryBackfill("slack", o.AccountID(), from)
+			}
 			switch {
 			case err != nil:
 				d.logger.Printf("sync error: %v", err)
@@ -773,6 +816,9 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
 	for _, s := range d.gmailSyncers {
 		n, err := s.Sync(ctx)
+		if from, ok := s.FirstSyncFrom(); ok {
+			d.startHistoryBackfill("gmail", s.AccountID(), from)
+		}
 		if err != nil {
 			d.logger.Printf("gmail sync error: %v", err)
 		} else if n > 0 {
@@ -788,6 +834,9 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 func (d *Daemon) phaseImapSync(ctx context.Context) {
 	for _, s := range d.imapSyncers {
 		n, err := s.Sync(ctx)
+		if from, ok := s.FirstSyncFrom(); ok {
+			d.startHistoryBackfill("imap", s.AccountID(), from)
+		}
 		if err != nil {
 			d.logger.Printf("imap sync error: %v", err)
 		} else if n > 0 {
@@ -834,6 +883,10 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	anyClean := false
 	for _, s := range d.jiraSyncers {
 		n, err := s.Sync(ctx)
+		// Read after every Sync, whatever it returned (R13).
+		if from, ok := s.FirstSyncFrom(); ok {
+			d.startHistoryBackfill("jira", s.AccountID(), from)
+		}
 		if err != nil {
 			d.logger.Printf("jira: account %d: sync error: %v", s.AccountID(), err)
 			if firstErr == nil {
@@ -1596,6 +1649,22 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 	if !d.config.Memory.Enabled {
 		d.logger.Printf("memory: disabled, skipping")
 		return
+	}
+	// Extraction is oldest-first behind a watermark: let the history
+	// backfill land its older rows first (docs/features/history-backfill.md).
+	if d.db != nil {
+		active, err := d.db.HasActiveHistoryBackfill()
+		if err != nil {
+			// Unknown backfill state: skip rather than fail open — running
+			// extraction past an unfinished backfill moves its watermark
+			// over rows that have not landed yet.
+			d.logger.Printf("memory: skipping cycle, history backfill check failed: %v", err)
+			return
+		}
+		if active {
+			d.logger.Printf("memory: waiting for the history backfill to finish")
+			return
+		}
 	}
 	if d.memoryPipe == nil && d.memoryOpen != nil {
 		p, err := d.memoryOpen()

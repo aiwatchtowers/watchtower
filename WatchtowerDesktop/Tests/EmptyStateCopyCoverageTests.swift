@@ -14,6 +14,6 @@ final class EmptyStateCopyCoverageTests: XCTestCase {
     }
 
     func testExemptListIsExactlyTheSpecs() {
-        XCTAssertEqual(EmptyStateCopyTable.exempt, ["search", "usage", "mcpServer", "chat"])
+        XCTAssertEqual(EmptyStateCopyTable.exempt, ["search", "usage", "mcpServer", "chat", "home"])
     }
 }

@@ -24,7 +24,7 @@ type createTrackArgs struct {
 // NewCreateTrack builds the create_track write tool: a new narrative track to
 // watch a topic over time, in the owner manual-create shape
 // (origin='custom', enabled=1) via db.CreateCustomTrack. Visible on the
-// reaction path and in the main chat.
+// reaction path, in the main chat and to automations.
 func NewCreateTrack() *Tool {
 	schema, err := jsonschema.For[createTrackArgs](nil)
 	if err != nil {
@@ -37,11 +37,12 @@ func NewCreateTrack() *Tool {
 			"keep an eye on or follow something over time.",
 		InputSchema: schema,
 		Access:      AccessWrite,
-		// The reaction path (REACT-02 binds the reacted message) and the main
-		// chat, where the owner asks for it directly. Never the target chat:
+		// The reaction path (REACT-02 binds the reacted message), the main
+		// chat, where the owner asks for it directly, and automations (spec
+		// 2026-10-14 §6.1). Never the target chat:
 		// its mandate forbids creating work outside the target's vertical line
 		// (TGT-BRIEF-01 axis 3).
-		Surfaces: []string{"reaction", "main"},
+		Surfaces: []string{"reaction", "main", AutomationSurface},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a createTrackArgs
 			if err := decodeStrict(raw, &a); err != nil {

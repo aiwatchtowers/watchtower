@@ -112,11 +112,12 @@ func NewCreateIdea() *Tool {
 		Description: "Capture an idea in the ideas registry.",
 		InputSchema: schema,
 		Access:      AccessWrite,
-		// The reaction path (REACT-02 binds the reacted message) and the main
-		// chat, where the owner asks for it directly. Never the target chat:
+		// The reaction path (REACT-02 binds the reacted message), the main
+		// chat, where the owner asks for it directly, and automations (spec
+		// 2026-10-14 §6.1). Never the target chat:
 		// its mandate forbids creating work outside the target's vertical line
 		// (TGT-BRIEF-01 axis 3).
-		Surfaces: []string{"reaction", "main"},
+		Surfaces: []string{"reaction", "main", AutomationSurface},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a createIdeaArgs
 			if err := decodeStrict(raw, &a); err != nil {

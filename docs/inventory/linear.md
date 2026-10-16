@@ -6,13 +6,13 @@
 >
 > AI assistant: when working in `internal/linear/`,
 > `internal/db/linear.go`, `internal/db/linear_accounts.go`,
-> `internal/db/linear_users.go`, `internal/db/migrations/00116_linear_tables.sql`,
-> `internal/db/migrations/00117_tracker_views.sql`, `cmd/linear.go`, or
+> `internal/db/linear_users.go`, `internal/db/migrations/00119_linear_tables.sql`,
+> `internal/db/migrations/00120_tracker_views.sql`, `cmd/linear.go`, or
 > `phaseLinearSync` in `internal/daemon/daemon.go`, read this file first.
 > Any proposed change that would break a guard test or remove a contract
 > must be raised as a question before touching code.
 
-**Module:** `internal/linear/` (OAuth, GraphQL client, syncer), `internal/db/linear*.go`, migrations 00116 (`linear_*` tables) and 00117 (`tracker_*` views), `cmd/linear.go`, `internal/daemon/daemon.go` (`phaseLinearSync`). Feature note: `docs/features/linear.md`. The Linear rung of OWNER-01 is documented in [owner-identity.md](owner-identity.md); not repeated here.
+**Module:** `internal/linear/` (OAuth, GraphQL client, syncer), `internal/db/linear*.go`, migrations 00119 (`linear_*` tables) and 00120 (`tracker_*` views), `cmd/linear.go`, `internal/daemon/daemon.go` (`phaseLinearSync`). Feature note: `docs/features/linear.md`. The Linear rung of OWNER-01 is documented in [owner-identity.md](owner-identity.md); not repeated here.
 **Last full audit:** 2026-10-15
 
 ## LINEAR-01 — The watermark is honest

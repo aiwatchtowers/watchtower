@@ -65,6 +65,7 @@ type SyncConfig struct {
 	PollInterval       time.Duration `mapstructure:"poll_interval"`
 	SyncThreads        bool          `mapstructure:"sync_threads"`
 	SyncOnWake         bool          `mapstructure:"sync_on_wake"`
+	BackfillDays       int           `mapstructure:"backfill_days"`
 }
 
 type DigestConfig struct {
@@ -172,13 +173,13 @@ type CalendarConfig struct {
 	Enabled           bool     `mapstructure:"enabled"`            // enable calendar sync (default: true)
 	SelectedCalendars []string `mapstructure:"selected_calendars"` // specific calendar IDs to sync
 	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: DefaultCalendarSyncDaysAhead)
-	HistoryDays       int      `mapstructure:"history_days"`       // days of past events to keep synced (default: 14, floor 1)
+	HistoryDays       int      `mapstructure:"history_days"`       // days of past events to keep synced (default: 30, floor 1)
 }
 
 // EffectiveHistoryDays returns the configured past-events sync window in
-// days, floored at 1 so the window never collapses (spec: default 14,
+// days, floored at 1 so the window never collapses (spec: default 30,
 // floor 1 — the same clamp CalendarViewModel applies on the Swift side; an
-// absent config key gets the 14-day default from viper's SetDefault). Both
+// absent config key gets the 30-day default from viper's SetDefault). Both
 // the Google and CalDAV syncers derive timeMin from this, and the
 // per-calendar stale-delete then naturally retains the same window — so
 // widening it here is the single knob for browsable history.
@@ -454,6 +455,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("ai.workers", DefaultAIWorkers)
 	v.SetDefault("sync.workers", DefaultSyncWorkers)
 	v.SetDefault("sync.initial_history_days", DefaultInitialHistDays)
+	v.SetDefault("sync.backfill_days", DefaultBackfillDays)
 	v.SetDefault("sync.poll_interval", DefaultPollInterval)
 	v.SetDefault("sync.sync_threads", DefaultSyncThreads)
 	v.SetDefault("sync.sync_on_wake", DefaultSyncOnWake)

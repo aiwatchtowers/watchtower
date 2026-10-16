@@ -172,6 +172,9 @@ func (s *shownIDs) resolveAttentionSource(sourceType, sourceID string) (string, 
 		set = s.inbox
 	case "people":
 		return s.resolvePerson(sourceID)
+	case "automation":
+		// Automation notes carry no ids (the prompt says so): any id is invented.
+		return "", false
 	case "project":
 		id, err := strconv.ParseInt(strings.TrimSpace(sourceID), 10, 64)
 		if err != nil || !s.workbenches[id] {

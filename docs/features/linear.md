@@ -4,7 +4,7 @@ Plan 1 ships the schema, the tracker-neutral views and the connector. Consumers 
 
 ## Architecture
 
-Connector (`internal/linear/`) → `linear_*` tables (migration 00116) → `tracker_*` views (migration 00117) over Jira and Linear. Consumers will read only `tracker_*`; connectors write the normalized columns (`status_category`, `state_changed_at`) so the views stay plain projections.
+Connector (`internal/linear/`) → `linear_*` tables (migration 00119) → `tracker_*` views (migration 00120) over Jira and Linear. Consumers will read only `tracker_*`; connectors write the normalized columns (`status_category`, `state_changed_at`) so the views stay plain projections.
 
 ## OAuth
 
@@ -22,11 +22,11 @@ Authorization-code flow with PKCE (no client secret). The client id comes from `
 - Archived or trashed issues are stored with `is_deleted = 1`. Issues are keyed by UUID; keys move (LINEAR-04).
 - Users are fetched each pass and mapped to Slack by email only (`db.ResolveLinearUsersByEmail`; manual mappings are untouched); Slack ids are back-filled onto issues (assignee and creator; `db.BackfillLinearSlackIDs`); comments keep their Linear author id. Comment mentions are read from the body's `suggestion_userMentions` nodes (`attrs.id`).
 
-## Tables (00116)
+## Tables (00119)
 
 `linear_accounts`, `linear_teams` (selection), `linear_sync_state`, `linear_issues`, `linear_comments`, `linear_issue_history` (state and assignee changes), `linear_cycles`, `linear_projects`, `linear_relations`, `linear_user_map`.
 
-## Views (00117)
+## Views (00120)
 
 - `tracker_issues`: tracker, account_id, issue_id, key, project_key, title, description_text, status, status_category, status_changed_at, assignee_*, reporter_*, priority, priority_rank, points, due_date, iteration_id/name, container_kind/id/name, parent_key, labels, is_bug, is_blocked, url, created_at, updated_at, resolved_at, synced_at, is_deleted.
 - `tracker_comments` (the Linear branch shows the issue's current key, so comments follow a team move), `tracker_history` (tracker, account_id, issue key, id, field, from/to value and string, actor, changed_at), `tracker_iterations` (sprints and cycles with a derived state), `tracker_people`, `tracker_accounts` (enabled, non-removed accounts only).

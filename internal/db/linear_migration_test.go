@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMigration00116_LinearTablesDownUp(t *testing.T) {
+func TestMigration00119_LinearTablesDownUp(t *testing.T) {
 	d := openTestDB(t)
 	for _, tbl := range []string{"linear_accounts", "linear_teams", "linear_sync_state", "linear_issues",
 		"linear_comments", "linear_issue_history", "linear_cycles", "linear_projects",

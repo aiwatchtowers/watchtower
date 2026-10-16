@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -211,6 +212,21 @@ func (db *DB) GetOldestMessagesByTimeRange(channelID string, from, to float64, l
 	defer rows.Close()
 
 	return scanMessages(rows)
+}
+
+// SlackAccountHasMessages reports whether any stored message belongs to the
+// Slack account: its channel ids are namespaced "<account>:<raw>" (00048),
+// so the account's rows are the primary-key range ["<account>:",
+// "<account>;") — ';' is the byte after ':'.
+func (db *DB) SlackAccountHasMessages(accountID int64) (bool, error) {
+	prefix := strconv.FormatInt(accountID, 10)
+	var has bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM messages WHERE channel_id >= ? AND channel_id < ?)`,
+		prefix+":", prefix+";").Scan(&has)
+	if err != nil {
+		return false, fmt.Errorf("checking stored messages of slack account %d: %w", accountID, err)
+	}
+	return has, nil
 }
 
 // CountMessagesInChannelRange returns how many messages one channel holds in a

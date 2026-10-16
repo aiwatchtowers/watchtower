@@ -86,13 +86,18 @@ type FakeProposal struct {
 // FakeRegistry is an automations.ToolRegistry over a fixed tool set. CallRead
 // returns ReadResults[name] (or ReadErrors[name]) and refuses an unknown or
 // write tool the way *tools.Registry does; Propose records the call and
-// returns a pending receipt. Neither runs a tool's Execute.
+// returns ProposeReceipts[name] (or ProposeErrors[name]; a pending receipt
+// when neither is set). Neither runs a tool's Execute.
 type FakeRegistry struct {
 	Tools       map[string]*tools.Tool
 	ReadResults map[string]any
 	ReadErrors  map[string]error
 	Reads       []FakeRead
 	Proposed    []FakeProposal
+	// ProposeReceipts and ProposeErrors script Propose per tool name. A
+	// scripted receipt with ActionID 0 gets the proposal's number.
+	ProposeReceipts map[string]tools.Receipt
+	ProposeErrors   map[string]error
 
 	mu sync.Mutex
 }
@@ -125,7 +130,8 @@ func (r *FakeRegistry) CallRead(_ context.Context, name string, args json.RawMes
 	return r.ReadResults[name], nil
 }
 
-// Propose records the proposal and returns a pending receipt.
+// Propose records the proposal and returns its scripted receipt or error
+// (a pending receipt by default).
 func (r *FakeRegistry) Propose(_ context.Context, name string, args json.RawMessage, b tools.Binding) (tools.Receipt, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -133,7 +139,17 @@ func (r *FakeRegistry) Propose(_ context.Context, name string, args json.RawMess
 		return tools.Receipt{}, tools.ErrUnknownTool
 	}
 	r.Proposed = append(r.Proposed, FakeProposal{Name: name, Args: append(json.RawMessage(nil), args...), Binding: b})
-	return tools.Receipt{ActionID: int64(len(r.Proposed)), Status: "pending", Tool: name}, nil
+	if err := r.ProposeErrors[name]; err != nil {
+		return tools.Receipt{}, err
+	}
+	rc, ok := r.ProposeReceipts[name]
+	if !ok {
+		rc = tools.Receipt{Status: "pending", Tool: name}
+	}
+	if rc.ActionID == 0 {
+		rc.ActionID = int64(len(r.Proposed))
+	}
+	return rc, nil
 }
 
 // ReadCalls returns a copy of the reads received so far.

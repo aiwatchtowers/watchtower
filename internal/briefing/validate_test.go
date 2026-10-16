@@ -129,3 +129,14 @@ func TestShownIDs_ValidatesTeamPulseAndCoachingPeople(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(wire), "user_id", "a blanked id is omitted, not stored as \"\"")
 }
+
+func TestValidateIDs_AutomationSourceIDAlwaysBlanked(t *testing.T) {
+	s := newShownIDs()
+	r := &BriefingResult{Attention: []AttentionItem{
+		{Text: "a", SourceType: "automation", SourceID: "7"},
+		{Text: "b", SourceType: "automation"},
+	}}
+	assert.Equal(t, 1, s.validateIDs(r))
+	assert.Equal(t, "", r.Attention[0].SourceID)
+	assert.Equal(t, "automation", r.Attention[0].SourceType, "the item keeps its type, only the invented id goes")
+}

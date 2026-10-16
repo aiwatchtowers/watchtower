@@ -13,13 +13,16 @@ of these entries; decisions §20, §20.1).
 
 **Module:** `internal/automations/`, `internal/db/automations.go`,
 `internal/db/automation_runs.go`, `internal/db/automation_stats.go`,
-`internal/db/automation_reads.go`, `internal/db/migrations/00113_automations.sql`,
-`cmd/automations*.go`, `cmd/automations_registry.go`,
+`internal/db/automation_reads.go`, `internal/db/automation_grants.go`,
+`internal/db/migrations/00113_automations.sql`,
+`internal/db/migrations/00117_automation_tool_grants.sql`,
+`cmd/automations*.go` (incl. `cmd/automations_auto.go`), `cmd/automations_registry.go`,
+`internal/briefing/automations.go` (the FROM YOUR AUTOMATIONS block),
 `internal/daemon/automation_wake.go`, `internal/tools/emails.go`,
 `internal/tools/automation_reads.go`
-**Last full audit:** 2026-10-15 (Automations P1)
+**Last full audit:** 2026-10-15 (Automations P2)
 
-Phases: P1 (core) is in code. P2 (writes), P3 (authoring + Desktop), P4
+Phases: P1 (core) and P2 (writes) are in code. P3 (authoring + Desktop), P4
 (events), P5 (workbench) and P6 (mcp, agent, templates) each flip their
 **Planned** part in the same commit as its code; exactly one plan flips each
 part. Guard tests are named `TestAutoNN_…` (Go) and `testAutoNN_…` (Swift);
@@ -43,7 +46,13 @@ scope argument is absent is admitted only by `@*` or `tool:<name>`;
 knowledge tools, `list_inbox`, the memory tools and `get_writing_style` have
 no capability and are admitted only by `tool:<name>` (asks #273, #277); a scope
 argument spelled in another case (`PROJECT`, `Key`, `Account`) is not read as
-the scope, so the call needs `@*`. A Jira project grant covers what the tool
+the scope, so the call needs `@*`. An output shortcut needs its kind in
+`outputs`; `output.slack` needs more (D28, ask #315,
+`(*Manifest).AllowOutputTool`): `outputs: [slack]` **and** a permission that
+admits the `send_slack_message` call itself — `slack:write@<account>` for the
+resolved account, `slack:write@*`, or the unscoped `tool:send_slack_message`
+(which admits it like `slack:write@*`); `output.target` needs only
+`outputs: [target]`. A Jira project grant covers what the tool
 returns with that project's issues, linked issues of other projects included
 (owner ruling, ask #287). An uncaught `PermissionDenied` ends the run
 `failed`/`permission`.
@@ -56,7 +65,8 @@ owner never read.
 **Test guards:**
 - `internal/automations/sdk_test.go` — `TestAuto01_DeniedCallThrowsAndWritesDeniedStep` (the fake registry records zero calls), `TestLLM_StrongNeedsStrongPermission`, `TestOutput_GateAndBodyLimit`
 - `internal/automations/sandbox_test.go` — `TestSandbox_DeniedCallWritesDeniedStep`
-- `internal/automations/manifest_test.go` — `TestManifest_ScopeMatching`, `TestManifest_JiraScopeFromRealArgs`, `TestManifest_EmailScopeMatchesLabelOrAddress`, `TestManifest_UnscopedSourceReadsNeedStar`, `TestManifest_D23ToolScopes`, `TestManifest_KnowledgeToolsOnlyByToolEntry`, `TestManifest_ToolNotOnAutomationSurfaceDenied`, `TestManifest_ScopeOfErrorIsADeniedNotAPanic`, `TestManifest_LLMStrongImpliesLight`, `TestManifest_OutputGate`
+- `internal/automations/manifest_test.go` — `TestManifest_ScopeMatching`, `TestManifest_JiraScopeFromRealArgs`, `TestManifest_EmailScopeMatchesLabelOrAddress`, `TestManifest_UnscopedSourceReadsNeedStar`, `TestManifest_D23ToolScopes`, `TestManifest_KnowledgeToolsOnlyByToolEntry`, `TestManifest_ToolNotOnAutomationSurfaceDenied`, `TestManifest_ScopeOfErrorIsADeniedNotAPanic`, `TestManifest_LLMStrongImpliesLight`, `TestManifest_OutputGate`, `TestManifest_AllowOutputToolSlackNeedsWriteScope`, `TestManifest_AdmitsWrite`
+- `internal/automations/sdk_output_p2_test.go` — `TestOutput_SlackNeedsSlackWriteScope` (D28), `TestOutput_TargetGateIsOutputsNotTool`
 - `internal/automations/manifest_scope_test.go` — `TestManifest_JiraProjectGrantCoversLinkedData`, `TestManifest_CaseVariantScopeArgRefused`, `TestManifest_NilDBDeniedNotPanic`
 - `cmd/automations_registry_test.go` — `TestToolCapabilities_CoversEveryAutomationTool` (every tool visible on `automation` has a capability entry or is deliberately `tool:`-only)
 - `internal/automations/executor_test.go` — `TestExecutor_UncaughtPermissionDeniedFailsWithPermissionKind` (the run-level mapping)
@@ -65,17 +75,30 @@ owner never read.
 
 ## AUTO-02 — Writes only through the registry
 
-**Status:** Enforced (P1: the read side — no SDK path writes outside the
-automation's own tables) · Planned (P2: the write side, `tool` writes through
-`Registry.Propose`)
+**Status:** Enforced (P1: the read side; P2: the write side — `tool()` writes
+and `output.target`/`output.slack` through `Registry.Propose`)
 
 **Observable:** The only SDK paths that change data outside the automation's
 own tables are `Registry.Propose` (and the `Apply` it triggers) on the
-`automation` surface, `shell()` and `session()`; `output.inbox`/`report`
-(and P2's `briefing`) write only `automation_outputs`, and `state.set` only
-`automation_state`, both through the run's commit (AUTO-04). In P1, `tool()`
-reaches only `Registry.CallRead`: a write tool throws `NotAvailable` ("writes
-arrive in a later phase") and never reaches `Propose`. The automation read
+`automation` surface, `shell()` and `session()` (P5); `output.inbox`/`report`/`briefing`
+write only `automation_outputs`, and `state.set` only
+`automation_state`, both through the run's commit (AUTO-04). `tool()` reads
+go through `Registry.CallRead`; `tool()` writes (P2's `ToolWriteModule`) go
+only through `Registry.Propose` under the run's automation binding
+(`Surface='automation'`, `context_type='automation_run'`, `context_id` and
+`AutomationRunID` = the run id, never `DirectApply`), after the manifest check:
+each write is one `agent_actions` row, pending unless the automation trust
+order decides `execute` (AGENT-03), and a dry run never reaches the registry
+(AUTO-12). `output.target(args)` and `output.slack(args)` are shortcuts for the
+same path: each proposes `create_target`/`send_slack_message` through
+`Registry.Propose` under the run's binding (a pending row unless a grant or
+trust decides execute), gated by `outputs` (plus, for `output.slack`, the
+`slack:write` scope of D28 — AUTO-01), and throw `NotAvailable` when the tool is
+not visible on the `automation` surface. Until P5 a workbench automation's run
+writes nothing through either path: the registry's `workbenchAutomationGate`
+refuses its `Propose`/`Approve`/`Apply` (`ErrWorkbenchAutomationWrite`; a row
+whose run is gone fails closed, `ErrAutomationRunGone`) and the script gets
+`NotAvailable`, dry runs included (AGENT-01). The automation read
 tools write nothing either: `memory_open` skips its access-stat bump on the
 `automation` surface and `buildAutomationRegistry` mounts `memory_recall`
 without the shadow handle, so it writes no shadow row.
@@ -85,32 +108,50 @@ without the shadow handle, so it writes no shadow row.
 wrote a table directly would bypass the Inbox, trust and the owner's Approve.
 
 **Test guards:**
-- `internal/automations/sdk_test.go` — `TestTool_WriteNotAvailableInP1`
+- `internal/automations/sdk_tool_write_test.go` — `TestAuto02_ToolWriteGoesThroughPropose` (P2: a `tool()` write is one pending `agent_actions` row on the `automation` surface with `context_type='automation_run'`; no target is created before an approval), `TestToolWait_AppliedRejectedFailed`
+- `internal/automations/sdk_output_p2_test.go` — `TestOutput_TargetGateIsOutputsNotTool`, `TestOutput_SlackIsAProposalUnlessGranted`, `TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable`, `TestWorkbenchAutomation_WritesNotAvailable`
+- `internal/tools/registry_automation_test.go` — `TestAgent01_AutomationWriteRecordsProposalOnly`, `TestWorkbenchAutomation_ProposeRefused`, `TestWorkbenchAutomation_PreexistingRowCannotBeApplied`
 - `internal/tools/automation_reads_test.go` — `TestMemoryOpen_NoAccessBumpOnAutomationSurface`, `TestD23Tools_AutomationSurfaceOnly`
 - `cmd/automations_registry_test.go` — `TestBuildAutomationRegistry_AddsMemoryTools` (recall on this registry writes no shadow row)
-- P2 adds the write-side guard (plan `2026-10-14-automations-p2.md`) and flips this entry.
 
 **Locked since:** 2026-10-14
 
 ## AUTO-03 — Auto only by the owner, bound to the hash
 
-**Status:** Planned (P2)
+**Status:** Enforced
 
 **Observable:** An auto grant is written only by `automations auto … on`
 outside AI-agent markers with the current `approval_hash`; it applies only
-while that hash equals the run's; any script/permission change makes it
-inactive until re-granted; every auto write is one `agent_actions` row through
-`Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. (The
-AGENT-03 amendment of spec §14.2, owner-approved in ask #265, lands with it.)
+while that hash equals the run's; any script/permission change deactivates
+it until the owner grants the new hash or the recipe returns to the exact
+granted text (the grant compares hashes only); every auto write is one `agent_actions` row through
+`Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. The
+grant table is `automation_tool_grants` (migration 00117; store
+`internal/db/automation_grants.go`). `automations auto <id|slug> <tool> on
+--hash <sha> [--workbench N]` refuses, in order: an AI-agent marker (AGENT-07), a missing
+`--hash`, an unknown automation, a hash other than the row's current `approval_hash` ("the recipe
+changed; reload and confirm again"), an unparsable recipe, a tool not in the
+automation registry, an AlwaysAsk tool ("never auto", D14) and a tool the
+manifest does not admit as a write (`Manifest.AdmitsWrite`: write access, on
+the `automation` surface, admitted by the manifest for `tool()` or through the
+output shortcut — `outputs: [target]` for `create_target`; `outputs: [slack]`
+alone does not admit `send_slack_message`, which needs `slack:write`, D28).
+`auto … off` stays open, is idempotent and needs no registry check. A call
+inside an automation's `agent()` (`Binding.AutomationAgent`) is never auto
+(the branch is in code; nothing sets the flag until P6's `agent()`). The
+amendment of AGENT-03 (spec §14.2, owner-approved in ask #265) is in
+`agent-actions.md`.
 
 **Why locked:** Auto is the one place an External write runs without a
 per-call click; it is safe only while it is bound to exactly the code and
 permissions the owner reviewed.
 
-**Test guards:** none yet — P2 adds them (plan `2026-10-14-automations-p2.md`)
-and flips this entry. P1 already refuses trust on the `automation` surface
-(`internal/tools/registry_test.go` `TestSetTrust_RefusesReadToolsAndTheAutomationSurface`,
-see `agent-actions.md`).
+**Test guards:**
+- `cmd/automations_auto_test.go` — `TestAuto03_GrantInactiveAfterEditAndReactivatedByNewHash`, `TestAgent03_AutoGrantRefusedUnderAgentMarkers`
+- `internal/tools/registry_automation_test.go` — `TestAgent03_AutoGrantAppliesExternalOnlyOnAutomationSurfaceWithMatchingHash`, `TestAgent03_AutoGrantNeverCoversAnotherAutomationOrSurface`, `TestAgent03_RecipeEditMakesAutoGrantInactive`, `TestAgent03_AlwaysAskIsNeverAuto`, `TestTrustOrder_AutomationSurface` (incl. its `AutomationAgent` rows)
+- `internal/db/automation_grants_test.go` — `TestMigration00117_GrantsTable`, `TestGrant_StaleReGrantKeepsExistingGrant`
+- `internal/automations/manifest_test.go` — `TestManifest_AdmitsWrite`
+- see AGENT-03 in `agent-actions.md`
 
 **Locked since:** 2026-10-14
 
@@ -135,6 +176,7 @@ cursor in `state` would silently skip or repeat work.
 - `internal/db/automation_runs_test.go` — `TestAuto04_FinishCommitOnlyOnSuccess`, `TestFinish_RefusesTerminalRun`, `TestFinish_RefusesForeignOutput`
 - `internal/automations/executor_test.go` — `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed out, over budget, cancelled), `TestAuto04_SucceededCommitsStateAndOutputsAtomically`
 - `internal/automations/sdk_test.go` — `TestState_ReadsCommittedPlusOwnSets`, `TestState_RejectsUnserialisableValues`
+- `internal/automations/sdk_output_p2_test.go` — `TestOutput_BriefingBufferedAndCommittedOnSuccess` (P2: `output.briefing` is buffered like `report` and committed only with `succeeded`)
 
 **Locked since:** 2026-10-14
 
@@ -358,6 +400,8 @@ would make checking as dangerous as running.
 
 **Test guards:**
 - `internal/automations/executor_test.go` — `TestAuto12_DryRunWritesNoActionsOutputsOrState`
+- `internal/automations/sdk_tool_write_test.go` — `TestAuto12_DryRunWriteNeverReachesRegistry` (P2: a `tool()` write, `{wait:true}` included)
+- `internal/automations/sdk_output_p2_test.go` — `TestOutput_P2KindsDryRun` (P2: `output.briefing`/`target`/`slack` in a dry run commit nothing and propose nothing)
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
 - P5 adds the session/shell guard (plan `2026-10-14-automations-p5.md`) and flips that half.
@@ -386,6 +430,8 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-15 (Automations P2 Task 9, board #814): **AUTO-02 (write side) and AUTO-03 flip from Planned to Enforced.** AUTO-02 names `output.target`/`output.slack` (shortcuts through `Registry.Propose`) and the P2 workbench write gate (until P5); AUTO-03 records the grant table (migration 00117 — 00114–00116 are unrelated main migrations), the `automations auto` refusal order and the dormant `AutomationAgent` branch (P6); AUTO-01 records D28 (ask #315: `output.slack` needs `outputs: [slack]` and `slack:write@<account>`; an unscoped `tool:send_slack_message` counts as `slack:write@*`), which changed the `TestManifest_AdmitsWrite` case formerly named "outputs slack" (admitted) to "outputs slack alone admits no grant (D28)" (refused) (a narrowing). AUTO-04/12 gain the P2 output and dry-run guards. P1's interim `TestTool_WriteNotAvailableInP1` stays retired (entry below). No guard relaxed.
+- 2026-10-15 (Automations P2 Task 5): AUTO-02's P1 guard `TestTool_WriteNotAvailableInP1` is retired as planned (P2 plan Task 5, Step 3): it pinned P1's interim "writes arrive in a later phase" branch, not a contract. `tool()` writes now go through `Registry.Propose` on the `automation` surface (`ToolWriteModule`); the write-side guard `TestAuto02_ToolWriteGoesThroughPropose` replaces it. AUTO-12 gains `TestAuto12_DryRunWriteNeverReachesRegistry` (a dry-run write, `{wait:true}` included, returns `{status:"dry_run"}` and writes no `agent_actions` row). The status flips of AUTO-02/AUTO-03 stay with Task 9.
 - 2026-10-15 (**owner decision, ask #294**; spec §20.3 D26, amending D5): strengthening, no guard relaxed. AUTO-06's `approval_hash` now also binds the trigger (without a button's cosmetic label; `confirm` counts), the `missed` policy, the budget (tokens and minutes) and `concurrency`, so a schedule or budget edit needs the owner's confirmation again. `TestApprovalHash_GoldenCanonicalBytes` gets new canonical bytes and hex (computed outside Go); guards `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`, `TestApprovalHash_ButtonLabelIsCosmetic` added. Upgrade effect: every recipe is re-hashed once, so every recipe confirmed before this change is unconfirmed until the owner confirms it again.
 - 2026-10-15 (**owner decision, ask #294**; spec §20.3 D25): **AUTO-08 amended — the daily-cap clause is removed** (owner-approved in ask #294). `automations.daily_budget_tokens`, `ExecutorOptions.DailyBudgetTokens`, the meter's live daily total and `InterruptDailyCap` are gone; `error_kind='daily_cap'` stays in the CHECK but is no longer produced. Guards retired with that approval: `TestAuto08_DailyCap`, `TestAuto08_DailyCapSeesConcurrentSpend`, `TestAuto08_DailyCapDayFollowsTheExecutorZone`, `TestAuto08_DailyCapWindowIsTheRunStartDay`, `TestExecutor_DailyCapZeroSpendsNothing`, `TestSandbox_DailyCapInterruptsUncatchably` (plus the meter unit tests `TestMeter_DailyRemainderInterrupts`, `TestMeter_LiveDailyTotalAcrossRuns`, `TestMeter_DailyTotalReadErrorRefusesCall`). Added `TestAuto08_NoDailyCapAcrossRuns`. The per-run token budget, time budget, pause timeout and terminal-status guards are unchanged.
 - 2026-10-15 (**owner decision, ask #293**; spec §20.3 D24): strengthening, no guard relaxed. AUTO-06 notes that `automations enable` and `automations delete` are owner-only (refused under AGENT-07 markers before anything is read or written); guard `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers` added.

@@ -89,6 +89,15 @@ package enum CalendarQueries {
         ) ?? 0
     }
 
+    /// Whether `meeting_prep_cache` holds a non-empty prep for the event.
+    package static func hasPrep(_ db: Database, eventID: String) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS (SELECT 1 FROM meeting_prep_cache WHERE event_id = ? AND result_json != '')",
+            arguments: [eventID]
+        ) ?? false
+    }
+
     // MARK: - Linked-Event Stub
 
     /// Minimal projection for "linked to event X" affordances (recording

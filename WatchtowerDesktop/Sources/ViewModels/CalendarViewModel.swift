@@ -34,7 +34,7 @@ final class CalendarViewModel {
     private let daysAhead = 7
 
     /// Days of past events to display — `calendar.history_days` from the
-    /// config (the same knob that widens the Go syncers' timeMin), fallback 14.
+    /// config (the same knob that widens the Go syncers' timeMin), fallback 30.
     let historyDays: Int
 
     /// Extra day pinned into the rendered window by a deep link whose event
