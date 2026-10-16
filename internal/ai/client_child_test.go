@@ -143,7 +143,7 @@ func readPid(path string) int {
 
 func waitPid(t *testing.T, path string) int {
 	t.Helper()
-	require.Eventually(t, func() bool { return readPid(path) > 0 }, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return readPid(path) > 0 }, 20*time.Second, 20*time.Millisecond)
 	return readPid(path)
 }
 

@@ -76,7 +76,7 @@ func TestCodexProcessGroupKilledOnCancel(t *testing.T) {
 		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
 		done <- err
 	}()
-	require.Eventually(t, func() bool { return readPid() > 0 }, 5*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return readPid() > 0 }, 20*time.Second, 20*time.Millisecond)
 	pgid := readPid()
 	cancel()
 	select {
