@@ -31,6 +31,39 @@ type Client struct {
 	// (`--cd`, and the process cwd) under the read-only sandbox. Empty =
 	// today's run in a temp dir holding the MCP config.
 	readFolder string
+	// childEnv replaces the os.Environ() base of the child's environment
+	// when childEnvSet (SetChildEnv); processGroup runs the child in its own
+	// process group killed as a group (SetProcessGroup).
+	childEnv     []string
+	childEnvSet  bool
+	processGroup bool
+}
+
+// SetChildEnv replaces the inherited environment of the child with env (the
+// rich PATH is still appended last). Unset = os.Environ() as today.
+func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, true }
+
+// SetProcessGroup runs the child in its own process group and kills the
+// whole group on cancel or deadline (see ai.ConfigureChild). codex has no
+// per-tool MCP allowlist flag; the server-side tool filter is the
+// enforcement, as for claude.
+func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
+
+// childEnviron is the child's environment: the base (os.Environ() unless
+// replaced) without PATH, then the rich PATH.
+func (c *Client) childEnviron() []string {
+	base := os.Environ()
+	if c.childEnvSet {
+		base = c.childEnv
+	}
+	var env []string
+	for _, e := range base {
+		if strings.HasPrefix(e, "PATH=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	return append(env, "PATH="+RichPATH())
 }
 
 // SetReadFolder makes the run a read-only look at dir (`ai query
@@ -220,21 +253,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		if promptStdin != "" {
 			cmd.Stdin = strings.NewReader(promptStdin)
 		}
-		cmd.Cancel = func() error {
-			return cmd.Process.Signal(os.Interrupt)
-		}
-		cmd.WaitDelay = 5 * time.Second
+		ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 		cmd.Dir = c.processDir()
-
-		// Build clean environment with enriched PATH.
-		var env []string
-		for _, e := range os.Environ() {
-			if strings.HasPrefix(e, "PATH=") {
-				continue
-			}
-			env = append(env, e)
-		}
-		cmd.Env = append(env, "PATH="+RichPATH())
+		cmd.Env = c.childEnviron()
 
 		var stderrBuf strings.Builder
 		cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
@@ -332,21 +353,9 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if promptStdin != "" {
 		cmd.Stdin = strings.NewReader(promptStdin)
 	}
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(os.Interrupt)
-	}
-	cmd.WaitDelay = 5 * time.Second
+	ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 	cmd.Dir = c.processDir()
-
-	// Build clean environment with enriched PATH.
-	var env []string
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "PATH=") {
-			continue
-		}
-		env = append(env, e)
-	}
-	cmd.Env = append(env, "PATH="+RichPATH())
+	cmd.Env = c.childEnviron()
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
