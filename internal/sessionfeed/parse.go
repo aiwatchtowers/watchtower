@@ -126,22 +126,7 @@ func (st *state) handle(raw []byte) {
 	at, _ := time.Parse(time.RFC3339Nano, rec.Timestamp)
 	switch rec.Type {
 	case "user":
-		if rec.IsMeta || rec.IsCompact || rec.IsSidechain != st.sidechain {
-			return
-		}
-		st.recordParentReport(rec)
-		if st.sidechain {
-			// only the first plain-string record is the task
-			var task string
-			if st.hasTask || json.Unmarshal(rec.Message.Content, &task) != nil {
-				return
-			}
-			st.hasTask = true
-		}
-		if e, ok := userEntry(rec); ok {
-			e.At, e.Conversation = at, conv
-			res.Entries = append(res.Entries, e)
-		}
+		st.handleUser(rec, at)
 	case "assistant":
 		if rec.IsSidechain != st.sidechain {
 			return
@@ -158,35 +143,70 @@ func (st *state) handle(raw []byte) {
 	}
 }
 
+// handleUser appends the owner-side entry of a user record, if it has one.
+func (st *state) handleUser(rec record, at time.Time) {
+	if rec.IsMeta || rec.IsCompact || rec.IsSidechain != st.sidechain {
+		return
+	}
+	st.recordParentReport(rec)
+	if st.sidechain {
+		// only the first plain-string record is the task
+		var task string
+		if st.hasTask || json.Unmarshal(rec.Message.Content, &task) != nil {
+			return
+		}
+		st.hasTask = true
+	}
+	if e, ok := userEntry(rec); ok {
+		e.At, e.Conversation = at, st.conv
+		st.res.Entries = append(st.res.Entries, e)
+	}
+}
+
 func userEntry(rec record) (Entry, bool) {
+	text, ok := userText(rec.Message.Content)
+	if !ok {
+		return Entry{}, false
+	}
+	return classifyUserText(rec.UUID, text)
+}
+
+// userText flattens a user message's content; ok is false for tool results
+// and undecodable content.
+func userText(content json.RawMessage) (string, bool) {
 	var text string
-	if err := json.Unmarshal(rec.Message.Content, &text); err != nil {
-		var blocks []block
-		if json.Unmarshal(rec.Message.Content, &blocks) != nil {
-			return Entry{}, false
-		}
-		var parts []string
-		hasImage := false
-		for _, b := range blocks {
-			switch b.Type {
-			case "tool_result":
-				return Entry{}, false
-			case "text":
-				parts = append(parts, b.Text)
-			case "image":
-				hasImage = true
-			}
-		}
-		text = strings.Join(parts, "\n")
-		if hasImage && !strings.Contains(text, "[Image #") {
-			text += "\n[image]"
+	if err := json.Unmarshal(content, &text); err == nil {
+		return text, true
+	}
+	var blocks []block
+	if json.Unmarshal(content, &blocks) != nil {
+		return "", false
+	}
+	var parts []string
+	hasImage := false
+	for _, b := range blocks {
+		switch b.Type {
+		case "tool_result":
+			return "", false
+		case "text":
+			parts = append(parts, b.Text)
+		case "image":
+			hasImage = true
 		}
 	}
+	text = strings.Join(parts, "\n")
+	if hasImage && !strings.Contains(text, "[Image #") {
+		text += "\n[image]"
+	}
+	return text, true
+}
+
+func classifyUserText(uuid, text string) (Entry, bool) {
 	text = strings.TrimSpace(reminderRe.ReplaceAllString(text, ""))
 	if text == "" {
 		return Entry{}, false
 	}
-	e := Entry{ID: rec.UUID, Kind: KindOwner, Text: text}
+	e := Entry{ID: uuid, Kind: KindOwner, Text: text}
 	switch {
 	case strings.HasPrefix(text, "<command-name>"):
 		name := firstGroup(cmdNameRe, text)

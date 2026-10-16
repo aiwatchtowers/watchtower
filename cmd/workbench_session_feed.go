@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path/filepath"
 	"strings"
 	"time"
@@ -120,12 +121,8 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	switch agentkind.Kind(sess.Kind) {
-	case agentkind.Claude:
-	case agentkind.Codex:
-		return fmt.Errorf("session %d: codex sessions are not supported yet", id)
-	default:
-		return fmt.Errorf("session %d is not an agent session", id)
+	if err := requireClaudeSession(sess); err != nil {
+		return err
 	}
 	convs, err := sessionFeedConversations(ctx, database, sess)
 	if err != nil {
@@ -133,11 +130,38 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 	}
 	lookup := sessionFeedAskLookup(database, sess.WorkbenchID)
 
+	out, err := buildSessionFeedOutput(id, convs, after, lookup, workbenchSessionFeedFlagSubagent)
+	if err != nil {
+		return err
+	}
+	w := cmd.OutOrStdout()
+	if workbenchSessionFeedFlagJSON {
+		return writeJSON(w, out)
+	}
+	printSessionFeed(w, out.Entries)
+	return nil
+}
+
+// requireClaudeSession refuses sessions the feed cannot read.
+func requireClaudeSession(sess *db.TerminalSession) error {
+	switch agentkind.Kind(sess.Kind) {
+	case agentkind.Claude:
+		return nil
+	case agentkind.Codex:
+		return fmt.Errorf("session %d: codex sessions are not supported yet", sess.ID)
+	default:
+		return fmt.Errorf("session %d is not an agent session", sess.ID)
+	}
+}
+
+// buildSessionFeedOutput reads either one subagent's feed (sub set) or the
+// tab's chat after the cursor.
+func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *sessionfeed.Cursor, lookup sessionfeed.AskLookup, sub string) (sessionFeedJSON, error) {
 	out := sessionFeedJSON{SessionID: id, Entries: []sessionFeedEntryJSON{}, Subagents: []sessionFeedEntryJSON{}, UnknownRecords: map[string]int{}}
-	if sub := workbenchSessionFeedFlagSubagent; sub != "" {
+	if sub != "" {
 		res, err := sessionFeedSubagent(convs, sub)
 		if err != nil {
-			return err
+			return out, err
 		}
 		var markers []sessionfeed.Entry
 		for _, e := range res.Entries {
@@ -147,29 +171,20 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 		}
 		out.Entries, out.Subagents = toSessionFeedEntries(res.Entries), toSessionFeedEntries(markers)
 		out.Skipped = res.Skipped
-		for k, n := range res.Unknown {
-			out.UnknownRecords[k] = n
-		}
-	} else {
-		feed, err := sessionfeed.Build(convs, after, lookup)
-		if err != nil {
-			return err
-		}
-		if feed.Cursor.Conv != "" {
-			out.Cursor = feed.Cursor.String()
-		}
-		out.Entries, out.Subagents = toSessionFeedEntries(feed.Entries), toSessionFeedEntries(feed.Subagents)
-		out.Skipped = feed.Skipped
-		for k, n := range feed.Unknown {
-			out.UnknownRecords[k] = n
-		}
+		maps.Copy(out.UnknownRecords, res.Unknown)
+		return out, nil
 	}
-	w := cmd.OutOrStdout()
-	if workbenchSessionFeedFlagJSON {
-		return writeJSON(w, out)
+	feed, err := sessionfeed.Build(convs, after, lookup)
+	if err != nil {
+		return out, err
 	}
-	printSessionFeed(w, out.Entries)
-	return nil
+	if feed.Cursor.Conv != "" {
+		out.Cursor = feed.Cursor.String()
+	}
+	out.Entries, out.Subagents = toSessionFeedEntries(feed.Entries), toSessionFeedEntries(feed.Subagents)
+	out.Skipped = feed.Skipped
+	maps.Copy(out.UnknownRecords, feed.Unknown)
+	return out, nil
 }
 
 // sessionFeedConversations lists the tab's conversations in ledger order

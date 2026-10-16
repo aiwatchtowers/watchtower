@@ -64,14 +64,7 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 	if after != nil {
 		feed.Cursor = *after
 	}
-	afterIdx := -1
-	if after != nil {
-		for i, c := range convs {
-			if c.AgentSessionID == after.Conv {
-				afterIdx = i
-			}
-		}
-	}
+	afterIdx := cursorIndex(convs, after)
 	subIdx := map[string]int{} // marker id -> index in feed.Subagents
 	addSubagents := func(es []Entry, parsed bool) {
 		for _, e := range es {
@@ -112,32 +105,47 @@ func Build(convs []Conversation, after *Cursor, asks AskLookup) (*Feed, error) {
 		addSubagents(res.Entries, true)
 		addSubagents(metaMarkers(sessionDir, c.AgentSessionID), false)
 		if read && start == 0 {
-			sep := Entry{ID: c.AgentSessionID + ":sep", Kind: KindSeparator, Conversation: c.AgentSessionID}
-			if len(res.Entries) > 0 {
-				sep.At = res.Entries[0].At
-			}
-			feed.Entries = append(feed.Entries, sep)
+			feed.Entries = append(feed.Entries, separatorEntry(c.AgentSessionID, res.Entries))
 		}
 		read = true
 		feed.Entries = append(feed.Entries, res.Entries...)
 		feed.Cursor = Cursor{Conv: c.AgentSessionID, Offset: res.Offset}
 		feed.Skipped += res.Skipped
-		for k, n := range res.Unknown {
-			feed.Unknown[k] += n
-		}
+		addCounts(feed.Unknown, res.Unknown)
 	}
-	if asks != nil {
-		for i := range feed.Entries {
-			e := &feed.Entries[i]
-			if e.Kind != KindAskAnswer {
-				continue
-			}
-			if title, text, ok := asks(e.AskID); ok {
-				e.Title, e.Text = title, text
-			}
-		}
-	}
+	fillAskAnswers(feed.Entries, asks)
 	return feed, nil
+}
+
+// cursorIndex is the index of the conversation the cursor points into, or -1.
+func cursorIndex(convs []Conversation, after *Cursor) int {
+	if after == nil {
+		return -1
+	}
+	idx := -1
+	for i, c := range convs {
+		if c.AgentSessionID == after.Conv {
+			idx = i
+		}
+	}
+	return idx
+}
+
+// fillAskAnswers replaces the title and text of ask-answer entries with the
+// looked-up values, when the lookup knows the ask.
+func fillAskAnswers(entries []Entry, asks AskLookup) {
+	if asks == nil {
+		return
+	}
+	for i := range entries {
+		e := &entries[i]
+		if e.Kind != KindAskAnswer {
+			continue
+		}
+		if title, text, ok := asks(e.AskID); ok {
+			e.Title, e.Text = title, text
+		}
+	}
 }
 
 // parseFile parses a conversation's transcript from byte offset start. A
@@ -187,4 +195,19 @@ func LocateAll(projectsDir string, folderRoots []string, agentSessionIDs []strin
 		}
 	}
 	return found
+}
+
+// separatorEntry marks the start of a later conversation, timed by its first entry.
+func separatorEntry(conv string, entries []Entry) Entry {
+	sep := Entry{ID: conv + ":sep", Kind: KindSeparator, Conversation: conv}
+	if len(entries) > 0 {
+		sep.At = entries[0].At
+	}
+	return sep
+}
+
+func addCounts(dst, src map[string]int) {
+	for k, n := range src {
+		dst[k] += n
+	}
 }
