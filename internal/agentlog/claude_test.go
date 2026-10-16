@@ -117,7 +117,8 @@ func TestParseClaude_OwnerTurnCompactionAPIErrorPRLinkCost(t *testing.T) {
 
 func TestParseClaude_StoresNoText(t *testing.T) {
 	s := line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "timestamp": "2026-10-01T09:59:00Z", "cwd": "/w",
-		"message": map[string]any{"role": "user", "content": "SENTINEL-PROMPT"}}) + line(t, assistant("s1", "u1", "m1", "r1", 5))
+		"message": map[string]any{"role": "user", "content": "SENTINEL-PROMPT"}}) + line(t, assistant("s1", "u1", "m1", "r1", 5,
+		toolUse("t1", "Bash", map[string]any{"command": "cd /SENTINEL_DIR && make test SENTINEL_ARG"})))
 	r := parse(t, s, ParseOptions{})
 	b, err := json.Marshal(r)
 	require.NoError(t, err)

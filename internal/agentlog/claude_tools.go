@@ -201,29 +201,81 @@ func skipEnvAssign(s string) (string, bool) {
 	return strings.TrimLeft(rest, " \t"), true
 }
 
-func shellTarget(cmd string) string {
-	cmd = strings.TrimSpace(cmd)
+// skippedPrograms only move or configure the shell; the next command is the
+// real one.
+var skippedPrograms = map[string]bool{"cd": true, "pushd": true, "popd": true, "export": true, "set": true, "source": true, ".": true}
+
+var segmentSplitRe = regexp.MustCompile(`&&|\|\||;|\n`)
+
+// stripWrappers drops leading env assignments and the timeout/env/time/nice
+// wrappers (with their numeric argument) from a command segment.
+func stripWrappers(s string) string {
 	for {
-		var ok bool
-		if cmd, ok = skipEnvAssign(cmd); !ok {
-			break
+		s = strings.TrimSpace(s)
+		if rest, ok := skipEnvAssign(s); ok {
+			s = rest
+			continue
+		}
+		fields := strings.Fields(s)
+		if len(fields) == 0 {
+			return ""
+		}
+		drop := 0
+		switch fields[0] {
+		case "env", "time":
+			drop = 1
+		case "timeout":
+			drop = 1
+			if len(fields) > 1 && !strings.HasPrefix(fields[1], "-") {
+				drop = 2
+			}
+		case "nice":
+			drop = 1
+			if len(fields) > 2 && fields[1] == "-n" {
+				drop = 3
+			}
+		default:
+			return s
+		}
+		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), fields[0]))
+		for i := 1; i < drop; i++ {
+			s = strings.TrimSpace(strings.TrimPrefix(s, fields[i]))
 		}
 	}
-	if i := strings.IndexAny(cmd, "&|;\n"); i >= 0 {
-		cmd = cmd[:i]
+}
+
+// shellTarget returns the program and at most one subcommand of the first
+// real command in a shell line, skipping cd/export-style segments, env
+// assignments and wrappers. Nothing else from the line is ever kept.
+func shellTarget(cmd string) string {
+	for _, seg := range segmentSplitRe.Split(cmd, -1) {
+		if i := strings.IndexByte(seg, '|'); i >= 0 {
+			seg = seg[:i]
+		}
+		fields := strings.Fields(stripWrappers(seg))
+		if len(fields) == 0 {
+			continue
+		}
+		prog := filepath.Base(fields[0])
+		if skippedPrograms[prog] {
+			continue
+		}
+		if !progRe.MatchString(prog) {
+			return ""
+		}
+		if len(fields) > 1 {
+			switch {
+			case prog == "bash" || prog == "sh" || prog == "zsh":
+				if script := filepath.Base(fields[1]); !strings.HasPrefix(fields[1], "-") && progRe.MatchString(script) {
+					return prog + " " + script
+				}
+			case subcommandPrograms[prog] && subcmdRe.MatchString(fields[1]) && !strings.HasPrefix(fields[1], "-"):
+				return prog + " " + fields[1]
+			}
+		}
+		return prog
 	}
-	fields := strings.Fields(cmd)
-	if len(fields) == 0 {
-		return ""
-	}
-	prog := filepath.Base(fields[0])
-	if !progRe.MatchString(prog) {
-		return ""
-	}
-	if subcommandPrograms[prog] && len(fields) > 1 && subcmdRe.MatchString(fields[1]) && !strings.HasPrefix(fields[1], "-") {
-		return prog + " " + fields[1]
-	}
-	return prog
+	return ""
 }
 
 // rejected reports an owner "reject" permission decision (an object on real

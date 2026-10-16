@@ -88,6 +88,25 @@ func TestErrorClass(t *testing.T) {
 	assert.Equal(t, "other", errorClass("boom"))
 }
 
+func TestShellTarget_FirstRealCommand(t *testing.T) {
+	cases := map[string]string{
+		"cd /x/y && make test":                        "make test",
+		"cd /x && FOO=1 go test ./internal/db":        "go test",
+		"S=/tmp/a; timeout 300 swift test --filter X": "swift test",
+		"export A=1; pushd d && git status":           "git status",
+		"time nice -n 5 go build ./...":               "go build",
+		"go test ./... | tail -5":                     "go test",
+		"bash scripts/dev-health.sh --quiet":          "bash dev-health.sh",
+		"sh ./run.sh":                                 "sh run.sh",
+		"bash -c 'echo hi'":                           "bash",
+		"cd /only/cd":                                 "",
+		"env X=1 gh pr create --title secret":         "gh pr",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, shellTarget(in), in)
+	}
+}
+
 func TestShellTarget_ContentSafe(t *testing.T) {
 	cases := map[string]string{
 		`TOKEN="abc def" git status`: "git status",
