@@ -27,6 +27,16 @@ struct AgentActionCardView: View {
     /// (`SlackSendProposal.reconnectAccountID`) and returns why it failed, nil
     /// on success. Nil hides the button.
     var onReconnectSlack: ((Int64) async -> String?)?
+    /// Where the proposal came from, above the card — "⚙ <automation> · run
+    /// #<n>" for a row an automation run proposed (`ActionStripViewModel.actionLabels`).
+    /// Nil shows nothing.
+    var contextLabel: String?
+    /// Opens what `contextLabel` names (the automation's card, run open).
+    /// Nil renders the label as plain text.
+    var onOpenContext: (() -> Void)?
+    /// The editor chat's newest draft text (the Draft panel's); a pending
+    /// `save_automation` card whose text differs warns. nil elsewhere.
+    var latestDraftText: String?
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
@@ -199,9 +209,17 @@ struct AgentActionCardView: View {
     }
 
     var body: some View {
+        // One args decode per render for a save_automation card.
+        let save = action.tool == SaveAutomationCardModel.tool ? SaveAutomationCardModel(action: action) : nil
         VStack(alignment: .leading, spacing: 8) {
-            header
-            if let slack = SlackSendProposal(action: action) {
+            if let contextLabel {
+                contextLine(contextLabel)
+            }
+            header(title: save?.title ?? Self.title(for: action))
+            if let save {
+                SaveAutomationCardDetails(model: save, actionID: action.id,
+                                          differsFromDraft: action.isPending && save.differsFromDraft(latestDraftText))
+            } else if let slack = SlackSendProposal(action: action) {
                 SlackRecipientLine(proposal: slack)
                 // The text is in the editor while the row can still be edited.
                 if !(action.isPending && editableSlack != nil) {
@@ -281,11 +299,27 @@ struct AgentActionCardView: View {
         return message
     }
 
-    private var header: some View {
+    @ViewBuilder
+    private func contextLine(_ label: String) -> some View {
+        if let onOpenContext {
+            Button(label, action: onOpenContext)
+                .buttonStyle(.link)
+                .font(.caption)
+                .help("Open the automation run")
+                .accessibilityIdentifier("agentAction.contextLabel")
+        } else {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("agentAction.contextLabel")
+        }
+    }
+
+    private func header(title: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: action.external ? "arrow.up.right.square" : "checklist")
                 .foregroundStyle(Color.accentColor)
-            Text(Self.title(for: action)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Spacer()
             Text(statusLabel)
                 .font(.caption)
@@ -378,5 +412,66 @@ struct AgentActionCardView: View {
             }
         }
         .disabled(inFlight)
+    }
+}
+
+/// The `save_automation` card's body (spec §11): file, trigger, permissions
+/// with the widening ones marked "+", outputs, budget, missed runs,
+/// concurrency, the assistant's dry-run summary, and the code it confirms —
+/// the whole recipe for a new one, the diff against the saved file for an
+/// edit.
+private struct SaveAutomationCardDetails: View {
+    let model: SaveAutomationCardModel
+    let actionID: Int64
+    let differsFromDraft: Bool
+
+    var body: some View {
+        if differsFromDraft {
+            Label(SaveAutomationCardModel.draftMismatchWarning, systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
+            Text(line)
+                .font(.callout)
+                .foregroundStyle(line.hasPrefix("+ ") ? Color.orange : Color.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let summary = model.dryRunSummary {
+            Text(summary).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        if let text = model.newRecipeText {
+            // A new recipe has nothing to diff against: its whole text is
+            // what Approve confirms (Review Focus #2).
+            RecipeTextDisclosure(title: SaveAutomationCardModel.recipeDisclosureTitle(text), text: text,
+                                 modelID: -actionID, contentHash: "save-\(actionID)", slug: "recipe")
+                .font(.callout)
+        }
+        if let diff = model.diff {
+            DisclosureGroup(diff.isIdentical ? "No change to the recipe text" : "Show changes") {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in row(line) }
+                }
+            }
+            .font(.callout)
+            .disabled(diff.isIdentical)
+        }
+    }
+
+    private func row(_ line: OwnerAskSnapshotDiff.Line) -> some View {
+        let (mark, text, tint): (String, String, Color?) = switch line {
+        case let .same(text): (" ", text, nil)
+        case let .added(text): ("+", text, .green)
+        case let .removed(text): ("−", text, .red)
+        }
+        return HStack(alignment: .top, spacing: 6) {
+            Text(mark).foregroundStyle(tint ?? .secondary).frame(width: 10)
+            Text(text.isEmpty ? " " : text).foregroundStyle(tint == nil ? .secondary : .primary)
+        }
+        .font(.system(.caption, design: .monospaced))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.map { $0.opacity(0.12) } ?? .clear)
+        .textSelection(.enabled)
     }
 }

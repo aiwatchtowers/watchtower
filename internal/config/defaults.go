@@ -22,7 +22,10 @@ const (
 	// first run only (an account with no search_last_date watermark yet).
 	// Once a watermark exists, catch-up depth is governed by
 	// sync.maxSearchCatchUpDays instead — see internal/sync/search_sync.go.
-	DefaultInitialHistDays   = 2
+	DefaultInitialHistDays = 2
+	// DefaultBackfillDays is how many days a source's history backfill reaches
+	// back after its first sync; 0 = off.
+	DefaultBackfillDays      = 30
 	DefaultPollInterval      = 15 * time.Minute
 	DefaultSyncThreads       = true
 	DefaultSyncOnWake        = true
@@ -88,7 +91,7 @@ const (
 	// Calendar defaults
 	DefaultCalendarEnabled       = true
 	DefaultCalendarSyncDaysAhead = 7
-	DefaultCalendarHistoryDays   = 14
+	DefaultCalendarHistoryDays   = 30
 
 	// Gmail defaults
 	DefaultGmailEnabled            = true
@@ -100,6 +103,11 @@ const (
 	DefaultImapInitialHistoryDays = 7
 	DefaultImapMaxMessagesPerSync = 100
 	DefaultImapMaxBodyBytes       = 51200
+
+	// Linear defaults
+	DefaultLinearEnabled          = false
+	DefaultLinearSyncIntervalMins = 15
+	DefaultLinearBackfillDays     = 90
 
 	// Jira defaults
 	DefaultJiraEnabled          = false

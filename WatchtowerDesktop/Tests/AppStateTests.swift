@@ -750,41 +750,6 @@ final class AppStateTests: XCTestCase {
         XCTAssertNotNil(appState.onboardingStepError)
     }
 
-    /// Landing: Catch-Up for work communication with Slack, else Workbench
-    /// for development, else AI Chat.
-    func testFinishLandsOnTheGoalsTab() async throws {
-        let catchUpFeatures: Set<String> = ["secretary-inbox", "slack-digests", "stream-digests"]
-        let cases: [(Set<OnboardingGoal>, Bool, Set<String>, SidebarDestination)] = [
-            ([.workCommunication, .development], true, [], .catchUp),
-            ([.workCommunication, .development], false, [], .workbench),
-            // Attention detection and both digest features off: no Catch-Up
-            // tab to land on.
-            ([.workCommunication, .development], true, catchUpFeatures, .workbench),
-            ([.workCommunication], true, catchUpFeatures, .chat),
-            // Attention detection off alone still leaves Slack Digests' recap.
-            ([.workCommunication], true, ["secretary-inbox"], .catchUp),
-            ([.development], true, [], .workbench),
-            ([.tasksAndJira], false, [], .chat)
-        ]
-        for (goals, slack, disabled, expected) in cases {
-            let (manager, path) = try TestDatabase.createDatabaseManager()
-            defer { TestDatabase.cleanup(path: path) }
-            if slack {
-                try await manager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
-            }
-            let open: @Sendable () throws -> DatabaseManager = { manager }
-            let appState = AppState.isolated(openDatabase: open)
-            appState.featureVisibility.disabledFeatureIDs = disabled
-            appState.needsOnboarding = true
-            _ = await appState.openDatabaseForOnboarding()
-            appState.onboarding.goTo(.connect)
-
-            await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: goals)) {}
-
-            XCTAssertEqual(appState.selectedDestination, expected, "\(goals) slack=\(slack) disabled=\(disabled)")
-        }
-    }
-
     // MARK: - Finish writes the flag alone
 
     /// Leaving the last step writes `onboarding_done` and nothing else: the

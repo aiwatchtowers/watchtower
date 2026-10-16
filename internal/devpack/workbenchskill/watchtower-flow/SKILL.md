@@ -1,7 +1,7 @@
 ---
 name: watchtower-flow
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or a group of targets is worked. Watchtower's default methodology, on top of the watchtower-workbench skill.
-x-watchtower-pack: v9
+x-watchtower-pack: v10
 ---
 
 # Watchtower Flow

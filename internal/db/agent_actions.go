@@ -84,6 +84,27 @@ func (db *DB) MaxAgentActionID() (int64, error) {
 	return id, nil
 }
 
+// AgentActionIDsAfter returns, ascending, the ids above afterID of the rows
+// bound to (contextType, contextID) — the proposals an automation's agent()
+// call made, read against a MaxAgentActionID floor taken before it.
+func (db *DB) AgentActionIDsAfter(contextType, contextID string, afterID int64) ([]int64, error) {
+	rows, err := db.Query(`SELECT id FROM agent_actions WHERE context_type = ? AND context_id = ? AND id > ? ORDER BY id`,
+		contextType, contextID, afterID)
+	if err != nil {
+		return nil, fmt.Errorf("listing agent actions of %s %s: %w", contextType, contextID, err)
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning agent action id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetAgentAction returns the row or nil when it does not exist.
 func (db *DB) GetAgentAction(id int64) (*AgentAction, error) {
 	a, err := scanAgentAction(db.QueryRow(`SELECT `+agentActionColumns+` FROM agent_actions WHERE id = ?`, id))

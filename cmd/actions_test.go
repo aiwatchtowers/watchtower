@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -212,20 +213,26 @@ func TestActions_TrustAndTools(t *testing.T) {
 	out, err := runActions(t, "tools", "--json")
 	require.NoError(t, err)
 	var listed []struct {
-		Name     string   `json:"name"`
-		External bool     `json:"external"`
-		Trust    string   `json:"trust"`
-		Surfaces []string `json:"surfaces"`
+		Name           string            `json:"name"`
+		External       bool              `json:"external"`
+		Trust          string            `json:"trust"`
+		Surfaces       []string          `json:"surfaces"`
+		TrustBySurface map[string]string `json:"trust_by_surface"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
 	byName := map[string]int{}
 	for i, l := range listed {
 		byName[l.Name] = i
 	}
-	assert.Equal(t, "execute", listed[byName["create_target"]].Trust)
+	// Without --surface the chats execute; the automation surface keeps ask
+	// (set only when named), so the one-level summary is "mixed".
+	assert.Equal(t, map[string]string{"main": "execute", "reaction": "execute", tools.AutomationSurface: "ask"},
+		listed[byName["create_target"]].TrustBySurface)
+	assert.Equal(t, "mixed", listed[byName["create_target"]].Trust)
 	assert.True(t, listed[byName["create_jira_issue"]].External)
 	assert.Equal(t, "ask", listed[byName["create_jira_issue"]].Trust)
-	assert.ElementsMatch(t, []string{"main", "target", "reaction"}, listed[byName["create_jira_issue"]].Surfaces)
+	assert.ElementsMatch(t, []string{"main", "target", "reaction", tools.AutomationSurface},
+		listed[byName["create_jira_issue"]].Surfaces)
 
 	out, err = runActions(t, "tools", "--surface", "target", "--json")
 	require.NoError(t, err)
@@ -233,7 +240,9 @@ func TestActions_TrustAndTools(t *testing.T) {
 }
 
 // Trust is per (tool, surface) (target 167): without --surface the CLI sets
-// every surface the tool is on; --surface sets one; the listing shows each.
+// every chat surface the tool is on — never the automation surface, which is
+// set only when named (spec 2026-10-14 §6.2) —; --surface sets one; the
+// listing shows each.
 func TestActions_TrustPerSurface(t *testing.T) {
 	database := writeActionsConfig(t)
 	type row struct {
@@ -258,14 +267,17 @@ func TestActions_TrustPerSurface(t *testing.T) {
 	_, err := runActions(t, "trust", "create_target", "execute")
 	require.NoError(t, err)
 	got := listCreateTarget()
-	assert.Equal(t, "execute", got.Trust)
-	assert.Equal(t, map[string]string{"main": "execute", "reaction": "execute"}, got.TrustBySurface)
+	assert.Equal(t, "mixed", got.Trust)
+	assert.Equal(t, map[string]string{"main": "execute", "reaction": "execute", tools.AutomationSurface: "ask"},
+		got.TrustBySurface)
+	assert.Equal(t, "execute", listCreateTarget("--surface", "main").Trust)
 
 	_, err = runActions(t, "trust", "create_target", "ask", "--surface", "main")
 	require.NoError(t, err)
 	got = listCreateTarget()
 	assert.Equal(t, "mixed", got.Trust)
-	assert.Equal(t, map[string]string{"main": "ask", "reaction": "execute"}, got.TrustBySurface)
+	assert.Equal(t, map[string]string{"main": "ask", "reaction": "execute", tools.AutomationSurface: "ask"},
+		got.TrustBySurface)
 	assert.Equal(t, "execute", listCreateTarget("--surface", "reaction").Trust)
 	trust, err := database.GetToolTrust("create_target", "main")
 	require.NoError(t, err)
@@ -313,9 +325,10 @@ func TestActions_WorkbenchSurfaceIsNoTrustPlace(t *testing.T) {
 
 // Settings → Assistant tools draws a switch per listed surface, and trust is a
 // write-tool setting: the listing carries write tools only — none of the
-// automation-only reads — and no "automation" surface anywhere (P1 automations
-// get no grants). `actions trust` refuses a read tool, with or without
-// --surface, and the automation surface on a write tool; nothing is written.
+// automation-only reads. The automation surface is a trust place since
+// Automations P2 (spec §6.2), so a write tool lists it exactly when it has a
+// trust level there. `actions trust` refuses a read tool, with or without
+// --surface, and a surface the write tool is not on; nothing is written.
 func TestActions_ToolsListsOnlyTrustableTools(t *testing.T) {
 	database := writeActionsConfig(t)
 	out, err := runActions(t, "tools", "--json")
@@ -328,12 +341,18 @@ func TestActions_ToolsListsOnlyTrustableTools(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
 	require.NotEmpty(t, listed)
+	onAutomation := 0
 	for _, l := range listed {
 		assert.Equal(t, string(tools.AccessWrite), l.Access, "%s: only write tools take trust", l.Name)
-		assert.NotContains(t, l.Surfaces, tools.AutomationSurface, l.Name)
-		assert.NotContains(t, l.TrustBySurface, tools.AutomationSurface, l.Name)
+		_, trusted := l.TrustBySurface[tools.AutomationSurface]
+		assert.Equal(t, slices.Contains(l.Surfaces, tools.AutomationSurface), trusted,
+			"%s: the automation surface is listed exactly when it carries a trust level", l.Name)
+		if trusted {
+			onAutomation++
+		}
 	}
-	assert.NotContains(t, out, `"`+tools.AutomationSurface+`"`)
+	assert.Equal(t, len(automationWriteSurfaces), onAutomation,
+		"exactly the ten write tools carry an automation trust level")
 	for _, name := range []string{"list_emails", "get_email", "list_inbox", "get_writing_style", "list_messages"} {
 		assert.NotContains(t, out, `"`+name+`"`, "%s is a read tool", name)
 	}
@@ -346,12 +365,92 @@ func TestActions_ToolsListsOnlyTrustableTools(t *testing.T) {
 		_, err = runActions(t, args...)
 		require.ErrorIs(t, err, tools.ErrNotWritable, args)
 	}
-	_, err = runActions(t, "trust", "create_target", "execute", "--surface", tools.AutomationSurface)
+	// brief_context is reaction-only and never offered to automations.
+	_, err = runActions(t, "trust", "brief_context", "execute", "--surface", tools.AutomationSurface)
 	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered)
 	var rows int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust
 		WHERE surface = ? OR tool IN ('get_writing_style', 'list_emails')`, tools.AutomationSurface).Scan(&rows))
 	assert.Zero(t, rows, "no refused trust call writes a row")
+}
+
+// Settings → Assistant tools shows an Automations switch for each of the ten
+// write tools (Automations P2, spec 2026-10-14 §6.2 step 4): `actions tools
+// --json` lists trust_by_surface.automation for every one, "ask" by default;
+// a local tool takes execute there only when --surface automation is named.
+func TestActionsTools_ListsAutomationTrust(t *testing.T) {
+	writeActionsConfig(t)
+	local := []string{"create_target", "create_idea", "create_track", "remind_me"}
+	for _, name := range local {
+		_, err := runActions(t, "trust", name, "execute", "--surface", tools.AutomationSurface)
+		require.NoError(t, err, name)
+	}
+	_, err := runActions(t, "trust", "send_slack_message", "execute", "--surface", tools.AutomationSurface)
+	require.ErrorIs(t, err, tools.ErrExternalExecute)
+
+	byName := listedAutomationTrust(t)
+	for name := range automationWriteSurfaces {
+		trust, ok := byName[name]
+		require.True(t, ok, "%s lists no automation trust", name)
+		want := string(tools.TrustAsk)
+		if slices.Contains(local, name) {
+			want = string(tools.TrustExecute)
+		}
+		assert.Equal(t, want, trust, name)
+	}
+	for _, name := range []string{"connect_jira_board", "dismiss_tracks", "edit_confluence_page", "brief_context"} {
+		_, ok := byName[name]
+		assert.False(t, ok, "%s is never offered to automations", name)
+	}
+}
+
+// An execute set without --surface is meant for the chats: on a real tool
+// offered to automations it writes every chat surface but never
+// tool_trust(<tool>, 'automation') — automation-wide trust is set only when
+// named (trustTargetSurfaces, spec §6.2).
+func TestActionsTrust_WithoutSurfaceLeavesAutomationAsk(t *testing.T) {
+	database := writeActionsConfig(t)
+	// create_track is seeded at ask on both chat surfaces (00065, 00112), so
+	// the execute below is what flips them.
+	countExecute := func() int {
+		var n int
+		require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust
+			WHERE tool = 'create_track' AND trust = 'execute'`).Scan(&n))
+		return n
+	}
+	require.Zero(t, countExecute(), "create_track starts at ask")
+
+	out, err := runActions(t, "trust", "create_track", "execute")
+	require.NoError(t, err)
+	assert.Contains(t, out, "create_track: trust = execute on reaction, main")
+	assert.NotContains(t, out, tools.AutomationSurface)
+
+	var rows int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust
+		WHERE tool = 'create_track' AND surface = ?`, tools.AutomationSurface).Scan(&rows))
+	assert.Zero(t, rows, "no automation trust row without --surface automation")
+	assert.Equal(t, 2, countExecute(), "both chat surfaces execute")
+	assert.Equal(t, string(tools.TrustAsk), listedAutomationTrust(t)["create_track"])
+}
+
+// listedAutomationTrust is trust_by_surface.automation per tool from
+// `actions tools --json`, for the tools that carry one.
+func listedAutomationTrust(t *testing.T) map[string]string {
+	t.Helper()
+	out, err := runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	var listed []struct {
+		Name           string            `json:"name"`
+		TrustBySurface map[string]string `json:"trust_by_surface"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+	byName := map[string]string{}
+	for _, l := range listed {
+		if trust, ok := l.TrustBySurface[tools.AutomationSurface]; ok {
+			byName[l.Name] = trust
+		}
+	}
+	return byName
 }
 
 // The Desktop's Settings toggle locks a tool on always_ask (AGENT-03).
@@ -496,4 +595,40 @@ func TestActions_ApproveArgsSHA256MustMatchTheStoredArgs(t *testing.T) {
 	out, err := runActions(t, "approve", strconv.FormatInt(id, 10), "--args-sha256", tools.ArgsSHA256(args), "--json")
 	require.NoError(t, err)
 	assert.Contains(t, out, `"status": "applied"`)
+}
+
+// An execute set without --surface is meant for the chats: it must not also
+// auto-apply every automation's calls of the tool. The automation surface is
+// set only when named (spec §6.2 step 4 stays reachable explicitly).
+func TestActionsTrust_FanOutSkipsAutomation(t *testing.T) {
+	write := func(surfaces ...string) *tools.Tool {
+		return &tools.Tool{Name: "fake_write", Access: tools.AccessWrite, Surfaces: surfaces}
+	}
+	cases := []struct {
+		name    string
+		tool    *tools.Tool
+		flag    string
+		want    []string
+		wantErr string
+	}{
+		{name: "fan-out leaves automation out", tool: write("main", "reaction", tools.AutomationSurface, tools.WorkbenchSurface),
+			want: []string{"main", "reaction"}},
+		{name: "explicit automation", tool: write("main", tools.AutomationSurface), flag: tools.AutomationSurface,
+			want: []string{tools.AutomationSurface}},
+		{name: "automation-only tool needs the flag", tool: write(tools.AutomationSurface),
+			wantErr: "pass --surface automation"},
+		{name: "workbench-only tool", tool: write(tools.WorkbenchSurface), wantErr: "always apply in their own workbench"},
+		{name: "surface-less tool", tool: write(), wantErr: "names no surface"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := trustTargetSurfaces(tc.tool, tc.flag)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

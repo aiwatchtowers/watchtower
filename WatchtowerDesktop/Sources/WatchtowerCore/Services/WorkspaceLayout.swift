@@ -12,10 +12,12 @@ package enum WorkspacePane: Codable, Hashable, Sendable {
     case sessionReport(Int64)
     case board
     case files
+    /// The diff reviewer of a session's changes (board #328).
+    case changes(Int64)
 }
 
 /// The project page header's view buttons: a terminal (any session), the
-/// Session view, the Board or the Files.
+/// Session view, the Board, the Files or a session's Changes.
 package enum WorkspaceView: CaseIterable, Sendable {
     case terminal
     /// A session's report (the Session view).
@@ -23,6 +25,8 @@ package enum WorkspaceView: CaseIterable, Sendable {
     case board
     /// The code editor's file tabs (POC).
     case files
+    /// A session's changes under review (board #328).
+    case changes
 
     /// What `pane` shows.
     package init(_ pane: WorkspacePane) {
@@ -31,6 +35,7 @@ package enum WorkspaceView: CaseIterable, Sendable {
         case .sessionReport: self = .report
         case .board: self = .board
         case .files: self = .files
+        case .changes: self = .changes
         }
     }
 
@@ -217,16 +222,18 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
 
     /// A deleted session never stays in the layout; a Session view on its
     /// report stays, with no session to show until another one is picked.
+    /// Its Changes pane goes with it: its round has no session to review.
     package mutating func forgetSession(_ id: Int64, fallback: WorkspacePane) {
-        let gone = WorkspacePane.session(id)
-        if expanded == gone { expanded = nil }
-        if secondary == gone { secondary = nil }
-        if primary == gone {
-            if let next = secondary {
-                primary = next
-                secondary = nil
-            } else {
-                primary = fallback
+        for gone in [WorkspacePane.changes(id), .session(id)] {
+            if expanded == gone { expanded = nil }
+            if secondary == gone { secondary = nil }
+            if primary == gone {
+                if let next = secondary {
+                    primary = next
+                    secondary = nil
+                } else {
+                    primary = fallback
+                }
             }
         }
     }

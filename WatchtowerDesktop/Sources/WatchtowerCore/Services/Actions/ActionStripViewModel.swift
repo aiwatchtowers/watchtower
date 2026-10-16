@@ -1,8 +1,9 @@
 import Foundation
 import GRDB
 
-/// The Dashboard's action strip — a union of pending agent-action proposals
-/// and due reminders, both reaction-command surfaces. AppState-owned so it
+/// The Inbox action strip — a union of pending agent-action proposals, due
+/// reminders and unread automation inbox outputs (STRIP-01 amended, spec
+/// §14.4). AppState-owned so it
 /// survives navigation away from the Dashboard (the `SlackAccountsViewModel`
 /// house pattern): `refresh()` on appear / after a mutation, not live GRDB
 /// observation — cross-process daemon/CLI writes don't fire `ValueObservation`
@@ -12,12 +13,19 @@ import GRDB
 /// approve/reject/retry route through it, so `Registry.Apply`'s exactly-once
 /// claim and the envelope-error surfacing stay in one place. Reminder
 /// done/snooze are direct GRDB writes (Swift-owned, no daemon contention,
-/// the `inbox_feedback` dual-path precedent), so they need no CLI round trip.
+/// the `inbox_feedback` dual-path precedent), so they need no CLI round trip;
+/// so are an output's Done/Dismiss, the only automation columns Swift writes
+/// (`read_at`/`dismissed_at`, spec §9.6).
 @MainActor
 @Observable
 package final class ActionStripViewModel {
     package private(set) var actionRows: [AgentAction] = []
     package private(set) var reminderRows: [Reminder] = []
+    /// Unread `kind='inbox'` automation outputs, newest first.
+    package private(set) var outputRows: [AutomationOutputCard] = []
+    /// Action id → "⚙ <automation> · run #<n>" for the rows an automation
+    /// run proposed (`context_type='automation_run'`).
+    package private(set) var actionLabels: [Int64: String] = [:]
     /// `finished_at` of the latest successful `reaction-commands` daemon run
     /// — the cheat sheet's "last check". Nil until the phase has run once.
     package private(set) var lastReactionCheck: String?
@@ -28,27 +36,79 @@ package final class ActionStripViewModel {
     /// needs to render one of these rows the way a chat surface does.
     package let actionFeed: AgentActionFeed
 
-    package init(dbPool: DatabasePool, cliRunner: CLIRunnerProtocol? = nil) {
+    package init(
+        dbPool: DatabasePool,
+        cliRunner: CLIRunnerProtocol? = nil,
+        automationsWake: (() async throws -> Void)? = nil
+    ) {
         self.dbPool = dbPool
-        self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner)
+        self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
     }
 
-    /// One-shot refetch of both halves of the strip (plus the reaction phase's
-    /// last check). The only thing that can surface a row a subprocess (CLI
-    /// action commands, the reaction-command daemon phase) wrote.
+    /// The Inbox sidebar badge: what the strip waits on the owner for —
+    /// proposals awaiting a decision, due reminders and unread inbox outputs.
+    /// Each source tolerates a schema that predates it (its table missing
+    /// counts 0); any other read error is thrown, never folded into 0.
+    nonisolated package static func badgeCount(_ db: Database, nowUTC: String) throws -> Int {
+        try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
+            + zeroIfTableMissing { try ReminderQueries.dueCount(db, nowUTC: nowUTC) }
+            + zeroIfTableMissing { try AutomationQueries.inboxOutputCount(db) }
+    }
+
+    /// `count()`, or 0 when its table does not exist yet (an older schema).
+    nonisolated package static func zeroIfTableMissing(_ count: () throws -> Int) throws -> Int {
+        do {
+            return try count()
+        } catch let error as DatabaseError
+            where error.resultCode == .SQLITE_ERROR && (error.message ?? "").hasPrefix("no such table") {
+            return 0
+        }
+    }
+
+    /// The card labels for `rows`: an automation run's row gets its run's
+    /// label, or "⚙ automation · run #<n>" when the run (and with it the
+    /// automation) is gone. Other rows get none.
+    nonisolated package static func labels(for rows: [AgentAction], runLabels: [Int64: String]) -> [Int64: String] {
+        var out: [Int64: String] = [:]
+        for row in rows {
+            guard let runID = automationRunID(row) else { continue }
+            out[row.id] = runLabels[runID] ?? "⚙ automation · run #\(runID)"
+        }
+        return out
+    }
+
+    /// The run an automation row was proposed by; nil for any other row.
+    nonisolated package static func automationRunID(_ row: AgentAction) -> Int64? {
+        guard row.contextType == AgentActionFeed.automationRunContext else { return nil }
+        return Int64(row.contextID)
+    }
+
+    /// One-shot refetch of the strip's three sources (plus the automation
+    /// labels and the reaction phase's last check). The only thing that can
+    /// surface a row a subprocess (CLI action commands, the reaction-command
+    /// daemon phase, an automation run) wrote. Reads only (STRIP-02).
     package func refresh() {
         lastError = nil
         let formatter = ISO8601DateFormatter()
         let now = formatter.string(from: Date())
         let terminalSince = formatter.string(from: Date().addingTimeInterval(-24 * 3600))
         do {
-            (actionRows, reminderRows, lastReactionCheck) = try dbPool.read { db in
-                (
-                    try AgentActionQueries.fetchStrip(db, terminalSince: terminalSince),
-                    try ReminderQueries.fetchDue(db, nowUTC: now),
-                    try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands")
+            let snapshot = try dbPool.read { db in
+                let actions = try AgentActionQueries.fetchStrip(db, terminalSince: terminalSince)
+                let runLabels = try AutomationQueries.runLabels(db, runIDs: actions.compactMap(Self.automationRunID))
+                return (
+                    actions: actions,
+                    labels: Self.labels(for: actions, runLabels: runLabels),
+                    reminders: try ReminderQueries.fetchDue(db, nowUTC: now),
+                    outputs: try AutomationQueries.fetchInboxOutputs(db),
+                    lastCheck: try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands")
                 )
             }
+            actionRows = snapshot.actions
+            actionLabels = snapshot.labels
+            reminderRows = snapshot.reminders
+            outputRows = snapshot.outputs
+            lastReactionCheck = snapshot.lastCheck
         } catch {
             lastError = error.localizedDescription
         }
@@ -73,6 +133,27 @@ package final class ActionStripViewModel {
             // A reminder deleted elsewhere leaves the strip; `refresh` clears
             // `lastError`, so the reason is set after it.
             if error is RowNotFoundError { refresh() }
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Done on an output card: writes `read_at` only. The card leaves the
+    /// strip only once the write landed; a failure keeps it and says why.
+    package func markOutputDone(_ id: Int64) {
+        writeOutput { try AutomationQueries.markOutputRead($0, id: id, now: Date()) }
+    }
+
+    /// Dismiss on an output card: writes `dismissed_at` only.
+    package func dismissOutput(_ id: Int64) {
+        writeOutput { try AutomationQueries.dismissOutput($0, id: id, now: Date()) }
+    }
+
+    private func writeOutput(_ write: (Database) throws -> Void) {
+        lastError = nil
+        do {
+            try dbPool.write(write)
+            refresh()
+        } catch {
             lastError = error.localizedDescription
         }
     }

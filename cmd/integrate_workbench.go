@@ -332,8 +332,8 @@ var legacySkillKeptNote = "Your own copy of the old " + devpack.LegacySkillName 
 	devpack.LegacySkillName + " yourself once you no longer need it; until then Claude Code sees both skills."
 
 // singleFileLayoutNote is the one line for a core skill the owner edited
-// before the v9 split (spec 2026-10-15 §4.3): kept, with no preset beside it.
-const singleFileLayoutNote = "Your edited skill keeps the old single-file layout; delete it to take the v9 core and preset."
+// before the v10 split (spec 2026-10-15 §4.3): kept, with no preset beside it.
+const singleFileLayoutNote = "Your edited skill keeps the old single-file layout; delete it to take the v10 core and preset."
 
 // legacyPermissionNote is the suggestion for the owner's allow rules that
 // still name the old server; "" when there are none. The rules are never

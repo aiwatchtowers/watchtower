@@ -16,13 +16,10 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/fsutil"
 )
 
 // recipeSlugOf is the slug a recipe file's name gives (its stem).
-func recipeSlugOf(path string) string {
-	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-}
+func recipeSlugOf(path string) string { return automations.RecipeSlugOf(path) }
 
 // validateJSON is `validate --json` — the pinned key set of plan Task 12.
 type validateJSON struct {
@@ -39,9 +36,10 @@ type validateJSON struct {
 }
 
 // validateRecipe parses data as the recipe slug in scope. A parse error is a
-// result (ok:false), not an error. widening is every normalised permission
-// (a recipe validated on its own widens from nothing).
-func validateRecipe(slug string, data []byte, contentHash string, scope automations.Scope) validateJSON {
+// result (ok:false), not an error. widening is what the normalised
+// permissions add to baseline — every one of them for a recipe validated on
+// its own (nil baseline).
+func validateRecipe(slug string, data []byte, contentHash string, scope automations.Scope, baseline []string) validateJSON {
 	v := validateJSON{Errors: []string{}, Slug: slug, Scope: scope.String(), ContentHash: contentHash,
 		Permissions: []string{}, Outputs: []string{}, Widening: []string{}}
 	r, err := automations.ParseRecipe(slug, data, scope)
@@ -57,7 +55,7 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 	v.OK, v.Name, v.ApprovalHash = true, r.Name, automations.ApprovalHash(r)
 	v.Permissions = append(v.Permissions, m.Normalized()...)
 	v.Outputs = append(v.Outputs, slices.Compact(slices.Sorted(slices.Values(r.Outputs)))...)
-	v.Widening = automations.Covers(nil, v.Permissions)
+	v.Widening = automations.Covers(baseline, v.Permissions)
 	return v
 }
 
@@ -67,7 +65,7 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
-	scope, _, err := workbenchScope(database, autoFlags.Workbench)
+	scope, baseline, err := validateScope(database)
 	if err != nil {
 		return err
 	}
@@ -75,7 +73,7 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	v := validateRecipe(recipeSlugOf(args[0]), data, contentHash, scope)
+	v := validateRecipe(recipeSlugOf(args[0]), data, contentHash, scope, baseline)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, v) // ok:false exits 0: the Desktop decodes it
@@ -86,6 +84,41 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "%s: ok — %s (%s), approval hash %s\n", args[0], v.Name, v.Scope, v.ApprovalHash)
 	fmt.Fprintf(w, "  permissions: %v\n  outputs:     %v\n", v.Permissions, v.Outputs)
 	return nil
+}
+
+// validateScope is the scope validate parses in and the permissions its
+// widening starts from: with --against, that automation's scope and the
+// permissions the owner last confirmed for it (automations.ConfirmedRecipe —
+// never an unconfirmed hand edit's; none known → nil, so every permission
+// widens, like draft_automation/save_automation); otherwise --workbench's
+// scope (personal by default) and none.
+func validateScope(database *db.DB) (automations.Scope, []string, error) {
+	if autoFlags.Against == 0 {
+		scope, _, err := workbenchScope(database, autoFlags.Workbench)
+		return scope, nil, err
+	}
+	if autoFlags.Workbench != 0 {
+		return automations.Scope{}, nil, errors.New("--against and --workbench are mutually exclusive: --against takes the automation's scope")
+	}
+	if autoFlags.Against < 0 {
+		return automations.Scope{}, nil, fmt.Errorf("invalid --against %d: want a positive automation id", autoFlags.Against)
+	}
+	a, err := database.GetAutomation(autoFlags.Against)
+	if err != nil {
+		return automations.Scope{}, nil, err
+	}
+	confirmed, err := automations.ConfirmedRecipe(database, a)
+	if err != nil {
+		return automations.Scope{}, nil, fmt.Errorf("automation %d: reading its confirmed text: %w", a.ID, err)
+	}
+	if confirmed == nil {
+		return automationScopeOf(a), nil, nil
+	}
+	m, err := automations.ParseManifest(confirmed.Permissions, confirmed.Outputs, confirmed.Scope)
+	if err != nil { // ParseRecipe validated the manifest already
+		return automations.Scope{}, nil, fmt.Errorf("automation %d confirmed manifest: %w", a.ID, err)
+	}
+	return automationScopeOf(a), m.Normalized(), nil
 }
 
 // rescanFolderJSON is one folder of `rescan --json`.
@@ -272,11 +305,20 @@ func resolveSaveTarget(cfg *config.Config, database *db.DB, file, target string)
 		return saveTarget{}, fmt.Errorf("cannot save to %s: a recipe lives in the personal folder (%s) or a workbench's .watchtower/automations folder",
 			target, automations.PersonalDir(cfg.WorkspaceDir()))
 	}
+	if scope.Kind == automations.ScopeWorkbench {
+		w, err := database.GetWorkbench(scope.WorkbenchID)
+		if err != nil {
+			return saveTarget{}, err
+		}
+		if err := refuseLinkedRecipeDir(automations.WorkbenchDir(w.FolderPath)); err != nil {
+			return saveTarget{}, fmt.Errorf("cannot save to %s: %w", target, err)
+		}
+	}
 	return saveTarget{scope: scope, dir: dir, path: path, slug: slug}, nil
 }
 
 // runAutomationsSave writes --file's recipe atomically to its recipe folder
-// (fsutil.WriteFileAtomic — the one helper P3's save_automation and P6's
+// (automations.Indexer.WriteRecipe — the one path P3's save_automation and P6's
 // install-template reuse), indexes the folder and, with --confirm-hash,
 // confirms it. --confirm-hash is refused under an AI agent's markers
 // (AGENT-07) before anything is written, and a hash that is not the saved
@@ -305,6 +347,11 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 	}
 	if err := checkConfirmHash(t, data, autoFlags.ConfirmHash); err != nil {
 		return err
+	}
+	if cmd.Flags().Changed(expectContentHashFlag) {
+		if err := checkExpectedContentHash(t.path, autoFlags.ExpectContentHash); err != nil {
+			return err
+		}
 	}
 	a, err := writeAndIndexRecipe(cmd.Context(), cfg, database, t, data)
 	if err != nil {
@@ -341,40 +388,52 @@ func checkConfirmHash(t saveTarget, data []byte, hash string) error {
 	return nil
 }
 
+// expectContentHashFlag is save's --expect-content-hash: the content hash of
+// the file the Desktop loaded ("" = it had no file), so a recipe changed on
+// disk since is refused instead of overwritten.
+const expectContentHashFlag = "expect-content-hash"
+
+// checkExpectedContentHash refuses, before anything is written, a save over
+// a target whose current content hash is not want ("" = the target must not
+// exist; anything at the path, even a symlink, is a change).
+func checkExpectedContentHash(path, want string) error {
+	changed := fmt.Errorf("not saved: the recipe changed on disk since you opened it (%s) — reload it and review again", path)
+	_, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		if want != "" {
+			return changed
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking %s: %w", path, err)
+	}
+	if want == "" {
+		return changed
+	}
+	_, got, err := automations.ReadRecipeFile(path)
+	if err != nil {
+		return fmt.Errorf("not saved: %w", err)
+	}
+	if got != want {
+		return changed
+	}
+	return nil
+}
+
 // writeAndIndexRecipe writes data to t atomically, rescans t's folder and
 // returns the file's index row; a file the indexer skipped is an error
-// carrying its reason.
+// carrying its reason (automations.Indexer.WriteRecipe).
 func writeAndIndexRecipe(ctx context.Context, cfg *config.Config, database *db.DB, t saveTarget, data []byte) (*db.Automation, error) {
-	if err := os.MkdirAll(t.dir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", t.dir, err)
-	}
-	if err := fsutil.WriteFileAtomic(t.path, data, 0o644); err != nil {
-		return nil, fmt.Errorf("writing %s: %w", t.path, err)
-	}
-	return indexedRecipeAt(ctx, cfg, database, t.scope, t.dir, t.path)
+	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
+	return ix.WriteRecipe(ctx, t.scope, t.dir, t.path, data)
 }
 
 // indexedRecipeAt rescans dir under scope and returns the index row of the
 // recipe file at path (canonical), or an error naming why it is not indexed.
 func indexedRecipeAt(ctx context.Context, cfg *config.Config, database *db.DB, scope automations.Scope, dir, path string) (*db.Automation, error) {
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
-	report, err := ix.RescanFolder(ctx, scope, dir)
-	if err != nil {
-		return nil, err
-	}
-	for _, s := range report.Skipped {
-		if s.Path == path {
-			return nil, fmt.Errorf("%s is not indexed: %s", path, s.Reason)
-		}
-	}
-	a, err := database.GetAutomationBySlug(string(scope.Kind), scope.WorkbenchID, recipeSlugOf(path))
-	if err != nil {
-		return nil, fmt.Errorf("%s is not indexed: %w", path, err)
-	}
-	if a.Path != path || a.RemovedAt != nil {
-		return nil, fmt.Errorf("%s is not indexed (its slug belongs to automation %d at %s)", path, a.ID, a.Path)
-	}
-	return a, nil
+	return ix.IndexedRecipeAt(ctx, scope, dir, path)
 }
 
 // runAutomationsDelete removes an automation's index row — which cascades

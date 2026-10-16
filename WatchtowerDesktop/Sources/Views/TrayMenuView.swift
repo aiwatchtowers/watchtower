@@ -17,6 +17,7 @@ struct TrayMenuView: View {
             daemonError: appState.daemonManager.errorMessage,
             cliStoreError: appState.cliStoreError,
             voicesPendingCount: appState.voiceRegistryCenter.pendingCount,
+            backfillLine: appState.planUsageCenter?.backfillLine,
             modelDownloads: appState.transcriptionModelProvisioner.downloads,
             retryModelDownloadAction: { key in appState.transcriptionModelProvisioner.retry(key) },
             planUsageLines: appState.planUsageCenter?.trayLines ?? [],
@@ -38,6 +39,11 @@ struct TrayMenuView: View {
             syncNowAction: {
                 Task { await appState.daemonManager.syncNow() }
             },
+            runAutomationSections: appState.trayRunAutomationSections(),
+            runAutomationAction: { id in
+                Task { await appState.runAutomationFromTray(id) }
+            },
+            openAutomationsAction: { appState.openAutomationsFromTray() },
             quickCaptureAction: {
                 // Same "become regular" move as Open Watchtower: the Quick
                 // Capture window is a real window and needs a Dock icon /
@@ -75,8 +81,11 @@ struct TrayMenuView: View {
             }
         )
         // The shared DaemonManager polls from AppState.initialize(); this only
-        // refreshes the line the moment the menu is opened.
-        .onAppear { appState.daemonManager.checkStatus() }
+        // refreshes the line (and the automation rows) the moment the menu is opened.
+        .onAppear {
+            appState.daemonManager.checkStatus()
+            if appState.isAutomationsFeatureEnabled { appState.quickRunCenter?.reload() }
+        }
     }
 }
 
@@ -92,6 +101,8 @@ struct TrayMenuContent: View {
     let daemonError: String?
     let cliStoreError: String?
     let voicesPendingCount: Int
+    /// "Loading history: N of M days" while a first-run backfill loads; nil hides it.
+    var backfillLine: String?
     /// Transcription-model downloads, running or failed (#744).
     var modelDownloads: [TranscriptionModelProvisioner.Download] = []
     var retryModelDownloadAction: (TranscriptionModelProvisioner.ModelKey) -> Void = { _ in }
@@ -103,6 +114,11 @@ struct TrayMenuContent: View {
     let updateVersion: String?
     let updateAction: () -> Void
     let syncNowAction: () -> Void
+    /// The "Run automation ▸" submenu; nil hides it (feature off, or no
+    /// quick-run center yet).
+    var runAutomationSections: [TrayRunAutomationMenu.Section]?
+    var runAutomationAction: (Int64) -> Void = { _ in }
+    var openAutomationsAction: () -> Void = {}
     let quickCaptureAction: () -> Void
     let voicesAction: () -> Void
     let reviewVoicesAction: () -> Void
@@ -134,6 +150,9 @@ struct TrayMenuContent: View {
     var body: some View {
         Group {
             Text(Self.statusText(isRunning: isRunning, syncProgress: syncProgress))
+            if let backfillLine {
+                Text(backfillLine)
+            }
             if let daemonError {
                 Text("Daemon: \(daemonError)")
             }
@@ -157,6 +176,9 @@ struct TrayMenuContent: View {
             Divider()
             Button("Sync Now", action: syncNowAction)
                 .disabled(!isRunning)
+            if let runAutomationSections {
+                runAutomationMenu(runAutomationSections)
+            }
             Divider()
             Button("New Voice Idea", action: quickCaptureAction)
             Divider()
@@ -175,6 +197,23 @@ struct TrayMenuContent: View {
                 // (see TrayAppDelegate.requestQuit).
                 TrayAppDelegate.requestQuit()
             }
+        }
+    }
+
+    /// Grouped by workbench, then Personal (spec §12.7, mockup 7); a disabled
+    /// or unreadable recipe is listed but not clickable.
+    private func runAutomationMenu(_ sections: [TrayRunAutomationMenu.Section]) -> some View {
+        Menu("Run automation") {
+            ForEach(sections) { section in
+                Section(section.title) {
+                    ForEach(section.items) { item in
+                        Button(item.label) { runAutomationAction(item.id) }
+                            .disabled(!item.isActionable)
+                    }
+                }
+            }
+            Divider()
+            Button("Open Automations…", action: openAutomationsAction)
         }
     }
 }

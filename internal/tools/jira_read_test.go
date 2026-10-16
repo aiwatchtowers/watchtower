@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,4 +225,43 @@ func TestCreateJiraIssue_AcceptsSelectedBoardProjectBeforeFullSync(t *testing.T)
 	assert.NoError(t, tool.Validate(ctx, d, json.RawMessage(`{"project_key":"acme","issue_type":"Task","summary":"s","reason":"r"}`)))
 	var verr *ValidationError
 	assert.ErrorAs(t, tool.Validate(ctx, d, json.RawMessage(`{"project_key":"OFF","issue_type":"Task","summary":"s","reason":"r"}`)), &verr)
+}
+
+// list_jira_issues returns lean rows: no raw API payload, no custom field
+// values, the description clipped — a 200-issue page of production-size
+// issues stays under the automation SDK's 256 KiB result cap, while
+// get_jira_issue still returns the issue in full.
+func TestListJiraIssues_LeanRows(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	raw := `{"fields":{"blob":"` + strings.Repeat("r", 20*1024) + `"}}`
+	custom := `{"customfield_10010":"` + strings.Repeat("c", 20*1024) + `"}`
+	desc := strings.Repeat("d", 8*1024)
+	for i := 1; i <= 200; i++ {
+		key := "ABC-" + strconv.Itoa(i)
+		require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
+			AccountID: 1, Key: key, ID: key, ProjectKey: "ABC", Summary: "issue " + key, DescriptionText: desc,
+			Status: "In Progress", StatusCategory: "indeterminate", AssigneeDisplayName: "colleague A",
+			Labels: `["payments"]`, Components: "[]", FixVersions: "[]", RawJSON: raw, CustomFieldsJSON: custom,
+			CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z", SyncedAt: "2026-06-02T00:00:00Z",
+		}))
+	}
+	reg := jiraReadRegistry(t, d)
+
+	got := callReadString(t, reg, "list_jira_issues", `{"project":"ABC","limit":200}`)
+	assert.Less(t, len(got), 256*1024, "a 200-issue page fits the SDK result cap")
+	assert.NotContains(t, got, "RawJSON")
+	assert.NotContains(t, got, "CustomFieldsJSON")
+	assert.NotContains(t, got, "customfield_10010")
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(got), &rows))
+	require.Len(t, rows, 200)
+	assert.Equal(t, "In Progress", rows[0]["Status"])
+	assert.Equal(t, "colleague A", rows[0]["AssigneeDisplayName"])
+	assert.Equal(t, true, rows[0]["DescriptionTruncated"])
+	assert.Len(t, rows[0]["DescriptionText"], maxListedDescriptionBytes)
+
+	full := callReadString(t, reg, "get_jira_issue", `{"key":"ABC-7"}`)
+	assert.Contains(t, full, "customfield_10010", "get_jira_issue keeps the full issue")
+	assert.Contains(t, full, desc)
 }

@@ -71,15 +71,18 @@ func ReadArgsIn(ctx context.Context, bin, dir string, args ...string) ([]string,
 }
 
 // contentReads are the subcommands that can run a filter driver on the
-// folder's files; log only with a patch.
-var contentReads = []string{"status", "ls-files", "check-ignore", "diff", "diff-files", "diff-index"}
+// folder's files (add runs clean filters while it stages, write-tree when it
+// re-checks a racy index entry); log, show and
+// diff-tree only with a patch.
+var contentReads = []string{"status", "ls-files", "check-ignore", "diff", "diff-files", "diff-index", "add", "write-tree"}
 
 // readsContent: args (subcommand first) may run a filter driver.
 func readsContent(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if args[0] == "log" || args[0] == "show" {
+	switch args[0] {
+	case "log", "show", "diff-tree":
 		return slices.ContainsFunc(args[1:], func(a string) bool { return a == "-p" || a == "--patch" || a == "-u" })
 	}
 	return slices.Contains(contentReads, args[0])
@@ -141,13 +144,21 @@ func OwnerArgs(args ...string) []string { return append(slices.Clone(ownerConfig
 // locate git: a bare "git" would be a PATH lookup that can find the shim,
 // so callers pass Locate's path.
 func Exec(ctx context.Context, dir string, stdin []byte, name string, args ...string) (stdout, stderr []byte, err error) {
+	return ExecEnv(ctx, dir, nil, stdin, name, args...)
+}
+
+// ExecEnv is Exec with extraEnv appended after the inherited repository
+// variables are dropped: a caller's own GIT_INDEX_FILE (the reviewer's
+// temporary index) reaches git, an inherited one never does.
+func ExecEnv(ctx context.Context, dir string, extraEnv []string, stdin []byte, name string, args ...string) (stdout, stderr []byte, err error) {
 	c := exec.CommandContext(ctx, name, args...)
 	c.Dir = dir
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		key, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(repositoryEnv, key)
 	})
-	c.Env = append(env, "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GH_PROMPT_DISABLED=1", "LC_ALL=C")
+	env = append(env, "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GH_PROMPT_DISABLED=1", "LC_ALL=C")
+	c.Env = append(env, extraEnv...)
 	c.WaitDelay = time.Second
 	if stdin != nil {
 		c.Stdin = bytes.NewReader(stdin)

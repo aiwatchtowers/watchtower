@@ -5,30 +5,44 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
+	"watchtower/internal/tools"
 )
 
 // automationsFlags holds every flag of the automations subcommands. Tests
 // reset it between runs (cobra keeps a flag's last value across Execute
-// calls); a zero value always means "not given".
+// calls); a zero value means "not given" — except ExpectContentHash, where
+// "" is a value and the flag's Changed state tells (tests reset it too).
 type automationsFlags struct {
-	JSON        bool
-	Workbench   int64
-	File        string
-	Path        string
-	Hash        string
-	ConfirmHash string
-	RerunOf     int64
-	Limit       int
-	Kind        string
+	JSON              bool
+	Workbench         int64
+	File              string
+	Path              string
+	Hash              string
+	ConfirmHash       string
+	ExpectContentHash string
+	Against           int64
+	RerunOf           int64
+	Limit             int
+	Kind              string
+	Step              int64    // session-launched/-ended
+	Session           int64    // session-launched
+	Status            string   // session-ended
+	Error             string   // session-ended
+	Params            []string // install-template --param
 }
 
 var autoFlags automationsFlags
@@ -73,24 +87,32 @@ func init() {
 	outputs := newAutomationsSubcommand("outputs", "List automation outputs", cobra.NoArgs, runAutomationsOutputs)
 	wake := newAutomationsSubcommand("wake", "Wake the daemon's automation scheduler and executor", cobra.NoArgs,
 		runAutomationsWake)
+	auto := newAutomationsSubcommand("auto <id|slug> <tool> on|off",
+		"Turn a tool's auto grant on (owner only, at the current approval hash) or off", cobra.ExactArgs(3),
+		runAutomationsAuto)
 
-	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs} {
+	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto} {
 		c.Flags().BoolVar(&autoFlags.JSON, "json", false, "output as JSON")
 	}
-	for _, c := range []*cobra.Command{list, show, validate, rescan} {
+	for _, c := range []*cobra.Command{list, show, validate, rescan, auto} {
 		c.Flags().Int64Var(&autoFlags.Workbench, "workbench", 0, "workbench id (its .watchtower/automations folder)")
 	}
 	dryRun.Flags().StringVar(&autoFlags.File, "file", "", "a recipe file in a recipe folder (rescanned first)")
 	save.Flags().StringVar(&autoFlags.File, "file", "", "the recipe text to write")
 	save.Flags().StringVar(&autoFlags.Path, "path", "", "where to write it (default: the personal folder, the file's name)")
 	save.Flags().StringVar(&autoFlags.ConfirmHash, "confirm-hash", "", "confirm the saved recipe at this approval hash (owner only)")
+	save.Flags().StringVar(&autoFlags.ExpectContentHash, expectContentHashFlag, "",
+		`refuse unless the target file's content hash is this ("" = the file must not exist)`)
+	validate.Flags().Int64Var(&autoFlags.Against, "against", 0,
+		"compare with this automation: its scope, widening from its current permissions")
 	confirm.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash being confirmed (required)")
+	auto.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash the grant binds to (required for on)")
 	run.Flags().Int64Var(&autoFlags.RerunOf, "rerun-of", 0, "the run this one reruns")
 	runs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many runs (default 20)")
 	outputs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many outputs (default 20)")
-	outputs.Flags().StringVar(&autoFlags.Kind, "kind", "", "only outputs of this kind (inbox, report)")
+	outputs.Flags().StringVar(&autoFlags.Kind, "kind", "", "only outputs of this kind (inbox, briefing, report)")
 	automationsCmd.AddCommand(list, show, validate, rescan, run, dryRun, cancel, runs, steps, enable, disable,
-		confirm, save, del, outputs, wake)
+		confirm, save, del, outputs, wake, auto)
 }
 
 // openAutomationsCmd loads the config and opens the database with the
@@ -160,6 +182,38 @@ func workbenchScope(database *db.DB, workbenchID int64) (automations.Scope, stri
 		return automations.Scope{}, "", err
 	}
 	return automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: w.ID}, automations.WorkbenchDir(w.FolderPath), nil
+}
+
+// refuseLinkedRecipeDir refuses a workbench recipe folder (absolute, as
+// stored) with a symlink anywhere in its existing part: the scheduler never
+// scans such a folder (the indexer's workbenchPathPlain), and a write through
+// the link could land outside the workbench. The part that does not exist
+// yet is created plain by MkdirAll.
+func refuseLinkedRecipeDir(dir string) error {
+	existing := dir
+	for {
+		_, err := os.Lstat(existing)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("checking %s: %w", existing, err)
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			break
+		}
+		existing = parent
+	}
+	plain, err := fsutil.NoSymlinkComponents(existing)
+	if err != nil {
+		return fmt.Errorf("checking %s: %w", dir, err)
+	}
+	if !plain {
+		return fmt.Errorf("%s has a symlink in its path: a workbench recipe folder must be a plain directory "+
+			"(the scheduler never scans one behind a link)", dir)
+	}
+	return nil
 }
 
 // resolveAutomation finds an automation by slug in the scope of --workbench
@@ -244,11 +298,59 @@ type automationJSON struct {
 	ApprovalHash      string   `json:"approval_hash"`
 	ConfirmedHash     string   `json:"confirmed_hash"`
 	Widening          []string `json:"widening"`
+	// Grants are the auto grants, inactive ones included (P2, spec §6.4).
+	Grants []automationGrantJSON `json:"grants"`
+	// AutoTools are the write tools the manifest admits, for the edit form's
+	// Auto toggles (P3); never null, empty for a recipe that does not parse.
+	AutoTools []automationAutoToolJSON `json:"auto_tools"`
+	// The confirmation sheet's Changed block (P3, spec §12.2, D26): see
+	// automationChanges and automationAuthor.
+	Changes      []automationChangeJSON `json:"changes"`
+	ChangesKnown bool                   `json:"changes_known"`
+	ChangedBy    string                 `json:"changed_by"`
+	ChangedAt    *string                `json:"changed_at"`
 }
+
+// automationChangeJSON is one hashed field that differs from the confirmed
+// recipe: old and new in automations.ApprovalFields' text form (the trigger
+// spec JSON without a button's label), both "" for the script.
+type automationChangeJSON struct {
+	Field string `json:"field"`
+	Old   string `json:"old"`
+	New   string `json:"new"`
+}
+
+// automationAutoToolJSON is one entry of show's auto_tools: a write tool the
+// manifest admits; always_asks marks one auto can never be turned on for (D14).
+type automationAutoToolJSON struct {
+	Tool       string `json:"tool"`
+	AlwaysAsks bool   `json:"always_asks"`
+}
+
+// automationAutoTools lists the write tools of reg the manifest of a admits
+// (Manifest.AdmitsWriteTool), sorted by name; [] when a does not parse.
+func automationAutoTools(reg *tools.Registry, a *db.Automation) []automationAutoToolJSON {
+	out := []automationAutoToolJSON{}
+	m, err := automationManifest(a)
+	if err != nil {
+		return out
+	}
+	for _, t := range reg.All() {
+		if m.AdmitsWriteTool(t) {
+			out = append(out, automationAutoToolJSON{Tool: t.Name, AlwaysAsks: t.AlwaysAsk})
+		}
+	}
+	slices.SortFunc(out, func(x, y automationAutoToolJSON) int { return strings.Compare(x.Tool, y.Tool) })
+	return out
+}
+
+// changedByAssistant is changed_by when an applied save_automation wrote the
+// recipe's current approval hash.
+const changedByAssistant = "assistant"
 
 // newAutomationJSON builds show's payload; widening is Covers(nil, current)
 // for an unconfirmed recipe (see automationJSON's v1 limit).
-func newAutomationJSON(a *db.Automation) (automationJSON, error) {
+func newAutomationJSON(database *db.DB, a *db.Automation, grants []db.AutomationToolGrant) (automationJSON, error) {
 	perms, err := decodeAutomationList("permissions_json", a.PermissionsJSON)
 	if err != nil {
 		return automationJSON{}, fmt.Errorf("automation %d: %w", a.ID, err)
@@ -264,7 +366,11 @@ func newAutomationJSON(a *db.Automation) (automationJSON, error) {
 		Concurrency: a.Concurrency, MissedPolicy: a.MissedPolicy, PauseTimeoutHours: a.PauseTimeoutHours,
 		Enabled: a.Enabled, Runnable: a.Runnable(), NeedsConfirmation: automationNeedsConfirmation(a),
 		ParseError: a.ParseError, ContentHash: a.ContentHash, ApprovalHash: a.ApprovalHash,
-		ConfirmedHash: a.ConfirmedHash, Widening: []string{},
+		ConfirmedHash: a.ConfirmedHash, Widening: []string{}, Grants: newAutomationGrantsJSON(grants),
+		AutoTools: []automationAutoToolJSON{}, Changes: []automationChangeJSON{},
+	}
+	if j.ChangedBy, j.ChangedAt, err = automationAuthor(database, a); err != nil {
+		return automationJSON{}, err
 	}
 	if a.ParseError != "" {
 		return j, nil
@@ -277,11 +383,88 @@ func newAutomationJSON(a *db.Automation) (automationJSON, error) {
 	if !automationConfirmed(a) {
 		j.Widening = automations.Covers(nil, perms)
 	}
+	if j.Changes, j.ChangesKnown, err = automationChanges(database, a, r); err != nil {
+		return automationJSON{}, err
+	}
 	return j, nil
 }
 
+// automationChanges is the Changed block's diff of a (parsed as current)
+// against the text the owner confirmed (spec §12.2, D26). Confirmed: nothing
+// changed, known. Never confirmed: nothing to compare, unknown ("First
+// confirmation"). Otherwise the confirmed text is automations.ConfirmedRecipe's
+// (the run snapshot or save_automation candidate whose approval hash is
+// confirmed_hash); none leaves the diff unknown. changes is never nil.
+func automationChanges(database *db.DB, a *db.Automation, current *automations.Recipe) ([]automationChangeJSON, bool, error) {
+	if automationConfirmed(a) {
+		return []automationChangeJSON{}, true, nil
+	}
+	if a.ConfirmedHash == "" {
+		return []automationChangeJSON{}, false, nil
+	}
+	confirmed, err := automations.ConfirmedRecipe(database, a)
+	if err != nil {
+		return nil, false, err
+	}
+	if confirmed == nil {
+		return []automationChangeJSON{}, false, nil
+	}
+	return diffApprovalFields(confirmed, current), true, nil
+}
+
+// diffApprovalFields lists the hashed fields that differ between the
+// confirmed and the current recipe, in ApprovalFields' order.
+func diffApprovalFields(confirmed, current *automations.Recipe) []automationChangeJSON {
+	changes := []automationChangeJSON{}
+	before, after := automations.ApprovalFields(confirmed), automations.ApprovalFields(current)
+	for i, f := range after {
+		if before[i].Value == f.Value {
+			continue
+		}
+		c := automationChangeJSON{Field: f.Name, Old: before[i].Value, New: f.Value}
+		if f.Name == "script" {
+			c.Old, c.New = "", "" // the sheet says "Script changed" and shows the script itself
+		}
+		changes = append(changes, c)
+	}
+	return changes
+}
+
+// automationAuthor is the Changed block's author line: "assistant" and the
+// applied_at of the newest applied save_automation that pinned a's current
+// approval hash; otherwise "" and a's updated_at (no author is recorded for a
+// plain `save` or a hand edit — v1 limit, spec §12.2). The time is RFC 3339
+// UTC, nil when unknown.
+func automationAuthor(database *db.DB, a *db.Automation) (string, *string, error) {
+	if a.ApprovalHash != "" {
+		save, err := database.LatestAppliedAutomationSave(a.Path, automationScopeOf(a).String(), a.ApprovalHash)
+		if err != nil {
+			return "", nil, err
+		}
+		if save != nil {
+			return changedByAssistant, rfc3339UTC(save.AppliedAt), nil
+		}
+	}
+	if a.UpdatedAt.IsZero() {
+		return "", nil, nil
+	}
+	at := a.UpdatedAt.UTC().Format(time.RFC3339)
+	return "", &at, nil
+}
+
+// rfc3339UTC normalises a stored timestamp to RFC 3339 UTC; nil when it does
+// not parse (an applied row always has one).
+func rfc3339UTC(s string) *string {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil
+	}
+	out := t.UTC().Format(time.RFC3339)
+	return &out
+}
+
 func runAutomationsShow(cmd *cobra.Command, args []string) error {
-	_, database, err := openAutomationsCmd()
+	cfg, database, err := openAutomationsCmd()
 	if err != nil {
 		return err
 	}
@@ -290,10 +473,15 @@ func runAutomationsShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	j, err := newAutomationJSON(a)
+	grants, err := database.ListAutomationToolGrants(a.ID)
 	if err != nil {
 		return err
 	}
+	j, err := newAutomationJSON(database, a, grants)
+	if err != nil {
+		return err
+	}
+	j.AutoTools = automationAutoTools(buildAutomationRegistry(cfg, database), a)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, j)
@@ -316,6 +504,13 @@ func printAutomation(w io.Writer, j automationJSON) {
 	fmt.Fprintf(w, "  approval:    %s (confirmed: %s)\n", j.ApprovalHash, orNone(j.ConfirmedHash))
 	if len(j.Widening) > 0 {
 		fmt.Fprintf(w, "  not confirmed yet: %v\n", j.Widening)
+	}
+	for _, g := range j.Grants {
+		state := "auto"
+		if !g.Active {
+			state = "auto paused — the recipe changed"
+		}
+		fmt.Fprintf(w, "  grant:       %s (%s)\n", g.Tool, state)
 	}
 }
 

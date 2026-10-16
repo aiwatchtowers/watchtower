@@ -151,7 +151,9 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 		if c, ok := client.(mcpConfigurable); ok {
 			c.SetMCPArgs(chatMCPArgs()) // claude/codex reach tools via the MCP subprocess
 		}
-		if c, ok := client.(externalMCPConfigurable); ok {
+		// The editor chat carries only draft/save and read tools (spec
+		// 2026-10-14 §14.5, D11); an external server may expose writes.
+		if c, ok := client.(externalMCPConfigurable); ok && aiFlagSurface != tools.AutomationEditorSurface {
 			c.SetExternalMCPServers(loadExternalMCPServers(cfg, dbPath))
 		}
 	}
@@ -341,10 +343,7 @@ const (
 func refreshConnectionTools(database *db.DB, c *db.ExternalConnection, server ai.ExternalMCPServer, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	tools, err := listServerTools(ctx, externalmcp.ServerSpec{
-		Kind: server.Kind, Command: server.Command, Args: server.Args, URL: server.URL,
-		Env: server.Env, Headers: server.Headers,
-	})
+	tools, err := listServerTools(ctx, serverSpec(server))
 	if err != nil {
 		if ferr := database.SetExternalConnectionListFailed(c.ID, time.Now().UTC().Format(time.RFC3339)); ferr != nil {
 			log.Printf("external connection %d (%s): recording failed listing: %v", c.ID, c.Name, ferr)
@@ -357,6 +356,15 @@ func refreshConnectionTools(database *db.DB, c *db.ExternalConnection, server ai
 	}
 	c.Tools, c.ToolsListed, c.ToolsListedAt, c.ToolsStale = tools, true, listedAt, false
 	return nil
+}
+
+// serverSpec is how externalmcp reaches server: its transport fields and
+// credentials.
+func serverSpec(server ai.ExternalMCPServer) externalmcp.ServerSpec {
+	return externalmcp.ServerSpec{
+		Kind: server.Kind, Command: server.Command, Args: server.Args, URL: server.URL,
+		Env: server.Env, Headers: server.Headers,
+	}
 }
 
 // listServerTools is externalmcp.ListTools; a var so tests can stub the

@@ -491,9 +491,9 @@ func TestSandbox_NewSandboxNeedsEnv(t *testing.T) {
 func TestEnv_Binding(t *testing.T) {
 	env := &Env{Run: &db.AutomationRun{ID: 42}, Automation: &db.Automation{ProjectID: 3}}
 	want := tools.Binding{Surface: tools.AutomationSurface, ContextType: tools.AutomationContextType,
-		ContextID: "42", WorkbenchID: 3}
+		ContextID: "42", AutomationRunID: 42, WorkbenchID: 3}
 	if got := env.Binding(); got.Surface != want.Surface || got.ContextType != want.ContextType ||
-		got.ContextID != want.ContextID || got.WorkbenchID != want.WorkbenchID {
+		got.ContextID != want.ContextID || got.AutomationRunID != want.AutomationRunID || got.WorkbenchID != want.WorkbenchID {
 		t.Fatalf("Binding = %+v; want %+v", got, want)
 	}
 	draft := &Env{Run: &db.AutomationRun{}, Recipe: &Recipe{Scope: Scope{Kind: ScopeWorkbench, WorkbenchID: 9}}}

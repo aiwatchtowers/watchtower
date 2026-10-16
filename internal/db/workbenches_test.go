@@ -243,6 +243,11 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		VALUES ('main', ?, 0, 0)`, fmt.Sprintf("%d:x:1", pid))
 	require.NoError(t, err)
 
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s-proj02", "2026-10-01T00:00:00Z", pid)},
+		Events:   []AgentLogEvent{apiCall("s-proj02", "m-proj02:r1", 3)}})
+	require.NoError(t, err)
+
 	require.NoError(t, d.DeleteWorkbench(pid))
 
 	for _, q := range []string{
@@ -311,7 +316,93 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	var mainChat int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE context_type IS NULL`).Scan(&mainChat))
 	assert.Equal(t, 1, mainChat, "only code_question rows go, whatever their context_id")
+	// PROJ-02 exception (ask #153): agent analytics outlive the workbench.
+	var orphaned, orphanEvents int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_sessions WHERE session_uuid = 's-proj02' AND project_id IS NULL`).Scan(&orphaned))
+	assert.Equal(t, 1, orphaned, "the analytics session survives with project_id NULL")
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE session_uuid = 's-proj02'`).Scan(&orphanEvents))
+	assert.Equal(t, 1, orphanEvents, "the analytics events survive")
 	assert.ErrorIs(t, d.DeleteWorkbench(pid), ErrWorkbenchNotFound)
+}
+
+// TestProj02_DeleteRemovesAutomationRows extends PROJ-02 to the workbench's
+// automations (spec 2026-10-14 P5): its automations, their runs, steps,
+// state and outputs, and its owner asks go with it; another workbench's stay;
+// the recipe files in the folder are the owner's repo files and are untouched.
+func TestProj02_DeleteRemovesAutomationRows(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	keep := newTestWorkbench(t, d)
+	wb, err := d.GetWorkbench(pid)
+	require.NoError(t, err)
+	recipe := filepath.Join(wb.FolderPath, ".watchtower", "automations", "release.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(recipe), 0o755))
+	require.NoError(t, os.WriteFile(recipe, []byte("---\nname: Release\n---\n"), 0o644))
+
+	seed := func(project int64) (automation, run int64) {
+		t.Helper()
+		automation, err := d.UpsertAutomationIndex(Automation{
+			Slug: "release", Scope: "workbench", ProjectID: project, Path: fmt.Sprintf("/w%d/release.md", project),
+			Name: "Release", TriggerKind: "manual", TriggerSpec: `{"manual":true}`, MissedPolicy: "run_once",
+			Concurrency: 1, BudgetTokens: 50000, BudgetMinutes: 5, PauseTimeoutHours: 72,
+			PermissionsJSON: `["llm"]`, OutputsJSON: `["inbox"]`, RecipeText: "x", ContentHash: "c", ApprovalHash: "h",
+		})
+		require.NoError(t, err)
+		done, _, err := d.EnqueueAutomationRun(EnqueueRequest{AutomationID: automation, Trigger: TriggerManual, Now: runTestNow})
+		require.NoError(t, err)
+		ok, err := d.ClaimAutomationRun(done, "h", "x", 50000, 5, runTestNow)
+		require.NoError(t, err)
+		require.True(t, ok)
+		mustAppendAutomationRunStep(t, d, done, "llm", "ok")
+		require.NoError(t, d.FinishAutomationRun(done, RunFinish{Status: RunSucceeded, Now: runTestNow},
+			&RunCommit{StateJSON: []byte(`{"k":1}`), Outputs: []AutomationOutput{{Kind: "inbox", Title: "t", Body: "b"}}}))
+		run, _, err = d.EnqueueAutomationRun(EnqueueRequest{AutomationID: automation, Trigger: TriggerManual, Now: runTestNow})
+		require.NoError(t, err)
+		ok, err = d.ClaimAutomationRun(run, "h", "x", 50000, 5, runTestNow)
+		require.NoError(t, err)
+		require.True(t, ok)
+		mustAppendAutomationRunStep(t, d, run, "llm", "waiting")
+		mustInsertAsk(t, d, questionAsk(project, "Ship it?"))
+		return automation, run
+	}
+	gone, goneRun := seed(pid)
+	kept, _ := seed(keep)
+
+	require.NoError(t, d.DeleteWorkbench(pid))
+
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM automations WHERE project_id = ?`,
+		`SELECT COUNT(*) FROM owner_asks WHERE project_id = ?`,
+	} {
+		var n int
+		require.NoError(t, d.QueryRow(q, pid).Scan(&n))
+		assert.Zero(t, n, q)
+	}
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM automation_runs WHERE automation_id = ?`,
+		`SELECT COUNT(*) FROM automation_run_steps WHERE run_id IN (SELECT id FROM automation_runs WHERE automation_id = ?)`,
+		`SELECT COUNT(*) FROM automation_state WHERE automation_id = ?`,
+		`SELECT COUNT(*) FROM automation_outputs WHERE automation_id = ?`,
+	} {
+		var n int
+		require.NoError(t, d.QueryRow(q, gone).Scan(&n))
+		assert.Zero(t, n, q)
+	}
+	var steps int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM automation_run_steps WHERE run_id = ?`, goneRun).Scan(&steps))
+	assert.Zero(t, steps, "the in-flight run's steps are gone")
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM automation_runs WHERE automation_id = ?`,
+		`SELECT COUNT(*) FROM automation_state WHERE automation_id = ?`,
+		`SELECT COUNT(*) FROM automation_outputs WHERE automation_id = ?`,
+	} {
+		var n int
+		require.NoError(t, d.QueryRow(q, kept).Scan(&n))
+		assert.NotZero(t, n, "another workbench's rows are untouched: "+q)
+	}
+	got, err := os.ReadFile(recipe)
+	require.NoError(t, err, "the recipe file in the folder survives the delete")
+	assert.Equal(t, "---\nname: Release\n---\n", string(got))
 }
 
 // TestDeleteWorkbench_CodeQuestionPrefixIsExact: deleting workbench 1 never

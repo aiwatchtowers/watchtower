@@ -50,7 +50,7 @@ type workbenchResyncJSON struct {
 	// Flow is the watchtower-flow preset's devpack state (spec 2026-10-15
 	// §4.3): installed, updated, unchanged, removed (preset none), drifted
 	// or foreign (kept), missing (beside a single-file core); "" = not
-	// reached. SingleFileLayout: the core is an owner-edited pre-v9 single
+	// reached. SingleFileLayout: the core is an owner-edited pre-v10 single
 	// file, kept with no preset. Both additive.
 	Flow             string `json:"flow"`
 	SingleFileLayout bool   `json:"single_file_layout"`

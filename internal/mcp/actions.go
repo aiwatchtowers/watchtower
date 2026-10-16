@@ -45,51 +45,80 @@ type getActionArgs struct {
 // description, refusal and receipt in that vocabulary (Binding.Spell); the
 // call itself dispatches by the tool's current name, the one agent_actions
 // records.
-func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding, mountWrites bool) {
+//
+// hooks narrow the mounted set and gate each call (an automation agent()'s
+// server); their zero value changes nothing.
+func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding, mountWrites bool, hooks callHooks) {
 	for _, t := range reg.List(binding.Surface) {
 		tool := t
+		if hooks.filter != nil && !hooks.filter(tool) {
+			continue
+		}
 		listed := &mcpsdk.Tool{
 			Name:        binding.Spell(tool.Name),
 			Description: binding.Spell(tool.Description),
 			InputSchema: spellSchema(binding, tool.Name, tool.InputSchema),
 		}
 		if tool.Access == tools.AccessRead {
-			s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-				data, err := reg.CallRead(ctx, tool.Name, req.Params.Arguments, binding)
-				if err != nil {
-					var verr *tools.ValidationError
-					if errors.As(err, &verr) {
-						return errResult(binding.Spell(verr.Msg)), nil
-					}
-					return errResult(binding.Spell(err.Error())), nil
-				}
-				res, _, jerr := jsonResult(data)
-				return res, jerr
-			})
+			s.AddTool(listed, readToolHandler(reg, tool, binding, hooks))
 			continue
 		}
 		if !mountWrites {
 			continue
 		}
-		s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-			rc, err := reg.Propose(ctx, tool.Name, req.Params.Arguments, binding)
-			if err != nil {
-				var verr *tools.ValidationError
-				if errors.As(err, &verr) {
-					return errResult(binding.Spell(verr.Msg)), nil
-				}
-				return errResult(binding.Spell(fmt.Sprintf("recording proposal: %v", err))), nil
-			}
-			rc.Tool, rc.Message, rc.Error = binding.Spell(rc.Tool), binding.Spell(rc.Message), binding.Spell(rc.Error)
-			res, _, err := jsonResult(rc)
-			return res, err
-		})
+		s.AddTool(listed, writeToolHandler(reg, tool, binding, hooks))
 	}
 
 	if !mountWrites {
 		return
 	}
+	registerGetAction(s, database, reg, binding)
+}
 
+// readToolHandler serves a read tool: the call gate, CallRead, then the
+// result check.
+func readToolHandler(reg *tools.Registry, tool *tools.Tool, binding tools.Binding, hooks callHooks) mcpsdk.ToolHandler {
+	return func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments, binding)
+		if refused != nil {
+			return refused, nil
+		}
+		data, err := reg.CallRead(ctx, tool.Name, args, binding)
+		if err != nil {
+			var verr *tools.ValidationError
+			if errors.As(err, &verr) {
+				return errResult(binding.Spell(verr.Msg)), nil
+			}
+			return errResult(binding.Spell(err.Error())), nil
+		}
+		return hooks.result(data)
+	}
+}
+
+// writeToolHandler serves a write tool: the call gate, Propose, then the
+// result check over the spelled receipt.
+func writeToolHandler(reg *tools.Registry, tool *tools.Tool, binding tools.Binding, hooks callHooks) mcpsdk.ToolHandler {
+	return func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments, binding)
+		if refused != nil {
+			return refused, nil
+		}
+		rc, err := reg.Propose(ctx, tool.Name, args, binding)
+		if err != nil {
+			var verr *tools.ValidationError
+			if errors.As(err, &verr) {
+				return errResult(binding.Spell(verr.Msg)), nil
+			}
+			return errResult(binding.Spell(fmt.Sprintf("recording proposal: %v", err))), nil
+		}
+		rc.Tool, rc.Message, rc.Error = binding.Spell(rc.Tool), binding.Spell(rc.Message), binding.Spell(rc.Error)
+		return hooks.result(rc)
+	}
+}
+
+// registerGetAction mounts get_action (chat mode only): one proposal by id,
+// visible only when binding may see it.
+func registerGetAction(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "get_action",
 		Description: "Look up one proposed action by id: its status (pending, approved, rejected, applied, " +
@@ -115,6 +144,43 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 	})
 }
 
+// callHooks are a chat-mode server's optional narrowing (WithToolFilter,
+// WithCallGate, WithResultCheck).
+type callHooks struct {
+	filter      func(t *tools.Tool) bool
+	gate        func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error)
+	resultCheck func(result []byte) error
+}
+
+// gateCall runs the call gate: the args to dispatch, or the error result of a
+// refused call.
+func (h callHooks) gateCall(ctx context.Context, t *tools.Tool, args json.RawMessage, binding tools.Binding) (json.RawMessage, *mcpsdk.CallToolResult) {
+	if h.gate == nil {
+		return args, nil
+	}
+	gated, err := h.gate(ctx, t, args)
+	if err != nil {
+		return nil, errResult(binding.Spell(err.Error()))
+	}
+	return gated, nil
+}
+
+// result is jsonResult(v) passed through the result check.
+func (h callHooks) result(v any) (*mcpsdk.CallToolResult, error) {
+	res, _, err := jsonResult(v)
+	if err != nil || res.IsError || h.resultCheck == nil {
+		return res, err
+	}
+	text, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		return errResult("the result is not text"), nil
+	}
+	if err := h.resultCheck([]byte(text.Text)); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return res, nil
+}
+
 // spellSchema is a tool's input schema as binding's session lists it: the
 // registry's own schema, or, for a legacy session, a copy whose texts name
 // the renamed tools by their old names (Binding.Spell). The registry's
@@ -138,8 +204,10 @@ func spellSchema(binding tools.Binding, toolName string, schema *jsonschema.Sche
 	return spelled
 }
 
-// actionVisible decides whether get_action may show row to this session. A
-// workbench session sees only its own workbench's rows. A chat session sees
+// actionVisible decides whether get_action may show row to this session. An
+// automation run's session (an agent() child) sees only its own run's rows —
+// checked first, since a workbench automation's binding also carries the
+// workbench. A workbench session sees only its own workbench's rows. A chat session sees
 // only its own conversation's rows; a binding with no conversation
 // (conversation_id 0: a CLI-only install, spec §12) sees only the
 // conversation-less rows of its own surface — never a conversation's, a
@@ -147,6 +215,9 @@ func spellSchema(binding tools.Binding, toolName string, schema *jsonschema.Sche
 // as a missing row, so the model cannot learn that an id it invented belongs
 // to someone else's chat.
 func actionVisible(row db.AgentAction, binding tools.Binding) bool {
+	if binding.AutomationRunID != 0 {
+		return row.ContextType == tools.AutomationContextType && row.ContextID == strconv.FormatInt(binding.AutomationRunID, 10)
+	}
 	if binding.WorkbenchID != 0 {
 		return row.ContextType == tools.WorkbenchContextType && row.ContextID == strconv.FormatInt(binding.WorkbenchID, 10)
 	}

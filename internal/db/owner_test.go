@@ -14,6 +14,7 @@ type ownerSeed struct {
 	google      []GoogleAccount
 	jira        []JiraAccount // Owner* fields recorded via SetJiraAccountOwner
 	jiraUserMap []JiraUserMap
+	linear      []LinearAccount // Owner* fields recorded via SetLinearAccountOwner; Enabled false disables, Status "removed" removes
 }
 
 // seedOwner creates every row of s through the production writers, so the
@@ -43,6 +44,17 @@ func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 		}
 		require.NoError(t, d.SetJiraAccountOwner(id, j.OwnerAccountID, j.OwnerEmail, j.OwnerDisplayName))
 	}
+	for _, l := range s.linear {
+		id, err := d.CreateLinearAccount("")
+		require.NoError(t, err)
+		if !l.Enabled {
+			require.NoError(t, d.SetLinearAccountEnabled(id, false))
+		}
+		if l.Status == "removed" {
+			require.NoError(t, d.SetLinearAccountRemoved(id))
+		}
+		require.NoError(t, d.SetLinearAccountOwner(id, l.OwnerUserID, l.OwnerEmail, l.OwnerDisplayName))
+	}
 	for _, m := range s.jiraUserMap {
 		require.NoError(t, d.UpsertJiraUserMap(m))
 	}
@@ -56,8 +68,8 @@ func TestOwner01_ResolveOwnerLadder(t *testing.T) {
 	}{
 		{"none", ownerSeed{}, Owner{}},
 		{"slack only", ownerSeed{slack: []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
-			slackUser: &User{ID: "1:U123", Name: "vadym", DisplayName: "Vadym", Email: "v@slack.io"}},
-			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", Email: "v@slack.io", DisplayName: "Vadym"}},
+			slackUser: &User{ID: "1:U123", Name: "owner-a", DisplayName: "Owner A", Email: "owner-a@example.com"}},
+			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", Email: "owner-a@example.com", DisplayName: "Owner A"}},
 		{"google only, mixed-case email", ownerSeed{google: []GoogleAccount{{Email: "Me@X.com"}}},
 			Owner{ID: "google:me@x.com", Source: OwnerSourceGoogle, Email: "Me@X.com", DisplayName: "Me"}},
 		{"jira only", ownerSeed{jira: []JiraAccount{{CloudID: "c1", Enabled: true, OwnerAccountID: "acc-9", OwnerEmail: "j@x.com", OwnerDisplayName: "J Doe"}}},
@@ -80,19 +92,32 @@ func TestOwner01_ResolveOwnerLadder(t *testing.T) {
 		{"disabled jira is skipped", ownerSeed{jira: []JiraAccount{{CloudID: "c1", Enabled: false, OwnerAccountID: "acc-9"}}}, Owner{}},
 		{"slack + jira_user_map bridge fills JiraAccountID", ownerSeed{
 			slack:       []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
-			slackUser:   &User{ID: "1:U123", Name: "vadym", DisplayName: "Vadym"},
+			slackUser:   &User{ID: "1:U123", Name: "owner-a", DisplayName: "Owner A"},
 			jiraUserMap: []JiraUserMap{{JiraAccountID: "acc-map", SlackUserID: "1:U123"}}},
-			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", JiraAccountID: "acc-map", DisplayName: "Vadym"}},
+			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", JiraAccountID: "acc-map", DisplayName: "Owner A"}},
 		{"google account without an email is skipped", ownerSeed{google: []GoogleAccount{{Email: ""}, {Email: "b@x.com"}}},
 			Owner{ID: "google:b@x.com", Source: OwnerSourceGoogle, Email: "b@x.com", DisplayName: "b"}},
 		{"slack user without display name falls back to real name", ownerSeed{
 			slack:     []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
-			slackUser: &User{ID: "1:U123", Name: "vadym", RealName: "Vadym Real"}},
-			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", DisplayName: "Vadym Real"}},
+			slackUser: &User{ID: "1:U123", Name: "owner-a", RealName: "Owner A Real"}},
+			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", DisplayName: "Owner A Real"}},
 		{"bare-form jira_user_map row bridges a namespaced owner", ownerSeed{
 			slack:       []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
 			jiraUserMap: []JiraUserMap{{JiraAccountID: "acc-bare", SlackUserID: "U123"}}},
 			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", JiraAccountID: "acc-bare"}},
+		{"linear only", ownerSeed{linear: []LinearAccount{{Enabled: true, OwnerUserID: "user-1", OwnerEmail: "owner@example.com", OwnerDisplayName: "Owner"}}},
+			Owner{ID: "linear:user-1", Source: OwnerSourceLinear, Email: "owner@example.com", DisplayName: "Owner", LinearUserIDs: []string{"user-1"}}},
+		{"jira + linear: jira wins ID and enrichment, linear ids still filled", ownerSeed{
+			jira:   []JiraAccount{{CloudID: "c1", Enabled: true, OwnerAccountID: "acc-9", OwnerEmail: "j@x.com", OwnerDisplayName: "J Doe"}},
+			linear: []LinearAccount{{Enabled: true, OwnerUserID: "user-1", OwnerEmail: "owner@example.com", OwnerDisplayName: "Owner"}}},
+			Owner{ID: "jira:acc-9", Source: OwnerSourceJira, Email: "j@x.com", JiraAccountID: "acc-9", DisplayName: "J Doe", LinearUserIDs: []string{"user-1"}}},
+		{"removed linear is skipped", ownerSeed{linear: []LinearAccount{{Enabled: true, Status: "removed", OwnerUserID: "user-1"}}}, Owner{}},
+		{"disabled linear is skipped", ownerSeed{linear: []LinearAccount{{Enabled: false, OwnerUserID: "user-1"}}}, Owner{}},
+		{"linear account without an owner id is skipped", ownerSeed{linear: []LinearAccount{{Enabled: true}, {Enabled: true, OwnerUserID: "user-2"}}},
+			Owner{ID: "linear:user-2", Source: OwnerSourceLinear, LinearUserIDs: []string{"user-2"}}},
+		{"two linear workspaces: first is the rung, both ids listed by account id", ownerSeed{linear: []LinearAccount{
+			{Enabled: true, OwnerUserID: "user-1", OwnerEmail: "owner@example.com"}, {Enabled: true, OwnerUserID: "user-2"}}},
+			Owner{ID: "linear:user-1", Source: OwnerSourceLinear, Email: "owner@example.com", DisplayName: "owner", LinearUserIDs: []string{"user-1", "user-2"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,14 +137,15 @@ func TestOwner01_SlackInstallIDUnchanged(t *testing.T) {
 	d := openTestDB(t)
 	seedOwner(t, d, ownerSeed{
 		slack:     []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
-		slackUser: &User{ID: "1:U123", Name: "vadym", DisplayName: "Vadym", Email: "v@slack.io"},
+		slackUser: &User{ID: "1:U123", Name: "owner-a", DisplayName: "Owner A", Email: "owner-a@example.com"},
 		google:    []GoogleAccount{{Email: "me@x.com"}},
 		jira:      []JiraAccount{{CloudID: "c1", Enabled: true, OwnerAccountID: "acc-9", OwnerEmail: "j@x.com", OwnerDisplayName: "J Doe"}},
+		linear:    []LinearAccount{{Enabled: true, OwnerUserID: "user-1", OwnerEmail: "owner@example.com", OwnerDisplayName: "Owner"}},
 	})
 	got, err := d.ResolveOwner()
 	require.NoError(t, err)
 	assert.Equal(t, Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123",
-		Email: "v@slack.io", JiraAccountID: "acc-9", DisplayName: "Vadym"}, got)
+		Email: "owner-a@example.com", JiraAccountID: "acc-9", DisplayName: "Owner A", LinearUserIDs: []string{"user-1"}}, got)
 }
 
 func TestOwner01_ProfileSurvivesRungSwitch(t *testing.T) {

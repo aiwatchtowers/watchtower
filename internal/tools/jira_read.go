@@ -20,12 +20,75 @@ type getJiraIssueArgs struct {
 	Key string `json:"key" jsonschema:"Jira issue key, e.g. ABC-123"`
 }
 
+// maxListedDescriptionBytes clips each description in list_jira_issues;
+// get_jira_issue returns the whole issue.
+const maxListedDescriptionBytes = 512
+
+// jiraIssueListItem is one list_jira_issues row: the synced issue without
+// RawJSON and CustomFieldsJSON (and IsDeleted, always false here) (the full API payload and the custom field
+// values, often tens of KiB each — a page of them would pass the automation
+// SDK's 256 KiB result cap) and with the description clipped. The keys keep
+// db.JiraIssue's field names, which the chat's source chips decode.
+type jiraIssueListItem struct {
+	AccountID               int64    `json:"AccountID"`
+	Key                     string   `json:"Key"`
+	ID                      string   `json:"ID"`
+	ProjectKey              string   `json:"ProjectKey"`
+	BoardID                 int      `json:"BoardID,omitempty"`
+	Summary                 string   `json:"Summary"`
+	DescriptionText         string   `json:"DescriptionText,omitempty"`
+	DescriptionTruncated    bool     `json:"DescriptionTruncated,omitempty"`
+	IssueType               string   `json:"IssueType"`
+	IsBug                   bool     `json:"IsBug,omitempty"`
+	Status                  string   `json:"Status"`
+	StatusCategory          string   `json:"StatusCategory"`
+	StatusCategoryChangedAt string   `json:"StatusCategoryChangedAt,omitempty"`
+	AssigneeAccountID       string   `json:"AssigneeAccountID,omitempty"`
+	AssigneeEmail           string   `json:"AssigneeEmail,omitempty"`
+	AssigneeDisplayName     string   `json:"AssigneeDisplayName,omitempty"`
+	AssigneeSlackID         string   `json:"AssigneeSlackID,omitempty"`
+	ReporterAccountID       string   `json:"ReporterAccountID,omitempty"`
+	ReporterEmail           string   `json:"ReporterEmail,omitempty"`
+	ReporterDisplayName     string   `json:"ReporterDisplayName,omitempty"`
+	ReporterSlackID         string   `json:"ReporterSlackID,omitempty"`
+	Priority                string   `json:"Priority,omitempty"`
+	StoryPoints             *float64 `json:"StoryPoints,omitempty"`
+	DueDate                 string   `json:"DueDate,omitempty"`
+	SprintID                int      `json:"SprintID,omitempty"`
+	SprintName              string   `json:"SprintName,omitempty"`
+	EpicKey                 string   `json:"EpicKey,omitempty"`
+	Labels                  string   `json:"Labels,omitempty"`
+	Components              string   `json:"Components,omitempty"`
+	FixVersions             string   `json:"FixVersions,omitempty"`
+	CreatedAt               string   `json:"CreatedAt"`
+	UpdatedAt               string   `json:"UpdatedAt"`
+	ResolvedAt              string   `json:"ResolvedAt,omitempty"`
+	SyncedAt                string   `json:"SyncedAt"`
+}
+
+func listedJiraIssue(j db.JiraIssue) jiraIssueListItem {
+	desc, truncated := ClipUTF8Bytes(j.DescriptionText, maxListedDescriptionBytes)
+	return jiraIssueListItem{
+		AccountID: j.AccountID, Key: j.Key, ID: j.ID, ProjectKey: j.ProjectKey, BoardID: j.BoardID, Summary: j.Summary,
+		DescriptionText: desc, DescriptionTruncated: truncated, IssueType: j.IssueType, IsBug: j.IsBug,
+		Status: j.Status, StatusCategory: j.StatusCategory, StatusCategoryChangedAt: j.StatusCategoryChangedAt,
+		AssigneeAccountID: j.AssigneeAccountID, AssigneeEmail: j.AssigneeEmail, AssigneeDisplayName: j.AssigneeDisplayName, AssigneeSlackID: j.AssigneeSlackID,
+		ReporterAccountID: j.ReporterAccountID, ReporterEmail: j.ReporterEmail, ReporterDisplayName: j.ReporterDisplayName,
+		ReporterSlackID: j.ReporterSlackID, Priority: j.Priority,
+		StoryPoints: j.StoryPoints, DueDate: j.DueDate, SprintID: j.SprintID, SprintName: j.SprintName, EpicKey: j.EpicKey,
+		Labels: j.Labels, Components: j.Components, FixVersions: j.FixVersions,
+		CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt, ResolvedAt: j.ResolvedAt, SyncedAt: j.SyncedAt,
+	}
+}
+
 // NewListJiraIssues lists synced Jira issues, optionally filtered by project,
-// status, or assignee account id.
+// status, or assignee account id, as lean rows (jiraIssueListItem).
 func NewListJiraIssues() *Tool {
 	return &Tool{
-		Name:        "list_jira_issues",
-		Description: "List synced Jira issues, optionally filtered by project, status, or assignee account id.",
+		Name: "list_jira_issues",
+		Description: "List synced Jira issues, optionally filtered by project, status, or assignee account id. " +
+			"Each row has the issue's main fields, without custom fields, and its description clipped at 512 bytes; " +
+			"get_jira_issue returns one issue in full.",
 		InputSchema: mustSchema[listJiraIssuesArgs]("list_jira_issues"),
 		Access:      AccessRead,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -39,10 +102,11 @@ func NewListJiraIssues() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("listing jira issues: %w", err)
 			}
-			if issues == nil {
-				issues = []db.JiraIssue{}
+			out := make([]jiraIssueListItem, 0, len(issues))
+			for _, j := range issues {
+				out = append(out, listedJiraIssue(j))
 			}
-			return issues, nil
+			return out, nil
 		},
 	}
 }

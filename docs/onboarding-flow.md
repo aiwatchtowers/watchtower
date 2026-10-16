@@ -18,7 +18,7 @@ was removed on 2026-10-14, #758). There is no
 | Connect step | `Views/Onboarding/OnboardingConnectStepView.swift` + `WatchtowerCore/Services/OnboardingConnectPlan.swift` |
 | People load (users-only sync) | `WatchtowerCore/Services/PeopleRosterLoad.swift` |
 | Profile writes (OWNER-01) | `WatchtowerCore/Services/OnboardingProfileWriter.swift` |
-| Finish: daemon, landing, first sync | `App/OnboardingCompletion.swift`, `WatchtowerCore/Services/OnboardingFinishPlan.swift`, `AppState.leaveOnboardingStep` |
+| Finish: daemon, landing (Home), first sync | `App/OnboardingCompletion.swift`, `WatchtowerCore/Services/OnboardingFinishPlan.swift`, `AppState.leaveOnboardingStep`, `AppState.landOnHome` |
 
 Everything stateful lives in `AppState` (`onboarding`, `onboardingGoals`,
 `peopleRoster`), so a step re-rendering, Back, or the
@@ -54,7 +54,7 @@ Customize screen never loses what was picked.
                  ▼
             FINISH (the last step the route runs)
    onboarding_done written → daemon started (or restarted once) in
-   the background → `.complete` → landing tab
+   the background → `.complete` → Home
 ```
 
 `OnboardingRoute(goals:)` decides the skips. The goals it
@@ -119,9 +119,8 @@ Settings starts no load.
    `sync --daemon --detach`; its first cycle syncs and runs every enabled
    pipeline itself.
 3. `.complete`, the rest of the app's database wiring, sidebar counts, the
-   connected-sources refresh, and the landing tab: Catch-Up when the goals
-   include Work communication and the Catch-Up tab shows, else Workbench
-   for Development, else AI Chat.
+   connected-sources refresh, and Home, for every goal set (a setup re-run
+   keeps the current tab).
 
 Finish is the only place onboarding starts or restarts the daemon: the
 Connect sheets run in `.deferred` mode, and nothing else in the flow touches

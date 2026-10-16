@@ -103,7 +103,7 @@ type WorkbenchInstallReport struct {
 	// §4.3): installed/updated/unchanged, removed (preset none, ours),
 	// drifted/foreign (kept), or missing (none there beside a single-file
 	// core). SingleFileLayout: the core is an owner-edited copy from before
-	// v9 that still carries the methodology, so no preset went beside it.
+	// v10 that still carries the methodology, so no preset went beside it.
 	Flow             SkillStatus
 	SingleFileLayout bool
 

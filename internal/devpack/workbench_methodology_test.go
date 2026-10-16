@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -99,7 +100,7 @@ func TestProj04_DriftedV8KeepsSingleFileNoFlow(t *testing.T) {
 	})
 }
 
-// An owner-edited v9 core carries no methodology, so the preset still goes
+// An owner-edited v10 core carries no methodology, so the preset still goes
 // in beside it.
 func TestInstallWorkbench_AnEditedV9CoreStillGetsThePreset(t *testing.T) {
 	folder := fakeRepo(t)
@@ -111,20 +112,31 @@ func TestInstallWorkbench_AnEditedV9CoreStillGetsThePreset(t *testing.T) {
 	assert.Equal(t, StateInstalled, rep.Flow.State)
 }
 
-func TestV8CoreDigestIsTheShippedFixture(t *testing.T) {
-	sum := sha256.Sum256([]byte(v8Skill(t)))
-	assert.Equal(t, v8CoreSHA256, hex.EncodeToString(sum[:]))
+func TestShippedCoreDigestsAreTheFixtures(t *testing.T) {
+	for fixture, want := range map[string]string{"watchtower-workbench-v8.md": v8CoreSHA256, "watchtower-workbench-v9.md": v9CoreSHA256} {
+		b, err := os.ReadFile(filepath.Join("testdata", fixture))
+		require.NoError(t, err)
+		sum := sha256.Sum256(b)
+		assert.Equal(t, want, hex.EncodeToString(sum[:]), fixture)
+	}
 }
 
-// Spec §4.3: the shipped v8 bytes count as ours even without the sidecar.
-func TestInstallWorkbench_AdoptsTheShippedV8WithoutASidecar(t *testing.T) {
-	folder := fakeRepo(t)
-	writeTestFile(t, workbenchSkillFile(folder), v8Skill(t))
-	rep, err := InstallWorkbench(context.Background(), workbenchOpts(folder, newFakeClaude()))
-	require.NoError(t, err)
-	assert.Equal(t, StateUpdated, rep.Skill.State)
-	assert.Equal(t, StateInstalled, rep.Flow.State)
-	assert.Equal(t, workbenchSkill().Content, readTestFile(t, workbenchSkillFile(folder)))
+// Spec §4.3: the shipped v8 and v9 bytes count as ours even without the
+// sidecar.
+func TestInstallWorkbench_AdoptsTheShippedSingleFileWithoutASidecar(t *testing.T) {
+	for _, fixture := range []string{"watchtower-workbench-v8.md", "watchtower-workbench-v9.md"} {
+		t.Run(fixture, func(t *testing.T) {
+			shipped, err := os.ReadFile(filepath.Join("testdata", fixture))
+			require.NoError(t, err)
+			folder := fakeRepo(t)
+			writeTestFile(t, workbenchSkillFile(folder), string(shipped))
+			rep, err := InstallWorkbench(context.Background(), workbenchOpts(folder, newFakeClaude()))
+			require.NoError(t, err)
+			assert.Equal(t, StateUpdated, rep.Skill.State)
+			assert.Equal(t, StateInstalled, rep.Flow.State)
+			assert.Equal(t, workbenchSkill().Content, readTestFile(t, workbenchSkillFile(folder)))
+		})
+	}
 }
 
 // PROJ-02 (spec §9): a removal takes our preset out of both skill
@@ -207,7 +219,7 @@ func TestFolderMethodologyLayout_SeesASingleFileCore(t *testing.T) {
 	assert.Equal(t, MethodologyLayout{Core: true, SingleFile: true}, FolderMethodologyLayout(folder))
 }
 
-// Spec §4.3: a preset change upgrades a pre-v9 core of ours to the split
+// Spec §4.3: a preset change upgrades a pre-v10 core of ours to the split
 // layout before it syncs the preset (with none, the v8 single file would
 // still carry the whole methodology); an owner-edited core stays as it is
 // (PROJ-04).

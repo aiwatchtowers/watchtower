@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -462,6 +463,53 @@ func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince, to float64) ([]
 		candidates = append(candidates, c)
 	}
 	return candidates, rows.Err()
+}
+
+// ChannelRangeCandidate is one channel holding messages inside a history
+// backfill range, with its digest progress inside that same range.
+type ChannelRangeCandidate struct {
+	ChannelID         string
+	NewestInRange     float64 // newest message ts in (from, to]
+	LastDigestInRange float64 // max channel-digest period_to with period_to in (from, to], 0 if none
+}
+
+// ChannelsWithMessagesInRange returns one candidate per channel of one Slack
+// account holding messages in (from, to]. It is the backfill's discovery
+// query. A backfill row belongs to one account, so only channels whose
+// namespaced id ("<account>:<raw>", see 00048) carries that account's prefix
+// count. A backfill range sits below every forward mark, so a channel's
+// progress inside it is read from digests ending inside the range only — the
+// channel's overall MAX(period_to) (the forward mark) would hide the whole
+// range.
+func (db *DB) ChannelsWithMessagesInRange(slackAccountID int64, from, to float64) ([]ChannelRangeCandidate, error) {
+	prefix := strconv.FormatInt(slackAccountID, 10) + ":"
+	rows, err := db.Query(`
+		SELECT m.channel_id, MAX(m.ts_unix),
+		       COALESCE((SELECT MAX(d.period_to) FROM digests d
+		                 WHERE d.type = 'channel' AND d.channel_id = m.channel_id
+		                   AND d.period_to > ? AND d.period_to <= ?), 0)
+		FROM messages m
+		WHERE m.ts_unix > ? AND m.ts_unix <= ?
+		  AND substr(m.channel_id, 1, ?) = ?
+		GROUP BY m.channel_id
+		ORDER BY m.channel_id`, from, to, from, to, len(prefix), prefix)
+	if err != nil {
+		return nil, fmt.Errorf("querying channels with messages in range: %w", err)
+	}
+	defer rows.Close()
+
+	var candidates []ChannelRangeCandidate
+	for rows.Next() {
+		var c ChannelRangeCandidate
+		if err := rows.Scan(&c.ChannelID, &c.NewestInRange, &c.LastDigestInRange); err != nil {
+			return nil, fmt.Errorf("querying channels with messages in range: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("querying channels with messages in range: %w", err)
+	}
+	return candidates, nil
 }
 
 // GetDigestDecisionsForChannel returns individual decisions from digests

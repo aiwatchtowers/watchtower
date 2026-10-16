@@ -2,6 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 enum SidebarDestination: String, CaseIterable, Identifiable {
+    case home
     case chat
     case catchUp
     case briefings
@@ -14,6 +15,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     // The raw value is persisted (`sidebar.hiddenItems`, the tab id), so the
     // Workbench rename keeps its bytes (spec 2026-10-02 A9).
     case workbench = "projects"
+    case automations
     case digests
     case people
     case memory
@@ -31,6 +33,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .home: "Home"
         case .chat: "AI Chat"
         case .catchUp: "Catch Up"
         case .briefings: "Briefings"
@@ -41,6 +44,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .targets: "Targets"
         case .tracks: "Tracks"
         case .workbench: "Workbench"
+        case .automations: "Automations"
         case .digests: "Digests"
         case .people: "People"
         case .memory: "Memory"
@@ -58,6 +62,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
+        case .home: "house"
         case .chat: "bubble.left.and.bubble.right"
         case .catchUp: "tray.and.arrow.down"
         case .briefings: "sun.max"
@@ -68,6 +73,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .targets: "scope"
         case .tracks: "binoculars"
         case .workbench: "folder.badge.gearshape"
+        case .automations: "gearshape.2"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
         case .memory: "archivebox"
@@ -83,12 +89,13 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Always-visible items rendered above the collapsible sections. Calendar
-    /// sits right under Workbench (board #206; it was in FOCUS before): a root
+    /// Always-visible items rendered above the collapsible sections, Home
+    /// first. Automations follows Workbench (hidden with its feature off).
+    /// Calendar sits right under them (board #206; it was in FOCUS before): a root
     /// item has no hide menu, so a `sidebar.hiddenItems` entry left from
     /// hiding it in FOCUS is ignored and the tab shows again.
     static var rootItems: [Self] {
-        [.targets, .tracks, .workbench, .calendar]
+        [.home, .targets, .tracks, .workbench, .automations, .calendar]
     }
 
     /// Always-visible items rendered below the collapsible sections, as the last
@@ -120,6 +127,7 @@ extension SidebarDestination {
         case .dayPlan: ["day-plan"]
         case .tracks: ["tracks"]
         case .people: ["people-cards"]
+        case .automations: ["automations"]
         default: nil
         }
     }
@@ -153,16 +161,14 @@ extension SidebarDestination {
     /// longer visible (its feature was just turned off, its source is gone,
     /// or a persisted selection from a previous launch points at a now-hidden
     /// tab), or nil when `current` is still visible and no fallback is
-    /// needed: Inbox when it shows, else Workbench, which has no gate at all
-    /// (an install with no source hides Inbox). Pure — no AppState
-    /// dependency — so the selection owner can call it both on a live change
-    /// and once at appear.
+    /// needed: always Home, which has no feature or source gate, so it shows
+    /// on every install. Pure — no AppState dependency — so the selection
+    /// owner can call it both on a live change and once at appear.
     static func fallbackDestination(
         current: SidebarDestination,
         disabled: Set<String>,
         connected: ConnectedSources
     ) -> SidebarDestination? {
-        guard !current.isVisible(disabledFeatures: disabled, connected: connected) else { return nil }
-        return Self.inbox.isVisible(disabledFeatures: disabled, connected: connected) ? .inbox : .workbench
+        current.isVisible(disabledFeatures: disabled, connected: connected) ? nil : .home
     }
 }

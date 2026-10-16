@@ -51,6 +51,11 @@ const (
 	AutomationContextType = "automation_run"
 )
 
+// AutomationEditorSurface is the "change it in words" chat bound to one
+// automation (spec 2026-10-14-automations-design §11, §14.5): it carries only
+// draft_automation, save_automation and the read tools.
+const AutomationEditorSurface = "automation_editor"
+
 // Binding is where a proposal came from: the chat surface, conversation and
 // turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
 // read at propose time and wins over TurnID — a warm `ai session` spans many
@@ -82,6 +87,18 @@ type Binding struct {
 	// Agent is `mcp --agent`: the agent a workbench session runs, when no
 	// terminal session row names it (agentLabelFor). Empty = not given.
 	Agent agentkind.Kind
+	// AutomationRunID is the automation run a call is made for. Set only by
+	// the automations executor (with Surface AutomationSurface), never with
+	// DirectApply (admitProposal refuses the pair). A proposal records it as
+	// context_type 'automation_run' / context_id <run id>, so bindingOf
+	// rebuilds it for a later Apply; the run's auto grants are read through it.
+	AutomationRunID int64
+	// AutomationAgent is set only for calls made inside an automation's
+	// agent() (P6's runtime-B loop and its `--surface automation` MCP server):
+	// on the automation surface such a call always resolves to ask, whatever
+	// grant or trust row exists (spec §6.5, proposals stay pending). Not
+	// persisted — a later Apply does not need it.
+	AutomationAgent bool
 }
 
 // turnID is the turn a proposal attaches to right now.
@@ -202,6 +219,10 @@ type Receipt struct {
 	Message  string `json:"message"`
 	Result   any    `json:"result,omitempty"`
 	Error    string `json:"error,omitempty"`
+	// Auto is true only when an automation auto grant decided execute (an
+	// execute from a tool_trust row leaves it false), so the run logs the
+	// write as an auto=1 step.
+	Auto bool `json:"auto,omitempty"`
 }
 
 // ValidationError carries a model-facing message; no row is written for it.
@@ -226,6 +247,10 @@ var (
 	ErrSurfaceNotOffered = errors.New("tool is not offered on that surface")
 	ErrBadTransition     = errors.New("action is not in an applicable state")
 	ErrNotFound          = errors.New("action not found")
+	// ErrAutomationRunGone: an automation run's write whose run no longer
+	// exists — refused (fail closed, automationWorkbench), since the run may
+	// have been a workbench one whose workbench is gone.
+	ErrAutomationRunGone = errors.New("the automation run no longer exists")
 )
 
 // Registry holds the tools and the DB the proposal rows live in.
@@ -365,14 +390,13 @@ func CheckTrustable(t *Tool) error {
 }
 
 // trustSurfaceErr refuses a surface that is no trust place for t: one t is
-// not on, the workbench (DEV-06) and the automation surface (P1 automations
-// take no grants; spec 2026-10-14-automations-design leaves those to P2).
+// not on, and the workbench (DEV-06). The automation surface is a trust place
+// like main (spec 2026-10-14-automations-design §6.2 step 4); its auto grants
+// are a separate table the registry reads first.
 func trustSurfaceErr(t *Tool, surface string) error {
 	switch {
 	case surface == WorkbenchSurface:
 		return fmt.Errorf("%w: workbench tools always apply in their own workbench", ErrSurfaceNotOffered)
-	case surface == AutomationSurface:
-		return fmt.Errorf("%w: the automation surface takes no trust", ErrSurfaceNotOffered)
 	case strings.TrimSpace(surface) == "" || !visibleOn(t, surface):
 		return fmt.Errorf("%w: %s is not on the %q surface", ErrSurfaceNotOffered, t.Name, surface)
 	}
@@ -382,14 +406,14 @@ func trustSurfaceErr(t *Tool, surface string) error {
 // TrustSurfaces is the surfaces of t a trust level is kept for: none for a
 // read tool, and for a write tool every surface but the workbench, whose
 // write tools apply under DirectApply and never read trust (DEV-06, target
-// 167), and the automation surface, which takes no trust (trustSurfaceErr).
+// 167). The automation surface is one (spec §6.2 step 4).
 func TrustSurfaces(t *Tool) []string {
 	out := make([]string, 0, len(t.Surfaces))
 	if t.Access != AccessWrite {
 		return out
 	}
 	for _, s := range t.Surfaces {
-		if s != WorkbenchSurface && s != AutomationSurface {
+		if s != WorkbenchSurface {
 			out = append(out, s)
 		}
 	}
@@ -418,11 +442,11 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	if t.Access != AccessWrite {
 		return Receipt{}, ErrNotWritable
 	}
-	args, err := r.admitProposal(ctx, t, args, b)
+	args, b, err := r.admitProposal(ctx, t, args, b)
 	if err != nil {
 		return Receipt{}, err
 	}
-	trust, err := r.resolveTrust(t, b)
+	trust, auto, err := r.resolveTrust(t, args, b)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -431,12 +455,16 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 		return Receipt{}, err
 	}
 	if trust == TrustExecute {
-		return r.applyTrusted(ctx, id, b)
+		rc, err := r.applyTrusted(ctx, id, b)
+		// Auto marks an auto write that landed: a grant-decided call whose
+		// Execute failed is a failed row, not an auto=1 step.
+		rc.Auto = auto && err == nil && rc.Status == "applied"
+		return rc, err
 	}
 	where := "in this chat"
-	if b.DirectApply {
-		// A workbench session has no chat card: the proposal waits in the
-		// Desktop's Inbox → Actions strip.
+	if b.DirectApply || b.Surface == AutomationSurface {
+		// A workbench session and an automation run have no chat card: the
+		// proposal waits in the Desktop's Inbox → Actions strip.
 		where = "in Watchtower Desktop (Inbox → Actions)"
 	}
 	return Receipt{
@@ -474,6 +502,9 @@ func (r *Registry) ApproveSeen(ctx context.Context, id int64, patch json.RawMess
 	}
 	if row.Status != "pending" {
 		return false, nil
+	}
+	if _, err := r.automationWorkbench(bindingOf(row)); err != nil {
+		return false, err
 	}
 	if seenArgsSHA256 != "" && !strings.EqualFold(seenArgsSHA256, ArgsSHA256(row.ArgsJSON)) {
 		return false, fmt.Errorf("%w: #%d changed since it was shown; reload it and approve again", ErrBadTransition, id)
@@ -533,33 +564,97 @@ func (r *Registry) approveWithArgs(row *db.AgentAction, args json.RawMessage) (b
 }
 
 // admitProposal runs every gate a write call passes before a row is written:
-// the bound workbench is alive, the surface gate, the direct-apply gate, the
-// args checks, the mandatory reason, then the tool's Scope. Any failure
-// writes nothing.
-func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (json.RawMessage, error) {
+// an automation run's workbench resolved, the bound workbench is alive, the
+// surface gate, the direct-apply gate, the args checks, the mandatory reason,
+// then the tool's Scope. Any failure writes nothing. It returns the args to
+// persist and the binding the call runs under.
+func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (json.RawMessage, Binding, error) {
+	b, err := r.automationWorkbench(b)
+	if err != nil {
+		return nil, b, err
+	}
 	if err := r.WorkbenchAlive(ctx, b); err != nil {
-		return nil, err
+		return nil, b, err
+	}
+	if err := automationBindingGate(b); err != nil {
+		return nil, b, err
 	}
 	if !visibleOn(t, b.Surface) {
 		// Get is surface-blind: a caller that dispatches by name (a reaction
 		// mapping, a model naming a tool it was never offered) must not reach a
 		// tool its surface does not list.
-		return nil, &ValidationError{Msg: fmt.Sprintf("%s is not available on the %s surface", t.Name, b.Surface)}
+		return nil, b, &ValidationError{Msg: fmt.Sprintf("%s is not available on the %s surface", t.Name, b.Surface)}
 	}
 	if err := directApplyGate(t, b); err != nil {
-		return nil, err
+		return nil, b, err
 	}
-	args, err := r.prepareProposalArgs(ctx, t, args)
+	args, err = r.prepareProposalArgs(ctx, t, args)
 	if err != nil {
-		return nil, err
+		return nil, b, err
 	}
 	if reasonOf(args) == "" {
-		return nil, &ValidationError{Msg: `"reason" is required: say why you propose this`}
+		return nil, b, &ValidationError{Msg: `"reason" is required: say why you propose this`}
 	}
 	if err := t.scope(ctx, r.db, args, b); err != nil {
-		return nil, err
+		return nil, b, err
 	}
-	return args, nil
+	return args, b, nil
+}
+
+// automationBindingGate keeps an automation run's context on the automation
+// surface: a run id or an 'automation_run' context on any other surface (a
+// chat started with `--context-type automation_run`, a caller copying a run's
+// binding) is refused before a row is written, so such a row can never be
+// mistaken for a run's proposal or rebuild a run id at Apply.
+func automationBindingGate(b Binding) error {
+	if b.Surface == AutomationSurface {
+		return nil
+	}
+	if b.AutomationRunID != 0 || b.ContextType == AutomationContextType {
+		return &ValidationError{Msg: "an automation run's context is valid only on the automation surface"}
+	}
+	return nil
+}
+
+// automationWorkbench returns b with the workbench of its automation run
+// (spec §13): a run's agent_actions row carries the run, not the workbench
+// (newProposalRow), so Propose, Approve and every Apply — inline or a later
+// `actions apply` — resolve it from run → automations.project_id, and
+// WorkbenchAlive and the tool's Scope then check it the way they check a
+// workbench session's row. A run that no longer exists fails closed
+// (ErrAutomationRunGone): deleting a workbench cascades its automations and
+// runs, so a missing run may have been a workbench one. A binding naming
+// another workbench than its run's is refused. A run context whose id does not
+// parse fails closed the same way. Bindings off the automation surface or
+// without a run pass untouched.
+func (r *Registry) automationWorkbench(b Binding) (Binding, error) {
+	if b.Surface != AutomationSurface {
+		return b, nil
+	}
+	if b.AutomationRunID == 0 {
+		if b.ContextType == AutomationContextType {
+			// bindingOf leaves the run id 0 for a context id that does not
+			// parse: no run to resolve a workbench from, so fail closed.
+			return b, fmt.Errorf("automation run %q: %w", b.ContextID, ErrAutomationRunGone)
+		}
+		return b, nil
+	}
+	run, err := r.db.GetAutomationRun(b.AutomationRunID)
+	if errors.Is(err, db.ErrAutomationRunNotFound) {
+		return b, fmt.Errorf("automation run %d: %w", b.AutomationRunID, ErrAutomationRunGone)
+	}
+	if err != nil {
+		return b, fmt.Errorf("reading automation run %d: %w", b.AutomationRunID, err)
+	}
+	a, err := r.db.GetAutomation(run.AutomationID)
+	if err != nil {
+		return b, fmt.Errorf("reading the automation of run %d: %w", b.AutomationRunID, err)
+	}
+	if b.WorkbenchID != 0 && b.WorkbenchID != a.ProjectID {
+		return b, &ValidationError{Msg: fmt.Sprintf("automation run %d does not belong to workbench %d", b.AutomationRunID, b.WorkbenchID)}
+	}
+	b.WorkbenchID = a.ProjectID
+	return b, nil
 }
 
 // directApplyGate is what keeps DirectApply narrow: it never runs an External
@@ -569,6 +664,11 @@ func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMess
 func directApplyGate(t *Tool, b Binding) error {
 	if !b.DirectApply {
 		return nil
+	}
+	if b.Surface == AutomationSurface || b.AutomationRunID != 0 {
+		// A workbench automation never inherits DEV-06's direct apply: its
+		// writes are proposals, auto-applied only through a grant (spec §6.1).
+		return &ValidationError{Msg: "automations never apply directly; " + t.Name + " is recorded as a proposal only"}
 	}
 	if t.External && !t.ProposeUnderDirectApply {
 		return &ValidationError{Msg: t.Name + " leaves this machine and never runs in a direct-apply session"}
@@ -591,23 +691,88 @@ func directApplyGate(t *Tool, b Binding) error {
 // this call only; the stored trust row is not consulted or changed. An
 // AlwaysAsk tool is ask on the same grounds as External. Otherwise the row
 // for the binding's own surface decides: an execute set for another surface
-// does not apply here.
-func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
+// does not apply here. The automation surface has its own order
+// (resolveAutomationTrust); auto reports that an automation grant decided.
+func (r *Registry) resolveTrust(t *Tool, args json.RawMessage, b Binding) (trust Trust, auto bool, err error) {
+	if b.Surface == AutomationSurface {
+		return r.resolveAutomationTrust(t, args, b)
+	}
 	if t.External || t.AlwaysAsk {
-		return TrustAsk, nil
+		return TrustAsk, false, nil
 	}
 	if b.DirectApply {
-		return TrustExecute, nil
+		return TrustExecute, false, nil
 	}
-	return r.Trust(t.Name, b.Surface)
+	trust, err = r.Trust(t.Name, b.Surface)
+	return trust, false, err
+}
+
+// resolveAutomationTrust is the trust order on the automation surface (spec
+// 2026-10-14-automations-design §6.2, the AGENT-03 amendment of §14.2), first
+// match wins: an AlwaysAsk tool is ask; a call made inside agent() is ask;
+// an active auto grant of the run's automation is execute, External
+// included; an External tool is otherwise ask; else the tool_trust row of the
+// automation surface (ask when absent). An execute whose tool's Ready rejects
+// the normalized args (several pinned candidates to pick from) is recorded as
+// a pending ask instead, for the owner to resolve: never applied-then-failed.
+func (r *Registry) resolveAutomationTrust(t *Tool, args json.RawMessage, b Binding) (Trust, bool, error) {
+	if t.AlwaysAsk || b.AutomationAgent {
+		return TrustAsk, false, nil
+	}
+	trust, auto, err := r.automationGrantOrTrust(t, b)
+	if err != nil || trust != TrustExecute {
+		return trust, false, err
+	}
+	if !t.readyFor(args) {
+		return TrustAsk, false, nil
+	}
+	return trust, auto, nil
+}
+
+// readyFor reports whether args pass the tool's Ready (true without one). A
+// refusal is no error of the call — the owner resolves it on the pending row.
+func (t *Tool) readyFor(args json.RawMessage) bool {
+	return t.Ready == nil || t.Ready(args) == nil
+}
+
+// automationGrantOrTrust is steps 2–4 of resolveAutomationTrust. A grant
+// applies only while its hash equals both the automation's approval_hash and
+// the run's recipe_hash (db.ActiveAutomationToolGrant), and only for the
+// automation the bound run belongs to.
+func (r *Registry) automationGrantOrTrust(t *Tool, b Binding) (Trust, bool, error) {
+	if b.AutomationRunID != 0 {
+		granted, err := r.db.ActiveAutomationToolGrant(b.AutomationRunID, t.Name)
+		if err != nil {
+			return "", false, fmt.Errorf("reading the auto grant of %s for automation run %d: %w", t.Name, b.AutomationRunID, err)
+		}
+		if granted {
+			return TrustExecute, true, nil
+		}
+	}
+	if t.External {
+		return TrustAsk, false, nil
+	}
+	trust, err := r.Trust(t.Name, AutomationSurface)
+	return trust, false, err
 }
 
 // newProposalRow is the agent_actions row a proposal records. A workbench-bound
 // call stores its workbench in context_type/context_id, so Apply — possibly a
-// later `actions apply` — rebuilds the same binding (bindingOf).
+// later `actions apply` — rebuilds the same binding (bindingOf). An
+// automation run's call stores its run instead, even in a workbench
+// automation: the row must reach the Inbox strip with its run label (spec
+// §6.3), so the workbench context is not written for it.
+//
+// Apply rebuilds the workbench of such a row from its run
+// (automationWorkbench), so WorkbenchAlive and the tool's Scope re-check it
+// at apply time as they do for a workbench row, and the Apply fails once the
+// workbench (and with it the run) is gone.
 func newProposalRow(t *Tool, args json.RawMessage, trust Trust, b Binding) db.AgentAction {
 	ctxType, ctxID := b.ContextType, b.ContextID
-	if b.WorkbenchID != 0 {
+	switch {
+	case b.AutomationRunID != 0:
+		ctxType, ctxID = AutomationContextType, strconv.FormatInt(b.AutomationRunID, 10)
+	case b.WorkbenchID != 0:
 		ctxType, ctxID = WorkbenchContextType, strconv.FormatInt(b.WorkbenchID, 10)
 	}
 	row := db.AgentAction{
@@ -628,9 +793,13 @@ func bindingOf(row *db.AgentAction) Binding {
 		Surface: row.Surface, ConversationID: row.ConversationID,
 		ContextType: row.ContextType, ContextID: row.ContextID, TurnID: row.TurnID,
 	}
-	if row.ContextType == WorkbenchContextType {
+	switch row.ContextType {
+	case WorkbenchContextType:
 		// A malformed id leaves WorkbenchID 0, which every workbench tool refuses.
 		b.WorkbenchID, _ = strconv.ParseInt(row.ContextID, 10, 64)
+	case AutomationContextType:
+		// A malformed id leaves AutomationRunID 0: no run, so no grant.
+		b.AutomationRunID, _ = strconv.ParseInt(row.ContextID, 10, 64)
 	}
 	return b
 }
@@ -787,7 +956,11 @@ func (r *Registry) apply(ctx context.Context, id int64, live Binding) (*db.Agent
 	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: bindingOf(row), Retry: row.Status == "failed"}
 	call.Binding.Agent = live.Agent
 	// Re-scope against the stored binding: a retried or late-applied workbench
-	// row must still belong to a live workbench and touch only its rows.
+	// row — an automation run's included, its workbench resolved from the run —
+	// must still belong to a live workbench and touch only its rows.
+	if call.Binding, err = r.automationWorkbench(call.Binding); err != nil {
+		return r.recordFailure(id, from, err)
+	}
 	if err := r.WorkbenchAlive(ctx, call.Binding); err != nil {
 		return r.recordFailure(id, from, err)
 	}

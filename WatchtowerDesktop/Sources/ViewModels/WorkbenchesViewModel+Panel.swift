@@ -196,22 +196,9 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.board)
         case .files:
             updated.showWorkbenchView(.files)
-        case .report:
-            // The session on screen, else the active one, else the first
-            // listed agent session; with none there is nothing to report on.
-            let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id)
-                ?? orderedSessions(projectID: project.id).first { $0.kind.isAgent }?.id
-            guard let id else { return }
-            // Beside its own session's terminal (board #357): a split showing
-            // that terminal swaps its other pane; otherwise the page becomes
-            // the terminal and its report side by side, so a panel click
-            // re-points the report instead of replacing it. Nothing starts.
-            if updated.isSplit, updated.visiblePanes.contains(.session(id)) {
-                updated.showWorkbenchView(.sessionReport(id))
-            } else {
-                updated.primary = .session(id)
-                updated.split(with: .sessionReport(id))
-            }
+        case .report, .changes:
+            guard let id = sessionViewTarget(projectID: project.id) else { return }
+            Self.placeBesideItsSession(view == .report ? .sessionReport(id) : .changes(id), sessionID: id, in: &updated)
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
             // `openMostRecentSession` takes its own ticket — past its
@@ -225,6 +212,51 @@ extension WorkbenchesViewModel {
         }
         beginSwitch(projectID: project.id)
         setLayout(updated, projectID: project.id)
+    }
+
+    /// The session the Session and Changes views open on: the one on screen,
+    /// else the active one, else the first listed agent session; nil = none,
+    /// nothing to report on or review (the header's Changes button is then
+    /// disabled).
+    func sessionViewTarget(projectID: Int64) -> Int64? {
+        layout(projectID: projectID).sessionIDs.first ?? activeSessionID(projectID: projectID)
+            ?? orderedSessions(projectID: projectID).first { $0.kind.isAgent }?.id
+    }
+
+    /// A session row's Review Changes (board #328): its workbench on screen,
+    /// the session's Changes pane beside its terminal, the way the header's
+    /// Changes button puts it.
+    func showChanges(sessionID: Int64, projectID: Int64) {
+        if selectedWorkbenchID != projectID { selectedWorkbenchID = projectID }
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        Self.placeBesideItsSession(.changes(sessionID), sessionID: sessionID, in: &updated)
+        setLayout(updated, projectID: projectID)
+    }
+
+    /// The session's Changes pane model, made once per session; nil without
+    /// the watchtower CLI (the review runs through `workbench review …`).
+    func reviewModel(sessionID: Int64, projectID: Int64) -> ReviewChangesModel? {
+        if let model = reviewModels[sessionID] { return model }
+        guard let cli else { return nil }
+        let model = ReviewChangesModel(
+            projectID: projectID, sessionID: sessionID, cli: cli, db: dbPool, lineDelivery: lineDelivery
+        )
+        reviewModels[sessionID] = model
+        return model
+    }
+
+    /// A session's report or Changes beside its own session's terminal
+    /// (board #357): a split showing that terminal swaps its other pane;
+    /// otherwise the page becomes the terminal and `pane` side by side, so a
+    /// panel click re-points the report instead of replacing it. Nothing starts.
+    private static func placeBesideItsSession(_ pane: WorkspacePane, sessionID id: Int64, in layout: inout WorkspaceLayout) {
+        if layout.isSplit, layout.visiblePanes.contains(.session(id)) {
+            layout.showWorkbenchView(pane)
+        } else {
+            layout.primary = .session(id)
+            layout.split(with: pane)
+        }
     }
 
     /// A FILES tree click (POC): the file opens in a tab (a preview tab on a

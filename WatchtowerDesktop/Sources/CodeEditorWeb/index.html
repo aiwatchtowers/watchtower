@@ -1,6 +1,7 @@
 <!doctype html>
 <!--
-  The Files pane's Monaco host page, served by CodeEditorSchemeHandler under
+  The Files pane's Monaco host page (and the automation recipe editor's,
+  RecipeEditorView), served by CodeEditorSchemeHandler under
   wtcode://editor/. One model per open file, keyed by the Swift buffer's id
   (stable across a rename), so each keeps its undo stack, cursor and scroll.
   Every edit carries `base`: the disk revision the model was last given
@@ -24,6 +25,12 @@
                                                file not on screen takes it
                                                when it is shown
     focus()                                    the keyboard into the editor
+    setReadOnly(bool)                          true: the owner cannot type
+                                               (the recipe in a confirmation
+                                               sheet); show() then leaves the
+                                               keyboard where it is. Off by
+                                               default (the Files pane never
+                                               calls it)
     definitionAtCursor() → Bool                Go to Definition (Ctrl+Cmd+J
                                                from the menu): posts
                                                `definition` for the word at

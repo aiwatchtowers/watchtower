@@ -26,8 +26,9 @@ var messageRefRE = regexp.MustCompile(`^[^@\s]+@\d+\.\d+$`)
 
 // reminderRef picks the stored message ref. On the reaction path it is the
 // reacted message from the binding and nothing else (REACT-02: no invented
-// provenance); elsewhere the binding's ContextID is a chat context, so only
-// the model's explicit message_ref (or none) is used.
+// provenance); elsewhere (the main chat, an automation run) the binding's
+// ContextID is a chat or run context, so only the caller's explicit
+// message_ref (or none) is used.
 func reminderRef(a remindMeArgs, b Binding) string {
 	if b.Surface == "reaction" {
 		return b.ContextID
@@ -37,7 +38,7 @@ func reminderRef(a remindMeArgs, b Binding) string {
 
 // NewRemindMe builds the remind_me write tool: a reminder that resurfaces at
 // a chosen time — about the reacted message on the reaction path (REACT-02),
-// or an optional explicit message_ref in the main chat.
+// or an optional explicit message_ref in the main chat and in automations.
 func NewRemindMe() *Tool {
 	schema, err := jsonschema.For[remindMeArgs](nil)
 	if err != nil {
@@ -48,9 +49,10 @@ func NewRemindMe() *Tool {
 		Description: "Set a reminder that resurfaces in the Inbox at a chosen time, optionally about one Slack message.",
 		InputSchema: schema,
 		Access:      AccessWrite,
-		// The reaction path (REACT-02 binds the reacted message) and the main
-		// chat; never the target chat (TGT-BRIEF-01 axis 3).
-		Surfaces: []string{"reaction", "main"},
+		// The reaction path (REACT-02 binds the reacted message), the main
+		// chat and automations (spec 2026-10-14 §6.1); never the target chat
+		// (TGT-BRIEF-01 axis 3).
+		Surfaces: []string{"reaction", "main", AutomationSurface},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a remindMeArgs
 			if err := decodeStrict(raw, &a); err != nil {

@@ -107,6 +107,8 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var selections: [SelectionMessage] = []
     var scrolls: [String] = []
     var askAIs: [String] = []
+    /// The diff page's `comment {startLine, endLine, side}` posts.
+    var comments: [[String: Any]] = []
     var errors: [String] = []
     var loadError: String?
 
@@ -119,8 +121,8 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         webView.navigationDelegate = self
     }
 
-    func load() {
-        webView.load(URLRequest(url: URL(string: "wtcode://editor/index.html")!))
+    func load(_ page: String = "index.html") {
+        webView.load(URLRequest(url: URL(string: "wtcode://editor/\(page)")!))
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -181,6 +183,13 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 return
             }
             askAIs.append(id)
+        case "comment":
+            // Decoded as MonacoDiffView.Coordinator does.
+            guard body["startLine"] is Int, body["endLine"] is Int, body["side"] is String else {
+                errors.append("malformed comment message: \(body)")
+                return
+            }
+            comments.append(body)
         case "error":
             errors.append((body["message"] as? String) ?? "error without a message")
         default:
@@ -323,6 +332,7 @@ window.__h = {
   proposalZones: function () {
     return Array.prototype.map.call(document.querySelectorAll('.wt-proposal-new'), function (n) { return n.textContent; });
   },
+  readOnly: function () { return monaco.editor.getEditors()[0].getOption(monaco.editor.EditorOption.readOnly); },
   undo: function (id) { var m = __h.model(id); if (!m) { return false; } m.undo(); return true; },
   onScreen: function () {
     var m = monaco.editor.getEditors()[0].getModel();
@@ -709,12 +719,13 @@ func tokenChecks(_ page: Page) async {
 @MainActor
 func navigationChecks(_ page: Page) async {
     // The §10 chords: Monaco's own bindings for them are removed (ruling R28),
-    // so a keystroke in the editor reaches the app's menu.
+    // so a keystroke in the editor reaches the app's menu. ⌃⌘R is "Run
+    // Automation…" (automations spec §12.7), which Monaco never bound.
     let bindings = await page.eval("__h.keybindings()") as? [String] ?? []
     check("keybindings: the probe reads Monaco's bindings", bindings.count > 100 && bindings.contains("cmd+f\tactions.find"),
           "\(bindings.count) bindings")
     let chords = ["shift+cmd+o", "shift+cmd+f", "ctrl+cmd+j", "shift+cmd+u", "ctrl+6", "ctrl+cmd+left",
-                  "ctrl+cmd+right", "cmd+i", "alt+cmd+enter"]
+                  "ctrl+cmd+right", "cmd+i", "alt+cmd+enter", "ctrl+cmd+r"]
     for chord in chords {
         let owners = bindings.filter { $0.hasPrefix(chord + "\t") }.map { String($0.dropFirst(chord.count + 1)) }
         check("keybindings: Monaco binds nothing to \(chord)", owners.isEmpty, "still bound to \(owners)")
@@ -1036,6 +1047,66 @@ func questionChecks(_ page: Page) async {
     page.askAIs.removeAll()
 }
 
+/// setReadOnly (the automation recipe editor's confirmation sheet).
+@MainActor
+func readOnlyChecks(_ page: Page) async {
+    check("setReadOnly: off by default", await page.eval("__h.readOnly()") as? Bool == false)
+    await page.call("wt.setReadOnly", true)
+    check("setReadOnly(true): the editor is read-only", await page.eval("__h.readOnly()") as? Bool == true)
+    await page.call("wt.show", ["id": "ro", "path": "digest.md", "text": "---\nname: Digest\n---\n", "rev": 1])
+    check("setReadOnly: show still puts the file on screen", await page.evalString("__h.onScreen()") == "ro")
+    check("setReadOnly: a .md path is Markdown", await page.evalString("__h.lang('ro')") == "markdown")
+    await page.call("wt.setReadOnly", false)
+    check("setReadOnly(false): editable again", await page.eval("__h.readOnly()") as? Bool == false)
+    await page.call("wt.close", "ro")
+    await pause(0.5)
+    page.texts.removeAll()
+}
+
+/// The Changes pane's diff page (CodeEditorWeb/diff.html), driven the way
+/// MonacoDiffView.Coordinator drives it: `wt.showDiff`, `wt.setComments`,
+/// the Comment action's post. Comment text must land as text, never HTML.
+@MainActor
+func diffPageChecks(root: URL) async {
+    let page = Page(root: root)
+    page.load("diff.html")
+    let loaded = await wait(30) { page.ready || page.loadError != nil || !page.errors.isEmpty }
+    check("diff page: posts ready with no error", loaded && page.ready && page.errors.isEmpty,
+          page.loadError ?? page.errors.joined(separator: "; "))
+    guard page.ready else { return }
+    let comment: [String: Any] = ["id": 1, "startLine": 2, "endLine": 2, "body": "<b>bold?</b>", "status": "draft", "reply": ""]
+    await page.call("wt.showDiff", [
+        "path": "main.go", "original": "package main\n\nfunc a() {}\n", "modified": "package main\n\nfunc b() {}\n",
+        "inline": false, "comments": [comment],
+    ] as [String: Any])
+    await pause(0.3)
+    let sides = await page.eval(
+        "(function () { var m = monaco.editor.getDiffEditors()[0].getModel();"
+            + " return [m.original.getLanguageId(), m.modified.getValue()]; })()"
+    ) as? [String]
+    check("showDiff: both sides, the language from the path",
+          sides == ["go", "package main\n\nfunc b() {}\n"], "\(String(describing: sides))")
+    let zone = await page.eval(
+        "(function () { var n = document.querySelector('.wt-comment');"
+            + " return n ? [n.textContent, n.querySelectorAll('b').length] : null; })()"
+    ) as? [Any]
+    check("showDiff: the comment shows as text, not HTML",
+          zone?.first as? String == "<b>bold?</b>" && zone?.last as? Int == 0, "\(String(describing: zone))")
+    await page.call("wt.setComments", [Any]())
+    let left = await page.evalInt("document.querySelectorAll('.wt-comment').length")
+    check("setComments: an empty list clears the comments", left == 0, "\(String(describing: left))")
+    _ = await page.eval(
+        "(function () { var e = monaco.editor.getDiffEditors()[0].getModifiedEditor();"
+            + " e.setSelection(new monaco.Range(1, 1, 3, 4)); e.getAction('wt.comment').run(); return true; })()"
+    )
+    let posted = await wait(3) { !page.comments.isEmpty }
+    let first = page.comments.first
+    check("Comment: posts the selection's lines and side",
+          posted && first?["startLine"] as? Int == 1 && first?["endLine"] as? Int == 3 && first?["side"] as? String == "new",
+          "\(page.comments)")
+    check("diff page: no error posted during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
+}
+
 // MARK: - Main
 
 @MainActor
@@ -1056,6 +1127,8 @@ func run(root: URL) async -> Int32 {
     await questionChecks(page)
     await detectionChecks(page)
     await tokenChecks(page)
+    await readOnlyChecks(page)
+    await diffPageChecks(root: root)
 
     check("no error posted by the page during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
     print("\n\(passes) passed, \(failures) failed")

@@ -24,6 +24,19 @@ package struct EmptyStateCopy: Equatable, Sendable {
     }
 }
 
+/// A Getting ready card's text: the feature's name and what it makes.
+package struct FeatureCardCopy: Equatable, Sendable {
+    /// "Digests"
+    package let title: String
+    /// One sentence; any hour is already filled in.
+    package let whatItIs: String
+
+    package init(title: String, whatItIs: String) {
+        self.title = title
+        self.whatItIs = whatItIs
+    }
+}
+
 package enum EmptyStateAction: Equatable, Sendable {
     /// Shown only when readiness is `.off`.
     case turnOn(featureID: String)
@@ -58,8 +71,8 @@ package enum EmptyStateCopyTable {
     }
 
     /// Raw values with intentionally no shared empty state (search, usage,
-    /// mcpServer, chat keep theirs).
-    package static let exempt: Set<String> = ["search", "usage", "mcpServer", "chat"]
+    /// mcpServer, chat keep theirs; home is never empty).
+    package static let exempt: Set<String> = ["search", "usage", "mcpServer", "chat", "home"]
 
     private static func jira(_ icon: String, _ title: String, _ landsHere: String) -> EmptyStateCopy {
         EmptyStateCopy(icon: icon, title: title, landsHere: landsHere, feature: .jira, primaryAction: .connect(.jira))
@@ -102,6 +115,10 @@ package enum EmptyStateCopyTable {
             icon: "folder.badge.gearshape", title: "No workbenches yet",
             landsHere: "Boards bound to a folder, where Claude Code or Codex works.",
             feature: nil, primaryAction: .tabAction(label: "Add a folder")),
+        "automations": EmptyStateCopy(
+            icon: "gearshape.2", title: "No automations yet",
+            landsHere: "Recipes the assistant runs for you on a schedule, on an event or at a click.",
+            feature: nil, primaryAction: .tabAction(label: "New automation")),
         "digests": EmptyStateCopy(
             icon: "doc.text.magnifyingglass", title: "No digests yet",
             landsHere: "Per-channel summaries after each sync.",
@@ -124,4 +141,59 @@ package enum EmptyStateCopyTable {
             landsHere: "Activity across channels.",
             feature: .slackSync, primaryAction: nil)
     ]
+}
+
+extension EmptyStateCopyTable {
+    /// The Getting ready card text per tracked feature. Where a tab's row shows
+    /// this feature, `whatItIs` IS that row's `landsHere` (hour filled in); the
+    /// four features with no tab row of their own (slackSync, streamDigests,
+    /// knowledgeIndex, jira) have their own sentence here.
+    package static func featureCard(_ feature: ReadinessFeature, briefingHour: Int, dayPlanHour: Int) -> FeatureCardCopy {
+        let title = cardTitle(feature)
+        let tab: String
+        switch feature {
+        case .slackSync:
+            return FeatureCardCopy(
+                title: title,
+                whatItIs: "Your Slack channels and messages, synced so everything else has something to read.")
+        case .streamDigests:
+            return FeatureCardCopy(title: title, whatItIs: "Summaries of what moved in Jira and mail.")
+        case .knowledgeIndex:
+            return FeatureCardCopy(
+                title: title,
+                whatItIs: "A search index over your messages, documents and notes for the assistant.")
+        case .jira:
+            return FeatureCardCopy(title: title, whatItIs: "Your Jira boards, issues and releases.")
+        case .digests: tab = "digests"
+        case .tracks: tab = "tracks"
+        case .peopleCards: tab = "people"
+        case .briefing: tab = "briefings"
+        case .dayPlan: tab = "dayPlan"
+        case .ideas: tab = "ideas"
+        case .memory: tab = "memory"
+        case .inbox: tab = "inbox"
+        case .calendar: tab = "calendar"
+        }
+        // Every tab above has a row in `rows`.
+        let landsHere = copy(for: tab, briefingHour: briefingHour, dayPlanHour: dayPlanHour)?.landsHere ?? ""
+        return FeatureCardCopy(title: title, whatItIs: landsHere)
+    }
+
+    private static func cardTitle(_ feature: ReadinessFeature) -> String {
+        switch feature {
+        case .slackSync: "Slack sync"
+        case .digests: "Digests"
+        case .streamDigests: "Stream digests"
+        case .tracks: "Tracks"
+        case .peopleCards: "People cards"
+        case .briefing: "Briefing"
+        case .dayPlan: "Day plan"
+        case .ideas: "Ideas"
+        case .memory: "Memory"
+        case .inbox: "Inbox"
+        case .knowledgeIndex: "Knowledge search"
+        case .calendar: "Calendar"
+        case .jira: "Jira"
+        }
+    }
 }

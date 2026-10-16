@@ -540,3 +540,64 @@ func TestRecipe_LoneCRNormalised(t *testing.T) {
 		t.Errorf("lone-CR twin parses differently:\nlf: %+v\ncr: %+v", a, b)
 	}
 }
+
+// TestApprovalFields_OrderAndCanonicalValues: the Changed block's fields come
+// in the pinned order, in the hash's canonical forms, and a button's label is
+// not part of the trigger (D26).
+func TestApprovalFields_OrderAndCanonicalValues(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal}
+	fm := func(label string) []byte {
+		return recipeWith("name: A\ntrigger:\n  button: {label: "+label+"}\npermissions: [Jira:READ@pay, llm:light]\n"+
+			"outputs: [report, inbox]\nbudget:\n  tokens: 1000\n  minutes: 2\n", "log(1);\n")
+	}
+	got := ApprovalFields(mustParse(t, fm("Go"), personal))
+	var names []string
+	values := map[string]string{}
+	for _, f := range got {
+		names = append(names, f.Name)
+		values[f.Name] = f.Value
+	}
+	want := []string{"trigger", "missed", "budget_tokens", "budget_minutes", "concurrency", "outputs", "permissions", "scope", "script"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+	for name, v := range map[string]string{
+		"trigger": `{"button":{"confirm":false}}`, "budget_tokens": "1000", "budget_minutes": "2",
+		"outputs": `["inbox","report"]`, "permissions": `["jira:read@PAY","llm:light"]`, "scope": "personal", "script": "log(1);\n",
+	} {
+		if values[name] != v {
+			t.Errorf("%s = %q, want %q", name, values[name], v)
+		}
+	}
+	if relabelled := ApprovalFields(mustParse(t, fm("Run it now"), personal)); !reflect.DeepEqual(relabelled, got) {
+		t.Errorf("a label rename changed the fields: %v", relabelled)
+	}
+}
+
+// TestRecipe_ParsesSwiftWrittenFrontmatter pins the Desktop's frontmatter
+// writer on the Go side: swift_written.md is byte-for-byte what the edit
+// form's RecipeFrontmatter.render writes for its sample (the Swift half,
+// RecipeFrontmatterTests.testRenderMatchesSharedFixture), and the strict
+// parser reads it back to the same fields.
+func TestRecipe_ParsesSwiftWrittenFrontmatter(t *testing.T) {
+	body := "Written by the edit form.\n\n```js\noutput.inbox({ title: \"t\", body: \"b\" });\n```\n"
+	r := mustParse(t, append(readFixture(t, "swift_written.md"), body...), Scope{Kind: ScopePersonal})
+
+	got := Recipe{
+		Name: r.Name, Trigger: r.Trigger, Missed: r.Missed, Concurrency: r.Concurrency,
+		Permissions: r.Permissions, Outputs: r.Outputs, Budget: r.Budget, PauseTimeoutHours: r.PauseTimeoutHours,
+	}
+	want := Recipe{
+		Name:              `Mail: "triage" # weekly \ done — ok`,
+		Trigger:           Trigger{Kind: TriggerSchedule, Schedule: "30 8 * * 1-5"},
+		Missed:            MissedSkip,
+		Concurrency:       2,
+		Permissions:       []string{"gmail:read@work", "llm:light"},
+		Outputs:           []string{"inbox", "report"},
+		Budget:            Budget{Tokens: 120000, Minutes: 10},
+		PauseTimeoutHours: 24,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("swift_written.md:\n got: %+v\nwant: %+v", got, want)
+	}
+}

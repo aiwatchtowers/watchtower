@@ -45,11 +45,14 @@ type Env struct {
 	Trigger    TriggerInfo
 }
 
-// Binding is the registry binding of this run's tool calls (spec §6.1).
+// Binding is the registry binding of this run's tool calls (spec §6.1). A
+// workbench automation's binding carries its WorkbenchID, which scopes its
+// reads and writes (the registry re-resolves it from the run at Apply).
 func (e *Env) Binding() tools.Binding {
 	b := tools.Binding{Surface: tools.AutomationSurface, ContextType: tools.AutomationContextType}
 	if e.Run != nil {
 		b.ContextID = strconv.FormatInt(e.Run.ID, 10)
+		b.AutomationRunID = e.Run.ID
 	}
 	switch {
 	case e.Automation != nil:

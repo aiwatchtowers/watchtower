@@ -450,14 +450,27 @@ func (db *DB) AutomationScopeGeneration(scope string, projectID int64) (string, 
 	return fmt.Sprintf("%d/%d/%s", count, maxID, maxUpdated), nil
 }
 
-// DeleteAutomation deletes automation id with its runs, steps, state and
-// outputs (FK cascade); ErrAutomationNotFound when there is none.
+// deleteRunAsksSQL deletes the asks of automation ?'s runs. Every path that
+// deletes runs executes it first, in the same transaction: the run's FK would
+// otherwise null automation_run_id and leave the ask looking like an
+// external terminal's, which session-side readers then see.
+const deleteRunAsksSQL = `DELETE FROM owner_asks WHERE automation_run_id IN (
+	SELECT id FROM automation_runs WHERE automation_id = ?)`
+
+// DeleteAutomation deletes automation id with its runs' asks and, by FK
+// cascade, its runs, steps, state and outputs; ErrAutomationNotFound when
+// there is none.
 func (db *DB) DeleteAutomation(id int64) error {
-	res, err := db.Exec(`DELETE FROM automations WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("deleting automation %d: %w", id, err)
-	}
-	return requireAutomationRow(res, id)
+	return db.WithTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(deleteRunAsksSQL, id); err != nil {
+			return fmt.Errorf("deleting the asks of automation %d: %w", id, err)
+		}
+		res, err := tx.Exec(`DELETE FROM automations WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("deleting automation %d: %w", id, err)
+		}
+		return requireAutomationRow(res, id)
+	})
 }
 
 func requireAutomationRow(res sql.Result, id int64) error {
@@ -514,4 +527,50 @@ func (db *DB) FastForwardAutomations(now time.Time) (primed, cancelled int, err 
 		return 0, 0, fmt.Errorf("%s: %w", what, err)
 	}
 	return int(p), int(c), nil
+}
+
+// AutomationRunSnapshotAt is the recipe_snapshot of automationID's newest
+// run claimed at recipeHash ("" when there is none). The confirmation sheet
+// reads it as a candidate for the text the owner confirmed (spec §12.2).
+func (db *DB) AutomationRunSnapshotAt(automationID int64, recipeHash string) (string, error) {
+	var snapshot string
+	err := db.QueryRow(`SELECT recipe_snapshot FROM automation_runs
+		WHERE automation_id = ? AND recipe_hash = ? AND recipe_snapshot != ''
+		ORDER BY id DESC LIMIT 1`, automationID, recipeHash).Scan(&snapshot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading the run snapshot of automation %d: %w", automationID, err)
+	}
+	return snapshot, nil
+}
+
+// AutomationSave is what the confirmation sheet reads from an applied
+// save_automation proposal: the recipe text it saved (and confirmed) and when
+// it applied.
+type AutomationSave struct {
+	RecipeText string
+	AppliedAt  string
+}
+
+// LatestAppliedAutomationSave is the newest applied save_automation whose
+// pinned args name path and scope ("personal" | "workbench:<id>") and, when
+// approvalHash is not "", pinned that approval hash; nil when there is none.
+func (db *DB) LatestAppliedAutomationSave(path, scope, approvalHash string) (*AutomationSave, error) {
+	var s AutomationSave
+	err := db.QueryRow(`SELECT COALESCE(json_extract(args_json, '$.recipe_text'), ''), applied_at
+		FROM agent_actions
+		WHERE tool = 'save_automation' AND status = 'applied' AND json_valid(args_json)
+		  AND json_extract(args_json, '$.path') = ? AND json_extract(args_json, '$.scope') = ?
+		  AND (? = '' OR json_extract(args_json, '$.approval_hash') = ?)
+		ORDER BY applied_at DESC, id DESC LIMIT 1`, path, scope, approvalHash, approvalHash).
+		Scan(&s.RecipeText, &s.AppliedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the save_automation actions for %s: %w", path, err)
+	}
+	return &s, nil
 }

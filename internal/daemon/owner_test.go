@@ -44,7 +44,7 @@ func TestOwner02_DaemonDayPlanNoOwnerLoggedOncePerUTCDay(t *testing.T) {
 	d, _, buf := noOwnerDaemon(t, &config.Config{DayPlan: config.DayPlanConfig{Enabled: true, Hour: 1}})
 	fp := &fakeDayPlanRunner{}
 	d.SetDayPlanPipeline(fp)
-	const line = "daemon: day_plan skipped: no owner identity (connect Slack, Google or Jira)"
+	const line = "daemon: day_plan skipped: no owner identity (connect Slack, Google, Jira or Linear)"
 
 	day1 := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
 	for i := 0; i < 3; i++ {
@@ -77,7 +77,7 @@ func TestOwner02_DaemonBriefingNoOwnerIsBenignAndLoggedOnce(t *testing.T) {
 		d.phaseBriefing(context.Background())
 	}
 
-	assert.Equal(t, 1, strings.Count(buf.String(), "daemon: briefing skipped: no owner identity (connect Slack, Google or Jira)"))
+	assert.Equal(t, 1, strings.Count(buf.String(), "daemon: briefing skipped: no owner identity (connect Slack, Google, Jira or Linear)"))
 	assert.NotContains(t, buf.String(), "briefing error", "no owner is not logged as a failure")
 	assert.Equal(t, 0, gen.calls)
 	assert.Equal(t, 0, d.briefingAttempts)
@@ -113,7 +113,7 @@ func TestOwner02_DaemonInboxNoOwnerLoggedOncePerUTCDay(t *testing.T) {
 		d.phaseInbox(context.Background())
 	}
 
-	assert.Equal(t, 1, strings.Count(buf.String(), "daemon: inbox skipped: no owner identity (connect Slack, Google or Jira)"))
+	assert.Equal(t, 1, strings.Count(buf.String(), "daemon: inbox skipped: no owner identity (connect Slack, Google, Jira or Linear)"))
 	var runs int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'inbox'`).Scan(&runs))
 	assert.Equal(t, 0, runs, "a no-owner skip is not a pipeline run")

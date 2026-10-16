@@ -24,6 +24,8 @@ type Client struct {
 	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
 	// passes through `ai query --tools chat`. Empty = the read-only dev server.
 	mcpArgs []string
+	// mcpEnvVars are passed through to the MCP server (SetMCPEnvVars).
+	mcpEnvVars []string
 	// stdinOnly routes the system prompt and user message through stdin only
 	// (see SetStdinOnly) — never through argv.
 	stdinOnly bool
@@ -31,6 +33,39 @@ type Client struct {
 	// (`--cd`, and the process cwd) under the read-only sandbox. Empty =
 	// today's run in a temp dir holding the MCP config.
 	readFolder string
+	// childEnv replaces the os.Environ() base of the child's environment
+	// when childEnvSet (SetChildEnv); processGroup runs the child in its own
+	// process group killed as a group (SetProcessGroup).
+	childEnv     []string
+	childEnvSet  bool
+	processGroup bool
+}
+
+// SetChildEnv replaces the inherited environment of the child with env (the
+// rich PATH is still appended last). Unset = os.Environ() as today.
+func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, true }
+
+// SetProcessGroup runs the child in its own process group and kills the
+// whole group on cancel or deadline (see ai.ConfigureChild). codex has no
+// per-tool MCP allowlist flag; the server-side tool filter is the
+// enforcement, as for claude.
+func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
+
+// childEnviron is the child's environment: the base (os.Environ() unless
+// replaced) without PATH, then the rich PATH.
+func (c *Client) childEnviron() []string {
+	base := os.Environ()
+	if c.childEnvSet {
+		base = c.childEnv
+	}
+	var env []string
+	for _, e := range base {
+		if strings.HasPrefix(e, "PATH=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	return append(env, "PATH="+RichPATH())
 }
 
 // SetReadFolder makes the run a read-only look at dir (`ai query
@@ -46,6 +81,10 @@ func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
 func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
+
+// SetMCPEnvVars names environment variables codex passes through to the
+// watchtower MCP server (its env_vars; codex otherwise filters them out).
+func (c *Client) SetMCPEnvVars(names []string) { c.mcpEnvVars = names }
 
 // SetStdinOnly makes every subsequent call route the system prompt and user
 // message through stdin ONLY (CHAT-04, spec §9: no content on any process's
@@ -176,7 +215,7 @@ func (c *Client) workDir() (dir string, cleanup func(), err error) {
 	if c.dbPath == "" {
 		return "", func() {}, nil
 	}
-	tmpDir, err := mcpWorkDir(c.dbPath, c.mcpArgs)
+	tmpDir, err := mcpWorkDir(c.dbPath, c.mcpArgs, c.mcpEnvVars)
 	if err != nil {
 		return "", func() {}, err
 	}
@@ -220,21 +259,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		if promptStdin != "" {
 			cmd.Stdin = strings.NewReader(promptStdin)
 		}
-		cmd.Cancel = func() error {
-			return cmd.Process.Signal(os.Interrupt)
-		}
-		cmd.WaitDelay = 5 * time.Second
+		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		defer reap()
 		cmd.Dir = c.processDir()
-
-		// Build clean environment with enriched PATH.
-		var env []string
-		for _, e := range os.Environ() {
-			if strings.HasPrefix(e, "PATH=") {
-				continue
-			}
-			env = append(env, e)
-		}
-		cmd.Env = append(env, "PATH="+RichPATH())
+		cmd.Env = c.childEnviron()
 
 		var stderrBuf strings.Builder
 		cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
@@ -332,21 +360,10 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if promptStdin != "" {
 		cmd.Stdin = strings.NewReader(promptStdin)
 	}
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(os.Interrupt)
-	}
-	cmd.WaitDelay = 5 * time.Second
+	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	defer reap()
 	cmd.Dir = c.processDir()
-
-	// Build clean environment with enriched PATH.
-	var env []string
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "PATH=") {
-			continue
-		}
-		env = append(env, e)
-	}
-	cmd.Env = append(env, "PATH="+RichPATH())
+	cmd.Env = c.childEnviron()
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}

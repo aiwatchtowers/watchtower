@@ -8,7 +8,7 @@ import (
 )
 
 func TestMcpWorkDir_CreatesConfig(t *testing.T) {
-	tmpDir, err := mcpWorkDir("/tmp/test.db", nil)
+	tmpDir, err := mcpWorkDir("/tmp/test.db", nil, nil)
 	if err != nil {
 		t.Fatalf("mcpWorkDir failed: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestMcpWorkDir_CreatesConfig(t *testing.T) {
 }
 
 func TestMcpWorkDir_DirectoryStructure(t *testing.T) {
-	tmpDir, err := mcpWorkDir("/tmp/test.db", nil)
+	tmpDir, err := mcpWorkDir("/tmp/test.db", nil, nil)
 	if err != nil {
 		t.Fatalf("mcpWorkDir failed: %v", err)
 	}
@@ -51,5 +51,18 @@ func TestMcpWorkDir_DirectoryStructure(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Error(".codex should be a directory")
+	}
+}
+
+// An env var the server needs (an automation's run marker) is named in
+// env_vars: codex starts MCP servers with a filtered environment. Without
+// envVars the table carries no env_vars line.
+func TestWatchtowerServerTOML_EnvVars(t *testing.T) {
+	got := WatchtowerServerTOML("/tmp/w.db", []string{"--chat"}, []string{"WATCHTOWER_AUTOMATION_RUN_ID"})
+	if !strings.HasSuffix(got, "args = [\"mcp\", \"--db-path\", \"/tmp/w.db\", \"--chat\"]\nenv_vars = [\"WATCHTOWER_AUTOMATION_RUN_ID\"]\n") {
+		t.Fatalf("toml = %s", got)
+	}
+	if plain := WatchtowerServerTOML("/tmp/w.db", nil, nil); strings.Contains(plain, "env_vars") {
+		t.Fatalf("toml without env vars = %s", plain)
 	}
 }

@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"watchtower/internal/automations"
+	"watchtower/internal/automations/authoring"
+	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
@@ -181,8 +185,21 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	before := countRows(t, database, guardTables)
-	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main", ConversationID: 7})
+	// The automation tables a draft's dry run would write if it wrote at all.
+	tables := append(slices.Clone(guardTables),
+		"automations", "automation_runs", "automation_run_steps", "automation_state", "automation_outputs")
+	before := countRows(t, database, tables)
+	reg := chatRegistry(t, database)
+	gen := &automationstest.FakeGenerator{Replies: []string{"done"}}
+	if err := reg.Register(authoring.NewDraftAutomation(authoring.Deps{
+		DB:       database,
+		Backends: func() automations.Backends { return automations.Backends{Generator: gen, Registry: reg} },
+		Enabled:  func() bool { return true },
+		Clock:    automations.RealClock{},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	cs := newChatSession(t, database, reg, tools.Binding{Surface: "main", ConversationID: 7})
 	// The chat connection really is writable — otherwise this guard would be
 	// measuring the query_only pragma all over again instead of the handlers.
 	if _, err := database.Exec(`INSERT INTO users (id, name, is_stub) VALUES ('WCHAT', 'w', 1)`); err != nil {
@@ -195,6 +212,7 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	ctx := context.Background()
 	calls := append(readOnlyGuardCalls(),
 		mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": actionID}})
+	calls = append(calls, chatOnlyReadGuardCalls()...)
 	for _, c := range calls {
 		res, err := cs.CallTool(ctx, &c)
 		if err != nil {
@@ -203,10 +221,16 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 		if res.IsError {
 			t.Errorf("call %s returned an error result: %s", c.Name, textContent(t, res))
 		}
+		if c.Name == "draft_automation" {
+			assertDraftDryRunSucceeded(t, textContent(t, res))
+		}
+	}
+	if gen.CallCount() == 0 {
+		t.Error("draft_automation never reached its dry run's llm() — the guard measured nothing")
 	}
 
-	after := countRows(t, database, guardTables)
-	for _, tbl := range guardTables {
+	after := countRows(t, database, tables)
+	for _, tbl := range tables {
 		if before[tbl] != after[tbl] {
 			t.Errorf("table %s row count changed %d -> %d after read tools ran on the chat session", tbl, before[tbl], after[tbl])
 		}
@@ -214,6 +238,40 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	rows, _ := database.ListAgentActions(db.AgentActionFilter{})
 	if len(rows) != 1 {
 		t.Errorf("read tools wrote agent_actions rows: %d (want the 1 seeded)", len(rows))
+	}
+}
+
+// chatOnlyReadGuardCalls are the read tools mounted on the chat surfaces but
+// not on the dev surface, so they are not in readOnlyGuardCalls (shared with
+// DEV-01's TestNoToolMutatesDatabase): draft_automation (Automations P3),
+// with a recipe whose dry run calls llm(), a write tool, state.set and
+// output.inbox — each of which must answer without a row.
+func chatOnlyReadGuardCalls() []mcpsdk.CallToolParams {
+	recipe := "---\nname: Guard draft\ntrigger:\n  manual: true\npermissions:\n  - llm:light\n  - tool:create_target\n" +
+		"outputs: [inbox]\n---\nA guard recipe.\n\n```js\nvar s = llm(\"x\"); tool(\"create_target\", {text: \"t\"});\n" +
+		"state.set(\"k\", 1); output.inbox({title: \"t\", body: s}); return 1\n```\n"
+	return []mcpsdk.CallToolParams{
+		{Name: "draft_automation", Arguments: map[string]any{"recipe_text": recipe}},
+	}
+}
+
+// assertDraftDryRunSucceeded keeps the draft guard call from degenerating
+// into a parse error that never reaches the dry run.
+func assertDraftDryRunSucceeded(t *testing.T, text string) {
+	t.Helper()
+	var res struct {
+		OK     bool     `json:"ok"`
+		Errors []string `json:"errors"`
+		DryRun *struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		} `json:"dry_run"`
+	}
+	if err := json.Unmarshal([]byte(text), &res); err != nil {
+		t.Fatalf("draft_automation result: %v: %s", err, text)
+	}
+	if !res.OK || res.DryRun == nil || res.DryRun.Status != db.RunSucceeded {
+		t.Fatalf("draft_automation did not dry-run the guard recipe: %s", text)
 	}
 }
 
@@ -374,5 +432,147 @@ func TestGetAction_ElidesLargeArgStrings(t *testing.T) {
 	row, _ := database.GetAgentAction(id)
 	if row.ArgsJSON != string(args) {
 		t.Fatal("the stored row must stay untouched")
+	}
+}
+
+// newHookedSession is newChatSession with the server options of an
+// automation agent()'s server (WithToolFilter, WithCallGate, WithResultCheck).
+func newHookedSession(t *testing.T, database *db.DB, reg *tools.Registry, binding tools.Binding, opts ...ServerOption) *mcpsdk.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	srv := NewServer(database, append([]ServerOption{WithRegistry(reg, binding)}, opts...)...)
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "v0"}, nil)
+	st, ct := mcpsdk.NewInMemoryTransports()
+	if _, err := srv.s.Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
+
+func countActions(t *testing.T, database *db.DB) int {
+	t.Helper()
+	var n int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestChatMode_ToolFilterUnmountsTools(t *testing.T) {
+	database := seedDB(t)
+	keep := map[string]bool{"create_target": true, "list_targets": true}
+	cs := newHookedSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"},
+		WithToolFilter(func(tool *tools.Tool) bool { return keep[tool.Name] }))
+	names := toolNames(t, cs)
+	want := map[string]bool{"create_target": true, "list_targets": true, "get_action": true}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("tools = %v, want %v", names, want)
+	}
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "create_jira_issue", Arguments: map[string]any{}})
+	if err == nil && !res.IsError {
+		t.Fatalf("an unmounted tool must not be callable, got %s", textContent(t, res))
+	}
+	if n := countActions(t, database); n != 0 {
+		t.Fatalf("agent_actions rows = %d, want 0", n)
+	}
+}
+
+func TestChatMode_CallGateRunsBeforeDispatch(t *testing.T) {
+	database := seedDB(t)
+	var gated []string
+	gate := func(_ context.Context, tool *tools.Tool, args json.RawMessage) (json.RawMessage, error) {
+		gated = append(gated, tool.Name)
+		if tool.Name == "create_target" {
+			return nil, fmt.Errorf("PermissionDenied: needs targets:write")
+		}
+		return json.RawMessage(`{"limit":1}`), nil
+	}
+	cs := newHookedSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"}, WithCallGate(gate))
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "create_target",
+		Arguments: map[string]any{"text": "x", "reason": "r"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(textContent(t, res), "PermissionDenied: needs targets:write") {
+		t.Fatalf("a refused call is the gate's error result, got %s", textContent(t, res))
+	}
+	if n := countActions(t, database); n != 0 {
+		t.Fatalf("a refused write records no row, got %d", n)
+	}
+	// The gate's args are the ones dispatched: an invalid body passes because
+	// the gate replaced it.
+	res, err = cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_targets",
+		Arguments: map[string]any{"no_such_arg": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("the gated args dispatch, got %s", textContent(t, res))
+	}
+	if fmt.Sprint(gated) != "[create_target list_targets]" {
+		t.Fatalf("gate calls = %v", gated)
+	}
+}
+
+func TestChatMode_ResultCheckReplacesResult(t *testing.T) {
+	database := seedDB(t)
+	cs := newHookedSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"},
+		WithResultCheck(func(result []byte) error {
+			return fmt.Errorf("ResultTooLarge: the result is %d bytes", len(result))
+		}))
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_targets", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(textContent(t, res), "ResultTooLarge") {
+		t.Fatalf("the result check's error replaces the result, got %s", textContent(t, res))
+	}
+}
+
+// An automation agent()'s session sees only its own run's rows — not another
+// run's, nor its workbench's (the binding of a workbench automation carries
+// the workbench too).
+func TestGetAction_ScopedToAutomationRun(t *testing.T) {
+	database := seedDB(t)
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wb, err := database.CreateWorkbench("acme", folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(a db.AgentAction) int64 {
+		t.Helper()
+		a.Tool, a.ArgsJSON, a.Reason = "create_target", `{"text":"x"}`, "r"
+		id, err := database.InsertAgentAction(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	own := insert(db.AgentAction{Surface: tools.AutomationSurface, ContextType: tools.AutomationContextType, ContextID: "7"})
+	otherRun := insert(db.AgentAction{Surface: tools.AutomationSurface, ContextType: tools.AutomationContextType, ContextID: "8"})
+	workbench := insert(db.AgentAction{Surface: tools.WorkbenchSurface, ContextType: tools.WorkbenchContextType,
+		ContextID: fmt.Sprint(wb)})
+	plain := insert(db.AgentAction{Surface: tools.AutomationSurface})
+
+	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: tools.AutomationSurface,
+		ContextType: tools.AutomationContextType, ContextID: "7", AutomationRunID: 7, WorkbenchID: wb, AutomationAgent: true})
+	for _, id := range []int64{otherRun, workbench, plain} {
+		res, _ := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
+		if !res.IsError {
+			t.Fatalf("row #%d must be hidden from run 7's session, got %s", id, textContent(t, res))
+		}
+	}
+	res, _ := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": own}})
+	if res.IsError {
+		t.Fatalf("run 7's session sees its own row: %s", textContent(t, res))
 	}
 }

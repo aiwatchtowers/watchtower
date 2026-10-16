@@ -243,7 +243,7 @@ func (db *DB) ClearWorkbenchArchivedThrough(workbenchID int64) error {
 }
 
 // WorkbenchMethodology is a workbench's personal methodology overrides
-// (migration 00116, spec 2026-10-15-workbench-configurable-methodology §8):
+// (migration 00123, spec 2026-10-15-workbench-configurable-methodology §8):
 // "" = NULL, so the folder's .watchtower/workflow.md, else the built-in
 // default, applies. Read apart from GetWorkbench (workbenchCols leaves the
 // columns out) so a hook running against a database a migration behind fails

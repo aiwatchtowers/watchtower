@@ -112,3 +112,29 @@ func TestAgentActions_ApproveWithArgsIsConditional(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "an approved row takes no further edits")
 }
+
+func TestAgentActionIDsAfter_OnlyNewerRowsOfTheContext(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+	insert := func(ctxType, ctxID string) int64 {
+		id, err := d.InsertAgentAction(AgentAction{Tool: "create_target", ArgsJSON: "{}", Reason: "r",
+			Surface: "automation", ContextType: ctxType, ContextID: ctxID})
+		require.NoError(t, err)
+		return id
+	}
+	insert("automation_run", "7")
+	floor, err := d.MaxAgentActionID()
+	require.NoError(t, err)
+	a := insert("automation_run", "7")
+	insert("automation_run", "8")
+	insert("reaction", "7")
+	b := insert("automation_run", "7")
+
+	got, err := d.AgentActionIDsAfter("automation_run", "7", floor)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{a, b}, got)
+
+	got, err = d.AgentActionIDsAfter("automation_run", "9", 0)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{}, got, "none is an empty list, not nil")
+}

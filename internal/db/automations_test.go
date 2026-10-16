@@ -711,3 +711,45 @@ func TestFastForwardAutomations_PrimesSchedulesAndCancelsQueued(t *testing.T) {
 		t.Fatal("a zero time must be refused")
 	}
 }
+
+// LatestAppliedAutomationSave matches the pinned path and scope, only applied
+// save_automation rows, and — when given — the pinned approval hash.
+func TestLatestAppliedAutomationSave_Filters(t *testing.T) {
+	d := openTestDB(t)
+	insert := func(tool, status, args, appliedAt string) {
+		t.Helper()
+		if _, err := d.Exec(`INSERT INTO agent_actions (tool, args_json, status, applied_at) VALUES (?, ?, ?, ?)`,
+			tool, args, status, appliedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := func(path, scope, hash, prev string) string {
+		return `{"path":"` + path + `","scope":"` + scope + `","approval_hash":"` + hash + `","recipe_text":"` + prev + `"}`
+	}
+	insert("save_automation", "applied", args("/p/a.md", "personal", "h1", "one"), "2026-10-14T08:00:00Z")
+	insert("save_automation", "applied", args("/p/a.md", "personal", "h2", "two"), "2026-10-15T08:00:00Z")
+	insert("save_automation", "pending", args("/p/a.md", "personal", "h3", "pending"), "")
+	insert("save_automation", "applied", args("/p/a.md", "workbench:1", "h4", "other scope"), "2026-10-16T08:00:00Z")
+	insert("save_automation", "applied", args("/p/b.md", "personal", "h5", "other path"), "2026-10-16T08:00:00Z")
+	insert("create_target", "applied", `not json`, "2026-10-16T08:00:00Z")
+
+	for _, tc := range []struct {
+		hash, wantPrev, wantAt string
+	}{
+		{"", "two", "2026-10-15T08:00:00Z"},
+		{"h1", "one", "2026-10-14T08:00:00Z"},
+	} {
+		got, err := d.LatestAppliedAutomationSave("/p/a.md", "personal", tc.hash)
+		if err != nil || got == nil {
+			t.Fatalf("hash %q: got %v, %v", tc.hash, got, err)
+		}
+		if got.RecipeText != tc.wantPrev || got.AppliedAt != tc.wantAt {
+			t.Errorf("hash %q: got %+v, want %s at %s", tc.hash, got, tc.wantPrev, tc.wantAt)
+		}
+	}
+	for _, hash := range []string{"h3", "h4", "nope"} {
+		if got, err := d.LatestAppliedAutomationSave("/p/a.md", "personal", hash); err != nil || got != nil {
+			t.Errorf("hash %q: got %+v, %v; want none", hash, got, err)
+		}
+	}
+}

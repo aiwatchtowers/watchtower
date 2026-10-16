@@ -1340,7 +1340,8 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
     CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
-    CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')));
+    CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
+  CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')));
 CREATE TABLE IF NOT EXISTS project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1510,7 +1511,7 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     answer           TEXT NOT NULL DEFAULT '',   -- JSON, Desktop-written
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     answered_at      TEXT NOT NULL DEFAULT '',
-    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '',
+    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '', automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
@@ -1576,7 +1577,7 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question     TEXT,
     chat_question_at  TEXT,
     agent_turns       TEXT,
-    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT,
+    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -1715,6 +1716,275 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     breakdown_json TEXT NOT NULL DEFAULT '[]',
     updated_at     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_log_files (
+  path           TEXT PRIMARY KEY,
+  agent          TEXT NOT NULL CHECK (agent IN ('claude')),
+  size           INTEGER NOT NULL DEFAULT 0,
+  mtime          TEXT NOT NULL DEFAULT '',
+  read_offset    INTEGER NOT NULL DEFAULT 0,
+  parser_version INTEGER NOT NULL DEFAULT 0,
+  missing_at     TEXT,
+  scanned_at     TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS agent_log_sessions (
+  session_uuid        TEXT PRIMARY KEY,
+  agent               TEXT NOT NULL CHECK (agent IN ('claude')),
+  project_id          INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  folder_path         TEXT NOT NULL,
+  home_cwd            TEXT NOT NULL,
+  terminal_session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+  source_path         TEXT NOT NULL,
+  git_branch          TEXT NOT NULL DEFAULT '',
+  model               TEXT NOT NULL DEFAULT '',
+  started_at          TEXT NOT NULL,
+  ended_at            TEXT NOT NULL,
+  reported_cost_usd   REAL
+);
+CREATE TABLE IF NOT EXISTS agent_log_events (
+  id             INTEGER PRIMARY KEY,
+  session_uuid   TEXT NOT NULL REFERENCES agent_log_sessions(session_uuid) ON DELETE CASCADE,
+  key            TEXT NOT NULL UNIQUE,
+  kind           TEXT NOT NULL CHECK (kind IN
+                   ('api_call','owner_turn','tool','skill','compaction','api_error','pr_link')),
+  ts             TEXT NOT NULL,
+  uuid           TEXT NOT NULL DEFAULT '',
+  parent_uuid    TEXT NOT NULL DEFAULT '',
+  prompt_id      TEXT NOT NULL DEFAULT '',
+  agent_id       TEXT NOT NULL DEFAULT '',
+  is_sidechain   INTEGER NOT NULL DEFAULT 0,
+  name           TEXT NOT NULL DEFAULT '',
+  target         TEXT NOT NULL DEFAULT '',
+  trigger        TEXT NOT NULL DEFAULT '',
+  outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN
+                   ('','ok','error','denied','interrupted','pending')),
+  error_class    TEXT NOT NULL DEFAULT '',
+  duration_ms    INTEGER,
+  skill          TEXT NOT NULL DEFAULT '',
+  input_tokens          INTEGER NOT NULL DEFAULT 0,
+  output_tokens         INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+  cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+  speed          TEXT NOT NULL DEFAULT '',
+  service_tier   TEXT NOT NULL DEFAULT '',
+  cost_usd       REAL NOT NULL DEFAULT 0,
+  price_version  INTEGER NOT NULL DEFAULT 0,
+  cost_estimated INTEGER NOT NULL DEFAULT 0,
+  lines_added    INTEGER NOT NULL DEFAULT 0,
+  lines_removed  INTEGER NOT NULL DEFAULT 0,
+  src_path       TEXT NOT NULL,
+  src_offset     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS automation_tool_grants (
+    automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    tool          TEXT NOT NULL,
+    grant_hash    TEXT NOT NULL,                             -- approval_hash the owner granted
+    granted_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (automation_id, tool)
+);
+CREATE TABLE IF NOT EXISTS history_backfill (
+    id             INTEGER PRIMARY KEY,
+    source_kind    TEXT    NOT NULL CHECK (source_kind IN ('slack', 'gmail', 'imap', 'jira')),
+    account_id     INTEGER NOT NULL,
+    floor_ts       REAL    NOT NULL,
+    upper_ts       REAL    NOT NULL,
+    reached_ts     REAL    NOT NULL,
+    status         TEXT    NOT NULL DEFAULT 'running'
+                   CHECK (status IN ('running', 'paused', 'done', 'off')),
+    waiting        TEXT    NOT NULL DEFAULT '' CHECK (waiting IN ('', 'plan_limit')),
+    chunk_failures INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT    NOT NULL DEFAULT '',
+    started_at     TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL,
+    done_at        TEXT,
+    UNIQUE (source_kind, account_id)
+);
+CREATE TABLE IF NOT EXISTS linear_accounts (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id                   TEXT NOT NULL DEFAULT '',
+    url_key                  TEXT NOT NULL DEFAULT '',
+    org_name                 TEXT NOT NULL DEFAULT '',
+    label                    TEXT NOT NULL DEFAULT '',
+    status                   TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed
+    error                    TEXT NOT NULL DEFAULT '',
+    enabled                  INTEGER NOT NULL DEFAULT 1,
+    owner_user_id            TEXT NOT NULL DEFAULT '',
+    owner_email              TEXT NOT NULL DEFAULT '',
+    owner_display_name       TEXT NOT NULL DEFAULT '',
+    memory_last_extracted_ts REAL NOT NULL DEFAULT 0,
+    ideas_floor              TEXT NOT NULL DEFAULT '',
+    moved_watermark          TEXT NOT NULL DEFAULT '',  -- moved-issue reconcile cursor; advances only on success
+    created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS linear_teams (
+    account_id  INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id          TEXT NOT NULL,
+    key         TEXT NOT NULL DEFAULT '',
+    name        TEXT NOT NULL DEFAULT '',
+    is_selected INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, id)
+);
+CREATE TABLE IF NOT EXISTS linear_sync_state (
+    account_id     INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    team_id        TEXT NOT NULL,
+    watermark      TEXT NOT NULL DEFAULT '',
+    last_synced_at TEXT NOT NULL DEFAULT '',
+    last_error     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, team_id)
+);
+CREATE TABLE IF NOT EXISTS linear_issues (
+    account_id            INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id                    TEXT NOT NULL,
+    key                   TEXT NOT NULL,
+    previous_keys         TEXT NOT NULL DEFAULT '[]',
+    team_id               TEXT NOT NULL DEFAULT '',
+    team_key              TEXT NOT NULL DEFAULT '',
+    title                 TEXT NOT NULL DEFAULT '',
+    description_text      TEXT NOT NULL DEFAULT '',
+    state_name            TEXT NOT NULL DEFAULT '',
+    state_type            TEXT NOT NULL DEFAULT '',
+    status_category       TEXT NOT NULL DEFAULT 'todo',
+    state_changed_at      TEXT NOT NULL DEFAULT '',
+    assignee_id           TEXT NOT NULL DEFAULT '',
+    assignee_email        TEXT NOT NULL DEFAULT '',
+    assignee_display_name TEXT NOT NULL DEFAULT '',
+    assignee_slack_id     TEXT NOT NULL DEFAULT '',
+    creator_id            TEXT NOT NULL DEFAULT '',
+    creator_email         TEXT NOT NULL DEFAULT '',
+    creator_display_name  TEXT NOT NULL DEFAULT '',
+    creator_slack_id      TEXT NOT NULL DEFAULT '',
+    priority              INTEGER NOT NULL DEFAULT 0,
+    estimate              REAL,
+    due_date              TEXT NOT NULL DEFAULT '',
+    cycle_id              TEXT NOT NULL DEFAULT '',
+    project_id            TEXT NOT NULL DEFAULT '',
+    parent_id             TEXT NOT NULL DEFAULT '',
+    labels                TEXT NOT NULL DEFAULT '[]',
+    url                   TEXT NOT NULL DEFAULT '',
+    created_at            TEXT NOT NULL DEFAULT '',
+    updated_at            TEXT NOT NULL DEFAULT '',
+    completed_at          TEXT NOT NULL DEFAULT '',
+    canceled_at           TEXT NOT NULL DEFAULT '',
+    raw_json              TEXT NOT NULL DEFAULT '{}',
+    synced_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    is_deleted            INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, id)
+);
+CREATE TABLE IF NOT EXISTS linear_comments (
+    account_id          INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id                  TEXT NOT NULL,
+    issue_id            TEXT NOT NULL,
+    issue_key           TEXT NOT NULL DEFAULT '',
+    author_id           TEXT NOT NULL DEFAULT '',
+    author_display_name TEXT NOT NULL DEFAULT '',
+    body_text           TEXT NOT NULL DEFAULT '',
+    mentioned_user_ids  TEXT NOT NULL DEFAULT '[]',
+    created_at          TEXT NOT NULL DEFAULT '',
+    updated_at          TEXT NOT NULL DEFAULT '',
+    synced_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (account_id, id)
+);
+CREATE TABLE IF NOT EXISTS linear_issue_history (
+    account_id         INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id                 TEXT NOT NULL,
+    field              TEXT NOT NULL CHECK (field IN ('status','assignee')),
+    issue_id           TEXT NOT NULL,
+    from_value         TEXT NOT NULL DEFAULT '',
+    from_string        TEXT NOT NULL DEFAULT '',
+    to_value           TEXT NOT NULL DEFAULT '',
+    to_string          TEXT NOT NULL DEFAULT '',
+    actor_id           TEXT NOT NULL DEFAULT '',
+    actor_display_name TEXT NOT NULL DEFAULT '',
+    changed_at         TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, id, field)
+);
+CREATE TABLE IF NOT EXISTS linear_cycles (
+    account_id   INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id           TEXT NOT NULL,
+    team_id      TEXT NOT NULL DEFAULT '',
+    number       INTEGER NOT NULL DEFAULT 0,
+    name         TEXT NOT NULL DEFAULT '',
+    starts_at    TEXT NOT NULL DEFAULT '',
+    ends_at      TEXT NOT NULL DEFAULT '',
+    completed_at TEXT NOT NULL DEFAULT '',
+    progress     REAL NOT NULL DEFAULT 0,
+    synced_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (account_id, id)
+);
+CREATE TABLE IF NOT EXISTS linear_projects (
+    account_id  INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id          TEXT NOT NULL,
+    name        TEXT NOT NULL DEFAULT '',
+    state       TEXT NOT NULL DEFAULT '',
+    progress    REAL NOT NULL DEFAULT 0,
+    target_date TEXT NOT NULL DEFAULT '',
+    lead_id     TEXT NOT NULL DEFAULT '',
+    url         TEXT NOT NULL DEFAULT '',
+    synced_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (account_id, id)
+);
+CREATE TABLE IF NOT EXISTS linear_relations (
+    account_id       INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id               TEXT NOT NULL,
+    issue_id         TEXT NOT NULL,
+    related_issue_id TEXT NOT NULL,
+    type             TEXT NOT NULL,
+    PRIMARY KEY (account_id, id)
+);
+CREATE TABLE IF NOT EXISTS linear_user_map (
+    linear_user_id   TEXT PRIMARY KEY,
+    email            TEXT NOT NULL DEFAULT '',
+    display_name     TEXT NOT NULL DEFAULT '',
+    slack_user_id    TEXT NOT NULL DEFAULT '',
+    match_method     TEXT NOT NULL DEFAULT '',
+    match_confidence REAL NOT NULL DEFAULT 0,
+    resolved_at      TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS review_rounds (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id     INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+  source         TEXT NOT NULL DEFAULT 'session' CHECK (source IN ('session','pr')),
+  folder_root    TEXT NOT NULL,
+  base_sha       TEXT NOT NULL,
+  base_label     TEXT NOT NULL DEFAULT '',
+  tree_sha       TEXT NOT NULL,
+  prev_round_id  INTEGER REFERENCES review_rounds(id) ON DELETE SET NULL,
+  status         TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','sent','delivered')),
+  mode           TEXT NOT NULL DEFAULT 'quick' CHECK (mode IN ('quick','deep')),
+  phase          TEXT NOT NULL DEFAULT '',
+  chapter_key    TEXT NOT NULL DEFAULT '',
+  active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  sent_at        TEXT,
+  delivered_at   TEXT
+);
+CREATE TABLE IF NOT EXISTS review_comments (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id       INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  path           TEXT,
+  side           TEXT NOT NULL DEFAULT 'new' CHECK (side IN ('old','new')),
+  start_line     INTEGER NOT NULL DEFAULT 0,
+  end_line       INTEGER NOT NULL DEFAULT 0,
+  quote          TEXT NOT NULL DEFAULT '',
+  quote_prefix   TEXT NOT NULL DEFAULT '',
+  quote_suffix   TEXT NOT NULL DEFAULT '',
+  tree_sha       TEXT NOT NULL DEFAULT '',
+  lens           TEXT NOT NULL DEFAULT '',
+  body           TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','carried','resolved','outdated')),
+  carried_from   INTEGER REFERENCES review_comments(id) ON DELETE SET NULL,
+  agent_reply    TEXT NOT NULL DEFAULT '',
+  agent_reply_at TEXT,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE TABLE IF NOT EXISTS review_viewed (
+  round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,
+  content_sha TEXT NOT NULL,
+  PRIMARY KEY (round_id, path)
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -1743,6 +2013,110 @@ SELECT up.ancestor AS target_id,
 FROM up
 JOIN projects p ON p.id = up.project_id
 GROUP BY up.ancestor;
+CREATE VIEW IF NOT EXISTS agent_log_session_totals AS
+SELECT session_uuid,
+  SUM(CASE WHEN kind = 'api_call' THEN 1 ELSE 0 END)   AS api_calls,
+  SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+  SUM(cache_read_tokens) AS cache_read_tokens,
+  SUM(cache_write_5m_tokens) AS cache_write_5m_tokens,
+  SUM(cache_write_1h_tokens) AS cache_write_1h_tokens,
+  SUM(cost_usd) AS cost_usd,
+  SUM(cost_estimated) AS cost_estimated_calls,
+  SUM(CASE WHEN kind = 'owner_turn' THEN 1 ELSE 0 END) AS owner_turns,
+  SUM(CASE WHEN kind = 'tool' THEN 1 ELSE 0 END)       AS tool_calls,
+  SUM(CASE WHEN kind = 'tool' AND outcome = 'error' THEN 1 ELSE 0 END)       AS tool_errors,
+  SUM(CASE WHEN kind = 'tool' AND outcome = 'denied' THEN 1 ELSE 0 END)      AS tool_denials,
+  SUM(CASE WHEN kind = 'tool' AND outcome = 'interrupted' THEN 1 ELSE 0 END) AS tool_interrupts,
+  SUM(CASE WHEN kind = 'skill' THEN 1 ELSE 0 END)      AS skill_activations,
+  SUM(CASE WHEN kind = 'compaction' THEN 1 ELSE 0 END) AS compactions,
+  SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed
+FROM agent_log_events GROUP BY session_uuid;
+CREATE VIEW IF NOT EXISTS tracker_issues AS
+SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
+       ji.summary AS title, ji.description_text, ji.status, ji.status_category,
+       ji.status_category_changed_at AS status_changed_at,
+       ji.assignee_account_id AS assignee_id, ji.assignee_email, ji.assignee_display_name, ji.assignee_slack_id,
+       ji.reporter_account_id AS reporter_id, ji.reporter_display_name, ji.reporter_slack_id,
+       ji.priority,
+       CASE ji.priority WHEN 'Highest' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3
+                        WHEN 'Low' THEN 4 WHEN 'Lowest' THEN 5 ELSE 0 END AS priority_rank,
+       ji.story_points AS points, ji.due_date,
+       COALESCE(CAST(ji.sprint_id AS TEXT), '') AS iteration_id, ji.sprint_name AS iteration_name,
+       CASE WHEN ji.epic_key != '' THEN 'epic' ELSE '' END AS container_kind,
+       ji.epic_key AS container_id,
+       COALESCE((SELECT e.summary FROM jira_issues e WHERE e.account_id = ji.account_id AND e.key = ji.epic_key), '') AS container_name,
+       '' AS parent_key, ji.labels, ji.is_bug,
+       CASE WHEN LOWER(ji.status) LIKE '%block%' THEN 1 ELSE 0 END AS is_blocked,
+       COALESCE((SELECT a.site_url FROM jira_accounts a WHERE a.id = ji.account_id), '') || '/browse/' || ji.key AS url,
+       ji.created_at, ji.updated_at, ji.resolved_at, ji.synced_at, ji.is_deleted
+FROM jira_issues ji
+UNION ALL
+SELECT 'linear', li.account_id, li.id, li.key, li.team_key,
+       li.title, li.description_text, li.state_name, li.status_category, li.state_changed_at,
+       li.assignee_id, li.assignee_email, li.assignee_display_name, li.assignee_slack_id,
+       li.creator_id, li.creator_display_name, li.creator_slack_id,
+       CASE li.priority WHEN 1 THEN 'Urgent' WHEN 2 THEN 'High' WHEN 3 THEN 'Medium' WHEN 4 THEN 'Low' ELSE '' END,
+       CASE WHEN li.priority BETWEEN 1 AND 4 THEN li.priority ELSE 0 END,
+       li.estimate, li.due_date, li.cycle_id,
+       COALESCE((SELECT CASE WHEN c.name != '' THEN c.name ELSE 'Cycle ' || c.number END
+                 FROM linear_cycles c WHERE c.account_id = li.account_id AND c.id = li.cycle_id), ''),
+       CASE WHEN li.project_id != '' THEN 'project' ELSE '' END,
+       li.project_id,
+       COALESCE((SELECT p.name FROM linear_projects p WHERE p.account_id = li.account_id AND p.id = li.project_id), ''),
+       COALESCE((SELECT par.key FROM linear_issues par WHERE par.account_id = li.account_id AND par.id = li.parent_id), ''),
+       li.labels,
+       EXISTS (SELECT 1 FROM json_each(li.labels) WHERE LOWER(value) = 'bug'),
+       EXISTS (SELECT 1 FROM linear_relations r JOIN linear_issues b ON b.account_id = r.account_id AND b.id = r.issue_id
+               WHERE r.account_id = li.account_id AND r.related_issue_id = li.id AND r.type = 'blocks'
+                 AND b.status_category != 'done' AND b.is_deleted = 0),
+       li.url, li.created_at, li.updated_at,
+       CASE WHEN li.completed_at != '' THEN li.completed_at ELSE li.canceled_at END,
+       li.synced_at, li.is_deleted
+FROM linear_issues li;
+CREATE VIEW IF NOT EXISTS tracker_comments AS
+SELECT 'jira' AS tracker, account_id, id, issue_key, author_account_id AS author_id, author AS author_display_name,
+       body_text, NULL AS mentioned_ids, created_at, updated_at, synced_at
+FROM jira_comments
+UNION ALL
+SELECT 'linear', c.account_id, c.id,
+       COALESCE((SELECT i.key FROM linear_issues i WHERE i.account_id = c.account_id AND i.id = c.issue_id), c.issue_key),
+       c.author_id, c.author_display_name, c.body_text, c.mentioned_user_ids, c.created_at, c.updated_at, c.synced_at
+FROM linear_comments c;
+CREATE VIEW IF NOT EXISTS tracker_history AS
+SELECT 'jira' AS tracker, account_id, issue_key, history_id AS id, field, from_value, from_string,
+       to_value, to_string, author_account_id AS actor_id, author_display_name AS actor_display_name, changed_at
+FROM jira_issue_changelog
+UNION ALL
+SELECT 'linear', h.account_id, COALESCE((SELECT i.key FROM linear_issues i WHERE i.account_id = h.account_id AND i.id = h.issue_id), ''),
+       h.id, h.field, h.from_value, h.from_string, h.to_value, h.to_string, h.actor_id, h.actor_display_name, h.changed_at
+FROM linear_issue_history h;
+CREATE VIEW IF NOT EXISTS tracker_iterations AS
+SELECT 'jira' AS tracker, s.account_id, CAST(s.id AS TEXT) AS id, s.name, s.state, s.start_date AS starts_at,
+       s.end_date AS ends_at, s.complete_date AS completed_at,
+       COALESCE((SELECT b.project_key FROM jira_boards b WHERE b.account_id = s.account_id AND b.id = s.board_id), '') AS project_key
+FROM jira_sprints s
+UNION ALL
+SELECT 'linear', c.account_id, c.id,
+       CASE WHEN c.name != '' THEN c.name ELSE 'Cycle ' || c.number END,
+       CASE WHEN c.completed_at != '' OR (c.ends_at != '' AND c.ends_at < strftime('%Y-%m-%dT%H:%M:%fZ','now')) THEN 'closed'
+            WHEN c.starts_at != '' AND c.starts_at > strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN 'future'
+            ELSE 'active' END,
+       c.starts_at, c.ends_at, c.completed_at,
+       COALESCE((SELECT t.key FROM linear_teams t WHERE t.account_id = c.account_id AND t.id = c.team_id), '')
+FROM linear_cycles c;
+CREATE VIEW IF NOT EXISTS tracker_people AS
+SELECT 'jira' AS tracker, jira_account_id AS user_id, email, slack_user_id, display_name FROM jira_user_map
+UNION ALL
+SELECT 'linear', linear_user_id, email, slack_user_id, display_name FROM linear_user_map;
+CREATE VIEW IF NOT EXISTS tracker_accounts AS
+SELECT 'jira' AS tracker, id, CASE WHEN label != '' THEN label ELSE site_name END AS label, site_url AS url, status, enabled
+FROM jira_accounts
+WHERE enabled = 1 AND status != 'removed'
+UNION ALL
+SELECT 'linear', id, CASE WHEN label != '' THEN label ELSE org_name END,
+       CASE WHEN url_key != '' THEN 'https://linear.app/' || url_key ELSE '' END, status, enabled
+FROM linear_accounts
+WHERE enabled = 1 AND status != 'removed';
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);
 CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);
@@ -1907,6 +2281,31 @@ CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_date ON gmail_messages(account_id, internal_date);
 CREATE INDEX IF NOT EXISTS idx_imap_messages_account_date ON imap_messages(account_id, internal_date);
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id, account_id, internal_date);
+CREATE INDEX IF NOT EXISTS idx_agent_log_sessions_project ON agent_log_sessions(project_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_log_events_session ON agent_log_events(session_uuid, ts);
+CREATE INDEX IF NOT EXISTS idx_agent_log_events_kind ON agent_log_events(kind, name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_accounts_org ON linear_accounts(org_id) WHERE org_id != '';
+CREATE INDEX IF NOT EXISTS idx_linear_teams_key ON linear_teams(key);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_key ON linear_issues(key);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_team ON linear_issues(account_id, team_id);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_assignee ON linear_issues(assignee_id);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_assignee_status ON linear_issues(assignee_slack_id, status_category);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_status_cat ON linear_issues(status_category);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_cycle ON linear_issues(cycle_id);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_project ON linear_issues(project_id);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_updated ON linear_issues(updated_at);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_due ON linear_issues(due_date);
+CREATE INDEX IF NOT EXISTS idx_linear_issues_synced ON linear_issues(synced_at);
+CREATE INDEX IF NOT EXISTS idx_linear_comments_issue_author ON linear_comments(issue_key, author_id);
+CREATE INDEX IF NOT EXISTS idx_linear_comments_created ON linear_comments(created_at);
+CREATE INDEX IF NOT EXISTS idx_linear_comments_synced ON linear_comments(synced_at);
+CREATE INDEX IF NOT EXISTS idx_linear_history_issue ON linear_issue_history(account_id, issue_id, changed_at);
+CREATE INDEX IF NOT EXISTS idx_linear_relations_related ON linear_relations(account_id, related_issue_id, type);
+CREATE INDEX IF NOT EXISTS idx_linear_relations_issue ON linear_relations(account_id, issue_id);
+CREATE INDEX IF NOT EXISTS idx_linear_user_map_slack ON linear_user_map(slack_user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
+CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

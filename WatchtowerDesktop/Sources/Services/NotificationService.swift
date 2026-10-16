@@ -341,6 +341,26 @@ final class NotificationService: Sendable {
             UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil))
     }
 
+    /// A run started from the "Run Automation…" palette or the tray ended
+    /// (spec §12.7); one identifier per run, so a second post replaces the
+    /// first. The texts come from `AutomationRunNotifier`.
+    func sendAutomationRunFinished(
+        name: String,
+        status: AutomationRunStatus,
+        summary: String,
+        error: String,
+        automationID: Int64,
+        runID: Int64
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = String(AutomationRunNotifier.title(name: name, status: status).prefix(200))
+        content.body = String(AutomationRunNotifier.body(summary: summary, error: error).prefix(200))
+        content.sound = .default
+        content.userInfo = AutomationRunNotifier.userInfo(automationID: automationID, runID: runID)
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: AutomationRunNotifier.identifier(runID: runID), content: content, trigger: nil))
+    }
+
     /// Every delivered session banner goes — on launch and on quit, when
     /// none can name a running session. Reads what was delivered; asks for
     /// no authorization.

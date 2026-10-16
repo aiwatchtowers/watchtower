@@ -47,6 +47,8 @@ type Client struct {
 	reg     registry
 	binding tools.Binding
 	maxIter int
+	opts    Options
+	allowed map[string]bool // nil = every surface tool (Options.Tools nil)
 
 	toolEvents bool // emit ai.StreamChunk{Tool: …} around each dispatch (EmitToolEvents)
 }
@@ -57,21 +59,61 @@ type Client struct {
 // boundary and the text, unchanged.
 func (c *Client) EmitToolEvents() { c.toolEvents = true }
 
+// Options restrict and meter a runtime-B loop (an automation's agent(),
+// spec 2026-10-14-automations-design §6.5). The zero value is NewClient's
+// unrestricted loop.
+type Options struct {
+	// Tools is the allowlist: only Tools ∩ List(surface) is offered, and a
+	// call naming any other tool is refused before the registry sees it. nil
+	// offers every surface tool.
+	Tools []string
+	// Gate runs before each offered tool call and returns the args to
+	// dispatch; its error is fed back to the model as the call's result.
+	Gate func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error)
+	// ResultCheck sees each successful tool result as encoded for the model;
+	// its error replaces the result (fed back as the call's error).
+	ResultCheck func(result []byte) error
+	// MaxIterations caps the model calls; 0 = defaultMaxIterations.
+	MaxIterations int
+	// BeforeModelCall runs before every model call; its error stops the loop
+	// and is returned.
+	BeforeModelCall func() error
+	// AfterModelCall receives each model response's token usage (0, 0 when
+	// the server reports none).
+	AfterModelCall func(inputTokens, outputTokens int)
+}
+
 // NewClient builds a runtime-B client. baseURL is the OpenAI-compatible server
 // ("" for the Ollama default); reg is the tool registry; b carries the chat
 // surface/conversation/turn a proposal is bound to.
 func NewClient(model, baseURL string, reg *tools.Registry, b tools.Binding) *Client {
+	return NewClientWithOptions(model, baseURL, reg, b, Options{})
+}
+
+// NewClientWithOptions is NewClient restricted and metered by opts.
+func NewClientWithOptions(model, baseURL string, reg *tools.Registry, b tools.Binding, opts Options) *Client {
 	if baseURL == "" {
 		baseURL = ollama.DefaultBaseURL
 	}
-	return &Client{
+	c := &Client{
 		model:   model,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		httpc:   ollama.NewHTTPClient(),
 		reg:     reg,
 		binding: b,
 		maxIter: defaultMaxIterations,
+		opts:    opts,
 	}
+	if opts.MaxIterations > 0 {
+		c.maxIter = opts.MaxIterations
+	}
+	if opts.Tools != nil {
+		c.allowed = make(map[string]bool, len(opts.Tools))
+		for _, name := range opts.Tools {
+			c.allowed[name] = true
+		}
+	}
+	return c
 }
 
 // Query runs the loop and streams the assistant turn. Each round that makes a
@@ -128,12 +170,9 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 	var lastContent string
 
 	for i := 0; i < c.maxIter; i++ {
-		resp, err := c.chat(ctx, msgs, oaTools)
+		resp, err := c.meteredChat(ctx, msgs, oaTools)
 		if err != nil {
 			return "", usage, err
-		}
-		if len(resp.Choices) == 0 {
-			return "", usage, fmt.Errorf("model returned no choices")
 		}
 		usage = addUsage(usage, resp.Usage)
 		m := resp.Choices[0].Message
@@ -176,6 +215,31 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 	return note, usage, nil
 }
 
+// meteredChat is one model call between the BeforeModelCall and
+// AfterModelCall hooks; a response with no choices is an error.
+func (c *Client) meteredChat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (*oaResponse, error) {
+	if c.opts.BeforeModelCall != nil {
+		if err := c.opts.BeforeModelCall(); err != nil {
+			return nil, err
+		}
+	}
+	resp, err := c.chat(ctx, msgs, oaTools)
+	if err != nil {
+		return nil, err
+	}
+	if c.opts.AfterModelCall != nil {
+		var in, out int
+		if resp.Usage != nil {
+			in, out = resp.Usage.PromptTokens, resp.Usage.CompletionTokens
+		}
+		c.opts.AfterModelCall(in, out)
+	}
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("model returned no choices")
+	}
+	return resp, nil
+}
+
 // emitTool forwards a tool start/end chunk when tool events are on.
 func (c *Client) emitTool(emit func(ai.StreamChunk), ev *ai.ToolEvent) {
 	if emit != nil && c.toolEvents {
@@ -189,6 +253,11 @@ func (c *Client) emitTool(emit func(ai.StreamChunk), ev *ai.ToolEvent) {
 // the turn.
 func (c *Client) dispatch(ctx context.Context, call oaToolCall) string {
 	name := call.Function.Name
+	// The allowlist is checked first: a tool outside it was never offered,
+	// whatever the registry or the surface would say about it.
+	if c.allowed != nil && !c.allowed[name] {
+		return errJSON("tool " + name + " is not offered here")
+	}
 	t, ok := c.reg.Get(name)
 	if !ok {
 		return errJSON("unknown tool " + name)
@@ -205,28 +274,47 @@ func (c *Client) dispatch(ctx context.Context, call oaToolCall) string {
 	// empty body and reject invalid JSON with a model-facing message, so a
 	// pre-coercion here would only hide that message from the model.
 	args := json.RawMessage(call.Function.Arguments)
+	if c.opts.Gate != nil {
+		gated, err := c.opts.Gate(ctx, t, args)
+		if err != nil {
+			return errJSON(err.Error())
+		}
+		args = gated
+	}
+	var result any
 	switch t.Access {
 	case tools.AccessWrite:
 		rc, err := c.reg.Propose(ctx, name, args, c.binding)
 		if err != nil {
 			return errJSON(err.Error())
 		}
-		return marshalResult(rc)
+		result = rc
 	default:
 		data, err := c.reg.CallRead(ctx, name, args, c.binding)
 		if err != nil {
 			return errJSON(err.Error())
 		}
-		return marshalResult(data)
+		result = data
 	}
+	out := marshalResult(result)
+	if c.opts.ResultCheck != nil {
+		if err := c.opts.ResultCheck([]byte(out)); err != nil {
+			return errJSON(err.Error())
+		}
+	}
+	return out
 }
 
-// buildTools renders the registry's surface-visible tools as OpenAI function
-// definitions, each tool's declared InputSchema becoming the parameters schema.
+// buildTools renders the registry's surface-visible tools (narrowed to
+// Options.Tools when set) as OpenAI function definitions, each tool's
+// declared InputSchema becoming the parameters schema.
 func (c *Client) buildTools() []oaTool {
 	list := c.reg.List(c.binding.Surface)
 	out := make([]oaTool, 0, len(list))
 	for _, t := range list {
+		if c.allowed != nil && !c.allowed[t.Name] {
+			continue
+		}
 		var params json.RawMessage
 		if t.InputSchema != nil {
 			b, err := json.Marshal(t.InputSchema)

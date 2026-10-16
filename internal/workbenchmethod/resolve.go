@@ -76,7 +76,7 @@ func Combine(personal db.WorkbenchMethodology, f File) Effective {
 
 // Resolve is workbench workbenchID's effective methodology with folder's
 // workflow.md ("" = the workbench's own folder). A database failure — no
-// such workbench, a schema without the 00116 columns, a lock — resolves to
+// such workbench, a schema without the 00123 columns, a lock — resolves to
 // Defaults with Err set: strict and on, never weaker (PROJ-13).
 func Resolve(database *db.DB, workbenchID int64, folder string) Effective {
 	personal, err := database.GetWorkbenchMethodology(workbenchID)

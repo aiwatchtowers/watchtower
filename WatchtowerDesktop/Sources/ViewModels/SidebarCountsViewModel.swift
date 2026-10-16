@@ -17,7 +17,8 @@ final class SidebarCountsViewModel {
     var activeTaskCount: Int = 0
     var overdueTaskCount: Int = 0
     /// What the Inbox tab actually shows since it became the action strip:
-    /// proposals awaiting the owner + due reminders.
+    /// proposals awaiting the owner + due reminders + unread automation inbox
+    /// outputs (`ActionStripViewModel.badgeCount`).
     var inboxStripCount: Int = 0
 
     /// Pending memory dispute flags — beliefs waiting for the owner's verdict.
@@ -61,6 +62,8 @@ final class SidebarCountsViewModel {
     /// by THIS process, so a feature that shells out to the CLI (Catch-Up's
     /// `catchup run`) asks for a refresh once its child process is done —
     /// otherwise its badge keeps a stale count until the next in-process write.
+    /// The daemon's automation inbox outputs arrive the same way: the
+    /// Automations poll asks for a refresh when their unread count moves.
     func refresh() async {
         await loadInitial()
     }
@@ -74,14 +77,17 @@ final class SidebarCountsViewModel {
             // Observe row counts of every source table so any write (including
             // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
             let observation = ValueObservation.tracking { db -> [Int] in
-                // agent_actions and reminders are the Inbox badge's own two
-                // sources (inboxStripCount) — before the inbox demolition the
-                // badge only ever re-fired because inbox_items/situations
-                // happened to be in this list.
+                // agent_actions, reminders and automation_outputs are the
+                // Inbox badge's own sources (inboxStripCount) — before the
+                // inbox demolition the badge only ever re-fired because
+                // inbox_items/situations happened to be in this list. An
+                // output's Done/Dismiss changes no count, but GRDB re-fetches
+                // on any write to a tracked table and the loop below does not
+                // drop duplicates, so it still refreshes the badge.
                 let tables = ["tracks", "briefings", "targets", "digests",
                               "stream_digests", "catchup_recaps",
                               "memory_dispute_flags", "ideas",
-                              "agent_actions", "reminders"]
+                              "agent_actions", "reminders", "automation_outputs"]
                 return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {
@@ -146,11 +152,12 @@ final class SidebarCountsViewModel {
                 // pre-catchup_recaps schema like the reads below it.
                 let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
                 let waitingRecap = hasWaitingRecap ? 1 : 0
-                // The Inbox tab's strip: pending/failed proposals + due reminders,
-                // user-independent and tolerant of a pre-agent-actions schema.
+                // The Inbox tab's strip: pending/failed proposals + due reminders
+                // + unread automation inbox outputs, user-independent and
+                // tolerant of a schema predating any of them (a missing table
+                // counts 0; any other read error fails the fetch).
                 let nowUTC = ISO8601DateFormatter().string(from: Date())
-                let stripCount = ((try? AgentActionQueries.awaitingOwnerCount(db)) ?? 0)
-                    + ((try? ReminderQueries.dueCount(db, nowUTC: nowUTC)) ?? 0)
+                let stripCount = try ActionStripViewModel.badgeCount(db, nowUTC: nowUTC)
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
                 // Ideas awaiting review, tolerant of a pre-ideas-registry schema.

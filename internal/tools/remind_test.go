@@ -56,7 +56,7 @@ func TestRemindMe_Registration(t *testing.T) {
 	assert.Equal(t, "remind_me", tool.Name)
 	assert.Equal(t, AccessWrite, tool.Access)
 	assert.False(t, tool.External)
-	assert.ElementsMatch(t, []string{"reaction", "main"}, tool.Surfaces, "reaction path + main chat; never the target chat (TGT-BRIEF-01 axis 3)")
+	assert.ElementsMatch(t, []string{"reaction", "main", AutomationSurface}, tool.Surfaces, "reaction path + main chat + automations; never the target chat (TGT-BRIEF-01 axis 3)")
 	require.NotNil(t, tool.InputSchema)
 }
 

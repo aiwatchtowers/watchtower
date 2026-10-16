@@ -12,12 +12,15 @@ import (
 	"strings"
 )
 
-// v8CoreSHA256 is the digest of the single-file v8 watchtower-workbench skill
-// we shipped (testdata/watchtower-workbench-v8.md, pinned by
-// TestV8CoreDigestIsTheShippedFixture). A copy with these exact bytes and no
-// sidecar (a crash between the write and the sidecar) is ours: spec
-// 2026-10-15 §4.3 "the shipped bytes".
-const v8CoreSHA256 = "256a8b31f413d260716c305c677df2681da8a3d7778f3ba93aeb52bd051f9085"
+// v8CoreSHA256 and v9CoreSHA256 are the digests of the single-file v8 and v9
+// watchtower-workbench skills we shipped (testdata/watchtower-workbench-v8.md
+// and -v9.md, pinned by TestShippedCoreDigestsAreTheFixtures). A copy with
+// these exact bytes and no sidecar (a crash between the write and the
+// sidecar) is ours: spec 2026-10-15 §4.3 "the shipped bytes".
+const (
+	v8CoreSHA256 = "256a8b31f413d260716c305c677df2681da8a3d7778f3ba93aeb52bd051f9085"
+	v9CoreSHA256 = "f9e35071f4298bb9ebeb19bc09c4aaba1e2a79877a919da537d84cc2d821254b"
+)
 
 // The exclude lines of the preset in each agent's skills directory.
 const (
@@ -25,10 +28,10 @@ const (
 	codexFlowExcludeLine = ".agents/skills/" + FlowSkillName + "/"
 )
 
-// adoptShippedV8 records the v8 digest beside a core skill in skillsDir that
-// is byte-identical to the v8 we shipped but has no sidecar, so the upgrade
-// takes it as ours.
-func adoptShippedV8(skillsDir string) error {
+// adoptShippedSingleFile records the digest beside a core skill in skillsDir
+// that is byte-identical to the v8 or v9 we shipped but has no sidecar, so
+// the upgrade takes it as ours.
+func adoptShippedSingleFile(skillsDir string) error {
 	dir := filepath.Join(skillsDir, WorkbenchSkillName)
 	recorded, err := readShippedDigest(dir)
 	if err != nil || recorded != "" {
@@ -41,17 +44,18 @@ func adoptShippedV8(skillsDir string) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", filepath.Join(dir, "SKILL.md"), err)
 	}
-	if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) == v8CoreSHA256 {
-		return writeShippedDigest(dir, v8CoreSHA256)
+	sum := sha256.Sum256(b)
+	if digest := hex.EncodeToString(sum[:]); digest == v8CoreSHA256 || digest == v9CoreSHA256 {
+		return writeShippedDigest(dir, digest)
 	}
 	return nil
 }
 
 // installSkillPair installs the core skill into skillsDir (adopting a
-// sidecar-less shipped v8 first), then syncs the preset beside it. A core
+// sidecar-less shipped single file first), then syncs the preset beside it. A core
 // that could not be installed leaves the preset alone; core is then zero.
 func installSkillPair(skillsDir string, presetNone bool) (core, flow SkillStatus, singleFile bool, errs []error) {
-	if err := adoptShippedV8(skillsDir); err != nil {
+	if err := adoptShippedSingleFile(skillsDir); err != nil {
 		errs = append(errs, err)
 	}
 	var err error
@@ -67,7 +71,7 @@ func installSkillPair(skillsDir string, presetNone bool) (core, flow SkillStatus
 // syncFlowSkill applies spec §4.3 to the preset beside core: preset none
 // removes it when it is ours (an edited or foreign copy is kept and
 // reported); otherwise it is installed under the DEV-04 rules — unless core
-// is an owner-edited single file from before v9 (singleFile), which carries
+// is an owner-edited single file from before v10 (singleFile), which carries
 // its own methodology: then nothing is written and its status is reported.
 func syncFlowSkill(skillsDir string, core SkillStatus, presetNone bool) (flow SkillStatus, singleFile bool, err error) {
 	if presetNone {
@@ -89,14 +93,14 @@ func syncFlowSkill(skillsDir string, core SkillStatus, presetNone bool) (flow Sk
 
 // carriesMethodology reports whether the core skill file at path is a
 // single-file skill from before the split: its marker names a pack version
-// below v9.
+// below v10.
 func carriesMethodology(path string) (bool, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", path, err)
 	}
 	v, ok := packVersion(string(b))
-	return ok && v < 9, nil
+	return ok && v < 10, nil
 }
 
 // packVersion is N of the frontmatter's "x-watchtower-pack: vN".
@@ -126,7 +130,7 @@ type MethodologyReport struct {
 // core skill copy in the folder (.claude/skills, .agents/skills), touching
 // neither the hooks nor the MCP registration: the install a preset change
 // runs (spec §8). Each core copy goes through the install first, so a
-// pre-v9 core of ours becomes the v9 split before the preset follows it (an
+// pre-v10 core of ours becomes the v10 split before the preset follows it (an
 // owner-edited or foreign one is left as it is, DEV-04). A directory without
 // the core skill is left alone.
 func SyncMethodology(o WorkbenchInstallOptions) (MethodologyReport, error) {
@@ -175,7 +179,7 @@ func SyncMethodology(o WorkbenchInstallOptions) (MethodologyReport, error) {
 // owner-edited one. Flow: our preset, current or a version behind (an edited
 // one is the owner's). FlowPresent: any preset copy, an edited or foreign one
 // included — resync keeps those, so the preset counts as installed.
-// SingleFile: an owner-edited core from before v9.
+// SingleFile: an owner-edited core from before v10.
 type MethodologyLayout struct {
 	Core, Flow, FlowPresent, SingleFile bool
 }

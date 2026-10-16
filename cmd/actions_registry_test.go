@@ -102,7 +102,63 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 
 	project := pinProjectSurface(t, reg, main, target, reaction)
 	pinAutomationSurface(t, reg, main, target, reaction, project)
+	pinAuthoringTools(t, reg, main, target, reaction, project)
 	assert.Equal(t, []string{"main", "target"}, get.Surfaces, "get_confluence_page's surfaces are unchanged")
+}
+
+// pinAuthoringTools pins draft_automation and save_automation (Automations P3,
+// spec 2026-10-14 §11): both on main and automation_editor only; save is an
+// AlwaysAsk write, draft a read that stays out of tools.ReadTools() (DEV-01).
+func pinAuthoringTools(t *testing.T, reg *tools.Registry, main, target, reaction, project map[string]bool) {
+	t.Helper()
+	want := []string{"main", tools.AutomationEditorSurface}
+	save, ok := reg.Get("save_automation")
+	require.True(t, ok, "save_automation missing")
+	assert.Equal(t, tools.AccessWrite, save.Access)
+	assert.True(t, save.AlwaysAsk, "Save is the owner's Approve: never execute trust")
+	assert.Equal(t, want, save.Surfaces)
+	draft, ok := reg.Get("draft_automation")
+	require.True(t, ok, "draft_automation missing")
+	assert.Equal(t, tools.AccessRead, draft.Access)
+	assert.Equal(t, want, draft.Surfaces)
+	for _, name := range []string{"draft_automation", "save_automation"} {
+		assert.True(t, main[name], "%s missing on main", name)
+		assert.False(t, target[name] || reaction[name] || project[name], "%s is main + automation_editor only", name)
+		assert.False(t, surfaceToolNames(reg, tools.AutomationSurface)[name], "%s is never offered to automations", name)
+		for _, rt := range tools.ReadTools() {
+			assert.NotEqual(t, name, rt.Name, "dev-mode MCP never mounts %s (DEV-01)", name)
+		}
+	}
+}
+
+// The editor chat (spec 2026-10-14 §14.5, D11) is narrow: as the chat MCP
+// server mounts it — buildToolRegistry plus the dependency-carrying reads —
+// the only write tool on automation_editor is save_automation; every other
+// tool there is a read, and no surface-less write tool leaks onto it.
+func TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	reg := buildToolRegistry(&config.Config{ActiveWorkspace: "test-ws"}, database)
+	for _, dt := range tools.DependentReadTools(tools.ReadDeps{}) {
+		require.NoError(t, reg.Register(dt))
+	}
+
+	listed := surfaceToolNames(reg, tools.AutomationEditorSurface)
+	for _, tool := range reg.List(tools.AutomationEditorSurface) {
+		if tool.Name == "save_automation" {
+			assert.Equal(t, tools.AccessWrite, tool.Access)
+			continue
+		}
+		assert.Equal(t, tools.AccessRead, tool.Access, "%s is a write tool on automation_editor", tool.Name)
+	}
+	for _, name := range []string{"save_automation", "draft_automation", "load_skill"} {
+		assert.True(t, listed[name], "%s missing on automation_editor", name)
+	}
+	for _, rt := range tools.ReadTools() {
+		assert.True(t, listed[rt.Name], "read tool %s missing on automation_editor", rt.Name)
+	}
 }
 
 func surfaceToolNames(reg *tools.Registry, surface string) map[string]bool {
@@ -122,7 +178,7 @@ func pinProjectSurface(t *testing.T, reg *tools.Registry, main, target, reaction
 	workbenchTools := []string{
 		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "list_comments", "add_comment", "resolve_comment",
-		"ask_owner", "get_ask", "list_asks", "withdraw_ask", "finish_session",
+		"ask_owner", "get_ask", "get_review", "list_asks", "withdraw_ask", "finish_session",
 	}
 	project := surfaceToolNames(reg, "project")
 	for _, p := range workbenchTools {
@@ -185,4 +241,45 @@ func pinAutomationSurface(t *testing.T, reg *tools.Registry, main, target, react
 	assert.Equal(t, []string{"main", tools.WorkbenchSurface, tools.AutomationSurface}, style.Surfaces)
 	assert.True(t, automation["get_writing_style"])
 	assert.False(t, automation["get_confluence_page"], "a live network read is never on the automation surface")
+	pinAutomationWriteTools(t, reg, automation)
+}
+
+// automationWriteSurfaces is the pinned surface set of each write tool
+// offered to automations (Automations P2, spec 2026-10-14 §6.1): its
+// pre-P2 surfaces plus the automation surface.
+var automationWriteSurfaces = map[string][]string{
+	"create_target":         {"main", "reaction", tools.AutomationSurface},
+	"create_idea":           {"reaction", "main", tools.AutomationSurface},
+	"create_track":          {"reaction", "main", tools.AutomationSurface},
+	"remind_me":             {"reaction", "main", tools.AutomationSurface},
+	"create_jira_issue":     {"main", "target", "reaction", tools.AutomationSurface},
+	"add_jira_comment":      {"main", "target", tools.AutomationSurface},
+	"transition_jira_issue": {"main", "target", tools.AutomationSurface},
+	"assign_jira_issue":     {"main", "target", tools.AutomationSurface},
+	"update_jira_issue":     {"main", "target", tools.AutomationSurface},
+	"send_slack_message":    {"main", tools.WorkbenchSurface, tools.AutomationSurface},
+}
+
+func pinAutomationWriteTools(t *testing.T, reg *tools.Registry, automation map[string]bool) {
+	t.Helper()
+	for name, want := range automationWriteSurfaces {
+		tool, ok := reg.Get(name)
+		require.True(t, ok, "%s missing", name)
+		assert.Equal(t, tools.AccessWrite, tool.Access, name)
+		assert.Equal(t, want, tool.Surfaces, "%s: exact surfaces", name)
+		assert.True(t, automation[name], "%s missing on the automation surface", name)
+	}
+	// Exactly the ten write tools: the bulk dismiss (AlwaysAsk), the board
+	// connect, the Confluence edit, the reaction-only brief and every
+	// workbench tool stay off the automation surface.
+	for _, tool := range reg.List(tools.AutomationSurface) {
+		if tool.Access == tools.AccessWrite {
+			_, pinned := automationWriteSurfaces[tool.Name]
+			assert.True(t, pinned, "%s is a write tool on the automation surface but not one of the ten", tool.Name)
+		}
+	}
+	for _, name := range []string{"connect_jira_board", "dismiss_tracks", "edit_confluence_page", "brief_context",
+		"create_targets", "update_target", "add_comment", "ask_owner", "finish_session", "update_workbench"} {
+		assert.False(t, automation[name], "%s is never offered to automations", name)
+	}
 }

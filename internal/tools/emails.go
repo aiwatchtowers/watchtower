@@ -18,6 +18,7 @@ const MaxEmailBodyBytes = 32 * 1024
 type listEmailsArgs struct {
 	Account    string `json:"account" jsonschema:"the mailbox: a connected Google or IMAP account's label or email address, or gmail:<id> / imap:<id> when those are ambiguous"`
 	Since      string `json:"since,omitempty" jsonschema:"only messages received at or after this RFC 3339 time"`
+	Before     string `json:"before,omitempty" jsonschema:"only messages received before this RFC 3339 time (exclusive); to page older, pass the oldest date of the previous page"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 	UnreadOnly bool   `json:"unread_only,omitempty" jsonschema:"only messages that were unread when synced (may be stale)"`
 }
@@ -55,7 +56,9 @@ func NewListEmails() *Tool {
 	return &Tool{
 		Name: "list_emails",
 		Description: "List one mailbox's locally synced email (Gmail or IMAP), newest first, without bodies. " +
-			"Filter with since and unread_only. unread is the state when the message was synced and may be stale. " +
+			"Filter with since (inclusive), before (exclusive; page older by passing the previous page's oldest date) and unread_only. " +
+			"Dates have one-second precision, so a page can end inside a second that holds more messages: page with " +
+			"before = that date + 1 s and skip the ids already seen. unread is the state when the message was synced and may be stale. " +
 			"Read one message's body with get_email.",
 		InputSchema: mustSchema[listEmailsArgs]("list_emails"),
 		Access:      AccessRead,
@@ -73,8 +76,12 @@ func NewListEmails() *Tool {
 			if err != nil {
 				return nil, err
 			}
+			before, err := utcArg("before", a.Before)
+			if err != nil {
+				return nil, err
+			}
 			msgs, err := d.ListLocalEmails(ctx, db.LocalEmailQuery{
-				Store: acct.store, AccountID: acct.id, Since: since, Limit: listLimit(a.Limit), UnreadOnly: a.UnreadOnly,
+				Store: acct.store, AccountID: acct.id, Since: since, Before: before, Limit: listLimit(a.Limit), UnreadOnly: a.UnreadOnly,
 			})
 			if err != nil {
 				return nil, err

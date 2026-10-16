@@ -68,17 +68,6 @@ func briefRulesFor(preset string) []string {
 	return briefRules
 }
 
-// joinBriefLines joins the non-empty lines.
-func joinBriefLines(lines ...string) string {
-	kept := make([]string, 0, len(lines))
-	for _, l := range lines {
-		if l != "" {
-			kept = append(kept, l)
-		}
-	}
-	return strings.Join(kept, "\n")
-}
-
 // briefFolderRules is f's part of the slot within room runes.
 func briefFolderRules(f workbenchmethod.File, room int) string {
 	switch {

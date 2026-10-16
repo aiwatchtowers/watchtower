@@ -34,7 +34,7 @@ func TestFlowSkillShipsWithMarkerAndName(t *testing.T) {
 	content := string(body)
 	assert.Equal(t, "watchtower-flow", name)
 	assert.True(t, HasMarker(content), "the preset carries %s (DEV-04)", MarkerKey)
-	assert.Contains(t, content, "\n"+MarkerKey+": v9\n")
+	assert.Contains(t, content, "\n"+MarkerKey+": v10\n")
 	assert.Contains(t, content, "\nname: watchtower-flow\n")
 	assert.Contains(t, content, "\ndescription: Use in a folder bound to a Watchtower workbench")
 	s := flowSkill()

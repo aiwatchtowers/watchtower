@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -426,4 +427,35 @@ func TestSessionStartWithoutCwdKeepsALateHooksCwdOut(t *testing.T) {
 
 	hookStep(t, database, pid, row, at, 15, withCwd(t, toolResultPayload("toolu_new", "/tmp/x.jsonl"), "/tmp/new"))
 	assert.Equal(t, "/tmp/new", storedCwd(t, database, row).Path, "the new run's hook")
+}
+
+func TestProjectBrief_ListsWaitingReviewRounds(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	other, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+		VALUES (?, 'claude', 'other', '/tmp/acme', ?)`, pid, briefClearedID)
+	require.NoError(t, err)
+	otherRow, _ := other.LastInsertId()
+
+	rid, err := database.CreateReviewRound(db.ReviewRound{ProjectID: pid, SessionID: sql.NullInt64{Int64: row, Valid: true},
+		FolderRoot: "/tmp/acme", BaseSHA: "b", TreeSHA: "t"})
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO review_comments (round_id, path, body) VALUES (?, 'a.go', 'fix')`, rid)
+	require.NoError(t, err)
+	_, ok, err := database.SendReviewRound(pid, rid)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	out, _ := runBriefHook(t, pid, hookPayload("startup", briefLaunchID))
+	assert.Contains(t, out, fmt.Sprintf("Review round #%d waiting (1 comment) → get_review %d", rid, rid))
+
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(otherRow, 10))
+	out, _ = runBriefHook(t, pid, hookPayload("startup", briefClearedID))
+	assert.NotContains(t, out, "Review round #", "another session's brief does not list it")
+
+	_, err = database.MarkReviewRoundDelivered(pid, rid)
+	require.NoError(t, err)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	out, _ = runBriefHook(t, pid, hookPayload("resume", briefLaunchID))
+	assert.NotContains(t, out, "Review round #", "a delivered round is no longer waiting")
 }

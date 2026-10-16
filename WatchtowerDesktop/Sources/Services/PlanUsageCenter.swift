@@ -22,6 +22,9 @@ final class PlanUsageCenter {
 
     private(set) var status: PlanUsageStatus?
     private(set) var isRefreshing = false
+    /// The tray's history backfill line (`BackfillProgress.line`); nil when
+    /// nothing loads. Rides this poll so the tray needs no timer of its own.
+    private(set) var backfillLine: String?
     /// After every successful read, not only when the status changed, so a
     /// consumer (the notifier) dedupes itself.
     @ObservationIgnored var onStatus: ((PlanUsageStatus) -> Void)?
@@ -64,6 +67,7 @@ final class PlanUsageCenter {
     }
 
     func reload() async {
+        await reloadBackfillLine()
         do {
             let fresh = try await dbPool.read { try PlanUsageQueries.status($0) }
             // Stopped while the read ran: drop the result.
@@ -75,6 +79,18 @@ final class PlanUsageCenter {
             }
         } catch {
             NSLog("PlanUsageCenter: reload failed: %@", String(describing: error))
+        }
+    }
+
+    /// Its own read, so a failure here cannot freeze the plan status; a failed
+    /// read keeps the last line.
+    private func reloadBackfillLine() async {
+        do {
+            let line = try await dbPool.read { BackfillProgress.line(try BackfillQueries.rows($0)) }
+            guard !Task.isCancelled else { return }
+            if line != backfillLine { backfillLine = line }
+        } catch {
+            NSLog("PlanUsageCenter: backfill read failed: %@", String(describing: error))
         }
     }
 

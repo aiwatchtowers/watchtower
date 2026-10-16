@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import GRDB
+import os
 
 /// The proposal feed one chat VM composes (the `SkillsCatalog` precedent —
 /// one shared piece, composed per VM): observes agent_actions for the bound
@@ -30,9 +31,17 @@ package final class AgentActionFeed {
     /// Failures that belong to no single row: the observation, a refresh, the
     /// outcomes read.
     package var lastError: String?
+    /// Runs after every Approve/Reject/Retry with the row as re-read from
+    /// disk (nil when it is gone) — the automation editor refreshes the
+    /// Automations list once a `save_automation` lands.
+    @ObservationIgnored package var onDecision: ((Int64, AgentAction?) -> Void)?
 
     private let dbPool: DatabasePool
     private let cliRunner: CLIRunnerProtocol?
+    /// `watchtower automations wake` (spec §7.4): sent after a decision on a
+    /// row an automation run proposed, so the run waiting on it resumes now
+    /// rather than on the executor's next poll. Nil = never wake.
+    private let automationsWake: (() async throws -> Void)?
     /// Safety-net poll cadence, at `IdeasViewModel.pollInterval`'s 30 s: the
     /// turn-boundary refresh is what makes proposals feel immediate, this only
     /// has to catch a turn that never reaches its end. Injectable for tests.
@@ -55,9 +64,15 @@ package final class AgentActionFeed {
         }
     }
 
-    package init(dbPool: DatabasePool, cliRunner: CLIRunnerProtocol? = nil, pollInterval: Duration = .seconds(30)) {
+    package init(
+        dbPool: DatabasePool,
+        cliRunner: CLIRunnerProtocol? = nil,
+        automationsWake: (() async throws -> Void)? = nil,
+        pollInterval: Duration = .seconds(30)
+    ) {
         self.dbPool = dbPool
         self.cliRunner = cliRunner
+        self.automationsWake = automationsWake
         self.pollInterval = pollInterval
     }
 
@@ -208,9 +223,10 @@ package final class AgentActionFeed {
             return
         }
         inFlight.insert(id)
-        defer { inFlight.remove(id) }
+        var completed = false
         do {
             let data = try await runner.run(args: ["actions", verb, String(id)] + extra + ["--json"])
+            completed = true
             if let env = try? JSONDecoder().decode(Envelope.self, from: data),
                let err = env.error, !err.isEmpty {
                 rowErrors[id] = RowError(verb: verb, message: err)
@@ -218,8 +234,31 @@ package final class AgentActionFeed {
         } catch {
             rowErrors[id] = RowError(verb: verb, message: error.localizedDescription)
         }
+        inFlight.remove(id)
         // The CLI wrote on its own connection; the observation will never fire
         // for it (TargetWatchesViewModel.refreshEvents precedent).
         refresh()
+        onDecision?(id, rows.first { $0.id == id })
+        if completed { await wakeIfAutomationRun(id) }
     }
+
+    /// Wakes on any call the CLI completed, an envelope error included: an
+    /// approve whose apply failed still moved the row, and a spurious wake
+    /// only costs the executor one early poll. The row is read from disk —
+    /// the strip's feed has no conversation, so `rows` never holds it. A
+    /// failed read or wake is logged and never reported as the decision
+    /// failing: the decision landed, the run resumes on its next poll anyway.
+    private func wakeIfAutomationRun(_ id: Int64) async {
+        guard let automationsWake else { return }
+        do {
+            let contextType = try await dbPool.read { db in try AgentActionQueries.contextType(db, id: id) }
+            guard contextType == Self.automationRunContext else { return }
+            try await automationsWake()
+        } catch {
+            Self.log.error("automations wake after deciding action \(id) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    nonisolated package static let automationRunContext = "automation_run"
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "agent-actions")
 }

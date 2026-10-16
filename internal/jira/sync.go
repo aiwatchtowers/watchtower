@@ -40,6 +40,7 @@ type Syncer struct {
 	commentSyncLimit int                // max changed issues fetched for comments per project sync pass (0 = disabled)
 	changelogLimit   int                // max issues whose status/assignee history is fetched per pass (0 = disabled)
 	OnProgress       func(SyncProgress) // optional progress callback
+	firstSyncFrom    time.Time          // set by Sync when it was the account's first; see FirstSyncFrom
 }
 
 // NewSyncer creates a Syncer for one Jira account.
@@ -89,8 +90,51 @@ func (s *Syncer) SetCommentSyncLimit(n int) {
 	s.commentSyncLimit = n
 }
 
-// Sync performs an incremental sync: fetches issues updated since last sync minus 2 minutes overlap.
+// Sync performs an incremental sync: fetches issues updated since last sync
+// minus 2 minutes overlap. It also records whether this was the account's
+// first sync (FirstSyncFrom).
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
+	s.firstSyncFrom = time.Time{}
+	started := time.Now().UTC()
+	had, err := s.hasSyncWatermark()
+	if err != nil {
+		s.logger.Printf("sync: reading watermarks: %v", err)
+		had = true // unknown is not a first sync: never start a backfill on a guess
+	}
+	n, err := s.sync(ctx)
+	if !had { // whatever sync returned (R13, R32): a watermark stamped before a late error counts
+		if has, herr := s.hasSyncWatermark(); herr == nil && has {
+			s.firstSyncFrom = started
+		}
+	}
+	return n, err
+}
+
+// FirstSyncFrom reports whether the last Sync was the account's first — no
+// project of the account had a watermark before it and, whatever it returned, at
+// least one project has one after it — and, if so, when that Sync started.
+// The history backfill's upper bound (docs/features/history-backfill.md):
+// the forward ideas Jira floor is initialized after this instant.
+func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
+	return s.firstSyncFrom, !s.firstSyncFrom.IsZero()
+}
+
+// hasSyncWatermark reports whether any project of this account has a
+// last_synced_at watermark.
+func (s *Syncer) hasSyncWatermark() (bool, error) {
+	states, err := s.db.GetJiraSyncStates()
+	if err != nil {
+		return false, err
+	}
+	for _, st := range states {
+		if st.AccountID == s.accountID && st.LastSyncedAt != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Syncer) sync(ctx context.Context) (int, error) {
 	total := 0
 
 	boards, err := s.db.GetJiraSelectedBoards(s.accountID)

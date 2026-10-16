@@ -12,7 +12,10 @@ import (
 	"os/exec"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -26,6 +29,9 @@ type Usage struct {
 	InputTokens    int
 	OutputTokens   int
 	TotalAPITokens int
+	// CostUSD is the CLI's total_cost_usd when it reports one (QuerySync);
+	// 0 = not reported.
+	CostUSD float64
 }
 
 // cliUsage is the nested usage object in the Claude CLI JSON response.
@@ -155,6 +161,101 @@ type Client struct {
 	// with its file-read tools allowed and unhidden and no settings files
 	// loaded. Empty = today's run in os.TempDir().
 	readFolder string
+	// watchtowerTools narrows the watchtower allowlist from the whole server
+	// to these tools when watchtowerToolsSet (SetWatchtowerTools); an empty
+	// set then allows no watchtower tool at all.
+	watchtowerTools    []string
+	watchtowerToolsSet bool
+	// childEnv replaces the os.Environ() base of the child's environment
+	// when childEnvSet (SetChildEnv).
+	childEnv    []string
+	childEnvSet bool
+	// processGroup runs the child in its own process group, killed as a
+	// group on cancel (SetProcessGroup).
+	processGroup bool
+	// maxTurns, when > 0, is passed as --max-turns (SetMaxTurns).
+	maxTurns int
+}
+
+// SetWatchtowerTools narrows --allowedTools from the whole `mcp__watchtower`
+// server to one mcp__watchtower__<name> token per name (an automation's
+// headless agent() child). An empty or nil names grants no watchtower tool;
+// never calling it keeps today's whole-server token.
+func (c *Client) SetWatchtowerTools(names []string) {
+	c.watchtowerTools, c.watchtowerToolsSet = names, true
+}
+
+// SetChildEnv replaces the inherited environment of the child with env (the
+// rich PATH is still appended last). Unset = os.Environ() as today.
+func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, true }
+
+// SetProcessGroup runs the child in its own process group and kills the
+// whole group on cancel or deadline: SIGINT, then SIGKILL after the grace
+// period. Off = today's behaviour (only the child is signalled).
+func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
+
+// SetMaxTurns passes --max-turns n to the CLI; 0 = no limit flag.
+func (c *Client) SetMaxTurns(n int) { c.maxTurns = n }
+
+// childEnviron is the child's environment: os.Environ() plus the rich PATH,
+// or, with SetChildEnv, exactly that env (any PATH entry dropped) plus the
+// rich PATH.
+func (c *Client) childEnviron() []string {
+	if !c.childEnvSet {
+		return append(os.Environ(), "PATH="+claude.RichPATH())
+	}
+	env := make([]string, 0, len(c.childEnv)+1)
+	for _, e := range c.childEnv {
+		if !strings.HasPrefix(e, "PATH=") {
+			env = append(env, e)
+		}
+	}
+	return append(env, "PATH="+claude.RichPATH())
+}
+
+// GroupKillGrace is how long a process-group child (SetProcessGroup, an
+// automation's agent() child) has between SIGINT and the group's SIGKILL. It
+// stays under the automation sandbox's 2 s AbandonGrace, so a cancelled or
+// stopped run's call returns — the whole group dead — before the run would
+// be abandoned and before the daemon, which waits for its runs, can exit and
+// leave a SIGINT-ignoring child behind.
+const GroupKillGrace = time.Second
+
+// ConfigureChild applies the cancel policy to cmd: SIGINT then SIGKILL after
+// grace via WaitDelay, or, with group, a process group of its own that is
+// interrupted and then killed as a whole (the leader's grandchildren
+// included) after GroupKillGrace — group mode ignores grace. Shared with the
+// codex client. The caller runs the returned reap once cmd.Wait has
+// returned (or the child never started): a cancelled group's pending
+// SIGKILL is then sent at once and its timer stopped, so the group is dead
+// when the call returns — even when WaitDelay ended the wait first — and no
+// timer outlives the call to signal a reused process group id later.
+func ConfigureChild(cmd *exec.Cmd, group bool, grace time.Duration) (reap func()) {
+	if !group {
+		cmd.WaitDelay = grace
+		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+		return func() {}
+	}
+	cmd.WaitDelay = GroupKillGrace
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var mu sync.Mutex
+	var kill *time.Timer
+	var pgid int
+	cmd.Cancel = func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		leader := cmd.Process.Pid // Setpgid: the leader's pid is the group id
+		pgid = leader
+		kill = time.AfterFunc(GroupKillGrace, func() { _ = syscall.Kill(-leader, syscall.SIGKILL) })
+		return syscall.Kill(-pgid, syscall.SIGINT)
+	}
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if kill != nil && kill.Stop() {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	}
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
@@ -270,6 +371,9 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		// other server the CLI would load on its own.
 		"--strict-mcp-config",
 	})
+	if c.maxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(c.maxTurns))
+	}
 	// Claude CLI requires --verbose for stream-json output format.
 	if outputFormat == "stream-json" {
 		args = append(args, "--verbose")
@@ -459,13 +563,18 @@ const sessionDisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,
 // slice order. An external server is never granted whole (QC-02): a whole
 // `mcp__<Name>` token would let the chat call its write tools unapproved.
 func AllowedTools(ext []ExternalMCPServer) string {
-	tools := "mcp__watchtower"
+	return allowedTools([]string{"mcp__watchtower"}, ext)
+}
+
+// allowedTools joins the base tokens and every allowed external tool token.
+func allowedTools(base []string, ext []ExternalMCPServer) string {
+	tokens := slices.Clone(base)
 	for _, s := range ext {
 		for _, t := range s.AllowTools {
-			tools += "," + externalToolToken(s.Name, t)
+			tokens = append(tokens, externalToolToken(s.Name, t))
 		}
 	}
-	return tools
+	return strings.Join(tokens, ",")
 }
 
 // ExternalDisallowedTools lists every external tool the chat must not call
@@ -524,6 +633,13 @@ func ChatMCPConfig(dbPath string, mcpArgs []string, ext []ExternalMCPServer) str
 // allowedToolsFlag builds the --allowedTools value (see AllowedTools; no
 // external servers means byte-identical to the pre-feature value).
 func (c *Client) allowedToolsFlag() string {
+	if c.watchtowerToolsSet {
+		tokens := make([]string, len(c.watchtowerTools))
+		for i, n := range c.watchtowerTools {
+			tokens[i] = externalToolToken("watchtower", n)
+		}
+		return allowedTools(tokens, c.externalServers)
+	}
 	return AllowedTools(c.externalServers)
 }
 
@@ -608,14 +724,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			cmd.Stdin = strings.NewReader(promptStdin)
 		}
 		// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
-		cmd.Cancel = func() error {
-			return cmd.Process.Signal(os.Interrupt)
-		}
-		cmd.WaitDelay = 5 * time.Second
+		reap := ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		defer reap()
 		cmd.Dir = c.workDir()
-		cmd.Env = append(os.Environ(),
-			"PATH="+claude.RichPATH(),
-		)
+		cmd.Env = c.childEnviron()
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -739,14 +851,10 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	if promptStdin != "" {
 		cmd.Stdin = strings.NewReader(promptStdin)
 	}
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(os.Interrupt)
-	}
-	cmd.WaitDelay = 5 * time.Second
+	reap := ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	defer reap()
 	cmd.Dir = c.workDir()
-	cmd.Env = append(os.Environ(),
-		"PATH="+claude.RichPATH(),
-	)
+	cmd.Env = c.childEnviron()
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
@@ -783,6 +891,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		InputTokens:    resp.Usage.InputTokens,
 		OutputTokens:   resp.Usage.OutputTokens,
 		TotalAPITokens: totalAPI,
+		CostUSD:        resp.CostUSD,
 	}
 
 	return strings.TrimRight(resp.Result, "\n"), usage, nil

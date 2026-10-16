@@ -10,8 +10,8 @@ struct ForwardedNotificationResponse: Codable {
     let payload: [String: String]
 
     /// The routing view of the payload, with `digestId`/`ideaId` restored to the Int
-    /// the navigation calls expect. A missing or unparseable one drops the key rather
-    /// than smuggling a string in under it.
+    /// (the other ids to the Int64) the navigation calls expect. A missing or unparseable
+    /// one drops the key rather than smuggling a string in under it.
     var userInfo: [AnyHashable: Any] {
         var info: [AnyHashable: Any] = payload
         info[NotificationForwarding.digestIDKey] = payload[NotificationForwarding.digestIDKey].flatMap(Int.init)
@@ -20,6 +20,8 @@ struct ForwardedNotificationResponse: Codable {
         info[NotificationForwarding.workbenchIDKey] = payload[NotificationForwarding.workbenchIDKey].flatMap(Int64.init)
         info[NotificationForwarding.workbenchSubjectIDKey] = payload[NotificationForwarding.workbenchSubjectIDKey].flatMap(Int64.init)
         info[NotificationForwarding.workbenchAskIDKey] = payload[NotificationForwarding.workbenchAskIDKey].flatMap(Int64.init)
+        info[NotificationForwarding.automationIDKey] = payload[NotificationForwarding.automationIDKey].flatMap(Int64.init)
+        info[NotificationForwarding.runIDKey] = payload[NotificationForwarding.runIDKey].flatMap(Int64.init)
         return info
     }
 }
@@ -55,13 +57,16 @@ enum NotificationForwarding {
     static let workbenchPaneKey = "pane"
     /// The owner ask a workbench push opens (spec 2026-10-03 Part 8).
     static let workbenchAskIDKey = "askId"
+    /// The run an automation finish notice opens (spec §12.7).
+    static let automationIDKey = "automationId"
+    static let runIDKey = "runId"
 
     /// The `userInfo` keys forwarded routing in `NotificationDelegate.route` actually
     /// reads — anything else in the push is dropped rather than shipped across the
     /// process boundary.
     static let routedKeys = [
         "type", digestIDKey, ideaIDKey, transcriptIDKey, workbenchIDKey, workbenchSubjectIDKey, workbenchPaneKey,
-        workbenchAskIDKey
+        workbenchAskIDKey, automationIDKey, runIDKey
     ]
 
     static func encode(actionID: String, userInfo: [AnyHashable: Any]) -> String? {

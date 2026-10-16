@@ -100,6 +100,10 @@ workbench target. The registry's `list_targets`/`get_target` return a workbench
 target only inside that workbench's own session (`watchtower mcp --workbench N`);
 any other session is told `no target with id N`.
 
+*Note (2026-10-15, no contract change):* the Desktop's Home "My targets" read,
+`TargetQueries.homeSummary`, filters `project_id IS NULL` as well, guarded by
+`testProj01_HomeSummaryNeverReturnsAProjectTarget`.
+
 **Why locked:** Owner decision D4. An agent decomposes a plan into dozens of
 sub-targets; letting them into the Targets tab, the day plan, next-step,
 Catch-Up, memory mirrors or the inbox overdue notification would flood every
@@ -109,12 +113,13 @@ calls on it.
 **Test guards:**
 - `internal/db` — `TestProj01_ProjectTargetsNeverReachNonBoardReaders` (Task 3)
 - `internal/tools/workbenches_test.go::TestProj01_TargetReadsFollowTheSessionScope`
+- `WatchtowerDesktop/Tests/Core/WorkbenchTargetExclusionTests.swift::testProj01_HomeSummaryNeverReturnsAProjectTarget` (Home, 2026-10-15)
 
 **Locked since:** 2026-09-29
 
 ## PROJ-02 — delete leaves nothing
 
-**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for the methodology preset, board #266)
+**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for agent analytics, owner approved in ask #153, board #297; amended 2026-10-15 for the methodology preset, board #266)
 
 **Observable:** `watchtower workbench delete N` first runs the folder removal
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
@@ -172,6 +177,7 @@ row delete removes each session's worktree ledger
 from `terminal_sessions`, with its `cleanup_result`/`cleanup_at` on the row
 itself. The worktrees and branches a cleanup removed are not brought back
 by anything; a workbench delete runs no sweep of the repository (only the placed sessions' own cleanup below).
+Agent analytics rows (`agent_log_sessions`/`agent_log_events`, migration `00116`) are the one exception: they outlive the workbench with `project_id` NULL (and `terminal_session_id` NULL) and are adopted by a workbench later created on the same folder.
 *2026-10-14 (board #229, asks #122/#124):* deleting a workbench
 first runs the session cleanup (PROJ-18) for every placed session's
 worktree and `wt/` branch; a worktree the cleanup keeps stays on disk
@@ -202,9 +208,10 @@ registered against a dead id — is worse than no workbench at all, and the owne
 must be able to undo the whole feature for a folder in one step.
 
 **Test guards:**
-- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives; its code questions and their messages and search rows are gone, another workbench's question and a main-chat row with the same `context_id` survive; since 2026-10-11 a presence row on one of its sessions is left with `session_id` NULL; since 2026-10-14, board #535, no `terminal_session_worktrees` row of its sessions is left while another workbench's session's ledger row survives — assertions added, none relaxed)
+- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives; its code questions and their messages and search rows are gone, another workbench's question and a main-chat row with the same `context_id` survive; since 2026-10-11 a presence row on one of its sessions is left with `session_id` NULL; since 2026-10-14, board #535, no `terminal_session_worktrees` row of its sessions is left while another workbench's session's ledger row survives; since 2026-10-15, board #297, an agent analytics session of it survives with `project_id` NULL — assertion added, none relaxed)
 - `cmd/workbench_cleanup_test.go::TestWorkbenchDelete_CleansPlacedWorktreesKeepsDirtyOnes` (2026-10-14, board #229)
 - `cmd/workbench_cleanup_test.go::TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList` (2026-10-14, board #229: a kept worktree stays on disk, is listed in `kept_worktrees`, and its local MCP entry is unregistered)
+- `internal/db/workbenches_test.go::TestProj02_DeleteRemovesAutomationRows` (2026-10-16, automations P5: the workbench's automations, their runs, steps, state and outputs, and its owner asks go with it; another workbench's stay; the recipe files in the folder are untouched)
 - `cmd/workbench_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
 - `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
@@ -437,15 +444,15 @@ rule from one Repair or Re-run Setup; `workbench resync --json` reports
 `cleanup_permission_added`.
 
 *2026-10-15 (board #266, spec §4.3):* the install writes two skills into `.claude/skills` and
-`.agents/skills`: the core `watchtower-workbench` (pack v9) always, and the `watchtower-flow` preset
+`.agents/skills`: the core `watchtower-workbench` (pack v10) always, and the `watchtower-flow` preset
 unless the effective preset is `none` (`WorkbenchInstallOptions.PresetNone`, resolved like the hooks).
 Both follow the DEV-04 rules. Preset `none` removes the preset only when its bytes are ours (shipped,
 or matching the sidecar); an edited or foreign copy is kept and reported. An owner-edited core from
-before v9 (marker below `v9`) keeps the single-file layout: nothing is written beside it, and
-`resync` says "Your edited skill keeps the old single-file layout; delete it to take the v9 core and
-preset." A core byte-identical to the shipped v8 with no sidecar is adopted as ours. A preset change
+before v10 (marker below `v10`) keeps the single-file layout: nothing is written beside it, and
+`resync` says "Your edited skill keeps the old single-file layout; delete it to take the v10 core and
+preset." A core byte-identical to the shipped v8 or v9 with no sidecar is adopted as ours. A preset change
 through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the skills only: each core
-copy goes through the install first, so a pre-v9 core of ours becomes v9, then the preset follows; no
+copy goes through the install first, so a pre-v10 core of ours becomes v10, then the preset follows; no
 hook or registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install
 or resync, and the brief names the mismatch. An owner-edited preset copy counts as installed under
 `watchtower-flow` (no mismatch line, never rewritten); under `none` it is kept, `methodology --json`
@@ -1165,7 +1172,7 @@ it again once it was cleared; only Go writes it.
 
 ## PROJ-12 — an ask's answer is submitted only into a session whose hooks reported this run, never into a permission prompt they reported nor over the owner's half-typed text
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog; amended 2026-10-07 with the owner's approval, board #396 (owner directive 2026-10-05: «send it right away»); amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog; amended 2026-10-07 with the owner's approval, board #396 (owner directive 2026-10-05: «send it right away»); amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-16 with the owner's approval (spec review ask #179, board #328): the diff reviewer's round line uses the same delivery)
 
 **Observable:** When the owner answers an ask in the Desktop, the answer is
 stored first — one guarded `UPDATE owner_asks SET status='answered', answer,
@@ -1258,6 +1265,14 @@ hook (PROJ-11). The Workbench launch passes `-c
 check_for_update_on_startup=false`, so codex's update notice (where Return
 means "Update now") cannot take a delivered Return.
 
+The diff reviewer (board #328, 2026-10-16) uses the same delivery for its
+rounds: the second fixed line `Review round #<id> sent (<n> comment[s]) — read
+it with get_review <id> using the watchtower-workbench skill.` (Swift
+`ReviewDeliveryLine`, a dual path with Go `reviewdiff.DeliveryLine` pinned by
+`internal/reviewdiff/testdata/lines`) is typed through `SessionLineDelivery`
+with `LineKey.review`, under exactly the gates above, and only after `review
+send` stored the round as `sent` (REVIEW-04).
+
 **Why locked:** Owner decisions (spec 2026-10-03, decision 3; board #379,
 2026-10-04). An automatic Return could confirm whatever Claude Code's TUI
 shows at that moment without the owner seeing it: a permission dialog's
@@ -1285,6 +1300,7 @@ would send the agent to read an answer that is not there — the
 - `cmd/workbench_brief_test.go::TestProj12_AnsweredAskSurvivesAFullBoard`
 - Quick ask (board #501, 2026-10-11; wording unchanged — a tap or a Reply in the banner or the stack is an answer in the Desktop and goes through the drawer's own call, `OwnerAsksViewModel.answer(_:with:)`, spec 2026-10-10 Part 11.2): `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_AQuickAnswerFromTheBannerIsStoredThenDeliveredLikeTheDrawers` (the same stored answer and line bytes as the drawer's, stored before anything is typed; the same paste, pause and Return rules: held at a permission prompt, only pasted over the owner's draft), `testProj12_AReplyIsSentAsOtherOnOneLine` (line breaks and control characters as spaces, trimmed, at most 500 runes; a blank Reply sends nothing); supporting: `testAQuickTapOnAWithdrawnAskTypesNothing` (withdrawn meanwhile: nothing written or typed, the card leaves the banner and the stack)
 - supporting: `OwnerAsksViewModelTests` (`testCopiedShowsTheCopiedAnswerHint` — no keystroke and no Return without bracketed paste; `testAPermissionPromptDuringThePauseLeavesTheLineTyped`; `testAHeldAnswerGoesNowhereOnceItsSessionStops`, `testAHeldAnswerNeverReachesALaterRunOfItsSession`, `testTwoHeldAnswersToOneSessionGoOneAfterTheOther`, `testAnAnswerDuringAnotherAnswersPauseIsQueuedThenGoesNext`, `testDismissingAHeldAnswerCancelsItsDelivery`, `testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted`, `testAHoldThatEndedBeforeTheWaitIsNotMarkedStillWaiting`); `TerminalCenterTests::testATypedAnswerHintStaysThroughKeysIntoAPermissionDialog`; `CodeHandoffCenterTests::testAnAnswerIntoASessionWaitingThisRunIsSubmitted`, `testAHandOffIntoABackgroundSessionIsAtThePrompt` (board #411, ruling R52); `TerminalOwnerInputTests::testOnlyTheOwnersInputIsReported` (the owner's bytes, never the app's paste); `SessionAgentStateCenterTests::testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered` (the wiring through the stored states); `SessionAgentStatusTests::testTheRunsMarkSaysTheHooksReportThisRun`; `TerminalCenterTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted`, `testTheOwnersReturnDuringThePauseSkipsOurs` — also `\` then Return is no submit, `testTheOwnersReturnDuringThePauseOverADialogOrAFailedReadLeavesTheLineTyped`, `testTheOwnersReturnDuringThePauseCountsWhateverTheCallersOtherCondition`, `testARestartDropsTheLastRunsPasteBar`); `cmd/workbench_brief_session_test.go::TestApplySessionStart_HooksReadErrorStillMovesTheID`; `OwnerAsksViewModelTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testARelaunchDuringTheReadBeforeThePasteTypesNothing`, `testTheOwnersReturnDuringThePauseSendsTheAnswer`); `internal/db/terminal_sessions_test.go` (`TestMarkTerminalAgentRun_NewRunStartsEmpty`, `TestClearTerminalAgentState_LeavesNoStamp`); `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
+- Diff reviewer round line (2026-10-16, board #328): `WatchtowerDesktop/Tests/Core/ReviewDeliveryLineTests.swift::testMatchesGoFixtures`, `WatchtowerDesktop/Tests/SessionLineDeliveryReviewTests.swift`, `internal/reviewdiff/line_test.go::TestDeliveryLine_Fixtures`
 
 **Locked since:** 2026-10-03
 
@@ -1401,7 +1417,7 @@ are trusted as one set). The never-traps rules above hold unchanged.
 *2026-10-15 (board #266, spec `docs/superpowers/specs/2026-10-15-workbench-configurable-methodology-design.md` §7):*
 the guard runs under the workbench's ask guard mode and finish check, resolved at run time by
 `workbenchmethod.ResolveSession` (the owner's setting in `projects.ask_guard_mode`/`finish_check`,
-migration `00116`, else the session folder's `.watchtower/workflow.md`, else `strict` and `on`). Any
+migration `00123`, else the session folder's `.watchtower/workflow.md`, else `strict` and `on`). Any
 failure to read them — no database, a schema without the columns, a lock, a present but malformed
 terminal-session variable — resolves to `strict` and `on`, silently. `strict` with the finish check on
 is the table above, unchanged (`decideStop`). `soft`:
@@ -2073,7 +2089,11 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
-- 2026-10-15 (board #266, configurable methodology; spec `docs/superpowers/specs/2026-10-15-workbench-configurable-methodology-design.md` §9, plan `docs/superpowers/plans/2026-10-15-workbench-configurable-methodology.md`; **PROJ-13, PROJ-04 and PROJ-02 amended, owner approved in asks #141 (modes), #146 (spec) and #150 (plan)**): **PROJ-13** gains the ask guard modes (`strict`/`soft`/`off`) and the finish check (`on`/`off`) for the Stop and PreToolUse guards, resolution failure → strict + on, and off with the finish check off → no model call. **PROJ-04** — the install writes the v9 core and the `watchtower-flow` preset, removes the preset only when ours, and keeps a drifted pre-v9 single file without a preset. **PROJ-02** — a delete removes our preset too. **PROJ-08** — listing only: the installed preset directories are skipped from the folder's docs index like the core. **PROJ-14** unchanged, noted: with the finish check off a session the agent does not finish ends as Stopped without a summary; only `finish_session` marks a session finished. **PROJ-03** unchanged: the Desktop's "Create workflow.md" runs the CLI on the owner's click and never overwrites a file; the agent never writes `workflow.md` or its own checks (no MCP tool changes them). PROJ-07 and PROJ-11 unchanged. All existing guards kept, none relaxed.
+- 2026-10-16 (Automations P5 part 1, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §13): **PROJ-02 strengthened** — deleting a workbench also removes its automation rows (`automations`, `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`) and the owner asks its automations filed; guard `TestProj02_DeleteRemovesAutomationRows`; the recipe files under `.watchtower/automations/` stay (owner's repo files). **PROJ-12/PROJ-13:** an automation's ask never reaches a session (see the entry above; guard `TestAutomationAsks_InvisibleToSessionReaders`); the Desktop-side guard that the terminal delivery excludes it follows in part 2. **PROJ-11 note, no text changed:** a session an automation's `session()` starts is an ordinary workbench session (same hooks, states, report and cleanup); for the run, "stopped" means the process ending, reported by the Desktop through `automations session-ended` (R-P5-3). No guard relaxed.
+- 2026-10-16 (Automations P5 Task 6, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §5, D6/D7): **PROJ-12 and PROJ-13 strengthened — no contract text weakened, no guard changed.** A workbench automation's `ask()` files an `owner_asks` row with `session_id` NULL and `automation_run_id` set (migration `00122`); its run waits for the answer itself and marks it `delivered`. Every session-side reader leaves such a row out (`a.automation_run_id IS NULL`): the brief's "Answered asks for you" and its other-sessions count (`AnsweredAsksForBrief`), `list_asks` (`OwnerAskFilter.ExcludeAutomation`), `get_ask`, `withdraw_ask` and ask_owner's `previous_ask_id` (all through `askInWorkbench`: "no ask with id N"), the series hint (`RecentOpenQuestionAsk`) and the withdrawn-title check (`LastWithdrawnByTitle`) — so PROJ-12's "an ask with no session … the session's next `workbench brief` lists it" never applies to an automation's ask, and no session's `get_ask` can deliver it. The owner-facing readers keep it (the Waiting-for-you stack, `CountOpenOwnerAsks` — the 30-ask cap stays per workbench —, badges, `workbench asks --json`, the daily briefing). **PROJ-13:** the Stop and `PreToolUse` ask guards read no `owner_asks` row (they classify the message and read the session row and presence), so they cannot see an automation's ask; text unchanged. The Desktop's terminal delivery of an automation ask is excluded in the Swift phase (Task 12). Guards: `internal/db/owner_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`, `internal/tools/workbench_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`; every existing PROJ-12/PROJ-13 guard green unmodified.
+- 2026-10-16 (board #328, diff reviewer Plan 1; **approved by the owner, spec review ask #179**): **PROJ-12 amended** — the delivery also carries the diff reviewer's round line `Review round #<id> sent (<n> comment[s]) — read it with get_review <id> …`, typed through `SessionLineDelivery` (`LineKey.review`) under the same gates and only after `review send` stored the round; no gate relaxed, no guard changed, round guards listed under PROJ-12 and in `review.md` (REVIEW-04).
+- 2026-10-15 (first run P2, Home, board #783): note only, no contract text changed and no guard relaxed. **PROJ-01** — the Desktop's Home "My targets" read `TargetQueries.homeSummary` is one more non-board reader filtering `project_id IS NULL`; its guard `testProj01_HomeSummaryNeverReturnsAProjectTarget` is listed under PROJ-01.
+- 2026-10-15 (board #266, configurable methodology; spec `docs/superpowers/specs/2026-10-15-workbench-configurable-methodology-design.md` §9, plan `docs/superpowers/plans/2026-10-15-workbench-configurable-methodology.md`; **PROJ-13, PROJ-04 and PROJ-02 amended, owner approved in asks #141 (modes), #146 (spec) and #150 (plan)**): **PROJ-13** gains the ask guard modes (`strict`/`soft`/`off`) and the finish check (`on`/`off`) for the Stop and PreToolUse guards, resolution failure → strict + on, and off with the finish check off → no model call. **PROJ-04** — the install writes the v10 core and the `watchtower-flow` preset, removes the preset only when ours, and keeps a drifted pre-v10 single file without a preset. **PROJ-02** — a delete removes our preset too. **PROJ-08** — listing only: the installed preset directories are skipped from the folder's docs index like the core. **PROJ-14** unchanged, noted: with the finish check off a session the agent does not finish ends as Stopped without a summary; only `finish_session` marks a session finished. **PROJ-03** unchanged: the Desktop's "Create workflow.md" runs the CLI on the owner's click and never overwrites a file; the agent never writes `workflow.md` or its own checks (no MCP tool changes them). PROJ-07 and PROJ-11 unchanged. All existing guards kept, none relaxed.
 - 2026-10-15 (Automations P1, board #753): note only, no contract text or guard changed. The owner's `watchtower automations` CLI can write and remove recipe files in a workbench folder's `.watchtower/automations/` (`save --path` atomically through `fsutil.WriteFileAtomic`; `delete` removes only a regular recipe file in that folder); `dry-run --file` and `rescan --workbench N` read it. No Desktop path, workbench MCP tool or daemon code writes the folder in P1, so PROJ-03 (the Desktop's writes) is unchanged; the owner-approved PROJ-03 amendment (ask #272, automations spec §14.6) is written into PROJ-03 with Automations P5, which adds the Desktop save.
 - 2026-10-14 (board #535, session cleanup; spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13, business page `…-business.md`, plan `docs/superpowers/plans/2026-10-12-session-cleanup.md`; **PROJ-18 added, PROJ-11, PROJ-04 and PROJ-02 amended, owner approved 2026-10-12, ask #193**): `watchtower workbench cleanup` (`internal/sessioncleanup`, migration `00111`: `terminal_session_worktrees` + `terminal_sessions.cleanup_result`/`cleanup_at`) plans, then with `--apply` removes, the linked worktrees and local branches a session's agents created — never unsaved, unpushed, in-use or someone else's work (PROJ-18, the approved wording verbatim plus the stricter as-shipped list); the skill pack's finishing step runs it (DEV-04 changelog: pack v8); the Desktop offers it on Delete Session (**Delete and Clean Up**, the default, or **Delete Only**), per session (**Clean Up…**) and as the owner's sweep (**Clean Up Old Worktrees…**, with a one-time hint above 1 GB). **PROJ-11:** the state hooks record each new (worktree root, branch) of any agent of the session, at most 64, without git; a ledger failure never costs the state write. **PROJ-04:** the install adds one `permissions.allow` rule `Bash(<bin> workbench cleanup:*)` (the bin quoted only when unsafe, ours only with an absolute `watchtower` bin, the owner's entries never touched). **PROJ-02:** the folder removal deletes that rule; the ledger goes with the session row by cascade (`TestProj02_RemoveProjectLeavesNothingInstalled` and `TestProj02_DeleteProjectLeavesNoRows` extended, assertions added). **PROJ-17:** note only — `delete` (✕, ⌘⌫, Delete Only) is a no-op and Start fresh refused on a row a cleanup runs on, and every resume of a row whose terminal Delete and Clean Up closed is refused. **PROJ-14** unchanged (the report only reads `cleanup_result`). No guard relaxed.
 - 2026-10-14 (merging main into feature/533-sessions; no new principle, no guard changed): **PROJ-16** — Ready to check (#534, ask #195) counts as idle for a phone line: it is a resting form of Finished / Waiting for you. **PROJ-17** — renumbered because PROJ-16 is the phone-typing contract (main); the session cleanup of board #535 is PROJ-18 (its inventory entry follows with #535); its phone-list wording now says the row leaves and comes back on the hub's next 30 s full tick, not at once (main's #724 removed the fast nudge).

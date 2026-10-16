@@ -32,6 +32,7 @@ type sdkCase struct {
 	reg       *automationstest.FakeRegistry
 	backends  *automations.Backends // nil = Generator, Registry and a clock
 	modules   []automations.Module  // nil = DefaultModules
+	meter     *automations.Meter    // nil = 50000 tokens, 5 minutes on a fixed clock
 }
 
 type sdkRun struct {
@@ -93,6 +94,9 @@ func runSDK(t *testing.T, script string, c sdkCase) sdkRun {
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)
 	}
+	if c.meter == nil {
+		c.meter = automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, clock)
+	}
 	env := &automations.Env{
 		Ctx:        context.Background(),
 		Run:        &db.AutomationRun{ID: 42, AutomationID: 3},
@@ -101,7 +105,7 @@ func runSDK(t *testing.T, script string, c sdkCase) sdkRun {
 		Manifest:   m,
 		DryRun:     c.dryRun,
 		Journal:    c.journal,
-		Meter:      automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, clock),
+		Meter:      c.meter,
 		Buffer:     automations.NewCommitBuffer(json.RawMessage(c.committed)),
 	}
 	sb, err := automations.NewSandbox(env, c.modules)
@@ -394,14 +398,6 @@ func TestTool_NullResultIsNull(t *testing.T) {
 	reg := fakeTools()
 	reg.ReadResults["list_targets"] = nil
 	mustReturn(t, `return String(tool("list_targets") === null)`, sdkCase{perms: []string{"targets:read"}, reg: reg}, "true")
-}
-
-func TestTool_WriteNotAvailableInP1(t *testing.T) {
-	r := mustReturn(t, `try { tool("create_target", {title: "x"}); return "called" } catch (e) { return e.name }`,
-		sdkCase{perms: []string{"tool:create_target"}}, "NotAvailable")
-	if p := r.reg.ProposedCalls(); len(p) != 0 {
-		t.Fatalf("proposals = %+v; want none", p)
-	}
 }
 
 func TestTool_BadCallsAreValidationErrors(t *testing.T) {

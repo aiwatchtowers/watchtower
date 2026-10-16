@@ -75,7 +75,7 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
         let single = Self.envelope.replacingOccurrences(of: #""install_single_file_layout":false"#,
                                                         with: #""install_single_file_layout":true"#)
         XCTAssertEqual(try decode(single).installNote,
-                       "Your edited skill keeps the old single-file layout; delete it to take the v9 core and preset.")
+                       "Your edited skill keeps the old single-file layout; delete it to take the v10 core and preset.")
     }
 
     func testKeysFlagsChoicesAndLabels() {

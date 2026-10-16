@@ -124,7 +124,7 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
     package let installError: String
     /// What the install left in `.claude/skills` and `.agents/skills` (a
     /// devpack state; empty without the core skill there or when no install
-    /// ran) and whether an edited pre-v9 core keeps the single-file layout.
+    /// ran) and whether an edited pre-v10 core keeps the single-file layout.
     package let installFlow: String
     package let installCodexFlow: String
     package let installSingleFileLayout: Bool
@@ -165,7 +165,7 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
     }
 
     /// After a preset change: preset none kept an edited or foreign
-    /// watchtower-flow copy (spec §4.3), or an edited pre-v9 core keeps its
+    /// watchtower-flow copy (spec §4.3), or an edited pre-v10 core keeps its
     /// own methodology; nil otherwise. Go's `keptFlowNote` says the same.
     package var installNote: String? {
         let kept: Set<String> = ["drifted", "foreign"]
@@ -173,7 +173,7 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
             return "Your edited watchtower-flow skill was kept; delete it yourself to drop the methodology."
         }
         if installSingleFileLayout {
-            return "Your edited skill keeps the old single-file layout; delete it to take the v9 core and preset."
+            return "Your edited skill keeps the old single-file layout; delete it to take the v10 core and preset."
         }
         return nil
     }

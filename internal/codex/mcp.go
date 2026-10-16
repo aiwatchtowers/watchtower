@@ -15,9 +15,11 @@ import (
 // server command — the chat mode flags (--chat --surface … --conversation …
 // --turn …) the Desktop passes through `ai query --tools chat`; pass nil for
 // the read-only dev server. The caller must remove the returned directory when
-// done (typically via defer os.RemoveAll).
+// done (typically via defer os.RemoveAll). envVars are passed through to the
+// server (WatchtowerServerTOML); nil for every caller but an automation's
+// agent() child.
 // Returns the path to the temp directory and any error.
-func mcpWorkDir(dbPath string, extra []string) (string, error) {
+func mcpWorkDir(dbPath string, extra, envVars []string) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "codex-mcp-*")
 	if err != nil {
 		return "", fmt.Errorf("creating temp dir for codex MCP config: %w", err)
@@ -29,13 +31,7 @@ func mcpWorkDir(dbPath string, extra []string) (string, error) {
 		return "", fmt.Errorf("creating .codex dir: %w", err)
 	}
 
-	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
-	quoted := make([]string, 0, len(args))
-	for _, a := range args {
-		quoted = append(quoted, strconv.Quote(a))
-	}
-	configContent := fmt.Sprintf("[mcp_servers.watchtower]\ncommand = %q\nargs = [%s]\n",
-		watchtowerBinary(), strings.Join(quoted, ", "))
+	configContent := WatchtowerServerTOML(dbPath, extra, envVars)
 
 	configPath := filepath.Join(codexDir, "config.toml")
 	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
@@ -46,18 +42,38 @@ func mcpWorkDir(dbPath string, extra []string) (string, error) {
 	return tmpDir, nil
 }
 
+// WatchtowerServerTOML is the config.toml table that mounts this binary as
+// codex's watchtower MCP server: `watchtower mcp --db-path <db> <extra…>`.
+// envVars, when given, become the server's env_vars: codex starts MCP
+// servers with a filtered environment, so a variable the server needs (an
+// automation's run marker) must be named to reach it. With no envVars the
+// table is the one the chat and dev servers always had.
+func WatchtowerServerTOML(dbPath string, extra, envVars []string) string {
+	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
+	s := fmt.Sprintf("[mcp_servers.watchtower]\ncommand = %q\nargs = [%s]\n", watchtowerBinary(), quotedList(args))
+	if len(envVars) > 0 {
+		s += fmt.Sprintf("env_vars = [%s]\n", quotedList(envVars))
+	}
+	return s
+}
+
+// quotedList is items as the inside of a TOML string array.
+func quotedList(items []string) string {
+	quoted := make([]string, 0, len(items))
+	for _, a := range items {
+		quoted = append(quoted, strconv.Quote(a))
+	}
+	return strings.Join(quoted, ", ")
+}
+
 // mcpConfigOverrides mounts the same watchtower server as mcpWorkDir's
 // config.toml, as `-c` overrides — for a run whose working root is not a
 // temp dir (a read-folder run).
 func mcpConfigOverrides(dbPath string, extra []string) []string {
 	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
-	quoted := make([]string, 0, len(args))
-	for _, a := range args {
-		quoted = append(quoted, strconv.Quote(a))
-	}
 	return []string{
 		"-c", "mcp_servers.watchtower.command=" + strconv.Quote(watchtowerBinary()),
-		"-c", "mcp_servers.watchtower.args=[" + strings.Join(quoted, ", ") + "]",
+		"-c", "mcp_servers.watchtower.args=[" + quotedList(args) + "]",
 	}
 }
 

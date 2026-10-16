@@ -18,7 +18,7 @@ Connections (QC-01..04), Reaction Commands (STRIP-01..03), Model & Provider Regi
 `cmd/automations*.go`, `internal/tools/registry.go` (surface + binding + trust order), `cmd/actions_registry.go`,
 `internal/daemon/` (scheduler/executor goroutines, wake signal, event publishing from sync phases),
 `internal/digest/models.go` + `tier_scan_test.go` (source tags), `internal/briefing/` (P2), `internal/skills/shipped/`
-(P3), `internal/config/` (one key), migrations 00113–00115, `internal/db/schema.sql`; Desktop: new Automations
+(P3), `internal/config/` (one key), migrations 00113 and 00117–00118 (00114–00116 are unrelated main migrations), `internal/db/schema.sql`; Desktop: new Automations
 tab, `AgentActionCardView` label, Inbox strip (P3), workbench header buttons and session requests (P5); new
 `docs/inventory/automations.md`. New Go dependencies: `github.com/dop251/goja` (sandbox) and
 `github.com/robfig/cron/v3` (its standard 5-field parser only; its scheduler is not used).
@@ -264,7 +264,7 @@ Every call writes one step row (§9.3) — start, result summary, tokens, durati
 | `output.report({title, body})` | P1 | `outputs: [report]` | Same, `kind='report'`; shown on the automation card and in the run. Every `output.*` title is ≤ 200 characters (P1 review decision). |
 | `output.briefing({title, body})` | P2 | `outputs: [briefing]` | Same, `kind='briefing'`; the next daily briefing includes outputs created since the previous briefing (§12.6). |
 | `output.target({...create_target args})` | P2 | `outputs: [target]` | Sugar for `tool("create_target", args)` — a registry write (manifest needs no `tool:create_target`; `outputs` is the gate). |
-| `output.slack({...send_slack_message args})` | P2 | `outputs: [slack]` | Sugar for `tool("send_slack_message", args)` — External, a proposal unless auto (§6). |
+| `output.slack({...send_slack_message args})` | P2 | `outputs: [slack]` **and** `slack:write@<account>` covering the call (§20.3 D28) | Sugar for `tool("send_slack_message", args)` — External, a proposal unless auto (§6). `outputs: [slack]` alone sends nothing and admits no auto grant (D28). |
 | `ask({kind, title, summary?, questions?, checklist?})` | P5 | `ask:owner` | Workbench automations only (§13.3). Creates an `owner_asks` row; pauses (`waiting_reason='ask'`) until answered; returns the answer JSON. |
 | `session({prompt, agent?, title?, wait?})` | P5 | `session:start[@kind]` | Workbench only (§13.1). Returns `{session_id, status, summary}` (`wait:"finish"`, default) or `{session_id}` (`wait:"none"`). |
 | `shell(cmd)` | P5 | `shell:"<cmd>"` | Workbench only (§13.2). Returns `{exit_code, stdout, stderr}`. |
@@ -280,6 +280,15 @@ Every call writes one step row (§9.3) — start, result summary, tokens, durati
   `Binding{Surface: "automation", ContextType: "automation_run", ContextID: <run id>, AutomationRunID: <run id>,
   WorkbenchID: <workbench id or 0>}`. `bindingOf` rebuilds `AutomationRunID` from `context_type='automation_run'`.
   `DirectApply` is never set for automations (a workbench automation does not inherit DEV-06's direct apply).
+- **Workbench runs may not write until P5 (controller decision, P2 review).** A run's `agent_actions` row carries
+  the run (`context_type='automation_run'`), not the workbench, so its Apply would run with `WorkbenchID` 0 —
+  without `WorkbenchAlive` and the tool's `Scope`. Until P5, `Registry.workbenchAutomationGate` refuses every
+  write of a workbench automation's run: `Propose` (the binding's `WorkbenchID`, or the run's
+  `automations.project_id`) with `tools.ErrWorkbenchAutomationWrite` and no row; `Approve` (row stays pending)
+  and `Apply` (row lands `failed`, `Execute` never runs) of such a row. A row whose run no longer exists fails
+  closed (`tools.ErrAutomationRunGone`; deleting a workbench cascades its runs). The script sees `NotAvailable`
+  for `tool()` writes and `output.target`/`output.slack`, dry runs included (the SDK refuses before the dry-run
+  branch, so a dry run never reports a write a live run cannot make). Reads are unaffected.
 - Write tools that name the `automation` surface in P2 (each tool's `Surfaces` gains `"automation"`):
   `create_target`, `create_idea`, `create_track`, `remind_me`, `create_jira_issue`, `add_jira_comment`,
   `transition_jira_issue`, `assign_jira_issue`, `update_jira_issue`, `send_slack_message`. Not offered:
@@ -345,7 +354,8 @@ carries `status='applied'` and `auto=1`. Approve/Reject stay the existing owner-
   AlwaysAsk tool or a tool the manifest does not admit as a write) and removed by `… off` (open to anyone).
   The Desktop's form is the only UI that runs `on`.
 - A grant whose `grant_hash` no longer equals `approval_hash` is **inactive**, kept for display ("Auto paused —
-  the recipe changed. Re-confirm?"). Re-confirming writes the new hash. A save never carries grants over by
+  the recipe changed. Re-confirm?"). Re-confirming writes the new hash; a recipe returned to the exact granted
+  text matches the kept hash again, so the grant is active again without a new grant. A save never carries grants over by
   itself: the save sheet lists the grants the edit pauses with unchecked "Keep auto for …" boxes; checking one
   runs `auto … on --hash <new>` after the save (AUTO-03).
 
@@ -564,7 +574,7 @@ IS NOT NULL`, partial unique `(automation_id, trigger) WHERE status='queued'` (c
 (agent_actions id, no FK); `ask_id`, `session_id` INTEGER NULL (no FK, P5); `input_tokens`, `output_tokens`
 INTEGER DEFAULT 0; `tokens_estimated` INTEGER DEFAULT 0; `reported_cost_usd` REAL NULL (display only); `duration_ms`; `error` TEXT DEFAULT ''; `started_at`, `finished_at`.
 
-### 9.4 `automation_state`, `automation_outputs` (00113); `automation_tool_grants` (00114, P2)
+### 9.4 `automation_state`, `automation_outputs` (00113); `automation_tool_grants` (00117, P2)
 
 - `automation_state(automation_id PK FK CASCADE, state_json TEXT NOT NULL DEFAULT '{}', run_id INTEGER NULL,
   updated_at)`.
@@ -574,7 +584,7 @@ INTEGER DEFAULT 0; `tokens_estimated` INTEGER DEFAULT 0; `reported_cost_usd` REA
 - `automation_tool_grants(automation_id FK CASCADE, tool TEXT, grant_hash TEXT NOT NULL, granted_at,
   PRIMARY KEY (automation_id, tool))`.
 
-### 9.5 00115_automation_workbench.sql (P5)
+### 9.5 00118_automation_workbench.sql (P5)
 
 `ALTER TABLE owner_asks ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL`;
 `ALTER TABLE terminal_sessions ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET
@@ -690,14 +700,18 @@ when. **It may** lists the permissions with widening entries marked, or "No chan
 "Show the script (N lines)" discloses the script read-only. Buttons **Dry run first**, **Not now**, **Confirm**
 (primary). Go computes the block (`show --json` keys `changes`, `changes_known`, `changed_by`, `changed_at`, added
 in P3): the index holds only `confirmed_hash`, so the confirmed text is the newest `automation_runs.recipe_snapshot`
-whose `recipe_hash` equals `confirmed_hash`, else the `previous_recipe_text` pinned in the last applied
-`save_automation` for that automation, and a candidate counts only if its `approval_hash` computed now equals
+whose `recipe_hash` equals `confirmed_hash`, else the `recipe_text` of the newest applied `save_automation` for
+that automation that pinned `confirmed_hash` (a save confirms its own text, §11 Execute; amended 2026-10-16 —
+the earlier `previous_recipe_text` named the replaced text, which hashes to `confirmed_hash` only when the save
+left the hash unchanged), and a candidate counts only if its `approval_hash` computed now equals
 `confirmed_hash`. So: confirmed → no changes, known; never confirmed → "First confirmation"; a counting candidate →
 its field diff, known; no counting candidate — including after a hash-format change such as D26's re-hash, where
 the snapshot text may equal the current text yet its hash no longer matches — → `changes_known` false and the
 block reads "What changed is not known — review the whole recipe". The author line is "Changed by the
 assistant in the chat · <age>" when an applied `save_automation` pinned the recipe's current `approval_hash`,
-otherwise "Changed outside Watchtower · <age of updated_at>" — v1 limit: a plain `automations save`
+otherwise "Changed outside Watchtower · <age of updated_at>". Since Execute confirms the hash it pins, the
+assistant case cannot appear in this sheet (an assistant save is confirmed by the owner's Approve on its card);
+`show --json` still reports `changed_by: "assistant"` for such a confirmed recipe — v1 limit: a plain `automations save`
 or a hand edit records no author, so the mockup's "Changed by Claude in the workbench terminal" needs an author
 record (owner-accepted limit, 2026-10-15; a later phase; a `confirmed_text` column would also remove the snapshot fallback).
 
@@ -780,6 +794,11 @@ a refusal that still arrives is shown as the CLI's message, nothing is retried).
 
 ## 13. Workbench automations (P5)
 
+**P5 must lift the P2 write gate (§6.1).** Before workbench automations ship, P5 removes
+`Registry.workbenchAutomationGate`'s workbench refusal and the SDK's matching dry-run refusal, and makes `Apply`
+(inline and later) of an `automation_run` row resolve the workbench from run → `automations.project_id`, run
+`WorkbenchAlive` and the tool's `Scope` against it, and fail when it is gone; a missing run keeps failing closed.
+
 ### 13.1 `session()` — a visible session
 
 1. The SDK writes a step `kind='session'`, `status='waiting'`, `args_json={prompt, agent, title}`; the run goes
@@ -801,7 +820,7 @@ interrupt and in tests' cleanup), timeout = remaining active budget, stdout/stde
 kept, `truncated: true`). Output over the limit is **truncated, never a failure** (§20.1 D19, ask #272): when the
 two tails together would still serialise over §4's 256 KiB result limit, both are cut further (keeping tails,
 each stream at most half of the limit, a shorter stream's unused share going to the other) until the result fits;
-the result says so (`truncated: true`) and the step row records the exit code and which stream was cut. `shell()` never throws `ResultTooLarge`. Environment: `PATH`, `HOME`, `LANG`, `USER` from the daemon plus
+the result says so (`truncated: true`) and the step row records the exit code and which stream was cut. `shell()` never throws `ResultTooLarge`. Environment: `PATH` (the daemon's resolved rich PATH, `claude.RichPATH` — a Desktop-started daemon's own is launchd's minimal one), `HOME`, `LANG`, `USER` from the daemon plus
 `WATCHTOWER_AUTOMATION_RUN_ID=<run>`; nothing else (no tokens, no `WATCHTOWER_TERMINAL_SESSION_ID`). Only exact
 manifest commands (AUTO-13). In a privacy-protected folder (`privacyProtected`, see §13.4) `shell()` is refused with `NotAvailable`
 ("this workbench is in a protected folder; use session() or move the folder") — §20 D9; the folder is never
@@ -830,7 +849,7 @@ schedule without the daemon touching the folder — except `shell()`, refused th
 |---|---|---|---|
 | AUTO-01 | The manifest is the only source of permissions | Every SDK call is checked against the recipe's `permissions`/`outputs` before its backend runs; a miss throws `PermissionDenied`, writes a `denied` step and touches nothing. No trust row, grant, surface or argument widens it. | P1 |
 | AUTO-02 | Writes only through the registry | The only SDK paths that change data outside the automation's own tables are `Registry.Propose` (and `Apply` it triggers) on the `automation` surface, `shell()` and `session()`; `output.inbox/briefing/report` write only `automation_outputs`. | P1 (pinned), P2 |
-| AUTO-03 | Auto only by the owner, bound to the hash | An auto grant is written only by `automations auto … on` outside AI-agent markers with the current `approval_hash`; it applies only while that hash equals the run's; any script/permission change makes it inactive until re-granted; every auto write is one `agent_actions` row through `Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. | P2 |
+| AUTO-03 | Auto only by the owner, bound to the hash | An auto grant is written only by `automations auto … on` outside AI-agent markers with the current `approval_hash`; it applies only while that hash equals the run's; any script/permission change deactivates it until the owner grants the new hash or the recipe returns to the exact granted text (the grant compares hashes only); every auto write is one `agent_actions` row through `Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. | P2 |
 | AUTO-04 | State commits only on success | `state.set` and `output.*` (local) are buffered and committed in one transaction with `status='succeeded'`; any other terminal status leaves `automation_state` and `automation_outputs` byte-identical. | P1 |
 | AUTO-05 | Bounded concurrency per automation | At most `concurrency` (default 1) runs of one automation are `running`/`waiting` at once; the claim is one conditional update. | P1 |
 | AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed (a schedule, missed-policy, budget or concurrency change included, §20.3 D26). Dry runs are exempt (they write nothing, AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271): the CLI refuses it under AI-agent markers (AGENT-07, `WATCHTOWER_AUTOMATION_RUN_ID` included) and `draft_automation` refuses to dry-run a draft whose `approval_hash` is an unconfirmed recipe's. | P1, P3 |
@@ -859,9 +878,10 @@ Replace AGENT-03's Observable with:
 > AlwaysAsk tools never — when an `automation_tool_grants` row exists for (that automation, that tool) whose
 > `grant_hash` equals both the automation's current `approval_hash` and the run's `recipe_hash`. Such a grant is
 > written only by `watchtower automations auto <id> <tool> on --hash <sha>` from the Desktop, refused under an AI
-> agent's environment markers (AGENT-07) and refused for a hash other than the current one; any change to the
-> recipe's script or permissions (by anyone, the assistant included) makes it inactive until the owner grants it
-> again. An auto write is still one `agent_actions` row (`trust_at_create='execute'`, `context_type=
+> agent's environment markers (AGENT-07) and refused for a hash other than the current one; the grant is active
+> only while the recipe's `approval_hash` equals the granted hash — any change to the recipe's script or
+> permissions (by anyone, the assistant included) deactivates it, and only the owner granting the new hash or a
+> return to the exact granted text re-activates it. An auto write is still one `agent_actions` row (`trust_at_create='execute'`, `context_type=
 > 'automation_run'`) applied through `Apply`'s claim (AGENT-05), logged as an `auto=1` step of its run and shown in
 > the Inbox as applied. No other surface, binding, trust row or grant can execute an External tool.
 
@@ -946,10 +966,10 @@ sharing personal recipes; a visual flow editor; parameterised `shell` commands; 
 | Phase | Depends on | Delivers |
 |---|---|---|
 | **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; per-run token budgets (the daily cap was retired by §20.3 D25); Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs/wake`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
-| **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
+| **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00117; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
 | **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; quick run from the "Run Automation…" palette (⌃⌘R) and the menu-bar tray with a finish notice (§12.7, ask #295); the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
-| **P5 workbench** | P1, P2, P3 | Workbench scope, repo recipes in `.watchtower/automations/`, Desktop rescan for protected folders, header buttons, `session()` + `AutomationSessionCenter`, `shell()`, `ask()`, migration 00115, AUTO-12 (session/shell half), AUTO-13; the PROJ-03 amendment (§14.6, approved in ask #272). |
+| **P5 workbench** | P1, P2, P3 | Workbench scope, repo recipes in `.watchtower/automations/`, Desktop rescan for protected folders, header buttons, `session()` + `AutomationSessionCenter`, `shell()`, `ask()`, migration 00118, AUTO-12 (session/shell half), AUTO-13; the PROJ-03 amendment (§14.6, approved in ask #272). |
 | **P6 mcp, agent, templates** | P1, P2 | `mcp()`, `agent()` (§6.5, §20 D3), five templates + gallery (`templates`, `install-template`), e2e over the templates; the QC-02 amendment (§14.7, approved in ask #272). |
 
 P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases, P2 the registry). Swift work
@@ -1014,7 +1034,7 @@ per watched run), `TrayRunAutomationMenuTests` (grouping and status text).
 `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails` (ask #272),
 `TestSaveAutomation_WorkbenchWritesIntoItsFolder` (PROJ-03, ask #272),
 `TestSession_WaitsForAppThenSessionThenFinish`, `TestAsk_WaitsAndDelivers`, `TestAuto12_DryRunStartsNoSessionOrShell`,
-`TestRescan_WorkbenchRecipeNeedsConfirmation`, migration test for 00115. Swift — `WorkbenchHeaderAutomationButtonsTests`
+`TestRescan_WorkbenchRecipeNeedsConfirmation`, migration test for 00118. Swift — `WorkbenchHeaderAutomationButtonsTests`
 (runnable/unconfirmed/active states, confirm dialog), `AutomationSessionCenterTests` (launch on request, writes
 session id, wakes daemon; app launched later picks pending request).
 
@@ -1117,7 +1137,7 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
   `include_linked` says. `digests:read` stays (`list_digests`/`get_digest`/`get_today_briefing`) and `find_experts`
   stays under `people:read`; neither is `tool:`-only.
 
-### 20.3 Rulings after P1 (asks #293, #294, #295)
+### 20.3 Rulings after P1 (asks #293, #294, #295, #315)
 
 24. **D24 (ask #293): enable and delete are owner-only.** `automations enable` and `automations delete` are refused
     under every AGENT-07 marker (`agentEnvMarkers`, `WATCHTOWER_AUTOMATION_RUN_ID` included) through the same
@@ -1152,3 +1172,11 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
     accepted the confirm sheet's author-line limit (§12.2: only the assistant's saves are attributed). Both call `automations run <id> --json` like the
     card's Run now and respect the feature-off refusal (§12.7). No Go change beyond P3's `show --json` additions
     (§12.2): the CLI already returns `run_id`/`coalesced`, and runs carry `summary`/`error` for the notice.
+28. **D28 (ask #315): `output.slack` writes only where the recipe has the right.** `output.slack` needs both
+    `outputs: [slack]` and the manifest's `slack:write@<account>` covering the call (the same scope check a
+    `tool("send_slack_message")` call passes, `AllowTool`); a denial's `needed` names the `slack:write` scope
+    (`slack:write@*` when no account resolves). The output shortcut therefore admits an auto grant on
+    `send_slack_message` only together with a `slack:write` entry (`AdmitsWrite`), so a grant never exceeds the
+    recipe's scope. `output.target` is unchanged: `outputs: [target]` is its whole gate. Guards
+    `TestOutput_SlackNeedsSlackWriteScope`, `TestManifest_AllowOutputToolSlackNeedsWriteScope`,
+    `TestManifest_AdmitsWrite`.

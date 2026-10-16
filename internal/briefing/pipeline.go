@@ -161,11 +161,14 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	peopleSummaryCtx := p.gatherPeopleSummary()
 	profileCtx := formatUserProfile(profile)
 	jiraCtx := p.gatherJiraContext(owner)
-	workbenchesCtx, hasRealWorkbenches := p.gatherWorkbenches(p.revisionWindowStart(currentUserID, date))
+	sinceLastBriefing := p.revisionWindowStart(currentUserID, date)
+	workbenchesCtx, hasRealWorkbenches := p.gatherWorkbenches(sinceLastBriefing)
 	memRevisionsCtx := p.gatherMemoryRevisions(currentUserID, date)
+	automationsCtx, hasRealAutomationOutputs := p.gatherAutomationOutputs(p.automationOutputsSince(currentUserID, date))
 
 	// Check we have some data (suggestion text alone doesn't count).
-	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealWorkbenches)
+	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealWorkbenches,
+		hasRealAutomationOutputs)
 	if !hasData {
 		p.logger.Println("briefing: no digests or tracks available, skipping")
 		return 0, nil
@@ -203,6 +206,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		jiraCtx,
 		workbenchesCtx,
 		memRevisionsCtx,
+		automationsCtx,
 	)
 
 	// Prepend learned preferences (derived from catch-up review feedback) so the

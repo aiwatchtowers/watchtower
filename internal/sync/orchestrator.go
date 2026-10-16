@@ -77,6 +77,12 @@ type Orchestrator struct {
 	// reads it via SearchIncomplete to freeze the inbox watermark (INBOX-09).
 	searchIncomplete bool
 
+	// firstSyncFrom is the window start of the current Run's search sync when
+	// it was the account's completed first one (no usable watermark before,
+	// watermark written after); zero otherwise. Run resets it; the daemon
+	// reads it via FirstSyncFrom to start a history backfill.
+	firstSyncFrom time.Time
+
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
 	jiraKeyDetector interface {
@@ -174,6 +180,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
 	o.searchRateLimited = false
 	o.searchIncomplete = false
+	o.firstSyncFrom = time.Time{}
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)
 	return err

@@ -6,7 +6,7 @@ import ViewInspector
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The workbench header's `Terminal ▾ | Session | Board | Files | split | ⋯`
+/// The workbench header's `Terminal ▾ | Session | Board | Files | Changes | split | ⋯`
 /// (spec 2026-10-03-workbench-session-report Part 7, the owner's pick on
 /// board #357): the buttons' order, what each toggle does, the Session
 /// view's pairing with its session in a split, and the ⋯ menu's actions.
@@ -103,9 +103,10 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
 
     // MARK: - View buttons
 
-    /// The owner's pick: Terminal ▾ | Session | Board | Files, the sessions
-    /// chevron on the Terminal button only.
-    func testTheViewButtonsReadTerminalSessionBoardFiles() async throws {
+    /// The owner's pick: Terminal ▾ | Session | Board | Files, plus the diff
+    /// reviewer's Changes (board #328); the sessions chevron on the Terminal
+    /// button only.
+    func testTheViewButtonsReadTerminalSessionBoardFilesChanges() async throws {
         let s = try await seed()
         let sut = controls(makeVM(), s.project)
 
@@ -113,11 +114,31 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         // archive setting's choices).
         let buttons = try sut.inspect().find(ViewType.ForEach.self)
         let titles = try buttons.findAll(ViewType.Toggle.self).map(Self.title)
-        XCTAssertEqual(titles, ["Terminal", "Session", "Board", "Files"])
+        XCTAssertEqual(titles, ["Terminal", "Session", "Board", "Files", "Changes"])
         XCTAssertNoThrow(try buttons.tupleView(0).find(ViewType.Menu.self), "the sessions chevron sits by Terminal")
-        for index in 1..<4 {
+        for index in 1..<5 {
             XCTAssertThrowsError(try buttons.tupleView(index).find(ViewType.Menu.self), "no chevron by \(titles[index])")
         }
+    }
+
+    /// Changes with no session to review is disabled, not a click that does
+    /// nothing; with a session listed it is enabled.
+    func testTheChangesButtonIsDisabledWithoutASession() async throws {
+        let dir = folder.appendingPathComponent("empty", isDirectory: true).path
+        let empty = try await pool.write { d in
+            let p = try TestDatabase.insertWorkbench(d, name: "empty", folder: dir)
+            return try XCTUnwrap(try Workbench.fetchOne(d, sql: "SELECT * FROM projects WHERE id = ?", arguments: [p]))
+        }
+        let vm = makeVM()
+        await vm.loadSessions(projectID: empty.id)
+        XCTAssertNil(vm.sessionViewTarget(projectID: empty.id))
+        XCTAssertTrue(try toggle("Changes", controls(vm, empty)).isDisabled())
+        XCTAssertFalse(try toggle("Board", controls(vm, empty)).isDisabled())
+
+        let s = try await seed()
+        await vm.loadSessions(projectID: s.project.id)
+        XCTAssertNotNil(vm.sessionViewTarget(projectID: s.project.id))
+        XCTAssertFalse(try toggle("Changes", controls(vm, s.project)).isDisabled())
     }
 
     /// Every view button toggles its view as before, the Session button

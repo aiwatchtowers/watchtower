@@ -3,6 +3,8 @@ package automationstest
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
 	"sync"
 
 	"watchtower/internal/automations"
@@ -86,13 +88,18 @@ type FakeProposal struct {
 // FakeRegistry is an automations.ToolRegistry over a fixed tool set. CallRead
 // returns ReadResults[name] (or ReadErrors[name]) and refuses an unknown or
 // write tool the way *tools.Registry does; Propose records the call and
-// returns a pending receipt. Neither runs a tool's Execute.
+// returns ProposeReceipts[name] (or ProposeErrors[name]; a pending receipt
+// when neither is set). Neither runs a tool's Execute.
 type FakeRegistry struct {
 	Tools       map[string]*tools.Tool
 	ReadResults map[string]any
 	ReadErrors  map[string]error
 	Reads       []FakeRead
 	Proposed    []FakeProposal
+	// ProposeReceipts and ProposeErrors script Propose per tool name. A
+	// scripted receipt with ActionID 0 gets the proposal's number.
+	ProposeReceipts map[string]tools.Receipt
+	ProposeErrors   map[string]error
 
 	mu sync.Mutex
 }
@@ -105,6 +112,20 @@ func (r *FakeRegistry) Get(name string) (*tools.Tool, bool) {
 	defer r.mu.Unlock()
 	t, ok := r.Tools[name]
 	return t, ok
+}
+
+// List returns the tools visible on surface, sorted by name.
+func (r *FakeRegistry) List(surface string) []*tools.Tool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*tools.Tool, 0, len(r.Tools))
+	for _, t := range r.Tools {
+		if t.VisibleOn(surface) {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b *tools.Tool) int { return strings.Compare(a.Name, b.Name) })
+	return out
 }
 
 // CallRead records the read and returns its scripted result.
@@ -125,7 +146,8 @@ func (r *FakeRegistry) CallRead(_ context.Context, name string, args json.RawMes
 	return r.ReadResults[name], nil
 }
 
-// Propose records the proposal and returns a pending receipt.
+// Propose records the proposal and returns its scripted receipt or error
+// (a pending receipt by default).
 func (r *FakeRegistry) Propose(_ context.Context, name string, args json.RawMessage, b tools.Binding) (tools.Receipt, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -133,7 +155,17 @@ func (r *FakeRegistry) Propose(_ context.Context, name string, args json.RawMess
 		return tools.Receipt{}, tools.ErrUnknownTool
 	}
 	r.Proposed = append(r.Proposed, FakeProposal{Name: name, Args: append(json.RawMessage(nil), args...), Binding: b})
-	return tools.Receipt{ActionID: int64(len(r.Proposed)), Status: "pending", Tool: name}, nil
+	if err := r.ProposeErrors[name]; err != nil {
+		return tools.Receipt{}, err
+	}
+	rc, ok := r.ProposeReceipts[name]
+	if !ok {
+		rc = tools.Receipt{Status: "pending", Tool: name}
+	}
+	if rc.ActionID == 0 {
+		rc.ActionID = int64(len(r.Proposed))
+	}
+	return rc, nil
 }
 
 // ReadCalls returns a copy of the reads received so far.
@@ -148,4 +180,104 @@ func (r *FakeRegistry) ProposedCalls() []FakeProposal {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]FakeProposal(nil), r.Proposed...)
+}
+
+// FakeMCPCall is one Call a FakeMCP received.
+type FakeMCPCall struct {
+	Server, Tool string
+	Args         json.RawMessage
+}
+
+// FakeMCP is an automations.MCPCaller that records its calls. It returns
+// Result (null when empty) or Err.
+type FakeMCP struct {
+	Result json.RawMessage
+	Err    error
+
+	mu    sync.Mutex
+	calls []FakeMCPCall
+}
+
+var _ automations.MCPCaller = (*FakeMCP)(nil)
+
+// Call records the call and returns the scripted outcome.
+func (m *FakeMCP) Call(_ context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, FakeMCPCall{Server: server, Tool: tool, Args: append(json.RawMessage(nil), args...)})
+	return m.Result, m.Err
+}
+
+// Calls returns a copy of the calls received so far.
+func (m *FakeMCP) Calls() []FakeMCPCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]FakeMCPCall(nil), m.calls...)
+}
+
+// FakeAgent is an automations.AgentRunner that records its requests. OnRun,
+// when set, runs first; then each ModelCalls entry is one model call through
+// the request's hooks — BeforeModelCall (its error is returned at once),
+// then AfterModelCall with the entry's input and output tokens. With
+// UntilDone it then blocks until ctx ends and returns ctx.Err(); otherwise it
+// returns Result or Err.
+type FakeAgent struct {
+	RunnerName string // "" = "fake"
+	ModelCalls [][2]int
+	UntilDone  bool
+	OnRun      func(req automations.AgentRequest)
+	Result     automations.AgentResult
+	Err        error
+
+	mu         sync.Mutex
+	reqs       []automations.AgentRequest
+	afterCalls int
+}
+
+var _ automations.AgentRunner = (*FakeAgent)(nil)
+
+// Name is RunnerName, "fake" when empty.
+func (a *FakeAgent) Name() string {
+	if a.RunnerName == "" {
+		return "fake"
+	}
+	return a.RunnerName
+}
+
+// Run records req and plays the scripted model calls.
+func (a *FakeAgent) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	a.mu.Lock()
+	a.reqs = append(a.reqs, req)
+	a.mu.Unlock()
+	if a.OnRun != nil {
+		a.OnRun(req)
+	}
+	for _, u := range a.ModelCalls {
+		if err := req.BeforeModelCall(); err != nil {
+			return automations.AgentResult{}, err
+		}
+		req.AfterModelCall(u[0], u[1])
+		a.mu.Lock()
+		a.afterCalls++
+		a.mu.Unlock()
+	}
+	if a.UntilDone {
+		<-ctx.Done()
+		return automations.AgentResult{}, ctx.Err()
+	}
+	return a.Result, a.Err
+}
+
+// Requests returns a copy of the requests received so far.
+func (a *FakeAgent) Requests() []automations.AgentRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]automations.AgentRequest(nil), a.reqs...)
+}
+
+// AfterCalls is how many scripted model calls completed.
+func (a *FakeAgent) AfterCalls() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.afterCalls
 }

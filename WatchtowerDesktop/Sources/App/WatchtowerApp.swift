@@ -93,7 +93,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// `forwarded` flag of its own — so widening the wire payload cannot re-open it.
     ///
     /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`, `transcriptID`,
-    /// `projectId`, `pane`, `subjectId`, `askId`) must stay in sync with
+    /// `projectId`, `pane`, `subjectId`, `askId`, `automationId`, `runId`) must stay in sync with
     /// `NotificationForwarding.routedKeys`, the allowlist of what crosses the boundary.
     /// The self-received branches legitimately read more (`eventId`, `conferenceUrl`):
     /// those keys are absent by design from the forwarded payload and must stay so.
@@ -124,6 +124,8 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             }
         case "project": // the workbench push; its pre-rename type (spec 2026-10-02 A1)
             routeWorkbench(userInfo, appState: appState)
+        case AutomationRunNotifier.pushType:
+            routeAutomationRun(userInfo, appState: appState)
         case "meeting_reminder":
             if forwarded {
                 // Say it out loud rather than degrading in silence — the same
@@ -204,6 +206,32 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         } else {
             appState?.selectedDestination = .workbench
         }
+    }
+
+    /// An automation finish notice (spec §12.7): the run on its card, in a
+    /// main window brought forward (the run may have been started from the
+    /// tray with no window open). Pure navigation, so no `forwarded` gate;
+    /// without both ids it opens the Automations tab.
+    @MainActor
+    static func routeAutomationRun(_ userInfo: [AnyHashable: Any], appState: AppState?) {
+        appState?.bringMainWindowForward()
+        if let target = automationRunTarget(userInfo) {
+            appState?.openAutomationRun(automationID: target.automationID, runID: target.runID)
+        } else {
+            appState?.selectedDestination = .automations
+        }
+    }
+
+    /// The run a finish notice names. Ids arrive as Int64 when self-received
+    /// and restored by `ForwardedNotificationResponse.userInfo` when
+    /// forwarded; an NSNumber is accepted too (the `voice_label` precedent).
+    static func automationRunTarget(_ userInfo: [AnyHashable: Any]) -> (automationID: Int64, runID: Int64)? {
+        func int64(_ key: String) -> Int64? {
+            userInfo[key] as? Int64 ?? (userInfo[key] as? NSNumber)?.int64Value
+        }
+        guard let automationID = int64(NotificationForwarding.automationIDKey),
+              let runID = int64(NotificationForwarding.runIDKey) else { return nil }
+        return (automationID, runID)
     }
 
     static func workbenchRoute(_ userInfo: [AnyHashable: Any]) -> WorkbenchRoute? {
@@ -357,6 +385,8 @@ struct WatchtowerApp: App {
             .overlay(alignment: .top) {
                 UpcomingMeetingBannerView()
             }
+            // "Run Automation…" (⌃⌘R) over every destination, never per tab.
+            .modifier(RunAutomationPaletteHost(appState: appState))
             .background(OpaqueWindowBackground())
             // `.environment` must wrap the overlay too: the overlay attaches as a
             // sibling outside any environment applied deeper on NavigationRoot, so
@@ -438,6 +468,16 @@ struct WatchtowerApp: App {
                     TrayAppDelegate.requestQuit()
                 }
                 .keyboardShortcut("q", modifiers: .command)
+            }
+            // Spec §12.7, owner ruling 2026-10-15: its own key equivalent,
+            // the same on every tab and window (⌘K stays Go to… / Search Chats).
+            CommandGroup(after: .newItem) {
+                if RunAutomationCommand.isAvailable(featureEnabled: appState.isAutomationsFeatureEnabled,
+                                                    hasCenter: appState.quickRunCenter != nil) {
+                    Button(RunAutomationCommand.title) { appState.showRunAutomationPalette() }
+                        .keyboardShortcut(KeyEquivalent(RunAutomationCommand.key),
+                                          modifiers: RunAutomationCommand.modifiers)
+                }
             }
             // Only while a workbench window is key (spec §10, ruling R36):
             // `keyWorkbench` is the workbench on screen while its window (or
@@ -642,5 +682,40 @@ class OpaqueBackgroundView: NSView {
             contentView.layer?.isOpaque = true
             contentView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         }
+    }
+}
+
+/// The tray's "Run automation ▸" alerts (spec §12.7): app-modal, since the
+/// tray has no window to put a sheet on (ruling R-P3-16). Closures, so a
+/// test can answer them.
+struct TrayAutomationAlerts {
+    /// "Run “<name>”?" with **Run** / **Cancel**; true for **Run**.
+    var confirmRun: @MainActor (QuickRunRow) -> Bool
+    /// A refusal (the CLI's message, the feature switched off).
+    var showRefusal: @MainActor (String) -> Void
+
+    @MainActor static var live: Self {
+        Self(
+            confirmRun: { row in
+                NSApp.activate(ignoringOtherApps: true)
+                let alert = NSAlert()
+                alert.messageText = "Run “\(row.name)”?"
+                alert.informativeText = [row.descriptionLead, "You'll get a notice when it ends."]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n\n")
+                alert.addButton(withTitle: "Run")
+                alert.addButton(withTitle: "Cancel")
+                return alert.runModal() == .alertFirstButtonReturn
+            },
+            showRefusal: { message in
+                NSApp.activate(ignoringOtherApps: true)
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "The automation did not run"
+                alert.informativeText = message
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+        )
     }
 }

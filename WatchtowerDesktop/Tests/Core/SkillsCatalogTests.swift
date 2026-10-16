@@ -642,7 +642,7 @@ final class SkillsCatalogTests: XCTestCase {
     /// sides: Go's `TestShippedPack` pins them for the daemon that deploys
     /// them, and this pins them for the chats that have to see them listed.
     /// A tightening of this parser that refuses a shipped file would otherwise
-    /// show up only as three skills quietly missing from every chat.
+    /// show up only as four skills quietly missing from every chat.
     func testShippedPackParsesHere() throws {
         let shipped = URL(fileURLWithPath: Self.goFixturesDir())
             .deletingLastPathComponent()
@@ -650,7 +650,7 @@ final class SkillsCatalogTests: XCTestCase {
             .path
         let files = try FileManager.default.contentsOfDirectory(atPath: shipped)
             .filter { $0.hasSuffix(".md") }
-        XCTAssertEqual(files.count, 3, "the shipped pack must be reachable at \(shipped)")
+        XCTAssertEqual(files.count, 4, "the shipped pack must be reachable at \(shipped)")
 
         for file in files {
             let name = String(file.dropLast(3))

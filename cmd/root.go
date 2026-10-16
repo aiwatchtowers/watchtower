@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/db/lockmetrics"
 	"watchtower/internal/repl"
 
 	"github.com/spf13/cobra"
@@ -72,6 +73,7 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 
 // Execute runs the root command and returns the exit code.
 func Execute() int {
+	lockmetrics.SetProcessRole(roleFor(os.Args[1:]))
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		var ec *exitCodeError

@@ -93,11 +93,13 @@ func noAsk(id int64) error {
 	return &ValidationError{Msg: fmt.Sprintf("no ask with id %d", id), Err: db.ErrAskNotFound}
 }
 
-// askInWorkbench loads ask id of workbenchID; another workbench's or a missing
-// one reads as noAsk.
+// askInWorkbench loads ask id of workbenchID; another workbench's, a missing
+// one or an automation run's (its run waits for the answer itself, never a
+// session: get_ask, withdraw_ask and previous_ask_id all come through here)
+// reads as noAsk.
 func askInWorkbench(d *db.DB, workbenchID, id int64) (*db.OwnerAsk, error) {
 	a, err := d.GetOwnerAsk(workbenchID, id)
-	if errors.Is(err, db.ErrAskNotFound) {
+	if errors.Is(err, db.ErrAskNotFound) || (err == nil && a.AutomationRunID.Valid) {
 		return nil, noAsk(id)
 	}
 	return a, err
@@ -531,7 +533,7 @@ func NewListAsks(sessionEnv func() string) *Tool {
 			if err != nil {
 				return nil, err
 			}
-			f := db.OwnerAskFilter{Statuses: askStatuses[a.Status], Limit: maxListedAsks}
+			f := db.OwnerAskFilter{Statuses: askStatuses[a.Status], Limit: maxListedAsks, ExcludeAutomation: true}
 			if a.Session == "mine" {
 				s, err := terminalSessionOf(d, p.ID, sessionEnv)
 				if err != nil {
