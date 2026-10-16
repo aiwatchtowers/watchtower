@@ -364,7 +364,9 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         XCTAssertEqual(opened, 1)
     }
 
-    func testTheTitleRowShortcutsAreOffUnderThePalette() async throws {
+    /// Under the palette the title row's toggle is off; Go to… stays on.
+    /// (Their chords are the Workbench menu's since issue #288.)
+    func testTheTitleRowToggleIsOffUnderThePalette() async throws {
         let vm = makeVM()
         let actions = WorkbenchSwitcherActions(openFolder: {}, showAll: {})
 
@@ -373,18 +375,35 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         let closed = try WorkbenchTitleRow(vm: vm, switcherActions: actions, paletteOpen: false) {}
             .inspect().findAll(ViewType.Button.self)
 
-        // The toggle, Go to…, ⌘[, ⌘T and ⌘1…⌘9 (⇧⌘O is Open Quickly's, R26).
-        XCTAssertEqual(open.count, 4 + SessionSwitcherPresentation.maxShortcut)
-        let goTo = { (button: InspectableView<ViewType.Button>) in
-            (try? button.accessibilityLabel().string()) == "Go to…"
-        }
-        XCTAssertTrue(open.filter { !goTo($0) }.allSatisfy { $0.isDisabled() }, "nothing changes the page behind it")
-        XCTAssertFalse(open.first(where: goTo)?.isDisabled() ?? true)
-        // Closed: the toggle and Go to… work; the session keys need a page,
-        // ⌘[ a list off screen.
-        let toggle = try XCTUnwrap(closed.first { (try? $0.accessibilityLabel().string()) == "Hide Sessions Panel" })
-        XCTAssertFalse(toggle.isDisabled())
-        XCTAssertEqual(closed.filter { !$0.isDisabled() }.count, 2)
+        let label = { (button: InspectableView<ViewType.Button>) in try? button.accessibilityLabel().string() }
+        XCTAssertTrue(try XCTUnwrap(open.first { label($0) == "Hide Sessions Panel" }).isDisabled())
+        XCTAssertFalse(try XCTUnwrap(open.first { label($0) == "Go to…" }).isDisabled())
+        XCTAssertFalse(try XCTUnwrap(closed.first { label($0) == "Hide Sessions Panel" }).isDisabled())
+    }
+
+    /// The Workbench menu (issue #288): nothing that changes the page works
+    /// under the palette; ⌘T and ⌘1…⌘9 need a workbench page.
+    func testTheWorkbenchMenuIsOffUnderThePaletteAndItsSessionKeysNeedAPage() async throws {
+        let a = try await workbench("alpha")
+        let vm = makeVM()
+        await vm.reload()
+        var opened = 0
+        let menu = { (paletteOpen: Bool) in WorkbenchMenuContext(vm: vm, paletteOpen: paletteOpen) { opened += 1 } }
+
+        XCTAssertFalse(menu(false).canUseSessionKeys, "no workbench page")
+        XCTAssertTrue(menu(false).canTogglePanel)
+
+        vm.drill(into: a)
+        XCTAssertTrue(menu(false).canUseSessionKeys)
+        XCTAssertFalse(menu(true).canUseSessionKeys, "nothing changes the page behind the palette")
+        XCTAssertFalse(menu(true).canTogglePanel)
+        XCTAssertFalse(menu(true).canGoBack)
+
+        XCTAssertEqual(menu(false).panelToggleTitle, "Hide Sessions Panel")
+        vm.panelVisible = false
+        XCTAssertEqual(menu(false).panelToggleTitle, "Show Sessions Panel")
+        menu(false).openGoTo()
+        XCTAssertEqual(opened, 1)
     }
 
     // MARK: - Failed reads
