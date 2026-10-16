@@ -204,6 +204,16 @@ func TestReadsContent_AddAndPatchDiffTree(t *testing.T) {
 	}
 }
 
+// apply reads and writes work-tree files and hash-object hashes one, both
+// through the folder's filter drivers (REVIEW-05).
+func TestReadsContent_ApplyAndHashObject(t *testing.T) {
+	for _, args := range [][]string{{"apply", "--check", "-R", "p"}, {"apply", "-R", "p"}, {"hash-object", "--", "a"}} {
+		if !readsContent(args) {
+			t.Errorf("readsContent(%v) = false, want true", args)
+		}
+	}
+}
+
 func TestExecEnv_KeepsCallerIndexDropsInherited(t *testing.T) {
 	t.Setenv("GIT_INDEX_FILE", "/inherited/index")
 	out, _, err := ExecEnv(context.Background(), t.TempDir(), []string{"GIT_INDEX_FILE=/caller/index"}, nil,
