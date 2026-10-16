@@ -182,3 +182,25 @@ func TestAutomationsGenerator_ChildEnvHasNoAgentMarkers(t *testing.T) {
 		assert.NotContains(t, markers, name, "the generator's child carries %s", name)
 	}
 }
+
+func TestAutomationAuthoringDeps_BackendsCarryMCPAndAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg, err := config.Load(fakeModelConfig(t, t.TempDir(), "claude", "/usr/bin/false"))
+	require.NoError(t, err)
+
+	b := automationAuthoringDeps(cfg, nil).Backends()
+
+	assert.NotNil(t, b.Generator)
+	assert.NotNil(t, b.Registry)
+	assert.NotNil(t, b.MCP)
+	assert.NotNil(t, b.Agent)
+	// The agent runner's children get an allowlisted env, never the markers.
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("WATCHTOWER_TERMINAL_SESSION_ID", "1")
+	for _, kv := range automationAgentEnv(1) {
+		name, _, _ := strings.Cut(kv, "=")
+		if name != automations.RunEnvMarker { // the run's own marker is set on purpose
+			assert.NotContains(t, agentEnvMarkers, name)
+		}
+	}
+}
