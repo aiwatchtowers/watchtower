@@ -112,7 +112,7 @@ func TestLoadLenses_RefusesUnsafeFiles(t *testing.T) {
 			require.NoError(t, os.MkdirAll(other, 0o755))
 			require.NoError(t, os.WriteFile(filepath.Join(other, "review.md"), []byte("## Docs\n- q\n"), 0o644))
 			require.NoError(t, os.Symlink(other, filepath.Join(dir, ".watchtower")))
-		}, ".watchtower", false},
+		}, "not a real directory", false},
 		{"fifo", func(t *testing.T, dir string) {
 			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".watchtower"), 0o755))
 			require.NoError(t, syscall.Mkfifo(filepath.Join(dir, ".watchtower", "review.md"), 0o644))
@@ -161,4 +161,11 @@ func TestLoadLenses_RefusesUnsafeFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseLenses_IgnoresLeadingBOM(t *testing.T) {
+	ls, notes := ParseLenses([]byte("\xef\xbb\xbf## Tests\n- Extra?\n"))
+	assert.Empty(t, notes)
+	tests := findLens(t, ls, "tests")
+	assert.Equal(t, "Extra?", tests.Items[len(tests.Items)-1].Text)
 }
