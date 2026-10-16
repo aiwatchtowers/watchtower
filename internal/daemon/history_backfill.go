@@ -156,36 +156,10 @@ func (d *Daemon) historyBackfillSources() []historybackfill.Source {
 // IMAP accounts have no enabled flag and no revoked
 // state, so only a deleted mailbox ends theirs.
 func (d *Daemon) accountState(kind string, id int64) historybackfill.AccountState {
-	var status string
-	var err error
-	switch kind {
-	case "slack":
-		var a db.SlackAccount
-		a, err = d.db.GetSlackAccount(id)
-		status = a.Status
-		if err == nil && (status == "removed" || !a.Enabled) {
-			return historybackfill.AccountGone
-		}
-	case "gmail":
-		var a db.GoogleAccount
-		a, err = d.db.GetGoogleAccount(id)
-		status = a.Status
-		if err == nil && (!d.config.Gmail.Enabled || !a.GmailEnabled) {
-			return historybackfill.AccountGone
-		}
-	case "imap":
-		_, err = d.db.GetEmailAccount(id) // IMAP has no revoked state
-	case "jira":
-		var a db.JiraAccount
-		a, err = d.db.GetJiraAccount(id)
-		status = a.Status
-		if err == nil && (!d.config.Jira.Enabled || status == "removed" || !a.Enabled) {
-			return historybackfill.AccountGone
-		}
-	default:
-		return historybackfill.AccountGone
-	}
+	status, off, err := d.backfillAccount(kind, id)
 	switch {
+	case off:
+		return historybackfill.AccountGone
 	case errors.Is(err, sql.ErrNoRows), errors.Is(err, db.ErrJiraAccountNotFound):
 		return historybackfill.AccountGone
 	case err != nil:
@@ -195,6 +169,28 @@ func (d *Daemon) accountState(kind string, id int64) historybackfill.AccountStat
 		return historybackfill.AccountRevoked
 	}
 	return historybackfill.AccountOK
+}
+
+// backfillAccount looks up a row's account and returns its status, whether
+// it is off (the lookup succeeded but the account or its source is turned
+// off, or the kind is unknown) and the lookup error.
+func (d *Daemon) backfillAccount(kind string, id int64) (string, bool, error) {
+	switch kind {
+	case "slack":
+		a, err := d.db.GetSlackAccount(id)
+		return a.Status, err == nil && (a.Status == "removed" || !a.Enabled), err
+	case "gmail":
+		a, err := d.db.GetGoogleAccount(id)
+		return a.Status, err == nil && (!d.config.Gmail.Enabled || !a.GmailEnabled), err
+	case "imap":
+		_, err := d.db.GetEmailAccount(id) // IMAP has no revoked state
+		return "", false, err
+	case "jira":
+		a, err := d.db.GetJiraAccount(id)
+		return a.Status, err == nil && (!d.config.Jira.Enabled || a.Status == "removed" || !a.Enabled), err
+	default:
+		return "", true, nil
+	}
 }
 
 func (d *Daemon) historyBackfillHooksStampPath() string {

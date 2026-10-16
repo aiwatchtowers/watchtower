@@ -103,22 +103,8 @@ func (r *Runner) runRows(ctx, bctx context.Context, rows []db.HistoryBackfill) e
 
 // runRow handles one row; stop ends the Step.
 func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (stop bool, err error) {
-	switch r.Account(row.SourceKind, row.AccountID) {
-	case AccountGone:
-		return false, r.setStatus(row, "off")
-	case AccountRevoked:
-		if row.Status != "paused" {
-			if err := r.setStatus(row, "paused"); err != nil {
-				return false, err
-			}
-		}
-		return false, r.clearWaiting(row)
-	case AccountOK:
-	}
-	if row.Status == "paused" {
-		if err := r.setStatus(row, "running"); err != nil {
-			return false, err
-		}
+	if active, err := r.applyAccountState(row); err != nil || !active {
+		return false, err
 	}
 
 	src := r.source(row.SourceKind, row.AccountID)
@@ -141,14 +127,7 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 	}
 
 	if r.nearLimit() {
-		if row.Waiting != waitingPlanLimit {
-			if err := r.Store.SetHistoryBackfillWaiting(row.ID, waitingPlanLimit, r.Now()); err != nil {
-				return true, err
-			}
-			row.Waiting = waitingPlanLimit
-			r.logf("history backfill: Claude plan limit near, processing waits (%s account %d)", row.SourceKind, row.AccountID)
-		}
-		return true, nil
+		return true, r.markPlanLimitWaiting(row)
 	}
 	if err := r.clearWaiting(row); err != nil {
 		return true, err
@@ -162,6 +141,43 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 		return true, nil // budget cut or lock held: retry the chunk next cycle
 	}
 	return false, r.advance(row, fromTS)
+}
+
+// applyAccountState brings the row's status in line with its account: a
+// gone account turns the row off, a revoked one pauses it, and an OK one
+// resumes a paused row. active is false when the row must not run now.
+func (r *Runner) applyAccountState(row *db.HistoryBackfill) (active bool, err error) {
+	switch r.Account(row.SourceKind, row.AccountID) {
+	case AccountGone:
+		return false, r.setStatus(row, "off")
+	case AccountRevoked:
+		if row.Status != "paused" {
+			if err := r.setStatus(row, "paused"); err != nil {
+				return false, err
+			}
+		}
+		return false, r.clearWaiting(row)
+	case AccountOK:
+	}
+	if row.Status == "paused" {
+		if err := r.setStatus(row, "running"); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// markPlanLimitWaiting records that the plan gate holds the row.
+func (r *Runner) markPlanLimitWaiting(row *db.HistoryBackfill) error {
+	if row.Waiting == waitingPlanLimit {
+		return nil
+	}
+	if err := r.Store.SetHistoryBackfillWaiting(row.ID, waitingPlanLimit, r.Now()); err != nil {
+		return err
+	}
+	row.Waiting = waitingPlanLimit
+	r.logf("history backfill: Claude plan limit near, processing waits (%s account %d)", row.SourceKind, row.AccountID)
+	return nil
 }
 
 // fail records a chunk failure; the third failure of a chunk skips it. A
