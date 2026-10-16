@@ -1,8 +1,12 @@
 # Keyboard shortcuts
 
-Every key equivalent in the app. **Help → Keyboard Shortcuts** opens this list in a window. On a workbench page the **Workbench** menu in the menu bar shows the workbench's chords, and the **Navigate** menu shows the Files editor's; the tray's **New Voice Idea** shows ⌃⌥D. Some rows work only on a given tab or while a window is in front; that is noted per area.
+Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows the same list in a window. On a workbench page the **Workbench** menu holds the workbench's chords and the **Navigate** menu the Files editor's; the tray's **New Voice Idea** shows ⌃⌥D. Some chords differ by tab: ⌘K is **Search chats** in AI Chat and **Go to…** on the Workbench tab, ⌘N is **New chat** in AI Chat and **New target** in Targets.
 
-## Global
+## By area
+
+**Help → Keyboard Shortcuts** opens this list in a window. On a workbench page the **Workbench** menu shows the workbench's chords and the **Navigate** menu the Files editor's; the menu-bar icon's **New Voice Idea** shows ⌃⌥D. Some chords mean different things on different tabs: ⌘K is **Search chats** in AI Chat and **Go to…** on the Workbench tab, ⌘N is **New chat** in AI Chat and **New target** in Targets.
+
+### Global
 
 | Keys | Action |
 |---|---|
@@ -12,7 +16,7 @@ Every key equivalent in the app. **Help → Keyboard Shortcuts** opens this list
 | **⌘,** | Settings |
 | **⌘Q** | Quit Watchtower |
 
-## AI Chat
+### AI Chat
 
 | Keys | Action |
 |---|---|
@@ -25,7 +29,7 @@ Every key equivalent in the app. **Help → Keyboard Shortcuts** opens this list
 | **⌘Return** | Save & Send an edited message |
 | **↑ / ↓** | Previous / next chat (in the chat list) |
 
-## Targets
+### Targets
 
 | Keys | Action |
 |---|---|
@@ -36,13 +40,13 @@ Every key equivalent in the app. **Help → Keyboard Shortcuts** opens this list
 | **⌘Return / ⌃Return** | Send a comment, or save the text you are editing (target comments) |
 | **Esc** | Cancel editing |
 
-## Ideas
+### Ideas
 
 | Keys | Action |
 |---|---|
 | **⌘Return** | Create (new idea) |
 
-## Workbench
+### Workbench
 
 The Workbench menu lists most of these.
 
@@ -57,7 +61,7 @@ The Workbench menu lists most of these.
 | **A** | Waiting for you (nothing focused) |
 | **Esc** | Board: close the target panel, then leave the group |
 
-## Sessions Panel
+### Sessions Panel
 
 After a click on the panel's empty space, the SESSIONS label or the group header.
 
@@ -68,9 +72,8 @@ After a click on the panel's empty space, the SESSIONS label or the group header
 | **⌘⌫** | Delete the highlighted session |
 | **⌘Z** | Undo the delete |
 | **Esc** | Back to the terminal |
-| **Tab / ⇧Tab** | Move focus on / back out of the panel |
 
-## Go to… Palette
+### Go to… Palette
 
 | Keys | Action |
 |---|---|
@@ -79,7 +82,7 @@ After a click on the panel's empty space, the SESSIONS label or the group header
 | **⌘Return** | Open a session of this workbench beside the one on screen |
 | **Esc** | Close |
 
-## Waiting for You
+### Waiting for You
 
 Single keys work while no field, terminal or editor has the keyboard.
 
@@ -94,7 +97,7 @@ Single keys work while no field, terminal or editor has the keyboard.
 | **⌘Return** | Answer, Send or Approve |
 | **⌘⇧Return** | Request changes (review) |
 
-## Files Editor
+### Files Editor
 
 With a workbench page on screen; the Navigate menu lists most of these.
 
@@ -111,7 +114,7 @@ With a workbench page on screen; the Navigate menu lists most of these.
 | **⌥⌘Return** | Hand to Session (an Ask AI answer) |
 | **⌥⌘M** | Comment on the selected lines (Changes pane) |
 
-## Open Quickly
+### Open Quickly
 
 | Keys | Action |
 |---|---|
@@ -122,7 +125,7 @@ With a workbench page on screen; the Navigate menu lists most of these.
 | **Space** | Quick Look |
 | **Esc** | Close |
 
-## Run Automation
+### Run Automation
 
 | Keys | Action |
 |---|---|
@@ -130,7 +133,7 @@ With a workbench page on screen; the Navigate menu lists most of these.
 | **Return** | Run the highlighted automation |
 | **Esc** | Close |
 
-## Voices
+### Voices
 
 On the active card.
 
@@ -140,8 +143,17 @@ On the active card.
 | **Return** | Confirm |
 | **1–9** | Pick that candidate |
 
-## Settings
+### Settings
 
 | Keys | Action |
 |---|---|
 | **⌘S** | Save |
+
+## Also
+
+- In the sessions panel, **Tab** / **⇧Tab** move the keyboard on to the next or previous part of the window.
+
+## Related
+
+- [Asks](../features/workbench/asks.md) — the Waiting for You keys in context.
+- [Code viewer](../features/workbench/code-viewer.md) — Open Quickly and the Files editor.
