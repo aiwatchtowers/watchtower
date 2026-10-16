@@ -7,7 +7,7 @@ A template gives you a working recipe to adapt instead of a blank page. Knowing 
 ## How it works
 ### The settings block
 The top of the file holds the settings:
-- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), a `button` (with a label), or `manual: true` (only when you run it).
+- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). The edit form calls the button option **When I press a button**; it draws no button anywhere. It only makes the recipe appear under its label in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu.
 - **Permissions**, such as `gmail:read@work`, `jira:read@PAY`, `llm:light`, `llm:strong`, `tool:create_jira_issue`. Reading all Slack messages or all calendar events needs `slack:read@*` or `calendar:read@*`.
 - **Outputs**, any of `inbox`, `briefing`, `report`, `target`, `slack`. Posting to Slack also needs `slack:write@<account>`.
 - **Budget**: tokens (1,000 to 2,000,000) and minutes (1 to 60).
@@ -36,7 +36,7 @@ A recipe can also live in a Workbench folder, in `.watchtower/automations/`, whe
 | `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` |
 | `release-buttons` | workbench | by hand | three recipes (release, deploy to test, deploy to stage), each running one `make` target and asking before it acts |
 
-`new-mail-summary` is written for new-mail events, which are not available. Run it by hand after listing your mailboxes in the script's `scheduledAccounts`, or switch its trigger to a schedule.
+`new-mail-summary` is triggered by new-mail events, and nothing sends those events today, so it never starts by itself. Put your mailboxes' labels or addresses in `scheduledAccounts` in the script, then run it by hand, or change its trigger to a schedule.
 
 ## When it's empty or wrong
 - **"No templates yet."** The command-line tool is older than the app; update Watchtower.
