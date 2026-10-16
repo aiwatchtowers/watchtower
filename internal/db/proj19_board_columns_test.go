@@ -136,6 +136,35 @@ func TestProj19_ColumnMoveWritesNoHistory(t *testing.T) {
 	assert.False(t, statusActor(t, d, tid).Valid, "an unused claim is dropped")
 }
 
+// A move between two columns of the same status writes only the column:
+// the leaf's progress stays and no history row is written.
+func TestProj19_SameStatusColumnMoveKeepsProgress(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	cols := replaceColumns(t, d, wb,
+		BoardColumn{Status: "in_progress", Title: "Spec"},
+		BoardColumn{Status: "in_progress", Title: "Code"})
+	tid := SeedTestWorkbenchTarget(t, d, wb, sql.NullInt64{}, "task")
+	spec, code := columnID(t, cols, "Spec"), columnID(t, cols, "Code")
+	setColumn(t, d, tid, "in_progress", &spec)
+	require.NoError(t, d.SetTargetProgress(int(tid), 0.4))
+	before := len(statusHistory(t, d, tid))
+
+	setColumn(t, d, tid, "in_progress", &code)
+
+	assert.Equal(t, nullID(code), targetColumn(t, d, tid))
+	got, err := d.GetTargetByID(int(tid))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.4, got.Progress, 1e-9, "a column move keeps the progress")
+	assert.Len(t, statusHistory(t, d, tid), before)
+
+	// A status change still resets it as today.
+	setColumn(t, d, tid, "done", nil)
+	got, err = d.GetTargetByID(int(tid))
+	require.NoError(t, err)
+	assert.InDelta(t, 1.0, got.Progress, 1e-9)
+}
+
 func TestProj19_DeletedColumnFallsBack(t *testing.T) {
 	d := openTestDB(t)
 	wb := newTestWorkbench(t, d)
@@ -196,6 +225,7 @@ func TestReplaceBoardColumns_Validates(t *testing.T) {
 		"hiding todo":          {Hidden: []string{"todo"}},
 		"status change":        {Columns: []BoardColumn{{ID: code.ID, Status: "todo", Title: "Code"}}},
 		"another workbench id": {Columns: []BoardColumn{code, {ID: foreign.Columns[0].ID, Status: "todo", Title: "Inbox"}}},
+		"hidden with columns":  {Columns: []BoardColumn{{Status: "in_review", Title: "QA"}}, Hidden: []string{"in_review"}},
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

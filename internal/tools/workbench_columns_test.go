@@ -81,6 +81,18 @@ func TestUpdateTarget_ColumnSetsStatusAndColumn(t *testing.T) {
 	assert.Len(t, again, len(history))
 }
 
+func TestUpdateTarget_ColumnWithinOneStatusKeepsProgress(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	seedColumns(t, fx.d, fx.a)
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"column":"Spec","progress":0.4,"reason":"r"}`, fx.aTarget))
+
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"column":"Code","reason":"design done"}`, fx.aTarget))
+	got, err := fx.d.GetTargetByID(int(fx.aTarget))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.4, got.Progress, 1e-9)
+}
+
 func TestUpdateTarget_ColumnResolvesByTitleCaseInsensitiveAndImplicitLabel(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := workbenchRegistry(t, fx.d)

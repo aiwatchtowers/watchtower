@@ -261,7 +261,13 @@ func validateBoardColumns(in BoardColumns) ([]BoardColumn, []string, error) {
 		}
 		cols = append(cols, c)
 	}
-	return cols, normalizeHidden(in.Hidden), nil
+	hidden := normalizeHidden(in.Hidden)
+	for _, s := range hidden {
+		if perStatus[s] > 0 {
+			return nil, nil, columnsErrorf("%q: hide it or give it columns, not both", s)
+		}
+	}
+	return cols, hidden, nil
 }
 
 // writeBoardColumns applies cols over the stored columns of projectID inside
@@ -314,17 +320,29 @@ func writeBoardColumns(tx *sql.Tx, projectID int64, stored, cols []BoardColumn) 
 }
 
 // SetTargetColumnTx moves target targetID to status and column columnID (nil
-// = the status's first column) in one UPDATE of status, board_column_id and
-// status_actor inside tx, so the PROJ-19 check sees the new pair; a status
-// change is recorded with actor (PROJ-06) and gets the same follow-ups as
-// UpdateTargetStatusAsTx. A column that is not of the target's workbench and
-// status is refused by the trigger.
+// = the status's first column) inside tx. A status change is one UPDATE of
+// status, board_column_id and status_actor, so the PROJ-19 check sees the new
+// pair; it is recorded with actor (PROJ-06) and gets the same follow-ups as
+// UpdateTargetStatusAsTx. With the status unchanged only board_column_id is
+// written: the leaf keeps its progress and no history row is added. A column
+// that is not of the target's workbench and status is refused by the trigger.
 func (db *DB) SetTargetColumnTx(tx *sql.Tx, targetID int64, status string, columnID *int64, actor string) error {
 	col := sql.NullInt64{}
 	if columnID != nil {
 		col = sql.NullInt64{Int64: *columnID, Valid: true}
 	}
-	return setTargetStatusOn(tx, int(targetID), status, actor, &col)
+	var current string
+	if err := tx.QueryRow(`SELECT status FROM targets WHERE id = ?`, targetID).Scan(&current); err != nil {
+		return fmt.Errorf("reading target %d status: %w", targetID, err)
+	}
+	if current != status {
+		return setTargetStatusOn(tx, int(targetID), status, actor, &col)
+	}
+	if _, err := tx.Exec(`UPDATE targets SET board_column_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ?`, col, targetID); err != nil {
+		return fmt.Errorf("moving target %d to its column: %w", targetID, err)
+	}
+	return nil
 }
 
 // boardLeafColumns maps each leaf target of workbench workbenchID to its

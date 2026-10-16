@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/workbenchcheck"
+	"watchtower/internal/workbenchmethod"
 )
 
 // Board columns in the brief (spec 2026-10-16 §5, PROJ-19).
@@ -40,8 +42,9 @@ Turned off: in_review (go straight to done once the review passes).`, briefColum
 
 func TestBriefColumns_LongFallsBackToOneLine(t *testing.T) {
 	def := db.BoardColumns{Columns: []db.BoardColumn{}, Hidden: []string{"blocked"}}
+	statuses := []string{"todo", "in_progress", "done", "dismissed"} // a hidden status has no columns
 	for i := range 20 {
-		def.Columns = append(def.Columns, db.BoardColumn{ID: int64(i + 1), Status: db.BoardStatusOrder[i%5],
+		def.Columns = append(def.Columns, db.BoardColumn{ID: int64(i + 1), Status: statuses[i%len(statuses)],
 			Title: fmt.Sprintf("Column %02d", i), Description: strings.Repeat("d", 100)})
 	}
 	out := briefColumnsSection(def)
@@ -88,4 +91,46 @@ func TestBriefColumns_NoneLeavesBriefUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	after, _ := runBriefHook(t, pid, "")
 	assert.Equal(t, before, after)
+}
+
+// The columns share the reserved rules slot with the folder rules: with both
+// at their caps and a full board, the brief still fits briefMaxChars, keeps
+// both whole and the board gives way.
+func TestBriefColumns_MaximalRulesStayWithinTheBrief(t *testing.T) {
+	body := strings.Repeat("я", briefFolderRulesInline)
+	e := workbenchmethod.Combine(db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardOff, FinishCheck: workbenchmethod.FinishOff},
+		methodFile(body))
+	def := db.BoardColumns{Hidden: []string{"in_review", "blocked"}}
+	for i := range 8 {
+		def.Columns = append(def.Columns, db.BoardColumn{ID: int64(i + 1), Status: []string{"todo", "in_progress", "done"}[i%3],
+			Title: fmt.Sprintf("Column %d", i)})
+	}
+	// Grow the descriptions to the last length that still renders in full.
+	columns := briefColumnsSection(def)
+	for n := 1; ; n++ {
+		for i := range def.Columns {
+			def.Columns[i].Description = strings.Repeat("d", n)
+		}
+		next := briefColumnsSection(def)
+		if strings.HasPrefix(next, "Board columns: ") {
+			break
+		}
+		columns = next
+	}
+	require.Greater(t, utf8.RuneCountInString(columns), briefColumnsChars-40, "the section is near its cap")
+
+	var board []db.BoardNode
+	for i := 1; i <= 200; i++ {
+		board = append(board, briefNode(i, "todo", strings.Repeat("Implement the next part of the plan ", 8)))
+	}
+	method := joinBriefLines(briefMethodSection(e, ""), columns)
+	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary, briefRules,
+		method, "Cleanup: /usr/local/bin/watchtower workbench cleanup --session 3")
+
+	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
+	assert.Contains(t, out, body)
+	assert.Contains(t, out, columns)
+	assert.Contains(t, out, "\nBoard columns (the owner's;")
+	assert.Contains(t, out, "\nTurned off: in_review (")
+	assert.Contains(t, out, "more targets (workbench_board)", "the board is what gives way")
 }
