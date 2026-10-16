@@ -65,3 +65,11 @@ extension GuideSearchTests {
         #expect(GuideSearch.rank("zzzz-no-match", in: [a, b], limit: 5).isEmpty)
     }
 }
+
+extension GuideSearchTests {
+    @Test("punctuation around query words is trimmed")
+    func trimsPunctuation() {
+        #expect(GuideSearch.rank("recap?", in: Self.sections, limit: 5).first?.anchor == "get-a-recap")
+        #expect(GuideSearch.rank("how do I get a recap?", in: Self.sections, limit: 5).first?.anchor == "get-a-recap")
+    }
+}

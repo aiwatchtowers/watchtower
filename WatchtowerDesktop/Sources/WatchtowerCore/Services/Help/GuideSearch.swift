@@ -1,11 +1,11 @@
 import Foundation
 
-/// Keyword ranking over guide sections; mirrors the Go ranker (internal/guide).
+/// Keyword ranking over guide sections; mirrors the Go ranker (internal/userguide).
 /// Each query word adds only its best match: 3 heading word prefix, else 2 page-title
-/// word prefix, else 1 text contains. Words are split on whitespace; words under 2 chars drop.
+/// word prefix, else 1 text contains. Words are lowercased, split on whitespace, trimmed of non-letter/digit edges; words under 2 chars drop.
 package enum GuideSearch {
     package static func rank(_ query: String, in sections: [GuideSection], limit: Int) -> [GuideSection] {
-        let words = words(query).filter { $0.count >= 2 }
+        let words = Self.words(query)
         guard !words.isEmpty, limit > 0 else { return [] }
         var scored: [(score: Int, index: Int)] = []
         for (index, section) in sections.enumerated() {
@@ -30,6 +30,16 @@ package enum GuideSearch {
     }
 
     private static func words(_ s: String) -> [String] {
-        s.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+        s.lowercased().split(whereSeparator: \.isWhitespace).compactMap { raw in
+            let word = trimEdges(raw)
+            return word.count >= 2 ? word : nil
+        }
+    }
+
+    private static func trimEdges(_ raw: Substring) -> String {
+        var chars = Array(raw)
+        while let first = chars.first, !first.isLetter && !first.isNumber { chars.removeFirst() }
+        while let last = chars.last, !last.isLetter && !last.isNumber { chars.removeLast() }
+        return String(chars)
     }
 }
