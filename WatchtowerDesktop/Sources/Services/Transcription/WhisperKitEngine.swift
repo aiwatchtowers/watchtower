@@ -15,8 +15,6 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
     static let languageCodes: Set<String> = Constants.languageCodes
 
     private let whisperKit: WhisperKit
-    private let dropLock = NSLock()
-    private var drops = WindowDropCounts()
 
     /// Bench seam: sees every decoded segment with its confidence before L3
     /// decides. nil in production.
@@ -65,13 +63,6 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
             avgLogprob: logprobs.isEmpty ? passAvgLogprob : logprobs.reduce(0, +) / Float(logprobs.count),
             compressionRatio: textTokens.isEmpty ? passCompressionRatio : TextUtilities.compressionRatio(of: textTokens)
         )
-    }
-
-    func takeDropCounts() -> WindowDropCounts {
-        dropLock.withLock {
-            defer { drops = WindowDropCounts() }
-            return drops
-        }
     }
 
     /// Downloads `modelName`'s files to the local WhisperKit cache without
@@ -137,18 +128,23 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
 
     /// Without the flag: today's decode, no L3.
     func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
-        try await transcribeWindow(samples, language: language, prompt: prompt, dropDoubtful: false)
+        try await transcribeWindow(samples, language: language, prompt: prompt, dropDoubtful: false).segments
     }
 
+    /// The drops of every decode pass the prompt fallback runs, added up.
     func transcribeWindow(
         _ samples: [Float],
         language: String,
         prompt: String?,
         dropDoubtful: Bool
-    ) async throws -> [TranscribedSegment] {
-        try await decodeWithPromptFallback(promptTokens: promptTokens(for: prompt)) { tokens in
-            try await decode(samples, language: language, promptTokens: tokens, dropDoubtful: dropDoubtful)
+    ) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) {
+        var drops = WindowDropCounts()
+        let segments = try await decodeWithPromptFallback(promptTokens: promptTokens(for: prompt)) { tokens in
+            let decoded = try await decode(samples, language: language, promptTokens: tokens, dropDoubtful: dropDoubtful)
+            drops.add(decoded.drops)
+            return decoded.segments
         }
+        return (segments, drops)
     }
 
     private func decode(
@@ -156,7 +152,7 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         language: String,
         promptTokens: [Int]?,
         dropDoubtful: Bool
-    ) async throws -> [TranscribedSegment] {
+    ) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) {
         let results: [TranscriptionResult] = try await whisperKit.transcribe(
             audioArray: samples,
             decodeOptions: Self.decodingOptions(language: language, promptTokens: promptTokens)
@@ -174,8 +170,7 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         let cleaned = confident.withoutHallucinations()
         counts.phrase += confident.count - cleaned.count
         counts.droppedChars += confident.map(\.text.count).reduce(0, +) - cleaned.map(\.text.count).reduce(0, +)
-        dropLock.withLock { drops.add(counts) }
-        return cleaned
+        return (cleaned, counts)
     }
 
     /// L3 over one decode's segments: maps each to a `TranscribedSegment`

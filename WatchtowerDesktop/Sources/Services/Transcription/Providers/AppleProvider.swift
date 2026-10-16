@@ -142,7 +142,7 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
         let (audio, gate) = await speechOnlyBuffer(samples, detector: detectors.detector(for: config), config: config)
         try Task.checkCancellation() // a cancelled detection is no reason to decode a half-muted buffer
         var drops = WindowDropCounts()
-        defer { gate.logSummary(engineDrops: drops) }
+        defer { gate.logSummary(callerDrops: drops) }
         guard let audio else {
             progress(1, 1)
             return TranscriptionOutput(text: "", langStats: [:])

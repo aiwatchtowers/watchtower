@@ -36,6 +36,8 @@ struct WindowSpeechGate {
     private var fallbackWindows = 0
     private var droppedSegments = 0
     private var droppedChars = 0
+    /// What the engine dropped itself in this run's decodes (L3, phrase filter).
+    private var engineDrops = WindowDropCounts()
 
     init(detector: SpeechDetector?, config: TranscriptionConfig) {
         self.detector = config.speechGate ? detector : nil
@@ -86,16 +88,29 @@ struct WindowSpeechGate {
         return kept
     }
 
+    /// Adds one decode's engine drops (`decodeGatedWindow`).
+    mutating func countEngineDrops(_ drops: WindowDropCounts) {
+        engineDrops.add(drops)
+    }
+
     /// One line per recording, counts only — enough to tell "a defence ate
     /// it" from "the model never heard it" when a transcript looks thin.
-    /// `engineDrops` adds what the engine dropped itself (L3, phrase filter).
-    func logSummary(engineDrops: WindowDropCounts) {
-        let total = silentWindows + fallbackWindows + droppedSegments + engineDrops.confidence + engineDrops.phrase
-        guard total > 0 else { return }
-        NSLog("SpeechGate: dropped vad=%d window(s), outside_speech=%d, confidence=%d, phrase=%d segment(s), "
-              + "%d chars; %d window(s) on the energy fallback",
-              silentWindows, droppedSegments, engineDrops.confidence, engineDrops.phrase,
-              droppedChars + engineDrops.droppedChars, fallbackWindows)
+    /// `callerDrops` adds what the caller dropped itself (the phrase filter
+    /// on a non-Whisper engine's text) to the engine drops counted here.
+    func logSummary(callerDrops: WindowDropCounts = WindowDropCounts()) {
+        if let line = summary(callerDrops: callerDrops) { NSLog("%@", line) }
+    }
+
+    /// `logSummary`'s line; nil when nothing was dropped.
+    func summary(callerDrops: WindowDropCounts = WindowDropCounts()) -> String? {
+        var drops = engineDrops
+        drops.add(callerDrops)
+        let total = silentWindows + fallbackWindows + droppedSegments + drops.confidence + drops.phrase
+        guard total > 0 else { return nil }
+        return String(format: "SpeechGate: dropped vad=%d window(s), outside_speech=%d, confidence=%d, phrase=%d "
+                      + "segment(s), %d chars; %d window(s) on the energy fallback",
+                      silentWindows, droppedSegments, drops.confidence, drops.phrase,
+                      droppedChars + drops.droppedChars, fallbackWindows)
     }
 }
 
@@ -131,9 +146,10 @@ func decodeGatedWindow(
     }
     let prompt = contextPromptTail(prevText: promptText, prevLang: previousLanguage, language: language, config: config)
     do {
-        let segments = try await engine.transcribeWindow(window, language: language, prompt: prompt,
-                                                         dropDoubtful: config.speechGate)
-        return .decoded(gate.keep(segments, in: verdict), language: language)
+        let decoded = try await engine.transcribeWindow(window, language: language, prompt: prompt,
+                                                        dropDoubtful: config.speechGate)
+        gate.countEngineDrops(decoded.drops)
+        return .decoded(gate.keep(decoded.segments, in: verdict), language: language)
     } catch {
         return .failed(error)
     }

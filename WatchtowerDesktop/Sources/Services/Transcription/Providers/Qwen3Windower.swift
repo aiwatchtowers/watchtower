@@ -57,7 +57,7 @@ struct Qwen3Windower {
         var processed = 0
         var gate = WindowSpeechGate(detector: speechDetector, config: config)
         var phraseDrops = WindowDropCounts()
-        defer { gate.logSummary(engineDrops: phraseDrops) }
+        defer { gate.logSummary(callerDrops: phraseDrops) }
 
         func process(window: [Float], windowStart: Int) async {
             processed += 1

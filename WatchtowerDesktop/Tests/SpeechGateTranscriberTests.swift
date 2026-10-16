@@ -296,9 +296,9 @@ final class SpeechGateTranscriberTests: XCTestCase {
                 language: String,
                 prompt: String?,
                 dropDoubtful: Bool
-            ) async throws -> [TranscribedSegment] {
+            ) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) {
                 flags.append(dropDoubtful)
-                return [TranscribedSegment(text: "x", startSec: 0, endSec: 1)]
+                return ([TranscribedSegment(text: "x", startSec: 0, endSec: 1)], WindowDropCounts())
             }
         }
         let samples = audio([0.1...0.9, 0.1...0.9])
@@ -314,5 +314,46 @@ final class SpeechGateTranscriberTests: XCTestCase {
             XCTAssertEqual(batch.flags, [gate, gate])
             XCTAssertEqual(live.flags, batch.flags)
         }
+    }
+
+    func testEngineDropsAreCountedPerRun() async throws {
+        // Board #564: two runs sharing one engine (a live tail draining while
+        // a batch job decodes) each report only their own decodes' drops.
+        final class DroppingEngine: WhisperWindowEngine, @unchecked Sendable {
+            var nextDrops: [WindowDropCounts] = []
+            func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 0.9] }
+            func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
+                XCTFail("the gated step always passes the L3 flag")
+                return []
+            }
+            func transcribeWindow(
+                _ samples: [Float],
+                language: String,
+                prompt: String?,
+                dropDoubtful: Bool
+            ) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) {
+                ([TranscribedSegment(text: "x", startSec: 0, endSec: 1)], nextDrops.removeFirst())
+            }
+        }
+        let engine = DroppingEngine()
+        engine.nextDrops = [WindowDropCounts(confidence: 1, phrase: 0, droppedChars: 4),
+                            WindowDropCounts(confidence: 0, phrase: 3, droppedChars: 9),
+                            WindowDropCounts(confidence: 2, phrase: 0, droppedChars: 6)]
+        let window = audio([0.1...0.9])
+        var live = WindowSpeechGate(detector: FakeSpeechDetector(), config: config())
+        var batch = WindowSpeechGate(detector: FakeSpeechDetector(), config: config())
+        for gate in [0, 1, 0] {
+            if gate == 0 {
+                _ = await decodeGatedWindow(window, gate: &live, previousLanguage: nil, promptText: nil,
+                                            config: config(), engine: engine)
+            } else {
+                _ = await decodeGatedWindow(window, gate: &batch, previousLanguage: nil, promptText: nil,
+                                            config: config(), engine: engine)
+            }
+        }
+        XCTAssertEqual(live.summary(), "SpeechGate: dropped vad=0 window(s), outside_speech=0, confidence=3, "
+                       + "phrase=0 segment(s), 10 chars; 0 window(s) on the energy fallback")
+        XCTAssertEqual(batch.summary(), "SpeechGate: dropped vad=0 window(s), outside_speech=0, confidence=0, "
+                       + "phrase=3 segment(s), 9 chars; 0 window(s) on the energy fallback")
     }
 }
