@@ -34,6 +34,23 @@ func TestBuildArgs_WatchtowerToolsPerTool(t *testing.T) {
 	assert.Len(t, strings.Split(got, ","), 2)
 }
 
+func TestBuildArgs_WatchtowerToolsEmptyGrantsNone(t *testing.T) {
+	for _, names := range [][]string{nil, {}} {
+		c := NewClient("m", "", "")
+		c.SetWatchtowerTools(names)
+		args, _, err := c.buildArgs("sys", "hi", "json", "")
+		require.NoError(t, err)
+		assert.Equal(t, "", flagValue(t, args, "--allowedTools"))
+	}
+	// External tokens follow with no leading comma.
+	c := NewClient("m", "", "")
+	c.SetWatchtowerTools(nil)
+	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "github", AllowTools: []string{"get_issue"}}})
+	args, _, err := c.buildArgs("sys", "hi", "json", "")
+	require.NoError(t, err)
+	assert.Equal(t, "mcp__github__get_issue", flagValue(t, args, "--allowedTools"))
+}
+
 func TestBuildArgs_MaxTurns(t *testing.T) {
 	c := NewClient("m", "", "")
 	c.SetMaxTurns(7)

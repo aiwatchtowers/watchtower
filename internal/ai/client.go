@@ -157,9 +157,11 @@ type Client struct {
 	// with its file-read tools allowed and unhidden and no settings files
 	// loaded. Empty = today's run in os.TempDir().
 	readFolder string
-	// watchtowerTools, when non-nil (SetWatchtowerTools), narrows the
-	// watchtower allowlist from the whole server to these tools.
-	watchtowerTools []string
+	// watchtowerTools narrows the watchtower allowlist from the whole server
+	// to these tools when watchtowerToolsSet (SetWatchtowerTools); an empty
+	// set then allows no watchtower tool at all.
+	watchtowerTools    []string
+	watchtowerToolsSet bool
 	// childEnv replaces the os.Environ() base of the child's environment
 	// when childEnvSet (SetChildEnv).
 	childEnv    []string
@@ -173,8 +175,11 @@ type Client struct {
 
 // SetWatchtowerTools narrows --allowedTools from the whole `mcp__watchtower`
 // server to one mcp__watchtower__<name> token per name (an automation's
-// headless agent() child). Nil = today's whole-server token.
-func (c *Client) SetWatchtowerTools(names []string) { c.watchtowerTools = names }
+// headless agent() child). An empty or nil names grants no watchtower tool;
+// never calling it keeps today's whole-server token.
+func (c *Client) SetWatchtowerTools(names []string) {
+	c.watchtowerTools, c.watchtowerToolsSet = names, true
+}
 
 // SetChildEnv replaces the inherited environment of the child with env (the
 // rich PATH is still appended last). Unset = os.Environ() as today.
@@ -527,17 +532,18 @@ const sessionDisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,
 // slice order. An external server is never granted whole (QC-02): a whole
 // `mcp__<Name>` token would let the chat call its write tools unapproved.
 func AllowedTools(ext []ExternalMCPServer) string {
-	return allowedTools("mcp__watchtower", ext)
+	return allowedTools([]string{"mcp__watchtower"}, ext)
 }
 
-func allowedTools(base string, ext []ExternalMCPServer) string {
-	tools := base
+// allowedTools joins the base tokens and every allowed external tool token.
+func allowedTools(base []string, ext []ExternalMCPServer) string {
+	tokens := slices.Clone(base)
 	for _, s := range ext {
 		for _, t := range s.AllowTools {
-			tools += "," + externalToolToken(s.Name, t)
+			tokens = append(tokens, externalToolToken(s.Name, t))
 		}
 	}
-	return tools
+	return strings.Join(tokens, ",")
 }
 
 // ExternalDisallowedTools lists every external tool the chat must not call
@@ -596,12 +602,12 @@ func ChatMCPConfig(dbPath string, mcpArgs []string, ext []ExternalMCPServer) str
 // allowedToolsFlag builds the --allowedTools value (see AllowedTools; no
 // external servers means byte-identical to the pre-feature value).
 func (c *Client) allowedToolsFlag() string {
-	if c.watchtowerTools != nil {
+	if c.watchtowerToolsSet {
 		tokens := make([]string, len(c.watchtowerTools))
 		for i, n := range c.watchtowerTools {
 			tokens[i] = externalToolToken("watchtower", n)
 		}
-		return allowedTools(strings.Join(tokens, ","), c.externalServers)
+		return allowedTools(tokens, c.externalServers)
 	}
 	return AllowedTools(c.externalServers)
 }
