@@ -116,7 +116,8 @@ final class CatchUpViewModelTests: XCTestCase {
         defer { held.releaseAll() }
         let vm = CatchUpViewModel(dbPool: pool, now: { clock.now }, sleep: { await held.sleep($0) })
         vm.startObserving()
-        await waitFor { vm.recaps.count == 1 && !held.requests.isEmpty }
+        // The selection lands a tick after the recaps (and the recheck's request).
+        await waitFor { vm.recaps.count == 1 && vm.selected != nil && !held.requests.isEmpty }
         XCTAssertEqual(vm.selected?.isBuilding, true, "still inside the threshold on first load")
         XCTAssertEqual(held.requests.last, .seconds(2), "the recheck waits until one second past the threshold")
 
@@ -125,6 +126,37 @@ final class CatchUpViewModelTests: XCTestCase {
         await waitFor { vm.selected?.isFailed == true }
         XCTAssertEqual(vm.selected?.isFailed, true, "re-read past the threshold, no DB write needed")
         XCTAssertEqual(vm.selected?.error, CatchUpRecap.staleBuildingError)
+    }
+
+    /// A `building` row already past the threshold reads as failed on the
+    /// first observed value, from the injected clock, and asks for no recheck.
+    func testBuildingRowPastTheThresholdReadsFailedOnTheFirstLoad() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-600))
+        let due = try XCTUnwrap(ISO8601DateFormatter().date(from: created))
+            .addingTimeInterval(CatchUpRecap.staleBuildingAfter)
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO catchup_recaps (period_from, period_to, status, created_at)
+                    VALUES (1000, 2000, 'building', ?)
+                    """,
+                arguments: [created]
+            )
+        }
+
+        let clock = ManualClock(due.addingTimeInterval(1))
+        let held = HeldSleep()
+        defer { held.releaseAll() }
+        let vm = CatchUpViewModel(dbPool: pool, now: { clock.now }, sleep: { await held.sleep($0) })
+        vm.startObserving()
+        await waitFor { vm.selected != nil }
+        XCTAssertEqual(vm.selected?.isFailed, true, "the observation reads the injected clock")
+        XCTAssertEqual(vm.selected?.error, CatchUpRecap.staleBuildingError)
+        XCTAssertTrue(held.requests.isEmpty, "a failed row needs no recheck")
     }
 
     // MARK: - CLI failure classification

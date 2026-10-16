@@ -102,7 +102,8 @@ final class CatchUpViewModel {
     private let pollInterval: Duration = .seconds(1)
 
     /// The clock the stale-`building` projection reads, and the sleep the
-    /// stale recheck waits with; tests drive both.
+    /// stale recheck waits with (it returns once its task is cancelled);
+    /// tests drive both.
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
 

@@ -8,7 +8,8 @@ import (
 )
 
 // TestDisableBackgroundGit_AppendsAndGitSeesIt checks that an entry already
-// in GIT_CONFIG_COUNT survives and that git reads the added keys.
+// in GIT_CONFIG_COUNT survives and that git reads the added keys, and that
+// core.fsmonitor is not among them.
 func TestDisableBackgroundGit_AppendsAndGitSeesIt(t *testing.T) {
 	bin, err := exec.LookPath("git")
 	if err != nil {
@@ -25,9 +26,12 @@ func TestDisableBackgroundGit_AppendsAndGitSeesIt(t *testing.T) {
 	}
 	DisableBackgroundGit()
 
-	want := map[string]string{"core.splitindex": "false"}
-	for _, kv := range quietConfig {
-		want[strings.ToLower(kv[0])] = kv[1]
+	want := map[string]string{
+		"core.splitindex":        "false",
+		"maintenance.auto":       "false",
+		"gc.auto":                "0",
+		"gc.autodetach":          "false",
+		"maintenance.autodetach": "false",
 	}
 	out, err := exec.Command(bin, "config", "--list", "--show-scope").Output()
 	if err != nil {
@@ -41,6 +45,9 @@ func TestDisableBackgroundGit_AppendsAndGitSeesIt(t *testing.T) {
 		}
 		k, v, _ := strings.Cut(kv, "=")
 		got[k] = v
+	}
+	if v, ok := got["core.fsmonitor"]; ok {
+		t.Errorf("git sees core.fsmonitor=%q in the command scope: it would mask a repository's planted fsmonitor", v)
 	}
 	for k, v := range want {
 		if got[k] != v {
