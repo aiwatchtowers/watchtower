@@ -29,6 +29,9 @@ func failedEnd(kind string, err error) *runEnd {
 func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation, inline bool) {
 	defer e.Wake() // a finished run frees a slot: claim the next queued run, resume a waiting one
 	run, err := e.db.GetAutomationRun(runID)
+	if errors.Is(err, db.ErrAutomationRunNotFound) {
+		return // deleted with its workbench (cascade): nothing left to finish
+	}
 	if err != nil {
 		e.logger.Printf("automations: run %d: reading the claimed run: %v", runID, err)
 		e.finish(runID, a, db.RunFinish{Status: db.RunFailed, ErrorKind: db.ErrKindBackend, Error: err.Error()}, nil, false)
@@ -40,8 +43,20 @@ func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation
 		return
 	}
 	v, runErr := e.runSandbox(env, sb)
+	if e.runGone(runID) {
+		return
+	}
 	f, commit, abandoned := e.outcome(ctx, env, v, runErr, inline)
 	e.finish(runID, a, f, commit, abandoned)
+}
+
+// runGone reports whether the run's row is gone: a workbench delete removes
+// its automations' runs by cascade (PROJ-02) while one may be in flight. The
+// run then ends quietly — its journal writes failed against the vanished
+// rows, and there is nothing left to finish or report.
+func (e *Executor) runGone(runID int64) bool {
+	_, err := e.db.GetAutomationRun(runID)
+	return errors.Is(err, db.ErrAutomationRunNotFound)
 }
 
 // prepare re-parses the run's snapshot (never the file) and builds its
@@ -167,10 +182,13 @@ func (e *Executor) watchStatus(runID int64, sb *Sandbox, done <-chan struct{}) {
 	}
 }
 
-// runEnded reports whether the run is no longer active (cancelled, or ended
-// by anyone but this executor).
+// runEnded reports whether the run is no longer active (cancelled, ended by
+// anyone but this executor, or its row deleted with its workbench).
 func (e *Executor) runEnded(runID int64) (bool, error) {
 	r, err := e.db.GetAutomationRun(runID)
+	if errors.Is(err, db.ErrAutomationRunNotFound) {
+		return true, nil
+	}
 	if err != nil {
 		return false, err
 	}

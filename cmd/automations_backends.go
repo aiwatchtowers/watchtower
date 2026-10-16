@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
@@ -91,6 +92,7 @@ func automationBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 		Generator: gen,
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     automations.RealClock{},
+		Workbench: automations.NewWorkbenchResolver(database, func() string { return cfg.Workbench.DefaultAgent }, fsutil.PrivacyProtected),
 		MCP:       newAutomationMCPCaller(cfg, database),
 		Agent:     newAutomationAgentRunner(cfg, flagConfig, cfg.DBPath(), database),
 	}

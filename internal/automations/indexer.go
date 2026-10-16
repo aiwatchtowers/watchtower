@@ -68,6 +68,9 @@ type Indexer struct {
 	mu   sync.Mutex
 	seen map[string]folderState // canonical folder → its state at the last scan
 	big  map[string]bigFileHash // oversized recipe path → its hash at the last read
+	// probe, when set (tests), is called with each folder Changed,
+	// RescanFolder or folderMissing is about to touch on disk, before it does.
+	probe func(path string)
 }
 
 // bigFileHash remembers the whole-file hash of an oversized recipe, so a
@@ -102,6 +105,7 @@ func (ix *Indexer) RescanPersonal(ctx context.Context) (RescanReport, error) {
 // check; when dir or the database cannot be inspected it answers true, so the
 // rescan reports the real error.
 func (ix *Indexer) Changed(dir string) bool {
+	ix.touch(dir)
 	canon, err := canonicalDir(dir)
 	if err != nil {
 		return true
@@ -130,6 +134,7 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 	if err := validateScope(scope); err != nil {
 		return RescanReport{}, fmt.Errorf("rescanning %s: %w", dir, err)
 	}
+	ix.touch(dir)
 	canon, err := canonicalDir(dir)
 	if err != nil {
 		return RescanReport{}, fmt.Errorf("rescanning %s: %w", dir, err)
@@ -154,6 +159,20 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 	ix.seen[canon] = folderState{fingerprint: fp, scope: scope, generation: gen}
 	ix.mu.Unlock()
 	return scan.report, nil
+}
+
+// folderMissing reports whether folder does not exist (any other stat error
+// is left to the rescan to report).
+func (ix *Indexer) folderMissing(folder string) bool {
+	ix.touch(folder)
+	_, err := os.Stat(folder)
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+func (ix *Indexer) touch(path string) {
+	if ix.probe != nil {
+		ix.probe(path)
+	}
 }
 
 // folderScan is the state of one RescanFolder call.
