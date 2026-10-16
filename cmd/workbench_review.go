@@ -220,9 +220,19 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		open.TreeSHA = tree
 		return writeRound(ctx, cmd, repo, database, open)
 	}
-	base, err := repo.Base(ctx)
+	created, err := createReviewRound(ctx, repo, database, p, folder, tree)
 	if err != nil {
 		return failReview(cmd, err)
+	}
+	return writeRound(ctx, cmd, repo, database, created)
+}
+
+// createReviewRound opens a new round on the snapshot tree, linked to the
+// session's last sent round.
+func createReviewRound(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, p *db.Workbench, folder, tree string) (*db.ReviewRound, error) {
+	base, err := repo.Base(ctx)
+	if err != nil {
+		return nil, err
 	}
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
 		FolderRoot: folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
@@ -231,13 +241,9 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	}
 	id, err := database.CreateReviewRound(r)
 	if err != nil {
-		return failReview(cmd, err)
+		return nil, err
 	}
-	created, err := database.GetReviewRound(p.ID, id)
-	if err != nil {
-		return failReview(cmd, err)
-	}
-	return writeRound(ctx, cmd, repo, database, created)
+	return database.GetReviewRound(p.ID, id)
 }
 
 // roundRange: from/to of the round's diff; since → the previous round's tree

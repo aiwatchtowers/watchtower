@@ -178,20 +178,28 @@ func parseSection(f *File, lines []string) {
 			h := Hunk{Header: l}
 			h.OldStart, h.OldLines, h.NewStart, h.NewLines = parseRange(l)
 			cur = &h
-		case cur != nil && l == "":
-			cur.Lines = append(cur.Lines, " ") // diff.suppressBlankEmpty prints a blank context line bare
-		case cur != nil && (strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") || strings.HasPrefix(l, " ")):
-			cur.Lines = append(cur.Lines, l)
-			if l[0] == '+' {
-				f.Additions++
-			} else if l[0] == '-' {
-				f.Deletions++
-			}
-		case cur != nil && strings.HasPrefix(l, `\ `):
-			cur.Lines = append(cur.Lines, l) // "\ No newline at end of file"
+		case cur != nil:
+			addHunkLine(f, cur, l)
 		}
 	}
 	flush()
+}
+
+// addHunkLine appends one body line to the open hunk and counts it.
+func addHunkLine(f *File, cur *Hunk, l string) {
+	switch {
+	case l == "":
+		cur.Lines = append(cur.Lines, " ") // diff.suppressBlankEmpty prints a blank context line bare
+	case strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") || strings.HasPrefix(l, " "):
+		cur.Lines = append(cur.Lines, l)
+		if l[0] == '+' {
+			f.Additions++
+		} else if l[0] == '-' {
+			f.Deletions++
+		}
+	case strings.HasPrefix(l, `\ `):
+		cur.Lines = append(cur.Lines, l) // "\ No newline at end of file"
+	}
 }
 
 // parseRange reads "@@ -a,b +c,d @@" (",b"/",d" default to 1).
