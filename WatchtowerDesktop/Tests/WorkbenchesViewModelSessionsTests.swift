@@ -369,6 +369,29 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
                        "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: group, vocabulary: .legacy))")
     }
 
+    /// Board #476: a group started before the workbench's status was read
+    /// (a phone start, a click before the page's read) reads it first.
+    func testWorkOnAGroupReadsAnUnknownStatusFirst() async throws {
+        let p = try await workbenchWithFolder()
+        let group = try await pool.write { db -> Int64 in
+            let g = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Group")
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Leaf", parentID: g)
+            return g
+        }
+        let status = #"{"skill":"drifted","hook":true,"mcp":true,"group_prompt":false}"#
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner(stdout: Data(status.utf8))),
+                                      defaults: defaults, terminalCenter: center)
+        vm.titleService = { _ in .init(title: "", written: false) }
+        await vm.reload()
+        XCTAssertNil(vm.installStatus[p])
+
+        try await vm.startForTarget(targetID: group, prompt: nil, mode: .openExisting, placement: .background)
+
+        XCTAssertNotNil(vm.installStatus[p])
+        XCTAssertEqual(launches.last?.environment.last,
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: group, vocabulary: .current))")
+    }
+
     /// Board #476: the agent that starts decides whose skill copy counts —
     /// Codex's `.agents/skills` copy here lacks the group prompt, Claude
     /// Code's has it.

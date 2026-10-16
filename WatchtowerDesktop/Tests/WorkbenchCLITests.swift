@@ -482,6 +482,18 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(mixed.skillKnowsGroupPrompt(.claude), "an owner's copy without the group rules")
         XCTAssertTrue(mixed.skillKnowsGroupPrompt(.codex))
         XCTAssertFalse(mixed.needsRepair, "not knowing groups is no repair")
+        XCTAssertEqual(mixed.groupRulesNote,
+                       "The Claude Code skill here has no group rules, so Work on It starts a group as a single target")
+        XCTAssertTrue(mixed.repairHelp.hasSuffix("\n" + (mixed.groupRulesNote ?? "")), mixed.repairHelp)
+        XCTAssertNil(older.groupRulesNote)
+
+        let codexLacks = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false,"group_prompt":false}"#)
+        XCTAssertEqual(codexLacks.groupRulesNote,
+                       "The Codex skill here has no group rules, so Work on It starts a group as a single target")
+        // No skill at all: nothing to name (Repair covers it).
+        let none = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            #"{"skill":"missing","hook":true,"mcp":true,"group_prompt":false}"#.utf8))
+        XCTAssertNil(none.groupRulesNote)
     }
 
     func testNeedsRepairWhenCodexUntrustedOrSkillMissing() throws {

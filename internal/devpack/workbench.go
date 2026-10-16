@@ -150,7 +150,7 @@ type WorkbenchStatus struct {
 	LegacyMCP   bool // watchtower-project is registered
 
 	// GroupPrompt: the skill a Claude Code session here reads — the
-	// current one, else the old one while it is all there is — knows the
+	// current one, else the old one in a legacy folder — knows the
 	// group first prompt (skillKnowsGroupPrompt).
 	GroupPrompt bool
 }
@@ -464,7 +464,9 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	ps.MCP = ps.CurrentMCP || ps.LegacyMCP
 	ps.Legacy = ps.LegacyMCP || ps.LegacyHooks || ps.LegacySkill.State == StateUnchanged
 	ps.GroupPrompt = skillKnowsGroupPrompt(ps.Skill.Path)
-	if ps.Skill.State == StateMissing && ps.LegacySkill.State != StateMissing {
+	// The old skill is the one read only while the folder is legacy and has
+	// nothing newer — the Swift twin is WorkbenchInstallStatus.vocabulary.
+	if ps.Skill.State == StateMissing && ps.Legacy && ps.LegacySkill.State != StateMissing {
 		ps.GroupPrompt = skillKnowsGroupPrompt(ps.LegacySkill.Path)
 	}
 	return ps, errors.Join(errs...)

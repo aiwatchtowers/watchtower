@@ -92,6 +92,18 @@ func TestStatusWorkbench_GroupPromptFollowsTheSkillTheSessionReads(t *testing.T)
 		require.NotEqual(t, StateMissing, st.Skill.State)
 		assert.False(t, st.GroupPrompt, "the current copy without the group prompt wins over the old one")
 	})
+	t.Run("an old copy alone, nothing else legacy", func(t *testing.T) {
+		// Not a legacy folder, so the Desktop names the current skill (Swift
+		// WorkbenchInstallStatus.vocabulary): the old copy is not asked.
+		folder := fakeRepo(t)
+		f := newFakeClaude()
+		writeTestFile(t, filepath.Join(legacySkillDir(folder), "SKILL.md"), legacySkillContent+"\n`Work on group #<id>`\n")
+		st, err := StatusWorkbench(ctx, legacyOpts(folder, f))
+		require.NoError(t, err)
+		require.False(t, st.Legacy)
+		require.NotEqual(t, StateMissing, st.LegacySkill.State)
+		assert.False(t, st.GroupPrompt)
+	})
 }
 
 func TestStatusCodex_GroupPromptReadsTheCodexCopy(t *testing.T) {
