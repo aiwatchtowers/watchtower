@@ -117,7 +117,7 @@ func NewDraftAutomation(d Deps) *tools.Tool {
 		Access:      tools.AccessRead,
 		Surfaces:    []string{"main", tools.AutomationEditorSurface},
 		Execute: func(ctx context.Context, _ *db.DB, call tools.Call) (any, error) {
-			return draft(ctx, d, call.Args)
+			return draft(ctx, d, call)
 		},
 	}
 }
@@ -130,14 +130,26 @@ func draftSchema() *jsonschema.Schema {
 	return s
 }
 
-func draft(ctx context.Context, d Deps, raw json.RawMessage) (*DraftResult, error) {
+// draft runs evaluate and, on the editor surface, caches its result for the
+// Desktop's Draft panel (draftcache.go).
+func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	if d.Enabled == nil || !d.Enabled() {
 		return nil, &tools.ValidationError{Msg: msgFeatureOff}
 	}
 	var a draftArgs
-	if err := json.Unmarshal(raw, &a); err != nil {
+	if err := json.Unmarshal(call.Args, &a); err != nil {
 		return nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
+	res, err := evaluate(ctx, d, a)
+	if err != nil {
+		return nil, err
+	}
+	d.cacheDraft(call.Binding, a.RecipeText, res)
+	return res, nil
+}
+
+// evaluate validates a draft, computes its widening and dry-runs it.
+func evaluate(ctx context.Context, d Deps, a draftArgs) (*DraftResult, error) {
 	if strings.TrimSpace(a.RecipeText) == "" {
 		return nil, &tools.ValidationError{Msg: "recipe_text is required"}
 	}
