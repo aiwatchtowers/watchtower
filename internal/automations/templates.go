@@ -38,8 +38,11 @@ type Template struct {
 	Scope       ScopeKind       `json:"scope"`
 	Files       []string        `json:"files"`
 	Params      []TemplateParam `json:"params"`
-	Permissions []string        `json:"-"`
-	Outputs     []string        `json:"-"`
+	// Notes are what the owner must know before relying on the template
+	// (e.g. a trigger that does not fire yet); install-template prints them.
+	Notes       []string `json:"notes"`
+	Permissions []string `json:"-"`
+	Outputs     []string `json:"-"`
 }
 
 // loadTemplates reads the embedded index once. The gallery is compiled in, so
@@ -61,6 +64,9 @@ var loadTemplates = sync.OnceValue(func() []Template {
 		}
 		if t.Params == nil {
 			t.Params = []TemplateParam{}
+		}
+		if t.Notes == nil {
+			t.Notes = []string{}
 		}
 		if t.Permissions, t.Outputs, err = templateLists(t.Files[0]); err != nil {
 			panic(fmt.Sprintf("automations: template %s: %v", t.Name, err))

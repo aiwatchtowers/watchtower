@@ -175,6 +175,17 @@ func runPersonalDryRun(t *testing.T, c personalDryRun) {
 	wantNothingWritten(t, f, r, stateBefore)
 }
 
+// workbenchDryRunSteps is each workbench recipe's pinned dry-run journal: an
+// empty journal (a script that did nothing) must fail the guard. A dry-run
+// shell() returns no output, so pr-review-rounds lists no pull request and
+// starts no session step.
+var workbenchDryRunSteps = map[string]string{
+	"pr-review-rounds": "shell(shell):dry_run,state(get):ok,state(set):dry_run,output(report):dry_run",
+	"release":          "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",
+	"deploy-test":      "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",
+	"deploy-stage":     "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",
+}
+
 func runWorkbenchDryRun(t *testing.T, slug string) {
 	w := newWbE2E(t, automations.ShellResult{Stdout: prList})
 	files, err := automations.RenderTemplate(templateOf(t, slug), nil)
@@ -191,7 +202,11 @@ func runWorkbenchDryRun(t *testing.T, slug string) {
 	if n := len(w.shell.Calls()); n != 0 {
 		t.Fatalf("shell ran %d commands in a dry run", n)
 	}
-	for _, s := range w.steps(t, id) {
+	steps := w.steps(t, id)
+	if got := stepsLine(steps); got != workbenchDryRunSteps[slug] {
+		t.Fatalf("steps =\n  %s\nwant\n  %s", got, workbenchDryRunSteps[slug])
+	}
+	for _, s := range steps {
 		switch s.Kind {
 		case automations.StepKindShell, automations.StepKindSession, automations.StepKindOutput:
 			if s.Status != automations.StepDryRun {

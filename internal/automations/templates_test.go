@@ -273,7 +273,7 @@ func TestTemplate_NewMailSummaryKeepsPerAccountCursor(t *testing.T) {
 	if err := f.d.QueryRow(`SELECT state_json FROM automation_state WHERE automation_id = ?`, a.ID).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(state, `"work":"2026-10-14T11:00:00Z"`) {
+	if !strings.Contains(state, `"work":{"date":"2026-10-14T11:00:00Z","ids":["m2"]}`) {
 		t.Fatalf("state = %s; want the work cursor at the newest message", state)
 	}
 
