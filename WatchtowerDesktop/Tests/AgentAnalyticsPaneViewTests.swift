@@ -106,23 +106,22 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
 
     func testTilesShowActiveCostSessionsAndParallelism() throws {
         let all = try texts(overviewView(.overview(try Self.overview(), staleError: nil)))
-        XCTAssertTrue(all.contains("27m"), "active 1 650 000 ms: \(all)")
-        XCTAssertTrue(all.contains("31m"), "away")
-        XCTAssertTrue(all.contains("$12.50"))
+        XCTAssertTrue(all.contains("50m"), "active 3 030 000 ms: \(all)")
+        XCTAssertTrue(all.contains("10m"), "away")
+        XCTAssertTrue(all.contains("$15.50"))
         XCTAssertTrue(all.contains("2"), "sessions")
-        XCTAssertTrue(all.contains("Subagents: 1.2 at once on average · peak 2"), "\(all)")
-        XCTAssertTrue(all.contains("3 calls priced by estimate"))
+        XCTAssertTrue(all.contains("Subagents: 1.0 at once on average · peak 1"), "\(all)")
+        XCTAssertTrue(all.contains("1 call priced by estimate"), "\(all)")
     }
 
     func testTimeBreakdownLegendAndFootnote() throws {
         let all = try texts(overviewView(.overview(try Self.overview(), staleError: nil)))
-        // Shares of active time: tools 560 000, model 600 000, background 90 000, you 400 000.
-        XCTAssertTrue(all.contains("Tools 34%"), "\(all)")
-        XCTAssertTrue(all.contains("Model 36%"))
-        XCTAssertTrue(all.contains("Background agents 5%"))
-        XCTAssertTrue(all.contains("You 24%"))
-        XCTAssertTrue(all.contains("build & test 18% · subagents (fg) 7% · edit 4% · read & search 2% · git 1% · other 1% · MCP 0%"),
-                      "\(all)")
+        // Shares of active time (3 030 000): tools 363 000, model 82 000, background 785 000, you 1 800 000.
+        XCTAssertTrue(all.contains("Tools 12%"), "\(all)")
+        XCTAssertTrue(all.contains("Model 3%"))
+        XCTAssertTrue(all.contains("Background agents 26%"))
+        XCTAssertTrue(all.contains("You 59%"))
+        XCTAssertTrue(all.contains("build & test 12% · MCP 0% · other 0%"), "\(all)")
         XCTAssertTrue(all.contains("Tool time includes permission prompts."))
     }
 
@@ -131,8 +130,8 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let all = try texts(overviewView(.overview(ov, staleError: nil)))
         let findings = all.filter { text in ov.hints.contains { $0.finding == text } }
         XCTAssertEqual(findings, ov.hints.map(\.finding))
-        XCTAssertTrue(all.contains("9m"), "H1's time estimate")
-        XCTAssertTrue(all.contains("$9.00"), "H6's money estimate")
+        XCTAssertTrue(all.contains("4m"), "H1's time estimate")
+        XCTAssertTrue(all.contains("$15.00"), "H6's money estimate")
         XCTAssertFalse(all.contains { $0.localizedCaseInsensitiveContains("total") && $0.contains("sav") },
                        "no summed savings")
     }
@@ -140,9 +139,9 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
     func testHintEvidenceLinksOpenTheTargetAndTheSession() throws {
         let log = AnalyticsActionLog()
         let view = overviewView(.overview(try Self.overview(), staleError: nil), log: log)
-        try view.inspect().find(button: "#7 Add widget").tap()
+        try view.inspect().find(button: "#1 Add widget").tap()
         try view.inspect().find(button: "Session 11111111").tap()
-        XCTAssertEqual(log.targets, [7])
+        XCTAssertEqual(log.targets, [1])
         XCTAssertEqual(log.sessions, ["11111111-aaaa-bbbb-cccc-000000000001"])
     }
 
@@ -156,8 +155,8 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let view = overviewView(.overview(try Self.overview(), staleError: nil), log: log)
         let all = try texts(view)
         XCTAssertTrue(all.contains("shared"))
-        try view.inspect().find(button: "#7 Add widget").tap()
-        XCTAssertEqual(log.targets, [7])
+        try view.inspect().find(button: "#2 Fix login").tap()
+        XCTAssertEqual(log.targets, [2])
     }
 
     func testSessionRowOpensItsDetail() throws {
@@ -171,7 +170,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let all = try texts(overviewView(.overview(try Self.overview(), staleError: nil)))
         XCTAssertTrue(all.contains("make test"))
         XCTAssertTrue(all.contains("claude-opus-5-5"))
-        XCTAssertTrue(all.contains("91%"), "cache read share")
+        XCTAssertTrue(all.contains("28%"), "cache read share")
     }
 
     func testThePeriodLabelComesFromTheReportAndAChangedPickerSaysUpdating() throws {
@@ -228,8 +227,8 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
 
     func testSegmentDescription() throws {
         let det = try Self.detail()
-        XCTAssertEqual(AgentSessionTimelineView.describe(det.lanes[0].segments[1]), "Tools · build & test · make test · 3m")
-        XCTAssertEqual(AgentSessionTimelineView.describe(det.lanes[0].segments[0]), "Model · 30s")
+        XCTAssertEqual(AgentSessionTimelineView.describe(det.lanes[0].segments[5]), "Tools · build & test · make test · 2m")
+        XCTAssertEqual(AgentSessionTimelineView.describe(det.lanes[0].segments[0]), "Model · 10s")
     }
 
     // MARK: - Session report line
@@ -242,7 +241,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let row = try XCTUnwrap(SessionReportAnalyticsLine.row(in: ov, claudeSessionID: "11111111-aaaa-bbbb-cccc-000000000001"))
         var opened = 0
         let line = SessionReportAnalyticsLine(row: row) { opened += 1 }
-        XCTAssertNoThrow(try line.inspect().find(text: "Agent time 27m · $12.50 ·"))
+        XCTAssertNoThrow(try line.inspect().find(text: "Agent time 50m · $15.00 ·"))
         try line.inspect().find(button: "Analytics").tap()
         XCTAssertEqual(opened, 1)
     }
@@ -259,7 +258,57 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertTrue(vm.layout(projectID: projectID).visiblePanes.contains(.analytics))
     }
 
+    /// Opening a session's detail and going back keeps the pane shown: the
+    /// center is not hidden and the overview does not run again.
+    func testSwitchingToADetailAndBackKeepsTheOverviewShown() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "AgentAnalyticsPaneViewTests-\(UUID().uuidString)"))
+        let projectID = try await pool.write { d in try TestDatabase.insertWorkbench(d, folder: "/tmp/acme") }
+        let project = try await pool.read { d in
+            try XCTUnwrap(Workbench.fetchOne(d, sql: "SELECT * FROM projects WHERE id = ?", arguments: [projectID]))
+        }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: nil)
+        let runner = FakeCLIRunner(stdout: Self.fixture("agent-report-overview"))
+        let center = AgentAnalyticsCenter(runner: runner, interval: .seconds(3600))
+        defer { center.stop() }
+        vm.agentAnalytics = center
+
+        let host = NSHostingView(rootView: AgentAnalyticsPaneView(vm: vm, project: project))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        func settle() async {   // lay the view out, then let the center's runs finish
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        func overviewRuns() -> Int { runner.invocations.filter { !$0.contains("--session") }.count }
+        await settle()
+        XCTAssertEqual(overviewRuns(), 1)
+        XCTAssertTrue(center.isPolling)
+
+        vm.analyticsSession[projectID] = "11111111-aaaa-bbbb-cccc-000000000001"
+        await settle()
+        XCTAssertTrue(center.isPolling, "the detail does not hide the pane")
+        vm.analyticsSession[projectID] = nil
+        await settle()
+        XCTAssertEqual(overviewRuns(), 1, "back to the overview reruns nothing")
+        XCTAssertTrue(center.isPolling)
+        XCTAssertEqual(runner.invocations.filter { $0.contains("--session") }.count, 1)
+    }
+
     // MARK: - Colours
+
+    /// "You" has its own colour, not the orange of the pane's error lines,
+    /// and no two categories share one.
+    func testOwnerColourIsNotTheErrorOrange() {
+        XCTAssertNotEqual(AgentTimeCategory.owner.color, .orange)
+        let colours = [AgentTimeCategory.model, .tool, .background, .owner, .away].map(\.color)
+        XCTAssertEqual(Set(colours.map(\.description)).count, colours.count)
+    }
 
     /// The time bar draws its colours in both appearances (not the window's
     /// background, not transparent).

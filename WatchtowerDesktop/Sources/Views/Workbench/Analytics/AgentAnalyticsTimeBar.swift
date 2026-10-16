@@ -21,7 +21,7 @@ extension AgentTimeCategory {
         case .model: .purple
         case .tool: .blue
         case .background: .teal
-        case .owner: .orange
+        case .owner: .brown
         case .away: .gray
         }
     }

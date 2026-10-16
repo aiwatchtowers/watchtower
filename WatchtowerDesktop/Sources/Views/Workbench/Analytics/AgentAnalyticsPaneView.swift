@@ -4,7 +4,9 @@ import WatchtowerCore
 /// The Analytics pane (#298, spec 2026-10-16-agent-analytics-history Part
 /// C): the workbench's agent report from `AgentAnalyticsCenter`, its
 /// overview or one session's detail. While on screen the center keeps the
-/// overview fresh.
+/// overview fresh; the lifecycle hooks sit on a stable ZStack so moving
+/// between the overview and a detail neither hides the center nor reruns
+/// the overview.
 struct AgentAnalyticsPaneView: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
@@ -12,7 +14,7 @@ struct AgentAnalyticsPaneView: View {
     var body: some View {
         let center = vm.agentAnalytics
         let sessionUUID = vm.analyticsSession[project.id]
-        Group {
+        ZStack {
             if let sessionUUID {
                 AgentSessionAnalyticsView(
                     snapshot: center?.sessions[sessionUUID],
@@ -205,7 +207,7 @@ struct AgentAnalyticsOverviewView: View {
             Text(AgentAnalyticsFormat.subagentsLine(overview.subagents))
                 .font(.callout)
             if totals.costEstimatedCalls > 0 {
-                Text("\(totals.costEstimatedCalls) calls priced by estimate")
+                Text("\(totals.costEstimatedCalls) \(totals.costEstimatedCalls == 1 ? "call" : "calls") priced by estimate")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
