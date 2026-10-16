@@ -6,6 +6,7 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 
 ## Start here
 
+- [Your first week](start/first-week.md) — a short tour of what to try, in the order it pays off, from setup to your first automation
 - [Set up Watchtower](start/setup.md) — pick your goals, connect sources and get through the two setup screens, and run setup again later
 
 ## How Watchtower works
