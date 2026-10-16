@@ -12,7 +12,11 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 
 ## Execution
 
+- [Jira and Linear](features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards, and connect Linear.
+
 ## Insights
+
+- [Search and knowledge](features/search-and-knowledge.md) — find a Slack message, or let the assistant search everything you have synced.
 
 ## Workbench
 
