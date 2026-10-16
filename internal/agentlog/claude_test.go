@@ -161,6 +161,8 @@ func TestParseClaude_OwnerTurnTriggers(t *testing.T) {
 		{"<agent-message from=\"a\">x", "notification"},
 		{"<system-reminder>x</system-reminder>", "hook"},
 		{"Stop hook feedback: x", "hook"},
+		{"\n  <task-notification>x</task-notification>", "notification"},
+		{"\t<system-reminder>x", "hook"},
 		{"<command-name>/foo</command-name>", "owner"},
 		{[]map[string]any{{"type": "text", "text": "<task-notification>x"}}, "notification"},
 		{[]map[string]any{{"type": "text", "text": "hi"}}, "owner"},

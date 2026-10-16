@@ -334,8 +334,10 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 }
 
 // turnTrigger tells the owner's own turn from a system-injected one: a task or
-// sub-agent notification, or a hook / reminder block.
+// sub-agent notification, or a hook / reminder block. Leading whitespace is
+// ignored.
 func turnTrigger(text string) string {
+	text = strings.TrimLeft(text, " \t\r\n")
 	switch {
 	case strings.HasPrefix(text, "<task-notification>"), strings.HasPrefix(text, "<agent-message"):
 		return "notification"
