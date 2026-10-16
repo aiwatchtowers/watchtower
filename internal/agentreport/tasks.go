@@ -139,28 +139,57 @@ func (a *taskAcc) merge(b *taskAcc) {
 // ms, the remainder to the lowest id) and is marked Shared. Rows come by
 // target id; a group row sums its leaves and has its own calendar time.
 func Tasks(targets []db.AgentReportTarget, sessions map[string][]Segment, events map[string][]db.AgentReportEvent, now time.Time) []TaskRow {
-	now = now.UTC()
-	children := map[int64][]int64{}
-	byID := map[int64]db.AgentReportTarget{}
+	b := newTaskBoard(targets, now.UTC())
+	for _, sid := range sessionIDs(sessions, events) {
+		calls, apis := b.scanEvents(sid, events[sid])
+		ivs, leaves := b.sessionIntervals(sid, calls)
+		if len(leaves) == 0 {
+			continue
+		}
+		b.attributeSession(ivs, leaves, sessions[sid], apis)
+	}
+	rows := make([]TaskRow, 0, len(targets))
 	for _, t := range targets {
-		byID[t.ID] = t
+		rows = append(rows, b.row(t))
+	}
+	return rows
+}
+
+// taskBoard is the target tree and the per-target accumulators Tasks fills.
+type taskBoard struct {
+	targets  []db.AgentReportTarget
+	now      time.Time
+	byID     map[int64]db.AgentReportTarget
+	children map[int64][]int64
+	accs     map[int64]*taskAcc
+	named    map[int64]map[string]bool // sessions that call a tool naming the target
+}
+
+func newTaskBoard(targets []db.AgentReportTarget, now time.Time) *taskBoard {
+	b := &taskBoard{
+		targets: targets, now: now,
+		byID: map[int64]db.AgentReportTarget{}, children: map[int64][]int64{},
+		accs: map[int64]*taskAcc{}, named: map[int64]map[string]bool{},
+	}
+	for _, t := range targets {
+		b.byID[t.ID] = t
 	}
 	for _, t := range targets {
 		if t.ParentID != nil {
-			if _, ok := byID[*t.ParentID]; ok {
-				children[*t.ParentID] = append(children[*t.ParentID], t.ID)
+			if _, ok := b.byID[*t.ParentID]; ok {
+				b.children[*t.ParentID] = append(b.children[*t.ParentID], t.ID)
 			}
 		}
+		b.accs[t.ID] = &taskAcc{sessions: map[string]bool{}}
+		b.named[t.ID] = map[string]bool{}
 	}
-	isLeaf := func(id int64) bool { return len(children[id]) == 0 }
+	return b
+}
 
-	accs := map[int64]*taskAcc{}
-	named := map[int64]map[string]bool{} // sessions that call a tool naming the target
-	for _, t := range targets {
-		accs[t.ID] = &taskAcc{sessions: map[string]bool{}}
-		named[t.ID] = map[string]bool{}
-	}
+func (b *taskBoard) isLeaf(id int64) bool { return len(b.children[id]) == 0 }
 
+// sessionIDs are the sessions with segments or events, sorted.
+func sessionIDs(sessions map[string][]Segment, events map[string][]db.AgentReportEvent) []string {
 	ids := make([]string, 0, len(sessions)+len(events))
 	for s := range sessions {
 		ids = append(ids, s)
@@ -171,123 +200,134 @@ func Tasks(targets []db.AgentReportTarget, sessions map[string][]Segment, events
 		}
 	}
 	slices.Sort(ids)
-	for _, sid := range ids {
-		calls := map[int64][]time.Time{}
-		var apis []db.AgentReportEvent
-		for _, e := range events[sid] {
-			switch e.Kind {
-			case "tool":
-				id, ok := targetID(e.Target)
-				if !ok || byID[id].ID == 0 {
-					continue
-				}
-				named[id][sid] = true
-				if at, ok := parseAt(e.TS); ok {
-					calls[id] = append(calls[id], at)
-				}
-			case "api_call":
-				apis = append(apis, e)
-			}
-		}
-		// the intervals each leaf of this session counts over
-		ivs := map[int64][]window{}
-		var leaves []int64
-		for _, t := range targets {
-			cs := calls[t.ID]
-			if !isLeaf(t.ID) || len(cs) == 0 {
+	return ids
+}
+
+// scanEvents records which targets the session's tool calls name (and when),
+// and returns its api_call events.
+func (b *taskBoard) scanEvents(sid string, evs []db.AgentReportEvent) (map[int64][]time.Time, []db.AgentReportEvent) {
+	calls := map[int64][]time.Time{}
+	var apis []db.AgentReportEvent
+	for _, e := range evs {
+		switch e.Kind {
+		case "tool":
+			id, ok := targetID(e.Target)
+			if !ok || b.byID[id].ID == 0 {
 				continue
 			}
-			ws := windows(t.History, now)
-			inside := slices.ContainsFunc(cs, func(c time.Time) bool {
-				return slices.ContainsFunc(ws, func(w window) bool { return w.has(c) })
-			})
-			if !inside {
-				ws = []window{{slices.MinFunc(cs, time.Time.Compare), slices.MaxFunc(cs, time.Time.Compare)}}
+			b.named[id][sid] = true
+			if at, ok := parseAt(e.TS); ok {
+				calls[id] = append(calls[id], at)
 			}
-			ivs[t.ID] = ws
-			leaves = append(leaves, t.ID)
-			accs[t.ID].sessions[sid] = true
+		case "api_call":
+			apis = append(apis, e)
 		}
-		if len(leaves) == 0 {
+	}
+	return calls, apis
+}
+
+// sessionIntervals are the intervals each leaf of this session counts over,
+// and those leaves sorted by id.
+func (b *taskBoard) sessionIntervals(sid string, calls map[int64][]time.Time) (map[int64][]window, []int64) {
+	ivs := map[int64][]window{}
+	var leaves []int64
+	for _, t := range b.targets {
+		cs := calls[t.ID]
+		if !b.isLeaf(t.ID) || len(cs) == 0 {
 			continue
 		}
-		slices.Sort(leaves)
-		open := func(at time.Time) []int64 {
-			var out []int64
-			for _, id := range leaves {
-				if slices.ContainsFunc(ivs[id], func(w window) bool { return w.has(at) }) {
-					out = append(out, id)
-				}
-			}
-			return out
-		}
-		var cuts []time.Time
-		for _, ws := range ivs {
-			for _, w := range ws {
-				cuts = append(cuts, w.start, w.end)
-			}
-		}
-		slices.SortFunc(cuts, time.Time.Compare)
-		for _, seg := range sessions[sid] {
-			a, ok1 := parseAt(seg.Start)
-			b, ok2 := parseAt(seg.End)
-			if !ok1 || !ok2 {
-				continue
-			}
-			for _, c := range cuts {
-				if c.After(a) && c.Before(b) {
-					attribute(accs, open(a), seg, a, c)
-					a = c
-				}
-			}
-			attribute(accs, open(a), seg, a, b)
-		}
-		for _, e := range apis {
-			at, ok := parseAt(e.TS)
-			if !ok {
-				continue
-			}
-			ids := open(at)
-			for _, id := range ids {
-				accs[id].cost += e.CostUSD / float64(len(ids))
-				accs[id].shared = accs[id].shared || len(ids) > 1
-			}
-		}
-	}
-
-	rows := make([]TaskRow, 0, len(targets))
-	for _, t := range targets {
-		sum := &taskAcc{sessions: map[string]bool{}}
-		stack, seen := []int64{t.ID}, map[int64]bool{}
-		for len(stack) > 0 {
-			id := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			stack = append(stack, children[id]...)
-			for s := range named[id] {
-				sum.sessions[s] = true
-			}
-			if isLeaf(id) {
-				sum.merge(accs[id])
-			}
-		}
-		cal, ph := phases(t.History, now)
-		tm := sum.time
-		tm.seal()
-		sessionsOut := make([]string, 0, len(sum.sessions))
-		for s := range sum.sessions {
-			sessionsOut = append(sessionsOut, s)
-		}
-		slices.Sort(sessionsOut)
-		rows = append(rows, TaskRow{
-			TargetID: t.ID, Text: t.Text, Status: t.Status, CalendarMS: cal, Phases: ph,
-			AgentMS: tm.ActiveMS, Time: tm, CostUSD: sum.cost, Sessions: sessionsOut, Shared: sum.shared,
+		ws := windows(t.History, b.now)
+		inside := slices.ContainsFunc(cs, func(c time.Time) bool {
+			return slices.ContainsFunc(ws, func(w window) bool { return w.has(c) })
 		})
+		if !inside {
+			ws = []window{{slices.MinFunc(cs, time.Time.Compare), slices.MaxFunc(cs, time.Time.Compare)}}
+		}
+		ivs[t.ID] = ws
+		leaves = append(leaves, t.ID)
+		b.accs[t.ID].sessions[sid] = true
 	}
-	return rows
+	slices.Sort(leaves)
+	return ivs, leaves
+}
+
+// attributeSession splits the session's segments at every interval edge and
+// gives each piece, and each api_call's cost, to the leaves open then.
+func (b *taskBoard) attributeSession(ivs map[int64][]window, leaves []int64, segs []Segment, apis []db.AgentReportEvent) {
+	open := func(at time.Time) []int64 {
+		var out []int64
+		for _, id := range leaves {
+			if slices.ContainsFunc(ivs[id], func(w window) bool { return w.has(at) }) {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	var cuts []time.Time
+	for _, ws := range ivs {
+		for _, w := range ws {
+			cuts = append(cuts, w.start, w.end)
+		}
+	}
+	slices.SortFunc(cuts, time.Time.Compare)
+	for _, seg := range segs {
+		a, ok1 := parseAt(seg.Start)
+		end, ok2 := parseAt(seg.End)
+		if !ok1 || !ok2 {
+			continue
+		}
+		for _, c := range cuts {
+			if c.After(a) && c.Before(end) {
+				attribute(b.accs, open(a), seg, a, c)
+				a = c
+			}
+		}
+		attribute(b.accs, open(a), seg, a, end)
+	}
+	for _, e := range apis {
+		at, ok := parseAt(e.TS)
+		if !ok {
+			continue
+		}
+		ids := open(at)
+		for _, id := range ids {
+			b.accs[id].cost += e.CostUSD / float64(len(ids))
+			b.accs[id].shared = b.accs[id].shared || len(ids) > 1
+		}
+	}
+}
+
+// row sums a target's leaves (itself when it is one) into its TaskRow.
+func (b *taskBoard) row(t db.AgentReportTarget) TaskRow {
+	sum := &taskAcc{sessions: map[string]bool{}}
+	stack, seen := []int64{t.ID}, map[int64]bool{}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		stack = append(stack, b.children[id]...)
+		for s := range b.named[id] {
+			sum.sessions[s] = true
+		}
+		if b.isLeaf(id) {
+			sum.merge(b.accs[id])
+		}
+	}
+	cal, ph := phases(t.History, b.now)
+	tm := sum.time
+	tm.seal()
+	sessionsOut := make([]string, 0, len(sum.sessions))
+	for s := range sum.sessions {
+		sessionsOut = append(sessionsOut, s)
+	}
+	slices.Sort(sessionsOut)
+	return TaskRow{
+		TargetID: t.ID, Text: t.Text, Status: t.Status, CalendarMS: cal, Phases: ph,
+		AgentMS: tm.ActiveMS, Time: tm, CostUSD: sum.cost, Sessions: sessionsOut, Shared: sum.shared,
+	}
 }
 
 // attribute gives [a, b) of seg to the open targets, equally.

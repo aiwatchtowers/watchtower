@@ -57,34 +57,13 @@ type toolInterval struct {
 // covers it or when a notification turn closes the wait, else owner up to
 // AwayAfter per wait, then away; anything else is model.
 func walk(evs []timedEvent, bg []span, waits bool) []piece {
-	var out []piece
-	emit := func(p piece) {
-		if !p.end.After(p.start) {
-			return
-		}
-		if n := len(out); n > 0 {
-			l := &out[n-1]
-			if l.end.Equal(p.start) && l.cat == p.cat && l.class == p.class && l.verb == p.verb && l.src == p.src {
-				l.end = p.end
-				return
-			}
-		}
-		out = append(out, p)
-	}
+	w := &walker{bg: bg}
 	var active []toolInterval
 	var starts []int
 	if waits {
 		starts = waitStarts(evs)
 	}
-	closer := func(i int) string { // trigger of the owner_turn closing the wait of gap i
-		j := i + 1
-		for j < len(evs) && seeThrough(evs[j].Kind) {
-			j++
-		}
-		return evs[j].Trigger
-	}
 	wait := -1 // the wait whose owner time ownerUsed counts
-	var ownerUsed time.Duration
 	for i := 0; i+1 < len(evs); i++ {
 		if e := evs[i]; e.Kind == "tool" {
 			active = append(active, toolInterval{start: e.at, end: toolEnd(evs, i), class: eventClass(e.AgentReportEvent), verb: verb(e.AgentReportEvent), idx: i})
@@ -94,47 +73,95 @@ func walk(evs []timedEvent, bg []span, waits bool) []piece {
 		if !b.After(a) {
 			continue
 		}
-		cuts := []time.Time{a, b}
-		for _, t := range active {
-			if t.end.Before(b) {
-				cuts = append(cuts, t.end)
-			}
-		}
-		slices.SortFunc(cuts, func(x, y time.Time) int { return x.Compare(y) })
-		cuts = slices.CompactFunc(cuts, func(x, y time.Time) bool { return x.Equal(y) })
 		isWait := waits && starts[i] >= 0
 		if isWait && starts[i] != wait {
-			wait, ownerUsed = starts[i], 0
+			wait, w.ownerUsed = starts[i], 0
 		}
-		notified := isWait && closer(i) == "notification"
-		for k := 0; k+1 < len(cuts); k++ {
-			p, q := cuts[k], cuts[k+1]
-			if t, ok := earliestOpen(active, p); ok {
-				emit(piece{start: p, end: q, cat: CatTool, class: t.class, verb: t.verb, src: t.idx})
-				continue
-			}
-			if !isWait {
-				emit(piece{start: p, end: q, cat: CatModel, src: -1})
-				continue
-			}
-			for _, w := range cutBySpans(p, q, bg) {
-				if w.cat == CatBackground || notified {
-					w.cat = CatBackground
-					emit(w)
-					continue
-				}
-				left := AwayAfter - ownerUsed
-				mid := w.end
-				if d := w.end.Sub(w.start); d > left {
-					mid = w.start.Add(max(left, 0))
-				}
-				ownerUsed += mid.Sub(w.start)
-				emit(piece{start: w.start, end: mid, cat: CatOwner, src: -1})
-				emit(piece{start: mid, end: w.end, cat: CatAway, src: -1})
-			}
+		notified := isWait && waitCloser(evs, i) == "notification"
+		w.gap(active, gapCuts(a, b, active), isWait, notified)
+	}
+	return w.out
+}
+
+// walker collects walk's pieces, merging a piece into the previous one when
+// they touch and match, and counts the owner time of the current wait.
+type walker struct {
+	out       []piece
+	bg        []span
+	ownerUsed time.Duration
+}
+
+func (w *walker) emit(p piece) {
+	if !p.end.After(p.start) {
+		return
+	}
+	if n := len(w.out); n > 0 {
+		l := &w.out[n-1]
+		if l.end.Equal(p.start) && l.cat == p.cat && l.class == p.class && l.verb == p.verb && l.src == p.src {
+			l.end = p.end
+			return
 		}
 	}
-	return out
+	w.out = append(w.out, p)
+}
+
+// gap emits the pieces between consecutive cuts of one gap: the earliest open
+// tool call's, else model time, else (in a wait) background, owner or away.
+func (w *walker) gap(active []toolInterval, cuts []time.Time, isWait, notified bool) {
+	for k := 0; k+1 < len(cuts); k++ {
+		p, q := cuts[k], cuts[k+1]
+		if t, ok := earliestOpen(active, p); ok {
+			w.emit(piece{start: p, end: q, cat: CatTool, class: t.class, verb: t.verb, src: t.idx})
+			continue
+		}
+		if !isWait {
+			w.emit(piece{start: p, end: q, cat: CatModel, src: -1})
+			continue
+		}
+		w.waitPieces(p, q, notified)
+	}
+}
+
+// waitPieces splits [p, q) of a wait: background where a span covers it or
+// the wait closes on a notification, else owner up to AwayAfter, then away.
+func (w *walker) waitPieces(p, q time.Time, notified bool) {
+	for _, c := range cutBySpans(p, q, w.bg) {
+		if c.cat == CatBackground || notified {
+			c.cat = CatBackground
+			w.emit(c)
+			continue
+		}
+		left := AwayAfter - w.ownerUsed
+		mid := c.end
+		if d := c.end.Sub(c.start); d > left {
+			mid = c.start.Add(max(left, 0))
+		}
+		w.ownerUsed += mid.Sub(c.start)
+		w.emit(piece{start: c.start, end: mid, cat: CatOwner, src: -1})
+		w.emit(piece{start: mid, end: c.end, cat: CatAway, src: -1})
+	}
+}
+
+// gapCuts are a, b and every open tool call's end inside (a, b), sorted and
+// deduplicated.
+func gapCuts(a, b time.Time, active []toolInterval) []time.Time {
+	cuts := []time.Time{a, b}
+	for _, t := range active {
+		if t.end.Before(b) {
+			cuts = append(cuts, t.end)
+		}
+	}
+	slices.SortFunc(cuts, func(x, y time.Time) int { return x.Compare(y) })
+	return slices.CompactFunc(cuts, func(x, y time.Time) bool { return x.Equal(y) })
+}
+
+// waitCloser is the trigger of the owner_turn closing the wait of gap i.
+func waitCloser(evs []timedEvent, i int) string {
+	j := i + 1
+	for j < len(evs) && seeThrough(evs[j].Kind) {
+		j++
+	}
+	return evs[j].Trigger
 }
 
 // toolEnd is when the tool call at i closes: ts + duration, or, while it is

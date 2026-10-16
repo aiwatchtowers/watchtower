@@ -112,50 +112,17 @@ func short(sid string) string { return sid[:min(len(sid), 8)] }
 // in_progress/in_review window (from any session naming the target; the
 // narrowest window holding a run wins) or, outside every window, in one session.
 func repeatedHeavy(in HintInput, sessions []string) []Hint {
-	now := in.Now.UTC()
-	parents := map[int64]bool{}
-	for _, t := range in.Targets {
-		if t.ParentID != nil {
-			parents[*t.ParentID] = true
-		}
-	}
-	text := map[int64]string{}
-	wins := map[int64][]window{}
-	for _, t := range in.Targets {
-		if !parents[t.ID] {
-			text[t.ID] = t.Text
-			wins[t.ID] = windows(t.History, now)
-		}
-	}
-	type key struct{ scope, verb string }
-	runs := map[key][]timedEvent{}
-	inSessions := map[key]map[string]bool{}
+	text, wins := leafWindows(in.Targets, in.Now.UTC())
+	runs := map[runKey][]timedEvent{}
+	inSessions := map[runKey]map[string]bool{}
 	for _, sid := range sessions {
 		evs := sortEvents(in.Events[sid], func(e db.AgentReportEvent) bool { return e.Kind == "tool" })
-		linked := map[int64]bool{}
-		for _, e := range evs {
-			if id, ok := targetID(e.Target); ok && len(wins[id]) > 0 {
-				linked[id] = true
-			}
-		}
-		ids := slices.Sorted(maps.Keys(linked))
+		ids := linkedLeaves(evs, wins)
 		for _, e := range evs {
 			if ToolClass(e.Name, e.Target) != ClassBuildTest {
 				continue
 			}
-			scope := sid
-			var best time.Duration = -1
-			for _, id := range ids {
-				for _, w := range wins[id] {
-					if !w.has(e.at) {
-						continue
-					}
-					if d := w.end.Sub(w.start); best < 0 || d < best {
-						best, scope = d, fmt.Sprintf("#%d", id)
-					}
-				}
-			}
-			k := key{scope, verb(e.AgentReportEvent)}
+			k := runKey{runScope(e.at, sid, ids, wins), verb(e.AgentReportEvent)}
 			runs[k] = append(runs[k], e)
 			if inSessions[k] == nil {
 				inSessions[k] = map[string]bool{}
@@ -163,40 +130,98 @@ func repeatedHeavy(in HintInput, sessions []string) []Hint {
 			inSessions[k][sid] = true
 		}
 	}
-	keys := slices.SortedFunc(maps.Keys(runs), func(a, b key) int {
+	keys := slices.SortedFunc(maps.Keys(runs), func(a, b runKey) int {
 		return cmp.Or(cmp.Compare(a.scope, b.scope), cmp.Compare(a.verb, b.verb))
 	})
 	var out []Hint
 	for _, k := range keys {
-		rs := runs[k]
-		if len(rs) < RepeatRuns {
-			continue
+		if h, ok := repeatedHint(k, runs[k], inSessions[k], text); ok {
+			out = append(out, h)
 		}
-		slices.SortStableFunc(rs, func(a, b timedEvent) int { return a.at.Compare(b.at) })
-		var total int64
-		for _, r := range rs {
-			total += durMS(r.AgentReportEvent)
-		}
-		if total <= RepeatMin.Milliseconds() {
-			continue
-		}
-		est := total - durMS(rs[0].AgentReportEvent)
-		label := fmt.Sprintf("%d runs, %s", len(rs), fmtDur(total))
-		h := Hint{ID: "H1", EstimateMS: est, Evidence: []Evidence{{Kind: "command", Ref: k.verb, Label: label}}}
-		where := "session " + short(k.scope)
-		if strings.HasPrefix(k.scope, "#") {
-			where = "target " + k.scope
-			id, _ := targetID(k.scope)
-			h.Evidence = append(h.Evidence, Evidence{Kind: "target", Ref: k.scope, Label: text[id]})
-		}
-		for _, sid := range slices.Sorted(maps.Keys(inSessions[k])) {
-			h.Evidence = append(h.Evidence, sessionEv(sid, short(sid)))
-		}
-		h.Finding = fmt.Sprintf("%s ran %d times in %s, %s in all; the runs after the first took %s",
-			k.verb, len(rs), where, fmtDur(total), fmtDur(est))
-		out = append(out, h)
 	}
 	return out
+}
+
+// runKey groups H1's runs: a "#<id>" target or a session id, and the verb.
+type runKey struct{ scope, verb string }
+
+// leafWindows are the leaf targets' texts and in_progress/in_review windows.
+func leafWindows(targets []db.AgentReportTarget, now time.Time) (map[int64]string, map[int64][]window) {
+	parents := map[int64]bool{}
+	for _, t := range targets {
+		if t.ParentID != nil {
+			parents[*t.ParentID] = true
+		}
+	}
+	text := map[int64]string{}
+	wins := map[int64][]window{}
+	for _, t := range targets {
+		if !parents[t.ID] {
+			text[t.ID] = t.Text
+			wins[t.ID] = windows(t.History, now)
+		}
+	}
+	return text, wins
+}
+
+// linkedLeaves are the leaf targets with a window that the session's tool
+// calls name, sorted.
+func linkedLeaves(evs []timedEvent, wins map[int64][]window) []int64 {
+	linked := map[int64]bool{}
+	for _, e := range evs {
+		if id, ok := targetID(e.Target); ok && len(wins[id]) > 0 {
+			linked[id] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(linked))
+}
+
+// runScope is "#<id>" of the narrowest linked window holding at, else sid.
+func runScope(at time.Time, sid string, ids []int64, wins map[int64][]window) string {
+	scope := sid
+	var best time.Duration = -1
+	for _, id := range ids {
+		for _, w := range wins[id] {
+			if !w.has(at) {
+				continue
+			}
+			if d := w.end.Sub(w.start); best < 0 || d < best {
+				best, scope = d, fmt.Sprintf("#%d", id)
+			}
+		}
+	}
+	return scope
+}
+
+// repeatedHint is H1 for one scope and verb, when it ran RepeatRuns+ times
+// for more than RepeatMin in all.
+func repeatedHint(k runKey, rs []timedEvent, inSessions map[string]bool, text map[int64]string) (Hint, bool) {
+	if len(rs) < RepeatRuns {
+		return Hint{}, false
+	}
+	slices.SortStableFunc(rs, func(a, b timedEvent) int { return a.at.Compare(b.at) })
+	var total int64
+	for _, r := range rs {
+		total += durMS(r.AgentReportEvent)
+	}
+	if total <= RepeatMin.Milliseconds() {
+		return Hint{}, false
+	}
+	est := total - durMS(rs[0].AgentReportEvent)
+	label := fmt.Sprintf("%d runs, %s", len(rs), fmtDur(total))
+	h := Hint{ID: "H1", EstimateMS: est, Evidence: []Evidence{{Kind: "command", Ref: k.verb, Label: label}}}
+	where := "session " + short(k.scope)
+	if strings.HasPrefix(k.scope, "#") {
+		where = "target " + k.scope
+		id, _ := targetID(k.scope)
+		h.Evidence = append(h.Evidence, Evidence{Kind: "target", Ref: k.scope, Label: text[id]})
+	}
+	for _, sid := range slices.Sorted(maps.Keys(inSessions)) {
+		h.Evidence = append(h.Evidence, sessionEv(sid, short(sid)))
+	}
+	h.Finding = fmt.Sprintf("%s ran %d times in %s, %s in all; the runs after the first took %s",
+		k.verb, len(rs), where, fmtDur(total), fmtDur(est))
+	return h, true
 }
 
 func isCheap(e db.AgentReportEvent) bool {
