@@ -68,6 +68,9 @@ type Indexer struct {
 	mu   sync.Mutex
 	seen map[string]folderState // canonical folder → its state at the last scan
 	big  map[string]bigFileHash // oversized recipe path → its hash at the last read
+	// probe, when set (tests), is called with each folder Changed,
+	// RescanFolder or workbenchPathPlain is about to touch on disk, before it does.
+	probe func(path string)
 }
 
 // bigFileHash remembers the whole-file hash of an oversized recipe, so a
@@ -102,6 +105,7 @@ func (ix *Indexer) RescanPersonal(ctx context.Context) (RescanReport, error) {
 // check; when dir or the database cannot be inspected it answers true, so the
 // rescan reports the real error.
 func (ix *Indexer) Changed(dir string) bool {
+	ix.touch(dir)
 	canon, err := canonicalDir(dir)
 	if err != nil {
 		return true
@@ -130,6 +134,7 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 	if err := validateScope(scope); err != nil {
 		return RescanReport{}, fmt.Errorf("rescanning %s: %w", dir, err)
 	}
+	ix.touch(dir)
 	canon, err := canonicalDir(dir)
 	if err != nil {
 		return RescanReport{}, fmt.Errorf("rescanning %s: %w", dir, err)
@@ -154,6 +159,32 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 	ix.seen[canon] = folderState{fingerprint: fp, scope: scope, generation: gen}
 	ix.mu.Unlock()
 	return scan.report, nil
+}
+
+// workbenchPathPlain reports whether the scheduler may rescan folder's
+// recipe folder: folder is a directory, not a symlink, and neither
+// .watchtower nor .watchtower/automations is a symlink (either may be
+// absent). It only lstats, so no link is ever followed — one into a
+// privacy-protected folder (a git repo can carry such a link) would make the
+// background pass read there. Any other lstat failure answers false too.
+func (ix *Indexer) workbenchPathPlain(folder string) bool {
+	for i, p := range []string{folder, filepath.Join(folder, ".watchtower"), WorkbenchDir(folder)} {
+		ix.touch(p)
+		fi, err := os.Lstat(p)
+		if i > 0 && errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+		if err != nil || !fi.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+func (ix *Indexer) touch(path string) {
+	if ix.probe != nil {
+		ix.probe(path)
+	}
 }
 
 // folderScan is the state of one RescanFolder call.

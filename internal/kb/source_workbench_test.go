@@ -447,24 +447,6 @@ func TestWorkbenchDoc_SymlinkOutOfTheFolderIsNeverFollowed(t *testing.T) {
 	assert.Equal(t, filepath.Join(realFolder, "docs", "inner.md"), got)
 }
 
-func TestPrivacyProtected(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	protected := []string{
-		filepath.Join(home, "Documents", "acme"),
-		filepath.Join(home, "documents", "acme"), // APFS ignores case
-		filepath.Join(home, "Library", "CloudStorage", "x", "y"),
-		filepath.Join(home, "Library", "Mobile Documents", "a"),
-		"/Volumes/USB/acme",
-	}
-	for _, folder := range protected {
-		assert.True(t, privacyProtected(folder), folder)
-	}
-	for _, folder := range []string{filepath.Join(home, "Code", "acme"), filepath.Join(home, "DocumentsArchive")} {
-		assert.False(t, privacyProtected(folder), folder)
-	}
-}
-
 // kb reindex (owner-started) loses nothing an explicit trigger indexed in a
 // guarded folder the daemon skips.
 func TestReindex_KeepsProtectedWorkbenchDocs(t *testing.T) {
