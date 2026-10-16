@@ -10,7 +10,7 @@ struct WorkbenchInstallStatusIcons: View {
     let project: Workbench
 
     /// The install state as small icons with tooltips: installed, needs
-    /// Repair (in the "…" menu), Claude Code CLI not found.
+    /// Repair (in the "…" menu), older setup, Claude Code CLI not found.
     var body: some View {
         if let status = vm.installStatus[project.id] {
             if !status.claudeFound && !status.mcp { claudeNotFoundIcon }
@@ -25,8 +25,9 @@ struct WorkbenchInstallStatusIcons: View {
                     .accessibilityLabel("Install incomplete")
             } else if let notice = status.legacyNotice {
                 // A nudge only: nothing migrates until the owner runs it (O6).
-                Image(systemName: "exclamationmark.circle")
-                    .foregroundStyle(.orange)
+                // Its own icon, so the orange circle means only "incomplete" (#291).
+                Image(systemName: "arrow.up.circle")
+                    .foregroundStyle(.blue)
                     .font(.caption)
                     .help("\(notice)\n\(status.repairHelp)")
                     .accessibilityLabel("Older setup")
