@@ -116,7 +116,7 @@ func runAutomationsInstallTemplate(cmd *cobra.Command, args []string) error {
 	}
 	if scope.Kind == automations.ScopePersonal {
 		dir = automations.PersonalDir(cfg.WorkspaceDir())
-	} else if err := refuseLinkedRecipeDir(dir); err != nil {
+	} else if err := automations.RefuseLinkedRecipeDir(dir); err != nil {
 		return fmt.Errorf("not installed: %w", err)
 	}
 	out, err := installTemplateFiles(cmd.Context(), cfg, database, scope, dir, tpl.Files, files, cmd.ErrOrStderr())
