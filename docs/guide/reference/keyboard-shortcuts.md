@@ -38,6 +38,19 @@ Every key equivalent in the app. Some work only on a given tab or while a window
 | ⌘T | New session |
 | ⌘1 … ⌘9 | Switch to that session (numbers shown in the session switcher) |
 | ⌥⌘↩ | **Hand to Session** from a code question |
+| ⌃⌘A | **Show Waiting for You** (Navigate menu; works even when the terminal has the keyboard) |
+
+### Sessions panel
+
+These keys work only while the panel has the keyboard: after a click on the list's empty space, or after a click on its label, a group header, a ✕ or the Undo toast.
+
+| Keys | Action |
+|---|---|
+| ↑ / ↓ | Move the cursor over sessions |
+| ↩ | Open the session under the cursor |
+| esc | Give the keyboard back |
+| ⌘⌫ | Delete the session under the cursor (deferred, with an Undo bar) |
+| ⌘Z | Undo that delete |
 
 ## Workbench code viewer
 
@@ -52,6 +65,16 @@ The **Navigate** menu is enabled only while a workbench window is in front.
 | ⌘I | **Ask AI** about the selection |
 | ⌃6 | **File Symbols…** |
 | ⌃⌘← / ⌃⌘→ | **Back** / **Forward** |
+
+## Voices
+
+On the active card of the voice-labelling window.
+
+| Keys | Action |
+|---|---|
+| Space | Play or stop the first clip |
+| 1–9 | Pick that candidate in the list |
+| ↩ | **Confirm** |
 
 ## Owner asks (no field focused)
 

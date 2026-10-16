@@ -27,7 +27,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower jira`, `linear`, `confluence` | Trackers and Confluence spaces |
 | `watchtower connections` | [Quick Connections](../features/quick-connections.md) |
 
-Most account groups share `list`, `rename <id> <name>`, `enable`, `disable` and `remove`. See [Sources and accounts](../concepts/sources-and-accounts.md).
+Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` is common, `enable` / `disable` are not on every group. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).
 
 ## Reading what Watchtower made
 
@@ -41,7 +41,7 @@ Most account groups share `list`, `rename <id> <name>`, `enable`, `disable` and 
 | `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md) |
 | `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), weekly trends, synced users and channels |
 | `watchtower meeting-prep [event-id\|next]` | Meeting preparation |
-| `watchtower ask "<question>"`, `chat` | Ask the assistant from the terminal |
+| `watchtower ask "<question>"` | Ask the assistant a question from the terminal |
 | `watchtower kb search <query>`, `kb status`, `kb reindex` | The [knowledge index](../features/search-and-knowledge.md) |
 | `watchtower memory` | The [assistant memory](../features/memory.md) vault |
 | `watchtower feedback <good\|bad> <type> <id>` | Rate generated content |
@@ -74,4 +74,4 @@ Most account groups share `list`, `rename <id> <name>`, `enable`, `disable` and 
 | `watchtower prompts`, `tune` | Prompt templates and feedback-based tuning |
 | `--provider claude\|codex\|ollama` | Per-command provider override |
 
-Other commands (`terminal`, `dictate`, `chat`, `ai`) exist for the Desktop app and are not meant to be run by hand.
+`terminal`, `dictate` and `chat` are helpers the Desktop app calls; `ai` is too, apart from `ai models`.
