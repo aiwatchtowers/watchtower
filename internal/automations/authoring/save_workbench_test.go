@@ -34,8 +34,8 @@ func newWorkbenchSaveFixture(t *testing.T) (f *saveFixture, wbID int64, folder s
 	resolver := automations.NewWorkbenchResolver(d, func() string { return "claude" }, func(string) bool { return false })
 	if err := f.reg.Register(NewSaveAutomation(Deps{
 		DB: d, WorkspaceDir: f.ws, Enabled: func() bool { return true },
-		Clock:    automationstest.NewFakeClock(draftNow),
-		Backends: func() automations.Backends { return automations.Backends{Workbench: resolver} },
+		Clock:     automationstest.NewFakeClock(draftNow),
+		Workbench: resolver,
 	})); err != nil {
 		t.Fatal(err)
 	}

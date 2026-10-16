@@ -149,7 +149,8 @@ func saveScope(workbenchID int64) automations.Scope {
 // recipeTarget is the canonical folder and path of slug's recipe in scope —
 // the path the indexer stores in automations.path: the personal folder, or
 // the workbench's <folder>/.watchtower/automations (PROJ-03 as amended in
-// ask #272: the only place of the folder a save writes). A workbench recipe
+// ask #272: the only place of the folder a save writes; the folder comes from
+// d.Workbench). A workbench recipe
 // folder with a symlink in its existing path is refused, like `automations
 // save` refuses it; an unknown workbench and a linked folder are
 // *tools.ValidationError.
@@ -168,13 +169,12 @@ func recipeTarget(ctx context.Context, d Deps, scope automations.Scope, slug str
 }
 
 // workbenchRecipeDir is workbench id's recipe folder as stored, through
-// Backends().Workbench, once it is known not to sit behind a symlink.
+// d.Workbench, once it is known not to sit behind a symlink.
 func workbenchRecipeDir(ctx context.Context, d Deps, id int64) (string, error) {
-	resolver := d.backends().Workbench
-	if resolver == nil {
+	if d.Workbench == nil {
 		return "", errors.New("save_automation: no workbench resolver is configured")
 	}
-	wb, err := resolver.Workbench(ctx, id)
+	wb, err := d.Workbench.Workbench(ctx, id)
 	if errors.Is(err, db.ErrWorkbenchNotFound) {
 		return "", &tools.ValidationError{Msg: fmt.Sprintf("no workbench with id %d", id)}
 	}
