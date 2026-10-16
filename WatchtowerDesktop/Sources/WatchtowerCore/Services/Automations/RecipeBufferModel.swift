@@ -55,6 +55,16 @@ package final class RecipeBufferModel {
         }
     }
 
+    /// The host changed the text (the edit form spliced its fields into the
+    /// frontmatter): a new revision the page is given, still unsaved and still
+    /// tied to the file the text was typed on.
+    package func replace(text newText: String) {
+        revision += 1
+        textRevision = revision
+        hashes[revision] = baseContentHash
+        text = newText
+    }
+
     /// The file was loaded again (after a save, or a reload from disk): a new
     /// revision with nothing unsaved.
     package func reset(text: String, contentHash: String) {

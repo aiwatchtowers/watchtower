@@ -38,6 +38,7 @@ struct AutomationCardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                confirmationBanner
                 dryRunResult
                 if let error = vm.detailErrors[automation.id] {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -151,6 +152,28 @@ struct AutomationCardView: View {
             .fixedSize()
             .disabled(isBusy)
             .accessibilityLabel("More actions")
+        }
+    }
+
+    // MARK: - Confirmation
+
+    /// "Needs your confirmation" with **Review…** → the confirmation sheet (AUTO-06).
+    @ViewBuilder private var confirmationBanner: some View {
+        if automation.needsConfirmation, automation.parseError.isEmpty, automation.removedAt == nil {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.shield")
+                    .foregroundStyle(.orange)
+                Text("Needs your confirmation")
+                    .font(.callout.weight(.semibold))
+                Text("It won't run until you confirm it.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Review…") { actions.onConfirm?(automation.id) }
+                    .disabled(actions.onConfirm == nil)
+            }
+            .padding(10)
+            .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
         }
     }
 

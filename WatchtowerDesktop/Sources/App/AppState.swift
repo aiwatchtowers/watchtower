@@ -309,6 +309,9 @@ final class AppState {
     /// run, a dry run or a delete survives navigation; built with the
     /// sidebar on both paths that reveal it (launch, `completeOnboarding()`).
     private(set) var automationsViewModel: AutomationsViewModel?
+    /// The Automations edit form's drafts, saves and the confirmation
+    /// sheet's confirm; owned here so a save finishes after the form closes.
+    private(set) var automationEditorCenter: AutomationEditorCenter?
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
@@ -1300,9 +1303,18 @@ final class AppState {
     private func initAutomations(dbPool: DatabasePool) {
         guard automationsViewModel == nil else { return }
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
-        let vm = AutomationsViewModel(dbPool: dbPool, cli: AutomationsCLI(runner: runner))
+        let cli = AutomationsCLI(runner: runner)
+        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli)
         vm.start()
         automationsViewModel = vm
+        automationEditorCenter = AutomationEditorCenter(
+            cli: cli,
+            grants: { id in try await dbPool.read { db in try AutomationQueries.fetchGrants(db, automationID: id) } },
+            refresh: { [weak vm] id in
+                vm?.refresh()
+                await vm?.loadDetail(id)
+            }
+        )
     }
 
     /// Builds the sidebar counts view model, pre-loads counts, and starts observing.

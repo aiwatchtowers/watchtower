@@ -9,6 +9,8 @@ struct AutomationsTabActions {
     var onTemplates: (() -> Void)?
     var onEdit: ((Int64) -> Void)?
     var onChangeInWords: ((Int64) -> Void)?
+    /// The card's "Needs your confirmation" → the confirmation sheet.
+    var onConfirm: ((Int64) -> Void)?
     /// A step's proposal → the Inbox.
     var onOpenInbox: ((Int64) -> Void)?
 }
@@ -17,13 +19,33 @@ struct AutomationsTabActions {
 /// **Templates**, **+ New** and "Search automations", the list on the left
 /// and the selected automation's card on the right. All state lives in the
 /// `AppState`-owned `AutomationsViewModel`; only the search text is local.
+/// With an `editor`, **Edit** opens the edit form and the card's "Needs your
+/// confirmation" opens the confirmation sheet; their drafts and saves live in
+/// the `AppState`-owned `AutomationEditorCenter`, only which sheet is up is local.
 struct AutomationsView: View {
     @Bindable var vm: AutomationsViewModel
     var actions = AutomationsTabActions()
     var workbenchName: (Int64) -> String? = { _ in nil }
     var emptyStateContext: EmptyStateContext = .neutral
+    var editor: AutomationEditorCenter?
+
+    /// A sheet shown for one automation.
+    private struct SheetTarget: Identifiable {
+        let id: Int64
+    }
 
     @State private var searchText = ""
+    @State private var editing: SheetTarget?
+    @State private var confirming: SheetTarget?
+
+    private var cardActions: AutomationsTabActions {
+        var out = actions
+        if editor != nil {
+            out.onEdit = { editing = SheetTarget(id: $0) }
+            out.onConfirm = { confirming = SheetTarget(id: $0) }
+        }
+        return out
+    }
 
     private var filteredItems: [AutomationListItem] {
         let query = searchText.trimmingCharacters(in: .whitespaces)
@@ -63,6 +85,21 @@ struct AutomationsView: View {
         }
         .onDisappear { vm.setTabVisible(false) }
         .onChange(of: vm.items.map(\.id)) { _, _ in selectFirstIfNeeded() }
+        .sheet(item: $editing) { target in
+            if let editor {
+                AutomationFormView(
+                    editor: editor,
+                    vm: vm,
+                    automationID: target.id,
+                    onChangeInWords: actions.onChangeInWords
+                ) { editing = nil }
+            }
+        }
+        .sheet(item: $confirming) { target in
+            if let editor {
+                AutomationConfirmSheet(vm: vm, editor: editor, automationID: target.id) { confirming = nil }
+            }
+        }
     }
 
     /// The card is never blank while there are automations to show.
@@ -151,7 +188,7 @@ struct AutomationsView: View {
             AutomationCardView(
                 vm: vm,
                 item: item,
-                actions: actions,
+                actions: cardActions,
                 workbenchName: item.automation.projectID.flatMap(workbenchName),
                 now: Date()
             )

@@ -573,3 +573,31 @@ func TestApprovalFields_OrderAndCanonicalValues(t *testing.T) {
 		t.Errorf("a label rename changed the fields: %v", relabelled)
 	}
 }
+
+// TestRecipe_ParsesSwiftWrittenFrontmatter pins the Desktop's frontmatter
+// writer on the Go side: swift_written.md is byte-for-byte what the edit
+// form's RecipeFrontmatter.render writes for its sample (the Swift half,
+// RecipeFrontmatterTests.testRenderMatchesSharedFixture), and the strict
+// parser reads it back to the same fields.
+func TestRecipe_ParsesSwiftWrittenFrontmatter(t *testing.T) {
+	body := "Written by the edit form.\n\n```js\noutput.inbox({ title: \"t\", body: \"b\" });\n```\n"
+	r := mustParse(t, append(readFixture(t, "swift_written.md"), body...), Scope{Kind: ScopePersonal})
+
+	got := Recipe{
+		Name: r.Name, Trigger: r.Trigger, Missed: r.Missed, Concurrency: r.Concurrency,
+		Permissions: r.Permissions, Outputs: r.Outputs, Budget: r.Budget, PauseTimeoutHours: r.PauseTimeoutHours,
+	}
+	want := Recipe{
+		Name:              `Mail: "triage" # weekly \ done — ok`,
+		Trigger:           Trigger{Kind: TriggerSchedule, Schedule: "30 8 * * 1-5"},
+		Missed:            MissedSkip,
+		Concurrency:       2,
+		Permissions:       []string{"gmail:read@work", "llm:light"},
+		Outputs:           []string{"inbox", "report"},
+		Budget:            Budget{Tokens: 120000, Minutes: 10},
+		PauseTimeoutHours: 24,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("swift_written.md:\n got: %+v\nwant: %+v", got, want)
+	}
+}

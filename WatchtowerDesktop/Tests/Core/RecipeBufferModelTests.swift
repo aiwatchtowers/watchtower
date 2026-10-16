@@ -19,6 +19,20 @@ final class RecipeBufferModelTests: XCTestCase {
         XCTAssertFalse(buffer.isDirty, "typing back to the loaded text is clean")
     }
 
+    /// The edit form splices its fields in: the page gets a new revision, the
+    /// text stays unsaved and tied to the loaded file.
+    func testReplaceIsANewUnsavedRevision() {
+        let buffer = RecipeBufferModel(automationID: 7, text: recipe, contentHash: "h1")
+        buffer.replace(text: "spliced")
+        XCTAssertEqual(buffer.text, "spliced")
+        XCTAssertTrue(buffer.isDirty)
+        XCTAssertEqual(buffer.revision, 2)
+        XCTAssertEqual(buffer.textRevision, 2)
+        XCTAssertEqual(buffer.baseContentHash, "h1")
+        buffer.pageSent(text: "typed after", base: 2)
+        XCTAssertEqual(buffer.baseContentHash, "h1")
+    }
+
     func testResetClearsDirty() {
         let buffer = RecipeBufferModel(automationID: 7, text: recipe, contentHash: "h1")
         buffer.pageSent(text: "edited", base: 1)

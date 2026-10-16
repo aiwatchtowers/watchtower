@@ -186,7 +186,8 @@ struct MainNavigationView: View {
     /// connected-source change, and on every selection change, sharing the
     /// same pure `fallbackDestination` rule.
     /// The Automations tab's hooks into other surfaces; later tasks add
-    /// the New/Templates/Edit/Change in words ones.
+    /// the New/Templates/Change in words ones. Edit and the confirmation
+    /// sheet are the tab's own (`AutomationEditorCenter`).
     private var automationsTabActions: AutomationsTabActions {
         var actions = AutomationsTabActions()
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
@@ -288,7 +289,8 @@ struct MainNavigationView: View {
                     workbenchName: { id in
                         appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
                     },
-                    emptyStateContext: appState.emptyStateContext
+                    emptyStateContext: appState.emptyStateContext,
+                    editor: appState.automationEditorCenter
                 )
             } else {
                 Text("Automations unavailable")
