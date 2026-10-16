@@ -23,7 +23,7 @@ Memory is not part of this index; the assistant reads it separately. A deleted s
 
 ## Using it
 
-**Find a Slack message.** Open **Search** in the sidebar and type. A result opens its channel in Slack.
+**Find a Slack message.** Open **Search** in the sidebar and type. Each result shows its channel as a link; the `#channel` link opens that channel in Slack.
 
 **Ask across everything.** Open **AI Chat** and ask in plain words. The steps show as "Searched knowledge: ..." so you can see what the assistant looked up. Coding agents in a Workbench and other tools you connect through the **MCP Server** setup use the same index.
 
