@@ -53,9 +53,9 @@ type toolInterval struct {
 
 // walk splits [first, last event] of one lane into pieces. A gap goes to the
 // earliest-started open tool call while one is open; otherwise, with waits on,
-// a gap from an api_call to an owner_turn is a wait (background where a
-// background span covers it, else owner up to AwayAfter, then away); anything
-// else is model.
+// a gap of a wait (see waitStarts) is background where a background span
+// covers it, else owner up to AwayAfter per wait, then away; anything else is
+// model.
 func walk(evs []timedEvent, bg []span, waits bool) []piece {
 	var out []piece
 	emit := func(p piece) {
@@ -72,6 +72,12 @@ func walk(evs []timedEvent, bg []span, waits bool) []piece {
 		out = append(out, p)
 	}
 	var active []toolInterval
+	var starts []int
+	if waits {
+		starts = waitStarts(evs)
+	}
+	wait := -1 // the wait whose owner time ownerUsed counts
+	var ownerUsed time.Duration
 	for i := 0; i+1 < len(evs); i++ {
 		if e := evs[i]; e.Kind == "tool" {
 			active = append(active, toolInterval{start: e.at, end: toolEnd(evs, i), class: eventClass(e.AgentReportEvent), verb: verb(e.AgentReportEvent), idx: i})
@@ -89,8 +95,10 @@ func walk(evs []timedEvent, bg []span, waits bool) []piece {
 		}
 		slices.SortFunc(cuts, func(x, y time.Time) int { return x.Compare(y) })
 		cuts = slices.CompactFunc(cuts, func(x, y time.Time) bool { return x.Equal(y) })
-		isWait := waits && evs[i].Kind == "api_call" && evs[i+1].Kind == "owner_turn"
-		var ownerUsed time.Duration
+		isWait := waits && starts[i] >= 0
+		if isWait && starts[i] != wait {
+			wait, ownerUsed = starts[i], 0
+		}
 		for k := 0; k+1 < len(cuts); k++ {
 			p, q := cuts[k], cuts[k+1]
 			if t, ok := earliestOpen(active, p); ok {
@@ -121,11 +129,15 @@ func walk(evs []timedEvent, bg []span, waits bool) []piece {
 }
 
 // toolEnd is when the tool call at i closes: ts + duration, or, while it is
-// pending, the next event of the lane with a later ts (itself when none).
+// pending, the next event of the lane with a later ts (itself when none, or
+// when the owner's turn comes next).
 func toolEnd(evs []timedEvent, i int) time.Time {
 	e := evs[i]
 	if e.DurationMS != nil {
 		return e.at.Add(time.Duration(max(*e.DurationMS, 0)) * time.Millisecond)
+	}
+	if j := nextLater(evs, i); j >= 0 && evs[j].Kind == "owner_turn" {
+		return e.at // the owner answered: the gap is a wait, not tool time
 	}
 	for j := i + 1; j < len(evs); j++ {
 		if evs[j].at.After(e.at) {
@@ -133,6 +145,63 @@ func toolEnd(evs []timedEvent, i int) time.Time {
 		}
 	}
 	return e.at
+}
+
+// nextLater is the index of the first event after i with a later ts that is
+// not see-through, or -1.
+func nextLater(evs []timedEvent, i int) int {
+	for j := i + 1; j < len(evs); j++ {
+		if evs[j].at.After(evs[i].at) && !seeThrough(evs[j].Kind) {
+			return j
+		}
+	}
+	return -1
+}
+
+// seeThrough events neither start nor end a wait; time across them keeps
+// the wait's category.
+func seeThrough(kind string) bool {
+	return kind == "compaction" || kind == "pr_link" || kind == "skill"
+}
+
+// waitStarts maps each gap start i to the index of the turn-ending event of
+// the wait the gap [i, i+1) belongs to, or -1. A turn ends on an api_call, an
+// api_error or a pending tool the owner answered; the wait runs from there,
+// across see-through events only, to the next owner_turn.
+func waitStarts(evs []timedEvent) []int {
+	out := make([]int, len(evs))
+	last := -1 // last non-see-through event at or before i
+	for i := range evs {
+		out[i] = -1
+		if !seeThrough(evs[i].Kind) {
+			last = i
+		}
+		if last < 0 || !turnEnds(evs, last) {
+			continue
+		}
+		j := i + 1
+		for j < len(evs) && seeThrough(evs[j].Kind) {
+			j++
+		}
+		if j < len(evs) && evs[j].Kind == "owner_turn" {
+			out[i] = last
+		}
+	}
+	return out
+}
+
+func turnEnds(evs []timedEvent, i int) bool {
+	switch e := evs[i]; e.Kind {
+	case "api_call", "api_error":
+		return true
+	case "tool":
+		if e.DurationMS != nil {
+			return false
+		}
+		j := nextLater(evs, i)
+		return j >= 0 && evs[j].Kind == "owner_turn"
+	}
+	return false
 }
 
 func earliestOpen(active []toolInterval, at time.Time) (toolInterval, bool) {
@@ -309,6 +378,13 @@ func SessionSubagents(events []db.AgentReportEvent) (Subagents, []Lane) {
 		}
 	}
 	sa.UnionMS += cur.end.Sub(cur.start).Milliseconds()
+	for _, s := range spans {
+		if !s.background && !slices.ContainsFunc(spans, func(o subagentSpan) bool {
+			return o.agentID != s.agentID && o.start.Before(s.end) && s.start.Before(o.end)
+		}) {
+			sa.Serial++
+		}
+	}
 	if sa.UnionMS > 0 {
 		sa.AvgParallel = float64(sa.BusyMS) / float64(sa.UnionMS)
 	}

@@ -47,6 +47,7 @@ type Subagents struct {
 	Foreground  int     `json:"foreground"`
 	Background  int     `json:"background"`
 	Peak        int     `json:"peak"`
+	Serial      int     `json:"serial"`     // foreground subagents whose span overlaps no other
 	BusyMS      int64   `json:"busy_ms"`    // sum of the spans
 	UnionMS     int64   `json:"union_ms"`   // union of the spans
 	BlockedMS   int64   `json:"blocked_ms"` // main agent in foreground subagent calls

@@ -7,9 +7,10 @@ import (
 	"strings"
 )
 
-// agentReportParserVersion mirrors agentlog.ParserVersion's first value that
-// stores owner-turn triggers and Agent-call links (db cannot import agentlog).
-const agentReportParserVersion = 2
+// agentReportMinParserVersion is the first agentlog parser version that stores
+// owner-turn triggers and Agent-call links: a floor, not the current version
+// (db cannot import agentlog).
+const agentReportMinParserVersion = 2
 
 // AgentReportEvent is the slice of one agent_log_events row the #298 report reads.
 type AgentReportEvent struct {
@@ -49,7 +50,7 @@ func (db *DB) AgentReportSessions(projectID int64, since string) ([]AgentReportS
 		FROM agent_log_sessions s
 		WHERE s.project_id = ? AND (s.started_at >= ? OR s.ended_at >= ?)
 		ORDER BY s.started_at, s.session_uuid`,
-		[]any{projectID, projectID, agentReportParserVersion, projectID, since, since},
+		[]any{projectID, projectID, agentReportMinParserVersion, projectID, since, since},
 		func(r *sql.Rows) error {
 			var s AgentReportSession
 			if err := r.Scan(&s.SessionUUID, &s.StartedAt, &s.EndedAt, &s.Model, &s.GitBranch, &s.OldFormat); err != nil {

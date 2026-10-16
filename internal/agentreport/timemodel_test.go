@@ -146,14 +146,57 @@ func TestTimeModel_PendingToolClosesAtNextEvent(t *testing.T) {
 	f.api(35 * sec)
 	f.owner(2 * time.Hour)
 	f.api(2*time.Hour + 5*sec)
-	f.tool(2*time.Hour+5*sec, "Bash", "make test", nil) // pending as the last event
+	f.tool(2*time.Hour+5*sec, "Bash", "make test", nil) // pending, then the owner answers: a wait
+	f.owner(3 * time.Hour)
+	f.api(3*time.Hour + 5*sec)
+	f.tool(3*time.Hour+5*sec, "Bash", "make lint", nil) // pending as the last event
 
 	split, _ := SessionTime(f.evs)
 	assert.Equal(t, ms(30*sec), split.Tools.BuildTest)
-	assert.Equal(t, ms(30*mn), split.OwnerMS)
-	assert.Equal(t, ms(2*time.Hour-35*sec-30*mn), split.AwayMS)
-	assert.Equal(t, ms(10*sec), split.ModelMS)
+	assert.Equal(t, ms(60*mn), split.OwnerMS)
+	assert.Equal(t, ms(2*time.Hour-35*sec-30*mn+29*mn+55*sec), split.AwayMS)
+	assert.Equal(t, ms(15*sec), split.ModelMS)
 	assert.Equal(t, split.WallMS, sum(split))
+}
+
+func TestTimeModel_WaitEndsOnAPIErrorAndSeesThrough(t *testing.T) {
+	for _, c := range []struct {
+		name               string
+		build              func(f *fixture)
+		owner, away, model time.Duration
+	}{
+		{"api_error ends the turn", func(f *fixture) {
+			f.owner(0)
+			f.add(db.AgentReportEvent{Kind: "api_error"}, 10*sec)
+			f.owner(10*sec + 40*mn)
+			f.api(10*sec + 40*mn + 5*sec)
+		}, 30 * mn, 10 * mn, 15 * sec},
+		{"compaction inside a wait", func(f *fixture) {
+			f.owner(0)
+			f.api(10 * sec)
+			f.add(db.AgentReportEvent{Kind: "compaction"}, 10*sec+20*mn)
+			f.owner(10*sec + 50*mn)
+			f.api(10*sec + 50*mn + 5*sec)
+		}, 30 * mn, 20 * mn, 15 * sec},
+		{"pr_link inside a wait", func(f *fixture) {
+			f.owner(0)
+			f.api(10 * sec)
+			f.add(db.AgentReportEvent{Kind: "pr_link"}, 11*sec)
+			f.owner(10*sec + 10*mn)
+			f.api(10*sec + 10*mn + 5*sec)
+		}, 10 * mn, 0, 15 * sec},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var f fixture
+			c.build(&f)
+			split, segs := SessionTime(f.evs)
+			assert.Equal(t, ms(c.owner), split.OwnerMS)
+			assert.Equal(t, ms(c.away), split.AwayMS)
+			assert.Equal(t, ms(c.model), split.ModelMS)
+			assert.Equal(t, split.WallMS, sum(split))
+			assert.Equal(t, split.WallMS, segSum(t, segs))
+		})
+	}
 }
 
 func TestTimeModel_SingleEvent(t *testing.T) {
@@ -211,6 +254,7 @@ func TestSubagents_Parallelism(t *testing.T) {
 	assert.Equal(t, 2, sa.Foreground)
 	assert.Equal(t, 1, sa.Background)
 	assert.Equal(t, 2, sa.Peak)
+	assert.Equal(t, 1, sa.Serial, "only a3 runs alone; a1 overlaps a2")
 	assert.Equal(t, ms(30*mn), sa.BusyMS)
 	assert.Equal(t, ms(25*mn), sa.UnionMS)
 	assert.InDelta(t, 1.2, sa.AvgParallel, 1e-9)
