@@ -116,6 +116,21 @@ final class AskCenterTests: XCTestCase {
         engine.stop()
     }
 
+    /// A panel closed or reopened while the index and models load sends nothing.
+    func testPrepareToAskStopsWhenThePanelMovedOn() async {
+        let center = AskCenter(runner: StubGuideRunner(output: Self.fixture))
+        var modelLoads = 0
+        center.loadModels = { modelLoads += 1 }
+        let ready = await center.prepareToAsk(isShown: { true })
+        XCTAssertTrue(ready)
+        XCTAssertEqual(modelLoads, 1, "the first turn waits for the light model")
+        let closed = await center.prepareToAsk(isShown: { false })
+        XCTAssertFalse(closed)
+        center.loadModels = { center.startConversation() }
+        let reopened = await center.prepareToAsk(isShown: { true })
+        XCTAssertFalse(reopened)
+    }
+
     func testTurnPromptCarriesCurrentPageAndSections() async {
         let center = await loadedCenter()
         let spec = HelpChatSurface.spec(center: center, currentPage: { "Calendar" }, screens: { [self.calendar] })

@@ -8,6 +8,9 @@ extension AppState {
         center.resolvedLightModel = { [aiModelCatalog] provider in
             aiModelCatalog.provider(provider).flatMap { $0.resolvedLight.isEmpty ? nil : $0.resolvedLight }
         }
+        center.loadModels = { [aiModelCatalog] in
+            if aiModelCatalog.providers.isEmpty { await aiModelCatalog.load() }
+        }
         return center
     }
 

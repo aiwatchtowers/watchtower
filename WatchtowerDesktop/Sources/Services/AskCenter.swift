@@ -39,6 +39,9 @@ final class AskCenter {
     /// The light-tier model of a provider when the config names none (the
     /// model catalog's resolved value); nil leaves the CLI's default.
     @ObservationIgnored var resolvedLightModel: @MainActor (String) -> String? = { _ in nil }
+    /// Loads the model catalog `resolvedLightModel` reads, when it has not
+    /// loaded yet; awaited before the first turn so it runs on the light tier.
+    @ObservationIgnored var loadModels: @MainActor () async -> Void = {}
     /// The last owner text of the open conversation, added to the next
     /// turn's retrieval so a bare follow-up still finds the topic.
     @ObservationIgnored var previousQuestion: String?
@@ -92,6 +95,16 @@ final class AskCenter {
             return !title.hasPrefix(needle) && title.contains(needle)
         }
         return AskMatches(guide: guide, screens: Array((prefixed + containing).prefix(Self.screenLimit)))
+    }
+
+    /// Loads the guide index and the model catalog before a first question;
+    /// false when the panel closed or moved to a new conversation meanwhile,
+    /// so nothing is sent (no engine, no paid call nobody sees).
+    func prepareToAsk(isShown: @MainActor () -> Bool) async -> Bool {
+        let asked = conversationID
+        await loadIfNeeded()
+        await loadModels()
+        return isShown() && conversationID == asked
     }
 
     /// A panel opened: a fresh conversation with nothing carried over.

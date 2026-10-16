@@ -71,7 +71,7 @@ struct AskPanel: View {
         }
         .task {
             await center.loadIfNeeded()
-            if appState.aiModelCatalog.providers.isEmpty { await appState.aiModelCatalog.load() }
+            await center.loadModels()
         }
     }
 
@@ -283,13 +283,16 @@ struct AskPanel: View {
 
     // MARK: - The conversation
 
-    /// Waits for the guide index first (a cold first ⌘/ may still be
-    /// loading it); a failed load asks anyway, with no sections.
+    /// Waits for the guide index and the model catalog first (a cold first
+    /// ⌘/ may still be loading them — without the catalog the first answer
+    /// would run on the strong tier); a failed load asks anyway, with no
+    /// sections or the CLI's default model. A panel closed (or reopened on a
+    /// new conversation) meanwhile sends nothing: no engine, no paid call.
     private func ask(_ text: String) {
         guard !asking else { return }
         asking = true
         Task {
-            await center.loadIfNeeded()
+            guard await center.prepareToAsk(isShown: { [appState] in appState.isAskPanelShown }) else { return }
             let spec = HelpChatSurface.spec(
                 center: center,
                 currentPage: { [appState] in appState.selectedDestination.title },
