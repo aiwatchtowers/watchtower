@@ -39,7 +39,7 @@ The six statuses cannot simply become free-form: the parent rollup (PROJ-05), th
 
 ## 4. Storage
 
-Migration (next free number at merge; `00124` today):
+Migration (next free number at merge; `00125`):
 
 ```sql
 CREATE TABLE workbench_board_columns (

@@ -15,6 +15,70 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
     package let prevRoundId: Int64
     package let prevTreeSha: String
     package let prevTreeLost: Bool
+    /// Deep mode state (`''` reads as the Meaning phase); absent in older output.
+    package let phase: String
+    package let chapterKey: String
+    package let activeSeconds: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case id, status, mode, folderRoot, baseSha, baseLabel, treeSha, prevRoundId, prevTreeSha, prevTreeLost
+        case phase, chapterKey, activeSeconds
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int64.self, forKey: .id)
+        status = try c.decode(String.self, forKey: .status)
+        mode = try c.decode(String.self, forKey: .mode)
+        folderRoot = try c.decode(String.self, forKey: .folderRoot)
+        baseSha = try c.decode(String.self, forKey: .baseSha)
+        baseLabel = try c.decode(String.self, forKey: .baseLabel)
+        treeSha = try c.decode(String.self, forKey: .treeSha)
+        prevRoundId = try c.decode(Int64.self, forKey: .prevRoundId)
+        prevTreeSha = try c.decode(String.self, forKey: .prevTreeSha)
+        prevTreeLost = try c.decode(Bool.self, forKey: .prevTreeLost)
+        phase = try c.decodeIfPresent(String.self, forKey: .phase) ?? ""
+        chapterKey = try c.decodeIfPresent(String.self, forKey: .chapterKey) ?? ""
+        activeSeconds = try c.decodeIfPresent(Int.self, forKey: .activeSeconds) ?? 0
+    }
+}
+
+/// The Deep-mode phases stored in `review_rounds.phase` (`''` and unknown read as Meaning).
+package enum ReviewPhase: String, Sendable, CaseIterable {
+    case meaning, chapters, wrapup
+
+    package init(stored: String) {
+        self = Self(rawValue: stored) ?? .meaning
+    }
+}
+
+/// One review lens with its checklist (built-ins plus the workbench's `review.md`).
+package struct ReviewLens: Decodable, Equatable, Sendable, Identifiable {
+    package struct Item: Decodable, Equatable, Sendable {
+        package let key: String
+        package let text: String
+    }
+
+    package let id: String
+    package let name: String
+    package let builtin: Bool
+    package let items: [Item]
+}
+
+/// One `review_checks` row: a ticked checklist item or a Wrap-up mark.
+package struct ReviewCheck: FetchableRecord, Decodable, Equatable, Sendable {
+    package enum State: String, Decodable, Sendable { case checked, commented, done, partial, notDone = "not_done" }
+
+    package let chapterKey: String
+    package let lens: String
+    package let itemKey: String
+    package let state: State
+
+    private enum CodingKeys: String, CodingKey {
+        case lens, state
+        case chapterKey = "chapter_key"
+        case itemKey = "item_key"
+    }
 }
 
 package struct ReviewHunk: Decodable, Equatable, Sendable {
@@ -58,6 +122,29 @@ package struct ReviewDiffFile: Decodable, Equatable, Sendable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case path, oldPath, status, additions, deletions, binary, collapsedReason, newBlob, newMode, hunks
+    }
+
+    /// Direct construction for the pure review logic and its tests.
+    package init(
+        path: String,
+        additions: Int,
+        deletions: Int,
+        collapsedReason: String? = nil,
+        status: String = "modified",
+        binary: Bool = false,
+        newBlob: String = "",
+        newMode: String = "100644"
+    ) {
+        self.path = path
+        self.oldPath = nil
+        self.status = status
+        self.additions = additions
+        self.deletions = deletions
+        self.binary = binary
+        self.collapsedReason = collapsedReason
+        self.newBlob = newBlob
+        self.newMode = newMode
+        self.hunks = []
     }
 
     /// Go emits `"hunks": null` for collapsed, binary and unchanged files.
@@ -106,6 +193,18 @@ package struct ReviewContextItem: Decodable, Equatable, Sendable {
     package let planText: String?
     package let specPath: String?
     package let missing: String?
+
+    /// Direct construction for the pure review logic and its tests.
+    package init(targetId: Int64, text: String, intent: String = "", missing: String? = nil) {
+        self.targetId = targetId
+        self.text = text
+        self.intent = intent
+        self.planPath = nil
+        self.planTask = nil
+        self.planText = nil
+        self.specPath = nil
+        self.missing = missing
+    }
 }
 
 package struct ReviewEnvelope: Decodable, Sendable {
@@ -124,6 +223,8 @@ package struct ReviewEnvelope: Decodable, Sendable {
     package let comments: Int?
     package let line: String?
     package let items: [ReviewContextItem]?
+    package let lenses: [ReviewLens]?
+    package let lensNotes: [String]?
 }
 
 /// One `review_comments` row. A nil `path` is a design comment on the round.

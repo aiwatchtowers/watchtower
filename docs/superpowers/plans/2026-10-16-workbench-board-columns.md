@@ -18,7 +18,7 @@
 - A column's `status` never changes after creation (`--set` refuses it).
 - Column moves never write `target_status_history` (PROJ-06 unchanged).
 - With no columns and nothing hidden: brief, `workbench_board`, `get_target`, `workbench_info`, the Desktop Kanban and the phone are unchanged.
-- Migration number: next free at merge (`00124` today).
+- Migration number: next free at merge (`00125`, after main's `00124_review_checks`).
 - Inner loop only per task (CLAUDE.md "Agent-driven runs"): `go test ./internal/<pkg>` / `./cmd -run …`, `make test-swift FILTER=…`, `make kit-test FILTER=…`, `make lint-diff`, and `make lint-swift` for Swift tasks (lint-diff is Go-only).
 
 ## Review Focus
@@ -36,7 +36,7 @@
 Depends on: none.
 
 **Files:**
-- Create: `internal/db/migrations/00124_workbench_board_columns.sql`, `internal/db/board_columns.go`, `internal/db/proj19_board_columns_test.go`
+- Create: `internal/db/migrations/00125_workbench_board_columns.sql`, `internal/db/board_columns.go`, `internal/db/proj19_board_columns_test.go`
 - Modify: `internal/db/schema.sql`, `internal/db/workbench_board.go` (`BoardNode.Column`), `internal/db/targets.go` (scan stays unchanged unless needed — `db.Target` gets no new JSON-visible field), the `TestAllTablesExist` list, snapshot + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`)
 
 **Interfaces — Produces:**

@@ -428,7 +428,7 @@ CREATE TABLE IF NOT EXISTS targets (
                         CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')),
     branch              TEXT NOT NULL DEFAULT '',  -- project targets: the git branch carrying the work (00089)
     pr                  TEXT NOT NULL DEFAULT '',  -- project targets: the pull request, a number or URL (00089)
-    board_column_id     INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL, -- workbench targets: the board column, of the same workbench and status; NULL = the status's first column (00124)
+    board_column_id     INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL, -- workbench targets: the board column, of the same workbench and status; NULL = the status's first column (00125)
     CHECK(status != 'in_review' OR project_id IS NOT NULL)  -- in_review exists only on a project board (00086)
 );
 CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
@@ -453,7 +453,7 @@ CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
 -- (00086: an in_review child counts as started like in_progress; a rollup
 -- write sets status_actor = 'system'.)
 -- Triggers targets_board_column_check_{ai,bu} and targets_board_column_clear_au
--- (00124, PROJ-19): writing a board_column_id that is not a column of the
+-- (00125, PROJ-19): writing a board_column_id that is not a column of the
 -- target's workbench and current status aborts with 'board column does not
 -- match the target'; a status or project_id change that leaves the column's
 -- category sets board_column_id = NULL (no status history row).
@@ -2453,10 +2453,10 @@ CREATE TABLE IF NOT EXISTS projects (
     methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00123)
     ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00123)
     finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), -- the owner's finish check; NULL = the folder file, else on (00123)
-    board_hidden_statuses TEXT NULL -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00124)
+    board_hidden_statuses TEXT NULL -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
 );
 
--- Workbench board columns (00124, PROJ-19): named columns inside one status
+-- Workbench board columns (00125, PROJ-19): named columns inside one status
 -- category of one workbench, ordered by position. A status with no rows has
 -- one implicit column, its standard label (To Do, In Progress, In Review,
 -- Blocked, Done, Dismissed). Written only by `watchtower workbench columns`.
@@ -2990,4 +2990,14 @@ CREATE TABLE IF NOT EXISTS review_viewed (
   path        TEXT NOT NULL,
   content_sha TEXT NOT NULL, -- file content hash when marked Viewed
   PRIMARY KEY (round_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS review_checks (
+  round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  chapter_key TEXT NOT NULL,
+  lens        TEXT NOT NULL,
+  item_key    TEXT NOT NULL, -- first 16 hex of sha256 of the question text
+  state       TEXT NOT NULL CHECK (state IN ('checked','commented','done','partial','not_done')), -- unticking deletes the row
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (round_id, chapter_key, lens, item_key)
 );

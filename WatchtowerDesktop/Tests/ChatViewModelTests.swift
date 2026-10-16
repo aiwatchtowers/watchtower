@@ -842,7 +842,6 @@ final class ChatViewModelTests: XCTestCase {
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: ChatLiveArtifactFeed(turn: turn) { received.append($0) })
-        window.orderFront(nil)
         defer { window.close() }
 
         spin { !received.isEmpty }

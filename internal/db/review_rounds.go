@@ -23,6 +23,9 @@ type ReviewRound struct {
 	PrevRoundID   sql.NullInt64
 	Status        string
 	Mode          string
+	Phase         string
+	ChapterKey    string
+	ActiveSeconds int
 	CreatedAt     string
 	SentAt        sql.NullString
 	DeliveredAt   sql.NullString
@@ -40,12 +43,12 @@ type ReviewComment struct {
 }
 
 const reviewRoundCols = `id, project_id, session_id, source, folder_root, base_sha, base_label, tree_sha,
-	prev_round_id, status, mode, created_at, sent_at, delivered_at`
+	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at`
 
 func scanReviewRound(s interface{ Scan(...any) error }) (*ReviewRound, error) {
 	var r ReviewRound
 	err := s.Scan(&r.ID, &r.ProjectID, &r.SessionID, &r.Source, &r.FolderRoot, &r.BaseSHA, &r.BaseLabel,
-		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.CreatedAt, &r.SentAt, &r.DeliveredAt)
+		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt)
 	if err != nil {
 		return nil, err
 	}
