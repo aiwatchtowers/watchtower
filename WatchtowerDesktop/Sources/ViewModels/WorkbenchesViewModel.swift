@@ -430,6 +430,14 @@ final class WorkbenchesViewModel {
     /// view's body, hence not observed.
     @ObservationIgnored var reviewModels: [Int64: ReviewChangesModel] = [:]
 
+    /// `automations rescan --workbench N` (spec §13.4); nil without a CLI.
+    /// A seam for tests.
+    @ObservationIgnored var rescanAutomations: ((_ workbenchID: Int64) async throws -> Void)?
+    /// How long recipe-folder changes settle before one rescan runs.
+    @ObservationIgnored var automationRescanDelay: Duration = .seconds(1)
+    /// The debounced rescan waiting per workbench (`automationRecipesChanged`).
+    @ObservationIgnored var automationRescanTimers: [Int64: Task<Void, Never>] = [:]
+
     let dbPool: DatabasePool
     /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.
     let cli: WorkbenchCLI?
@@ -458,7 +466,11 @@ final class WorkbenchesViewModel {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
+            let automations = AutomationsCLI(runner: cli.runner)
+            asks.wakeAutomations = { try await automations.wake() }
+            rescanAutomations = { try await automations.rescan(workbenchID: $0) }
         }
+        codeFiles.onAutomationRecipesChanged = { [weak self] in self?.automationRecipesChanged(workbenchID: $0) }
         terminalCenter?.onSessionExit = { [weak self] id, code, closedByApp in
             self?.sessionExited(id, code: code, closedByApp: closedByApp)
         }

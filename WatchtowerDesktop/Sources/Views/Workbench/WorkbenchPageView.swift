@@ -66,6 +66,8 @@ struct WorkbenchPageView: View {
         .task(id: project.id) { await vm.startGitWatching(project: project) }
         // The 5 s poll follows the asks from here; this is the first read.
         .task(id: project.id) { await vm.asks.refreshIfChanged(projectID: project.id) }
+        // The folder's automation recipes are indexed (spec §13.4).
+        .task(id: project.id) { vm.workbenchPageOpened(projectID: project.id) }
         .onChange(of: project.id) { old, _ in vm.stopGitWatching(projectID: old) }
         .onDisappear { vm.stopGitWatching(projectID: project.id) }
         .confirmationDialog(

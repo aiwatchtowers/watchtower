@@ -127,12 +127,12 @@ final class AutomationFormTests: XCTestCase {
         XCTAssertFalse(plan.needsSheet)
     }
 
-    func testWorkbenchScopeNotEditableInP3() throws {
+    /// R-P3-5 lifted in P5 part 2 (PROJ-03 amendment, ask #272): the form
+    /// edits a workbench recipe like a personal one.
+    func testWorkbenchScopeIsEditable() throws {
         let form = AutomationFormModel(detail: try Fixtures.detail(scope: "workbench"))
-        XCTAssertFalse(form.isEditable)
         form.fields.name = "Changed"
-        XCTAssertEqual(form.renderedText(), Fixtures.recipe, "a workbench recipe's text is never rewritten by the form")
-        XCTAssertTrue(AutomationFormModel(detail: try Fixtures.detail()).isEditable)
+        XCTAssertTrue(form.renderedText().contains("name: \"Changed\"\n"), "the form writes a workbench recipe's fields")
     }
 
     // MARK: - Form and buffer

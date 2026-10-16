@@ -113,6 +113,8 @@ final class OwnerAsksViewModel {
         "Answer typed next to text not sent yet — press Return to send them together"
     nonisolated static let answerCopiedNote = "Answer copied — paste it into the terminal and press Return"
     nonisolated static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
+    /// An automation's ask (spec §13.3): its run reads the answer, no session does.
+    nonisolated static let automationAnswerNote = "Answer saved — the automation goes on with it"
     nonisolated static let withdrawnNote = "The agent withdrew this ask — your draft is kept"
     static let pollInterval: Duration = .seconds(5)
     /// A line held behind a permission prompt this long with no change
@@ -153,6 +155,9 @@ final class OwnerAsksViewModel {
     /// Each workbench's closed asks per session (nil = outside the app), as
     /// the session rows count them.
     private(set) var closedCounts: [Int64: [Int64?: Int]] = [:]
+    /// Each workbench's automation asks → "⚙ <automation> · run #N"
+    /// (`AutomationQueries.askLabels`), as last read.
+    private(set) var automationLabels: [Int64: [Int64: String]] = [:]
     /// Each workbench's superseded ask id → the round that replaced it.
     private(set) var replacements: [Int64: [Int64: Int64]] = [:]
     /// The read-only lists behind "N closed", read when one opens.
@@ -207,6 +212,9 @@ final class OwnerAsksViewModel {
     @ObservationIgnored var onLoaded: ((_ projectID: Int64) -> Void)?
     /// An answer was saved: the session states re-read their open asks.
     @ObservationIgnored var onAnswered: (() async -> Void)?
+    /// `automations wake` after an automation's ask was answered, so its
+    /// waiting run resumes now rather than on the daemon's next tick.
+    @ObservationIgnored var wakeAutomations: (() async throws -> Void)?
     /// The delivery's gates (`SessionLineDelivery`), set here by the
     /// wiring and the tests: a permission prompt holds a line, the hooks'
     /// report this run allows its Return, and a fresh read precedes it.
@@ -274,6 +282,7 @@ final class OwnerAsksViewModel {
         let replacements: [Int64: Int64]
         /// The drawer's ask when it is no longer open.
         let shown: OwnerAsk?
+        let automationLabels: [Int64: String]
     }
 
     func load(projectID: Int64) async {
@@ -284,12 +293,14 @@ final class OwnerAsksViewModel {
                 let shown = try drawerID.flatMap { id in
                     open.asks.contains { $0.id == id } ? nil : try OwnerAskQueries.ask(db, id: id, projectID: projectID)
                 }
+                let automationAsks = (open.asks + [shown].compactMap(\.self)).filter { $0.automationRunID != nil }
                 return Snapshot(
                     open: open,
                     fingerprint: try Self.fingerprint(db, projectID: projectID),
                     closedCounts: try OwnerAskQueries.closedCounts(db, projectID: projectID),
                     replacements: try OwnerAskQueries.replacements(db, projectID: projectID),
-                    shown: shown
+                    shown: shown,
+                    automationLabels: try AutomationQueries.askLabels(db, askIDs: automationAsks.map(\.id))
                 )
             }
             noteDeletedSessions(projectID: projectID, reread: snapshot.open.asks)
@@ -297,6 +308,7 @@ final class OwnerAsksViewModel {
             fingerprints[projectID] = snapshot.fingerprint
             closedCounts[projectID] = snapshot.closedCounts
             replacements[projectID] = snapshot.replacements
+            automationLabels[projectID] = snapshot.automationLabels
             if let shown = snapshot.shown { shownAsks[shown.id] = shown }
             dismissedAskIDs[projectID]?.formIntersection(snapshot.open.asks.map(\.id))
             // A row it cannot read is left out of the stack and named here.
@@ -315,6 +327,13 @@ final class OwnerAsksViewModel {
     func linkedAsk(askID: Int64, projectID: Int64) async throws -> OwnerAsk? {
         if let ask = openAsks[projectID]?.first(where: { $0.id == askID }) { return ask }
         return try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID) }
+    }
+
+    /// "⚙ <automation> · run #N" for an ask an automation run filed, as the
+    /// stack names it in place of a session; nil for an agent's ask.
+    func automationLabel(_ ask: OwnerAsk) -> String? {
+        guard let runID = ask.automationRunID else { return nil }
+        return automationLabels[ask.projectID]?[ask.id] ?? "⚙ Automation · run #\(runID)"
     }
 
     /// The ask a stack row, a closed list or a notice names: from the open
@@ -546,7 +565,8 @@ final class OwnerAsksViewModel {
     /// An answer notice's text, naming the agent of the session the ask
     /// came from (board #399).
     func noticeText(_ notice: AnswerNotice, ask: OwnerAsk) -> String {
-        notice.text(agent: ask.sessionID.flatMap { terminalCenter?.agent(of: $0) })
+        if ask.automationRunID != nil, notice == .delivered(.noSession) { return Self.automationAnswerNote }
+        return notice.text(agent: ask.sessionID.flatMap { terminalCenter?.agent(of: $0) })
     }
 
     func dismissNotice(askID: Int64) {
@@ -633,6 +653,8 @@ final class OwnerAsksViewModel {
     /// `answerErrors`), for an ask no longer open (`notOpen`: the
     /// `withdrawn` notice, the list reloaded) or when the write fails
     /// (`failed`). A success discards the ask's draft; otherwise it is kept.
+    /// An automation's ask (spec §13.3) is never delivered to a session —
+    /// its run reads the answer once the daemon is woken (`wakeAutomations`).
     @discardableResult
     func answer(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerResult {
         guard !isAnswering(ask.id) else { return .busy }
@@ -661,7 +683,9 @@ final class OwnerAsksViewModel {
         drafts.discard(askID)
         let line = OwnerAskPrompt.line(id: askID, kind: ask.kind, answer: answer)
         var delivery = Delivery.noSession
-        if let sessionID = ask.sessionID {
+        // Never typed, held or queued for an automation's ask, whatever
+        // session it names (Go files it with none).
+        if let sessionID = ask.sessionID, ask.automationRunID == nil {
             delivery = await lineDelivery.deliverLine(line, key: .ask(askID), sessionID: sessionID) { [weak self] event in
                 self?.heldAnswerTried(event, askID: askID, sessionID: sessionID)
             }
@@ -674,7 +698,19 @@ final class OwnerAsksViewModel {
         }
         await load(projectID: projectID)
         await onAnswered?()
+        if ask.automationRunID != nil { await wakeAutomationRun(askID: askID) }
         return .delivered(delivery)
+    }
+
+    /// Best effort: the answer is saved either way, and the daemon's next
+    /// tick resumes the run when the wake fails.
+    private func wakeAutomationRun(askID: Int64) async {
+        guard let wakeAutomations else { return }
+        do {
+            try await wakeAutomations()
+        } catch {
+            NSLog("OwnerAsks: waking the automations after ask #%lld failed: %@", askID, error.localizedDescription)
+        }
     }
 
     /// A Quick ask's tap or Reply (spec 2026-10-10 Part 9.1): `answer(_:with:)`,
