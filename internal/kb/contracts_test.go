@@ -187,6 +187,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		"idea":          {"кэш*"},
 		"confluence":    {"канарейк*", "diagram"},
 		"project_doc":   {"роадмап", "rollout"},
+		"guide":         {"inbox"},
 	}
 	require.Len(t, perSource, len(SourceNames()), "the fixture covers every source")
 	var all []Hit
@@ -199,7 +200,12 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		require.NoError(t, err, src)
 		n := countDocs(t, d, src)
 		require.Positive(t, n, "seedAll indexed no %s document", src)
-		assert.Len(t, res.Hits, n, "every %s document is reachable", src)
+		if src == GuideSource {
+			// The embedded guide has more pages than one search returns.
+			assert.NotEmpty(t, res.Hits, "the guide is reachable")
+		} else {
+			assert.Len(t, res.Hits, n, "every %s document is reachable", src)
+		}
 		all = append(all, res.Hits...)
 	}
 	broad, err := Search(ctx, d, Request{Queries: []string{"стейдж привет бюджет инвойс", "миграция OR кэш*"}, Limit: MaxLimit, Now: testNow()})
