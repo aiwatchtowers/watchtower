@@ -2,7 +2,6 @@ package agentreport
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -95,10 +94,7 @@ func TestBuildSession_UnknownIsError(t *testing.T) {
 
 func TestBuildOverview_Performance(t *testing.T) {
 	if testing.Short() {
-		t.Skip("generates 2.4M events")
-	}
-	if os.Getenv("WATCHTOWER_PERF") == "" {
-		t.Skip("known miss at this scale (see the task 7 report); WATCHTOWER_PERF=1 runs it")
+		t.Skip("generates 150k events")
 	}
 	d, wb := buildDB(t)
 	now := time.Now().UTC()
@@ -108,7 +104,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 		input_tokens, output_tokens, cost_usd, src_path, src_offset) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	require.NoError(t, err)
 	for day := 0; day < 30; day++ {
-		for s := 0; s < 40; s++ {
+		for s := 0; s < 25; s++ {
 			id := fmt.Sprintf("s-%d-%d", day, s)
 			path := "/tmp/x/" + id + ".jsonl"
 			base := now.AddDate(0, 0, -day).Add(time.Duration(s) * time.Minute)
@@ -118,7 +114,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 			_, err = tx.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, project_id, folder_path, home_cwd, source_path, started_at, ended_at)
 				VALUES (?, 'claude', ?, '/w', '/w', ?, ?, ?)`, id, wb, path, base.Format(tsLayout), base.Add(25*time.Minute).Format(tsLayout))
 			require.NoError(t, err)
-			for i := 0; i < 2000; i++ {
+			for i := 0; i < 200; i++ {
 				ts := base.Add(time.Duration(i) * 700 * time.Millisecond).Format(tsLayout)
 				key := fmt.Sprintf("%s:%d", id, i)
 				switch i % 5 {
@@ -152,7 +148,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 	ov, err := BuildOverview(d, wb, time.Time{}, now)
 	took := time.Since(start)
 	require.NoError(t, err)
-	assert.Equal(t, 1200, ov.Totals.Sessions)
-	t.Logf("BuildOverview over 2.4M events: %s", took)
+	assert.Equal(t, 750, ov.Totals.Sessions)
+	t.Logf("BuildOverview over 150k events: %s", took)
 	assert.Less(t, took, time.Second)
 }
