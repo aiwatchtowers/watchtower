@@ -4,11 +4,14 @@ import WatchtowerCore
 
 struct StatusBarView: View {
     @Environment(AppState.self) private var appState
-    @State private var daemonManager = DaemonManager()
     @State private var lastSync: String?
     @State private var stats: WorkspaceStats?
     @State private var backfillLine: String?
     @State private var refreshTask: Task<Void, Never>?
+
+    /// The app's one `DaemonManager`, polled from `AppState.initialize()`
+    /// for the tray too: this bar never starts or stops its poll (board #731).
+    private var daemonManager: DaemonManager { appState.daemonManager }
 
     var body: some View {
         HStack(spacing: 16) {
@@ -62,18 +65,20 @@ struct StatusBarView: View {
         .padding(.vertical, 6)
         .background(Color(.windowBackgroundColor))
         .onAppear {
-            daemonManager.resolvePathIfNeeded()
-            daemonManager.startPolling()
             loadStats()
+            // Every 30 s while a window is on screen; back on screen the
+            // stats load at once (board #731).
             refreshTask = Task {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(30))
-                    loadStats()
+                    if appState.uiVisibility.isOnScreen { loadStats() }
                 }
             }
         }
+        .onChange(of: appState.uiVisibility.isOnScreen) { _, onScreen in
+            if onScreen { loadStats() }
+        }
         .onDisappear {
-            daemonManager.stopPolling()
             refreshTask?.cancel()
             refreshTask = nil
         }

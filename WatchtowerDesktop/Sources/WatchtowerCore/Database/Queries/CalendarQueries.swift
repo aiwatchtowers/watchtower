@@ -57,6 +57,22 @@ package enum CalendarQueries {
         )
     }
 
+    /// The events of each 24 h day starting at `dayStarts` (sorted), in one
+    /// read: the same rows as one `fetchEvents(from: day, to: day + 24 h)`
+    /// per day — an event lands in every day it overlaps, compared on the
+    /// stored strings like the SQL — without a query per day (board #731).
+    /// Days without events are left out.
+    package static func fetchEventsByDay(_ db: Database, dayStarts: [Date]) throws -> [(day: Date, events: [CalendarEvent])] {
+        guard let first = dayStarts.first, let last = dayStarts.last else { return [] }
+        let events = try fetchEvents(db, from: first, to: last.addingTimeInterval(86400))
+        return dayStarts.compactMap { day in
+            let from = iso8601(day)
+            let to = iso8601(day.addingTimeInterval(86400))
+            let items = events.filter { $0.startTime <= to && $0.endTime >= from }
+            return items.isEmpty ? nil : (day, items)
+        }
+    }
+
     package static func fetchNextEvent(_ db: Database) throws -> CalendarEvent? {
         let now = iso8601(Date())
         return try CalendarEvent.fetchOne(

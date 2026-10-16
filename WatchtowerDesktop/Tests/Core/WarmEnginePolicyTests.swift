@@ -146,12 +146,19 @@ final class WarmEnginePolicyTests: XCTestCase {
 
     /// `CalendarEvent` has only `init(row:)` — build the fixture from a
     /// dictionary Row (the MeetingReminderCenterTests convention), with times
-    /// derived from `start` so tests carry no hardcoded dates.
+    /// derived from `start` so tests carry no hardcoded dates. By default a
+    /// call with a link, which `mayBeRecorded` lets hold an engine.
     private func makeEvent(
         id: String = "ev1",
         start: Date,
         end: Date? = nil,
-        isAllDay: Bool = false
+        isAllDay: Bool = false,
+        status: String = "confirmed",
+        type: String = "",
+        organizer: String = "",
+        attendees: String = "[]",
+        conferenceURL: String = "https://meet.example.com/abc-defg-hij",
+        accountEmail: String? = nil
     ) -> CalendarEvent {
         let row: Row = [
             "id": id,
@@ -161,19 +168,24 @@ final class WarmEnginePolicyTests: XCTestCase {
             "location": "",
             "start_time": Self.iso.string(from: start),
             "end_time": Self.iso.string(from: end ?? start.addingTimeInterval(1800)),
-            "organizer_email": "",
-            "attendees": "[]",
+            "organizer_email": organizer,
+            "attendees": attendees,
             "is_recurring": 0,
             "is_all_day": isAllDay ? 1 : 0,
-            "event_status": "confirmed",
-            "event_type": "",
+            "event_status": status,
+            "event_type": type,
             "html_link": "",
-            "conference_url": "",
+            "conference_url": conferenceURL,
             "raw_json": "{}",
             "synced_at": "",
-            "updated_at": ""
+            "updated_at": "",
+            "account_email": accountEmail
         ]
         return CalendarEvent(row: row)
+    }
+
+    private static func attendee(_ email: String, _ response: String = "accepted") -> String {
+        #"{"email":"\#(email)","display_name":"","response_status":"\#(response)","slack_user_id":""}"#
     }
 
     func testWindowDetectsOngoingMeeting() {
@@ -240,5 +252,66 @@ final class WarmEnginePolicyTests: XCTestCase {
 
     func testWindowOfNoEventsIsNoMeetings() {
         XCTAssertEqual(WarmEnginePolicy.window(events: [], now: now), .noMeetings)
+    }
+
+    // MARK: - Which events may hold an engine (mayBeRecorded, board #731)
+
+    func testACallWithALinkMayBeRecorded() {
+        XCTAssertTrue(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now)))
+    }
+
+    func testAMeetingWithAGuestButNoLinkMayBeRecorded() {
+        let event = makeEvent(
+            start: now, organizer: "owner@example.com",
+            attendees: "[\(Self.attendee("alice@example.com"))]", conferenceURL: "")
+        XCTAssertTrue(WarmEnginePolicy.mayBeRecorded(event))
+    }
+
+    func testASoloBlockWithoutALinkIsNotRecorded() {
+        // No guests, only the owner listed, or only a room: nobody to record.
+        let noGuests = makeEvent(start: now, organizer: "owner@example.com", conferenceURL: "")
+        let ownerOnly = makeEvent(
+            start: now, organizer: "owner@example.com",
+            attendees: "[\(Self.attendee("owner@example.com"))]", conferenceURL: "")
+        let roomOnly = makeEvent(
+            start: now, organizer: "owner@example.com",
+            attendees: "[\(Self.attendee("room-1@resource.calendar.google.com"))]", conferenceURL: "") // leak-check:allow
+        XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(noGuests))
+        XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(ownerOnly))
+        XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(roomOnly))
+    }
+
+    func testFocusTimeOutOfOfficeAndCancelledAreNotRecorded() {
+        XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now, type: "focusTime")))
+        XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now, type: "outOfOffice")))
+        XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now, type: "workingLocation")))
+        XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now, status: "cancelled")))
+        XCTAssertTrue(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now, type: "default")))
+        XCTAssertTrue(WarmEnginePolicy.mayBeRecorded(makeEvent(start: now, status: "tentative")))
+    }
+
+    func testAMeetingTheAccountDeclinedIsNotRecorded() {
+        let guests = "[\(Self.attendee("Owner@Example.com", "declined")),\(Self.attendee("alice@example.com"))]"
+        let declined = makeEvent(start: now, attendees: guests, accountEmail: "owner@example.com")
+        // Someone else's decline, or no account to tell whose: still a meeting.
+        let othersDecline = makeEvent(
+            start: now,
+            attendees: "[\(Self.attendee("owner@example.com")),\(Self.attendee("alice@example.com", "declined"))]",
+            accountEmail: "owner@example.com")
+        let noAccount = makeEvent(start: now, attendees: guests)
+        XCTAssertFalse(WarmEnginePolicy.mayBeRecorded(declined))
+        XCTAssertTrue(WarmEnginePolicy.mayBeRecorded(othersDecline))
+        XCTAssertTrue(WarmEnginePolicy.mayBeRecorded(noAccount))
+    }
+
+    func testWindowIgnoresEventsThatAreNotRecorded() {
+        let window = WarmEnginePolicy.window(
+            events: [
+                makeEvent(id: "focus", start: now.addingTimeInterval(-600), end: now.addingTimeInterval(600), type: "focusTime"),
+                makeEvent(id: "solo", start: now.addingTimeInterval(60), conferenceURL: "")
+            ],
+            now: now
+        )
+        XCTAssertEqual(window, .noMeetings)
     }
 }

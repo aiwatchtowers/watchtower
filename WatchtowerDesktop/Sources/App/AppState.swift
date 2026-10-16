@@ -43,6 +43,9 @@ final class AppState {
     /// AppState). Its path lookup is deliberately deferred until after the CLI
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
+    /// Whether a window of the app is on screen; the UI pollers skip their
+    /// refreshes off screen (board #731, `applyUIVisibility`).
+    let uiVisibility = UIVisibilityCenter()
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -687,6 +690,8 @@ final class AppState {
     /// (reinitializeAfterOnboarding), which must not stack observers.
     private func installLifecycleHooks() {
         targetAssistantCenter.embeddedChats = embeddedChatCenter
+        uiVisibility.onChange = { [weak self] in self?.applyUIVisibility($0) }
+        uiVisibility.start()
         if terminateObserver == nil {
             terminateObserver = NotificationCenter.default.addObserver(
                 forName: NSApplication.willTerminateNotification,
@@ -1579,7 +1584,10 @@ final class AppState {
     /// Not marked `private` (the `initIdeas` precedent) so XCTest can mount
     /// the Calendar tab on a test pool (`HomeLinkTests`).
     func initCalendar(dbPool: DatabasePool) {
-        calendarViewModel = CalendarViewModel(dbPool: dbPool)
+        calendarViewModel?.stopObserving()
+        let vm = CalendarViewModel(dbPool: dbPool)
+        vm.setOnScreen(uiVisibility.isOnScreen)
+        calendarViewModel = vm
     }
 
     private func initDayPlan(dbPool: DatabasePool) {
@@ -1608,6 +1616,7 @@ final class AppState {
     /// `IdeaNavigationTests` to drive `navigateToIdea`).
     func initIdeas(dbManager: DatabaseManager) {
         let vm = IdeasViewModel(dbManager: dbManager)
+        vm.setOnScreen(uiVisibility.isOnScreen)
         vm.startObserving()
         ideasViewModel = vm
     }
@@ -1841,6 +1850,8 @@ final class AppState {
                 && NSApp.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isVisible && $0.occlusionState.contains(.visible) }
         }
         notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
+        vm.setOnScreen(uiVisibility.isOnScreen)
+        vm.codeFiles.setOnScreen(uiVisibility.isOnScreen)
         let reports = SessionReportCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         reports.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }

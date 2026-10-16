@@ -29,6 +29,11 @@ final class CalendarViewModel {
 
     private let dbPool: DatabasePool
     private var observationTask: Task<Void, Never>?
+    private var refreshGate = ForegroundRefreshGate()
+    /// The load `setOnScreen` started — held so tests can await it.
+    private(set) var onScreenRefresh: Task<Void, Never>?
+    private var loadsStarted = 0
+    private var loadApplied = 0
 
     /// Number of future days to display (including today).
     private let daysAhead = 7
@@ -75,44 +80,87 @@ final class CalendarViewModel {
 
     // MARK: - Data Loading
 
+    /// What one load reads, applied in one go.
+    private struct Snapshot {
+        var days: [DayEvents]
+        var next: CalendarEvent?
+        var auth: CalendarQueries.AuthState?
+        var calendars: [CalendarCalendarItem]
+        var hasEvents: Bool
+    }
+
+    /// Reloads synchronously — the deep link (`ensureVisible`) expands and
+    /// scrolls right after it returns. The periodic refresh reads off the
+    /// main actor instead (`reload`).
     func loadEvents() {
+        let token = beginLoad()
+        let window = currentWindow()
+        apply(try? dbPool.read { try Self.read($0, dayStarts: window.days, calendar: window.calendar) }, token: token)
+    }
+
+    /// The same load, its read off the main actor (the poll and the return
+    /// on screen).
+    func reload() async {
+        let token = beginLoad()
+        let window = currentWindow()
+        let snapshot = try? await dbPool.read { try Self.read($0, dayStarts: window.days, calendar: window.calendar) }
+        apply(snapshot, token: token)
+    }
+
+    /// The UI went on or off screen (board #731): off screen the poll skips
+    /// its loads; back on screen after a skipped one, it loads at once.
+    func setOnScreen(_ onScreen: Bool) {
+        guard refreshGate.setOnScreen(onScreen) else { return }
+        onScreenRefresh = Task { await reload() }
+    }
+
+    /// One tick of the 30 s poll (its loop's body; tests call it directly).
+    func pollTick() async {
+        if refreshGate.tick() { await reload() }
+    }
+
+    private func currentWindow() -> (days: [Date], calendar: Calendar) {
         let cal = Calendar.current
-        let today = cal.startOfDay(for: Date())
-        let dayStarts = Self.dayWindow(
-            today: today, historyDays: historyDays, daysAhead: daysAhead,
+        let days = Self.dayWindow(
+            today: cal.startOfDay(for: Date()), historyDays: historyDays, daysAhead: daysAhead,
             pinned: pinnedDate, calendar: cal)
+        return (days, cal)
+    }
 
-        let result = try? dbPool.read { db -> ([DayEvents], CalendarEvent?, CalendarQueries.AuthState?, [CalendarCalendarItem]) in
-            var days: [DayEvents] = []
-            for dayStart in dayStarts {
-                let dayEnd = dayStart.addingTimeInterval(86400)
-                let items = try CalendarQueries.fetchEvents(db, from: dayStart, to: dayEnd)
-                if !items.isEmpty {
-                    let label = Self.label(for: dayStart, calendar: cal)
-                    days.append(DayEvents(id: dayStart, label: label, events: items))
-                }
-            }
-            let next = try CalendarQueries.fetchNextEvent(db)
-            let auth = try? CalendarQueries.fetchAuthState(db)
-            let cals = try CalendarQueries.fetchCalendarsGroupedForSettings(db)
-            return (days, next, auth, cals)
+    /// Loads overlap (a poll, a deep link's synchronous one): only one
+    /// started after the last applied load lands, so a slow older read never
+    /// undoes a newer one.
+    private func beginLoad() -> Int {
+        loadsStarted += 1
+        return loadsStarted
+    }
+
+    nonisolated private static func read(_ db: Database, dayStarts: [Date], calendar cal: Calendar) throws -> Snapshot {
+        let days = try CalendarQueries.fetchEventsByDay(db, dayStarts: dayStarts).map {
+            DayEvents(id: $0.day, label: label(for: $0.day, calendar: cal), events: $0.events)
         }
+        return Snapshot(
+            days: days,
+            next: try CalendarQueries.fetchNextEvent(db),
+            auth: try? CalendarQueries.fetchAuthState(db),
+            calendars: try CalendarQueries.fetchCalendarsGroupedForSettings(db),
+            hasEvents: try CalendarQueries.eventCount(db) > 0
+        )
+    }
 
-        dailyEvents = result?.0 ?? []
-        nextEvent = result?.1
-        calendars = result?.3 ?? []
-
-        let auth = result?.2
-        if let auth, auth.status == "revoked" || auth.status == "error" {
+    /// A failed read empties the lists, as before the off-main split.
+    private func apply(_ snapshot: Snapshot?, token: Int) {
+        guard token > loadApplied else { return }
+        loadApplied = token
+        dailyEvents = snapshot?.days ?? []
+        nextEvent = snapshot?.next
+        calendars = snapshot?.calendars ?? []
+        if let auth = snapshot?.auth, auth.status == "revoked" || auth.status == "error" {
             authState = auth
         } else {
             authState = nil
         }
-
-        let hasEvents = (try? dbPool.read { db in
-            try CalendarQueries.eventCount(db) > 0
-        }) ?? false
-        isConnected = hasEvents
+        isConnected = snapshot?.hasEvents ?? false
     }
 
     /// Ensure the day containing `date` is part of the rendered window,
@@ -158,7 +206,7 @@ final class CalendarViewModel {
 
     // MARK: - Helpers
 
-    private static func label(for date: Date, calendar cal: Calendar) -> String {
+    nonisolated private static func label(for date: Date, calendar cal: Calendar) -> String {
         if cal.isDateInToday(date) { return "Today" }
         if cal.isDateInTomorrow(date) { return "Tomorrow" }
         if cal.isDateInYesterday(date) { return "Yesterday" }
@@ -170,12 +218,17 @@ final class CalendarViewModel {
 
     // MARK: - Observation
 
+    /// Every 30 s while the UI is on screen (`refreshGate`): the daemon
+    /// writes the events from another process, so GRDB observation never
+    /// fires. Every consumer is on screen (the Calendar tab, the sidebar's
+    /// next meeting, Settings, the reconnect prompt); the meeting reminders
+    /// and the warm engine read the calendar themselves.
     private func startObserving() {
         observationTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
                 guard !Task.isCancelled, let self else { break }
-                self.loadEvents()
+                await self.pollTick()
             }
         }
     }
