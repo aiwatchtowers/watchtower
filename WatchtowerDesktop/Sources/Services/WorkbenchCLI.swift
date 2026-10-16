@@ -736,6 +736,42 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchGitStatus.self, from: data)
     }
 
+    // MARK: - Diff review (board #328)
+
+    /// Every review call prints one envelope; a refusal is `ok: false` with
+    /// `error` at exit 0, not a throw.
+    private func review(_ args: [String]) async throws -> ReviewEnvelope {
+        let data = try await runner.run(args: ["workbench", "review"] + args + ["--json"])
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(ReviewEnvelope.self, from: data)
+    }
+
+    func reviewStart(projectID: Int64, sessionID: Int64, refresh: Bool) async throws -> ReviewEnvelope {
+        try await review(["start", "--workbench", String(projectID), "--session", String(sessionID)]
+            + (refresh ? ["--refresh"] : []))
+    }
+
+    func reviewDiff(projectID: Int64, roundID: Int64, since: Bool) async throws -> ReviewEnvelope {
+        try await review(["diff", "--workbench", String(projectID), "--round", String(roundID)]
+            + (since ? ["--since"] : []))
+    }
+
+    /// `oldPath`: a renamed file's old path, where its old side is read.
+    func reviewFile(projectID: Int64, roundID: Int64, path: String, oldPath: String?, since: Bool) async throws -> ReviewEnvelope {
+        try await review(["file", "--workbench", String(projectID), "--round", String(roundID), "--path", path]
+            + (oldPath.map { ["--old-path", $0] } ?? [])
+            + (since ? ["--since"] : []))
+    }
+
+    func reviewSend(projectID: Int64, roundID: Int64) async throws -> ReviewEnvelope {
+        try await review(["send", "--workbench", String(projectID), "--round", String(roundID)])
+    }
+
+    func reviewContext(projectID: Int64, sessionID: Int64) async throws -> ReviewEnvelope {
+        try await review(["context", "--workbench", String(projectID), "--session", String(sessionID)])
+    }
+
     /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`).
     /// A refusal or failure exits 0 with the envelope's `refused`/`error`.
     func worktreeCreate(projectID: Int64, name: String) async throws -> WorktreeCreateResult {

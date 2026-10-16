@@ -979,6 +979,7 @@ extension WorkbenchesViewModel {
     func forgetProcessState(_ sessionID: Int64) {
         resumeStarts[sessionID] = nil
         resumeFailed.remove(sessionID)
+        reviewModels[sessionID] = nil
     }
 
     func setSessionError(_ message: String?, projectID: Int64?) {

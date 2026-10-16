@@ -50,9 +50,9 @@ struct WorkspacePaneView: View {
                 header
                 Divider()
             }
-            if isHidden, WorkspaceView(pane) == .terminal || WorkspaceView(pane) == .report {
+            if isHidden, [.terminal, .report, .changes].contains(WorkspaceView(pane)) {
                 // A hidden Session view leaves the screen too: its report
-                // stops refreshing until it is back.
+                // stops refreshing until it is back; so does a Changes pane.
                 Color.clear
             } else {
                 content.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,6 +94,9 @@ struct WorkspacePaneView: View {
         Menu {
             Button("Board") { show(.board) }.disabled(pane == .board)
             Button("Files") { show(.files) }.disabled(pane == .files)
+            if let id = currentSessionID {
+                Button("Changes") { show(.changes(id)) }.disabled(pane == .changes(id))
+            }
             Divider()
             Section("Sessions") {
                 ForEach(vm.orderedSessions(projectID: project.id)) { session in
@@ -112,6 +115,12 @@ struct WorkspacePaneView: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Show something else in this pane")
+    }
+
+    /// The session the pane picker's Changes reviews: the one in a slot,
+    /// else the active one.
+    private var currentSessionID: Int64? {
+        vm.layout(projectID: project.id).sessionIDs.first ?? vm.activeSessionID(projectID: project.id)
     }
 
     private func show(_ item: WorkspacePane) {
@@ -140,6 +149,18 @@ struct WorkspacePaneView: View {
         case let .sessionReport(id):
             WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)
                 .id(id)
+        case let .changes(id):
+            if let model = vm.reviewModel(sessionID: id, projectID: project.id) {
+                ReviewChangesPaneView(
+                    model: model,
+                    agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind }
+                )
+                .id(id)
+            } else {
+                Text(WorkbenchesViewModel.cliMissingMessage)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 }
@@ -245,6 +266,7 @@ extension WorkspaceView {
         case .report: "Session"
         case .board: "Board"
         case .files: "Files"
+        case .changes: "Changes"
         }
     }
 
@@ -254,6 +276,7 @@ extension WorkspaceView {
         case .report: "list.bullet.rectangle"
         case .board: "square.grid.2x2"
         case .files: "chevron.left.forwardslash.chevron.right"
+        case .changes: "plus.forwardslash.minus"
         }
     }
 }

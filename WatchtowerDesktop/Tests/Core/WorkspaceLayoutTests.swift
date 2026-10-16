@@ -133,8 +133,8 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.decode(Data(expanded.utf8)), .default)
     }
 
-    func testTheHeaderViewsAreTerminalSessionBoardAndFiles() {
-        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .report, .board, .files])
+    func testTheHeaderViewsAreTerminalSessionBoardFilesAndChanges() {
+        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .report, .board, .files, .changes])
         XCTAssertEqual(WorkspaceView(.sessionReport(4)), .report)
     }
 

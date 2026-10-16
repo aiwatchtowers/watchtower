@@ -1940,6 +1940,51 @@ CREATE TABLE IF NOT EXISTS linear_user_map (
     match_confidence REAL NOT NULL DEFAULT 0,
     resolved_at      TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS review_rounds (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id     INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+  source         TEXT NOT NULL DEFAULT 'session' CHECK (source IN ('session','pr')),
+  folder_root    TEXT NOT NULL,
+  base_sha       TEXT NOT NULL,
+  base_label     TEXT NOT NULL DEFAULT '',
+  tree_sha       TEXT NOT NULL,
+  prev_round_id  INTEGER REFERENCES review_rounds(id) ON DELETE SET NULL,
+  status         TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','sent','delivered')),
+  mode           TEXT NOT NULL DEFAULT 'quick' CHECK (mode IN ('quick','deep')),
+  phase          TEXT NOT NULL DEFAULT '',
+  chapter_key    TEXT NOT NULL DEFAULT '',
+  active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  sent_at        TEXT,
+  delivered_at   TEXT
+);
+CREATE TABLE IF NOT EXISTS review_comments (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id       INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  path           TEXT,
+  side           TEXT NOT NULL DEFAULT 'new' CHECK (side IN ('old','new')),
+  start_line     INTEGER NOT NULL DEFAULT 0,
+  end_line       INTEGER NOT NULL DEFAULT 0,
+  quote          TEXT NOT NULL DEFAULT '',
+  quote_prefix   TEXT NOT NULL DEFAULT '',
+  quote_suffix   TEXT NOT NULL DEFAULT '',
+  tree_sha       TEXT NOT NULL DEFAULT '',
+  lens           TEXT NOT NULL DEFAULT '',
+  body           TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','carried','resolved','outdated')),
+  carried_from   INTEGER REFERENCES review_comments(id) ON DELETE SET NULL,
+  agent_reply    TEXT NOT NULL DEFAULT '',
+  agent_reply_at TEXT,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE TABLE IF NOT EXISTS review_viewed (
+  round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,
+  content_sha TEXT NOT NULL,
+  PRIMARY KEY (round_id, path)
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2258,6 +2303,9 @@ CREATE INDEX IF NOT EXISTS idx_linear_history_issue ON linear_issue_history(acco
 CREATE INDEX IF NOT EXISTS idx_linear_relations_related ON linear_relations(account_id, related_issue_id, type);
 CREATE INDEX IF NOT EXISTS idx_linear_relations_issue ON linear_relations(account_id, issue_id);
 CREATE INDEX IF NOT EXISTS idx_linear_user_map_slack ON linear_user_map(slack_user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
+CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

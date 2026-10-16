@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// The workbench header's trailing controls: `Terminal ▾ | Session | Board |
-/// Files | split | ⋯` (spec 2026-10-03-workbench-session-report Part 7, the
+/// Files | Changes | split | ⋯` (spec 2026-10-03-workbench-session-report Part 7, the
 /// owner's pick on board #357).
 struct WorkbenchHeaderControls: View {
     @Bindable var vm: WorkbenchesViewModel
@@ -28,7 +28,7 @@ struct WorkbenchHeaderControls: View {
         }
     }
 
-    /// Terminal / Session / Board / Files: on = on screen. Turning one on
+    /// Terminal / Session / Board / Files / Changes: on = on screen. Turning one on
     /// shows it (beside the terminal in a split — the Session view beside
     /// its own session's terminal); turning it off closes that pane of a
     /// split. Split then puts two side by side.
@@ -55,6 +55,8 @@ struct WorkbenchHeaderControls: View {
                     if inside { hoveredView = view } else if hoveredView == view { hoveredView = nil }
                 })
                 .help(view.help)
+                // No session to review: say so rather than a click that does nothing.
+                .disabled(view == .changes && !layout.isShowing(.changes) && vm.sessionViewTarget(projectID: project.id) == nil)
                 if view == .terminal {
                     sessionMenu(slot: layout.terminalSlot, isOn: layout.isShowing(.terminal))
                 }
@@ -347,6 +349,7 @@ private extension WorkspaceView {
         case .report: "Show the session's report (in a split, beside its session's terminal)"
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
+        case .changes: "Review the session's changes"
         }
     }
 }

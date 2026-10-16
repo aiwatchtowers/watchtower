@@ -45,6 +45,8 @@ final class SessionLineDelivery {
     enum LineKey: Hashable {
         case ask(Int64)
         case input(String)
+        /// A review round's line (board #328), by round id.
+        case review(Int64)
     }
 
     /// What became of a held line when the held lines were tried again.
@@ -254,7 +256,7 @@ final class SessionLineDelivery {
         }
         let reread: () async -> Bool = { [weak self] in await self?.ownRead() ?? false }
         let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
-                                               keepingFormatCharacters: key.askID == nil,
+                                               keepingFormatCharacters: key.keepsFormatCharacters,
                                                delay: center.inputProfile(sessionID).submitSettle,
                                                refresh: reread) { [weak self] in
             self?.mayReturn(key: key, sessionID: sessionID) ?? false
@@ -315,18 +317,25 @@ extension SessionLineDelivery.LineKey {
         if case let .ask(id) = self { id } else { nil }
     }
 
+    /// Only the phone's text keeps its format characters (emoji joiners);
+    /// an answer's and a review's lines are the app's own.
+    var keepsFormatCharacters: Bool {
+        if case .input = self { true } else { false }
+    }
+
     /// The app log's source: an answer's lines keep `OwnerAsks` (PROJ-12).
     fileprivate var logSource: String {
         switch self {
         case .ask: "OwnerAsks"
         case .input: "SessionInput"
+        case .review: "review"
         }
     }
 
     fileprivate var logNoun: String {
         switch self {
         case .ask: "answer"
-        case .input: "line"
+        case .input, .review: "line"
         }
     }
 }
