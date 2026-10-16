@@ -548,3 +548,21 @@ func TestRecentOpenQuestionAsk(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, newest, got.ID, "excluding an older ask keeps the newest")
 }
+
+func TestInsertOwnerAsk_StoresAutomationRunID(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	runID := seedGrantRun(t, d, seedAutomationRow(t, d, "digest", "/tmp/acme/digest.md", "h1"), "h1")
+
+	a := questionAsk(pid, "Which?")
+	a.AutomationRunID = nullID(runID)
+	id := mustInsertAsk(t, d, a)
+	got, err := d.GetOwnerAsk(pid, id)
+	require.NoError(t, err)
+	assert.Equal(t, nullID(runID), got.AutomationRunID)
+
+	id = mustInsertAsk(t, d, questionAsk(pid, "Plain"))
+	got, err = d.GetOwnerAsk(pid, id)
+	require.NoError(t, err)
+	assert.False(t, got.AutomationRunID.Valid)
+}

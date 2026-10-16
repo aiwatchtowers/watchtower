@@ -37,6 +37,8 @@ type OwnerAsk struct {
 	Origin          string // agent | chat; '' on insert = agent
 	ChatAskedAt     string // origin chat only: when it was asked in the terminal (agent_state_at format)
 	WithdrawnAt     string // when it was withdrawn (created_at's format); '' while not, or withdrawn before 00107
+	// AutomationRunID is the automation run the ask belongs to (00122); NULL = not an automation's.
+	AutomationRunID sql.NullInt64
 }
 
 // OwnerAskFilter selects the asks of one workbench.
@@ -67,7 +69,7 @@ const (
 	ownerAskHead = `a.id, a.project_id, a.session_id, a.target_id, a.kind, a.title, a.summary, a.changes,
 	a.payload, a.doc_path, `
 	ownerAskTail = `, a.previous_ask_id, a.status, a.withdrawn_reason, a.answer, a.created_at,
-	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at`
+	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at, a.automation_run_id`
 	ownerAskCols = ownerAskHead + `a.doc_snapshot` + ownerAskTail
 	// ownerAskListCols leaves doc_snapshot out: it holds up to 2 MiB a row.
 	ownerAskListCols = ownerAskHead + `''` + ownerAskTail
@@ -81,7 +83,7 @@ func scanOwnerAsk(row interface{ Scan(...any) error }) (*OwnerAsk, error) {
 	var a OwnerAsk
 	if err := row.Scan(&a.ID, &a.WorkbenchID, &a.SessionID, &a.TargetID, &a.Kind, &a.Title, &a.Summary, &a.Changes,
 		&a.Payload, &a.DocPath, &a.DocSnapshot, &a.PreviousAskID, &a.Status, &a.WithdrawnReason, &a.Answer,
-		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt); err != nil {
+		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt, &a.AutomationRunID); err != nil {
 		return nil, err
 	}
 	return &a, nil
@@ -136,10 +138,10 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 	}
 	res, err := tx.Exec(`INSERT INTO owner_asks
 		(project_id, session_id, target_id, kind, title, summary, changes, payload, doc_path, doc_snapshot, previous_ask_id,
-		 level, origin, chat_asked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 level, origin, chat_asked_at, automation_run_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.WorkbenchID, a.SessionID, a.TargetID, a.Kind, a.Title, a.Summary, a.Changes, a.Payload,
-		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt)
+		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt, a.AutomationRunID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("inserting ask: %w", err)
 	}
