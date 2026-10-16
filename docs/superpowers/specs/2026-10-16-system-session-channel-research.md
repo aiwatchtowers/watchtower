@@ -10,7 +10,7 @@ captured on 2.1.295 for board #411) and its fixtures in `internal/claudesession/
 
 **Don't build the system session.** It would be a second, always-on Claude Code process that sends the same
 kind of socket frame Watchtower could send itself (plus an `auth` line, a `from` and its mode), but with a model turn in the middle of every message,
-a stricter acceptance rule on the receiving side (permission-mode parity, as the tool documents it), a public presence in every
+a public presence in every
 session's `ListAgents`, an inbound injection surface into a Watchtower-owned agent, and no help at all for
 Codex sessions. Its one real gain — a message that never types into the terminal — is a property of the
 **receiving** side of the peer channel, not of the sender; the experiments below measured it with a frame
@@ -58,6 +58,11 @@ Cross-session messaging is a local peer channel built into Claude Code:
 - `notify_when_idle` is a one-shot subscription: one notice when the target next goes idle or exits,
   delivered to the subscriber **as a message into its conversation** — so it needs a live subscriber, and the
   `SendMessage` tool itself documents it as "from the main conversation only".
+
+- Per the docs (doc reading): messaging is on by default (v2.1.224+ on macOS); a `-p` run binds a socket, a
+  `--bare` run does not and is invisible; there is no `claude send` command and no Agent SDK messaging API;
+  a `notify_when_idle` subscription expires after 12 hours; messages are plain text (slash commands are not
+  run), at most ~1M characters, 50 queued, bursts refused.
 
 So a system session does not avoid the socket protocol; it moves the protocol into a Claude Code process and
 puts a model turn in front of it. What it buys is that Claude Code, not Watchtower, keeps up with protocol
@@ -135,16 +140,20 @@ message" in their own terminal for an answer they gave, which needs a wording de
 - Direct frame (no mode asserted), Appendix B, measured on 2.1.295 (on 2.1.301 only `manual` was re-run, §3.4): accepted in `manual`, `acceptEdits`, `plan`,
   `auto`, `dontAsk`; **held** in `bypassPermissions` (Deny/Deliver prompt in the owner's terminal, registry
   `waiting`, a Notification hook — which PROJ-11 turns into Needs approval and a macOS notice).
-- A message from a Claude Code sender asserts the sender's mode. The `SendMessage` tool documents that "a
-  session running in a different permission mode than yours holds cross-session messages for its user's
-  approval (and may let them expire)". The one captured receipt (`peer_receipt_held.bin`, reason
-  "permission-mode parity") came from a `bypassPermissions` receiver of a frame with no mode asserted, so
-  the rule for a mode-asserting sender is **documented by the tool, not observed**. If it holds as
-  documented, **a system session in one mode would have its messages held by every working session in any
-  other mode** — and the owner switches modes per session (Shift+Tab), so a hold is the normal case, not the
-  edge case. Holds show the owner a prompt they did not ask for and look like an approval wait to PROJ-11.
-  (Not measured here, see §3.3; listed under open measurements in §6.)
-- A session can also refuse peer messages outright; nothing reports that back to a sender without `from`.
+- The documented rule (Claude Code docs, "Cross-session messaging", read 2026-10-16; doc reading, not
+  measured here) has two classes, not one per mode: sessions that bypass permission prompts, and all others.
+  A prompting receiver delivers a message and holds it only if the sender claims bypass; a bypassing
+  receiver holds it unless the sender also bypasses. A held message shows an approval dialog and is dropped
+  on Deny or after `dialogExpiry` (default 5 minutes). This matches what was observed: the direct frame,
+  asserting no bypass, was held only by `bypassPermissions` (2.1.295), and the captured receipt names the
+  rule "permission-mode parity". The `SendMessage` tool's own one-line summary ("a different permission
+  mode") is looser than the docs.
+- So **a system session in a prompting mode has the same holds as the direct frame**: none in prompting
+  receivers, a hold in every `bypassPermissions` receiver (an owner prompt they did not ask for, `waiting`,
+  and a Notification that PROJ-11 shows as Needs approval). Permission modes do not separate the two
+  options.
+- A session can set `crossSessionInbound` to `accept` (no holds) or `refuse` (no inbound messages), or deny
+  `SendMessage`/`ListAgents`; a refusal is not reported to a sender without `from`.
 
 ### 3.6 Auth and TCC
 
@@ -167,35 +176,38 @@ message" in their own terminal for an answer they gave, which needs a wording de
    direct frame, and the model in the loop makes the fixed line non-deterministic.
 3. **Ask answer as a message.** On the receiving side it is clearly better than typing: no Return into a
    dialog, no submit over a draft, no shared prompt (§3.4). But the gain comes from the peer channel, not the
-   system session; the system session's mode parity adds holds that the direct frame does not have (§3.5).
+   system session; both are held the same way by a `bypassPermissions` receiver (§3.5).
    Codex has no peer channel, so typed delivery stays regardless — a dual path either way.
 4. **`notify_when_idle` instead of polling.** Nothing to replace: idleness is pushed by the PROJ-11 hooks
    (Stop, Notification, SubagentStop, …) into `terminal_sessions`, and the registry `status` (`idle`/`busy`/
    `shell`/`waiting`) is readable without a model. A notice would cost a model turn in the system session and
    then still have to be relayed to Watchtower by parsing its stream output. One-shot per wait, too.
-5. **Another permission mode.** A likely further problem for the system session (parity holds as the tool
-   documents them, not observed, §3.5); the recommendation does not rest on it. The direct frame was held
-   only by `bypassPermissions` (2.1.295), which the hook inputs' `permission_mode` would let
-   Watchtower skip (best-effort: a Shift+Tab after the last hook is not seen).
+5. **Another permission mode.** Not a differentiator: by the documented two-class rule, a prompting system
+   session and the direct frame are both held only by `bypassPermissions` receivers (§3.5). Either way
+   Watchtower must skip those sessions, which the hook inputs' `permission_mode` would allow (best-effort: a
+   Shift+Tab after the last hook is not seen).
 6. **Auth and TCC.** Workable with today's rules (`--setting-sources`, no `CLAUDE_CONFIG_DIR`, a narrow tool
    list, an unprotected cwd); no new TCC surface expected; the new cost is lifecycle (refresh, respawn).
 7. **Visible in every `ListAgents`.** Yes. Every working session (and every unrelated session on the
    machine) sees it and can message it. That is noise in the agents' context and an inbound channel into a
    Watchtower-owned agent: any session, including one steered by a prompt injection in synced content, could
-   send it text. A system session with `SendMessage` would need its own guard against being steered into
-   messaging the owner's sessions.
+   send it text. `crossSessionInbound: refuse` in its `--settings` would close that inbound path (documented,
+   not tested here); the presence in every `ListAgents` stays.
 
 ## 5. Risks if the system session were built anyway
 
-- **Mode parity holds** (as documented, not observed) would turn routine deliveries into owner prompts and false Needs approval states (§3.5).
-- **Inbound steering** of a privileged sender (§4.7); the receiving preamble says peers grant no escalation,
-  but the system session's job is precisely to send.
+- **Bypass holds**, same as the direct frame: a `bypassPermissions` receiver shows the owner a prompt and PROJ-11
+  a false Needs approval (§3.5).
+- **Inbound steering** of a privileged sender (§4.7) unless it runs with `crossSessionInbound: refuse`; the
+  receiving preamble says peers grant no escalation, but the system session's job is precisely to send.
 - **Non-deterministic fixed lines** — breaks the pinned `DeliveryLine` dual path (PROJ-12 guards).
 - **Lifecycle**: one more long-lived process to start clean, watch, respawn on CLI updates, reap on quit
   (`CodeCLIProcess`-style groups), and keep out of the owner's `ListAgents`/agents view — which it cannot be.
-- **Undocumented surface either way**: registry fields, socket frames and parity rules are Claude Code
-  internals; the system session hides that behind a tool but does not remove the dependency on its
-  behaviour.
+- **What the system session does buy**: `SendMessage`, `ListAgents`, the two-class hold rule and
+  `crossSessionInbound` are documented; the frame's wire format and the `~/.claude/sessions` registry are
+  not (the docs say a script may open the socket and send the `auth` line, but do not document the payload).
+  That is a real point in its favour — the direct path of §6 depends on an internal that Claude Code may
+  change — and it is outweighed by the model turn, the non-deterministic line and the lifecycle.
 - **Codex**: no peer channel; the PTY delivery stays.
 
 ## 6. Smaller alternative — direct peer delivery of the PROJ-12 line (sketch, owner decision needed)
@@ -231,9 +243,9 @@ only through PROJ-12's gates", so it changes with them); `docs/features/workbenc
 
 **Open measurement before a spec:** the per-mode acceptance table re-run on the current CLI (only `manual`
 was re-run on 2.1.301); the `session_id` mismatch drop; a frame sent while the agent is mid-turn and while a
-background subagent runs (queue order with `priority: next`); the parity behaviour on a mode switch between
-the last hook and the send; and, for completeness, a `SendMessage` from a standalone sender to receivers in
-other modes (the documented parity hold).
+background subagent runs (queue order with `priority: next`); the hold on a mode switch to or from bypass
+between the last hook and the send; and, for completeness, the documented two-class rule for a `SendMessage`
+from a standalone sender.
 
 ## 7. Reproduction notes
 
@@ -243,6 +255,6 @@ other modes (the documented parity hold).
   socket, then the write side closed; the response is 0 bytes.
 - Receivers were driven over a pty with bracketed paste for typed text; a child receiver (started from
   inside Claude Code) has a socket but no registry entry, so it was addressed by its socket path.
-- A standalone receiver/sender pair (clean environment) is needed to measure `SendMessage` parity holds
+- A standalone receiver/sender pair (clean environment) is needed to measure `SendMessage` holds
   directly; starting one from an agent is refused by the auto-mode classifier, so that run belongs to the
   owner's own terminal.
