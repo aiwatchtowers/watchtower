@@ -195,7 +195,12 @@ func TestSaveAutomation_AlwaysAskAndPinsHash(t *testing.T) {
 	if err := f.reg.SetTrust("save_automation", "main", tools.TrustExecute); !errors.Is(err, tools.ErrAlwaysAsk) {
 		t.Fatalf("SetTrust execute = %v; want ErrAlwaysAsk", err)
 	}
-	p := f.pinned(t, id)
+	assertNewRecipePin(t, f, f.pinned(t, id), text)
+}
+
+// assertNewRecipePin checks the card a brand-new "foo" recipe pins.
+func assertNewRecipePin(t *testing.T, f *saveFixture, p savePinned, text string) {
+	t.Helper()
 	if want := parsedHash(t, "foo", text); p.ApprovalHash != want {
 		t.Errorf("approval_hash = %q; want %q", p.ApprovalHash, want)
 	}
@@ -225,6 +230,14 @@ func TestSaveAutomation_ApplyWritesIndexesConfirms(t *testing.T) {
 	if row.Status != "applied" {
 		t.Fatalf("Apply = %s %q; want applied", row.Status, row.Error)
 	}
+	assertOnlyRecipeFile(t, f, text)
+	assertSavedAndConfirmed(t, f, row, text)
+}
+
+// assertOnlyRecipeFile checks foo.md holds text byte for byte and is the
+// folder's only entry (no temp file left).
+func assertOnlyRecipeFile(t *testing.T, f *saveFixture, text string) {
+	t.Helper()
 	got, ok := f.readFile(t, "foo")
 	if !ok || got != text {
 		t.Fatalf("file = %q (exists %v); want the recipe text byte for byte", got, ok)
@@ -236,6 +249,12 @@ func TestSaveAutomation_ApplyWritesIndexesConfirms(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("recipe folder holds %d entries; want only foo.md (no temp file left)", len(entries))
 	}
+}
+
+// assertSavedAndConfirmed checks the indexed "foo" row is confirmed at the
+// parsed hash, stays disabled, and matches the applied row's result.
+func assertSavedAndConfirmed(t *testing.T, f *saveFixture, row *db.AgentAction, text string) {
+	t.Helper()
 	a := f.automation(t, "foo")
 	if a.ConfirmedHash == "" || a.ConfirmedHash != a.ApprovalHash || a.ApprovalHash != parsedHash(t, "foo", text) {
 		t.Errorf("confirmed=%q approval=%q; want both the parsed hash", a.ConfirmedHash, a.ApprovalHash)
