@@ -144,6 +144,30 @@ func Catalogue() string {
 	})
 }
 
+var entryLine = regexp.MustCompile(`^- \[([^\]]+)\]\(([^)\s#]+\.md)[^)]*\)`)
+
+// Map returns the README's group headings and one "- <Title> (<path>)" line
+// per entry, with no descriptions and no URLs: the compact app map for the
+// chat prompt.
+func Map() string {
+	b, err := files.ReadFile("README.md")
+	if err != nil {
+		return ""
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if h, ok := strings.CutPrefix(line, "## "); ok {
+			if len(out) > 0 {
+				out = append(out, "")
+			}
+			out = append(out, strings.TrimSpace(h))
+		} else if m := entryLine.FindStringSubmatch(line); m != nil {
+			out = append(out, "- "+m[1]+" ("+path.Clean(m[2])+")")
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 // Hash is the hex sha256 over all embedded files, in path order.
 func Hash() string {
 	h := sha256.New()

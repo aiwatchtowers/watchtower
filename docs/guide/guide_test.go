@@ -115,3 +115,13 @@ func TestCatalogueLinksAreAbsolute(t *testing.T) {
 		t.Error("missing absolute inbox link")
 	}
 }
+
+func TestMapIsCompact(t *testing.T) {
+	m := Map()
+	if !strings.Contains(m, "- Inbox (features/inbox.md)") {
+		t.Fatalf("missing Inbox entry:\n%s", m)
+	}
+	if strings.Contains(m, "https://") || strings.Contains(m, " — ") {
+		t.Fatalf("map carries a URL or description:\n%s", m)
+	}
+}

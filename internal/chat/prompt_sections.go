@@ -33,12 +33,12 @@ No tools are connected in this session. Answer from the conversation only, and s
 // A session without tools cannot search, so it gets the catalogue to link
 // only (noToolsBlock's rule: no promise the session cannot keep).
 func appGuideSection(toolsAvailable bool) string {
-	lead := "For any question about how Watchtower works, link the guide section that covers it. The guide's catalogue:\n"
+	lead := "For any question about how Watchtower works, link the guide section that covers it. The guide's pages:\n"
 	if toolsAvailable {
 		lead = "For any question about how Watchtower works, search the user guide first: search_knowledge with sources [\"guide\"]. " +
-			"Answer from what you find and link the section you used. The guide's catalogue:\n"
+			"Answer from what you find and link the section you used. The guide's pages:\n"
 	}
-	return "=== WATCHTOWER APP ===\n" + lead + guide.Catalogue() + "\n==="
+	return "=== WATCHTOWER APP ===\n" + lead + guide.Map() + "\n==="
 }
 
 const responseStyle = `=== RESPONSE STYLE ===

@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"watchtower/docs/guide"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/prompts"
@@ -366,12 +365,12 @@ func TestArtifactsContract(t *testing.T) {
 func TestSystemPromptCarriesGuideCatalogue(t *testing.T) {
 	got := appGuideSection(true)
 	assert.Contains(t, got, `sources ["guide"]`)
-	assert.Contains(t, got, guide.BaseURL+"features/workbench/README.md")
+	assert.Contains(t, got, "(features/workbench/README.md)")
 	assert.NotContains(t, got, "=== WATCHTOWER APP (answer questions about the app from this) ===")
 }
 
 func TestSystemPromptGuideWithoutToolsDoesNotPromiseSearch(t *testing.T) {
 	got := appGuideSection(false)
 	assert.NotContains(t, got, "search_knowledge")
-	assert.Contains(t, got, guide.BaseURL+"features/workbench/README.md")
+	assert.Contains(t, got, "(features/workbench/README.md)")
 }
