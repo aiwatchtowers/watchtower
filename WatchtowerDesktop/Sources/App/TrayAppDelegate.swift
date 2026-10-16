@@ -247,7 +247,11 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             hasBlockingWork: prompt != nil,
             confirmQuit: { prompt.map(Self.confirmQuit) ?? true },
             closeChatSessions: { await AppState.shared.chatSessionPool?.closeAll() },
-            closeTerminals: { await AppState.shared.terminalCenter.closeAll() },
+            closeTerminals: {
+                // Not reported stopped: the next launch reconciles them.
+                AppState.shared.automationSessionCenter?.stop()
+                await AppState.shared.terminalCenter.closeAll()
+            },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )

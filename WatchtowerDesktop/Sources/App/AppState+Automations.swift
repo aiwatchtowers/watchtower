@@ -1,4 +1,5 @@
 import AppKit
+import GRDB
 import OSLog
 import WatchtowerCore
 
@@ -74,6 +75,35 @@ extension AppState {
             activate()
             openMainWindow()
         }
+    }
+
+    // MARK: - Automation sessions (spec §13.1)
+
+    /// The center launching the sessions automation runs request; a launch
+    /// goes through the Workbench view model current at the time.
+    func makeAutomationSessionCenter(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) -> AutomationSessionCenter {
+        let terminals = terminalCenter
+        let center = AutomationSessionCenter(
+            dbPool: dbPool, cli: AutomationsCLI(runner: cliRunner ?? UnresolvedCLIRunner()),
+            start: { [weak self] request in
+                guard let vm = self?.workbenchesViewModel else {
+                    throw WorkbenchesViewModel.TargetStartError.failed("The Workbench is not ready.")
+                }
+                return try await vm.startAutomationSession(request)
+            },
+            isLive: { terminals.liveIDs.contains($0) }
+        )
+        terminals.onRowExit = { [weak center] id in
+            Task { await center?.sessionExited(rowID: id) }
+        }
+        return center
+    }
+
+    /// Polls while the `automations` feature is on; off, requests stay
+    /// pending (their run waits, bounded by its pause timeout).
+    func syncAutomationSessionCenter() {
+        guard let center = automationSessionCenter else { return }
+        if isAutomationsFeatureEnabled { center.start() } else { center.stop() }
     }
 
     // MARK: - Tray "Run automation ▸" (spec §12.7)

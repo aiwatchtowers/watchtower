@@ -53,7 +53,8 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
             try TestDatabase.insertAutomationStep(db, runID: run, seq: 2, kind: "ask", status: "waiting")
             return (wanted, p, a, run)
         }
-        let requests = try queue.read { try AutomationQueries.fetchPendingSessionRequests($0) }
+        let (requests, unreadable) = try queue.read { try AutomationQueries.fetchPendingSessionRequests($0) }
+        XCTAssertEqual(unreadable, [])
         XCTAssertEqual(requests, [PendingSessionRequest(
             stepID: wanted, runID: run, automationID: automation, projectID: workbench, automationName: "Review",
             prompt: "-Review PR 7", title: "⚙ Nightly · run #\(run)", agent: .codex
@@ -64,19 +65,20 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
     /// args cannot be read is left out (Go wrote and validated them).
     func testPendingRequestTitleFallbackAndBrokenArgs() throws {
         let queue = try TestDatabase.create()
-        let run = try queue.write { db -> Int64 in
+        let (run, broken) = try queue.write { db -> (Int64, [Int64]) in
             let p = try TestDatabase.insertWorkbench(db)
             let a = try TestDatabase.insertAutomation(db, slug: "review", name: "", workbenchID: p)
             let run = try TestDatabase.insertAutomationRun(db, automationID: a, status: "waiting", waitingReason: "app")
             try TestDatabase.insertAutomationStep(db, runID: run, seq: 1, kind: "session", argsJSON: args(title: ""),
                                                   status: "waiting")
-            try TestDatabase.insertAutomationStep(db, runID: run, seq: 2, kind: "session", argsJSON: "not json",
-                                                  status: "waiting")
-            try TestDatabase.insertAutomationStep(db, runID: run, seq: 3, kind: "session", argsJSON: args(agent: "vim"),
-                                                  status: "waiting")
-            return run
+            let notJSON = try TestDatabase.insertAutomationStep(db, runID: run, seq: 2, kind: "session",
+                                                                argsJSON: "not json", status: "waiting")
+            let badAgent = try TestDatabase.insertAutomationStep(db, runID: run, seq: 3, kind: "session",
+                                                                 argsJSON: args(agent: "vim"), status: "waiting")
+            return (run, [notJSON, badAgent])
         }
-        let requests = try queue.read { try AutomationQueries.fetchPendingSessionRequests($0) }
+        let (requests, unreadable) = try queue.read { try AutomationQueries.fetchPendingSessionRequests($0) }
+        XCTAssertEqual(unreadable, broken)
         XCTAssertEqual(requests.map(\.title), ["⚙ review · run #\(run)"])
         XCTAssertEqual(requests.map(\.automationName), ["review"])
     }
@@ -99,6 +101,34 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
         }
     }
 
+    /// A refused launch's row loses the run marker; an attached session and
+    /// another run's keep theirs.
+    func testDisownUnattachedSessions() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let p = try TestDatabase.insertWorkbench(db)
+            let a = try TestDatabase.insertAutomation(db, workbenchID: p)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: a, status: "waiting", waitingReason: "app")
+            let other = try TestDatabase.insertAutomationRun(db, automationID: a, status: "waiting", waitingReason: "app")
+            let attached = try session(db, projectID: p, runID: run)
+            try TestDatabase.insertAutomationStep(db, runID: run, seq: 1, kind: "session", argsJSON: args(),
+                                                  status: "ok", sessionID: attached.id)
+            let refused = try session(db, projectID: p, runID: run)
+            let others = try session(db, projectID: p, runID: other)
+
+            try AutomationQueries.disownUnattachedSessions(db, runID: run)
+
+            let marker = { (id: Int64) in
+                try Row.fetchOne(db, sql: "SELECT automation_run_id FROM terminal_sessions WHERE id = ?",
+                                 arguments: [id])?["automation_run_id"] as Int64?
+            }
+            XCTAssertNil(try marker(refused.id))
+            XCTAssertEqual(try marker(attached.id), run)
+            XCTAssertEqual(try marker(others.id), other)
+            XCTAssertNil(try AutomationQueries.unattachedSession(db, runID: run))
+        }
+    }
+
     func testWaitingSessionSteps() throws {
         let queue = try TestDatabase.create()
         let (step, sessionID) = try queue.write { db -> (Int64, Int64) in
@@ -117,6 +147,14 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
             let gone = try TestDatabase.insertAutomationRun(db, automationID: a, status: "cancelled")
             try TestDatabase.insertAutomationStep(db, runID: gone, seq: 1, kind: "session", argsJSON: args(),
                                                   status: "waiting", sessionID: s.id)
+            // Sessions that finished or failed: the run's wait reads those.
+            for (seq, column) in [(4, "finished_at"), (5, "agent_failed_at")] {
+                let ended = try session(db, projectID: p, runID: run)
+                try db.execute(sql: "UPDATE terminal_sessions SET \(column) = '2026-10-01T10:00:00Z' WHERE id = ?",
+                               arguments: [ended.id])
+                try TestDatabase.insertAutomationStep(db, runID: run, seq: seq, kind: "session", argsJSON: args(),
+                                                      status: "waiting", sessionID: ended.id)
+            }
             return (step, s.id)
         }
         let steps = try queue.read { try AutomationQueries.waitingSessionSteps($0) }

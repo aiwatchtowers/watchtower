@@ -1024,3 +1024,17 @@ private struct CodexHomeUnresolved: LocalizedError {
             + "the saved session was kept; try again, or use Start fresh"
     }
 }
+
+/// The reason an automation's `session()` reports as `launch_failed`
+/// (`AutomationSessionCenter`).
+extension WorkbenchesViewModel.TargetStartError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .notOnBoard: "The target is not on any workbench board."
+        case .inProgress: "A start for this target is still running."
+        case let .failed(message): message
+        case let .agentNotFound(agent): AgentChoicePresentation.notInstalledHint(agent)
+        case .cleaningUp: "The session is being cleaned up."
+        }
+    }
+}

@@ -314,6 +314,9 @@ final class AppState {
     private(set) var automationEditorCenter: AutomationEditorCenter?
     /// Quick run's rows and finish watch (spec §12.7); built with `automationsViewModel`.
     private(set) var quickRunCenter: QuickRunCenter?
+    /// Launches the sessions automation runs request (spec §13.1); built
+    /// once with the Workbench wiring, polling while the feature is on.
+    private(set) var automationSessionCenter: AutomationSessionCenter?
     /// The "Run Automation…" palette (⌃⌘R) is up.
     var isRunAutomationPaletteShown = false
     /// Owner notifications for project activity; polls every 30 s.
@@ -716,6 +719,7 @@ final class AppState {
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
                     self?.automationsViewModel?.stop()
+                    self?.automationSessionCenter?.stop()
                     self?.homeCenter.endReading()
                     self?.readinessCenter.stop()
                 }
@@ -831,8 +835,9 @@ final class AppState {
         // Every successful service load (launch, post-apply, failure-path
         // reload) pushes the fresh disabled set into the visibility store
         // the sidebar/navigation/banner read.
-        featureManager.onDisabledChanged = { [featureVisibility] ids in
+        featureManager.onDisabledChanged = { [weak self, featureVisibility] ids in
             featureVisibility.disabledFeatureIDs = ids
+            self?.syncAutomationSessionCenter()
         }
         Task { await featureManager.load() }
     }
@@ -1787,35 +1792,9 @@ final class AppState {
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, defaults: workbenchDefaults,
             terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery
         )
-        vm.codeFiles.codeIndex = codeIndexCenter
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
-        openQuicklyCenter.workbenches = vm
-        codeNavigationCenter.workbenches = vm
-        vm.codeFiles.navigation = codeNavigationCenter
-        codeUsagesCenter.useWorkspace(dbPool.path)
-        codeUsagesCenter.workbenches = vm
-        codeUsagesCenter.navigation = codeNavigationCenter
-        codeNavigationCenter.usages = codeUsagesCenter
-        vm.codeFiles.usages = codeUsagesCenter
-        codeQuestionCenter.workbenches = vm
-        codeQuestionCenter.navigation = codeNavigationCenter
-        codeQuestionCenter.codeIndex = codeIndexCenter
-        codeQuestionCenter.embeddedChats = embeddedChatCenter
-        codeQuestionCenter.dbPool = dbPool
-        codeQuestionCenter.dictation = dictationCenter
-        codeQuestionCenter.modelSuggestions = { [aiModelCatalog] in aiModelCatalog.suggestions(for: $0.rawValue) }
-        codeQuestionCenter.usages = codeUsagesCenter
-        openQuicklyCenter.questions = codeQuestionCenter
-        vm.codeFiles.questions = codeQuestionCenter
-        codeHandoffCenter.workbenches = vm
-        codeHandoffCenter.terminalCenter = terminalCenter
-        codeHandoffCenter.dbPool = dbPool
-        codeQuestionCenter.handoff = codeHandoffCenter
-        openQuicklyCenter.onHandToClaude = { [weak self] query, project, root in
-            guard let self else { return }
-            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(root))
-        }
+        wireCodeViewer(vm, dbPool: dbPool)
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
             codeQuestionCenter?.workbenchRemoved($0)
             codeUsagesCenter?.workbenchRemoved($0)
@@ -1861,6 +1840,11 @@ final class AppState {
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
         initMobileHub(dbPool: dbPool)
+        // Once: a setup re-run keeps the center and its launches in flight.
+        if automationSessionCenter == nil {
+            automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)
+        }
+        syncAutomationSessionCenter()
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.

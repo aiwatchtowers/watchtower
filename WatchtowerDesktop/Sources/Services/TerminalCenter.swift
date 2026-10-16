@@ -180,6 +180,9 @@ final class TerminalCenter {
     /// Watchtower caused it by closing the terminal (`close`/`closeAll`,
     /// which drop the process before signalling it). One subscriber.
     @ObservationIgnored var onSessionExit: ((_ id: Int64, _ code: Int32?, _ closedByApp: Bool) -> Void)?
+    /// Every process exit too, by session row id, for a subscriber that
+    /// outlives the workbench view model (`AutomationSessionCenter`).
+    @ObservationIgnored var onRowExit: ((_ id: Int64) -> Void)?
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
     /// inside its folder (`TerminalPathLinks`): workbench id, session id,
     /// location.
@@ -884,6 +887,7 @@ final class TerminalCenter {
             states[id] = .exited(code)
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
+            onRowExit?(id)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
         // A click into one terminal of a split makes it the active session.

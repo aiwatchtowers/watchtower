@@ -174,7 +174,11 @@ final class BackgroundStartTests: XCTestCase {
         do {
             _ = try await vm.startAutomationSession(request)
             XCTFail("expected a failure")
-        } catch is WorkbenchesViewModel.TargetStartError {}
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            // The reason `launch_failed` carries, not a generic error text.
+            guard case let .failed(message) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(error.localizedDescription, message)
+        }
         XCTAssertNil(vm.sessionErrors[p])
         XCTAssertTrue(launches.isEmpty)
     }

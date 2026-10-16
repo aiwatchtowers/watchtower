@@ -210,9 +210,11 @@ package enum AutomationQueries {
     /// The `session()` steps of workbench runs waiting for the app — step
     /// waiting with no session attached, run waiting with reason `app` — in
     /// step order (Go's `PendingAutomationSessionSteps`). A step whose args
-    /// cannot be read is logged and left out: Go validated them, so such a
-    /// row is broken, and its run waits until its pause timeout.
-    package static func fetchPendingSessionRequests(_ db: Database) throws -> [PendingSessionRequest] {
+    /// cannot be read is left out and named in `unreadable` (the caller logs
+    /// it once): Go validated them, so such a row is broken, and its run
+    /// waits until its pause timeout.
+    package static func fetchPendingSessionRequests(_ db: Database) throws
+        -> (requests: [PendingSessionRequest], unreadable: [Int64]) {
         let rows = try Row.fetchAll(db, sql: """
             SELECT st.id, st.run_id, a.id AS automation_id, a.project_id, st.args_json,
                 COALESCE(NULLIF(a.name, ''), a.slug) AS name
@@ -224,22 +226,25 @@ package enum AutomationQueries {
               AND a.scope = 'workbench' AND a.project_id IS NOT NULL
             ORDER BY st.id
             """)
-        return rows.compactMap { row in
+        var requests: [PendingSessionRequest] = []
+        var unreadable: [Int64] = []
+        for row in rows {
             let stepID: Int64 = row["id"]
             let runID: Int64 = row["run_id"]
             let name: String = row["name"]
             let json: String = row["args_json"]
             guard let args = try? JSONDecoder().decode(SessionStepArgs.self, from: Data(json.utf8)),
                   !args.prompt.isEmpty, let agent = AgentKind(rawValue: args.agent) else {
-                NSLog("AutomationQueries: session step %lld has unreadable args, not launched", stepID)
-                return nil
+                unreadable.append(stepID)
+                continue
             }
-            return PendingSessionRequest(
+            requests.append(PendingSessionRequest(
                 stepID: stepID, runID: runID, automationID: row["automation_id"], projectID: row["project_id"],
                 automationName: name, prompt: args.prompt,
                 title: args.title.isEmpty ? "⚙ \(name) · run #\(runID)" : args.title, agent: agent
-            )
+            ))
         }
+        return (requests, unreadable)
     }
 
     /// A session of run `runID` that no step names: the app created it but
@@ -253,13 +258,27 @@ package enum AutomationQueries {
             """, arguments: [runID])
     }
 
+    /// Takes the run marker off run `runID`'s sessions that no step names —
+    /// the row a refused launch left — so no later poll adopts one (Go
+    /// attaches only a session of the step's run). The rows stay.
+    package static func disownUnattachedSessions(_ db: Database, runID: Int64) throws {
+        try db.execute(sql: """
+            UPDATE terminal_sessions SET automation_run_id = NULL WHERE automation_run_id = ?
+              AND NOT EXISTS (SELECT 1 FROM automation_run_steps st WHERE st.session_id = terminal_sessions.id)
+            """, arguments: [runID])
+    }
+
     /// The `session()` steps still waiting on a session attached to them,
-    /// their run still waiting: the sessions whose end the app reports.
+    /// their run still waiting: the sessions whose end the app reports. A
+    /// session that finished or failed, or whose row is gone, is left out —
+    /// the run's wait reads those ends itself (spec §13.1).
     package static func waitingSessionSteps(_ db: Database) throws -> [(stepID: Int64, sessionID: Int64)] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT st.id, st.session_id FROM automation_run_steps st JOIN automation_runs r ON r.id = st.run_id
-            WHERE st.kind = 'session' AND st.status = 'waiting' AND st.session_id IS NOT NULL
+            JOIN terminal_sessions s ON s.id = st.session_id
+            WHERE st.kind = 'session' AND st.status = 'waiting'
               AND st.finished_at IS NULL AND r.status = 'waiting'
+              AND s.finished_at IS NULL AND s.agent_failed_at IS NULL
             ORDER BY st.id
             """)
         return rows.map { (stepID: $0["id"], sessionID: $0["session_id"]) }
