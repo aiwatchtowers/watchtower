@@ -765,6 +765,48 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.state), [.done])
     }
 
+    func testRemarkingIntentReplacesItsDraft() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let item = try XCTUnwrap(h.model.intentItems.first)
+        try h.model.markIntent(item, state: .notDone, note: "missing")
+        try h.model.markIntent(item, state: .partial, note: "half")
+        let rows = try await h.comments().filter { $0.lens == "intent" && $0.status == .draft }
+        XCTAssertEqual(rows.map(\.body), [ReviewWrapUp.intentCommentBody(partial: true, item: item, note: "half")])
+    }
+
+    func testMarkingDoneRemovesTheIntentDraft() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let item = try XCTUnwrap(h.model.intentItems.first)
+        try h.model.markIntent(item, state: .notDone, note: "")
+        try h.model.markIntent(item, state: .done, note: "")
+        let rows = try await h.comments()
+        XCTAssertTrue(rows.isEmpty)
+        XCTAssertEqual(h.model.comments, rows)
+    }
+
+    func testSetModeThrowsWhenTheRowWasSentBehindTheModel() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent'") }
+        XCTAssertThrowsError(try h.model.setMode(.deep)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        let mode = try await h.db.read { try String.fetchOne($0, sql: "SELECT mode FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(mode, "quick")
+        XCTAssertEqual(h.model.round?.status, "sent")
+        XCTAssertEqual(h.model.mode, .quick)
+    }
+
+    func testOpenResetsBreakHintDismissed() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        h.model.breakHintDismissed = true
+        await h.model.open()
+        XCTAssertFalse(h.model.breakHintDismissed)
+    }
+
     private func activeSeconds(_ h: Harness) async throws -> Int? {
         try await h.db.read { try Int.fetchOne($0, sql: "SELECT active_seconds FROM review_rounds WHERE id = 7") }
     }
@@ -773,6 +815,7 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         h.baseScript()
         await h.model.open()
+        // open() noted an interaction at real now; the fixed t0 below replaces it, and the first tick only sets the baseline.
         let t0 = Date(timeIntervalSince1970: 1_000_000)
         h.model.noteInteraction(at: t0)
         h.model.tick(at: t0, isKey: true)
