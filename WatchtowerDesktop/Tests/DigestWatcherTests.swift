@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Testing
+@testable import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
 
@@ -33,7 +34,7 @@ struct DigestWatcherTests {
         UserDefaults.standard.removeObject(forKey: "lastCheckedBriefingID")
         UserDefaults.standard.removeObject(forKey: "notifyDecisions")
         UserDefaults.standard.removeObject(forKey: "quietHoursEnabled")
-        UserDefaults.standard.removeObject(forKey: "notifyDailySummary")
+        UserDefaults.standard.removeObject(forKey: NotificationPreferences.briefingKey)
     }
 
     @Test("init seeds lastChecked from UserDefaults defaults")
@@ -212,8 +213,8 @@ struct DigestWatcherTests {
     @Test("notifyDailySummary=false suppresses the briefing banner but advances the watermark")
     func pollSuppressesBriefingWhenBriefingNotificationsOff() throws {
         resetDefaults()
-        UserDefaults.standard.set(false, forKey: "notifyDailySummary")
-        defer { UserDefaults.standard.removeObject(forKey: "notifyDailySummary") }
+        UserDefaults.standard.set(false, forKey: NotificationPreferences.briefingKey)
+        defer { UserDefaults.standard.removeObject(forKey: NotificationPreferences.briefingKey) }
 
         let pool = try makePool()
         try pool.write { try TestDatabase.insertBriefing($0) }
@@ -225,7 +226,7 @@ struct DigestWatcherTests {
         #expect(spy.briefingCalls.isEmpty)
         #expect(UserDefaults.standard.integer(forKey: "lastCheckedBriefingID") > 0)
 
-        UserDefaults.standard.set(true, forKey: "notifyDailySummary")
+        UserDefaults.standard.set(true, forKey: NotificationPreferences.briefingKey)
         watcher.poll()
         #expect(spy.briefingCalls.isEmpty, "turning the switch back on does not replay the briefing")
     }
