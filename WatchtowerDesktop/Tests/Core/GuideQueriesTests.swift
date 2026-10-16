@@ -66,4 +66,27 @@ struct GuideQueriesTests {
         #expect(hit.heading == "Why use it")
         #expect(hit.title == "Inbox")
     }
+
+    @Test("a question with only some words on a page still finds it")
+    func questionFallsBackToAnyTerm() throws {
+        let result = try hits("how do I see quarantine items")
+        #expect(result.map(\.path) == ["features/inbox.md"])
+    }
+
+    @Test("the limit caps the hits")
+    func limitCaps() throws {
+        let (pool, _) = try TestDatabase.createPool()
+        let result = try pool.write { db in
+            try seed(db)
+            return try GuideQueries.search(db, query: "quarantine OR assistant", limit: 1)
+        }
+        #expect(result.count == 1)
+    }
+
+    @Test("the best chunk, not the first, supplies the anchor")
+    func bestChunkAnchor() throws {
+        let hit = try #require(try hits("another section").first)
+        #expect(hit.url.absoluteString.hasSuffix("features/inbox.md#another-section"))
+        #expect(hit.heading == "Another section")
+    }
 }
