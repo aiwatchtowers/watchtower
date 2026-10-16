@@ -19,6 +19,7 @@ func runAgentsCmd(t *testing.T, args ...string) string {
 	t.Helper()
 	t.Cleanup(func() {
 		flagAgentsWorkbench, flagAgentsJSON = 0, false
+		flagAgentsSince, flagAgentsDays, flagAgentsSession = "", 7, ""
 		rootCmd.SetArgs(nil)
 	})
 	var out, errOut bytes.Buffer
@@ -68,6 +69,57 @@ func TestAgentsStatsJSON_PinnedKeys(t *testing.T) {
 	sort.Strings(keys)
 	assert.Equal(t, []string{"cost_estimated_calls", "cost_usd", "enabled", "outcomes", "owner_turns", "per_session",
 		"reported_cost_usd", "sessions", "skills", "tokens", "tools", "workbench_id"}, keys)
+}
+
+func jsonKeys(t *testing.T, out string) []string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
+	wb := strconv.FormatInt(agentsFixture(t), 10)
+	runAgentsCmd(t, "enable", "--workbench", wb)
+	out := runAgentsCmd(t, "report", "--workbench", wb, "--days", "0", "--json")
+	assert.Equal(t, []string{"commands", "enabled", "hints", "models", "old_format_sessions", "sessions", "since",
+		"subagents", "tasks", "time", "totals", "until", "workbench_id"}, jsonKeys(t, out))
+	var ov struct {
+		Totals   map[string]json.RawMessage `json:"totals"`
+		Sessions []map[string]json.RawMessage
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &ov))
+	assert.Len(t, ov.Sessions, 1)
+	assert.Len(t, ov.Totals, 6)
+
+	out = runAgentsCmd(t, "report", "--workbench", wb, "--session", "s1", "--json")
+	assert.Equal(t, []string{"commands", "hints", "lanes", "session", "subagents", "time"}, jsonKeys(t, out))
+}
+
+func TestAgentsReport_EmptyWorkbench(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("app", t.TempDir())
+	require.NoError(t, err)
+	out := runAgentsCmd(t, "report", "--workbench", strconv.FormatInt(wb, 10), "--json")
+	assert.Contains(t, out, `"enabled": false`)
+	for _, k := range []string{"commands", "models", "hints", "tasks", "sessions"} {
+		assert.Contains(t, out, `"`+k+`": []`)
+	}
+	assert.NotContains(t, out, "null")
+	flagAgentsJSON = false // flags persist between Execute calls
+	assert.Contains(t, runAgentsCmd(t, "report", "--workbench", strconv.FormatInt(wb, 10)), "0 sessions")
+}
+
+func TestAgentsReport_UnknownSessionFails(t *testing.T) {
+	wb := agentsFixture(t)
+	rootCmd.SetArgs([]string{"agents", "report", "--workbench", strconv.FormatInt(wb, 10), "--session", "nope"})
+	t.Cleanup(func() { flagAgentsWorkbench, flagAgentsSession = 0, ""; rootCmd.SetArgs(nil) })
+	assert.ErrorContains(t, rootCmd.Execute(), "not found")
 }
 
 func TestAgentsScan_RefusesWhenDisabled(t *testing.T) {
