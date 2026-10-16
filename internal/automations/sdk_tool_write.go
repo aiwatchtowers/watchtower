@@ -243,21 +243,30 @@ func withDefaultReason(env *Env, name string, args json.RawMessage) (json.RawMes
 }
 
 // defaultReason is "⚙ <automation name> · run #<run id>".
-func defaultReason(env *Env) string {
-	name := ""
-	switch {
-	case env.Automation != nil && env.Automation.Name != "":
-		name = env.Automation.Name
-	case env.Recipe != nil && env.Recipe.Name != "":
-		name = env.Recipe.Name
-	case env.Automation != nil:
-		name = env.Automation.Slug
-	}
+func defaultReason(env *Env) string { return runLabel(env, automationName(env)) }
+
+// runLabel is "⚙ <name> · run #<run id>", how the run's writes and
+// sessions name it.
+func runLabel(env *Env, name string) string {
 	var runID int64
 	if env.Run != nil {
 		runID = env.Run.ID
 	}
 	return "⚙ " + name + " · run #" + strconv.FormatInt(runID, 10)
+}
+
+// automationName is the run's automation as its labels name it: its name,
+// else the recipe's, else the slug.
+func automationName(env *Env) string {
+	switch {
+	case env.Automation != nil && env.Automation.Name != "":
+		return env.Automation.Name
+	case env.Recipe != nil && env.Recipe.Name != "":
+		return env.Recipe.Name
+	case env.Automation != nil:
+		return env.Automation.Slug
+	}
+	return ""
 }
 
 // registryError maps a registry failure for the script: a registry
