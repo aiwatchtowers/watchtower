@@ -188,10 +188,17 @@ func positiveInt(v any) (int, bool) {
 	return 0, false
 }
 
+const agentDraftNote = "agent() is not previewed in a draft; dry-run the saved recipe from its card to see it"
+
 func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 	m, err := authorizeAgent(env, b, step, req)
 	if err != nil {
 		return nil, err
+	}
+	if env.DryRun && env.Run != nil && env.Run.ID == 0 {
+		// A draft's in-memory dry run has no run row for the child's
+		// server to bind to: spawn nothing, spend nothing.
+		return dryRunResult(step, map[string]any{"note": agentDraftNote}), nil
 	}
 	floor, err := b.DB.MaxAgentActionID()
 	if err != nil {
