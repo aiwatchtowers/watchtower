@@ -125,3 +125,11 @@ func TestMapIsCompact(t *testing.T) {
 		t.Fatalf("map carries a URL or description:\n%s", m)
 	}
 }
+
+func TestMapCoversEveryCatalogueEntry(t *testing.T) {
+	want := strings.Count(Catalogue(), "\n- [")
+	got := strings.Count("\n"+Map(), "\n- ")
+	if want == 0 || got != want {
+		t.Fatalf("Map has %d entries, README catalogue has %d", got, want)
+	}
+}

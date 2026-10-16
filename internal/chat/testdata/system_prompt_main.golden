@@ -155,7 +155,7 @@ Hot map:
 Use memory_recall / memory_open for more; treat these notes as possibly outdated.
 
 === WATCHTOWER APP ===
-For any question about how Watchtower works, search the user guide first: search_knowledge with sources ["guide"]. Answer from what you find and link the section you used. The guide's pages:
+For any question about how Watchtower works, search the user guide first: search_knowledge with sources ["guide"]. Answer from what you find and link the section you used; if the guide has nothing on it, say so instead of guessing. The guide's pages:
 Start here
 - Your first week (start/first-week.md)
 - Set up Watchtower (start/setup.md)
