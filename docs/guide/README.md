@@ -16,6 +16,7 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 - [Day Plan](features/day-plan.md) — today as time blocks plus a backlog, with calendar conflicts flagged
 - [Inbox](features/inbox.md) — reminders, proposals to approve, Slack reaction commands and attention detection
 - [Ideas & Decisions](features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage
+- [Mail](features/mail.md) — what Gmail, Outlook and IMAP mail feeds into Catch Up, briefings, meeting prep and Ideas
 
 ## Execution
 
@@ -33,6 +34,10 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 ## Automations & AI
 
 ## Meetings & calendar
+
+- [Calendar and meeting prep](features/calendar-and-meeting-prep.md) — one timeline of meetings and recordings, plus an AI brief on the people before you join.
+- [Meeting recording](features/meeting-recording.md) — record a call locally and get a transcript, recap, action items and named speakers.
+- [Voice dictation](features/voice-dictation.md) — speak instead of typing in chats, ideas and notes, or capture an idea from anywhere.
 
 ## Apps & integration
 
