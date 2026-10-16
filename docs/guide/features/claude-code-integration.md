@@ -51,7 +51,7 @@ Options:
 
 ### Install for another client
 
-For Cursor or any client that reads a `.mcp.json`, add the server by hand:
+For Cursor or any client that reads a `.mcp.json`, add the server by hand (the **MCP Server** screen shows both this block and the `claude mcp add` command, each with **Copy config**; it runs nothing):
 
 ```json
 {

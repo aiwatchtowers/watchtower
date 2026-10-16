@@ -114,7 +114,7 @@ tags in brackets.
 
 Owner decision 2026-08-19 (supersedes the two-persona split of 2026-08-18): the app has ONE AI
 persona — **the assistant** — and that is the only word UI strings, prompts, and
-`docs/app-guide.md` may use for it ("secretary" survives only in stable identifiers:
+the user guide (`docs/guide/`) may use for it ("secretary" survives only in stable identifiers:
 `workspace.secretary_profile`, the `secretary-inbox` feature id, historical type names). What
 used to be encoded as two personas is now encoded as per-surface capability contracts, and those
 contracts did NOT move:

@@ -2,7 +2,7 @@
 
 Watchtower is a macOS app that mirrors your Slack, Google, Jira and meetings into a database on your Mac. It puts AI on top: briefings, a day plan, an inbox of what needs you, and a chat that knows your work. Its Workbench lets Claude Code or Codex work from a board of targets you control.
 
-Every page of the guide is listed below, once, grouped the way the sidebar is.
+Every page of the guide is listed below, once, grouped by what it helps with.
 
 ## Start here
 
