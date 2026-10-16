@@ -31,6 +31,7 @@ final class SearchViewModel {
         guard !trimmed.isEmpty else {
             results = []
             guideHits = []
+            isSearching = false
             return
         }
 
@@ -40,30 +41,39 @@ final class SearchViewModel {
             do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
 
             self.isSearching = true
+            // A stale search (cancelled, or the query moved on) writes nothing.
+            @MainActor func isCurrent() -> Bool {
+                if Task.isCancelled { return false }
+                return self.query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
+            }
             // Guide pages ride along; a failure here must not hide Slack results.
             do {
-                self.guideHits = try await dbManager.dbPool.read { db in
+                let hits = try await dbManager.dbPool.read { db in
                     try GuideQueries.search(db, query: trimmed)
                 }
+                if isCurrent() { self.guideHits = hits }
             } catch {
-                if !Task.isCancelled {
+                if isCurrent() {
                     Logger(subsystem: "com.watchtower.desktop", category: "search")
                         .error("guide search failed: \(error.localizedDescription, privacy: .public)")
                     self.guideHits = []
                 }
             }
             do {
-                self.results = try await dbManager.dbPool.read { db in
+                let found = try await dbManager.dbPool.read { db in
                     try SearchQueries.search(db, query: trimmed)
                 }
-                self.errorMessage = nil
+                if isCurrent() {
+                    self.results = found
+                    self.errorMessage = nil
+                }
             } catch {
-                if !Task.isCancelled {
+                if isCurrent() {
                     self.errorMessage = error.localizedDescription
                     self.results = []
                 }
             }
-            self.isSearching = false
+            if isCurrent() { self.isSearching = false }
         }
     }
 }

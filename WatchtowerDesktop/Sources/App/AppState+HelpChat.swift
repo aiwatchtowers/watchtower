@@ -11,11 +11,11 @@ extension AppState {
         isHelpChatShown = chatViewModel != nil
     }
 
-    /// Opens the popup with `prefill` typed into its composer (Search's Ask in chat).
+    /// Opens the popup with `prefill` in its composer (Search's Ask in chat); an existing draft is kept.
     func openHelpChat(prefill: String) {
         ensureChatViewModels()
         guard let chatViewModel else { return }
-        chatViewModel.draft = prefill
+        chatViewModel.draft = HelpChatPrefill.merge(draft: chatViewModel.draft, prefill: prefill)
         isHelpChatShown = true
     }
 
@@ -46,5 +46,14 @@ extension AppState {
             view = current.superview
         }
         return nil
+    }
+}
+
+enum HelpChatPrefill {
+    /// The composer shares the AI Chat draft: never overwrite what the owner typed.
+    static func merge(draft: String, prefill: String) -> String {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == prefill { return prefill }
+        return draft + "\n" + prefill
     }
 }

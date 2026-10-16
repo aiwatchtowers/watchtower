@@ -87,7 +87,7 @@ struct SearchView: View {
     private func helpSection(_ vm: SearchViewModel) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Help").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            ForEach(vm.guideHits, id: \.url) { hit in
+            ForEach(vm.guideHits, id: \.path) { hit in
                 Button { NSWorkspace.shared.open(hit.url) } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "book").foregroundStyle(.secondary)
