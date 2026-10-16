@@ -45,4 +45,4 @@ The status dot shows the state: green is OK, orange is a problem the next chat r
 - [AI Chat](ai-chat.md)
 - [Automations](automations.md)
 
-For developers: docs/features/quick-connections.md
+For developers: [docs/features/quick-connections.md](../../features/quick-connections.md)

@@ -7,7 +7,7 @@ A source is an account Watchtower reads from. You connect them in **Settings →
 | Source | Where | What Watchtower takes | What reads it |
 |---|---|---|---|
 | **Slack** | Connections → Slack | Messages, mentions and threads of the workspaces you connect, plus your own reactions | Digests, Tracks, People, Catch Up, Attention detection, Reaction Commands |
-| **Google** | Connections → Google | Calendar events and the Gmail inbox, switched separately per account | Calendar, meeting prep, Day Plan, Briefings, Inbox, Stream Digests, Ideas, Search |
+| **Google** | Connections → Google | Calendar events and the Gmail inbox, switched separately per account | Calendar, meeting prep, Day Plan, Briefings, Attention detection, Stream Digests, Ideas, Search |
 | **Email** | Connections → Email | New mail from an IMAP or Outlook mailbox | Search, Catch Up, Attention detection |
 | **Calendar** | Connections → Calendar | A CalDAV account or an ICS feed | Calendar, meeting prep, Day Plan |
 | **Jira** | Connections → Jira | Issues, boards, sprints, releases and comments of a Jira Cloud site; Confluence spaces you pick under the site | Targets, Boards, Workload, Blockers, Search, Ideas |

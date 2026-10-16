@@ -20,7 +20,7 @@ A change to any other target on its line (sub-targets at any depth, parents) alw
 
 **The next step is refreshed by the daemon.** After each sync cycle the daemon writes a **NEXT STEP** card for every To Do, In Progress or Blocked target that has none, or whose text changed since the last one. It handles up to 100 targets per cycle and gives each 3 tries a day, so a target whose reply keeps failing stops until you edit it or tomorrow arrives.
 
-**Dates are watched.** A snoozed target returns to To Do when its date passes. A target whose due date arrives is surfaced once in the Inbox. Both happen in the daemon cycle, so they need the daemon running.
+**Dates are watched.** A snoozed target returns to To Do when its date passes. A target whose due date arrives is surfaced once as an attention item, so it shows in Catch Up's **For you** and the briefing's **Needs Attention**. Both happen in the daemon cycle, so they need the daemon running.
 
 ## Using it
 

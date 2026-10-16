@@ -76,4 +76,4 @@ Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not
 
 - [Menu bar and updates](menu-bar-and-updates.md) for keeping the Mac side awake and running.
 
-For developers: docs/features/mobile-companion.md
+For developers: [docs/features/mobile-companion.md](../../features/mobile-companion.md)

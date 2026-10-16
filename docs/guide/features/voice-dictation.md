@@ -18,7 +18,7 @@ If you dictate into a field that already has text, the new text is added after i
 
 ### Engines and the first download
 
-**Settings › Meetings › Dictation model** picks the engine, separately from the meeting engine: **Apple (realtime)** on macOS 26 and later (the default there, nothing to download), or **Whisper large-v3 turbo**, **Whisper small (fast)** or **Whisper base (fastest)**. On older macOS the default is Whisper small.
+**Settings → Meetings → Dictation model** picks the engine, separately from the meeting engine: **Apple (realtime)** on macOS 26 and later (the default there, nothing to download), or **Whisper large-v3 turbo**, **Whisper small (fast)** or **Whisper base (fastest)**. On older macOS the default is Whisper small.
 
 A Whisper model downloads at the first dictation. The mic is already listening meanwhile, so nothing you say is lost, and the capsule reads "Downloading model… N%".
 

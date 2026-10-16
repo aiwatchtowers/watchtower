@@ -1,6 +1,6 @@
 # Jira and Linear
 
-Watchtower copies the Jira boards you pick onto your Mac and turns them into four overview tabs: **Project Map**, **Releases**, **Blockers** and **Workload**. It is for anyone who wants to see what is stuck, late or overloaded without opening Jira. Linear can be connected and synced from the command line, but it has no tab yet.
+Watchtower copies the Jira boards you pick onto your Mac and turns them into four overview tabs: **Project Map**, **Releases**, **Blockers** and **Workload**. It is for anyone who wants to see what is stuck, late or overloaded without opening Jira. Linear is connected and synced from the command line; no tab shows it.
 
 ## Why use it
 
@@ -20,7 +20,9 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 
 ### Linear
 
-`watchtower linear add` signs in with Linear, `watchtower linear teams` and `select` pick the teams, and the daemon then syncs them every 15 minutes (`linear.sync_interval_mins`) once the connection is made (`linear add`, and signing in again, switch `linear.enabled` on for you). The first pass loads every open issue and everything updated in the last 90 days. The data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it yet. The one place Linear counts today is knowing who you are: a connected Linear workspace can identify you for the briefing and the day plan.
+- **Connect:** `watchtower linear add` signs in with Linear, then `watchtower linear teams` and `select` pick the teams. Connecting (or signing in again) switches `linear.enabled` on for you.
+- **Sync:** the daemon syncs the selected teams every 15 minutes (`linear.sync_interval_mins`). The first pass loads every open issue and everything updated in the last 90 days.
+- **What reads it:** the data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it. Linear's one use is identifying you: a connected Linear workspace can identify you for the briefing and the day plan.
 
 ## Using it
 
@@ -36,6 +38,7 @@ An issue or epic key on any tab opens in Jira.
 ## When it's empty or wrong
 
 - **A tab says Jira isn't connected.** The tab says "Connect Jira to get this". Press **Connect Jira**; it opens **Settings** → **Connections**.
+- **Boards says "No boards yet".** Press **Fetch Boards**.
 - **A tab says "No blockers yet", "No workload yet" or similar.** Jira is connected but no data has arrived. Check that a board is switched on in **Boards** and wait for a sync.
 - **Workload is empty though Jira has issues.** No Jira user is matched to a Slack user. Connect Slack, then press **Resolve** in **User Mapping**.
 - **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Settings** → **Connections** → **Jira**.
@@ -47,4 +50,4 @@ Site needs **Re-login**? See [An account needs attention](../troubleshooting/acc
 
 - [Search and knowledge](search-and-knowledge.md): Jira issues and comments are searchable by the assistant.
 
-For developers: docs/features/jira-multi-account.md, docs/features/jira-changelog.md, docs/features/linear.md
+For developers: [docs/features/jira-multi-account.md](../../features/jira-multi-account.md), [docs/features/jira-changelog.md](../../features/jira-changelog.md), [docs/features/linear.md](../../features/linear.md)

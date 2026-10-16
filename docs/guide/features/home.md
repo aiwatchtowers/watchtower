@@ -35,7 +35,7 @@ When every card is ready or has failed and retries on its own, the zone shrinks 
 - Click **×** in the Getting ready header to hide the zone for good.
 - When a tab you were on is turned off or its source is disconnected, you land on Home.
 
-## The menu on the left
+### The menu on the left
 
 The menu lists Home, Targets, Tracks, Workbench, Automations and Calendar first. Below them are three collapsible sections:
 

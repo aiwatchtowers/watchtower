@@ -41,7 +41,7 @@ On a local Ollama model nothing is billed, but speed and quality depend on the m
 
 **Usage** has three tabs:
 
-- **Usage**: pick a day. It shows AI calls, input tokens (including cache), uncached input and output tokens, then each request with its pipeline, model and call count. It shows tokens, not money.
+- **Usage**: pick a day. It shows AI calls, input tokens (including cache), uncached input and output tokens, then each request with its pipeline, model and call count. It shows tokens, not money. A day with no AI calls shows nothing; pick another day.
 - **Progress**: history of the background runs, with each run's steps, tokens and duration. Runs that made no AI call are not listed, except a failed Memory run.
 - **Claude plan**: your Claude account's limits, below.
 

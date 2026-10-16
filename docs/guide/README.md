@@ -18,6 +18,21 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [AI providers, models and cost](concepts/ai-providers-and-cost.md) — Claude, Codex or Ollama, light and strong models, what costs tokens, and your Claude plan limits
 - [Privacy](concepts/privacy.md) — what stays on your Mac, what goes to your AI provider, and what goes to iCloud
 
+## Troubleshooting
+
+- [Troubleshooting](troubleshooting/README.md) — find what you see on the screen and open the page that fixes it
+- [A tab is empty](troubleshooting/tab-is-empty.md) — which switch and source each tab waits for, and what its status line wants
+- [Sync is stuck or slow](troubleshooting/sync-stuck-or-slow.md) — "Sync daemon not running", a sync that never ends, data that stops arriving
+- [No briefing or day plan today](troubleshooting/no-briefing-or-day-plan.md) — the gates a daily job waits behind, and how to generate one now
+- [The Claude or Codex tool is not found or not signed in](troubleshooting/ai-tool-not-found-or-not-signed-in.md) — the red cross, "isn't signed in", and Test Connection
+- [An account needs attention](troubleshooting/account-needs-attention.md) — red dots, Re-login, and which accounts you must remove and add again
+- [Calendar events are missing](troubleshooting/calendar-events-missing.md) — a hidden Calendar tab, sync banners and unselected calendars
+- [Recording or transcript problems](troubleshooting/recording-or-transcript-problems.md) — macOS permissions, no call audio, failed transcription and missing recaps
+- [A Workbench session or ask is stuck](troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
+- [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
+- [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — Claude plan warnings, rate limits and how to spend fewer tokens
+- [Known issues](troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
+
 ## Focus
 
 - [Home](features/home.md) — what needs you right now, setup progress, and how the menu works
@@ -74,21 +89,6 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [iPhone](features/iphone.md) — answer asks, edit the Workbench board, start sessions and record meetings from your phone, through your own iCloud
 - [Menu bar and updates](features/menu-bar-and-updates.md) — what the menu shows, what closing and quitting do, and how updates arrive
 - [Claude Code integration](features/claude-code-integration.md) — let your coding agent query Watchtower through a read-only MCP server and three skills
-
-## Troubleshooting
-
-- [Troubleshooting](troubleshooting/README.md) — find what you see on the screen and open the page that fixes it
-- [A tab is empty](troubleshooting/tab-is-empty.md) — which switch and source each tab waits for, and what its status line wants
-- [Sync is stuck or slow](troubleshooting/sync-stuck-or-slow.md) — "Sync daemon not running", a sync that never ends, data that stops arriving
-- [No briefing or day plan today](troubleshooting/no-briefing-or-day-plan.md) — the gates a daily job waits behind, and how to generate one now
-- [The Claude or Codex tool is not found or not signed in](troubleshooting/ai-tool-not-found-or-not-signed-in.md) — the red cross, "isn't signed in", and Test Connection
-- [An account needs attention](troubleshooting/account-needs-attention.md) — red dots, Re-login, and which accounts you must remove and add again
-- [Calendar events are missing](troubleshooting/calendar-events-missing.md) — a hidden Calendar tab, sync banners and unselected calendars
-- [Recording or transcript problems](troubleshooting/recording-or-transcript-problems.md) — macOS permissions, no call audio, failed transcription and missing recaps
-- [A Workbench session or ask is stuck](troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
-- [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
-- [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — Claude plan warnings, rate limits and how to spend fewer tokens
-- [Known issues](troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
 
 ## Reference
 

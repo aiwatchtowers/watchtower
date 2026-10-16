@@ -74,4 +74,4 @@ Sync not running or stuck? See [Sync is stuck or slow](../troubleshooting/sync-s
 
 - [iPhone](iphone.md): the phone app needs Watchtower running on the Mac.
 
-For developers: docs/features/tray-daemon-lifecycle.md
+For developers: [docs/features/tray-daemon-lifecycle.md](../../features/tray-daemon-lifecycle.md)

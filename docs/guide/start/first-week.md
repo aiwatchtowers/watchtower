@@ -4,13 +4,17 @@ A tour of what to try, in the order it pays off. Each stop is one thing to do, w
 
 ## Day 1: finish setup and let the first sync run
 
-**Try:** pick your goals, connect Slack or Google, and press **Continue**. **See:** Home opens, and the first sync starts in the background. **Needs:** the Claude Code or Codex command-line tool, installed and signed in; **Continue** stays off until it is found.
+- **Try:** pick your goals, connect Slack or Google, and press **Continue**.
+- **See:** Home opens, and the first sync starts in the background.
+- **Needs:** the Claude Code or Codex command-line tool, installed and signed in; **Continue** stays off until it is found.
 
 Most tabs are empty for the first few minutes, and each one says what will land there and when. Details: [Set up Watchtower](setup.md), and [How Watchtower works](../concepts/how-watchtower-works.md) for what the sync does every 15 minutes.
 
 ## Day 1: read Home
 
-**Try:** open **Home** and look at **Getting ready**. **See:** one card per feature that is on, each with a status line such as "Preparing now" or "Within ~15 min", and **Ready** when it is done. **Needs:** nothing. As things finish, a Today section shows what needs you.
+- **Try:** open **Home** and look at **Getting ready**.
+- **See:** one card per feature that is on, each with a status line such as "Preparing now" or "Within ~15 min", and **Ready** when it is done. As things finish, a Today section shows what needs you.
+- **Needs:** nothing.
 
 Details: [Home](../features/home.md). A tab that stays empty is explained on [A tab is empty](../troubleshooting/tab-is-empty.md).
 
@@ -54,15 +58,21 @@ Your calendar is synced by now, so use it.
 
 Details: [Calendar and meeting prep](../features/calendar-and-meeting-prep.md) and [Meeting recording](../features/meeting-recording.md).
 
-## Day 4: prepare for a meeting
+## Day 4: ask the assistant
 
-**Try:** open **Calendar**, click an event with other people and click **Prepare**. **See:** talking points, open items and a **Missing Context** note for attendees it could not match. Record the next call with **Record**, and the recording gets a transcript, a recap and action items. **Needs:** a connected calendar, or the tab stays hidden. Recording needs macOS 14.4 or later and two macOS permissions on first use.
+Once a few days of data have landed, ask a question across all of it.
 
-Details: [Calendar and meeting prep](../features/calendar-and-meeting-prep.md) and [Meeting recording](../features/meeting-recording.md).
+- **Try:** open **AI Chat** and ask "what did my team decide this week?".
+- **See:** an answer with a **Sources** panel, drawn from Slack, mail, Jira, meetings and digests.
+- **Needs:** a signed-in AI tool and the Knowledge search switch on; digests help only if **Slack Digests** is on.
+
+Details: [AI Chat](../features/ai-chat.md), [Digests](../features/digests.md) and [Tracks](../features/tracks.md).
 
 ## Day 5: hand a coding task to an agent
 
-**Try:** open **Workbench**, pick a repository folder, and let the agent propose a first board. **See:** a terminal with the agent running, and the proposal as an ask in **Waiting for you**. Nothing is created until you agree. Click **Work on It** on a target and come back later to answer its asks. **Needs:** Claude Code or Codex in the embedded terminal; no switch to turn on.
+- **Try:** open **Workbench**, pick a repository folder, and let the agent propose a first board. Click **Work on It** on a target and come back later to answer its asks.
+- **See:** a terminal with the agent running, and the proposal as an ask in **Waiting for you**. Nothing is created until you agree.
+- **Needs:** Claude Code or Codex in the embedded terminal; no switch to turn on.
 
 Details: [Workbench](../features/workbench/README.md).
 

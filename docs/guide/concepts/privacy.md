@@ -40,13 +40,13 @@ Other network traffic: calls to each source's own service, a version check again
 
 Nothing, unless you turn on **Sync with iPhone** in **Settings → Mobile**. It is off by default.
 
-When it is on, your Mac publishes a trimmed view of its data to your own iCloud (CloudKit) for your iPhone app: briefings, inbox items, targets, tracks, digests, calendar events, people cards, day plans, meeting transcripts, Workbench boards, sessions, asks and the connection status of your accounts (never tokens). The phone sends back actions and recordings.
+When it is on, your Mac publishes a trimmed view of its data to your own iCloud (CloudKit) for your iPhone app: Workbench boards with their targets and comments, sessions and their reports, asks, calendar events, meeting transcripts and recaps, and the status of phone recordings (never tokens). The phone sends back actions and recordings.
 
 It is end-to-end encrypted.
 
 Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception.
 
-A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** on the phone (Settings → Macs), or removing the phone on the Mac, deletes the Mac's data from the phone.
+A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**.
 
 ## Related
 

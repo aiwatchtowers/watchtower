@@ -16,7 +16,7 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 
 - **Semantic tier**: rewrites entity pages as episodes arrive, merges duplicates, archives cold history into rollups, and forms **beliefs** ("Alice owns the deploy pipeline") whose confidence rises and falls with evidence. Reflection, belief changes in the briefing, and "remember this:" all need it.
 - **Gmail source**: each email thread becomes one episode; senders become person pages (matched to Slack colleagues by email).
-- **Calendar source**: each ended meeting becomes one episode, with its recap folded in when one exists. Capture happens soon after the meeting ends, because the calendar keeps only about a day of past events.
+- **Calendar source**: each ended meeting becomes one episode, with its recap folded in when one exists. Capture happens on the first memory run after the meeting ends.
 - **Jira source**: episodes from Jira issues.
 - **Chats source**: lets a target's or track's chat pin a fact. Start a line with `remember this:` (or `remember:`); the rest becomes your own recorded statement. Without the prefix a chat turn is treated as drafting and never becomes memory. It also needs the **Chat surface** switch and the Semantic tier.
 - **Targets & Tracks mirrors**: each target and track gets a page with status, next step and an **Open loops** list, kept in sync and cleared when done. Nothing is written back into your targets.
@@ -50,4 +50,4 @@ Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 
 - [AI Chat](ai-chat.md)
 
-For developers: docs/features/memory.md
+For developers: [docs/features/memory.md](../../features/memory.md)

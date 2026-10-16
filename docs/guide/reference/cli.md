@@ -33,7 +33,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 
 | Command | What it does |
 |---|---|
-| `watchtower catchup` | Run, list, show and acknowledge [Catch-Up](../features/catch-up.md) recaps |
+| `watchtower catchup` | Run, list, show and acknowledge [Catch Up](../features/catch-up.md) recaps |
 | `watchtower briefing` | Today's [briefing](../features/briefings.md) |
 | `watchtower day-plan` | The [day plan](../features/day-plan.md) |
 | `watchtower inbox`, `remind <text>` | [Inbox](../features/inbox.md) and reminders |

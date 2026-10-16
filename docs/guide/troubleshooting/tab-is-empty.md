@@ -19,7 +19,7 @@ A tab shows what a background job wrote. It stays empty until its feature is on,
 | Memory | Memory (off by default) | Any source |
 | Calendar | none | A calendar |
 | Workload, Blockers, Project map, Releases, Boards | none | Jira |
-| Statistics | none | Slack |
+| Statistics | none | Slack (the tab also shows with only mail connected, but stays empty) |
 
 Targets, Workbench and Automations have no status line: they stay empty until you add something.
 

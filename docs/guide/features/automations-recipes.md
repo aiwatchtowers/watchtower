@@ -47,4 +47,4 @@ A recipe can also live in a Workbench folder, in `.watchtower/automations/`, whe
 ## Related
 - [Automations](automations.md)
 
-For developers: docs/features/automations.md
+For developers: [docs/features/automations.md](../../features/automations.md)

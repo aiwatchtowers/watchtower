@@ -85,4 +85,4 @@ You do not run these for a Workbench folder; Watchtower sets the folder up itsel
 
 - [Menu bar and updates](menu-bar-and-updates.md): the app keeps the data fresh.
 
-For developers: docs/features/developer-surface.md, docs/mcp-server.md
+For developers: [docs/features/developer-surface.md](../../features/developer-surface.md), [docs/mcp-server.md](../../mcp-server.md)

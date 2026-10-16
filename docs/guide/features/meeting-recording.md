@@ -20,13 +20,13 @@ If the call goes quiet, you get a warning. When nothing has come from the call f
 
 The recording's detail later notes the gap, such as "No call audio from 15:29 to the end".
 
-When headphones or AirPods connect or disconnect, the capture reattaches to the new device about a second later. Turn this off with **Follow audio device changes** in **Settings › Meetings**.
+When headphones or AirPods connect or disconnect, the capture reattaches to the new device about a second later. Turn this off with **Follow audio device changes** in **Settings → Meetings**.
 
 ### Transcription is local
 
 Audio never leaves your Mac. Only the transcript text goes to your AI provider, for the recap.
 
-Pick the **Engine** in **Settings › Meetings**. Only engines available on your Mac are listed:
+Pick the **Engine** in **Settings → Meetings**. Only engines available on your Mac are listed:
 
 - **WhisperKit (Whisper)**, the default, with the **Large v3 Turbo (recommended)** model, and **Qwen3-ASR** transcribe while you record, as long as **Live transcription** (on by default) is on.
 - **Parakeet v3 (NVIDIA)** and **Apple Speech (macOS 26+)** transcribe after **Stop** and show no live text meanwhile.
@@ -53,7 +53,7 @@ Each recording has four tabs:
 3. Open the meeting. The recap appears when the pills clear.
 4. For a recording with no event, use **Link to event…** in its header.
 
-Audio files are deleted after 30 days (**Delete audio after N days** in **Settings › Meetings**; 0 keeps them). Transcripts and recaps stay.
+Audio files are deleted after 30 days (**Delete audio after N days** in **Settings → Meetings**; 0 keeps them). Transcripts and recaps stay.
 
 **Delete** removes the recording, its transcript, notes, chat and audio after confirmation. The event's recap stays with the event.
 
@@ -67,14 +67,14 @@ When a voice is unknown, a notification says "N voices to label". Open the **Voi
 - **Review**: the list of known voices, spot-checks of recent automatic labels (**Correct** or **Wrong**), and **Export…** / **Import…** of a password-protected `.wtvoices` file. It holds only voice numbers, never audio or text.
 - **Train**: label many meetings at once; similar voices are grouped into one card.
 
-An imported voice only suggests a name until you confirm it. Turn the whole feature off with **Voice recognition** in **Settings › Meetings**; **Notify about unknown voices** only mutes the notification.
+An imported voice only suggests a name until you confirm it. Turn the whole feature off with **Voice recognition** in **Settings → Meetings**; **Notify about unknown voices** only mutes the notification.
 
 ## When it's empty or wrong
 
 - **No Record button:** the event is more than 10 minutes away or over, or the Mac is below macOS 14.4.
 - **"No speech recognized":** the note says whether call audio was missing. Check the output device.
 - **Only your voice in the transcript:** call audio was not captured. The **No call audio** warning fires during the call so you can fix it.
-- **Different people share one "Speaker N":** lower **Diarization threshold** (0.3 to 0.9) in **Settings › Meetings**.
+- **Different people share one "Speaker N":** lower **Diarization threshold** (0.3 to 0.9) in **Settings → Meetings**.
 - **Transcription or recap failed:** the audio is kept. Use **Retry** on the failed pill, **Re-transcribe** under the transcript, or **Generate recap** on the Recap tab.
 - **The app quit mid-recording:** at the next launch the pill offers **Transcribe recovered recording**; dismiss it to skip.
 - **"Speaker names were updated — regenerate the recap?":** names changed after the recap was made. Nothing regenerates on its own; click **Regenerate**.

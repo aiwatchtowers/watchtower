@@ -4,12 +4,12 @@ Terms the guide uses, in alphabetical order. Each links to the page that explain
 
 - **Ask** — a question an agent in a [workbench](../features/workbench/README.md) puts to you and waits on. Asks collect under **Waiting for you**. See [Asks](../features/workbench/asks.md).
 - **Assistant** — the one name for Watchtower's AI. It writes briefings and digests, answers in [chat](../features/ai-chat.md), and proposes actions.
-- **Attention item** — a message or mail thread that needs your reply, such as a mention, a DM or a thread addressed to you. It closes itself once you reply. See [Inbox](../features/inbox.md).
+- **Attention item** — a message or mail thread that needs your reply, such as a mention, a DM or a thread addressed to you. Slack, Jira and calendar items close when you answer in the source; mail items archive on their own after 7 or 14 days. See [Inbox](../features/inbox.md).
 - **Automation** — an owner-written recipe the daemon runs on a schedule or on demand. See [Automations](../features/automations.md).
 - **Backfill** — the month of history loaded for a newly connected source, freshest first. See [History backfill](../concepts/history-backfill.md).
-- **Board** — a workbench's set of targets, laid out as lanes. See [Board and targets](../features/workbench/board-and-targets.md).
+- **Board** — a workbench's set of targets, shown as a list or Kanban. See [Board and targets](../features/workbench/board-and-targets.md).
 - **Briefing** — the daily summary of what needs you, built from your synced sources. See [Briefings](../features/briefings.md).
-- **Catch-Up** — a recap of a window you were away for. See [Catch-Up](../features/catch-up.md).
+- **Catch Up** — a recap of a window you were away for. See [Catch Up](../features/catch-up.md).
 - **Daemon** — the background process that syncs your sources and runs the AI pipelines. The app starts and stops it. See [How Watchtower works](../concepts/how-watchtower-works.md).
 - **Day plan** — a schedule for today, with time blocks and a backlog. See [Day plan](../features/day-plan.md).
 - **Decision** — a settled choice mined from Slack, mail, Jira or meetings and kept in the decisions ledger. See [Ideas and decisions](../features/ideas-and-decisions.md).
@@ -26,7 +26,7 @@ Terms the guide uses, in alphabetical order. Each links to the page that explain
 - **Skill** — a reusable instruction sheet that teaches the assistant a kind of task. Manage them in **Settings** → **Profile**. See [Settings](settings.md).
 - **Source** — a connected service Watchtower reads: Slack, Google, mail, Jira, Linear, calendars. See [Sources and accounts](../concepts/sources-and-accounts.md).
 - **Target** — a concrete to-do with an owner and a deadline. In a workbench, targets are the cards on the board. See [Targets](../features/targets.md).
-- **Track** — an AI-written running story about an initiative, built from related digest topics. See [Tracks](../features/tracks.md).
+- **Track** — one line of work that needs your eye (a request, decision or follow-up), mined from Slack digests. See [Tracks](../features/tracks.md).
 - **Trust** — per tool, whether the assistant's write waits for your approval or applies at once. See [Settings](settings.md).
 - **Workbench** — a folder-bound board where Claude Code or Codex works your targets. See [Workbench](../features/workbench/README.md).
 - **Worktree** — a separate git checkout a session can work in, so parallel agents do not collide. See [Worktrees and cleanup](../features/workbench/worktrees-and-cleanup.md).

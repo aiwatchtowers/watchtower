@@ -55,4 +55,4 @@ A new recipe stays off until you turn it on in the Automations tab. See [Automat
 - [Quick Connections](quick-connections.md): other tools the chat can read from
 - [Automations](automations.md)
 
-For developers: docs/features/agent-actions.md, docs/features/slack-send.md, docs/features/confluence-page-editing.md
+For developers: [docs/features/agent-actions.md](../../features/agent-actions.md), [docs/features/slack-send.md](../../features/slack-send.md), [docs/features/confluence-page-editing.md](../../features/confluence-page-editing.md)

@@ -28,7 +28,7 @@ Workaround: use the **Daily** digest and [Tracks](../features/tracks.md). See [D
 
 ## Quiet Hours is a switch, and Daily summary does nothing
 
-**Known issue.** **Enable quiet hours** in **Settings → Features → Notification Types** has no hours: it is one switch. While it is on it holds back new-decision, Claude plan limit, Workbench and meeting-reminder notices (including "Meeting ended — still recording"). Other notices still arrive: transcript ready or failed, voices to label, update available, automation finished. **Daily summary notifications** does nothing; no code reads it.
+**Known issue.** **Enable quiet hours** in **Settings → Features → Quiet Hours** has no hours: it is one switch. While it is on it holds back new-decision, Claude plan limit, Workbench and meeting-reminder notices (including "Meeting ended — still recording"). Other notices still arrive: transcript ready or failed, voices to label, update available, automation finished. **Daily summary notifications** does nothing; no code reads it.
 
 Workaround: to silence other notices, use macOS **Focus** or the Notifications page in System Settings. Leave **Daily summary notifications** alone.
 

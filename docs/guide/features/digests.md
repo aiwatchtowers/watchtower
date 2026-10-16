@@ -12,7 +12,7 @@ Catching up on a channel you were away from, or checking "did we decide that?", 
 
 Left out: muted channels, one-to-one DMs (group DMs are kept), and channels with only bot traffic. A mostly-bot channel is digested around the human replies.
 
-**Trickle channels wait.** A channel digested less than 30 minutes ago with fewer than 10 visible messages is skipped until the next cycle. On a fresh install the first run reads the initial history window, 2 days by default.
+**Trickle channels wait.** A channel digested less than 30 minutes ago with fewer than 10 visible messages is skipped until the next cycle. On a fresh install the first run reads the first sync's window (**Initial History Days**, 3 days when set up in the app).
 
 **Daily rollups combine channels.** Once at least two channel digests exist for the same UTC day, the daemon writes one **Daily** digest across channels, and rewrites it when a newer channel digest lands. A day with one channel digest gets no rollup. After 3 failed attempts in a day the daemon stops retrying the rollup until the next day.
 

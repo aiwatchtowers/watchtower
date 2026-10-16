@@ -13,7 +13,7 @@ Three settings apply to every session of a workbench:
 | Setting | Values | What it does |
 |---|---|---|
 | **Methodology** | `watchtower-flow` (default), `none` | `watchtower-flow` installs a second skill: features, specs and plans become targets, and work goes to `in_review` for a reviewer. `none` leaves only the core workbench skill and your folder rules. |
-| **Ask guard** | `strict` (default), `soft`, `off` | What happens when the agent ends a turn with a request in plain text. `strict` sends it back until the agent files an [ask](asks.md). `soft` sends nothing back and raises the question as an ask for you. `off` checks nothing and allows the agent's own question tool. |
+| **Ask guard** | `strict` (default), `soft`, `off` | What happens when the agent ends a turn with a request in plain text. `strict` sends it back until the agent files an [ask](asks.md). `soft` sends nothing back and raises the question as an ask for you; Claude Code's question dialog works while you are in the session. `off` checks nothing and allows the agent's own question tool. |
 | **Finish check** | `on` (default), `off` | `on` sends back a turn that reports the work complete without calling `finish_session`. `off` skips the reminder, and an unfinished session ends as **Stopped** with no summary. |
 
 Each setting comes from the first of three places that has it:

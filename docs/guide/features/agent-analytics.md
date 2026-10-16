@@ -1,6 +1,6 @@
 # Agent analytics
 
-Agent analytics reads the history of the Claude Code sessions that ran in a workbench folder and totals their tokens, cost, tools and errors. It is for the person who wants to know what their agents cost and did. Today it is a command-line feature: there is no screen for it yet.
+Agent analytics reads the history of the Claude Code sessions that ran in a workbench folder and totals their tokens, cost, tools and errors. It is for the person who wants to know what their agents cost and did. It is a command-line feature with no screen.
 
 ## Why use it
 

@@ -47,4 +47,4 @@ Memory is not part of this index; the assistant reads it separately. A deleted s
 
 - [Jira and Linear](jira-and-linear.md): the Jira data that feeds this index.
 
-For developers: docs/features/knowledge-search.md, docs/features/confluence-knowledge-connector.md
+For developers: [docs/features/knowledge-search.md](../../features/knowledge-search.md), [docs/features/confluence-knowledge-connector.md](../../features/confluence-knowledge-connector.md)

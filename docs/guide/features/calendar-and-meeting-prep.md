@@ -18,7 +18,7 @@ The list covers the last `calendar.history_days` days (30 by default) and the ne
 
 The daemon syncs calendars on every cycle (every 15 minutes by default) and once when it starts, so a freshly connected calendar fills within about a minute.
 
-Google Calendar fetches `calendar.sync_days_ahead` days ahead (7 by default). Change it with **Sync days ahead** in **Settings › Connections › Google** (2, 3, 5, 7 or 14); the list itself only shows 7. Add CalDAV and ICS calendars under **Settings › Connections › Calendar** with **Add Calendar**.
+Google Calendar fetches `calendar.sync_days_ahead` days ahead (7 by default). Change it with **Sync days ahead** in **Settings → Connections → Google** (2, 3, 5, 7 or 14); the list itself only shows 7. Add CalDAV and ICS calendars under **Settings → Connections → Calendar** with **Add Calendar**.
 
 Connecting a calendar is also what makes the **Calendar** tab appear in the sidebar. With no calendar connected the tab stays hidden.
 
@@ -46,10 +46,10 @@ If a recording linked to an event is still running 2 minutes after the event end
 1. Open the **Calendar** tab and click an event. The detail pane shows the agenda and attendees.
 2. Click **Prepare**. The prep opens in the pane; **Refresh** makes a new one.
 3. To steer it, type into **Your Notes** and click **Regenerate with notes**.
-4. Click **Join** to open the meeting link. If **Auto-record on join** is on (the default, under **Settings › Meetings**) and nothing is recording, Join also starts a recording linked to the event.
+4. Click **Join** to open the meeting link. If **Auto-record on join** is on (the default, under **Settings → Meetings**) and nothing is recording, Join also starts a recording linked to the event.
 5. Click **Record** for the event itself, or **Record** in the list header for a meeting that has no event.
 
-To change reminders, go to **Settings › Features › Meeting Reminders**: **Meeting reminders** and **Remind before meeting** (0 to 60 minutes; 0 is **Off**).
+To change reminders, go to **Settings → Features → Meeting Reminders**: **Meeting reminders** and **Remind before meeting** (0 to 60 minutes; 0 is **Off**).
 
 ### What the prep contains
 
@@ -59,7 +59,7 @@ No recording? In the same pane, **Recap from text** under **Meeting Notes** writ
 
 ## When it's empty or wrong
 
-- **No Calendar tab:** no Google Calendar or CalDAV/ICS calendar is connected. Connect one in **Settings › Connections**.
+- **No Calendar tab:** no Google Calendar or CalDAV/ICS calendar is connected. Connect one in **Settings → Connections**.
 - **"No meetings yet":** the tab is there but nothing has synced. A banner above the list says why.
 - **"Calendar sync is off":** Google Calendar is connected but sync is switched off. Click **Turn On Calendar Sync**.
 - **"Watchtower's sync isn't running":** click **Start Sync**.

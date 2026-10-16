@@ -10,7 +10,7 @@ Scrolling channels to find "what was I asked to do?" is the cost this removes. A
 
 **Tracks are mined from digests, not from raw messages.** After each sync cycle the daemon reads the channel digests created since its last run and asks the AI which of them hold an actionable request, decision or follow-up for you. A topic that matches an existing track updates it; when the AI is unsure, it creates a new track, so a duplicate is the expected slip. Informational topics, finished work and mere mentions create nothing.
 
-**It needs [Digests](digests.md) first.** Tracks run only when both **Tracks** and **Slack Digests** are on, and they need to know who you are in Slack. Muted channels are skipped. On the first run it looks back over the initial history window (2 days by default); after that it takes only new digests.
+**It needs [Digests](digests.md) first.** Tracks run only when both **Tracks** and **Slack Digests** are on, and they need to know who you are in Slack. Muted channels are skipped. On the first run it looks back over the first sync's window (**Initial History Days**, 3 days when set up in the app); after that it takes only new digests.
 
 **Ownership says whose it is.** **Mine** is on you, **Delegated** is owned by one of your reports and you follow it, **Watching** is something you monitor and is limited to high priority. Priority, category (task, approval, decision needed, code review and so on) and an optional due date come from the AI; you can change the priority from the badge.
 
@@ -41,5 +41,3 @@ Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 ## Related
 
 [Digests](digests.md), [Targets](targets.md), [Statistics](statistics.md).
-
-For developers: [internal/tracks and the tracks prompt](../../../internal/tracks/pipeline.go)
