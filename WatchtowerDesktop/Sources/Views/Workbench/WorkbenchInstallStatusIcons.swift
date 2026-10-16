@@ -25,7 +25,7 @@ struct WorkbenchInstallStatusIcons: View {
                     .accessibilityLabel("Install incomplete")
             } else if let notice = status.legacyNotice {
                 // A nudge only: nothing migrates until the owner runs it (O6).
-                // Its own icon, so the orange circle means only "incomplete" (#291).
+                // Distinct from the orange "incomplete" circle: a different fix.
                 Image(systemName: "arrow.up.circle")
                     .foregroundStyle(.blue)
                     .font(.caption)
