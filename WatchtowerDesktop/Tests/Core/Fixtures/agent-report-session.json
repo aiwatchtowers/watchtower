@@ -1,0 +1,302 @@
+{
+  "session": {
+    "session_uuid": "11111111-aaaa-bbbb-cccc-000000000001",
+    "started_at": "2026-10-01T10:00:00.000Z",
+    "ended_at": "2026-10-01T11:00:30.000Z",
+    "model": "claude-opus-5-5",
+    "branch": "feature/widget",
+    "active_ms": 3030000,
+    "cost_usd": 15,
+    "avg_parallel": 1,
+    "old_format": false,
+    "prs": [
+      "https://example.com/acme/app/pull/1"
+    ]
+  },
+  "time": {
+    "model_ms": 82000,
+    "tools": {
+      "build_test": 360000,
+      "git": 0,
+      "read_search": 0,
+      "edit": 0,
+      "mcp": 2000,
+      "subagents_fg": 0,
+      "other": 1000
+    },
+    "background_ms": 785000,
+    "owner_ms": 1800000,
+    "away_ms": 600000,
+    "active_ms": 3030000,
+    "wall_ms": 3630000
+  },
+  "subagents": {
+    "count": 1,
+    "foreground": 0,
+    "background": 1,
+    "peak": 1,
+    "serial": 0,
+    "busy_ms": 775000,
+    "union_ms": 775000,
+    "blocked_ms": 0,
+    "avg_parallel": 1
+  },
+  "hints": [
+    {
+      "id": "H4",
+      "finding": "Waiting for you took over 30% of active time in 1 session and 2 tasks, 30m 0s in all",
+      "estimate_ms": 1800000,
+      "estimate_usd": 0,
+      "evidence": [
+        {
+          "kind": "session",
+          "ref": "11111111-aaaa-bbbb-cccc-000000000001",
+          "label": "30m 0s waiting, 59% of 50m 30s active"
+        },
+        {
+          "kind": "target",
+          "ref": "#1",
+          "label": "Add widget"
+        },
+        {
+          "kind": "target",
+          "ref": "#2",
+          "label": "Fix login"
+        }
+      ]
+    },
+    {
+      "id": "H1",
+      "finding": "make test ran 3 times in target #1, 6m 0s in all; the runs after the first took 4m 0s",
+      "estimate_ms": 240000,
+      "estimate_usd": 0,
+      "evidence": [
+        {
+          "kind": "command",
+          "ref": "make test",
+          "label": "3 runs, 6m 0s"
+        },
+        {
+          "kind": "target",
+          "ref": "#1",
+          "label": "Add widget"
+        },
+        {
+          "kind": "session",
+          "ref": "11111111-aaaa-bbbb-cccc-000000000001",
+          "label": "11111111"
+        }
+      ]
+    },
+    {
+      "id": "H6",
+      "finding": "Session 11111111 cost $15.00 with a 28% cache read share; its context was expensive",
+      "estimate_ms": 0,
+      "estimate_usd": 15,
+      "evidence": [
+        {
+          "kind": "session",
+          "ref": "11111111-aaaa-bbbb-cccc-000000000001",
+          "label": "$15.00"
+        }
+      ]
+    }
+  ],
+  "lanes": [
+    {
+      "agent_id": "",
+      "subagent_type": "",
+      "background": false,
+      "segments": [
+        {
+          "start": "2026-10-01T10:00:00.000Z",
+          "end": "2026-10-01T10:00:10.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:00:10.000Z",
+          "end": "2026-10-01T10:00:11.000Z",
+          "category": "tool",
+          "tool_class": "mcp",
+          "verb": "mcp__watchtower-workbench__update_target"
+        },
+        {
+          "start": "2026-10-01T10:00:11.000Z",
+          "end": "2026-10-01T10:00:15.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:00:15.000Z",
+          "end": "2026-10-01T10:00:16.000Z",
+          "category": "tool",
+          "tool_class": "mcp",
+          "verb": "mcp__watchtower-workbench__update_target"
+        },
+        {
+          "start": "2026-10-01T10:00:16.000Z",
+          "end": "2026-10-01T10:00:20.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:00:20.000Z",
+          "end": "2026-10-01T10:02:20.000Z",
+          "category": "tool",
+          "tool_class": "build_test",
+          "verb": "make test"
+        },
+        {
+          "start": "2026-10-01T10:02:20.000Z",
+          "end": "2026-10-01T10:02:30.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:02:30.000Z",
+          "end": "2026-10-01T10:04:30.000Z",
+          "category": "tool",
+          "tool_class": "build_test",
+          "verb": "make test"
+        },
+        {
+          "start": "2026-10-01T10:04:30.000Z",
+          "end": "2026-10-01T10:04:40.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:04:40.000Z",
+          "end": "2026-10-01T10:06:40.000Z",
+          "category": "tool",
+          "tool_class": "build_test",
+          "verb": "make test"
+        },
+        {
+          "start": "2026-10-01T10:06:40.000Z",
+          "end": "2026-10-01T10:06:50.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:06:50.000Z",
+          "end": "2026-10-01T10:06:51.000Z",
+          "category": "tool",
+          "tool_class": "other",
+          "verb": "Agent"
+        },
+        {
+          "start": "2026-10-01T10:06:51.000Z",
+          "end": "2026-10-01T10:07:00.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:07:00.000Z",
+          "end": "2026-10-01T10:20:05.000Z",
+          "category": "background",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:20:05.000Z",
+          "end": "2026-10-01T10:20:15.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:20:15.000Z",
+          "end": "2026-10-01T10:50:15.000Z",
+          "category": "owner",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:50:15.000Z",
+          "end": "2026-10-01T11:00:15.000Z",
+          "category": "away",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T11:00:15.000Z",
+          "end": "2026-10-01T11:00:30.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        }
+      ]
+    },
+    {
+      "agent_id": "agent-1",
+      "subagent_type": "general-purpose",
+      "background": true,
+      "segments": [
+        {
+          "start": "2026-10-01T10:07:05.000Z",
+          "end": "2026-10-01T10:07:10.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T10:07:10.000Z",
+          "end": "2026-10-01T10:07:15.000Z",
+          "category": "tool",
+          "tool_class": "read_search",
+          "verb": "Read"
+        },
+        {
+          "start": "2026-10-01T10:07:15.000Z",
+          "end": "2026-10-01T10:20:00.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        }
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "verb": "make test",
+      "class": "build_test",
+      "runs": 3,
+      "errors": 1,
+      "total_ms": 360000,
+      "avg_ms": 120000
+    },
+    {
+      "verb": "Read",
+      "class": "read_search",
+      "runs": 1,
+      "errors": 0,
+      "total_ms": 5000,
+      "avg_ms": 5000
+    },
+    {
+      "verb": "mcp__watchtower-workbench__update_target",
+      "class": "mcp",
+      "runs": 2,
+      "errors": 0,
+      "total_ms": 2000,
+      "avg_ms": 1000
+    },
+    {
+      "verb": "Agent",
+      "class": "subagents_fg",
+      "runs": 1,
+      "errors": 0,
+      "total_ms": 1000,
+      "avg_ms": 1000
+    }
+  ]
+}

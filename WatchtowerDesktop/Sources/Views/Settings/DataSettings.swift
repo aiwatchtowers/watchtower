@@ -259,9 +259,11 @@ struct DataSettings: View {
         UserDefaults.standard.removePersistentDomain(forName: "com.watchtower.desktop")
         UserDefaults.standard.removePersistentDomain(forName: "WatchtowerDesktop")
 
-        // L5 fix: dispatch terminate to main thread explicitly (not from async context)
+        // L5 fix: dispatch terminate to main thread explicitly (not from async context).
+        // A stop-only quit: sessions kept in the session host would belong to
+        // the wiped workspace and could never be reattached (board #496).
         await MainActor.run {
-            NSApplication.shared.terminate(nil)
+            TrayAppDelegate.requestQuit(stoppingSessions: true)
         }
     }
 

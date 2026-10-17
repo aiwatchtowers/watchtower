@@ -1072,3 +1072,23 @@ printf '{"type":"result","result":"ok"}'`)
 	_, statErr := os.Stat(ran)
 	assert.True(t, os.IsNotExist(statErr), "the CLI must not run without its system prompt")
 }
+
+// A no-tools run (`ai query --no-tools`, the ⌘/ help chat) mounts no MCP
+// server even with a database path, allows no tool and hides every built-in.
+func TestBuildArgs_NoToolsMountsNothing(t *testing.T) {
+	c := NewClient("claude-haiku", "/tmp/test.db", "")
+	c.SetNoTools()
+	args, _, err := c.buildArgs("system prompt", "user message", "stream-json", "")
+	require.NoError(t, err)
+
+	assert.NotContains(t, args, "--mcp-config")
+	assert.NotContains(t, args, "--allowedTools")
+	assertFlagValue(t, args, "--tools", "")
+	assert.Contains(t, args, "--strict-mcp-config", "no server the CLI would load on its own")
+	assert.Contains(t, args, "--disallowedTools", "the deny list stays as defence in depth")
+	for _, a := range args {
+		assert.NotContains(t, a, "/tmp/test.db")
+		assert.NotContains(t, a, "mcp__watchtower")
+	}
+	assert.Equal(t, args, c.ArgsForTest("system prompt", "user message"))
+}

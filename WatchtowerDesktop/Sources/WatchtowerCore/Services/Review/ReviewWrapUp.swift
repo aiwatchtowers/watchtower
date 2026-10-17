@@ -3,11 +3,14 @@ import Foundation
 package struct ReviewIntentItem: Equatable, Sendable, Identifiable {
     package let key: String
     package let text: String
+    /// The overview's raw coverage status for this item, nil without an overview.
+    package let aiStatus: String?
     package var id: String { key }
 
-    package init(key: String, text: String) {
+    package init(key: String, text: String, aiStatus: String? = nil) {
         self.key = key
         self.text = text
+        self.aiStatus = aiStatus
     }
 }
 
@@ -15,6 +18,20 @@ package struct ReviewIntentItem: Equatable, Sendable, Identifiable {
 package enum ReviewWrapUp {
     package static func intentItems(_ context: [ReviewContextItem]) -> [ReviewIntentItem] {
         context.map { ReviewIntentItem(key: "target:\($0.targetId)", text: $0.text) }
+    }
+
+    /// One item per context item, keyed and worded by the context item; the
+    /// overview's coverage entry with that item's 1-based index adds its
+    /// status. The model's wording never reaches the key, so a mark survives
+    /// a new overview that phrases the item differently.
+    package static func intentItems(
+        _ context: [ReviewContextItem], coverage: [(index: Int, status: String)]
+    ) -> [ReviewIntentItem] {
+        var statusOf: [Int: String] = [:]
+        for entry in coverage where statusOf[entry.index] == nil { statusOf[entry.index] = entry.status }
+        return context.enumerated().map { offset, item in
+            ReviewIntentItem(key: "target:\(item.targetId)", text: item.text, aiStatus: statusOf[offset + 1])
+        }
     }
 
     package static func commentsByChapter(

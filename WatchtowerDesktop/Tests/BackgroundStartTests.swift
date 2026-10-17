@@ -130,6 +130,59 @@ final class BackgroundStartTests: XCTestCase {
         XCTAssertNil(vm.sessionErrors[p])
     }
 
+    // MARK: - Automation sessions (automations P5)
+
+    private func automationRequest(_ p: Int64, agent: AgentKind = .claude) async throws -> PendingSessionRequest {
+        let (a, run) = try await pool.write { db -> (Int64, Int64) in
+            let a = try TestDatabase.insertAutomation(db, slug: "review", name: "Review", workbenchID: p)
+            return (a, try TestDatabase.insertAutomationRun(db, automationID: a, status: "waiting", waitingReason: "app"))
+        }
+        return PendingSessionRequest(stepID: 1, runID: run, automationID: a, projectID: p, automationName: "Review",
+                                     prompt: "Review PR 7", title: "⚙ Review · run #\(run)", agent: agent)
+    }
+
+    /// Ruling R-P5-7: the session starts in the background with the step's
+    /// title, prompt and the run marker.
+    func testAnAutomationSessionStartsInTheBackgroundWithTheRunMarker() async throws {
+        let p = try await workbench()
+        let shown = try await insertSession(p, title: "shown")
+        let vm = makeVM()
+        await page(vm, p, showing: shown)
+        let focusBefore = center.focusOrder
+        let request = try await automationRequest(p)
+
+        let row = try await vm.startAutomationSession(request)
+
+        XCTAssertEqual(center.focusOrder, focusBefore)
+        XCTAssertEqual(vm.layout(projectID: p).primary, .session(shown.id))
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertEqual(row.title, request.title)
+        XCTAssertEqual(row.kind, .claude)
+        XCTAssertEqual(row.automationRunID, request.runID)
+        let env = try XCTUnwrap(launches.last?.environment)
+        XCTAssertTrue(env.contains("WATCHTOWER_FIRST_PROMPT=Review PR 7"), "\(env)")
+        XCTAssertEqual(env.last, "WATCHTOWER_AUTOMATION_RUN_ID=\(request.runID)")
+        XCTAssertNil(vm.sessionErrors[p])
+    }
+
+    func testAnAutomationSessionWhoseLaunchIsRefusedThrows() async throws {
+        let p = try await workbench()
+        let request = try await automationRequest(p)
+        try FileManager.default.removeItem(atPath: acme)
+        let vm = makeVM()
+
+        do {
+            _ = try await vm.startAutomationSession(request)
+            XCTFail("expected a failure")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            // The reason `launch_failed` carries, not a generic error text.
+            guard case let .failed(message) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(error.localizedDescription, message)
+        }
+        XCTAssertNil(vm.sessionErrors[p])
+        XCTAssertTrue(launches.isEmpty)
+    }
+
     // MARK: - Bring forward
 
     /// `.keeping(.board)` is the Desktop's Work on it: the session is focused

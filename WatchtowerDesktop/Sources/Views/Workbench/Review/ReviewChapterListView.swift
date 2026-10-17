@@ -9,6 +9,13 @@ struct ReviewChapterListView: View {
 
     var body: some View {
         List {
+            if model.aiChaptersPending {
+                HStack {
+                    Text("AI chapters are ready").font(.callout)
+                    Spacer(minLength: 4)
+                    Button("Use them") { model.useAIChapters() }.controlSize(.small)
+                }
+            }
             if model.chapters.isEmpty {
                 Text("No changes").foregroundStyle(.secondary)
             }
@@ -35,7 +42,19 @@ struct ReviewChapterListView: View {
             Image(systemName: done ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(done ? Color.green : Color.secondary)
                 .accessibilityLabel(done ? "Done" : "Not done")
-            Text(chapter.title).fontWeight(current ? .semibold : .regular).lineLimit(1).truncationMode(.middle)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(chapter.title).fontWeight(current ? .semibold : .regular).lineLimit(1).truncationMode(.middle)
+                if let caption = ReviewPresentation.sourceCaption(chapter.source) {
+                    Text(caption).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            if chapter.core {
+                Image(systemName: "star.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+                    .help("Core of the change")
+                    .accessibilityLabel("Core")
+            }
             Spacer(minLength: 4)
             Text("\(chapter.changedLines) lines").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
         }

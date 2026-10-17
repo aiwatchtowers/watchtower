@@ -15,6 +15,8 @@ struct ReviewMeaningView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                ReviewOverviewView(model: model)
+                ReviewNotesWalkthrough(model: model)
                 Text("What this change is for").font(.headline)
                 if model.context.isEmpty {
                     Text("No targets are linked to this session").foregroundStyle(.secondary)

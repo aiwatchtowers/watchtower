@@ -71,7 +71,15 @@ struct AutomationCardView: View {
                     onToggle: { vm.toggleRun($0) },
                     onRerun: { runID in Task { await vm.rerun(automation.id, runID: runID) } },
                     onCancel: { runID in Task { await vm.cancel(runID: runID) } },
-                    onOpenInbox: actions.onOpenInbox
+                    links: AutomationStepRow.Links(
+                        openInbox: actions.onOpenInbox,
+                        openSession: automation.projectID.flatMap { projectID in
+                            actions.onOpenSession.map { open in { open(projectID, $0) } }
+                        },
+                        openAsk: automation.projectID.flatMap { projectID in
+                            actions.onOpenAsk.map { open in { open(projectID, $0) } }
+                        }
+                    )
                 )
             }
             .padding(.horizontal, 28)
@@ -132,11 +140,9 @@ struct AutomationCardView: View {
             .disabled(!buttons.dryRun.enabled || isBusy)
             .help(buttons.dryRun.help ?? "")
 
-            let wordsHelp = AutomationCardPresentation.changeInWordsHelp(
-                for: automation, providerHelp: actions.changeInWordsDisabledHelp)
             Button("Change in words") { actions.onChangeInWords?(automation.id) }
-                .disabled(actions.onChangeInWords == nil || automation.scope == .workbench)
-                .help(wordsHelp ?? "")
+                .disabled(actions.onChangeInWords == nil)
+                .help(actions.changeInWordsDisabledHelp ?? "")
             Button("Edit") { actions.onEdit?(automation.id) }
                 .disabled(actions.onEdit == nil)
 

@@ -1301,6 +1301,20 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.pendingQuotes.map(\.comment), ["Thursday?"])
     }
 
+    /// "Ask about this": each added quote asks for the composer anew, so the
+    /// owner types the follow-up; an ignored one does not.
+    func testAddingAQuoteRequestsComposerFocus() throws {
+        let vm = try makeViewModel()
+        _ = try XCTUnwrap(vm.newConversation())
+        XCTAssertNil(vm.composerFocusRequest)
+        vm.addQuote("retry budget", comment: "")
+        let first = try XCTUnwrap(vm.composerFocusRequest)
+        vm.addQuote("  ", comment: "")
+        XCTAssertEqual(vm.composerFocusRequest, first)
+        vm.addQuote("Ship on Friday", comment: "")
+        XCTAssertNotEqual(vm.composerFocusRequest, first)
+    }
+
     func testSendDraftSendsEveryQuoteAndTheTypedTextAsOneTurn() throws {
         let vm = try makeViewModel()
         _ = try XCTUnwrap(vm.newConversation())
@@ -1516,7 +1530,7 @@ final class ChatLandingViewModelTests: XCTestCase {
 
     func testAttachingOnTheLandingStaysOnTheLanding() throws {
         let vm = makeViewModel()
-        vm.attachPastedImage(Data([0x89, 0x50, 0x4E, 0x47]))
+        vm.attachPasted(Data([0x89, 0x50, 0x4E, 0x47]), name: "Pasted image.png")
         XCTAssertTrue(vm.isOnLanding)
     }
 

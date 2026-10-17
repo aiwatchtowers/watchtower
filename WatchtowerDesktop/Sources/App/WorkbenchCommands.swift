@@ -100,10 +100,19 @@ struct WorkbenchCommands: Commands {
 
 /// Help menu additions, after the stock Help search and app help.
 struct HelpCommands: Commands {
+    let appState: AppState
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(after: .help) {
+            // Inside a Monaco editor (Files, diff review, automation editor)
+            // ⌘/ stays its toggle comment: the page consumes it before the
+            // menu sees it, as with ⌘K above. The menu item still opens the panel.
+            Button("Ask Watchtower…") { appState.showAskPanel() }
+                .keyboardShortcut("/", modifiers: .command)
+            Button("Watchtower User Guide") {
+                if let url = appState.askCenter.guideHomeURL { NSWorkspace.shared.open(url) }
+            }
             Button("Keyboard Shortcuts") { openWindow(id: KeyboardShortcutsView.sceneID) }
         }
     }

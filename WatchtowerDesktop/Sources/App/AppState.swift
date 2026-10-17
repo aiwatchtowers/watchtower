@@ -314,8 +314,19 @@ final class AppState {
     private(set) var automationEditorCenter: AutomationEditorCenter?
     /// Quick run's rows and finish watch (spec §12.7); built with `automationsViewModel`.
     private(set) var quickRunCenter: QuickRunCenter?
+    /// Launches the sessions automation runs request (spec §13.1); built
+    /// once with the Workbench wiring, polling while the feature is on.
+    private(set) var automationSessionCenter: AutomationSessionCenter?
     /// The "Run Automation…" palette (⌃⌘R) is up.
     var isRunAutomationPaletteShown = false
+    /// The ⌘/ "Ask Watchtower" panel is up.
+    var isAskPanelShown = false
+    /// The panel's guide index and help conversation; the CLI is resolved on the first ⌘/.
+    @ObservationIgnored private(set) lazy var askCenter = makeAskCenter()
+    /// The main window's link gate (`AllowedURLSchemes` + screen links); one instance across re-renders.
+    @ObservationIgnored private(set) lazy var mainWindowOpenURL = AllowedURLSchemes.openURLAction { [weak self] url in
+        self?.openNavLink(url)
+    }
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
@@ -330,6 +341,8 @@ final class AppState {
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
+    /// The Analytics pane's `agents report` runs and Turn On (#298).
+    private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
@@ -708,6 +721,8 @@ final class AppState {
                     self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    // An agents report / enable child gets SIGTERM.
+                    self?.agentAnalyticsCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
                     // An escalate-question child gets SIGTERM.
@@ -716,6 +731,7 @@ final class AppState {
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
                     self?.automationsViewModel?.stop()
+                    self?.automationSessionCenter?.stop()
                     self?.homeCenter.endReading()
                     self?.readinessCenter.stop()
                 }
@@ -831,10 +847,18 @@ final class AppState {
         // Every successful service load (launch, post-apply, failure-path
         // reload) pushes the fresh disabled set into the visibility store
         // the sidebar/navigation/banner read.
-        featureManager.onDisabledChanged = { [featureVisibility] ids in
-            featureVisibility.disabledFeatureIDs = ids
-        }
+        wireFeatureVisibility()
         Task { await featureManager.load() }
+    }
+
+    /// Every successful Feature Manager load pushes the disabled set into
+    /// the visibility store and marks it loaded; a failed one changes nothing.
+    func wireFeatureVisibility() {
+        featureManager.onDisabledChanged = { [weak self, featureVisibility] ids in
+            featureVisibility.disabledFeatureIDs = ids
+            featureVisibility.isLoaded = true
+            self?.syncAutomationSessionCenter()
+        }
     }
 
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
@@ -1558,7 +1582,9 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
+        startSessionHost() // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
+        if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
@@ -1787,35 +1813,10 @@ final class AppState {
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, defaults: workbenchDefaults,
             terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery
         )
-        vm.codeFiles.codeIndex = codeIndexCenter
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
-        openQuicklyCenter.workbenches = vm
-        codeNavigationCenter.workbenches = vm
-        vm.codeFiles.navigation = codeNavigationCenter
-        codeUsagesCenter.useWorkspace(dbPool.path)
-        codeUsagesCenter.workbenches = vm
-        codeUsagesCenter.navigation = codeNavigationCenter
-        codeNavigationCenter.usages = codeUsagesCenter
-        vm.codeFiles.usages = codeUsagesCenter
-        codeQuestionCenter.workbenches = vm
-        codeQuestionCenter.navigation = codeNavigationCenter
-        codeQuestionCenter.codeIndex = codeIndexCenter
-        codeQuestionCenter.embeddedChats = embeddedChatCenter
-        codeQuestionCenter.dbPool = dbPool
-        codeQuestionCenter.dictation = dictationCenter
-        codeQuestionCenter.modelSuggestions = { [aiModelCatalog] in aiModelCatalog.suggestions(for: $0.rawValue) }
-        codeQuestionCenter.usages = codeUsagesCenter
-        openQuicklyCenter.questions = codeQuestionCenter
-        vm.codeFiles.questions = codeQuestionCenter
-        codeHandoffCenter.workbenches = vm
-        codeHandoffCenter.terminalCenter = terminalCenter
-        codeHandoffCenter.dbPool = dbPool
-        codeQuestionCenter.handoff = codeHandoffCenter
-        openQuicklyCenter.onHandToClaude = { [weak self] query, project, root in
-            guard let self else { return }
-            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(root))
-        }
+        vm.isAutomationsFeatureOn = { [weak self] in self?.isAutomationsFeatureLoadedOn ?? false }
+        wireCodeViewer(vm, dbPool: dbPool)
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
             codeQuestionCenter?.workbenchRemoved($0)
             codeUsagesCenter?.workbenchRemoved($0)
@@ -1826,9 +1827,7 @@ final class AppState {
             await center.closeAll { ids.contains($0) }
         }
         let notices = WorkbenchNotificationCenter(dbPool: dbPool, notifier: notifier)
-        vm.onWorkbenchCreated = { [weak notices] project, _ in
-            notices?.seedBaseline(project: project)
-        }
+        vm.onWorkbenchCreated = { [weak notices] project, _ in notices?.seedBaseline(project: project) }
         vm.onOwnerWrite = { [weak notices] projectID, subject in
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)
         }
@@ -1860,7 +1859,21 @@ final class AppState {
         reports.start()
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
+        vm.startHostReattach()
         initMobileHub(dbPool: dbPool)
+        // Once: a setup re-run keeps the center and its launches in flight.
+        if automationSessionCenter == nil {
+            automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)
+        }
+        syncAutomationSessionCenter()
+    }
+
+    /// Agent analytics (#298): the previous center stopped, a new one built.
+    private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
+        let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
+        analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
+        agentAnalyticsCenter?.stop()
+        (agentAnalyticsCenter, vm.agentAnalytics) = (analytics, analytics)
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.

@@ -111,6 +111,16 @@ extension WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
+    /// A session's analytics (the report's line): the Analytics pane goes
+    /// on screen on that session's detail.
+    func showSessionAnalytics(_ uuid: String, projectID: Int64) {
+        analyticsSession[projectID] = uuid
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        updated.showWorkbenchView(.analytics)
+        setLayout(updated, projectID: projectID)
+    }
+
     /// The Board of `projectID` takes the target it should open, once.
     func takeBoardFocus(projectID: Int64) -> Int64? {
         boardFocus.removeValue(forKey: projectID)

@@ -1,6 +1,6 @@
 # Automations
 
-An automation is a small recipe that Watchtower runs for you on a schedule or when you ask: read your mail or Jira, have the assistant summarise it, leave the result in your Inbox or as a report. You describe it in plain words, or start from a template.
+An automation is a small recipe that Watchtower runs for you on a schedule, when new messages or changes arrive, or when you ask: read your mail or Jira, have the assistant summarise it, leave the result in your Inbox or as a report. You describe it in plain words, or start from a template.
 
 ## Why use it
 
@@ -8,7 +8,7 @@ Some chores repeat: a Monday Jira summary, a digest of new mail, a Friday team r
 
 ## How it works
 
-A recipe is one Markdown file: settings (when it runs, what it may touch, where results go, its budget) plus one short script. The daemon runs it, so the Mac must be awake with Watchtower's daemon running. A schedule fires in your local time; if the Mac was asleep, the recipe can run once on wake or skip the slot.
+A recipe is one Markdown file: settings (when it runs, what it may touch, where results go, its budget) plus one short script. The daemon runs it, so the Mac must be awake with Watchtower's daemon running. A schedule fires in your local time; if the Mac was asleep, the recipe can run once on wake or skip the slot. An event trigger fires after a sync brings new Slack messages, mail, Jira or calendar changes, or Confluence pages, at most once per sync cycle ([Event triggers](automations-recipes.md#event-triggers)).
 
 ### Why you must confirm a recipe
 
@@ -71,7 +71,7 @@ On the card, **Run now** does the same, and **Dry run** works even before you co
 - **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
-- **Event triggers.** "On new mail / message" is greyed out: no event trigger runs.
+- **An event recipe didn't run.** It runs only after a sync that brought something new and matched its `where`. A source's first sync, history backfill and your own Slack messages never count. Jira comment changes count only while Stream Digests is on (Settings, Features). In the edit form, **On an event** picks the event type; a `where` filter is written in the recipe text.
 
 ## Related
 

@@ -14,14 +14,15 @@ import (
 
 // Spec 2026-10-02 §5.2: the five renamed tools map back from their old
 // names, and every one of them belongs to WorkbenchTools — DEV-06 (fifteen,
-// plus get_review since 2026-10-16: sixteen). The old names are only
+// plus get_review since 2026-10-16: sixteen, plus annotate_changes and
+// reply_review_comment: eighteen). The old names are only
 // resolved, never registered or served.
 func TestCanonicalToolName_MapsTheRenamedWorkbenchTools(t *testing.T) {
 	var names []string
 	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
 		names = append(names, tool.Name)
 	}
-	require.Len(t, names, 16)
+	require.Len(t, names, 18)
 	require.Len(t, preRenameWorkbenchToolNames, 5)
 	for oldName, newName := range preRenameWorkbenchToolNames {
 		assert.Contains(t, names, newName)

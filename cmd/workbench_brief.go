@@ -202,7 +202,8 @@ func briefFromDB(database *db.DB, p *db.Workbench) string {
 	// The mismatch check reads the workbench folder, which resync updates; a
 	// session worktree's own copy follows on its next worktree install.
 	e := workbenchmethod.ResolveSession(database, p.ID, briefSessionRow())
-	method := briefMethodSection(e, briefPresetMismatch(e, p.FolderPath, p.ID))
+	// The board columns (PROJ-19) share the folder rules' reserved slot.
+	method := joinBriefLines(briefMethodSection(e, briefPresetMismatch(e, p.FolderPath, p.ID)), briefColumnsFor(database, p.ID))
 	return renderSessionBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now,
 		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)))
 }
@@ -615,7 +616,11 @@ func briefRank(n db.BoardNode) int {
 func briefTargetLine(n db.BoardNode, depth int, now time.Time) string {
 	indent := strings.Repeat("  ", min(depth, 4))
 	t := n.Target
-	line := fmt.Sprintf("- #%d [%s, %s, %d%%] %s", t.ID, statusWithAge(n, now), t.Priority, int(math.Round(t.Progress*100)), t.Text)
+	place := statusWithAge(n, now)
+	if n.Column != "" { // the board's column in place of the status (PROJ-19)
+		place = strings.TrimSpace(n.Column + " " + statusAge(n.StatusSince, now))
+	}
+	line := fmt.Sprintf("- #%d [%s, %s, %d%%] %s", t.ID, place, t.Priority, int(math.Round(t.Progress*100)), t.Text)
 	if n.NewForAgent > 0 {
 		line += fmt.Sprintf(" (%d new comments)", n.NewForAgent)
 	}

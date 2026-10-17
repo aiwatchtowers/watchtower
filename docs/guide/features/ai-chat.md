@@ -25,20 +25,25 @@ Only the main chat, the target chat and the automation editor can act, through p
 1. Open **AI Chat**. A start page offers a composer, starter prompts, and your pinned and recent chats. If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
 2. Type and press Enter (Shift+Enter adds a line). **Stop** (Esc) keeps what was written and offers **Continue**. Hover your message to **Edit**; hover a reply to **Regenerate**. Every version is kept, switch with the arrows.
 3. Type `@` to point at a person, Slack channel, Jira issue, target or track. Type `/` at the start to load one of your enabled skills.
-4. Attach files with the paperclip, drag and drop, or paste. Images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB. One message's files together stay under 30 MB. Anything else is refused with the reason. Files are stored privately in the workspace and deleted with their chat.
-5. **New chat** is ⌘N; ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title is written after the first reply, and one you set is never replaced.
+4. Attach files with the paperclip, drag and drop, or ⌘V. Images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB. One message's files together stay under 30 MB. Anything else, or a folder, is refused with the file's name and the reason. Files are stored privately in the workspace and deleted with their chat.
+5. ⌘V attaches files copied in Finder, a screenshot or copied image, and copied PDF data. A PNG, JPEG, GIF or WebP goes as is; any other image becomes a PNG, shrunk if it is over 5 MB. Copied text pastes as text, even when the copy also carries a picture of it. Only a bare link or blank text beside an image yields to the image, as with a browser's **Copy Image**. A paste of 10,000 characters or more, up to 256 KB, offers **Attach as File** (it becomes `Pasted text.txt`; ⌘Z puts the text back) or **Keep as Text**. Longer text just pastes.
+6. **New chat** is ⌘N; ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title is written after the first reply, and one you set is never replaced.
 
 ### Artifacts
 
-A document, table, email or Slack draft, event or code opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it to a file (the extension follows the kind, for example .md, .csv or a language's extension for code).
+A document, table, email or Slack draft, event, code or HTML page opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it to a file (the extension follows the kind, for example .md, .csv or a language's extension for code).
 
 Select a passage and choose **Comment** to leave a note. Notes stay drafts until you click **Send N comments**, which sends them together; the assistant answers with a new version.
 
+An HTML page, such as a slide deck, shows rendered in the panel once it is fully written. Click the page, then use the arrow keys to page through a deck. **Present** opens it full screen (Esc leaves), **Open in Window** opens a big window, and **Reload** starts it over. The page runs with no internet access at all, so ask for one self-contained file, and links in it open nothing. It stays in Watchtower: there is no browser button, because a page written from your synced messages must not be able to send them anywhere. To keep or share it, use **Export…** to save the `.html` file. HTML pages take no passage comments.
+
 Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 
-### Quote in reply
+### Ask about a passage
 
-Hover a finished answer and choose **Quote in reply** to pick the exact passage you mean. Quotes collect above the message box and go out together with your next message.
+Select a passage of a finished answer right in the chat, then click **Ask about this** next to it. The passage joins the quotes above the message box and the cursor moves there, so you type your follow-up. Quotes go out together with your next message, each with an optional comment.
+
+A selection stays within one paragraph, list item or table cell. ⌘C and the right-click menu copy it as usual. Your own messages can be selected and copied, not quoted. The chats inside other tabs offer selection and copy only.
 
 ### Projects
 

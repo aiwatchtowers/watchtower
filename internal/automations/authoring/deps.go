@@ -10,8 +10,8 @@ import (
 )
 
 // Deps is what the authoring tools need. A workbench's folder comes from
-// Backends().Workbench (nil until P5 wires it), so there is no second folder
-// lookup here.
+// Workbench — the same resolver Backends().Workbench carries, without building
+// the whole backends set for one lookup.
 type Deps struct {
 	DB           *db.DB
 	WorkspaceDir string
@@ -22,6 +22,8 @@ type Deps struct {
 	Enabled func() bool
 	// Clock is the dry run's clock when Backends().Clock is nil.
 	Clock automations.Clock
+	// Workbench resolves save_automation's workbench_id to its folder.
+	Workbench automations.WorkbenchResolver
 }
 
 // backends is Backends() with DB and Clock filled from d when unset.

@@ -25,6 +25,13 @@ type reviewCommentView struct {
 	CarriedFrom int64  `json:"carried_from,omitempty"`
 }
 
+type reviewRevertView struct {
+	HunkID string `json:"hunk_id"`
+	Path   string `json:"path"`
+	Header string `json:"header"`
+	Patch  string `json:"patch"`
+}
+
 type reviewView struct {
 	RoundID   int64               `json:"round_id"`
 	Status    string              `json:"status"`
@@ -32,6 +39,7 @@ type reviewView struct {
 	TreeSHA   string              `json:"tree_sha"`
 	BaseLabel string              `json:"base_label"`
 	Comments  []reviewCommentView `json:"comments"`
+	Reverts   []reviewRevertView  `json:"reverts"`
 	Text      string              `json:"text"`
 }
 
@@ -41,7 +49,7 @@ func NewGetReview() *Tool {
 	return &Tool{
 		Name: "get_review",
 		Description: "Read a review round the owner sent from Watchtower's diff reviewer: every comment with its file, " +
-			"lines, the quoted code and the owner's text. Answer each comment in your reply and fix the code; the " +
+			"lines, the quoted code and the owner's text. Answer each comment with reply_review_comment and fix the code; the " +
 			"line 'Review round #N sent' or the session brief names the round.",
 		InputSchema: mustSchema[getReviewArgs]("get_review"),
 		Access:      AccessRead,
@@ -74,7 +82,7 @@ func NewGetReview() *Tool {
 				r.Status = "delivered"
 			}
 			v := reviewView{RoundID: r.ID, Status: r.Status, Folder: r.FolderRoot, TreeSHA: r.TreeSHA, BaseLabel: r.BaseLabel,
-				Comments: []reviewCommentView{}}
+				Comments: []reviewCommentView{}, Reverts: []reviewRevertView{}}
 			for _, c := range cs {
 				if c.Status != "sent" {
 					continue
@@ -82,6 +90,13 @@ func NewGetReview() *Tool {
 				v.Comments = append(v.Comments, reviewCommentView{ID: c.ID, Path: c.Path.String, Side: c.Side,
 					StartLine: c.StartLine, EndLine: c.EndLine, Quote: c.Quote, Lens: c.Lens, Body: c.Body,
 					CarriedFrom: c.CarriedFrom.Int64})
+			}
+			reverts, err := d.ReviewReverts(r.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, rv := range reverts {
+				v.Reverts = append(v.Reverts, reviewRevertView{HunkID: rv.HunkID, Path: rv.Path, Header: rv.Header, Patch: rv.Patch})
 			}
 			v.Text = reviewText(v)
 			return v, nil
@@ -110,6 +125,15 @@ func reviewText(v reviewView) string {
 			}
 		}
 		fmt.Fprintf(&b, "%s\n", c.Body)
+	}
+	if len(v.Reverts) > 0 {
+		b.WriteString("\nUndone by the owner (reverted in the work tree — do not redo without asking):\n")
+		for _, rv := range v.Reverts {
+			fmt.Fprintf(&b, "- %s %s\n", rv.Path, rv.Header)
+			for _, l := range strings.Split(strings.TrimRight(rv.Patch, "\n"), "\n") {
+				fmt.Fprintf(&b, "  %s\n", l)
+			}
+		}
 	}
 	return b.String()
 }

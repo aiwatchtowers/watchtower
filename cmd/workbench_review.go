@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -11,7 +12,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/reviewdiff"
-	"watchtower/internal/workbenchgit"
+	"watchtower/internal/tools"
 )
 
 const workbenchReviewBudget = 30 * time.Second
@@ -92,6 +93,24 @@ type reviewEnvelope struct {
 	Items            []reviewContextItem `json:"items,omitempty"`
 	Lenses           []reviewdiff.Lens   `json:"lenses,omitempty"`
 	LensNotes        []string            `json:"lens_notes,omitempty"`
+	Revert           *reviewRevertJSON   `json:"revert,omitempty"`
+	Overview         json.RawMessage     `json:"overview,omitempty"`
+	OverviewCached   bool                `json:"overview_cached,omitempty"`
+	Lessons          *[]reviewLessonJSON `json:"lessons,omitempty"`
+	Written          string              `json:"written,omitempty"`
+}
+
+type reviewRevertJSON struct {
+	HunkID string `json:"hunk_id"`
+	Path   string `json:"path"`
+}
+
+type reviewLessonJSON struct {
+	ID               int64   `json:"id"`
+	Lens             string  `json:"lens"`
+	Text             string  `json:"text"`
+	SourceCommentIDs []int64 `json:"source_comment_ids"`
+	Status           string  `json:"status"`
 }
 
 // reviewTarget resolves --workbench to its row and an open DB; a bad id or a
@@ -154,37 +173,6 @@ func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, 
 	return writeReview(cmd, reviewEnvelope{OK: true, Round: out})
 }
 
-// checkSessionOnWorkbench refuses a session of another workbench.
-func checkSessionOnWorkbench(database *db.DB, p *db.Workbench, sessionID int64) error {
-	row, err := database.GetTerminalSession(sessionID)
-	if err != nil {
-		return err
-	}
-	if !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != p.ID {
-		return fmt.Errorf("session %d is not on workbench %d", sessionID, p.ID)
-	}
-	return nil
-}
-
-// sessionFolder: the root of the folder the session's agent works in.
-func sessionFolder(ctx context.Context, database *db.DB, p *db.Workbench, sessionID int64) (string, error) {
-	if err := checkSessionOnWorkbench(database, p, sessionID); err != nil {
-		return "", err
-	}
-	cwd, err := database.TerminalAgentCwd(sessionID)
-	if err != nil {
-		return "", err
-	}
-	folder, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: p.FolderPath}, cwd.Path)
-	if err != nil {
-		return "", err
-	}
-	if folder.Root == "" {
-		return p.FolderPath, nil
-	}
-	return folder.Root, nil
-}
-
 func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	database, p, err := reviewTarget()
 	if err != nil {
@@ -202,7 +190,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	folder := ""
 	if open != nil {
 		folder = open.FolderRoot
-	} else if folder, err = sessionFolder(ctx, database, p, reviewFlagSession); err != nil {
+	} else if folder, err = tools.ReviewSessionFolder(ctx, database, p, reviewFlagSession); err != nil {
 		return failReview(cmd, err)
 	}
 	repo, err := reviewdiff.Open(folder, nil)
@@ -276,11 +264,19 @@ func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *
 }
 
 func loadRound(cmd *cobra.Command) (*db.DB, *db.ReviewRound, *reviewdiff.Repo, context.Context, context.CancelFunc, error) {
+	return loadRoundIn(cmd, cmd.Context())
+}
+
+// loadRoundIn is loadRound with the git budget taken under parent.
+func loadRoundIn(cmd *cobra.Command, parent context.Context) (*db.DB, *db.ReviewRound, *reviewdiff.Repo, context.Context, context.CancelFunc, error) {
 	database, p, err := reviewTarget()
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	ctx, cancel := workbenchGitContext(cmd, workbenchReviewBudget)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, workbenchReviewBudget)
 	r, err := database.GetReviewRound(p.ID, reviewFlagRound)
 	if err != nil {
 		cancel()

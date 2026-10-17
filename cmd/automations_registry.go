@@ -48,8 +48,9 @@ func automationAuthoringDeps(cfg *config.Config, database *db.DB) authoring.Deps
 		Backends: func() automations.Backends {
 			return automationBackends(cfg, database, automationsAuthoringGenerator(cfg))
 		},
-		Enabled: func() bool { return cfg.Automations.Enabled },
-		Clock:   automations.RealClock{},
+		Enabled:   func() bool { return cfg.Automations.Enabled },
+		Clock:     automations.RealClock{},
+		Workbench: automationWorkbenchResolver(cfg, database),
 	}
 }
 

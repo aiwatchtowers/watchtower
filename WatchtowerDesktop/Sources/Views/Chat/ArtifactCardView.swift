@@ -50,6 +50,7 @@ struct ArtifactCardView: View {
         case "slack": return "number"
         case "event": return "calendar"
         case "code": return "chevron.left.forwardslash.chevron.right"
+        case "html": return "play.rectangle"
         default: return "doc.richtext"
         }
     }
@@ -61,6 +62,7 @@ struct ArtifactCardView: View {
         case "slack": return "Slack message draft"
         case "event": return "Event draft"
         case "code": return "Code"
+        case "html": return "HTML page"
         default: return "Document"
         }
     }

@@ -117,7 +117,8 @@ func TestParseClaude_OwnerTurnCompactionAPIErrorPRLinkCost(t *testing.T) {
 
 func TestParseClaude_StoresNoText(t *testing.T) {
 	s := line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "timestamp": "2026-10-01T09:59:00Z", "cwd": "/w",
-		"message": map[string]any{"role": "user", "content": "SENTINEL-PROMPT"}}) + line(t, assistant("s1", "u1", "m1", "r1", 5))
+		"message": map[string]any{"role": "user", "content": "SENTINEL-PROMPT"}}) + line(t, assistant("s1", "u1", "m1", "r1", 5,
+		toolUse("t1", "Bash", map[string]any{"command": "cd /SENTINEL_DIR && make test SENTINEL_ARG"})))
 	r := parse(t, s, ParseOptions{})
 	b, err := json.Marshal(r)
 	require.NoError(t, err)
@@ -148,4 +149,34 @@ func TestParseClaude_UUIDLessRecordsKeepDistinctKeys(t *testing.T) {
 	require.Len(t, r.Events, 4)
 	assert.Len(t, keys, 4, "uuid-less events must not share a key: %v", keys)
 	assert.Equal(t, "owner_turn:/h/.claude/projects/-w/s1.jsonl:0", r.Events[0].Key)
+}
+
+func TestParseClaude_OwnerTurnTriggers(t *testing.T) {
+	cases := []struct {
+		content any
+		want    string
+	}{
+		{"hello", "owner"},
+		{"<task-notification>x</task-notification>", "notification"},
+		{"<agent-message from=\"a\">x", "notification"},
+		{"<system-reminder>x</system-reminder>", "hook"},
+		{"Stop hook feedback: x", "hook"},
+		{"\n  <task-notification>x</task-notification>", "notification"},
+		{"\t<system-reminder>x", "hook"},
+		{"<command-name>/foo</command-name>", "owner"},
+		{[]map[string]any{{"type": "text", "text": "<task-notification>x"}}, "notification"},
+		{[]map[string]any{{"type": "text", "text": "hi"}}, "owner"},
+	}
+	for i, c := range cases {
+		s := line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "timestamp": "2026-10-01T09:59:00Z", "cwd": "/w",
+			"message": map[string]any{"role": "user", "content": c.content}})
+		r := parse(t, s, ParseOptions{})
+		var got []string
+		for _, e := range r.Events {
+			if e.Kind == "owner_turn" {
+				got = append(got, e.Trigger)
+			}
+		}
+		assert.Equal(t, []string{c.want}, got, "case %d", i)
+	}
 }

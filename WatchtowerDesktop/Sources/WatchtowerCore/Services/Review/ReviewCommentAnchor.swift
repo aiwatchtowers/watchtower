@@ -30,16 +30,23 @@ package enum ReviewCommentAnchor {
         var plan = Plan()
         for c in comments {
             guard let path = c.path else { continue }
-            let anchor = CommentAnchor(quote: c.quote, prefix: c.quotePrefix, suffix: c.quoteSuffix, heading: "")
-            guard let text = textFor(path), let found = anchor.locate(in: text) else {
+            guard let text = textFor(path),
+                  let placement = locate(quote: c.quote, prefix: c.quotePrefix, suffix: c.quoteSuffix, in: text) else {
                 plan.lost.insert(c.id)
                 continue
             }
-            let start = line(at: found.lowerBound, in: text)
-            let lastChar = found.isEmpty ? found.lowerBound : text.index(before: found.upperBound)
-            plan.moved[c.id] = Placement(startLine: start, endLine: line(at: lastChar, in: text))
+            plan.moved[c.id] = placement
         }
         return plan
+    }
+
+    /// The lines of text where the quote now sits, nil when it is gone.
+    package static func locate(quote: String, prefix: String, suffix: String, in text: String) -> Placement? {
+        let anchor = CommentAnchor(quote: quote, prefix: prefix, suffix: suffix, heading: "")
+        guard let found = anchor.locate(in: text) else { return nil }
+        let start = line(at: found.lowerBound, in: text)
+        let lastChar = found.isEmpty ? found.lowerBound : text.index(before: found.upperBound)
+        return Placement(startLine: start, endLine: line(at: lastChar, in: text))
     }
 
     static func range(ofLines lines: ClosedRange<Int>, in text: String) -> Range<String.Index>? {

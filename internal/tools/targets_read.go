@@ -82,6 +82,7 @@ type workbenchTargetView struct {
 	StatusHistory []db.TargetStatusChange   `json:"status_history"`
 	Images        []db.WorkbenchTargetImage `json:"images"`
 	Archived      bool                      `json:"archived"`
+	Column        string                    `json:"column,omitempty"` // its board column, when the board defines columns (PROJ-19)
 }
 
 // NewGetTarget fetches one target by id, including sub-items, notes, and metadata.
@@ -135,5 +136,9 @@ func workbenchTargetDetails(d *db.DB, target *db.Target) (*workbenchTargetView, 
 	if err != nil {
 		return nil, err
 	}
-	return &workbenchTargetView{Target: target, StatusHistory: history, Images: images, Archived: archived}, nil
+	column, err := targetBoardColumn(d, target)
+	if err != nil {
+		return nil, err
+	}
+	return &workbenchTargetView{Target: target, StatusHistory: history, Images: images, Archived: archived, Column: column}, nil
 }
