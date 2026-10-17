@@ -16,6 +16,8 @@ package enum WorkspacePane: Codable, Hashable, Sendable {
     case analytics
     /// The diff reviewer of a session's changes (board #328).
     case changes(Int64)
+    /// The chat view of a session's dialog (`watchtower workbench session-feed`).
+    case sessionChat(Int64)
 }
 
 /// The project page header's view buttons: a terminal (any session), the
@@ -31,6 +33,8 @@ package enum WorkspaceView: CaseIterable, Sendable {
     case analytics
     /// A session's changes under review (board #328).
     case changes
+    /// A session's dialog as a chat.
+    case chat
 
     /// What `pane` shows.
     package init(_ pane: WorkspacePane) {
@@ -41,6 +45,7 @@ package enum WorkspaceView: CaseIterable, Sendable {
         case .files: self = .files
         case .analytics: self = .analytics
         case .changes: self = .changes
+        case .sessionChat: self = .chat
         }
     }
 
@@ -227,9 +232,9 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
 
     /// A deleted session never stays in the layout; a Session view on its
     /// report stays, with no session to show until another one is picked.
-    /// Its Changes pane goes with it: its round has no session to review.
+    /// Its Changes and Chat panes go with it: its round has no session to review.
     package mutating func forgetSession(_ id: Int64, fallback: WorkspacePane) {
-        for gone in [WorkspacePane.changes(id), .session(id)] {
+        for gone in [WorkspacePane.changes(id), .sessionChat(id), .session(id)] {
             if expanded == gone { expanded = nil }
             if secondary == gone { secondary = nil }
             if primary == gone {

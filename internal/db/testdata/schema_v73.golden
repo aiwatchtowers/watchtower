@@ -2632,6 +2632,14 @@ CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branc
 CHECK(status != 'in_review' OR project_id IS NOT NULL)
 )
 
+table	terminal_session_agent_sessions
+CREATE TABLE terminal_session_agent_sessions (
+terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+agent_session_id TEXT NOT NULL,
+first_seen_at TEXT NOT NULL,
+PRIMARY KEY (terminal_session_id, agent_session_id)
+)
+
 table	terminal_session_targets
 CREATE TABLE terminal_session_targets (
 session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
@@ -3302,6 +3310,22 @@ INSERT INTO target_status_history (target_id, from_status, to_status, changed_at
 VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
 COALESCE(NEW.status_actor, 'owner'));
 UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+END
+
+trigger	terminal_session_agent_sessions_ai
+CREATE TRIGGER terminal_session_agent_sessions_ai AFTER INSERT ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
+BEGIN
+INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END
+
+trigger	terminal_session_agent_sessions_au
+CREATE TRIGGER terminal_session_agent_sessions_au AFTER UPDATE OF claude_session_id ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
+BEGIN
+INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END
 
 view	agent_log_session_totals
@@ -5263,6 +5287,11 @@ GROUP BY up.ancestor
 31	branch	TEXT	notnull=1	dflt=''	pk=0
 32	pr	TEXT	notnull=1	dflt=''	pk=0
 33	board_column_id	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## terminal_session_agent_sessions
+0	terminal_session_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	agent_session_id	TEXT	notnull=1	dflt=NULL	pk=2
+2	first_seen_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## terminal_session_targets
 0	session_id	INTEGER	notnull=1	dflt=NULL	pk=1

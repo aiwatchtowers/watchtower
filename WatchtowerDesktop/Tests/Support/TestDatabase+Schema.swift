@@ -2003,6 +2003,12 @@ CREATE TABLE IF NOT EXISTS workbench_board_columns (
     position    INTEGER NOT NULL,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
+    terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    agent_session_id    TEXT NOT NULL,
+    first_seen_at       TEXT NOT NULL,
+    PRIMARY KEY (terminal_session_id, agent_session_id)
+);
 CREATE TABLE IF NOT EXISTS review_notes (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -2631,6 +2637,18 @@ WHEN NEW.board_column_id IS NOT NULL
                    AND c.status = NEW.status)
 BEGIN
     UPDATE targets SET board_column_id = NULL WHERE id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS terminal_session_agent_sessions_ai AFTER INSERT ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+    VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END;
+CREATE TRIGGER IF NOT EXISTS terminal_session_agent_sessions_au AFTER UPDATE OF claude_session_id ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+    VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END;
 """#
 }

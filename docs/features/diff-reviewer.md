@@ -154,7 +154,7 @@ re-marking an item replaces its earlier intent draft.
 
 ## What Plan 3 ships (agent tools, AI overview, Undo, Find repeats)
 
-**Tables (migration 00127 `review_agent_ai`, renumbered from 00125 when main took 00125 for agent analytics and 00126 for board #267; 00124 is Plan 2's `review_checks`, 00123
+**Tables (migration 00128 `review_agent_ai`, renumbered from 00125 when main took 00125 for agent analytics, 00126 for board #267 and 00127 for the session chat feed; 00124 is Plan 2's `review_checks`, 00123
 `workbench_methodology`).** `review_notes` (per workbench and session: `kind` `note` —
 path, lines, quote, text — or `chapter` — title in `text`, `paths_json`, `core`, `why` —,
 `tree_sha` of the snapshot they were checked against, `ord`); `review_overviews` (the

@@ -1751,4 +1751,12 @@ Entry format:
 - miss: codex was down. Every substantive finding came from the prosecutor and the silent-failure stand-in, which converged on F1/M1 independently.
 - weak-dimension: 7. The stale-overview drop guard, the overview cache's tree-change half and annotate's worktree folder have no tests. Every model-command test runs a fake factory in-process, so nothing exercises a cancel arriving from outside.
 - rule-gap (candidate, dim 9): *a CLI command the Desktop can cancel (a timeout, a task cancel, a newer request) that spawns a long-running child handles SIGTERM and kills that child; its test sends the signal, or cancels the command's context from outside, and asserts the child is gone.*
+
+## 2026-10-16 — feature/session-chat-feed (session chat feed: sessionfeed package, `workbench session-feed`, migration 00126 triggers, Desktop chat pane + subagent sheet; panel: prosecutor + codex, specialists unavailable) — verdict: changes-needed
+
+- contested: prosecutor F2 (earlier conversation's tail lost when a later conversation appears) [ac-correctness]. Dismissed: Build parses the cursor conversation from `after.Offset` (i == afterIdx) before moving on, so the tail is emitted; only the unknown-`after.Conv` re-emit remains, already logged as deferred.
+- false-positive: prosecutor F2 as above (read the loop before trusting a cursor-loss claim) [ac-correctness].
+- miss: codex alone caught the nested subagent marker being a dead button in the subagent sheet (SessionChatRow built without `openSubagent`) [ac-correctness].
+- weak-dimension: 6 (UI reachability of a spec'd "opens the same way" path was untested).
+- rule-gap (candidate): *a recursive UI affordance (sheet inside sheet) needs a test or a manual check that the nested callback is wired.*
 - outcome: TBD

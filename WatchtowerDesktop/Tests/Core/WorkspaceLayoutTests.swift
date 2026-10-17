@@ -133,9 +133,32 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.decode(Data(expanded.utf8)), .default)
     }
 
-    func testTheHeaderViewsAreTerminalSessionBoardFilesAnalyticsAndChanges() {
-        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .report, .board, .files, .analytics, .changes])
+    func testTheHeaderViewsAreTerminalSessionBoardFilesAnalyticsChangesAndChat() {
+        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .report, .board, .files, .analytics, .changes, .chat])
         XCTAssertEqual(WorkspaceView(.sessionReport(4)), .report)
+        XCTAssertEqual(WorkspaceView(.sessionChat(4)), .chat)
+    }
+
+    func testTheChatPaneRoundTripsThroughPersistence() throws {
+        let l = WorkspaceLayout(primary: .session(7), secondary: .sessionChat(7), expanded: nil, dividerFraction: 0.4)
+        XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)), l)
+    }
+
+    func testDeletingASessionClosesItsChatPane() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: .sessionChat(1), expanded: .sessionChat(1), dividerFraction: 0.5)
+        l.forgetSession(1, fallback: .board)
+        XCTAssertEqual(l.visiblePanes, [.board])
+        var other = WorkspaceLayout(primary: .session(2), secondary: .sessionChat(1), expanded: nil, dividerFraction: 0.5)
+        other.forgetSession(1, fallback: .board)
+        XCTAssertEqual(other.visiblePanes, [.session(2)])
+    }
+
+    func testTheChatViewShowsBesideItsSession() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        l.split(with: .sessionChat(1))
+        XCTAssertTrue(l.isShowing(.chat))
+        l.hide(.chat)
+        XCTAssertEqual(l.visiblePanes, [.session(1)])
     }
 
     // MARK: - Session view (spec 2026-10-03-workbench-session-report Part 7)

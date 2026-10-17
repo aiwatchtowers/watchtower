@@ -2656,6 +2656,16 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     PRIMARY KEY (session_id, root, branch)
 );
 
+-- Every agent session id a terminal tab has had (00127); the tab's own
+-- claude_session_id holds only the latest. Filled by AFTER INSERT / AFTER UPDATE
+-- OF claude_session_id triggers on terminal_sessions; ids and times only.
+CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
+    terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    agent_session_id    TEXT NOT NULL,
+    first_seen_at       TEXT NOT NULL, -- UTC ISO-8601 seconds
+    PRIMARY KEY (terminal_session_id, agent_session_id)
+);
+
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

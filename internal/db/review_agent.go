@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Diff reviewer, agent and AI layer (migration 00127, plan 3): the agent's
+// Diff reviewer, agent and AI layer (migration 00128, plan 3): the agent's
 // notes and chapters, cached AI overviews, undone hunks and house-rule lessons.
 
 // ReviewNote is one annotate_changes row: a line note (Kind "note") or a

@@ -198,9 +198,14 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.files)
         case .analytics:
             updated.showWorkbenchView(.analytics)
-        case .report, .changes:
+        case .report, .changes, .chat:
             guard let id = sessionViewTarget(projectID: project.id) else { return }
-            Self.placeBesideItsSession(view == .report ? .sessionReport(id) : .changes(id), sessionID: id, in: &updated)
+            let pane: WorkspacePane = switch view {
+            case .report: .sessionReport(id)
+            case .chat: .sessionChat(id)
+            default: .changes(id)
+            }
+            Self.placeBesideItsSession(pane, sessionID: id, in: &updated)
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
             // `openMostRecentSession` takes its own ticket — past its
@@ -233,6 +238,16 @@ extension WorkbenchesViewModel {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         Self.placeBesideItsSession(.changes(sessionID), sessionID: sessionID, in: &updated)
+        setLayout(updated, projectID: projectID)
+    }
+
+    /// A session row's Show Chat: its workbench on screen, the session's chat
+    /// beside its terminal.
+    func showChat(sessionID: Int64, projectID: Int64) {
+        if selectedWorkbenchID != projectID { selectedWorkbenchID = projectID }
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        Self.placeBesideItsSession(.sessionChat(sessionID), sessionID: sessionID, in: &updated)
         setLayout(updated, projectID: projectID)
     }
 
