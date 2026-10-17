@@ -153,6 +153,10 @@ struct WorkbenchesView: View {
             reviewChanges: { session in
                 guard let projectID = session.projectID else { return }
                 vm.showChanges(sessionID: session.id, projectID: projectID)
+            },
+            showChat: { session in
+                guard let projectID = session.projectID else { return }
+                vm.showChat(sessionID: session.id, projectID: projectID)
             }
         )
     }

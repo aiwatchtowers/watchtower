@@ -341,3 +341,39 @@ func TestScan_LedgerWorktreeRootIsRead(t *testing.T) {
 	calls, _ := f.totals()
 	assert.Equal(t, int64(1), calls)
 }
+
+func TestScan_ParserVersionBumpReparsesNewTargets(t *testing.T) {
+	f := newFixture(t)
+	a := assistant("s1", "u1", "m1", "r1", 5,
+		toolUse("t1", "Agent", map[string]any{"subagent_type": "Explore", "run_in_background": true}),
+		toolUse("t2", "mcp__watchtower-workbench__update_target", map[string]any{"target_id": 298}))
+	a["cwd"] = f.folder
+	f.write(f.folder, "s1.jsonl", line(t, a)+toolResultLine(t, "s1", "r2", "t1", "ok", false,
+		map[string]any{"toolUseResult": map[string]any{"agentId": "a1", "isAsync": true}})+
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "n1", "cwd": f.folder, "timestamp": "2026-10-01T10:00:09.000Z",
+			"message": map[string]any{"role": "user", "content": "<task-notification>x</task-notification>"}}))
+	f.scan()
+	_, err := f.d.Exec(`UPDATE agent_log_files SET parser_version = 1`)
+	require.NoError(t, err)
+	_, err = f.d.Exec(`UPDATE agent_log_events SET target = '', spawned_agent_id = '', background = 0 WHERE kind = 'tool'`)
+	require.NoError(t, err)
+	_, err = f.d.Exec(`UPDATE agent_log_events SET trigger = '' WHERE kind = 'owner_turn'`)
+	require.NoError(t, err)
+	f.scan()
+	var trig string
+	var bg bool
+	require.NoError(t, f.d.QueryRow(`SELECT trigger FROM agent_log_events WHERE kind = 'owner_turn'`).Scan(&trig))
+	assert.Equal(t, "notification", trig)
+	require.NoError(t, f.d.QueryRow(`SELECT background FROM agent_log_events WHERE name = 'Agent'`).Scan(&bg))
+	assert.True(t, bg)
+	rows, err := f.d.Query(`SELECT name, target, spawned_agent_id FROM agent_log_events WHERE kind = 'tool' ORDER BY name`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var n, tg, sp string
+		require.NoError(t, rows.Scan(&n, &tg, &sp))
+		got = append(got, n+"|"+tg+"|"+sp)
+	}
+	assert.Equal(t, []string{"Agent|Explore|a1", "mcp__watchtower-workbench__update_target|#298|"}, got)
+}

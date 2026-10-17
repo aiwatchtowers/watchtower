@@ -14,7 +14,7 @@ struct AutomationRunHistoryView: View {
     let onToggle: (Int64) -> Void
     let onRerun: (Int64) -> Void
     let onCancel: (Int64) -> Void
-    let onOpenInbox: ((Int64) -> Void)?
+    let links: AutomationStepRow.Links
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -86,7 +86,7 @@ struct AutomationRunHistoryView: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(runSteps) { step in
-                AutomationStepRow(step: step, onOpenInbox: onOpenInbox)
+                AutomationStepRow(step: step, links: links)
             }
             if !run.summary.isEmpty {
                 Text(run.summary)

@@ -23,6 +23,9 @@ type ReviewRound struct {
 	PrevRoundID   sql.NullInt64
 	Status        string
 	Mode          string
+	Phase         string
+	ChapterKey    string
+	ActiveSeconds int
 	CreatedAt     string
 	SentAt        sql.NullString
 	DeliveredAt   sql.NullString
@@ -40,12 +43,12 @@ type ReviewComment struct {
 }
 
 const reviewRoundCols = `id, project_id, session_id, source, folder_root, base_sha, base_label, tree_sha,
-	prev_round_id, status, mode, created_at, sent_at, delivered_at`
+	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at`
 
 func scanReviewRound(s interface{ Scan(...any) error }) (*ReviewRound, error) {
 	var r ReviewRound
 	err := s.Scan(&r.ID, &r.ProjectID, &r.SessionID, &r.Source, &r.FolderRoot, &r.BaseSHA, &r.BaseLabel,
-		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.CreatedAt, &r.SentAt, &r.DeliveredAt)
+		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt)
 	if err != nil {
 		return nil, err
 	}
@@ -190,4 +193,52 @@ func (db *DB) ReviewRoundsWaiting(projectID, sessionID int64) ([]ReviewRound, er
 		out = append(out, *r)
 	}
 	return out, rows.Err()
+}
+
+// ReplyReviewComment stores the agent's reply on a sent comment of the
+// workbench's sent or delivered round (status sent or resolved), and with
+// resolved marks it resolved; the same reply goes to its copies in the
+// session's open round (carried or outdated), which an owner-resolved copy
+// never receives. resolved false never reopens. ok false (nothing written)
+// when the comment is not such a comment of this workbench.
+func (db *DB) ReplyReviewComment(projectID, commentID int64, reply string, resolved bool) (bool, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck // a committed tx makes this a no-op
+	const now = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
+	set := `agent_reply = ?, agent_reply_at = ` + now + `, updated_at = ` + now
+	if resolved {
+		set += `, status = 'resolved'`
+	}
+	res, err := tx.Exec(`UPDATE review_comments SET `+set+` WHERE id = ? AND status IN ('sent','resolved')
+		AND round_id IN (SELECT id FROM review_rounds WHERE project_id = ? AND status IN ('sent','delivered'))`,
+		reply, commentID, projectID)
+	if err != nil {
+		return false, fmt.Errorf("replying to review comment %d: %w", commentID, err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	if _, err := tx.Exec(`UPDATE review_comments SET `+set+` WHERE carried_from = ? AND status IN ('carried','outdated')
+		AND round_id IN (SELECT o.id FROM review_rounds o, review_comments c JOIN review_rounds r ON r.id = c.round_id
+			WHERE c.id = ? AND o.project_id = r.project_id AND o.session_id IS r.session_id AND o.status = 'open')`,
+		reply, commentID, commentID); err != nil {
+		return false, fmt.Errorf("replying to the open copies of review comment %d: %w", commentID, err)
+	}
+	return true, tx.Commit()
+}
+
+// ReviewCommentRepliable reports whether commentID is a sent or resolved
+// comment of a sent or delivered round of workbench projectID: what
+// ReplyReviewComment accepts, without writing.
+func (db *DB) ReviewCommentRepliable(projectID, commentID int64) (bool, error) {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM review_comments WHERE id = ? AND status IN ('sent','resolved')
+		AND round_id IN (SELECT id FROM review_rounds WHERE project_id = ? AND status IN ('sent','delivered'))`,
+		commentID, projectID).Scan(&n); err != nil {
+		return false, fmt.Errorf("reading review comment %d: %w", commentID, err)
+	}
+	return n == 1, nil
 }

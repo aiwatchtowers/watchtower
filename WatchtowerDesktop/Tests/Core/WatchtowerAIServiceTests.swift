@@ -156,6 +156,17 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertFalse(args.contains("--tools"))
     }
 
+    /// The help chat runs `ai query --no-tools`: the flag rides ahead of the
+    /// `--` separator, with no tool mode.
+    func testBuildArgsNoToolsGoesBeforeTheSeparator() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "how do I add a source?", systemPrompt: "s", sessionID: nil, dbPath: nil, model: "m",
+            provider: "claude", toolMode: nil, noTools: true
+        )
+        XCTAssertEqual(args, ["ai", "query", "--system-prompt-stdin", "--model", "m", "--provider", "claude",
+                              "--no-tools", "--", "how do I add a source?"])
+    }
+
     /// Without a folder (every other chat) the argv is what it was.
     func testBuildArgsWithoutReadFolderIsUnchanged() {
         let args = WatchtowerAIService.buildArgs(

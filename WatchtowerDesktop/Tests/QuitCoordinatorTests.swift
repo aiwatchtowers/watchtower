@@ -11,7 +11,7 @@ final class QuitCoordinatorTests: XCTestCase {
         let replied = expectation(description: "replied true")
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: false,
-            confirmQuit: { confirmAsked = true; return true },
+            confirmQuit: { confirmAsked = true; return .quitStoppingSessions },
             stopDaemon: { stopped.fulfill() },
             reply: { ok in XCTAssertTrue(ok); replied.fulfill() })
         XCTAssertEqual(reply, .terminateLater)
@@ -23,7 +23,7 @@ final class QuitCoordinatorTests: XCTestCase {
         var stoppedCalled = false
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: true,
-            confirmQuit: { false },
+            confirmQuit: { .cancel },
             stopDaemon: { stoppedCalled = true },
             reply: { _ in XCTFail("must not reply when quit is cancelled") })
         XCTAssertEqual(reply, .terminateCancel)
@@ -34,7 +34,7 @@ final class QuitCoordinatorTests: XCTestCase {
         let replied = expectation(description: "replied")
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: true,
-            confirmQuit: { true },
+            confirmQuit: { .quitStoppingSessions },
             stopDaemon: {},
             reply: { ok in XCTAssertTrue(ok); replied.fulfill() })
         XCTAssertEqual(reply, .terminateLater)
@@ -49,7 +49,7 @@ final class QuitCoordinatorTests: XCTestCase {
         let replied = expectation(description: "replied")
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: false,
-            confirmQuit: { true },
+            confirmQuit: { .quitStoppingSessions },
             closeChatSessions: { order.append("chat") },
             stopDaemon: { order.append("daemon") },
             reply: { ok in XCTAssertTrue(ok); replied.fulfill() })
@@ -62,7 +62,7 @@ final class QuitCoordinatorTests: XCTestCase {
         var closed = false
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: true,
-            confirmQuit: { false },
+            confirmQuit: { .cancel },
             closeChatSessions: { closed = true },
             stopDaemon: {},
             reply: { _ in XCTFail("must not reply") })
@@ -77,7 +77,7 @@ final class QuitCoordinatorTests: XCTestCase {
         let replied = expectation(description: "replied")
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: false,
-            confirmQuit: { true },
+            confirmQuit: { .quitStoppingSessions },
             closeChatSessions: { order.append("chat") },
             closeTerminals: { order.append("terminals") },
             stopDaemon: { order.append("daemon") },
@@ -87,6 +87,69 @@ final class QuitCoordinatorTests: XCTestCase {
         XCTAssertEqual(order, ["chat", "terminals", "daemon"])
     }
 
+    /// Runs one quit with `choice` from the prompt; returns the steps taken,
+    /// in order, or nil when the quit was cancelled.
+    private func quit(choosing choice: QuitChoice) async -> [String]? {
+        var order: [String] = []
+        let replied = expectation(description: "replied")
+        let reply = QuitCoordinator.shouldTerminate(
+            hasBlockingWork: true,
+            confirmQuit: { choice },
+            closeChatSessions: { order.append("chat") },
+            closeTerminals: { order.append("close") },
+            detachTerminals: { order.append("detach") },
+            stopDaemon: { order.append("daemon") },
+            reply: { ok in XCTAssertTrue(ok); replied.fulfill() })
+        guard reply == .terminateLater else {
+            XCTAssertEqual(reply, .terminateCancel)
+            replied.isInverted = true
+            await fulfillment(of: [replied], timeout: 0.1) // a cancelled quit never replies
+            return nil
+        }
+        await fulfillment(of: [replied], timeout: 5)
+        return order
+    }
+
+    /// Keep Sessions and Quit leaves the hosted sessions running: they are
+    /// detached, never closed; chat sessions still close first and the
+    /// daemon still stops last (CHAT-03).
+    func testKeepSessionsChoiceDetaches() async {
+        let order = await quit(choosing: .quitKeepingSessions)
+        XCTAssertEqual(order, ["chat", "detach", "daemon"])
+    }
+
+    func testStopSessionsChoiceCloses() async {
+        let order = await quit(choosing: .quitStoppingSessions)
+        XCTAssertEqual(order, ["chat", "close", "daemon"])
+    }
+
+    func testCancelChoiceCancels() {
+        let reply = QuitCoordinator.shouldTerminate(
+            hasBlockingWork: true,
+            confirmQuit: { .cancel },
+            closeChatSessions: { XCTFail("a cancelled quit closes nothing") },
+            closeTerminals: { XCTFail("a cancelled quit closes nothing") },
+            detachTerminals: { XCTFail("a cancelled quit detaches nothing") },
+            stopDaemon: { XCTFail("a cancelled quit stops nothing") },
+            reply: { _ in XCTFail("must not reply") })
+        XCTAssertEqual(reply, .terminateCancel)
+    }
+
+    /// Unasked, a quit that keeps sessions (an update, a logout) detaches.
+    func testUnaskedQuitThatKeepsSessionsDetaches() async {
+        var order: [String] = []
+        let replied = expectation(description: "replied")
+        _ = QuitCoordinator.shouldTerminate(
+            hasBlockingWork: false,
+            confirmQuit: { XCTFail("nothing to ask"); return .cancel },
+            keepsSessions: true,
+            closeTerminals: { order.append("close") },
+            detachTerminals: { order.append("detach") },
+            stopDaemon: { order.append("daemon") },
+            reply: { _ in replied.fulfill() })
+        await fulfillment(of: [replied], timeout: 5)
+        XCTAssertEqual(order, ["detach", "daemon"])
+    }
 }
 
 /// The quit gate widened from "capturing" to `MeetingRecorderCenter.isBusy`:
@@ -128,7 +191,7 @@ final class QuitGateBlockingWorkTests: MeetingRecorderTestCase {
         var confirmAsked = false
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: center.isBusy,
-            confirmQuit: { confirmAsked = true; return false },
+            confirmQuit: { confirmAsked = true; return .cancel },
             stopDaemon: { XCTFail("a cancelled quit must not stop the daemon") },
             reply: { _ in XCTFail("a cancelled quit must not reply") })
         XCTAssertEqual(reply, .terminateCancel)

@@ -767,6 +767,36 @@ func TestAutomationsCLI_SaveAndDeleteInWorkbenchFolder(t *testing.T) {
 	assert.NoFileExists(t, target)
 }
 
+// PROJ-03 (amended, ask #272): in a workbench folder, save writes only
+// <folder>/.watchtower/automations/<slug>.md — any other path of the folder
+// is refused before anything is written.
+func TestAutomationsCLI_SavePathOutsideWorkbenchAutomationsRefused(t *testing.T) {
+	c := newAutoCLI(t)
+	folder, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	_, err = c.d.CreateWorkbench("beta", folder)
+	require.NoError(t, err)
+	src := writeRecipe(t, t.TempDir(), "draft", autoCLIRecipeText(`return 1`))
+	for _, rel := range []string{
+		filepath.Join("src", "x.md"),
+		"x.md",
+		filepath.Join(".watchtower", "x.md"),
+		filepath.Join(".watchtower", "automations", "nested", "x.md"),
+	} {
+		target := filepath.Join(folder, rel)
+		out, err := runAutomations(t, "save", "--file", src, "--path", target, "--json")
+		require.Error(t, err, "save --path %s: %s", rel, out)
+		assert.Contains(t, err.Error(), "cannot save to")
+		assert.NoFileExists(t, target)
+	}
+	entries, err := os.ReadDir(folder)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "nothing was written in the workbench folder")
+	rows, err := c.d.ListAutomations(db.AutomationFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
 // autoCLIRecipeWith is a recipe with the given trigger block (indented
 // lines), one permission and a token budget.
 func autoCLIRecipeWith(trigger, perm string, tokens int) string {

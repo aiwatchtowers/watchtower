@@ -44,10 +44,12 @@ extension WorkbenchesViewModel {
         return true
     }
 
-    /// A stack row's session caption: the session's title; for a
+    /// A stack row's session caption: the session's title; for an
+    /// automation's ask "⚙ <automation> · run #N" (spec §13.3); for a
     /// session-less ask "Session deleted" when the app saw its session go
     /// (board #542), else "Outside the app".
     func askSessionTitle(_ ask: OwnerAsk) -> String {
+        if let label = asks.automationLabel(ask) { return label }
         guard let id = ask.sessionID else {
             let deleted = asks.sessionDeletedAskIDs[ask.projectID]?.contains(ask.id) == true
             return deleted ? OwnerAskStack.sessionDeletedTitle : OwnerAskStack.outsideTheAppTitle
