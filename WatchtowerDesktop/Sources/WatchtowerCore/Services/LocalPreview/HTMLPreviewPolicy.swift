@@ -8,15 +8,28 @@ package enum HTMLPreviewPolicy {
     /// WebKit content rules: block every load, then let back in only the
     /// schemes that stay on the machine — `about:`/`data:`/`blob:` always,
     /// `file:` only for a file preview (WebKit itself keeps it inside the
-    /// folder the view was given read access to). http, https, ws, wss, ftp
-    /// and anything else never load. (Content-rule regexes have no `|`, hence
-    /// one rule per scheme.)
+    /// folder the view was given read access to). A chat artifact (no
+    /// files) gets nothing else: no network of any scheme. A workbench file
+    /// preview also gets https subresources of type script, style sheet,
+    /// font and image (a CDN deck such as reveal.js); fetch/XHR, WebSocket,
+    /// media, raw loads and documents over the network stay blocked, and
+    /// http/ws never load. (Content-rule regexes have no `|`, hence one rule
+    /// per scheme.)
     package static func contentRules(allowFiles: Bool) -> String {
         var schemes = ["about", "data", "blob"]
         if allowFiles { schemes.append("file") }
-        let allow = schemes.map { #"{"trigger":{"url-filter":"^\#($0):"},"action":{"type":"ignore-previous-rules"}}"# }
-        return "[" + ([#"{"trigger":{"url-filter":".*"},"action":{"type":"block"}}"#] + allow).joined(separator: ",") + "]"
+        var rules = [#"{"trigger":{"url-filter":".*"},"action":{"type":"block"}}"#]
+        rules += schemes.map { #"{"trigger":{"url-filter":"^\#($0):"},"action":{"type":"ignore-previous-rules"}}"# }
+        if allowFiles {
+            rules.append(#"{"trigger":{"url-filter":"^https:","resource-type":["#
+                + cdnResourceTypes.map { "\"\($0)\"" }.joined(separator: ",")
+                + #"]},"action":{"type":"ignore-previous-rules"}}"#)
+        }
+        return "[" + rules.joined(separator: ",") + "]"
     }
+
+    /// What a workbench file preview may load over https.
+    package static let cdnResourceTypes = ["script", "style-sheet", "font", "image"]
 
     /// Whether the view may navigate to `url`. The page itself (`page`, any
     /// fragment) and `about:` documents (an in-memory page is `about:blank`,

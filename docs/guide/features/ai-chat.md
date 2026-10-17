@@ -34,7 +34,7 @@ A document, table, email or Slack draft, event, code or HTML page opens in the a
 
 Select a passage and choose **Comment** to leave a note. Notes stay drafts until you click **Send N comments**, which sends them together; the assistant answers with a new version.
 
-An HTML page, such as a slide deck, shows rendered in the panel once it is fully written. Click the page, then use the arrow keys to page through a deck. **Present** opens it full screen (Esc leaves), **Open in Window** opens a big window, and **Reload** starts it over. **Open in Browser** opens the version on screen in your browser from a private address on your Mac (`http://127.0.0.1:…`). In the app the page runs with no internet access at all, and in the browser it may load nothing from the internet either, so ask for one self-contained file. Links in it open nothing. HTML pages take no passage comments.
+An HTML page, such as a slide deck, shows rendered in the panel once it is fully written. Click the page, then use the arrow keys to page through a deck. **Present** opens it full screen (Esc leaves), **Open in Window** opens a big window, and **Reload** starts it over. The page runs with no internet access at all, so ask for one self-contained file, and links in it open nothing. It stays in Watchtower: there is no browser button, because a page written from your synced messages must not be able to send them anywhere. To keep or share it, use **Export…** to save the `.html` file. HTML pages take no passage comments.
 
 Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 

@@ -1,12 +1,13 @@
 import Foundation
 import Network
 
-/// The loopback HTTP server behind "Open in Browser" for html artifacts and
-/// workbench html files (board #535). One per app, started on first use and
-/// stopped on quit. It listens on 127.0.0.1 only, on a random port, accepts
-/// local connections only, and serves only what was registered — each
-/// registration under its own unguessable token (`LocalPreviewHTTP` holds
-/// the routing). It never opens a connection of its own.
+/// The loopback HTTP server behind "Open in Browser" for workbench html
+/// files (board #535). One per app, started on first use and stopped on
+/// quit. It listens on 127.0.0.1 only, on a random port, accepts local
+/// connections only, and serves only the folders registered with it — each
+/// under its own unguessable token (`LocalPreviewHTTP` holds the routing).
+/// It never opens a connection of its own (pinned by a source scan). Chat
+/// artifacts never come here (CHAT-05).
 package final class LocalPreviewServer: @unchecked Sendable {
     package static let shared = LocalPreviewServer()
 
@@ -20,7 +21,14 @@ package final class LocalPreviewServer: @unchecked Sendable {
         }
     }
 
+    /// A client that has not sent its whole request header by then is dropped.
+    /// The send that follows is not timed: a big file is never cut off.
+    private static let headerTimeout: TimeInterval = 15
+
+    /// Accepts and reads requests; replies are built off it (`replyQueue`),
+    /// so a big file never holds up another connection.
     private let queue = DispatchQueue(label: "watchtower.local-preview")
+    private let replyQueue = DispatchQueue(label: "watchtower.local-preview.reply", attributes: .concurrent)
     private let lock = NSLock()
     private var registry = LocalPreviewRegistry()
     private var listener: NWListener?
@@ -29,16 +37,15 @@ package final class LocalPreviewServer: @unchecked Sendable {
 
     package init() {}
 
-    /// Registers `source` under `id` (its token kept across calls) and
-    /// returns the URL of `file` in it (`index.html` for a page), starting
-    /// the server on first use.
-    package func url(for source: LocalPreviewSource, id: String, file: String = "index.html") async throws -> URL {
-        let token = lock.withLock { registry.register(id: id, source: source) }
+    /// Registers `folder` under `id` (its token kept across calls) and
+    /// returns the URL of `file` in it, starting the server on first use.
+    package func url(forFile file: String, inFolder folder: URL, id: String) async throws -> URL {
+        let token = lock.withLock { registry.register(id: id, folder: folder) }
         let port = try await ensureStarted()
-        let allowed = CharacterSet.urlPathAllowed.subtracting(["/", "?", "#"])
+        // No "%" either: a literal "%20" in a file name must stay a name.
+        let allowed = CharacterSet.urlPathAllowed.subtracting(["/", "?", "#", "%"])
         let segments = file.split(separator: "/").map { String($0).addingPercentEncoding(withAllowedCharacters: allowed) ?? "" }
-        let path = segments.joined(separator: "/")
-        guard let url = URL(string: "http://127.0.0.1:\(port)/\(token)/\(path)") else {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/\(token)/\(segments.joined(separator: "/"))") else {
             throw Failure.unavailable("bad file name")
         }
         return url
@@ -125,14 +132,21 @@ package final class LocalPreviewServer: @unchecked Sendable {
         failed.forEach { $0.resume(throwing: Failure.unavailable(reason)) }
     }
 
-    private func serve(_ connection: NWConnection) {
-        connection.start(queue: queue)
-        // A client that never finishes its request is dropped.
-        queue.asyncAfter(deadline: .now() + 15) { connection.cancel() }
-        receive(connection, buffer: Data())
+    /// Per connection, touched on `queue` only.
+    private final class Pending {
+        var headerRead = false
     }
 
-    private func receive(_ connection: NWConnection, buffer: Data) {
+    private func serve(_ connection: NWConnection) {
+        let pending = Pending()
+        connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + Self.headerTimeout) {
+            if !pending.headerRead { connection.cancel() }
+        }
+        receive(connection, pending: pending, buffer: Data())
+    }
+
+    private func receive(_ connection: NWConnection, pending: Pending, buffer: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, isComplete, error in
             guard let self else { return connection.cancel() }
             var buffer = buffer
@@ -142,15 +156,20 @@ package final class LocalPreviewServer: @unchecked Sendable {
                 if isComplete || error != nil {
                     connection.cancel()
                 } else {
-                    self.receive(connection, buffer: buffer)
+                    self.receive(connection, pending: pending, buffer: buffer)
                 }
             case .malformed:
+                pending.headerRead = true
                 self.reply(LocalPreviewHTTP.error(400), includeBody: true, on: connection)
             case let .request(request):
-                let response = LocalPreviewHTTP.respond(to: request) { token in
-                    self.lock.withLock { self.registry.source(token: token) }
+                pending.headerRead = true
+                self.replyQueue.async {
+                    let port = self.lock.withLock { self.port } ?? 0
+                    let response = LocalPreviewHTTP.respond(to: request, port: port) { token in
+                        self.lock.withLock { self.registry.folder(token: token) }
+                    }
+                    self.reply(response, includeBody: request.method != "HEAD", on: connection)
                 }
-                self.reply(response, includeBody: request.method != "HEAD", on: connection)
             }
         }
     }

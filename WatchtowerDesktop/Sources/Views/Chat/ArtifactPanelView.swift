@@ -142,9 +142,8 @@ struct ArtifactPanelView: View {
         .padding(10)
     }
 
-    /// Reload, a big window (Present = full screen at once) and the browser
-    /// through the loopback server — the page is served from memory, the
-    /// version shown here.
+    /// View-only: Reload and a big window (Present = full screen at once).
+    /// The page never goes to a browser or any networked app (CHAT-05).
     private func htmlActions(_ draft: ArtifactDraft) -> some View {
         Group {
             Button { htmlReload += 1 } label: { Label("Reload", systemImage: "arrow.clockwise") }
@@ -156,11 +155,6 @@ struct ArtifactPanelView: View {
                 HTMLPreviewWindow.show(.page(draft.content), title: draft.title, fullScreen: true)
             } label: { Label("Present", systemImage: "play.rectangle") }
                 .help("Full screen; the arrow keys page through a deck, Esc leaves")
-            Button {
-                let id = "chat:\(model.conversationID):\(model.key)"
-                Task { notice = await HTMLBrowserOpener.open(.page(draft.content), id: id) }
-            } label: { Label("Open in Browser", systemImage: "safari") }
-                .help("Open this version in your browser from a private local address")
         }
         .disabled(!draft.isComplete)
     }

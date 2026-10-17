@@ -9,13 +9,19 @@ final class HTMLPreviewPolicyTests: XCTestCase {
     func testContentRulesBlockEverythingButLocalSchemes() throws {
         for allowFiles in [false, true] {
             let json = HTMLPreviewPolicy.contentRules(allowFiles: allowFiles)
-            let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: [String: String]]])
-            XCTAssertEqual(rules.first?["trigger"]?["url-filter"], ".*")
-            XCTAssertEqual(rules.first?["action"]?["type"], "block")
-            let allowed = rules.dropFirst().compactMap { $0["trigger"]?["url-filter"] }
-            XCTAssertEqual(Set(allowed), Set(["^about:", "^data:", "^blob:"] + (allowFiles ? ["^file:"] : [])))
-            XCTAssertTrue(rules.dropFirst().allSatisfy { $0["action"]?["type"] == "ignore-previous-rules" })
-            XCTAssertFalse(json.contains("http"), "no network scheme is ever let back in")
+            let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: [String: Any]]])
+            XCTAssertEqual(rules.first?["trigger"]?["url-filter"] as? String, ".*")
+            XCTAssertEqual(rules.first?["action"]?["type"] as? String, "block")
+            let allowed = rules.dropFirst().compactMap { $0["trigger"]?["url-filter"] as? String }
+            XCTAssertEqual(Set(allowed), Set(["^about:", "^data:", "^blob:"] + (allowFiles ? ["^file:", "^https:"] : [])))
+            XCTAssertTrue(rules.dropFirst().allSatisfy { $0["action"]?["type"] as? String == "ignore-previous-rules" })
+            if allowFiles {
+                // https only for CDN subresources, never fetch/XHR, sockets, media or documents.
+                let https = try XCTUnwrap(rules.first { $0["trigger"]?["url-filter"] as? String == "^https:" })
+                XCTAssertEqual(https["trigger"]?["resource-type"] as? [String], ["script", "style-sheet", "font", "image"])
+            } else {
+                XCTAssertFalse(json.contains("http"), "a chat artifact never gets a network scheme back")
+            }
         }
     }
 

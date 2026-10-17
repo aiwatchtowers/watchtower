@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WatchtowerCore
 
@@ -35,7 +36,7 @@ struct CodeHTMLPreviewBar: View {
             Button {
                 let folder = buffer.url.deletingLastPathComponent()
                 let name = buffer.url.lastPathComponent
-                Task { notice = await HTMLBrowserOpener.open(.folder(folder), id: "folder:\(folder.path)", file: name) }
+                Task { notice = await HTMLBrowserOpener.open(file: name, inFolder: folder) }
             } label: { Image(systemName: "safari") }
                 .buttonStyle(.borderless)
                 .help("Open in your browser from a private local address that serves only this file's folder")
@@ -67,5 +68,22 @@ struct CodeHTMLPreviewPane: View {
 enum CodeHTMLPreview {
     static func content(_ file: URL) -> SandboxedHTMLContent {
         .file(file, folder: file.deletingLastPathComponent())
+    }
+}
+
+/// "Open in Browser" for a workbench file: its folder through the app's
+/// loopback server (`LocalPreviewServer`: 127.0.0.1 only, an unguessable
+/// token per folder, GET/HEAD, a sandboxing CSP). Workbench files only —
+/// a chat artifact is never handed to a networked app (CHAT-05).
+@MainActor
+enum HTMLBrowserOpener {
+    /// Nil on success, else a sentence for the caller to show.
+    static func open(file: String, inFolder folder: URL) async -> String? {
+        do {
+            let url = try await LocalPreviewServer.shared.url(forFile: file, inFolder: folder, id: "folder:\(folder.path)")
+            return NSWorkspace.shared.open(url) ? nil : "Could not open the browser."
+        } catch {
+            return error.localizedDescription
+        }
     }
 }

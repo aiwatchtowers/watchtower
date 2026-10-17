@@ -18,12 +18,14 @@ enum SandboxedHTMLContent: Equatable {
 
 /// A WKWebView for HTML that may come from synced data through a prompt
 /// injection: JavaScript on (decks need it), a non-persistent data store, no
-/// script message handlers (no bridge to the app), every network load
-/// blocked by a content rule list (`HTMLPreviewPolicy.contentRules`), and
-/// every navigation away from its own content cancelled — links open
-/// nothing, `window.open` opens nothing (no UI delegate). Nothing loads
-/// until the rule list is installed; if it cannot be compiled the page is
-/// never shown.
+/// script message handlers (no bridge to the app), network loads blocked by
+/// a content rule list (`HTMLPreviewPolicy.contentRules`: none at all for a
+/// chat artifact), WebRTC removed by a document-start script in every frame
+/// (best effort: content rules do not cover it), every navigation away from
+/// its own content cancelled — links open nothing — and a UI delegate that
+/// opens no window, grants no camera or microphone and picks no file.
+/// Nothing loads until the rule list is installed; if it cannot be compiled
+/// the page is never shown.
 struct SandboxedHTMLView: NSViewRepresentable {
     let content: SandboxedHTMLContent
     /// Bump to load the content again (Reload, a file changed on disk).
@@ -31,6 +33,13 @@ struct SandboxedHTMLView: NSViewRepresentable {
     /// Take keyboard focus after the first load, so the arrow keys reach the
     /// page (a deck's slides) without a click first.
     var focusOnLoad = false
+
+    /// Runs before any page script, in every frame.
+    static let removeWebRTC = """
+    (() => { for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel"]) {
+      try { Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false }); } catch (e) {}
+    } })();
+    """
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -40,8 +49,12 @@ struct SandboxedHTMLView: NSViewRepresentable {
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.preferences.isElementFullscreenEnabled = true
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        config.userContentController.addUserScript(
+            WKUserScript(source: Self.removeWebRTC, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        )
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         context.coordinator.webView = webView
         context.coordinator.focusOnLoad = focusOnLoad
         context.coordinator.show(content, token: reloadToken)
@@ -56,16 +69,20 @@ struct SandboxedHTMLView: NSViewRepresentable {
         coordinator.cancel()
         webView.stopLoading()
         webView.navigationDelegate = nil
+        webView.uiDelegate = nil
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         weak var webView: WKWebView?
         var focusOnLoad = false
         private var shown: SandboxedHTMLContent?
         private var shownToken = 0
         private var focused = false
         private var load: Task<Void, Never>?
+        /// The rule list in force. A different one is added before this one
+        /// goes, so the view is never without a block.
+        private var installed: WKContentRuleList?
 
         func show(_ content: SandboxedHTMLContent, token: Int) {
             if shown == content, shownToken == token { return }
@@ -75,14 +92,12 @@ struct SandboxedHTMLView: NSViewRepresentable {
             load = Task { [weak self] in
                 let rules = await SandboxedHTMLRules.list(allowFiles: content.allowsFiles)
                 guard let self, !Task.isCancelled, let webView = self.webView else { return }
-                let controller = webView.configuration.userContentController
-                controller.removeAllContentRuleLists()
                 guard let rules else {
                     // Fail closed: without the network block nothing is shown.
                     webView.loadHTMLString("<p style=\"font:13px -apple-system\">The preview could not be prepared.</p>", baseURL: nil)
                     return
                 }
-                controller.add(rules)
+                self.install(rules, on: webView.configuration.userContentController)
                 switch content {
                 case let .page(html):
                     webView.loadHTMLString(html, baseURL: nil)
@@ -90,6 +105,13 @@ struct SandboxedHTMLView: NSViewRepresentable {
                     webView.loadFileURL(url, allowingReadAccessTo: folder)
                 }
             }
+        }
+
+        private func install(_ rules: WKContentRuleList, on controller: WKUserContentController) {
+            guard installed !== rules else { return }
+            controller.add(rules)
+            if let old = installed { controller.remove(old) }
+            installed = rules
         }
 
         func cancel() { load?.cancel() }
@@ -117,6 +139,36 @@ struct SandboxedHTMLView: NSViewRepresentable {
             focused = true
             window.makeFirstResponder(webView)
         }
+
+        // MARK: WKUIDelegate — nothing leaves the view
+
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            nil
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+            initiatedByFrame frame: WKFrameInfo,
+            type: WKMediaCaptureType,
+            decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
+        ) {
+            decisionHandler(.deny)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping @MainActor @Sendable ([URL]?) -> Void
+        ) {
+            completionHandler(nil)
+        }
     }
 }
 
@@ -127,7 +179,7 @@ private enum SandboxedHTMLRules {
 
     static func list(allowFiles: Bool) async -> WKContentRuleList? {
         if let list = compiled[allowFiles] { return list }
-        let identifier = "watchtower.html-preview.\(allowFiles ? "file" : "page").v1"
+        let identifier = "watchtower.html-preview.\(allowFiles ? "file" : "page").v2"
         let rules = HTMLPreviewPolicy.contentRules(allowFiles: allowFiles)
         guard let store = WKContentRuleListStore.default(),
               let list = try? await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: rules) else {
@@ -178,22 +230,6 @@ enum HTMLPreviewWindow {
             } else {
                 super.cancelOperation(sender)
             }
-        }
-    }
-}
-
-/// "Open in Browser": the page or file through the app's loopback server
-/// (`LocalPreviewServer`: 127.0.0.1 only, an unguessable token per
-/// registration, GET/HEAD, only the registered root).
-@MainActor
-enum HTMLBrowserOpener {
-    /// Nil on success, else a sentence for the caller to show.
-    static func open(_ source: LocalPreviewSource, id: String, file: String = "index.html") async -> String? {
-        do {
-            let url = try await LocalPreviewServer.shared.url(for: source, id: id, file: file)
-            return NSWorkspace.shared.open(url) ? nil : "Could not open the browser."
-        } catch {
-            return error.localizedDescription
         }
     }
 }

@@ -4,17 +4,20 @@ import XCTest
 final class LocalPreviewRoutingTests: XCTestCase {
     private var root: URL!
     private var outside: URL!
+    private let port: UInt16 = 51_234
 
     override func setUpWithError() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("local-preview-\(UUID().uuidString)")
         root = base.appendingPathComponent("deck")
         outside = base.appendingPathComponent("secret")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("img"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".git"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         try "<h1>Deck</h1>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         try "body{}".write(to: root.appendingPathComponent("style.css"), atomically: true, encoding: .utf8)
         try Data([0x89, 0x50]).write(to: root.appendingPathComponent("img/logo one.png"))
         try "TOKEN=x".write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        try "[core]".write(to: root.appendingPathComponent(".git/config"), atomically: true, encoding: .utf8)
         try "secret".write(to: outside.appendingPathComponent("keys.txt"), atomically: true, encoding: .utf8)
     }
 
@@ -22,57 +25,82 @@ final class LocalPreviewRoutingTests: XCTestCase {
         try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
     }
 
-    private func get(_ target: String, method: String = "GET", sources: [String: LocalPreviewSource]) -> LocalPreviewResponse {
-        LocalPreviewHTTP.respond(to: LocalPreviewRequest(method: method, target: target)) { sources[$0] }
+    private func get(_ target: String, method: String = "GET", host: String? = nil) -> LocalPreviewResponse {
+        let request = LocalPreviewRequest(method: method, target: target, host: host ?? "127.0.0.1:\(port)")
+        return LocalPreviewHTTP.respond(to: request, port: port) { $0 == "tok" ? self.root : nil }
     }
 
     // MARK: parsing
 
-    func testParseWaitsForTheEndOfTheHeaders() {
+    func testParseWaitsForTheEndOfTheHeadersAndReadsHost() {
         XCTAssertEqual(LocalPreviewHTTP.parse(Data("GET /a HTTP/1.1\r\nHost: x\r\n".utf8)), .incomplete)
-        XCTAssertEqual(LocalPreviewHTTP.parse(Data("GET /a/b.css?v=1 HTTP/1.1\r\nHost: x\r\n\r\n".utf8)),
-                       .request(LocalPreviewRequest(method: "GET", target: "/a/b.css?v=1")))
+        XCTAssertEqual(LocalPreviewHTTP.parse(Data("GET /a/b.css?v=1 HTTP/1.1\r\nhost:  127.0.0.1:9 \r\nAccept: */*\r\n\r\n".utf8)),
+                       .request(LocalPreviewRequest(method: "GET", target: "/a/b.css?v=1", host: "127.0.0.1:9")))
+        XCTAssertEqual(LocalPreviewHTTP.parse(Data("GET /a HTTP/1.0\r\n\r\n".utf8)),
+                       .request(LocalPreviewRequest(method: "GET", target: "/a", host: nil)))
     }
 
     func testParseRejectsMalformedAndOversizedRequests() {
         XCTAssertEqual(LocalPreviewHTTP.parse(Data("GET http://evil/ HTTP/1.1\r\n\r\n".utf8)), .malformed)
         XCTAssertEqual(LocalPreviewHTTP.parse(Data("GET /a\r\n\r\n".utf8)), .malformed)
         XCTAssertEqual(LocalPreviewHTTP.parse(Data("GET /a HTTP/2\r\n\r\n".utf8)), .malformed)
+        XCTAssertEqual(LocalPreviewHTTP.parse(Data("GET /a HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n".utf8)), .malformed)
         let huge = Data(("GET /" + String(repeating: "a", count: LocalPreviewHTTP.maxHeaderBytes + 1)).utf8)
         XCTAssertEqual(LocalPreviewHTTP.parse(huge), .malformed)
     }
 
     // MARK: routing
 
-    func testServesAFileUnderTheRootWithItsContentType() {
-        let sources = ["tok": LocalPreviewSource.folder(root)]
-        let css = get("/tok/style.css", sources: sources)
+    func testServesAFileUnderTheRootWithItsContentTypeAndTheSandboxPolicy() {
+        let css = get("/tok/style.css")
         XCTAssertEqual(css.status, 200)
         XCTAssertEqual(css.header("Content-Type"), "text/css; charset=utf-8")
         XCTAssertEqual(css.body, Data("body{}".utf8))
         XCTAssertEqual(css.header("Referrer-Policy"), "no-referrer")
-        let png = get("/tok/img/logo%20one.png", sources: sources)
+        let png = get("/tok/img/logo%20one.png")
         XCTAssertEqual(png.status, 200)
         XCTAssertEqual(png.header("Content-Type"), "image/png")
-        XCTAssertEqual(get("/tok/", sources: sources).body, Data("<h1>Deck</h1>".utf8))
-        XCTAssertEqual(get("/tok/index.html#slide-2", sources: sources).status, 200)
+        XCTAssertEqual(get("/tok/").body, Data("<h1>Deck</h1>".utf8))
+        XCTAssertEqual(get("/tok/index.html#slide-2").status, 200)
+        for response in [css, png, get("/tok/missing"), get("/tok/x", method: "POST"), get("/tok/", host: "evil.example:1")] {
+            XCTAssertEqual(response.header("Content-Security-Policy"), LocalPreviewHTTP.contentSecurityPolicy)
+        }
+    }
+
+    func testThePolicySandboxesAndForbidsReadingSiblingsAsText() {
+        let policy = LocalPreviewHTTP.contentSecurityPolicy
+        XCTAssertTrue(policy.hasPrefix("sandbox allow-scripts;"))
+        XCTAssertFalse(policy.contains("allow-same-origin"))
+        XCTAssertFalse(policy.contains("allow-popups"))
+        for directive in ["connect-src 'none'", "frame-src 'none'", "child-src 'none'", "worker-src 'none'",
+                          "object-src 'none'", "form-action 'none'", "base-uri 'none'"] {
+            XCTAssertTrue(policy.contains(directive), directive)
+        }
+    }
+
+    func testOnlyTheLoopbackHostOfThisPortIsServed() {
+        XCTAssertEqual(get("/tok/index.html", host: "localhost:\(port)").status, 200)
+        XCTAssertEqual(get("/tok/index.html", host: "LOCALHOST:\(port)").status, 200)
+        for host in ["evil.example", "evil.example:\(port)", "127.0.0.1", "127.0.0.1:1", "localhost", "[::1]:\(port)", ""] {
+            XCTAssertEqual(get("/tok/index.html", host: host).status, 403, host)
+        }
+        let noHost = LocalPreviewHTTP.respond(to: LocalPreviewRequest(method: "GET", target: "/tok/", host: nil), port: port) { _ in self.root }
+        XCTAssertEqual(noHost.status, 403)
     }
 
     func testWrongOrMissingTokenIsNotFound() {
-        let sources = ["tok": LocalPreviewSource.folder(root)]
-        XCTAssertEqual(get("/other/index.html", sources: sources).status, 404)
-        XCTAssertEqual(get("/index.html", sources: sources).status, 404)
-        XCTAssertEqual(get("/", sources: sources).status, 404)
+        XCTAssertEqual(get("/other/index.html").status, 404)
+        XCTAssertEqual(get("/index.html").status, 404)
+        XCTAssertEqual(get("/").status, 404)
     }
 
     func testOnlyGetAndHeadAreAllowed() {
-        let sources = ["tok": LocalPreviewSource.folder(root)]
         for method in ["POST", "PUT", "DELETE", "OPTIONS", "get"] {
-            let response = get("/tok/index.html", method: method, sources: sources)
+            let response = get("/tok/index.html", method: method)
             XCTAssertEqual(response.status, 405, method)
             XCTAssertEqual(response.header("Allow"), "GET, HEAD")
         }
-        let head = get("/tok/index.html", method: "HEAD", sources: sources)
+        let head = get("/tok/index.html", method: "HEAD")
         XCTAssertEqual(head.status, 200)
         let wire = String(bytes: head.serialized(includeBody: false), encoding: .utf8) ?? ""
         XCTAssertTrue(wire.hasPrefix("HTTP/1.1 200 OK\r\n"))
@@ -81,58 +109,58 @@ final class LocalPreviewRoutingTests: XCTestCase {
     }
 
     func testPathTraversalNeverLeavesTheRoot() {
-        let sources = ["tok": LocalPreviewSource.folder(root)]
         for target in ["/tok/../secret/keys.txt", "/tok/%2E%2E/secret/keys.txt", "/tok/img/../../secret/keys.txt",
-                       "/tok/..%2Fsecret%2Fkeys.txt", "/tok/.env", "/tok/%2Eenv", "/tok//style.css", "/tok/img/",
-                       "/tok/img", "/tok/missing.html", "/tok/a%00b"] {
-            XCTAssertEqual(get(target, sources: sources).status, 404, target)
+                       "/tok/..%2Fsecret%2Fkeys.txt", "/tok/.env", "/tok/%2Eenv", "/tok/.git/config", "/tok//style.css",
+                       "/tok/img/", "/tok/img", "/tok/missing.html", "/tok/a%00b"] {
+            XCTAssertEqual(get(target).status, 404, target)
         }
     }
 
     func testBrokenPercentEncodingIsABadRequest() {
-        XCTAssertEqual(get("/tok/%zz", sources: ["tok": .folder(root)]).status, 400)
+        XCTAssertEqual(get("/tok/%zz").status, 400)
     }
 
-    func testSymlinkEscapingTheRootIsRefused() throws {
-        let link = root.appendingPathComponent("leak.txt")
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside.appendingPathComponent("keys.txt"))
-        let dirLink = root.appendingPathComponent("up")
-        try FileManager.default.createSymbolicLink(at: dirLink, withDestinationURL: outside)
-        let inside = root.appendingPathComponent("alias.css")
-        try FileManager.default.createSymbolicLink(at: inside, withDestinationURL: root.appendingPathComponent("style.css"))
-        let sources = ["tok": LocalPreviewSource.folder(root)]
-        XCTAssertEqual(get("/tok/leak.txt", sources: sources).status, 404)
-        XCTAssertEqual(get("/tok/up/keys.txt", sources: sources).status, 404)
-        XCTAssertEqual(get("/tok/alias.css", sources: sources).status, 200, "a link that stays inside is fine")
+    func testSymlinkEscapingTheRootOrIntoAHiddenFileIsRefused() throws {
+        let manager = FileManager.default
+        try manager.createSymbolicLink(at: root.appendingPathComponent("leak.txt"),
+                                       withDestinationURL: outside.appendingPathComponent("keys.txt"))
+        try manager.createSymbolicLink(at: root.appendingPathComponent("up"), withDestinationURL: outside)
+        try manager.createSymbolicLink(at: root.appendingPathComponent("env.txt"),
+                                       withDestinationURL: root.appendingPathComponent(".env"))
+        try manager.createSymbolicLink(at: root.appendingPathComponent("gitconfig"),
+                                       withDestinationURL: root.appendingPathComponent(".git/config"))
+        try manager.createSymbolicLink(at: root.appendingPathComponent("repo"), withDestinationURL: root.appendingPathComponent(".git"))
+        try manager.createSymbolicLink(at: root.appendingPathComponent("alias.css"),
+                                       withDestinationURL: root.appendingPathComponent("style.css"))
+        for target in ["/tok/leak.txt", "/tok/up/keys.txt", "/tok/env.txt", "/tok/gitconfig", "/tok/repo/config"] {
+            XCTAssertEqual(get(target).status, 404, target)
+        }
+        XCTAssertEqual(get("/tok/alias.css").status, 200, "a link that stays inside and visible is fine")
     }
 
-    func testAPageIsServedAsIndexWithAStrictPolicy() {
-        let sources = ["tok": LocalPreviewSource.page("<p>hi</p>")]
-        let page = get("/tok/", sources: sources)
-        XCTAssertEqual(page.status, 200)
-        XCTAssertEqual(page.body, Data("<p>hi</p>".utf8))
-        XCTAssertEqual(page.header("Content-Type"), "text/html; charset=utf-8")
-        let policy = try? XCTUnwrap(page.header("Content-Security-Policy"))
-        XCTAssertTrue(policy?.hasPrefix("default-src 'none'") ?? false)
-        XCTAssertFalse(policy?.contains("connect-src") ?? true, "no fetch/XHR/WebSocket allowance")
-        XCTAssertEqual(get("/tok/index.html", sources: sources).status, 200)
-        XCTAssertEqual(get("/tok/other.js", sources: sources).status, 404)
+    func testARootInsideAHiddenFolderStillServes() throws {
+        // A session worktree lives under `<repo>/.claude/worktrees/<slug>`:
+        // only the path below the root is checked for hidden components.
+        let hidden = root.appendingPathComponent(".claude/worktrees/wt")
+        try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
+        try "<p>wt</p>".write(to: hidden.appendingPathComponent("deck.html"), atomically: true, encoding: .utf8)
+        XCTAssertNotNil(LocalPreviewHTTP.resolve(["deck.html"], under: hidden))
     }
 
     // MARK: registry
 
     func testRegistryKeepsATokenPerIDAndForgetsOnUnregister() {
         var registry = LocalPreviewRegistry()
-        let first = registry.register(id: "chat:1:deck", source: .page("v1"))
-        let again = registry.register(id: "chat:1:deck", source: .page("v2"))
-        let other = registry.register(id: "chat:1:other", source: .page("x"))
+        let first = registry.register(id: "folder:/a", folder: root)
+        let again = registry.register(id: "folder:/a", folder: outside)
+        let other = registry.register(id: "folder:/b", folder: root)
         XCTAssertEqual(first, again)
         XCTAssertNotEqual(first, other)
         XCTAssertEqual(first.count, 64)
-        XCTAssertEqual(registry.source(token: first), .page("v2"))
-        registry.unregister(id: "chat:1:deck")
-        XCTAssertNil(registry.source(token: first))
-        XCTAssertNotNil(registry.source(token: other))
+        XCTAssertEqual(registry.folder(token: first), outside)
+        registry.unregister(id: "folder:/a")
+        XCTAssertNil(registry.folder(token: first))
+        XCTAssertNotNil(registry.folder(token: other))
     }
 
     func testContentTypes() {
@@ -141,5 +169,6 @@ final class LocalPreviewRoutingTests: XCTestCase {
         XCTAssertEqual(LocalPreviewHTTP.contentType(forExtension: "svg"), "image/svg+xml")
         XCTAssertEqual(LocalPreviewHTTP.contentType(forExtension: "woff2"), "font/woff2")
         XCTAssertEqual(LocalPreviewHTTP.contentType(forExtension: "bin"), "application/octet-stream")
+        XCTAssertEqual(LocalPreviewHTTP.contentType(forExtension: "mp4"), "application/octet-stream", "no Range support, no video")
     }
 }
