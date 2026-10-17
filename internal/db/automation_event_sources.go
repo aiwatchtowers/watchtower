@@ -202,14 +202,17 @@ func (db *DB) CalendarEventMarks() (map[string]CalendarEventMark, error) {
 
 // CalendarEventLabel returns the event label of the account a calendar
 // belongs to: for a "caldav:<id>"/"ics:<id>" calendar its calendar_accounts
-// label, else the owning Google account's label (else its email). false when
+// label, else its username (CalDAV), else "<provider>:<id>" — never the URL,
+// which an ICS feed's secret may sit in; for any other calendar the owning
+// Google account's label (else its email). false when
 // the calendar names no account — missing, detached by a logout, or its
 // account gone. Read-only.
 func (db *DB) CalendarEventLabel(calendarID string) (string, bool, error) {
 	query, arg := `SELECT COALESCE(NULLIF(g.label, ''), g.email) FROM calendar_calendars c
         JOIN google_accounts g ON g.id = c.account_id WHERE c.id = ?`, any(calendarID)
 	if id, ok := calendarAccountID(calendarID); ok {
-		query, arg = `SELECT label FROM calendar_accounts WHERE id = ?`, id
+		query, arg = `SELECT COALESCE(NULLIF(label, ''), NULLIF(username, ''), provider || ':' || id)
+            FROM calendar_accounts WHERE id = ?`, id
 	}
 	var label string
 	err := db.QueryRow(query, arg).Scan(&label)

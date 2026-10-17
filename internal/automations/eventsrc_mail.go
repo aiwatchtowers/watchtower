@@ -6,7 +6,9 @@ import (
 	"watchtower/internal/db"
 )
 
-const mailNewMessages = "gmail.new_messages"
+// MailNewMessages is the event type of a mail account's sync, Gmail or IMAP
+// alike (phaseGmailSync, phaseImapSync).
+const MailNewMessages = "gmail.new_messages"
 
 // MailEvent builds the gmail.new_messages event for one mail account's sync:
 // provider is "gmail" or "imap", account its label (else its address), count
@@ -21,7 +23,7 @@ func MailEvent(d *db.DB, provider string, accountID int64, count int) (Event, bo
 	if err != nil {
 		return Event{}, false, fmt.Errorf("building mail event: %w", err)
 	}
-	return Event{Type: mailNewMessages, Fields: map[string]any{
+	return Event{Type: MailNewMessages, Fields: map[string]any{
 		"account": label, "provider": provider, "count": count,
 	}}, true, nil
 }

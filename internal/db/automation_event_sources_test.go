@@ -264,6 +264,23 @@ func TestAutomationEventSources_CalendarLabels(t *testing.T) {
 	}
 }
 
+func TestAutomationEventSources_CalendarAccountLabelFallback(t *testing.T) {
+	d, _, davCal := seedCalendarEventSources(t)
+	ics, err := d.CreateCalendarAccount(CalendarAccount{Provider: "ics"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE calendar_accounts SET label = ''`); err != nil {
+		t.Fatal(err)
+	}
+	icsCal := CalendarAccountCalendarID("ics", ics)
+	for calendar, want := range map[string]string{davCal: "owner", icsCal: icsCal} {
+		if got, ok, err := d.CalendarEventLabel(calendar); err != nil || !ok || got != want {
+			t.Errorf("%s: unlabelled label = %q, %v, %v; want %q", calendar, got, ok, err, want)
+		}
+	}
+}
+
 func TestAutomationEventSources_ConfluenceReads(t *testing.T) {
 	d := openTestDB(t)
 	acct, err := d.CreateJiraAccount(JiraAccount{CloudID: "c1", SiteURL: "https://acme.example.com", SiteName: "acme", Label: "work"})

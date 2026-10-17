@@ -531,6 +531,9 @@ func parseEvent(n *yaml.Node) (*EventTrigger, error) {
 // validateWhere refuses a where key the event type cannot match and a
 // malformed glob, walking the map in file order so the first bad key is named.
 func validateWhere(n *yaml.Node, e *EventTrigger) error {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias // where: *anchor — check the mapping it names
+	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		key := n.Content[i].Value
 		if !slices.Contains(EventFields[e.Type], key) {

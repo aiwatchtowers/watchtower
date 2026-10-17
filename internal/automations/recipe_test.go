@@ -295,6 +295,9 @@ func TestRecipe_EventWhereUnknownKeyRefused(t *testing.T) {
 		{"field of another type", ev("gmail.new_messages", "{channel: releases}"), `"channel"`, 6},
 		{"malformed glob", ev("slack.new_messages", "{channel: \"[bad\"}"), `"channel"`, 6},
 		{"malformed glob later", ev("slack.new_messages", "{account: work, channel: \"rel[\"}"), "glob", 6},
+		// An alias is checked as the mapping it names (the anchor's line 3).
+		{"alias", "name: T\nbudget: &w {tokens: 1000}\ntrigger:\n  event:\n    type: gmail.new_messages\n    where: *w\n",
+			`"tokens"`, 3},
 	})
 	r := mustParse(t, recipeWith(ev("slack.new_messages", "{account: Work, channel: \"rel*\", channel_id: C1}"), "x\n"), Scope{Kind: ScopePersonal})
 	want := map[string]string{"account": "Work", "channel": "rel*", "channel_id": "C1"}

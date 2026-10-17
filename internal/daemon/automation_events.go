@@ -7,9 +7,6 @@ import (
 	"watchtower/internal/automations"
 )
 
-// mailNewMessages is the event type phaseGmailSync and phaseImapSync publish.
-const mailNewMessages = "gmail.new_messages"
-
 // AutomationEvents is the event bus of the event automations (spec
 // 2026-10-14 §8; *automations.Bus): runSync begins it once per cycle, the
 // observed sync phases publish content-free events into it, and one Flush
@@ -27,8 +24,9 @@ func (d *Daemon) SetAutomationEvents(ev AutomationEvents) {
 	d.automationEvents = ev
 }
 
-// HasAutomationEvents reports whether an event bus is wired — cmd/sync.go's
-// wireAutomations attaches one only when automations.enabled is on.
+// HasAutomationEvents reports whether an event bus is wired —
+// cmd/automations_daemon.go's wireAutomations attaches one only when
+// automations.enabled is on.
 func (d *Daemon) HasAutomationEvents() bool {
 	return d.automationEvents != nil
 }
@@ -80,12 +78,12 @@ func (d *Daemon) observePhase(ctx context.Context, src automations.EventSource, 
 // Read before the syncer runs — an account's initial backfill is not news.
 func (d *Daemon) watchMail(provider string, accountID int64) bool {
 	ev := d.cycleEvents
-	if ev == nil || !ev.Wants(mailNewMessages) {
+	if ev == nil || !ev.Wants(automations.MailNewMessages) {
 		return false
 	}
 	set, err := d.db.MailWatermarkSet(provider, accountID)
 	if err != nil {
-		d.logger.Printf("automations: %s events: %v", mailNewMessages, err)
+		d.logger.Printf("automations: %s events: %v", automations.MailNewMessages, err)
 		return false
 	}
 	return set
@@ -99,7 +97,7 @@ func (d *Daemon) publishMail(watch bool, provider string, accountID int64, n int
 	}
 	e, ok, err := automations.MailEvent(d.db, provider, accountID, n)
 	if err != nil {
-		d.logger.Printf("automations: %s events: %v", mailNewMessages, err)
+		d.logger.Printf("automations: %s events: %v", automations.MailNewMessages, err)
 		return
 	}
 	if ok {

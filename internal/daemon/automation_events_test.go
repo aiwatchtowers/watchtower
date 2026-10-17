@@ -427,7 +427,7 @@ func TestDaemon_NoSubscribersTakesNoSnapshots(t *testing.T) {
 	assert.Empty(t, ev.published)
 }
 
-func TestDaemon_AutomationsDisabledNoBus(t *testing.T) {
+func TestDaemon_NilOrFailingBusLeavesRunSyncUnchanged(t *testing.T) {
 	d, _, _ := newEventsTestDaemon(t, nil)
 	d.SetAutomationEvents(nil)
 	assert.False(t, d.HasAutomationEvents())
@@ -453,9 +453,14 @@ func TestDaemon_ReactionCommandsUnchangedByBus(t *testing.T) {
 	assert.Equal(t, slack+1, reactions, "the poll still follows the Slack sync directly")
 	guard, ok := body.List[reactions].(*ast.IfStmt)
 	require.True(t, ok, "the poll keeps its ctx.Err() guard")
-	call := guard.Body.List[0].(*ast.ExprStmt).X.(*ast.CallExpr)
+	stmt, ok := guard.Body.List[0].(*ast.ExprStmt)
+	require.True(t, ok, "the guard's first statement is the poll call")
+	call, ok := stmt.X.(*ast.CallExpr)
+	require.True(t, ok, "the guard's first statement is the poll call")
 	require.Len(t, call.Args, 1)
-	assert.Equal(t, "ctx", call.Args[0].(*ast.Ident).Name)
+	arg, ok := call.Args[0].(*ast.Ident)
+	require.True(t, ok, "the poll is passed ctx")
+	assert.Equal(t, "ctx", arg.Name)
 
 	// At run time: the bus is asked only about event types of EventTypes.
 	ev := newRecordingEvents("slack.new_messages")
@@ -545,7 +550,9 @@ func runSyncObservedPhases(t *testing.T) map[string][]string {
 		if !ok {
 			return true
 		}
-		src := srcCall.Fun.(*ast.SelectorExpr).Sel.Name
+		srcSel, ok := srcCall.Fun.(*ast.SelectorExpr)
+		require.True(t, ok, "observePhase's source is a constructor call")
+		src := srcSel.Sel.Name
 		ast.Inspect(call.Args[2], func(m ast.Node) bool {
 			if c, ok := m.(*ast.CallExpr); ok {
 				if s, ok := c.Fun.(*ast.SelectorExpr); ok && strings.HasPrefix(s.Sel.Name, "phase") {

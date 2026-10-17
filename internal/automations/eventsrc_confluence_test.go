@@ -93,6 +93,16 @@ func TestConfluenceEvents_CommentOnlyChangeIsNotAnEvent(t *testing.T) {
 	}
 }
 
+func TestConfluenceEvents_RestoredAtSameVersionIsNotAnEvent(t *testing.T) {
+	d, src := confluenceFixture(t, true)
+	got := confluenceEvents(t, d, func() {
+		putConfluenceDoc(t, d, src, "100", "page", 1)
+	})
+	if len(got) != 0 {
+		t.Errorf("a page stored again at its version published %+v", got)
+	}
+}
+
 func TestConfluenceEvents_BlogpostAndAttachmentIgnored(t *testing.T) {
 	d, src := confluenceFixture(t, true)
 	putConfluenceDoc(t, d, src, "200", "blogpost", 1)
@@ -109,6 +119,7 @@ func TestConfluenceEvents_BlogpostAndAttachmentIgnored(t *testing.T) {
 // confluenceContentEvents builds Confluence events from the contentMarker
 // fixtures for TestBus_EventsCarryNoContent.
 func confluenceContentEvents(t *testing.T) []Event {
+	t.Helper()
 	d, src := confluenceFixture(t, true)
 	events := confluenceEvents(t, d, func() {
 		putConfluenceDoc(t, d, src, "100", "page", 2)

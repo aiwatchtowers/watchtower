@@ -25,7 +25,8 @@ const e2eEventRecipe = "---\nname: Releases watch\ntrigger:\n  event:\n    type:
 
 // e2eSlackCycle runs one cycle's event half the way runSync does: begin the
 // bus, the Slack phase observed by SlackSource (phase writes the messages),
-// then the cycle's single Flush keyed by syncStart.
+// then the cycle's single Flush keyed by syncStart. runSync's own step order
+// is pinned by TestRunSync_FlushOncePerCycleAfterSources.
 func e2eSlackCycle(d *Daemon, syncStart time.Time, phase func()) {
 	d.cycleEvents = d.beginAutomationEvents()
 	d.observePhase(context.Background(), automations.SlackSource(d.db), phase)
@@ -62,6 +63,8 @@ func TestEventAutomation_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, runs, 1)
 	assert.Equal(t, db.RunQueued, runs[0].Status)
+	assert.Equal(t, db.TriggerEvent, runs[0].Trigger)
+	assert.Equal(t, "2026-10-14T12:00:00Z", runs[0].EventCycle)
 
 	started, err := exec.Step(context.Background())
 	require.NoError(t, err)
