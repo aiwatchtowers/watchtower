@@ -735,10 +735,7 @@ func (p *Pipeline) contextBudget() int {
 func (p *Pipeline) planTrackBatches(entries []digestEntry) [][]digestEntry {
 	const tokensPerTopic = 700
 	const promptOverhead = 20000
-	maxTopicsPerBatch := (p.contextBudget() - promptOverhead) / tokensPerTopic
-	if maxTopicsPerBatch < 20 {
-		maxTopicsPerBatch = 20
-	}
+	maxTopicsPerBatch := max((p.contextBudget()-promptOverhead)/tokensPerTopic, 20)
 	return groupDigestBatches(entries, 15, maxTopicsPerBatch)
 }
 
@@ -1074,13 +1071,13 @@ func groupDigestBatches(entries []digestEntry, maxChannels, maxTopics int) [][]d
 // parseBatchTracksResult parses the JSON array returned by a batch tracks LLM call.
 func parseBatchTracksResult(raw string) ([]batchChannelResult, error) {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
@@ -2055,13 +2052,13 @@ func sanitize(text string) string {
 
 func cleanJSON(raw string) string {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}

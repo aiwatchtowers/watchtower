@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -800,10 +801,7 @@ func groupUsersIntoBatches(entries []batchUserEntry, maxUsers int) [][]batchUser
 	}
 	var batches [][]batchUserEntry
 	for i := 0; i < len(entries); i += maxUsers {
-		end := i + maxUsers
-		if end > len(entries) {
-			end = len(entries)
-		}
+		end := min(i+maxUsers, len(entries))
 		batches = append(batches, entries[i:end])
 	}
 	return batches
@@ -812,13 +810,13 @@ func groupUsersIntoBatches(entries []batchUserEntry, maxUsers int) [][]batchUser
 // parseBatchCardResult parses a JSON array of BatchCardResult from AI output.
 func parseBatchCardResult(raw string) ([]BatchCardResult, error) {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
@@ -1023,9 +1021,7 @@ func (p *Pipeline) loadReactionsMultiChannel(msgs []db.Message) map[string][]db.
 		if err != nil {
 			continue
 		}
-		for ts, summaries := range rm {
-			result[ts] = summaries
-		}
+		maps.Copy(result, rm)
 	}
 	return result
 }
@@ -1225,13 +1221,13 @@ func parseTeamSummaryResult(raw string) (*TeamSummaryResult, error) {
 
 func extractJSON(raw string) string {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}

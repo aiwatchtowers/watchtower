@@ -32,6 +32,7 @@ extension AppState {
             onboardingGoals: onboardingGoals?(defaults)
         )
         appState.daemonControlOverride = FakeDaemon()
+        appState.daemonStartQueue = DaemonStartQueue()
         appState.wireAppDatabaseOverride = { _ in }
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()
         appState.homeDefaultsOverride = defaults
@@ -83,6 +84,16 @@ extension AppState {
 final class FakeDaemon: DaemonControl {
     var running = false
     var startSucceeds = true
+    /// The start exits 0 but the daemon is gone right after.
+    var diesAfterStart = false
+    /// A restart reports the daemon down while it runs (its stop half).
+    var stopsDuringRestart = false
+    /// A stop leaves the old daemon running (still exiting, or it ignored it).
+    var stopKeepsRunning = false
+    /// After a start, this many `daemonIsRunning()` reads still say no (a
+    /// slow pid file).
+    var runningAfterChecks = 0
+    private var pendingChecks = 0
     var restartError: Error?
     var holdRestart = false
     /// The stopped daemon's process never goes.
@@ -95,16 +106,25 @@ final class FakeDaemon: DaemonControl {
 
     var isRestartParked: Bool { parked != nil }
 
-    func daemonIsRunning() -> Bool { running }
+    func daemonIsRunning() -> Bool {
+        guard pendingChecks == 0 else {
+            pendingChecks -= 1
+            return false
+        }
+        return running
+    }
 
     func startDetached() async -> Bool {
         starts += 1
-        running = startSucceeds
+        // A failed start leaves whatever ran before as it was.
+        if startSucceeds { running = !diesAfterStart }
+        if startSucceeds { pendingChecks = runningAfterChecks }
         return startSucceeds
     }
 
     func restartWaiting() async throws {
         restarts += 1
+        if stopsDuringRestart { running = false }
         if holdRestart {
             await withCheckedContinuation { parked = $0 }
         }
@@ -114,7 +134,7 @@ final class FakeDaemon: DaemonControl {
 
     func stopDaemonNow() async {
         stops += 1
-        running = false
+        if !stopKeepsRunning { running = false }
     }
 
     func waitUntilStopped() async throws {

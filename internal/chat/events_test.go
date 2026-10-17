@@ -15,12 +15,10 @@ func TestEventWriter_OneJSONLinePerEventUnderConcurrency(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewEventWriter(&buf)
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			require.NoError(t, w.Emit(Event{Type: EventTextDelta, TurnID: "t1", Text: "chunk with\nnewline"}))
-		}()
+		})
 	}
 	wg.Wait()
 

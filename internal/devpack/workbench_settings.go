@@ -798,9 +798,7 @@ func upsertOurHook(groups []any, spec hookSpec, workbenchID int64, command strin
 // keys are kept.
 func withOurCommand(hm map[string]any, command string) map[string]any {
 	cp := make(map[string]any, len(hm))
-	for k, v := range hm {
-		cp[k] = v
-	}
+	maps.Copy(cp, hm)
 	cp["command"] = command
 	return cp
 }
@@ -879,9 +877,7 @@ func newOurHookGroup(spec hookSpec, command string) map[string]any {
 // the group's other keys (its matcher among them) are kept.
 func groupWithHooks(m map[string]any, rest []any) map[string]any {
 	cp := make(map[string]any, len(m))
-	for k, v := range m {
-		cp[k] = v
-	}
+	maps.Copy(cp, m)
 	cp["hooks"] = rest
 	return cp
 }

@@ -15,7 +15,7 @@ func TestDescribeOutputDisclosesNoContent(t *testing.T) {
 
 	// Short stopwords are skipped: a 4-char run is already well past anything
 	// the fixed labels or the hex hash could collide with by chance.
-	for _, word := range strings.Fields(secret) {
+	for word := range strings.FieldsSeq(secret) {
 		if len(word) < 4 {
 			continue
 		}

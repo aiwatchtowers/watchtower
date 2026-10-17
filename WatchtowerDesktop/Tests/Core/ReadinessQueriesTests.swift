@@ -64,6 +64,18 @@ final class ReadinessQueriesTests: XCTestCase {
 
     // MARK: - Content presence
 
+    func testGuideRowsDoNotCountAsKnowledgeIndex() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO kb_documents (id, source) VALUES ('guide:a.md', 'guide')")
+        }
+        XCTAssertFalse(try queue.read(ReadinessQueries.contentPresent).contains(.knowledgeIndex))
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO kb_documents (id, source) VALUES ('slack:1', 'slack')")
+        }
+        XCTAssertTrue(try queue.read(ReadinessQueries.contentPresent).contains(.knowledgeIndex))
+    }
+
     func testEmptyDatabaseHasNoContent() throws {
         let queue = try TestDatabase.create()
         XCTAssertEqual(try queue.read(ReadinessQueries.contentPresent), [])

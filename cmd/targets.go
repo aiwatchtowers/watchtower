@@ -945,7 +945,7 @@ func runTargetsNoteList(cmd *cobra.Command, args []string) error {
 // writing `[""]` — the promote-subitem path's semantics (cmd/targets_ai.go).
 func parseTagsFlag(raw string) string {
 	parts := []string{}
-	for _, p := range strings.Split(raw, ",") {
+	for p := range strings.SplitSeq(raw, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			parts = append(parts, p)
 		}

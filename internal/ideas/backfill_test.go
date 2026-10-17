@@ -427,7 +427,7 @@ func TestGB2_Backfill_ConsolidateStillRunsAfterStage1Caps(t *testing.T) {
 	base := from.Add(time.Hour).Unix()
 	tx, err := d.Begin()
 	require.NoError(t, err)
-	for i := 0; i < 501; i++ {
+	for i := range 501 {
 		ts := time.Unix(base+int64(i), 0).UTC().Format(time.RFC3339)
 		_, ierr := tx.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -613,7 +613,7 @@ func TestD10_BoundedBackfillDoesNotStrandUnconsolidatedStreamRows(t *testing.T) 
 	// take the LOWER ids — the ordinary daemon produced them but has not yet
 	// consolidated them.
 	var pendingIDs []int64
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		id, err := d.InsertStreamDigest(db.StreamDigest{
 			Source: "gmail", AccountID: 1, Scope: "acct",
 			PeriodFrom: now.Add(-2 * time.Hour).UTC().Format(time.RFC3339),
@@ -626,7 +626,7 @@ func TestD10_BoundedBackfillDoesNotStrandUnconsolidatedStreamRows(t *testing.T) 
 	// In-window rows: period_to INSIDE [from, to], inserted SECOND so they take
 	// the HIGHER ids — the material the bounded backfill actually consolidates.
 	var inWindowIDs []int64
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		id, err := d.InsertStreamDigest(db.StreamDigest{
 			Source: "gmail", AccountID: 1, Scope: "acct",
 			PeriodFrom: from.UTC().Format(time.RFC3339),

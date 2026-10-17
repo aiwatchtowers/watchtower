@@ -78,7 +78,7 @@ final class HomeLandingTests: XCTestCase {
 
         await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
         await appState.stopSidebarCounts()?.value
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertEqual(daemon.restarts, 1, "the restart path, not the unchanged re-run")

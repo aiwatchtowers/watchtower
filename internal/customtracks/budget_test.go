@@ -89,7 +89,7 @@ func TestRunFailingTrackIsCappedPerDay(t *testing.T) {
 	gen.broken["BROKEN-INSTR"] = true
 	p := New(d, gen, "", nil)
 
-	for i := 0; i < maxDailyScanAttempts+3; i++ {
+	for i := range maxDailyScanAttempts + 3 {
 		if _, err := p.Run(context.Background()); err != nil && i == 0 {
 			t.Fatalf("run %d: a partial failure (one of two tracks) must not fail the run: %v", i, err)
 		}
@@ -122,7 +122,7 @@ func TestRunAllTracksFailedReturnsError(t *testing.T) {
 	gen.broken["BROKEN-ONE"], gen.broken["BROKEN-TWO"] = true, true
 	p := New(d, gen, "", nil)
 
-	for i := 0; i < maxDailyScanAttempts; i++ {
+	for i := range maxDailyScanAttempts {
 		if _, err := p.Run(context.Background()); err == nil {
 			t.Fatalf("run %d: every track failed, want an error", i)
 		}
@@ -240,7 +240,7 @@ func TestHasDueTracks(t *testing.T) {
 	if due, err := p.HasDueTracks(); err != nil || !due {
 		t.Fatalf("fresh track: HasDueTracks = (%v, %v), want (true, nil)", due, err)
 	}
-	for i := 0; i < maxDailyScanAttempts; i++ {
+	for range maxDailyScanAttempts {
 		_, _ = p.Run(context.Background())
 	}
 	if due, err := p.HasDueTracks(); err != nil || due {

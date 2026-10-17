@@ -240,6 +240,8 @@ final class GettingReadyTests: XCTestCase {
             (.error(message: "x"), .error, true),
             (.waitingForSync(detail: nil), .waiting, false),
             (.scheduled(.inAboutADay), .waiting, false),
+            // Not terminal: a zone of stopped cards must not complete and fold.
+            (.daemonStopped, .waiting, false),
             (nil, .waiting, false)
         ]
         for (readiness, tone, terminal) in cases {

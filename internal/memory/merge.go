@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -111,10 +112,8 @@ func appendMergedFrom(body, loserID string) string {
 // added again — a re-extracted window (MEM-04 re-processing) or a repeated
 // merge must not duplicate Links entries.
 func appendToLinks(body, line string) string {
-	for _, existing := range strings.Split(body, "\n") {
-		if existing == strings.TrimSuffix(line, "\n") {
-			return body
-		}
+	if slices.Contains(strings.Split(body, "\n"), strings.TrimSuffix(line, "\n")) {
+		return body
 	}
 	loc := linksHeadingRe.FindStringIndex(body)
 	if loc == nil {

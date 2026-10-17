@@ -108,7 +108,7 @@ func seedGmailThreadsInOneSecond(t *testing.T, d *db.DB, accountID int64, n int,
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	require.NoError(t, err)
 	defer stmt.Close()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		_, err = stmt.Exec(accountID, fmt.Sprintf("m%05d", i), fmt.Sprintf("thr-%05d", i),
 			"a@example.com", "Ann", "Subj", "body", internalDateISO)
 		require.NoError(t, err)
@@ -538,7 +538,7 @@ func TestIdeas01_EmailTieDrainStopsAtByteCeiling(t *testing.T) {
 	const seeded, wantRendered, wantUnrendered = 8, 5, 3
 	const fatSubject = 100000 // subjects are not excerpt-capped, so this sets the line size
 	same := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
-	for i := 0; i < seeded; i++ {
+	for i := range seeded {
 		seedGmailMessageIdeas(t, d, acctID, fmt.Sprintf("m%03d", i), fmt.Sprintf("thr-%03d", i),
 			"a@example.com", "Ann", strings.Repeat("s", fatSubject), "body", same)
 	}
@@ -592,7 +592,7 @@ func TestIdeas01_RaisedPromptBudgetDoesNotRaiseTheDrainCeiling(t *testing.T) {
 	const seeded, wantRendered = 8, 5
 	const fatSubject = 100000
 	same := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
-	for i := 0; i < seeded; i++ {
+	for i := range seeded {
 		seedGmailMessageIdeas(t, d, acctID, fmt.Sprintf("m%03d", i), fmt.Sprintf("thr-%03d", i),
 			"a@example.com", "Ann", strings.Repeat("s", fatSubject), "body", same)
 	}

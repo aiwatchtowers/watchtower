@@ -402,11 +402,9 @@ func TestLoadExternalMCPServers_OAuth_ParallelLaunchesRefreshOnce(t *testing.T) 
 	results := make([][]ai.ExternalMCPServer, 2)
 	var wg sync.WaitGroup
 	for i := range results {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			results[i] = loadExternalMCPServers(cfg, cfg.DBPath())
-		}()
+		})
 	}
 	wg.Wait()
 

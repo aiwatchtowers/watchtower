@@ -104,7 +104,7 @@ func enrichPATH(base string) string {
 			parts = append(parts, p)
 		}
 	}
-	for _, p := range strings.Split(base, ":") {
+	for p := range strings.SplitSeq(base, ":") {
 		if !seen[p] {
 			seen[p] = true
 			parts = append(parts, p)
@@ -117,7 +117,7 @@ func enrichPATH(base string) string {
 // (colon-separated directories), similar to exec.LookPath but using
 // a custom PATH instead of the process environment.
 func lookPathIn(name, pathEnv string) (string, error) {
-	for _, dir := range strings.Split(pathEnv, ":") {
+	for dir := range strings.SplitSeq(pathEnv, ":") {
 		if dir == "" {
 			continue
 		}

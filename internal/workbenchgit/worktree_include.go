@@ -81,7 +81,7 @@ func (r *repo) lsIgnored(ctx context.Context, rule string) ([]string, error) {
 		return nil, err
 	}
 	var found []string
-	for _, b := range bytes.Split(out, []byte{0}) {
+	for b := range bytes.SplitSeq(out, []byte{0}) {
 		if len(b) > 0 {
 			found = append(found, string(b))
 		}

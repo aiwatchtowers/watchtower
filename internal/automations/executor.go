@@ -282,11 +282,9 @@ func (p *poll) consider(r db.AutomationRun) error {
 	}
 	p.free--
 	p.started++
-	p.e.wg.Add(1)
-	go func() {
-		defer p.e.wg.Done()
+	p.e.wg.Go(func() {
 		p.e.runClaimed(p.ctx, r.ID, a, false)
-	}()
+	})
 	return nil
 }
 

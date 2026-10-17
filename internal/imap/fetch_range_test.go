@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -69,12 +70,7 @@ func TestFirstSyncAndBackfillMeetOnTheSameDayEastOfUTC(t *testing.T) {
 }
 
 func containsUID(uids []uint32, want uint32) bool {
-	for _, u := range uids {
-		if u == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(uids, want)
 }
 
 func TestFetchRangeStoresAllInRangeWithoutWatermarkOrAuthState(t *testing.T) {

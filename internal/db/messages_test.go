@@ -134,7 +134,7 @@ func TestGetMessagesDefaultLimit(t *testing.T) {
 	defer db.Close()
 
 	// Insert more than 100 messages
-	for i := 0; i < 110; i++ {
+	for i := range 110 {
 		ts := fmt.Sprintf("17000%05d.000001", i)
 		require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: ts, UserID: "U001", Text: "msg"}))
 	}

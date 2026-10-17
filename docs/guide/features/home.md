@@ -23,7 +23,7 @@ With nothing to show, Today says "Nothing needs you right now." If a card can't 
 
 ### The Getting ready zone
 
-On a new install a **Getting ready** zone sits above Today, one card per feature that is on and has its source. Each card carries the same status line as the feature's own empty tab, such as "Preparing now", "Starts after the first sync", "Within ~15 min" or "Today at 08:00". A finished feature shows **Ready** and **Open**.
+On a new install a **Getting ready** zone sits above Today, one card per feature that is on and has its source. Each card carries the same status line as the feature's own empty tab, such as "Preparing now", "Starts after the first sync", "Within ~15 min" or "Today at 08:00". A finished feature shows **Ready** and **Open**. If the background sync has been stopped for 30 seconds or more, the cards that are not ready say "Watchtower isn't running" instead; the banner at the top of the window has **Start**.
 
 While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan cards say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A connected Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead. A bare IMAP login without an @ does not count as an address.
 
@@ -52,6 +52,8 @@ AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOC
 - A tab appears only when its feature is on in Settings → Features and a source it needs is connected. For example Calendar needs a calendar, the Jira tabs need Jira, and Statistics needs Slack or mail.
 - Until Slack, mail and Jira are all connected, a quiet **+ Connect …** line at the bottom names what is missing and opens Settings → Connections. Its **×** hides it for good. A connected calendar counts as mail here.
 - Badges show what waits: unread briefings, proposals and due reminders in Inbox, ideas to review, one for a recap waiting for **I'm caught up**.
+
+Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." It is always there, and **⌘/** opens the [assistant over this tab](ai-chat.md).
 
 ## When it's empty or wrong
 

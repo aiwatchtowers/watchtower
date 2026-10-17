@@ -93,7 +93,7 @@ func TestGatherProjects_ListsOpenOwnerAsks(t *testing.T) {
 	d := testDB(t)
 	pid := seedWorkbench(t, d, "acme")
 	other := seedWorkbench(t, d, "other")
-	for i := 0; i < maxWorkbenchItems+1; i++ {
+	for i := range maxWorkbenchItems + 1 {
 		_, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'question', ?)`,
 			pid, "Which currency list "+strings.Repeat("x", i+1)+"?\nsecond line")
 		require.NoError(t, err)
@@ -134,7 +134,7 @@ func TestGatherProjects_ListsTargetsInReview(t *testing.T) {
 func TestGatherProjects_CapsItemsPerLine(t *testing.T) {
 	d := testDB(t)
 	pid := seedWorkbench(t, d, "acme")
-	for i := 0; i < maxWorkbenchItems+2; i++ {
+	for i := range maxWorkbenchItems + 2 {
 		seedWorkbenchTarget(t, d, pid, 0, "Task "+strings.Repeat("x", i+1), "in_progress", "2026-09-29T09:00:00Z")
 	}
 	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))

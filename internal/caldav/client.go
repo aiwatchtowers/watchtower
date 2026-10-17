@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"watchtower/internal/netsec"
@@ -108,10 +109,5 @@ func supportsEvents(cal webcaldav.Calendar) bool {
 	if len(cal.SupportedComponentSet) == 0 {
 		return true
 	}
-	for _, comp := range cal.SupportedComponentSet {
-		if comp == ical.CompEvent {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(cal.SupportedComponentSet, ical.CompEvent)
 }

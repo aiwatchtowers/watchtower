@@ -138,8 +138,8 @@ func commentText(c string) string {
 		return strings.Join(lines, " ")
 	}
 	for _, p := range []string{"///", "//!", "//", "---", "--", "#'", "##", "#", "%%%", "%%", "%", ";;;", ";;"} {
-		if strings.HasPrefix(c, p) {
-			return strings.TrimPrefix(c, p)
+		if after, ok := strings.CutPrefix(c, p); ok {
+			return after
 		}
 	}
 	return c
