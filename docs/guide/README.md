@@ -75,8 +75,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Writing and changing things from the AI Chat](features/ai-chat-actions.md) — proposals you approve: tasks, Jira, Slack messages, Confluence edits, automation drafts
 - [Quick Connections](features/quick-connections.md) — plug other tools' MCP servers into the chat as read-only sources
 - [Memory](features/memory.md) — the assistant's long-term notebook of people, projects and beliefs, in plain files you can edit
-- [Automations](features/automations.md) — recipes the daemon runs on a schedule or on demand, with confirmation, budgets and auto grants
-- [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe and the five ready-made templates
+- [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants
+- [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe, event triggers and the five ready-made templates
 
 ## Meetings & calendar
 
