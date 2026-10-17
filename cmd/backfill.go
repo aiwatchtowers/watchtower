@@ -40,6 +40,17 @@ type backfillRowJSON struct {
 	DoneAt    *string `json:"done_at"`
 }
 
+// backfillWaiting is what holds the row: the stored waiting (plan_limit), or
+// "held" while a transient failure holds its chunk (#580; held_since set,
+// the reason in last_error). The Desktop's BackfillQueries reads it the same
+// way.
+func backfillWaiting(waiting string, held bool) string {
+	if waiting == "" && held {
+		return "held"
+	}
+	return waiting
+}
+
 func runBackfillStatus(cmd *cobra.Command, _ []string) error {
 	database, err := openDBFromConfig()
 	if err != nil {
@@ -56,7 +67,7 @@ func runBackfillStatus(cmd *cobra.Command, _ []string) error {
 			Source:    r.SourceKind,
 			AccountID: r.AccountID,
 			Status:    r.Status,
-			Waiting:   r.Waiting,
+			Waiting:   backfillWaiting(r.Waiting, r.HeldSince != nil),
 			DaysTotal: int(math.Round((r.UpperTS - r.FloorTS) / 86400)),
 			DaysDone:  int(math.Round((r.UpperTS - r.ReachedTS) / 86400)),
 			LastError: r.LastError,

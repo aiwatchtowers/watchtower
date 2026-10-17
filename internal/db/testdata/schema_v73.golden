@@ -1344,7 +1344,7 @@ chunk_failures INTEGER NOT NULL DEFAULT 0,
 last_error TEXT NOT NULL DEFAULT '',
 started_at TEXT NOT NULL,
 updated_at TEXT NOT NULL,
-done_at TEXT,
+done_at TEXT, held_since TEXT,
 UNIQUE (source_kind, account_id)
 )
 
@@ -4178,6 +4178,7 @@ GROUP BY up.ancestor
 10	started_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 12	done_at	TEXT	notnull=0	dflt=NULL	pk=0
+13	held_since	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## idea_mentions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

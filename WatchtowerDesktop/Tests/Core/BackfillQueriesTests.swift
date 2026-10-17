@@ -24,6 +24,41 @@ final class BackfillQueriesTests: XCTestCase {
         ])
     }
 
+    /// #580: held_since reads as waiting = held; a plan-limit wait wins.
+    func testHeldRowReadsWaitingHeld() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try db.execute(sql: """
+                INSERT INTO history_backfill
+                (id, source_kind, account_id, floor_ts, upper_ts, reached_ts, status, waiting, started_at, updated_at,
+                 held_since)
+                VALUES
+                (1, 'imap', 1, 100, 400, 400, 'running', '', '2026-10-15T08:00:00Z', '2026-10-15T08:00:00Z',
+                 '2026-10-15T08:00:00Z'),
+                (2, 'gmail', 1, 100, 400, 400, 'running', 'plan_limit', '2026-10-15T08:00:00Z',
+                 '2026-10-15T08:00:00Z', '2026-10-15T08:00:00Z')
+                """)
+        }
+        let rows = try db.read { try BackfillQueries.rows($0) }
+        XCTAssertEqual(rows.map(\.waiting), ["held", "plan_limit"])
+    }
+
+    /// #580: a database from before migration 00131 (new app, old daemon) has
+    /// no held_since; the read still works and nothing reads "held".
+    func testRowsWithoutHeldSinceColumn() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try db.execute(sql: "ALTER TABLE history_backfill DROP COLUMN held_since")
+            try db.execute(sql: """
+                INSERT INTO history_backfill
+                (id, source_kind, account_id, floor_ts, upper_ts, reached_ts, status, waiting, started_at, updated_at)
+                VALUES (1, 'imap', 1, 100, 400, 400, 'running', '', '2026-10-15T08:00:00Z', '2026-10-15T08:00:00Z')
+                """)
+        }
+        let rows = try db.read { try BackfillQueries.rows($0) }
+        XCTAssertEqual(rows.map(\.waiting), [""])
+    }
+
     func testRowsEmptyWithoutBackfills() throws {
         let db = try TestDatabase.create()
         XCTAssertEqual(try db.read { try BackfillQueries.rows($0) }, [])

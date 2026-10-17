@@ -3,14 +3,19 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	gosync "sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,6 +26,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/historybackfill"
 	"watchtower/internal/ideas"
@@ -484,19 +490,98 @@ func TestOnSlackBackfillDone_HeldByPlanGate(t *testing.T) {
 
 // R23: an incomplete Slack search (rate limit) maps to the runner's hold.
 func TestHistoryBackfill_SlackSourceIncompleteIsHold(t *testing.T) {
-	assert.ErrorIs(t, slackFetchErr(fmt.Errorf("x: %w", sync.ErrBackfillIncomplete)), historybackfill.ErrHold)
+	assert.ErrorIs(t, backfillErr(fmt.Errorf("x: %w", sync.ErrBackfillIncomplete)), historybackfill.ErrHold)
 	other := fmt.Errorf("boom")
-	assert.Equal(t, other, slackFetchErr(other))
-	assert.NoError(t, slackFetchErr(nil))
+	assert.Equal(t, other, backfillErr(other))
+	assert.NoError(t, backfillErr(nil))
 }
 
 // F8: the rollups' digest-lock contention is a hold; any other rollup error
 // is a strike.
 func TestHistoryBackfill_SlackRollupLockContentionIsHold(t *testing.T) {
-	assert.ErrorIs(t, slackRollupErr(fmt.Errorf("x: %w", digest.ErrDigestLocked)), historybackfill.ErrHold)
+	assert.ErrorIs(t, backfillErr(fmt.Errorf("x: %w", digest.ErrDigestLocked)), historybackfill.ErrHold)
 	other := fmt.Errorf("opening digest lock: boom")
-	assert.Equal(t, other, slackRollupErr(other))
-	assert.NoError(t, slackRollupErr(nil))
+	assert.Equal(t, other, backfillErr(other))
+	assert.NoError(t, backfillErr(nil))
+}
+
+// #580: transport-level failures map to the runner's hold (retried, no
+// strike); errors about the chunk's data pass through as a strike, and a
+// chunk failure mixing both is a strike.
+func TestHistoryBackfill_TransientErrorsAreHolds(t *testing.T) {
+	aiTransport := digest.WithCause(errors.New("claude CLI not found"), exec.ErrNotFound)
+	_, _, _, aiErr := digest.WithCallTimeout(errGenerator{aiTransport}, time.Minute).Generate(context.Background(), "s", "u", "")
+	require.ErrorIs(t, aiErr, digest.ErrAICall)
+	parse := errors.New("parsing ideas.digest_email JSON: unexpected end")
+	busy := busyErr(t)
+
+	holds := map[string]error{
+		"ai transport":    fmt.Errorf("drain: %w", aiErr),
+		"timeout":         fmt.Errorf("x: %w", context.DeadlineExceeded),
+		"dial":            fmt.Errorf("listing: %w", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("no route to host")}),
+		"dns":             fmt.Errorf("x: %w", &net.DNSError{Err: "no such host", Name: "imap.example.com"}),
+		"url timeout":     &url.Error{Op: "Get", URL: "https://example.com", Err: timeoutErr{}},
+		"url reset":       &url.Error{Op: "Get", URL: "https://example.com", Err: syscall.ECONNRESET},
+		"url EOF":         fmt.Errorf("gmail GET /users/me/messages: %w", &url.Error{Op: "Get", URL: "https://example.com", Err: io.EOF}),
+		"cut body":        fmt.Errorf("reading response: %w", io.ErrUnexpectedEOF),
+		"busy db":         fmt.Errorf("upsert m1: %w", busy),
+		"gmail 503":       fmt.Errorf("x: %w", &gmail.StatusError{Op: "gmail GET /users/me/messages", Code: 503}),
+		"gmail 429":       fmt.Errorf("x: %w", &gmail.StatusError{Op: "gmail GET /users/me/messages", Code: 429}),
+		"gmail quota 403": &gmail.StatusError{Op: "gmail GET /users/me/messages", Code: 403, Body: `{"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}`},
+		"refresh 502":     fmt.Errorf("token refresh on 401: %w", &gmail.StatusError{Op: "token refresh failed", Code: 502}),
+		"chunk all ai":    &digest.ChunkErrors{Msg: "2 channel(s) failed", Errs: []error{aiErr, fmt.Errorf("x: %w", context.DeadlineExceeded)}},
+		"already a hold":  fmt.Errorf("x: %w", historybackfill.ErrHold),
+	}
+	for name, err := range holds {
+		assert.ErrorIs(t, backfillErr(err), historybackfill.ErrHold, name)
+	}
+	strikes := map[string]error{
+		"parse":           parse,
+		"ai reply":        errors.New("claude returned error (subtype=error_max_turns): too many turns"),
+		"x509":            &url.Error{Op: "Get", URL: "https://example.com", Err: errors.New("x509: certificate signed by unknown authority")},
+		"bad scheme":      &url.Error{Op: "Get", URL: "ftp://example.com", Err: errors.New("unsupported protocol scheme")},
+		"gmail 400":       &gmail.StatusError{Op: "gmail GET /users/me/messages", Code: 400},
+		"gmail plain 403": &gmail.StatusError{Op: "gmail GET /users/me/messages", Code: 403, Body: `{"error":{"errors":[{"reason":"forbidden"}]}}`},
+		"chunk mixed":     &digest.ChunkErrors{Msg: "2 channel(s) failed", Errs: []error{aiErr, parse}},
+	}
+	for name, err := range strikes {
+		assert.Equal(t, err, backfillErr(err), name)
+	}
+}
+
+type errGenerator struct{ err error }
+
+func (g errGenerator) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	return "", nil, "", g.err
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+// busyErr returns a real SQLITE_BUSY: a second connection writing while the
+// first holds the write lock.
+func busyErr(t *testing.T) error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "busy.db")
+	a, err := db.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { a.Close() })
+	b, err := db.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { b.Close() })
+	require.NoError(t, b.SetBusyTimeout(0))
+	tx, err := a.Begin()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	_, err = tx.Exec(`CREATE TABLE busy_probe (x INTEGER)`)
+	require.NoError(t, err)
+	_, err = b.Exec(`CREATE TABLE busy_probe2 (x INTEGER)`)
+	require.Error(t, err)
+	require.True(t, db.IsBusy(err), "want SQLITE_BUSY, got %v", err)
+	return err
 }
 
 // stageGen answers stage-1 stream digest calls and stage-2 consolidator
