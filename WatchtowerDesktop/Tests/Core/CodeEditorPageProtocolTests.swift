@@ -21,11 +21,11 @@ final class CodeEditorPageProtocolTests: XCTestCase {
     func testTextMateGrammarsMatchTheFetchScript() throws {
         let script = try String(contentsOf: Self.web.appendingPathComponent("textmate.js"), encoding: .utf8)
         let named = try Self.table("GRAMMARS", in: script)
-        let fetch = try String(
-            contentsOf: Self.web.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("scripts/fetch-textmate.sh"),
-            encoding: .utf8
-        )
+        let repo = Self.web
+            .deletingLastPathComponent() // Sources
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent()
+        let fetch = try String(contentsOf: repo.appendingPathComponent("scripts/fetch-textmate.sh"), encoding: .utf8)
         let list = try XCTUnwrap(fetch.range(of: #"GRAMMARS="([^"]*)""#, options: .regularExpression), "no GRAMMARS list")
         let names = fetch[list].dropFirst("GRAMMARS=\"".count).dropLast()
         let vendored = Set(names.split(whereSeparator: \.isWhitespace).map(String.init))
