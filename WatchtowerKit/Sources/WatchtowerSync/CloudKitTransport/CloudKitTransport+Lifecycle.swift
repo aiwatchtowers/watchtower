@@ -53,6 +53,9 @@ extension CloudKitTransport {
         let engine = engineFactory(stateSerialization, box)
         self.engine = engine
         delegateBox = box
+        // The new engine resumes from the stored state, which is from
+        // before any batch a previous engine failed to buffer.
+        engineBatchUnbuffered = false
 
         if managesZones {
             engine.add(pendingDatabaseChanges: CloudZoneID.allCases.map {
@@ -192,7 +195,9 @@ extension CloudKitTransport {
                     break
                 }
                 guard self.engine === engine, !isStopped else { return }
-                bufferPolledChanges(page)
+                // A page that did not reach the buffer keeps the token:
+                // the next pull reads it again.
+                guard bufferPolledChanges(page) else { return }
                 try store.setPollToken(page.changeToken, zone: zone)
                 moreComing = page.moreComing
             }
@@ -222,7 +227,7 @@ extension CloudKitTransport {
     /// whose change tag matches its archived system fields (fetched by the
     /// engine, or sent from here), and a deletion of a record it has no
     /// system fields for (never seen, or its deletion already buffered).
-    private func bufferPolledChanges(_ page: PolledZoneChanges) {
+    private func bufferPolledChanges(_ page: PolledZoneChanges) -> Bool {
         let modifications = page.modifications.filter { record in
             guard let zone = zones.cloudZone(for: record.recordID.zoneID),
                   let tag = record.recordChangeTag else { return true }
@@ -232,7 +237,7 @@ extension CloudKitTransport {
             guard let zone = zones.cloudZone(for: id.zoneID) else { return false }
             return (try? store.systemFields(recordName: id.recordName, zone: zone)) != nil
         }
-        bufferFetched(modifications: modifications, deletions: deletions)
+        return bufferFetched(modifications: modifications, deletions: deletions)
     }
 
     /// The change tag in a record's archived system fields, if any.

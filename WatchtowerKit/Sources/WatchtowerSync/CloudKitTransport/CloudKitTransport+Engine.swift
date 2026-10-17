@@ -299,7 +299,23 @@ extension CloudKitTransport {
 
     private func persistEngineState(_ serialization: CKSyncEngine.State.Serialization) {
         do {
-            let data = try JSONEncoder().encode(serialization)
+            saveEngineState(try JSONEncoder().encode(serialization))
+        } catch {
+            recordError(error)
+        }
+    }
+
+    /// Saves the engine's state (its change tokens) unless a batch this
+    /// engine fetched failed to reach the buffer: CKSyncEngine counts a
+    /// delivered batch as done, so a token saved past it would lose it for
+    /// good. The engine keeps running on its in-memory state; nothing more
+    /// is saved until the next engine start, which resumes from the last
+    /// good token and fetches that batch again (meanwhile a `pull()`'s zone
+    /// poll reads it again). Internal so tests drive it without a
+    /// CKSyncEngine state.
+    func saveEngineState(_ data: Data) {
+        guard !engineBatchUnbuffered else { return }
+        do {
             try store.saveEngineState(data)
             lastError = nil
         } catch {
@@ -308,13 +324,25 @@ extension CloudKitTransport {
     }
 
     private func bufferFetchedChanges(_ event: CKSyncEngine.Event.FetchedRecordZoneChanges) {
-        bufferFetched(modifications: event.modifications.map(\.record), deletions: event.deletions.map(\.recordID))
+        bufferEngineFetched(modifications: event.modifications.map(\.record), deletions: event.deletions.map(\.recordID))
+    }
+
+    /// The engine's fetched batch; a failed buffer write stops the engine
+    /// state from being saved (see `saveEngineState`). Internal so tests
+    /// feed it without fabricating an engine event.
+    func bufferEngineFetched(modifications: [CKRecord], deletions: [CKRecord.ID]) {
+        if !bufferFetched(modifications: modifications, deletions: deletions) {
+            engineBatchUnbuffered = true
+        }
     }
 
     /// Buffers fetched records and deletions of this hub's zones (the
     /// engine's fetched-changes events and the transport's own zone poll).
+    /// Returns false when the store write failed (recorded in `lastError`):
+    /// the caller must not move its change token past this batch.
     /// Internal so tests feed it without fabricating an engine event.
-    func bufferFetched(modifications fetched: [CKRecord], deletions: [CKRecord.ID]) {
+    @discardableResult
+    func bufferFetched(modifications fetched: [CKRecord], deletions: [CKRecord.ID]) -> Bool {
         let modifications = fetched.filter { zones.cloudZone(for: $0.recordID.zoneID) != nil }
         let changed = modifications.compactMap { modification -> CloudRecord? in
             guard let record = zones.cloudZone(for: modification.recordID.zoneID)
@@ -368,8 +396,10 @@ extension CloudKitTransport {
                 try store.deleteSystemFields(recordNames: names, zone: zone)
             }
             lastError = nil
+            return true
         } catch {
             recordError(error)
+            return false
         }
     }
 

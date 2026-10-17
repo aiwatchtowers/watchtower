@@ -794,6 +794,21 @@ public final class TransportStore: Sendable {
     }
 
     #if DEBUG
+    /// Test-only: makes every write to the incoming buffer fail (or work
+    /// again), as a full disk or a suspended database would.
+    func failBufferWrites(_ fail: Bool) throws {
+        try queue.write { db in
+            if fail {
+                try db.execute(sql: """
+                    CREATE TEMP TRIGGER IF NOT EXISTS test_fail_buffer BEFORE INSERT ON events
+                    BEGIN SELECT RAISE(ABORT, 'buffer write failed'); END
+                    """)
+            } else {
+                try db.execute(sql: "DROP TRIGGER IF EXISTS temp.test_fail_buffer")
+            }
+        }
+    }
+
     /// Test-only: inject a pending row with an arbitrary (possibly unmappable)
     /// zone string to exercise pendingBatch's orphan-eviction path.
     func injectRawPendingRow(recordName: String, zoneRaw: String) throws {

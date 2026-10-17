@@ -102,6 +102,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// Set by `stop()`, cleared only by the public `start()`: a reset's
     /// queued relaunch must not bring back an engine the owner stopped.
     var isStopped = false
+    /// A batch the running engine fetched did not reach the buffer: the
+    /// engine state is not saved again until the next engine start (see
+    /// `saveEngineState`).
+    var engineBatchUnbuffered = false
 
     // Send-side error state (spec §9).
     var batchLimit = maxBatchSize
