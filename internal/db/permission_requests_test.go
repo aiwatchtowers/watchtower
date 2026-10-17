@@ -31,15 +31,21 @@ func TestOpenPermissionRequestSetsApprovalAndInserts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertNewPendingRequest(t, got, row, pid, at)
+	if _, err := d.GetPermissionRequest(id + 100); err != ErrPermissionRequestNotFound {
+		t.Fatalf("missing row err = %v", err)
+	}
+}
+
+// assertNewPendingRequest checks a just-opened `ls -la` Bash request.
+func assertNewPendingRequest(t *testing.T, got *PermissionRequest, row, pid int64, at time.Time) {
+	t.Helper()
 	if got.Status != PermissionPending || got.ToolName != "Bash" || got.Summary != "ls -la" ||
 		got.SummaryClipped || got.TerminalSessionID != row || got.WorkbenchID != pid || got.DecidedAt.Valid || got.DecidedBy.Valid {
 		t.Fatalf("row = %+v", got)
 	}
 	if !got.CreatedAt.Equal(at) {
 		t.Fatalf("created_at = %v, want %v", got.CreatedAt, at)
-	}
-	if _, err := d.GetPermissionRequest(id + 100); err != ErrPermissionRequestNotFound {
-		t.Fatalf("missing row err = %v", err)
 	}
 }
 
