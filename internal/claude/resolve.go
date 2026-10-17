@@ -99,7 +99,7 @@ func mergePATH(paths ...string) string {
 	seen := make(map[string]bool)
 	var parts []string
 	for _, ps := range paths {
-		for _, p := range strings.Split(ps, ":") {
+		for p := range strings.SplitSeq(ps, ":") {
 			if p == "" || seen[p] {
 				continue
 			}
@@ -133,7 +133,7 @@ func fallbackPATH() string {
 	}
 
 	seen := make(map[string]bool)
-	for _, p := range strings.Split(existing, ":") {
+	for p := range strings.SplitSeq(existing, ":") {
 		seen[p] = true
 	}
 	var parts []string

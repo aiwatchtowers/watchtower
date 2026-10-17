@@ -167,7 +167,7 @@ func TestReviseBeliefsPromptByteIdenticalWhenPreferencesOff(t *testing.T) {
 // countLines counts the body lines containing needle.
 func countLines(body, needle string) int {
 	n := 0
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.Contains(line, needle) {
 			n++
 		}

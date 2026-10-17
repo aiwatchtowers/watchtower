@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"testing"
 )
@@ -148,7 +148,7 @@ func TestRecomputeParentProgress_SharedFixture(t *testing.T) {
 					t.Errorf("target %s progress = %v (present=%v), want %v", id, g, ok, want)
 				}
 			}
-			sort.Slice(touched, func(i, j int) bool { return touched[i] < touched[j] })
+			slices.Sort(touched)
 			wantTouched := append([]int64{}, c.Want.Touched...)
 			if len(touched) != len(wantTouched) {
 				t.Fatalf("touched = %v, want %v", touched, wantTouched)

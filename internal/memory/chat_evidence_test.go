@@ -135,9 +135,9 @@ func TestMemory09_OwnerRankOnlyFromAuthoredTurns(t *testing.T) {
 		// The model never names a rank: beliefOpJSON has no rank field, so a
 		// model-supplied "rank":"owner" cannot deserialize into anything the
 		// applier reads. Rank is minted exclusively by newEvidenceLines.
-		typ := reflect.TypeOf(beliefOpJSON{})
-		for i := 0; i < typ.NumField(); i++ {
-			assert.NotEqual(t, "rank", typ.Field(i).Tag.Get("json"),
+		typ := reflect.TypeFor[beliefOpJSON]()
+		for field := range typ.Fields() {
+			assert.NotEqual(t, "rank", field.Tag.Get("json"),
 				"beliefOpJSON must not carry a model-settable rank field")
 		}
 		raw := `{"op":"confirm","belief_id":"b","rank":"owner","evidence":[]}`

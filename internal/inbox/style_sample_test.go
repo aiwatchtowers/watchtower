@@ -120,7 +120,7 @@ func TestStyleSample_CapsPerChannelAndTotal(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "U1")
 	insertChannel(t, d, "C1", "public")
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		insertMessage(t, d, "C1", fmt.Sprintf("%d.1", 100+i), "U1", fmt.Sprintf("message number %d long enough", i))
 	}
 
@@ -135,10 +135,10 @@ func TestStyleSample_TotalCapAcrossChannels(t *testing.T) {
 	seedWorkspaceAndUser(t, d, "U1")
 	// 12 channels x 15 qualifying messages = 180 after the per-channel cap,
 	// so only the 150 total cap can trim the sample.
-	for c := 0; c < 12; c++ {
+	for c := range 12 {
 		chID := fmt.Sprintf("C%02d", c)
 		insertChannel(t, d, chID, "public")
-		for i := 0; i < 15; i++ {
+		for i := range 15 {
 			insertMessage(t, d, chID, fmt.Sprintf("%d.%d", 1000+c*100+i, c), "U1",
 				fmt.Sprintf("channel %d message %d long enough", c, i))
 		}

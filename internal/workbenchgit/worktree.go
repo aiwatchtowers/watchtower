@@ -170,7 +170,7 @@ func ensureExcludeLine(commonDir, line string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	for _, l := range strings.Split(string(raw), "\n") {
+	for l := range strings.SplitSeq(string(raw), "\n") {
 		if strings.TrimSpace(l) == line {
 			return nil
 		}

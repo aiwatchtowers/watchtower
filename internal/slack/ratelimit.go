@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"log"
+	"maps"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -138,9 +139,7 @@ func (rl *RateLimiter) Stats() (counts map[int]int, retries int) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	c := make(map[int]int, len(rl.counts))
-	for k, v := range rl.counts {
-		c[k] = v
-	}
+	maps.Copy(c, rl.counts)
 	return c, rl.retries
 }
 

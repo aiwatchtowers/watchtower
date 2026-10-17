@@ -94,7 +94,7 @@ func TestInsertOwnerAsk_RefusesThe31stOpenAsk(t *testing.T) {
 	answered := mustInsertAsk(t, d, questionAsk(pid, "Old"))
 	markAskAnswered(t, d, answered)
 	var first int64
-	for i := 0; i < asks.MaxOpenPerWorkbench; i++ {
+	for range asks.MaxOpenPerWorkbench {
 		id := mustInsertAsk(t, d, questionAsk(pid, "Q"))
 		if first == 0 {
 			first = id

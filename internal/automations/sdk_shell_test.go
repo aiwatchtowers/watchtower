@@ -282,7 +282,7 @@ func envLines(t *testing.T, out any) map[string]string {
 		t.Fatalf("env output = %#v", out)
 	}
 	m := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSuffix(s, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(s, "\n"), "\n") {
 		k, v, _ := strings.Cut(line, "=")
 		m[k] = v
 	}

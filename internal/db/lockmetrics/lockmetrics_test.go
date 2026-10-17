@@ -178,11 +178,11 @@ func TestConcurrentRecordsNeverInterleave(t *testing.T) {
 	const goroutines, perG = 16, 200
 	site := strings.Repeat("x", 300) // long lines make a torn write visible
 	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < perG; i++ {
+			for i := range perG {
 				Record(Event{Kind: KindExec, WaitMS: int64(g), HoldMS: int64(i), Site: site})
 			}
 		}(g)
@@ -214,7 +214,7 @@ func TestHelperProcessRecord(t *testing.T) {
 	SetProcessRole(os.Getenv(helperRoleEnv))
 	Configure(dbPath)
 	site := strings.Repeat("y", 300)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		Record(Event{Kind: KindTx, HoldMS: int64(i), Site: site})
 	}
 }
@@ -227,7 +227,7 @@ func TestTwoProcessesNeverInterleave(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	var cmds []*exec.Cmd
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperProcessRecord$")
 		cmd.Env = append(os.Environ(),
 			helperEnv+"="+dbPath,
@@ -277,7 +277,7 @@ func TestTwoProcessesNeverInterleave(t *testing.T) {
 func TestSinkNamesAndCapAreTheSharedLiterals(t *testing.T) {
 	path := setup(t)
 	setMaxFileBytesForTest(1024)
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		Record(Event{Kind: KindTx, HoldMS: int64(i), Site: strings.Repeat("s", 60)})
 	}
 	dir := filepath.Dir(path)
@@ -295,7 +295,7 @@ func TestRotationMovesFullFileToDotOneAndContinues(t *testing.T) {
 	path := setup(t)
 	setMaxFileBytesForTest(1024)
 
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		Record(Event{Kind: KindTx, HoldMS: int64(i), Site: strings.Repeat("s", 60)})
 	}
 
@@ -638,7 +638,7 @@ func TestUnwritableDirWarnsOnceAndNeverPanics(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(ro, 0o700) })
 	Configure(filepath.Join(ro, "watchtower.db"))
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		Record(Event{Kind: KindBusy})
 	}
 	if got := warns(); got != 1 {

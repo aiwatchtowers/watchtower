@@ -140,7 +140,7 @@ func TestReconcileSkippedWhenBudgetSpent(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
 	t0 := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		f.addPage(string(rune('a'+i)), 1, t0.Add(time.Duration(i)*time.Second))
 	}
 	clock := &stepClock{t: t0, step: time.Minute}

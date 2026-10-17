@@ -1616,15 +1616,26 @@ const gmailTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
 // failure propagates as a genuine error (freezing the Gmail watermark) rather
 // than being masked as an empty read.
 func (db *DB) ListGmailThreadsForExtract(accountID int64, sinceTS, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
+	return listExtractDrainingBoundary(func(op string, tsArg, before float64, lim int) ([]GmailExtractMessage, error) {
+		return db.queryGmailExtractMessages(accountID, op, tsArg, before, lim)
+	}, sinceTS, beforeTS, limit)
+}
+
+// listExtractDrainingBoundary is the shared limit-plus-boundary-drain loader
+// behind ListGmailThreadsForExtract and ListImapMessagesForExtract: query runs
+// one select with op ">" (the window, bounded by before and lim) or "=" (the
+// boundary second, unbounded), and a LIMIT cut inside a second is extended to
+// that whole second (see ListGmailThreadsForExtract).
+func listExtractDrainingBoundary(query func(op string, tsArg, before float64, lim int) ([]GmailExtractMessage, error), sinceTS, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
 	if limit <= 0 {
 		limit = 2000
 	}
-	out, err := db.queryGmailExtractMessages(accountID, ">", sinceTS, beforeTS, limit)
+	out, err := query(">", sinceTS, beforeTS, limit)
 	if err != nil || len(out) < limit {
 		return out, err
 	}
 	boundary := out[len(out)-1].TSUnix
-	full, err := db.queryGmailExtractMessages(accountID, "=", boundary, 0, -1) // LIMIT -1: unbounded
+	full, err := query("=", boundary, 0, -1) // LIMIT -1: unbounded
 	if err != nil {
 		return nil, err
 	}

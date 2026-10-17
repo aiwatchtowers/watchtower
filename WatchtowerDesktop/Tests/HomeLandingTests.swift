@@ -52,6 +52,7 @@ final class HomeLandingTests: XCTestCase {
             appState.onboarding.goTo(.connect)
 
             await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: goals)) {}
+            await appState.stopSidebarCounts()?.value
 
             XCTAssertEqual(appState.selectedDestination, .home, "\(goals) slack=\(slack) disabled=\(disabled)")
         }
@@ -76,6 +77,7 @@ final class HomeLandingTests: XCTestCase {
         await vm.refreshAsync()
 
         await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
+        await appState.stopSidebarCounts()?.value
         await appState.daemonStartChain?.value
 
         XCTAssertEqual(appState.onboarding.currentStep, .complete)

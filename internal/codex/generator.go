@@ -180,7 +180,7 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 	// bufio.Scanner: a command_execution / mcp_tool_call item can exceed any
 	// scanner buffer, and a scanner stopping there silently returned the
 	// pre-tool preamble as the answer.
-	for _, line := range bytes.Split(output, []byte("\n")) {
+	for line := range bytes.SplitSeq(output, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue

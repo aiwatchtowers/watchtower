@@ -92,7 +92,7 @@ func TestQuerySync_ChildEnvReplacesEnviron(t *testing.T) {
 	data, err := os.ReadFile(out)
 	require.NoError(t, err)
 	var got []string
-	for _, l := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		// the shell adds these itself
 		if strings.HasPrefix(l, "PWD=") || strings.HasPrefix(l, "SHLVL=") || strings.HasPrefix(l, "_=") || strings.HasPrefix(l, "OLDPWD=") {
 			continue

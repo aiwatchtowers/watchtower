@@ -379,7 +379,7 @@ func renderMarkers(markers []episodeRef) string {
 func parseFactsBullets(body string) []string {
 	var facts []string
 	inFacts := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## ") {
 			inFacts = trimmed == "## Facts"
@@ -463,7 +463,7 @@ func rebuildEntityBody(page Node, what, current string, facts []string, markers 
 // heading, or "" when the section is absent or empty.
 func sectionFirstLine(body, heading string) string {
 	inSection := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## ") {
 			inSection = trimmed == heading

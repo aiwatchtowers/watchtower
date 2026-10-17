@@ -26,7 +26,7 @@ func reflectConfig() config.MemoryConfig {
 // commit (at real time.Now()) falls inside the pass's 7-day lookback.
 func reflectDueDay(key string) time.Time {
 	base := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
-	for i := 0; i < reflectStaggerDays; i++ {
+	for i := range reflectStaggerDays {
 		d := base.AddDate(0, 0, i)
 		if dueForReflect(key, d) {
 			return d
@@ -38,7 +38,7 @@ func reflectDueDay(key string) time.Time {
 // reflectNotDueDay returns a day on which reflection is NOT due for key.
 func reflectNotDueDay(key string) time.Time {
 	base := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
-	for i := 0; i < reflectStaggerDays; i++ {
+	for i := range reflectStaggerDays {
 		d := base.AddDate(0, 0, i)
 		if !dueForReflect(key, d) {
 			return d
@@ -53,7 +53,7 @@ func reflectNotDueDay(key string) time.Time {
 func churnNode(t *testing.T, v *Vault, n Node, op string, times int, day time.Time) {
 	t.Helper()
 	rev := n
-	for i := 0; i < times; i++ {
+	for i := range times {
 		rev.Body = appendHistory(rev.Body, fmt.Sprintf("- %s: %s rev %d\n", day.Format("2006-01-02"), op, i))
 		_, err := v.WriteNodes([]Node{rev}, CommitMsg{Op: op, Summary: "revised", Cause: op, NodeIDs: []string{n.ID}})
 		require.NoError(t, err)
@@ -249,7 +249,7 @@ func TestReflectCapsObservations(t *testing.T) {
 	day := reflectDueDay("T1")
 
 	var obs []string
-	for i := 0; i < reflectMaxObservations+2; i++ {
+	for i := range reflectMaxObservations + 2 {
 		id := fmt.Sprintf("bel_0000000000000000000000000%d", i+1)
 		bel := beliefTestNode(id, fmt.Sprintf("belief %d", i), "ent_x", 0.5, 1, "active")
 		writeAndIndex(t, v, d, bel)

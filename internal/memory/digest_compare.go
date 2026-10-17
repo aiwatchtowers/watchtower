@@ -410,7 +410,7 @@ func (p *Pipeline) runDigestCompare(ctx context.Context, runID int64, stats *Run
 func sectionProse(body, heading string) string {
 	var lines []string
 	inSection := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## ") {
 			inSection = trimmed == heading

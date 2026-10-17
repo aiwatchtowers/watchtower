@@ -20,7 +20,7 @@ func lockEvents(t *testing.T, dbPath string) []lockmetrics.Event {
 		t.Fatalf("reading the lock-metrics sink: %v", err)
 	}
 	var out []lockmetrics.Event
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
 		var e lockmetrics.Event
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			t.Fatalf("bad sink line %q: %v", line, err)

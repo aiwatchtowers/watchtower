@@ -8,9 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// strPtr is a helper for building PromoteOverrides literals in tests.
-func strPtr(s string) *string { return &s }
-
 // makeParentWithSubItems creates a parent target with the given sub-item texts
 // (all undone, no due_date) and returns its ID.
 func makeParentWithSubItems(t *testing.T, db *DB, texts ...string) int64 {
@@ -153,15 +150,15 @@ func TestPromoteSubItemToChild_OverridesApplied(t *testing.T) {
 	parentID := makeParentWithSubItems(t, db, "rough text")
 
 	childID, err := db.PromoteSubItemToChild(parentID, 0, PromoteOverrides{
-		Text:        strPtr("polished text"),
-		Intent:      strPtr("custom intent"),
-		Level:       strPtr("day"),
-		Priority:    strPtr("low"),
-		Ownership:   strPtr("delegated"),
-		DueDate:     strPtr("2026-04-30T17:00"),
-		PeriodStart: strPtr("2026-04-30"),
-		PeriodEnd:   strPtr("2026-04-30"),
-		Tags:        strPtr(`["x","y"]`),
+		Text:        new("polished text"),
+		Intent:      new("custom intent"),
+		Level:       new("day"),
+		Priority:    new("low"),
+		Ownership:   new("delegated"),
+		DueDate:     new("2026-04-30T17:00"),
+		PeriodStart: new("2026-04-30"),
+		PeriodEnd:   new("2026-04-30"),
+		Tags:        new(`["x","y"]`),
 	})
 	require.NoError(t, err)
 

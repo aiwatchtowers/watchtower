@@ -220,9 +220,13 @@ package struct TerminalLaunch: Equatable, Sendable {
         "Work on group #\(targetID) using the \(WorkbenchNames.skill) skill."
     }
 
-    /// The first prompt of a Work on It session: the group wording when the target has sub-targets.
-    package static func workOnPrompt(targetID: Int64, isGroup: Bool) -> String {
-        isGroup ? workOnGroupPrompt(targetID: targetID) : workOnTargetPrompt(targetID: targetID)
+    /// The first prompt of a Work on It session: the group wording when the
+    /// target has sub-targets and the folder's skill knows that wording
+    /// (`skillKnowsGroups`, board #476). A skill without it — the old one, a
+    /// version before the group rules, an owner's copy that dropped them —
+    /// gets the target wording, as before the group prompt existed.
+    package static func workOnPrompt(targetID: Int64, isGroup: Bool, skillKnowsGroups: Bool) -> String {
+        isGroup && skillKnowsGroups ? workOnGroupPrompt(targetID: targetID) : workOnTargetPrompt(targetID: targetID)
     }
 
     /// Follows a session's brief when the owner asked for a plan first (a
