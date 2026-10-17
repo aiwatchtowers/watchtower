@@ -16,8 +16,9 @@ import (
 )
 
 // ErrHold is what a Source returns (wrapped) for a transient condition such
-// as a Slack rate limit: the runner holds the chunk for a later cycle like a
-// passed budget deadline — no strike, no advance, the Step ends (R23).
+// as a Slack rate limit, a network outage or a failed AI call: the runner
+// holds the chunk for a later cycle — no strike, no advance — and moves on
+// to the next row, so one held source never blocks the others (R23, #580).
 var ErrHold = errors.New("history backfill: hold the chunk")
 
 // Source fetches one account's raw data for a range. Process runs the AI
@@ -138,7 +139,7 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 		return r.fail(ctx, bctx, row, fromTS, from, to, fmt.Errorf("process: %w", err))
 	}
 	if !complete {
-		return true, nil // budget cut or lock held: retry the chunk next cycle
+		return false, nil // budget cut or lock held: retry the chunk next cycle, the next row still runs
 	}
 	return false, r.advance(row, fromTS)
 }
@@ -181,9 +182,10 @@ func (r *Runner) markPlanLimitWaiting(row *db.HistoryBackfill) error {
 }
 
 // fail records a chunk failure; the third failure of a chunk skips it. A
-// canceled context is a shutdown, and a passed Budget deadline or a source's
-// ErrHold holds the chunk for the next cycle: none is a failure, and all
-// stop the Step.
+// canceled context is a shutdown and a passed Budget deadline holds the
+// chunk for the next cycle: neither is a failure, and both stop the Step. A
+// source's ErrHold holds the chunk too, with no strike, and the Step goes on
+// to the next row.
 func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS float64, from, to time.Time, err error) (stop bool, _ error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return true, ctxErr
@@ -196,7 +198,7 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 	if errors.Is(err, ErrHold) {
 		r.logf("history backfill: %s account %d chunk [%s, %s) held for a later cycle: %v",
 			row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), err)
-		return true, nil
+		return false, nil
 	}
 	n, recErr := r.Store.RecordHistoryBackfillFailure(row.ID, err.Error(), r.Now())
 	if recErr != nil {

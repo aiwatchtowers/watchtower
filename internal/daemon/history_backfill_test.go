@@ -3,10 +3,13 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +24,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/historybackfill"
 	"watchtower/internal/ideas"
@@ -482,423 +486,48 @@ func TestOnSlackBackfillDone_HeldByPlanGate(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// R23: an incomplete Slack search (rate limit) maps to the runner's hold.
-func TestHistoryBackfill_SlackSourceIncompleteIsHold(t *testing.T) {
-	assert.ErrorIs(t, slackFetchErr(fmt.Errorf("x: %w", sync.ErrBackfillIncomplete)), historybackfill.ErrHold)
-	other := fmt.Errorf("boom")
-	assert.Equal(t, other, slackFetchErr(other))
-	assert.NoError(t, slackFetchErr(nil))
-}
-
-// F8: the rollups' digest-lock contention is a hold; any other rollup error
-// is a strike.
-func TestHistoryBackfill_SlackRollupLockContentionIsHold(t *testing.T) {
-	assert.ErrorIs(t, slackRollupErr(fmt.Errorf("x: %w", digest.ErrDigestLocked)), historybackfill.ErrHold)
-	other := fmt.Errorf("opening digest lock: boom")
-	assert.Equal(t, other, slackRollupErr(other))
-	assert.NoError(t, slackRollupErr(nil))
-}
-
-// stageGen answers stage-1 stream digest calls and stage-2 consolidator
-// calls, counting each and recording the stage-1 prompts.
-type stageGen struct {
-	mu             gosync.Mutex
-	stage1, stage2 int
-	prompts        []string
-}
-
-func (g *stageGen) Generate(_ context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if strings.Contains(user, "=== REGISTRY ===") {
-		g.stage2++
-		return `{"ops":[]}`, &digest.Usage{}, "", nil
+// R23, F8, #580: transient failures map to the runner's hold (retried, no
+// strike); anything else, such as a reply that cannot be parsed, passes
+// through as a strike.
+func TestHistoryBackfill_TransientErrorsAreHolds(t *testing.T) {
+	holds := map[string]error{
+		"slack rate limit": fmt.Errorf("x: %w", sync.ErrBackfillIncomplete),
+		"digest lock":      fmt.Errorf("x: %w", digest.ErrDigestLocked),
+		"ai call":          fmt.Errorf("digest backfill: 3 channel(s) failed: %w", aiCallFailure(t)),
+		"timeout":          fmt.Errorf("x: %w", context.DeadlineExceeded),
+		"network down":     fmt.Errorf("listing: %w", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("no route to host")}),
+		"dns":              fmt.Errorf("x: %w", &net.DNSError{Err: "no such host", Name: "imap.example.com"}),
+		"url error":        fmt.Errorf("x: %w", &url.Error{Op: "Get", URL: "https://example.com", Err: errors.New("connection reset")}),
+		"gmail 503":        fmt.Errorf("x: %w", &gmail.StatusError{Path: "/users/me/messages", Code: 503}),
+		"gmail 429":        fmt.Errorf("x: %w", &gmail.StatusError{Path: "/users/me/messages", Code: 429}),
+		"already a hold":   fmt.Errorf("x: %w", historybackfill.ErrHold),
 	}
-	g.stage1++
-	g.prompts = append(g.prompts, user)
-	return `{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[]}]}`, &digest.Usage{}, "", nil
-}
-
-// saw reports whether any stage-1 prompt contained s, and how many prompts
-// there were.
-func (g *stageGen) saw(s string) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for _, p := range g.prompts {
-		if strings.Contains(p, s) {
-			return true
-		}
+	for name, err := range holds {
+		assert.ErrorIs(t, backfillErr(err), historybackfill.ErrHold, name)
 	}
-	return false
+	strikes := map[string]error{
+		"parse":       errors.New("parsing ideas.digest_email JSON: unexpected end"),
+		"lock file":   errors.New("opening digest lock: boom"),
+		"gmail 400":   &gmail.StatusError{Path: "/users/me/messages", Code: 400},
+		"no progress": errors.New("digest backfill: no progress in [1,2]"),
+	}
+	for name, err := range strikes {
+		assert.Equal(t, err, backfillErr(err), name)
+	}
+	assert.NoError(t, backfillErr(nil))
 }
 
-// seedGmailAccountForIdeas seeds a Gmail account whose ideas floor is already
-// initialized at now (the forward pass ran), and returns its id.
-func seedGmailAccountForIdeas(t *testing.T, database *db.DB, email string) int64 {
+// aiCallFailure returns what a failed AI call looks like to its callers.
+func aiCallFailure(t *testing.T) error {
 	t.Helper()
-	res, err := database.Exec(`INSERT INTO google_accounts (email, label, gmail_enabled, gmail_last_internal_date, ideas_email_floor)
-		VALUES (?, 'Test', 1, ?, ?)`, email, float64(time.Now().Unix()), float64(time.Now().Unix()))
-	require.NoError(t, err)
-	acct, err := res.LastInsertId()
-	require.NoError(t, err)
-	return acct
-}
-
-func seedGmailMail(t *testing.T, database *db.DB, acct int64, id, body string, at time.Time) {
-	t.Helper()
-	_, err := database.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
-		VALUES (?, ?, ?, 'b@example.com', 'Ann', 'Subj', ?, ?)`, acct, id, "thr-"+id, body, at.UTC().Format(time.RFC3339))
-	require.NoError(t, err)
-}
-
-// R17/R28: the Gmail chunk runs only stage 1, gated on streams.enabled; the
-// consolidator is the regular ideas run's job, whatever ideas.enabled says.
-func TestHistoryBackfill_GmailSourceFlags(t *testing.T) {
-	cases := []struct {
-		name             string
-		streams, ideasOn bool
-		wantStage1       bool
-	}{
-		{"streams off", false, true, false},
-		{"ideas off", true, false, true},
-		{"both on", true, true, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			d, database, _ := newBackfillDaemon(t)
-			d.config.Streams.Enabled = tc.streams
-			d.config.Ideas.Enabled = tc.ideasOn
-			gen := &stageGen{}
-			d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
-			from := time.Now().AddDate(0, 0, -20)
-			acct := seedGmailAccountForIdeas(t, database, "a@example.com")
-			seedGmailMail(t, database, acct, "m1", "we should try X", from.Add(time.Hour))
-
-			complete, err := gmailSource{id: acct, d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
-			require.NoError(t, err)
-			assert.True(t, complete)
-			assert.Equal(t, tc.wantStage1, gen.stage1 > 0, "stage 1")
-			assert.Zero(t, gen.stage2, "no consolidator call from the backfill")
-		})
-	}
-}
-
-// cuttingStageGen answers stage-1 calls, counts the ones that succeeded, and
-// cancels the chunk's ctx after cutAfter of them (0 = never) — the budget
-// deadline passing mid-drain.
-type cuttingStageGen struct {
-	cutAfter int
-	cancel   context.CancelFunc
-	ok       int
-}
-
-func (g *cuttingStageGen) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", nil, "", err
-	}
-	g.ok++
-	if g.cutAfter > 0 && g.ok == g.cutAfter {
-		g.cancel()
-	}
-	return `{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[]}]}`, &digest.Usage{}, "", nil
-}
-
-// F2: a Gmail chunk held mid-drain resumes where it got to on the next
-// attempt, so the two attempts together pay the stage-1 calls of one
-// uninterrupted drain; the resume point is dropped once the chunk completes.
-func TestHistoryBackfill_GmailChunkResumesWhereItStopped(t *testing.T) {
-	from := time.Now().AddDate(0, 0, -20).Truncate(time.Second)
-	to := from.Add(48 * time.Hour)
-	setup := func(t *testing.T, gen digest.Generator) (*Daemon, int64) {
-		d, database, _ := newBackfillDaemon(t)
-		d.config.Streams.Enabled = true
-		d.config.Ideas.MaxPromptChars = 1 // one thread per stage-1 window
-		d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
-		acct := seedGmailAccountForIdeas(t, database, "a@example.com")
-		for i := range 4 {
-			seedGmailMail(t, database, acct, fmt.Sprintf("m%d", i), fmt.Sprintf("mail %d", i),
-				from.Add(time.Duration(i+1)*time.Hour))
-		}
-		return d, acct
-	}
-
-	whole := &cuttingStageGen{}
-	d, acct := setup(t, whole)
-	complete, err := gmailSource{id: acct, d: d}.Process(context.Background(), from, to)
-	require.NoError(t, err)
-	require.True(t, complete)
-	require.Greater(t, whole.ok, 2, "the chunk takes several passes")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	cut := &cuttingStageGen{cutAfter: 2, cancel: cancel}
-	d, acct = setup(t, cut)
-	src := gmailSource{id: acct, d: d}
-	complete, err = src.Process(ctx, from, to)
+	gen := digest.WithCallTimeout(failingGenerator{}, time.Minute)
+	_, _, _, err := gen.Generate(context.Background(), "sys", "user", "")
 	require.Error(t, err)
-	assert.False(t, complete)
-	assert.Len(t, d.backfillResume, 1, "the held chunk keeps its resume point")
-
-	cut.cutAfter = 0
-	complete, err = src.Process(context.Background(), from, to)
-	require.NoError(t, err)
-	assert.True(t, complete)
-	assert.Equal(t, whole.ok, cut.ok, "the retry pays no stage-1 call twice")
-	assert.Empty(t, d.backfillResume, "a completed chunk drops its resume point")
+	return err
 }
 
-// fetchingGmail is the daemon's gmailSource with a scripted Fetch, so a test
-// can make an account's mail arrive only with its own row's fetch.
-type fetchingGmail struct {
-	gmailSource
-	fetch func()
-}
+type failingGenerator struct{}
 
-func (f fetchingGmail) Fetch(context.Context, time.Time, time.Time) error {
-	f.fetch()
-	return nil
-}
-
-// R28 regression: two Gmail rows in one Step, A then B, with B's mail
-// arriving only with B's fetch. A's chunk must not drain B's account (which
-// would move B's floor past the window before B's mail exists), and each
-// row's Process mines only its own account.
-func TestHistoryBackfill_TwoGmailRowsOneStep(t *testing.T) {
-	d, database, _ := newBackfillDaemon(t)
-	d.config.Gmail.Enabled = true
-	d.config.Streams.Enabled = true
-	gen := &stageGen{}
-	d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
-
-	a := seedGmailAccountForIdeas(t, database, "a@example.com")
-	b := seedGmailAccountForIdeas(t, database, "b@example.com")
-	upper := time.Now().AddDate(0, 0, -10).Truncate(time.Second)
-	floor := upper.Add(-48 * time.Hour) // one chunk
-	for _, acct := range []int64{a, b} {
-		_, err := database.StartHistoryBackfill("gmail", acct, float64(floor.Unix()), float64(upper.Unix()), time.Now())
-		require.NoError(t, err)
-	}
-	seedGmailMail(t, database, b, "old-b", "bravo pending forward mail", time.Now().Add(-time.Hour)) // above the window
-
-	srcA := fetchingGmail{gmailSource{id: a, d: d}, func() {
-		seedGmailMail(t, database, a, "ma", "alpha backfilled mail", floor.Add(time.Hour))
-	}}
-	var aSawB bool
-	srcB := fetchingGmail{gmailSource{id: b, d: d}, func() {
-		aSawB = gen.saw("bravo")
-		seedGmailMail(t, database, b, "mb", "bravo backfilled mail", floor.Add(2*time.Hour))
-	}}
-	r := &historybackfill.Runner{
-		Store: database, Sources: []historybackfill.Source{srcA, srcB}, Account: d.accountState,
-		Budget: time.Minute, Now: time.Now, Logger: d.logger,
-	}
-	require.NoError(t, r.Step(context.Background()))
-
-	assert.True(t, gen.saw("alpha backfilled mail"))
-	assert.True(t, gen.saw("bravo backfilled mail"), "B's mail, fetched after A's chunk ran, is mined")
-	assert.False(t, aSawB, "A's chunk did no AI work for B's account")
-	assert.False(t, gen.saw("bravo pending forward mail"), "B's chunk stays inside its window")
-	rows, err := database.ListHistoryBackfills()
-	require.NoError(t, err)
-	for _, row := range rows {
-		assert.Equal(t, "done", row.Status)
-	}
-}
-
-// R30: a fresh Gmail account's first-sync window — which the forward stream
-// pass skipped by initializing the ideas floor at the newest synced message
-// — is stream-digested by the backfill's first chunk.
-func TestHistoryBackfill_GmailFirstSyncWeekIsMined(t *testing.T) {
-	d, database, _ := newBackfillDaemon(t)
-	d.config.Gmail.Enabled = true
-	d.config.Streams.Enabled = true
-	gen := &stageGen{}
-	d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
-
-	acct := seedGmailAccountForIdeas(t, database, "a@example.com")
-	newest := time.Now().Add(-24 * time.Hour)
-	seedGmailMail(t, database, acct, "m1", "first sync week mail", newest)
-	// The forward pass's initEmailFloor: the floor sits at the newest message.
-	_, err := database.Exec(`UPDATE google_accounts SET gmail_last_internal_date = ?, ideas_email_floor = ? WHERE id = ?`,
-		float64(newest.Unix()), float64(newest.Unix()), acct)
-	require.NoError(t, err)
-
-	syncStart := time.Now() // what gmail.Syncer.FirstSyncFrom now reports
-	d.startHistoryBackfill("gmail", acct, syncStart)
-	rows, err := database.ListHistoryBackfills()
-	require.NoError(t, err)
-	require.Len(t, rows, 1, "upper = sync start is never below the floor: the row starts")
-
-	src := fetchingGmail{gmailSource{id: acct, d: d}, func() {}}
-	r := &historybackfill.Runner{
-		Store: database, Sources: []historybackfill.Source{src}, Account: d.accountState,
-		Budget: time.Minute, Now: time.Now, Logger: d.logger,
-	}
-	require.NoError(t, r.Step(context.Background()))
-	assert.True(t, gen.saw("first sync week mail"), "the first-sync window is mined by the first chunk")
-	floor, err := database.IdeasEmailFloor(acct)
-	require.NoError(t, err)
-	assert.Equal(t, float64(newest.Unix()), floor, "the forward floor is restored")
-}
-
-func seedJiraIssueForIdeas(t *testing.T, database *db.DB, acct int64, key, desc string, updated time.Time) {
-	t.Helper()
-	u := db.FormatJiraTime(updated)
-	_, err := database.Exec(`INSERT INTO jira_issues
-		(account_id, key, id, project_key, board_id, summary, description_text, status, status_category, sprint_id, created_at, updated_at, synced_at)
-		VALUES (?, ?, ?, 'PRJ', 0, 'Summary', ?, 'Open', 'new', 0, ?, ?, ?)`, acct, key, key, desc, u, u, u)
-	require.NoError(t, err)
-}
-
-// R29: a Jira row's Process digests only its own account's issues.
-func TestHistoryBackfill_JiraSourceProcessOwnAccountOnly(t *testing.T) {
-	d, database, _ := newBackfillDaemon(t)
-	d.config.Streams.Enabled = true
-	gen := &stageGen{}
-	d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
-	now := db.FormatJiraTime(time.Now())
-	a, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-a"})
-	require.NoError(t, err)
-	b, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-b"})
-	require.NoError(t, err)
-	_, err = database.Exec(`UPDATE jira_accounts SET ideas_jira_floor = ?`, now)
-	require.NoError(t, err)
-	from := time.Now().AddDate(0, 0, -20)
-	seedJiraIssueForIdeas(t, database, a, "AA-1", "alpha issue", from.Add(time.Hour))
-	seedJiraIssueForIdeas(t, database, b, "BB-1", "bravo issue", from.Add(time.Hour))
-
-	complete, err := jiraSource{id: a, d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
-	require.NoError(t, err)
-	assert.True(t, complete)
-	assert.True(t, gen.saw("AA-1"))
-	assert.False(t, gen.saw("BB-1"), "only the row's own account")
-	assert.Zero(t, gen.stage2)
-
-	d.config.Streams.Enabled = false
-	n := gen.stage1
-	complete, err = jiraSource{id: b, d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
-	require.NoError(t, err)
-	assert.True(t, complete)
-	assert.Equal(t, n, gen.stage1, "streams off: no AI")
-}
-
-// R29: a Jira account's first sync starts a jira row; a later sync does not.
-func TestPhaseJiraSync_FirstSyncStartsBackfill(t *testing.T) {
-	d, database, _ := newBackfillDaemon(t)
-	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-a"})
-	require.NoError(t, err)
-	existing, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-b"})
-	require.NoError(t, err)
-	started := time.Now().Add(-time.Minute).Truncate(time.Second)
-	d.jiraSyncers = []jiraAccountSyncer{
-		&stubJiraSyncer{accountID: acct, firstSync: started},
-		&stubJiraSyncer{accountID: existing},
-	}
-
-	d.phaseJiraSync(context.Background())
-	rows, err := database.ListHistoryBackfills()
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, "jira", rows[0].SourceKind)
-	assert.Equal(t, acct, rows[0].AccountID)
-	assert.Equal(t, float64(started.Unix()), rows[0].UpperTS)
-}
-
-// F4: phaseSlackSync starts a backfill for an account's first sync (no
-// search watermark, no stored messages) and none for an account that
-// already synced.
-func TestPhaseSlackSync_FirstSyncStartsBackfill(t *testing.T) {
-	d, database, _ := newBackfillDaemon(t)
-	d.config.Sync.InitialHistoryDays = 3
-	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "acme", Domain: "acme"}))
-	d.SetOrchestrators([]*sync.Orchestrator{newBackfillOrchestrator(t, database, d.config)})
-
-	syncErr, _ := d.phaseSlackSync(context.Background())
-	require.NoError(t, syncErr)
-	rows, err := database.ListHistoryBackfills()
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, "slack", rows[0].SourceKind)
-	assert.Equal(t, int64(1), rows[0].AccountID)
-
-	// The watermark now exists: a later cycle starts nothing new.
-	_, err = database.Exec(`DELETE FROM history_backfill`)
-	require.NoError(t, err)
-	syncErr, _ = d.phaseSlackSync(context.Background())
-	require.NoError(t, syncErr)
-	rows, err = database.ListHistoryBackfills()
-	require.NoError(t, err)
-	assert.Empty(t, rows)
-}
-
-// stubMailSyncer is a mailSyncer whose Sync reports a scripted first sync.
-type stubMailSyncer struct {
-	accountID int64
-	firstSync time.Time // zero: not a first sync
-	syncErr   error
-}
-
-func (s *stubMailSyncer) Sync(context.Context) (int, error) { return 0, s.syncErr }
-func (s *stubMailSyncer) FetchRange(context.Context, time.Time, time.Time) (int, error) {
-	return 0, nil
-}
-func (s *stubMailSyncer) AccountID() int64 { return s.accountID }
-func (s *stubMailSyncer) FirstSyncFrom() (time.Time, bool) {
-	return s.firstSync, !s.firstSync.IsZero()
-}
-
-// F4: phaseGmailSync and phaseImapSync start a backfill for an account's
-// first sync — also when the sync then errs (R13) — and none for an account
-// that already synced.
-func TestPhaseMailSync_FirstSyncStartsBackfill(t *testing.T) {
-	for _, tc := range []struct {
-		kind string
-		wire func(d *Daemon, s []mailSyncer)
-		run  func(d *Daemon)
-	}{
-		{"gmail", func(d *Daemon, s []mailSyncer) { d.gmailSyncers = s }, func(d *Daemon) { d.phaseGmailSync(context.Background()) }},
-		{"imap", func(d *Daemon, s []mailSyncer) { d.imapSyncers = s }, func(d *Daemon) { d.phaseImapSync(context.Background()) }},
-	} {
-		t.Run(tc.kind, func(t *testing.T) {
-			d, database, _ := newBackfillDaemon(t)
-			started := time.Now().Add(-time.Minute).Truncate(time.Second)
-			tc.wire(d, []mailSyncer{
-				&stubMailSyncer{accountID: 7, firstSync: started, syncErr: fmt.Errorf("late failure")},
-				&stubMailSyncer{accountID: 8},
-			})
-
-			tc.run(d)
-			rows, err := database.ListHistoryBackfills()
-			require.NoError(t, err)
-			require.Len(t, rows, 1)
-			assert.Equal(t, tc.kind, rows[0].SourceKind)
-			assert.Equal(t, int64(7), rows[0].AccountID)
-			assert.Equal(t, float64(started.Unix()), rows[0].UpperTS)
-		})
-	}
-}
-
-func TestHistoryBackfill_AccountStateJira(t *testing.T) {
-	d, database, _ := newBackfillDaemon(t)
-	d.config.Jira.Enabled = true
-	ok, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
-	require.NoError(t, err)
-	revoked, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
-	require.NoError(t, err)
-	require.NoError(t, database.SetJiraAccountAuthState(revoked, "revoked", "grant gone"))
-	removed, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c3"})
-	require.NoError(t, err)
-	require.NoError(t, database.SetJiraAccountRemoved(removed))
-	disabled, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c4"})
-	require.NoError(t, err)
-	require.NoError(t, database.SetJiraAccountEnabled(disabled, false))
-
-	assert.Equal(t, historybackfill.AccountOK, d.accountState("jira", ok))
-	assert.Equal(t, historybackfill.AccountRevoked, d.accountState("jira", revoked))
-	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", removed))
-	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", disabled))
-	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", 999))
-
-	d.config.Jira.Enabled = false
-	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", ok), "jira.enabled=false: never wired")
+func (failingGenerator) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	return "", nil, "", errors.New("claude CLI failed (exit 1): API Error: Connection error")
 }

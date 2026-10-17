@@ -196,8 +196,9 @@ func TestRunner_ThreeFailuresSkipChunk(t *testing.T) {
 	assert.Empty(t, st.rows[0].LastError, "the next successful chunk clears the trace")
 }
 
-// R23: a source's ErrHold (a Slack rate limit) holds the chunk like the
-// budget deadline: no strike, no advance, the Step ends.
+// R23, #580: a source's ErrHold (a rate limit, a network outage, a failed
+// AI call) holds the chunk: no strike and no advance however many cycles it
+// lasts, and the next row still runs.
 func TestRunner_FetchHoldIsNotAFailure(t *testing.T) {
 	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "imap", 1, 30*day, 0)}}
 	a := &fakeSource{kind: "slack", id: 1, fetchErr: fmt.Errorf("search: %w", ErrHold)}
@@ -211,9 +212,32 @@ func TestRunner_FetchHoldIsNotAFailure(t *testing.T) {
 	assert.Equal(t, 0, st.rows[0].ChunkFailures)
 	assert.Empty(t, st.rows[0].LastError)
 	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
-	assert.Empty(t, b.calls, "the hold stops the Step")
+	assert.Equal(t, 1, b.count("process"), "the hold does not block the next row")
+	assert.Equal(t, 28*day, st.rows[1].ReachedTS)
 	assert.Equal(t, 1, strings.Count(buf.String(), "\n"), "one log line")
 	assert.Contains(t, buf.String(), "slack account 1")
+
+	for range MaxChunkFailures + 1 {
+		require.NoError(t, r.Step(context.Background()))
+	}
+	assert.Equal(t, 0, st.failures, "held cycles never add up to a skip")
+	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+}
+
+// #580: a held Process (an AI outage) is retried, never skipped.
+func TestRunner_ProcessHoldIsNotAFailure(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 1, 30*day, 0)}}
+	src := &fakeSource{kind: "gmail", id: 1, processErr: fmt.Errorf("drain: %w", ErrHold)}
+	r := newRunner(st, src)
+	for range MaxChunkFailures + 1 {
+		require.NoError(t, r.Step(context.Background()))
+	}
+	assert.Equal(t, 0, st.failures)
+	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+
+	src.processErr = nil
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, 28*day, st.rows[0].ReachedTS, "the chunk loads once the outage ends")
 }
 
 func TestRunner_FetchFailureRecorded(t *testing.T) {
@@ -314,7 +338,7 @@ func TestRunner_IncompleteProcessHolds(t *testing.T) {
 	require.NoError(t, newRunner(st, a, b).Step(context.Background()))
 	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
 	assert.Equal(t, 0, st.failures)
-	assert.Empty(t, b.calls, "an incomplete chunk stops the Step")
+	assert.Equal(t, 1, b.count("process"), "an incomplete chunk does not block the next row")
 }
 
 func TestRunner_RevokedPausesAndResumes(t *testing.T) {

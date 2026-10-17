@@ -64,7 +64,25 @@ func (g *timeoutGenerator) Generate(ctx context.Context, systemPrompt, userMessa
 
 	result, usage, newSessionID, err := g.inner.Generate(ctx, systemPrompt, userMessage, sessionID)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil {
-		return "", nil, "", fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded)
+		return "", nil, "", aiCallError{fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded)}
 	}
-	return result, usage, newSessionID, err
+	if err != nil {
+		return result, usage, newSessionID, aiCallError{err}
+	}
+	return result, usage, newSessionID, nil
 }
+
+// ErrAICall marks an error of the AI call itself — the CLI, the provider or
+// the network behind them failed, or the call ran out of time — as opposed to
+// a reply that came back and could not be used. Every daemon AI call goes
+// through WithCallTimeout, so errors.Is(err, ErrAICall) holds for every such
+// failure; the history backfill retries those instead of counting a strike
+// against the chunk (docs/features/history-backfill.md).
+var ErrAICall = errors.New("ai call failed")
+
+// aiCallError wraps an AI call failure so errors.Is sees ErrAICall without
+// changing the message callers log.
+type aiCallError struct{ err error }
+
+func (e aiCallError) Error() string   { return e.err.Error() }
+func (e aiCallError) Unwrap() []error { return []error{ErrAICall, e.err} }

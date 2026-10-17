@@ -2,6 +2,7 @@ package digest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -15,6 +16,30 @@ type blockingGenerator struct{}
 func (blockingGenerator) Generate(ctx context.Context, _, _, _ string) (string, *Usage, string, error) {
 	<-ctx.Done()
 	return "", nil, "", ctx.Err()
+}
+
+type errGenerator struct{ err error }
+
+func (g errGenerator) Generate(context.Context, string, string, string) (string, *Usage, string, error) {
+	return "", nil, "", g.err
+}
+
+// #580: every failed call is marked ErrAICall, so the history backfill can
+// retry an AI outage instead of skipping the chunk; the message and the
+// inner error stay as they were. A successful call carries no error.
+func TestWithCallTimeout_FailureIsAnAICallError(t *testing.T) {
+	inner := errors.New("claude CLI failed (exit 1): API Error: Connection error")
+	_, _, _, err := WithCallTimeout(errGenerator{inner}, time.Minute).Generate(context.Background(), "s", "u", "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAICall)
+	assert.ErrorIs(t, err, inner)
+	assert.Equal(t, inner.Error(), err.Error())
+
+	_, _, _, err = WithCallTimeout(blockingGenerator{}, 10*time.Millisecond).Generate(context.Background(), "s", "u", "")
+	assert.ErrorIs(t, err, ErrAICall, "the call's own timeout is an AI call failure too")
+
+	_, _, _, err = WithCallTimeout(&fastGenerator{}, time.Minute).Generate(context.Background(), "s", "u", "")
+	assert.NoError(t, err)
 }
 
 // fastGenerator returns immediately with a fixed result, recording the

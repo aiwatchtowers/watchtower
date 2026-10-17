@@ -132,9 +132,26 @@ func (c *Client) doGetRetry(ctx context.Context, path string, params url.Values,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gmail GET %s (%d): %s", path, resp.StatusCode, body)
+		return nil, &StatusError{Path: path, Code: resp.StatusCode, Body: string(body)}
 	}
 	return body, nil
+}
+
+// StatusError is a Gmail API reply with a status other than 200.
+type StatusError struct {
+	Path string
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("gmail GET %s (%d): %s", e.Path, e.Code, e.Body)
+}
+
+// Transient reports a status worth retrying later: rate limited or a
+// server-side failure.
+func (e *StatusError) Transient() bool {
+	return e.Code == http.StatusTooManyRequests || e.Code >= http.StatusInternalServerError
 }
 
 // listPageSize is the page size requested when maxResults is unlimited
