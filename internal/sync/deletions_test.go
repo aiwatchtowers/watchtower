@@ -141,10 +141,10 @@ func TestLiveDiff_TombstonesMissingRow(t *testing.T) {
 func TestLiveDiff_SkipsWhenListingEmpty(t *testing.T) {
 	ts, s := newLiveDiffSetup(t)
 	seedLive(t, ts, 6)
+	// A known channel keeps Run off the zero-channel full-sync fallback.
+	require.NoError(t, ts.db.EnsureChannel(ts.ns("C001"), "general", "public", ""))
 	s.set(nil, -1)
-	// Zero channels discovered sends Run on to a full sync this mux does not
-	// serve; its error is beside the point, the live diff has already run.
-	_ = ts.orch.Run(context.Background(), SyncOptions{})
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
 	assert.Equal(t, 0, countTombstones(t, ts.db))
 }
 
@@ -225,4 +225,45 @@ func TestBackfillSearch_NeverTombstones(t *testing.T) {
 	_, err := ts.orch.BackfillSearch(context.Background(), from, from.AddDate(0, 0, 1))
 	require.NoError(t, err)
 	assert.Equal(t, 0, countTombstones(t, ts.db))
+}
+
+// Bot and app posts may never reach search: one missing from the listing is
+// not a deletion.
+func TestLiveDiff_KeepsBotRowMissingFromSearch(t *testing.T) {
+	ts, s := newLiveDiffSetup(t)
+	stored := seedLive(t, ts, 9)
+	_, err := ts.db.Exec(`INSERT INTO users (id, name, is_bot) VALUES (?, 'deploybot', 1)`, ts.ns("B001"))
+	require.NoError(t, err)
+	botTS := dayTS(0, 12, 30)
+	require.NoError(t, ts.db.UpsertMessage(db.Message{ChannelID: ts.ns("C001"), TS: botTS, UserID: ts.ns("B001"), Text: "deployed"}))
+	appTS := dayTS(0, 12, 40)
+	require.NoError(t, ts.db.UpsertMessage(db.Message{ChannelID: ts.ns("C001"), TS: appTS, Text: "app post"}))
+	s.set(append([]string{}, stored[:8]...), -1)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	assert.True(t, isTombstone(t, ts.db, ts.ns("C001"), stored[8]), "the diff ran")
+	assert.False(t, isTombstone(t, ts.db, ts.ns("C001"), botTS))
+	assert.False(t, isTombstone(t, ts.db, ts.ns("C001"), appTS))
+	assert.Equal(t, 1, countTombstones(t, ts.db))
+}
+
+// A channel the listing returned nothing from is one search may not see at
+// all: it is skipped while another channel in the same window is diffed.
+func TestLiveDiff_SkipsChannelWithNothingListed(t *testing.T) {
+	ts, s := newLiveDiffSetup(t)
+	stored := seedLive(t, ts, 6)
+	var hidden []string
+	for i := range 3 {
+		h := dayTS(0, 9, 7+i)
+		require.NoError(t, ts.db.UpsertMessage(db.Message{ChannelID: ts.ns("C900"), TS: h, UserID: ts.ns("U001"), Text: "hidden"}))
+		hidden = append(hidden, h)
+	}
+	s.set(append([]string{}, stored[:5]...), -1)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	assert.True(t, isTombstone(t, ts.db, ts.ns("C001"), stored[5]))
+	for _, h := range hidden {
+		assert.False(t, isTombstone(t, ts.db, ts.ns("C900"), h))
+	}
+	assert.Equal(t, 1, countTombstones(t, ts.db))
 }

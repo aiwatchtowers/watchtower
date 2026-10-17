@@ -40,13 +40,17 @@ func liveDiffWindow(now time.Time) (from, to time.Time) {
 
 // tombstoneMissing tombstones the account's stored plain messages in
 // [from, to) that the listing did not return, unless sourcediff.Check
-// refuses (an empty listing, or more than half missing). Every skip is
-// logged. The stored set is read and diffed before the one short write.
+// refuses (an empty listing, or more than half missing). Only channels the
+// listing returned at least one message from inside the range are judged: a
+// channel search does not see (hidden from search, shared from another
+// org) would otherwise lose every row each cycle and never heal. Every skip
+// is logged. The stored set is read and diffed before the short writes.
 func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (int, error) {
-	stored, err := o.db.LiveSlackMessageKeys(o.accountID, float64(from.Unix()), float64(to.Unix()))
+	all, err := o.db.LiveSlackMessageKeys(o.accountID, float64(from.Unix()), float64(to.Unix()))
 	if err != nil {
 		return 0, err
 	}
+	listedIn := make(map[string]int)
 	listed := 0
 	for k := range l.seen {
 		at, err := parseSlackTS(k.TS)
@@ -54,16 +58,27 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 			continue
 		}
 		if !at.Before(from) && at.Before(to) {
+			listedIn[k.ChannelID]++
 			listed++
 		}
 	}
-	var missing []db.SlackMessageKey
-	for _, k := range stored {
+	rangeDesc := from.UTC().Format(time.RFC3339) + ".." + to.UTC().Format(time.RFC3339)
+	var stored, missing []db.SlackMessageKey
+	unlisted := make(map[string]bool)
+	for _, k := range all {
+		if listedIn[k.ChannelID] == 0 {
+			unlisted[k.ChannelID] = true
+			continue
+		}
+		stored = append(stored, k)
 		if _, ok := l.seen[k]; !ok {
 			missing = append(missing, k)
 		}
 	}
-	rangeDesc := from.UTC().Format(time.RFC3339) + ".." + to.UTC().Format(time.RFC3339)
+	if len(unlisted) > 0 {
+		o.logger.Printf("slack deletions: account %d range %s: skipped %d channels with stored messages but none listed",
+			o.accountID, rangeDesc, len(unlisted))
+	}
 	ok, reason := sourcediff.Check(len(stored), listed, len(missing), sourcediff.SlackFloors)
 	if !ok {
 		if reason != "" {

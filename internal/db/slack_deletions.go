@@ -10,13 +10,18 @@ import (
 type SlackMessageKey struct{ ChannelID, TS string }
 
 // LiveSlackMessageKeys lists the account's live, plain messages (empty subtype
-// and not deleted) with from <= ts_unix < to. Rows with a subtype are left
-// out because search.messages never returns join/leave events.
+// and not deleted) by a known human author with from <= ts_unix < to. These
+// are the rows search.messages is expected to return: it never returns
+// join/leave events, and app/bot posts (no user, or a bot user, honouring
+// is_bot_override) may never reach it, so those are left out too. An author
+// with no users row counts as human, as elsewhere in the package.
 func (db *DB) LiveSlackMessageKeys(accountID int64, from, to float64) ([]SlackMessageKey, error) {
 	prefix := strconv.FormatInt(accountID, 10)
-	rows, err := db.Query(`SELECT channel_id, ts FROM messages
-		WHERE channel_id >= ? AND channel_id < ? AND subtype = '' AND is_deleted = 0
-		  AND ts_unix >= ? AND ts_unix < ?`, prefix+":", prefix+";", from, to)
+	rows, err := db.Query(`SELECT m.channel_id, m.ts FROM messages m
+		LEFT JOIN users u ON u.id = m.user_id
+		WHERE m.channel_id >= ? AND m.channel_id < ? AND m.subtype = '' AND m.is_deleted = 0
+		  AND m.ts_unix >= ? AND m.ts_unix < ?
+		  AND m.user_id != '' AND COALESCE(u.is_bot_override, u.is_bot, 0) = 0`, prefix+":", prefix+";", from, to)
 	if err != nil {
 		return nil, fmt.Errorf("listing live slack messages of account %d: %w", accountID, err)
 	}
@@ -38,12 +43,26 @@ func (db *DB) LiveSlackMessageKeys(accountID int64, from, to float64) ([]SlackMe
 // and files rows. The inbox items made from the message stay, but their copies
 // of its text (snippet, context, raw_text, and its entry in a channel item's
 // mentions list) are blanked. FTS and kb_dirty follow through triggers. A key
-// that is already a tombstone, or not stored, is skipped. It returns how many
-// rows were tombstoned.
+// that is already a tombstone, or not stored, is skipped. Keys are written in
+// transactions of at most tombstoneBatch, so no write holds the lock long. It
+// returns how many rows were tombstoned (those of committed batches when a
+// later batch fails).
 func (db *DB) TombstoneSlackMessages(keys []SlackMessageKey) (int, error) {
-	if len(keys) == 0 {
-		return 0, nil
+	total := 0
+	for start := 0; start < len(keys); start += tombstoneBatch {
+		n, err := db.tombstoneSlackBatch(keys[start:min(start+tombstoneBatch, len(keys))])
+		total += n
+		if err != nil {
+			return total, err
+		}
 	}
+	return total, nil
+}
+
+// tombstoneBatch caps the keys one tombstone transaction writes.
+const tombstoneBatch = 200
+
+func (db *DB) tombstoneSlackBatch(keys []SlackMessageKey) (int, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("begin slack tombstone tx: %w", err)

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -80,16 +81,25 @@ func TestTombstoneSlackMessages_BlanksRowAndChildren(t *testing.T) {
 
 func TestLiveSlackMessageKeys_Scope(t *testing.T) {
 	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO users (id, name, is_bot, is_bot_override) VALUES
+		('1:U001', 'alice', 0, NULL), ('1:B001', 'bot', 1, NULL),
+		('1:B002', 'forced human', 1, 0), ('1:U002', 'forced bot', 0, 1)`)
+	require.NoError(t, err)
 	// 1758528000 = 2026-09-22T08:00:00Z
 	for _, m := range []Message{
-		{ChannelID: "1:C001", TS: "1758528000.000100", Text: "in"},
-		{ChannelID: "1:C002", TS: "1758531600.000100", Text: "in too"},
-		{ChannelID: "1:C001", TS: "1758528100.000100", Text: "joined", Subtype: "channel_join"},
-		{ChannelID: "1:C001", TS: "1758528200.000100", Text: "gone", IsDeleted: true},
-		{ChannelID: "2:C001", TS: "1758528000.000100", Text: "other account"},
-		{ChannelID: "1:C001", TS: "1758400000.000100", Text: "before"},
-		{ChannelID: "1:C001", TS: "1758600000.000100", Text: "at or after to"},
-		{ChannelID: "12:C001", TS: "1758528000.000100", Text: "account 12"},
+		{ChannelID: "1:C001", TS: "1758528000.000100", UserID: "1:U001", Text: "in"},
+		{ChannelID: "1:C002", TS: "1758531600.000100", UserID: "1:U001", Text: "in too"},
+		{ChannelID: "1:C002", TS: "1758531700.000100", UserID: "1:U009", Text: "no users row: human"},
+		{ChannelID: "1:C002", TS: "1758531800.000100", UserID: "1:B002", Text: "override says human"},
+		{ChannelID: "1:C001", TS: "1758528050.000100", UserID: "1:B001", Text: "bot"},
+		{ChannelID: "1:C001", TS: "1758528060.000100", UserID: "1:U002", Text: "override says bot"},
+		{ChannelID: "1:C001", TS: "1758528070.000100", Text: "app post, no user"},
+		{ChannelID: "1:C001", TS: "1758528100.000100", UserID: "1:U001", Text: "joined", Subtype: "channel_join"},
+		{ChannelID: "1:C001", TS: "1758528200.000100", UserID: "1:U001", Text: "gone", IsDeleted: true},
+		{ChannelID: "2:C001", TS: "1758528000.000100", UserID: "2:U001", Text: "other account"},
+		{ChannelID: "1:C001", TS: "1758400000.000100", UserID: "1:U001", Text: "before"},
+		{ChannelID: "1:C001", TS: "1758600000.000100", UserID: "1:U001", Text: "at or after to"},
+		{ChannelID: "12:C001", TS: "1758528000.000100", UserID: "12:U001", Text: "account 12"},
 	} {
 		require.NoError(t, d.UpsertMessage(m))
 	}
@@ -98,5 +108,24 @@ func TestLiveSlackMessageKeys_Scope(t *testing.T) {
 	assert.ElementsMatch(t, []SlackMessageKey{
 		{ChannelID: "1:C001", TS: "1758528000.000100"},
 		{ChannelID: "1:C002", TS: "1758531600.000100"},
+		{ChannelID: "1:C002", TS: "1758531700.000100"},
+		{ChannelID: "1:C002", TS: "1758531800.000100"},
 	}, keys)
+}
+
+func TestTombstoneSlackMessages_BatchesOverTwoHundredKeys(t *testing.T) {
+	d := openTestDB(t)
+	const n = 450
+	keys := make([]SlackMessageKey, 0, n)
+	for i := range n {
+		k := SlackMessageKey{ChannelID: "1:C001", TS: fmt.Sprintf("%d.000100", 1758528000+i)}
+		require.NoError(t, d.UpsertMessage(Message{ChannelID: k.ChannelID, TS: k.TS, UserID: "1:U001", Text: "x"}))
+		keys = append(keys, k)
+	}
+	got, err := d.TombstoneSlackMessages(keys)
+	require.NoError(t, err)
+	assert.Equal(t, n, got)
+	var deleted int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM messages WHERE is_deleted = 1`).Scan(&deleted))
+	assert.Equal(t, n, deleted)
 }
