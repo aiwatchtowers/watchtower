@@ -143,7 +143,8 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	o.progress.SetSearchAfter(searchAfter)
 	o.logger.Printf("search sync: query=%q", query)
 
-	completed, totalMessages, seenChannels, err := o.searchAndSave(ctx, query, true)
+	listing := newSearchListing(0)
+	completed, totalMessages, seenChannels, err := o.searchAndSave(ctx, query, true, listing)
 	if err != nil {
 		return err
 	}
@@ -172,6 +173,10 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	} else {
 		o.searchIncomplete = true
 		o.logger.Printf("search sync: pagination incomplete, leaving search_last_date unchanged to avoid data loss")
+	}
+	// Only a completed search can prove a stored message is gone.
+	if completed {
+		o.diffLiveWindow(listing)
 	}
 
 	// Populate discoveredChannelIDs (namespaced) so the full-sync fallback can skip inactive channels.
@@ -206,7 +211,7 @@ var ErrBackfillIncomplete = errors.New("slack backfill search incomplete (rate l
 // returns an error wrapping ErrBackfillIncomplete.
 func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (int, error) {
 	after, before := slackSearchRange(from, to)
-	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false)
+	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false, nil)
 	if err != nil {
 		return saved, err
 	}
@@ -230,7 +235,9 @@ func (o *Orchestrator) FirstSyncFrom() (time.Time, bool) {
 // Orchestrator (searchRateLimited/searchGapNote). live=false (a history
 // backfill) touches neither, and a page-1 rate limit just returns
 // completed=false with a nil error. Neither mode writes the search watermark.
-func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live bool) (completed bool, totalMessages int, seenChannels map[string]bool, err error) {
+// A non-nil listing collects every match's key, the matches received and
+// page 1's reported total, for a deletion diff (nil collects nothing).
+func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live bool, listing *searchListing) (completed bool, totalMessages int, seenChannels map[string]bool, err error) {
 	seenChannels = make(map[string]bool)
 	seenUsers := make(map[string]bool)
 	page := 1
@@ -284,6 +291,12 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 			return false, totalMessages, seenChannels, fmt.Errorf("search sync (page %d): %w", page, err)
 		}
 
+		if listing != nil {
+			if page == 1 {
+				listing.total = result.Total
+			}
+			listing.matched += len(result.Messages)
+		}
 		if len(result.Messages) == 0 {
 			completed = true
 			break
@@ -334,6 +347,9 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 			// but permalink contains thread_ts for threaded replies:
 			//   ...p1234567890123456?thread_ts=1234567890.123456
 			threadTS := extractThreadTSFromPermalink(msg.Permalink)
+			if listing != nil {
+				listing.seen[db.SlackMessageKey{ChannelID: namespacedChannelID, TS: msg.Timestamp}] = struct{}{}
+			}
 
 			dbMsgs = append(dbMsgs, db.Message{
 				ChannelID:  namespacedChannelID,
