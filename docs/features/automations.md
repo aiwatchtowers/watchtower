@@ -1,4 +1,4 @@
-# Automations (P1 core + P2 writes + P3 authoring and Desktop + P4 events + P5 workbench + P6 `mcp()`/`agent()` + templates, 2026-10-17 — every phase done)
+# Automations (P1 core + P2 writes + P3 authoring and Desktop + P4 events + P5 workbench + P6 `mcp()`/`agent()` + templates, 2026-10-17 — P1–P6 shipped; open follow-ups are listed in this note)
 
 Owner-written recipes the daemon runs on a schedule or on demand: a Markdown file with a strict YAML frontmatter (trigger, permission manifest, outputs, budget) and one synchronous JavaScript block, executed in a goja sandbox whose only world is the automation SDK. Spec: `docs/superpowers/specs/2026-10-14-automations-design.md` (decisions §20 ask #270, §20.1 asks #271–#273/#277, §20.2 asks #280/#287); business spec `…-business.md`; plans `docs/superpowers/plans/2026-10-14-automations-p1.md` … `-p6.md`. Contracts AUTO-01..13: `docs/inventory/automations.md`. Board #753.
 
@@ -227,7 +227,7 @@ Spec §10, §12.3, §15. The gallery is compiled in: `internal/automations/templ
 
 ## Event triggers (P4, 2026-10-17)
 
-Spec §8. Board #753, plan `docs/superpowers/plans/2026-10-14-automations-p4.md`. No migration (00113 already has `event_cycle`, `event_json` and the unique `(automation_id, event_cycle)` index) and no Swift (P3 already renders event triggers).
+Spec §8. Board #753, plan `docs/superpowers/plans/2026-10-14-automations-p4.md`. No migration (00113 already has `event_cycle`, `event_json` and the unique `(automation_id, event_cycle)` index) P3 already renders event triggers; the one Swift change is the edit form's **On an event** choice, which P3 had disabled (Event v1 limits below).
 
 - **Event types and fields** (`automations.EventTypes`, `EventFields`) — ids, labels, enums and counts only, never message text, subject, summary, title or body (`TestBus_EventsCarryNoContent` runs every source over fixtures whose content carries a marker):
 
@@ -258,7 +258,7 @@ Spec §8. Board #753, plan `docs/superpowers/plans/2026-10-14-automations-p4.md`
 - `where` globs use `path.Match`: `*` does not cross `/`.
 - The Desktop edit form picks **On an event** and its type, and edits or removes existing `where` rows; a new `where` key is written in the recipe text (Monaco editor, Change in words, a template).
 
-## Phase status (every phase done)
+## Phase status (P1–P6 shipped)
 
 - **P4 events:** done — bus, publishers in the sync phases, `Flush` per cycle, `where` matching, `db.MergeQueuedAutomationRunEvents`; the event half of AUTO-09 is Enforced (Event triggers above).
 - **P5 workbench:** done — part 1 (daemon rescans, `session()`, `shell()`, `ask()`, 00122, workbench writes; AUTO-12/AUTO-13 Enforced) and part 2 (workbench saves with PROJ-03 amended, the session launch center, header buttons, automation asks, Desktop rescans). Left: the New automation gallery's workbench picker.

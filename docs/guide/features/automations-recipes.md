@@ -28,7 +28,7 @@ An event trigger runs the recipe after a sync brings something new. For example,
 
 Every `where` key must match. A value matches regardless of case, either exactly or as a wildcard such as `PAY-*` (a `*` stops at `/`). Leave `where` out to match every event of the type. `where` only filters: the recipe still needs permissions for whatever it reads.
 
-A recipe runs at most once per sync cycle, however many events it matched; it gets up to 100 events, and `trigger.truncated` is true when there were more. A source's first sync, its history backfill and your own Slack messages never fire a trigger. The edit form can't pick an event trigger yet: write it in the recipe text in **Edit**, or ask **Change in words**.
+A recipe runs at most once per sync cycle, however many events it matched; it gets up to 100 events, and `trigger.truncated` is true when there were more. A source's first sync, its history backfill and your own Slack messages never fire a trigger. In **Edit**, **On an event** picks the type; write a `where` filter in the recipe text, or ask **Change in words**.
 
 ### Where recipes live
 Personal recipes sit in the `automations` folder inside Watchtower's workspace folder. The file name is the recipe's id: lower-case letters, digits and dashes. Shortcuts (symlinks) are never read; put the real file there.
