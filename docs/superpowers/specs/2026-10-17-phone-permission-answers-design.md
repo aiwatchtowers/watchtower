@@ -206,3 +206,18 @@ the session shows Working.
   has a handful of live sessions, so this is cheap; the plan measures it
   with `db lockstats` (reads are untimed, only the two writes count).
 - Probe result (Claude Code 2.1.302, 2026-10-17): a `PermissionRequest` hook with `"timeout": 86400` ran 700 s unanswered, outlived the 600 s default, and its allow decision applied; 86400 held, no cap found below 700 s.
+
+## 10. Addendum after the final review (ask #268, 2026-10-17)
+
+- The Go hook stores `summary_clipped` with the row; a Bash summary joins
+  the description as `"\n# "` so it reads as a shell comment.
+- Deny only from the phone, enforced by the hub (`answer_on_mac`) and
+  mirrored on the card (`PermissionAllowBlock` in WatchtowerSync): a
+  clipped request ("Shortened — answer on the Mac to allow"), and an
+  Edit/Write/NotebookEdit of a Watchtower, agent or shell settings path
+  ("Changes Watchtower or shell settings — answer on the Mac to allow").
+- A hook that stops (signal, timeout, repeated read errors) closes its row
+  `expired`; the Desktop expires not-live rows only once session liveness
+  has settled after a PROJ-20 reattach.
+- v1 limit: a long command allowed on the Mac stays at Needs approval on
+  the phone until it finishes; the phone's answers are ignored meanwhile.
