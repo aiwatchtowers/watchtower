@@ -536,9 +536,10 @@ func (p Policy) decideOverride(o override, input json.RawMessage) Decision {
 // docsWriteStaysInOwnDoc reports whether a Claude Docs create/update/batch
 // only touches a doc this session created, read by exact key: a batch whose
 // container births a new doc, or a container naming an own doc, with every
-// ref anywhere inside the call proven to stay in it (refRule, nestedRefsOK). Anything else — a call naming no doc, a key
-// it reads also spelled in another case, a value of the wrong type, a
-// member-level container — fails: an unproven write asks.
+// ref anywhere inside the call proven to stay in it (refRule,
+// nestedRefsOK). Anything else — a call naming no doc, a key it reads also
+// spelled in another case, a value of the wrong type, a member-level
+// container — fails: an unproven write asks.
 func (p Policy) docsWriteStaysInOwnDoc(tool string, input json.RawMessage) bool {
 	in, err := parseObject(input)
 	if err != nil || in.caseVariant("container", "ref", "batch") {
@@ -592,7 +593,7 @@ func (p Policy) ownDocRef(obj fields, kindKey string) bool {
 
 // refRule judges a ref inside an own (or newborn) container: a node is
 // addressed through the container, a doc must be own — or, in a batch, the
-// doc being born ("$lid:…") — and a tab may be one the batch itself makes.
+// doc being born — and any object the batch itself makes ("$lid:…") passes.
 // A tab, comment or anything else named by a real id may live in another
 // doc (those ids are global), so it asks.
 func (p Policy) refRule(raw json.RawMessage, inBatch bool) bool {
@@ -615,14 +616,14 @@ func (p Policy) refFieldsRule(ref fields, inBatch bool) bool {
 	if err != nil || !ok {
 		return false
 	}
-	newborn := inBatch && strings.HasPrefix(id, "$lid:")
+	if inBatch && strings.HasPrefix(id, "$lid:") {
+		return true // an object this very batch makes
+	}
 	switch strings.ToLower(object) {
 	case "node":
 		return true
 	case "project":
-		return newborn || p.ownDocRef(ref, "object")
-	case "file":
-		return newborn
+		return p.ownDocRef(ref, "object")
 	default:
 		return false
 	}
@@ -655,14 +656,15 @@ func (p Policy) batchMembersStayInOwnDoc(in fields) bool {
 }
 
 // nestedRefsOK walks every value of the call except the top-level container
-// (checked by the caller) — and the type a create or a batch member names
-// with its own "object" key — and holds each nested object to refRule: any
+// (checked by the caller) and holds each nested object to refRule: any
 // object carrying an "object" key is a ref, any carrying "kind":"project"
-// must name an own doc, and a "parent" or "answering" that is not a ref
-// object (a bare comment or thread id) asks. So a comment's parent, a
-// thread answer or a doc named deep in a payload is never one the gate did
-// not check.
+// must name an own doc, and a "parent" or "answering" must be such a ref
+// object (a bare comment or thread id asks). The type a create or a batch
+// member names with its own "object" key is no ref, but an id beside it
+// asks. So a comment's parent, a thread answer or a doc named deep in a
+// payload is never one the gate did not check.
 func (p Policy) nestedRefsOK(in fields) bool {
+	top := map[string]any{}
 	for k, raw := range in {
 		if k == "container" {
 			continue
@@ -671,23 +673,35 @@ func (p Policy) nestedRefsOK(in fields) bool {
 		if json.Unmarshal(raw, &v) != nil {
 			return false
 		}
-		if strings.EqualFold(k, "parent") || strings.EqualFold(k, "answering") {
-			if _, isObject := v.(map[string]any); !isObject {
+		top[k] = v
+	}
+	if !typeOnlyOK(top) {
+		return false
+	}
+	if raw, ok := top["batch"]; ok && raw != nil {
+		list, ok := raw.([]any)
+		if !ok {
+			return false
+		}
+		for _, m := range list {
+			member, ok := m.(map[string]any)
+			if !ok || !typeOnlyOK(member) || !p.childrenOK(member, true) {
 				return false
 			}
 		}
-		members := k == "batch"
-		if list, ok := v.([]any); ok && members {
-			for _, m := range list {
-				member, ok := m.(map[string]any)
-				if !ok || !p.childrenOK(member, true) {
-					return false
-				}
+		delete(top, "batch")
+	}
+	return p.childrenOK(top, false)
+}
+
+// typeOnlyOK refuses an object that names a type with its own "object" key
+// and also carries an id (any case) other than one the same batch makes.
+func typeOnlyOK(obj map[string]any) bool {
+	for k, v := range obj {
+		if strings.EqualFold(k, "id") {
+			if id, ok := v.(string); !ok || !strings.HasPrefix(id, "$lid:") {
+				return false
 			}
-			continue
-		}
-		if !p.valueOK(v, members) {
-			return false
 		}
 	}
 	return true
@@ -722,12 +736,14 @@ func (p Policy) valueOK(v any, inBatch bool) bool {
 	return true
 }
 
-// childrenOK applies valueOK to every value of obj (not to obj itself), and
-// asks when a "parent" or "answering" there is not an object.
+// childrenOK applies valueOK to every value of obj (not to obj itself);
+// a "parent" or "answering" there must be an object with an exact "object"
+// key (a ref valueOK then checks), anything else asks.
 func (p Policy) childrenOK(obj map[string]any, inBatch bool) bool {
 	for k, val := range obj {
 		if strings.EqualFold(k, "parent") || strings.EqualFold(k, "answering") {
-			if _, isObject := val.(map[string]any); !isObject {
+			ref, isObject := val.(map[string]any)
+			if _, hasObject := ref["object"]; !isObject || !hasObject {
 				return false
 			}
 		}

@@ -454,7 +454,8 @@ func (g *gate) claim(p *claudeProc, req permissionRequest, w *gateWait, id int64
 	line, err := permissionAllowLine(req.RequestID, input)
 	if err != nil {
 		g.finish(req.ToolUseID, "", "the approved input could not be sent: "+err.Error())
-		g.answer(p, permissionDenyLine(req.RequestID, "The approved input could not be sent ("+err.Error()+"). It was not sent."))
+		g.answer(p, permissionDenyLine(req.RequestID,
+			"The approved input could not be sent ("+err.Error()+"). It was not sent."))
 		return true
 	}
 	if err := p.write(line); err != nil {
