@@ -216,11 +216,7 @@ final class SessionStartStopHandlers {
         }
         // A board session only: the phone sees the agent sessions of a
         // workbench and nothing else.
-        let onBoard = try await dbPool.read { db -> Bool in
-            guard let row = try TerminalSessionQueries.fetch(db, id: sessionID),
-                  row.kind.isAgent, let projectID = row.projectID else { return false }
-            return try WorkbenchQueries.fetch(db, id: projectID) != nil
-        }
+        let onBoard = try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID) != nil }
         guard onBoard else { return .failed(.notFound, message: "This session no longer exists on the Mac") }
         if terminalCenter.liveIDs.contains(sessionID) {
             await terminalCenter.close(sessionID: sessionID)

@@ -272,6 +272,17 @@ final class TerminalCenter {
         Set(states.compactMap { $0.value == .running ? $0.key : nil })
     }
 
+    /// The launch's reattach of the session host's runs is done (or there
+    /// was nothing to reattach): from then on `liveIDs` holds every run
+    /// that survived the restart. Set once by
+    /// `WorkbenchesViewModel.startHostReattach`; the phone's permission
+    /// expiry waits for it (#517).
+    @ObservationIgnored private(set) var hostRunsSettled = false
+
+    func markHostRunsSettled() {
+        hostRunsSettled = true
+    }
+
     /// The live agent sessions (`claude` or `codex`) — the ones whose
     /// workbench hooks report a state.
     var liveAgentIDs: Set<Int64> {

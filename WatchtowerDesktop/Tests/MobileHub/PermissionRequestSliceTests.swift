@@ -25,8 +25,8 @@ final class PermissionRequestSliceTests: XCTestCase {
         TestDatabase.cleanup(path: dbPath)
     }
 
-    private func slice(live: Set<Int64>) -> PermissionRequestSlice {
-        let liveness = SessionLiveness(liveIDs: live)
+    private func slice(live: Set<Int64>, settled: Bool = true) -> PermissionRequestSlice {
+        let liveness = SessionLiveness(liveIDs: live, settled: settled)
         let now = fixedNow
         return PermissionRequestSlice(liveness: { liveness }, now: { now })
     }
@@ -45,14 +45,18 @@ final class PermissionRequestSliceTests: XCTestCase {
         workbench: Int64,
         summary: String = "git status",
         status: String = "pending",
-        age: TimeInterval = 5
+        age: TimeInterval = 5,
+        clipped: Bool = false
     ) throws -> Int64 {
         try db.execute(
             sql: """
-                INSERT INTO permission_requests (terminal_session_id, workbench_id, tool_name, summary, status, created_at)
-                VALUES (?, ?, 'Bash', ?, ?, ?)
+                INSERT INTO permission_requests
+                    (terminal_session_id, workbench_id, tool_name, summary, summary_clipped, status, created_at)
+                VALUES (?, ?, 'Bash', ?, ?, ?, ?)
                 """,
-            arguments: [session, workbench, summary, status, SessionAgentStatus.formatStamp(fixedNow.addingTimeInterval(-age))]
+            arguments: [
+                session, workbench, summary, clipped, status, SessionAgentStatus.formatStamp(fixedNow.addingTimeInterval(-age))
+            ]
         )
         return db.lastInsertedRowID
     }
@@ -119,6 +123,21 @@ final class PermissionRequestSliceTests: XCTestCase {
         XCTAssertEqual(payload["summary_clipped"] as? Bool, true)
     }
 
+    /// The hook cut the summary at 2000 runes (Go's flag): the wire says
+    /// so, though the text fits the wire's own cap.
+    func testProj21_GoClippedFlagReachesTheWire() throws {
+        let (session, id) = try dbPool.write { db -> (Int64, Int64) in
+            let workbench = try TestDatabase.insertWorkbench(db)
+            let session = try SliceSeed.insertSession(db, projectID: workbench)
+            return (session, try insertRequest(db, session: session, workbench: workbench, summary: "echo aaa", clipped: true))
+        }
+        let payload = try XCTUnwrap(try payloads(slice(live: [session]))[id])
+        XCTAssertEqual(payload["summary"] as? String, "echo aaa")
+        XCTAssertEqual(payload["summary_clipped"] as? Bool, true)
+        XCTAssertTrue(PermissionRequestSlice.wireSummary("echo aaa", clippedByGo: true).clipped)
+        XCTAssertFalse(PermissionRequestSlice.wireSummary("echo aaa", clippedByGo: false).clipped)
+    }
+
     /// Spec §4.2: a pending row older than the hook timeout, or of a session
     /// that is no longer live, has no reader: the pass marks it `expired`
     /// (its own short write before the read) and never publishes it.
@@ -161,6 +180,29 @@ final class PermissionRequestSliceTests: XCTestCase {
         XCTAssertEqual(try source.expire(dbPool), 0, "nothing left to expire: no write")
     }
 
+    /// At launch, before the reattach of the session host's runs is done, a
+    /// session that survived the restart is not live yet: its young row
+    /// stays pending (only hidden), and only the age expires a row.
+    func testBeforeLivenessSettlesOnlyTheAgeExpires() throws {
+        let (young, old) = try dbPool.write { db -> (Int64, Int64) in
+            let workbench = try TestDatabase.insertWorkbench(db)
+            let session = try SliceSeed.insertSession(db, projectID: workbench)
+            return (
+                try insertRequest(db, session: session, workbench: workbench),
+                try insertRequest(db, session: session, workbench: workbench, age: PermissionRequestSlice.maxAge + 1)
+            )
+        }
+        let source = slice(live: [], settled: false)
+
+        XCTAssertEqual(try source.expire(dbPool), 1)
+
+        XCTAssertEqual(try status(young), "pending", "its session may be one the reattach adopts")
+        XCTAssertEqual(try status(old), "expired")
+        XCTAssertTrue(try payloads(source).isEmpty, "not published while its session is not live")
+        XCTAssertEqual(try slice(live: []).expire(dbPool), 1, "once settled, the not-live rule applies")
+        XCTAssertEqual(try status(young), "expired")
+    }
+
     /// Ruling 1: the expiry age is the hook's own timeout (Go↔Swift dual
     /// path with `internal/devpack/workbench_settings.go permissionWaitSpec`).
     func testTheExpiryAgeIsTheHookTimeout() {
@@ -176,8 +218,8 @@ final class PermissionRequestSliceTests: XCTestCase {
         }
     }
 
-    /// The publisher runs the source's expiry before its read.
-    func testThePublisherExpiresBeforeItReads() async throws {
+    /// A publish pass runs the source's expiry.
+    func testAPublishPassRunsTheExpiry() async throws {
         let id = try seedOneRequest()
         let publisher = SlicePublisher(
             dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport().sealing(),

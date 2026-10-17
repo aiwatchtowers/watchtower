@@ -100,6 +100,7 @@ final class WorkbenchCLITests: XCTestCase {
         let missing = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
             "{\(base),\"permission_wait\":false}".utf8))
         XCTAssertFalse(missing.permissionWait)
+        XCTAssertTrue(missing.repairHelp.contains("permission wait missing"), missing.repairHelp)
         XCTAssertTrue(missing.needsRepair)
         let present = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
             "{\(base),\"permission_wait\":true}".utf8))

@@ -86,18 +86,19 @@ final class PermissionAnswerHandlersTests: XCTestCase {
     }
 
     /// A running `claude` session on the test workbench (made by the first
-    /// call).
-    private func liveSession() async throws -> Int64 {
+    /// call); a `codex` row is only created (its scope check comes first).
+    private func liveSession(kind: TerminalSession.Kind = .claude) async throws -> Int64 {
         let acme = folder.path
         let existing = workbenchID
         let session = try await pool.write { db -> TerminalSession in
             let project = existing != 0 ? existing : try TestDatabase.insertWorkbench(db, folder: acme)
             return try TerminalSessionQueries.create(db, .init(
-                projectID: project, kind: .claude, title: "Ship it", folderPath: acme,
-                claudeSessionID: UUID().uuidString.lowercased()
+                projectID: project, kind: kind, title: "Ship it", folderPath: acme,
+                claudeSessionID: kind == .claude ? UUID().uuidString.lowercased() : nil
             ))
         }
         workbenchID = try XCTUnwrap(session.projectID)
+        guard kind == .claude else { return session.id }
         center.start(session, fresh: true)
         XCTAssertTrue(center.liveIDs.contains(session.id))
         return session.id
@@ -110,16 +111,20 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         )
     }
 
-    private func request(_ sessionID: Int64, status: String = "pending") async throws -> Int64 {
+    private func request(
+        _ sessionID: Int64, status: String = "pending", tool: String = "Bash", summary: String = "make test",
+        clipped: Bool = false
+    ) async throws -> Int64 {
         let workbench = workbenchID
         let created = SessionAgentStatus.formatStamp(clock.now.addingTimeInterval(-5))
         return try await pool.write { db in
             try db.execute(
                 sql: """
-                    INSERT INTO permission_requests (terminal_session_id, workbench_id, tool_name, summary, status, created_at)
-                    VALUES (?, ?, 'Bash', 'make test', ?, ?)
+                    INSERT INTO permission_requests
+                        (terminal_session_id, workbench_id, tool_name, summary, summary_clipped, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                arguments: [sessionID, workbench, status, created]
+                arguments: [sessionID, workbench, tool, summary, clipped, status, created]
             )
             return db.lastInsertedRowID
         }
@@ -276,6 +281,91 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         XCTAssertEqual(try row(id)?["status"], "pending")
     }
 
+    /// Owner decision (ask #268): a shortened request is Deny only — the
+    /// hub refuses the allow and leaves the row for the Mac.
+    func testProj21_AClippedRequestCannotBeAllowed() async throws {
+        let session = try await liveSession()
+        let id = try await request(session, clipped: true)
+        let handlers = try makeHandlers()
+
+        let allow = try await handlers.handle(answer(session, request: id))
+
+        XCTAssertEqual(allow.status, .failed)
+        XCTAssertEqual(allow.reason, .answerOnMac)
+        XCTAssertEqual(allow.errorMessage, "Shortened — answer on the Mac to allow")
+        XCTAssertEqual(try row(id)?["status"], "pending")
+        let deny = try await handlers.handle(answer(session, request: id, "deny"))
+        XCTAssertEqual(deny.status, .applied, "Deny still works")
+        XCTAssertEqual(try row(id)?["status"], "denied")
+    }
+
+    /// A summary longer than the wire's cap was shortened for the phone too.
+    func testAnAllowOfASummaryPastTheWireCapIsRefused() async throws {
+        let session = try await liveSession()
+        let id = try await request(session, summary: String(repeating: "a", count: PermissionRequestSlice.maxSummary + 1))
+
+        let outcome = try await makeHandlers().handle(answer(session, request: id))
+
+        XCTAssertEqual(outcome.reason, .answerOnMac)
+        XCTAssertEqual(try row(id)?["status"], "pending")
+    }
+
+    /// Owner decision (ask #268): an Edit/Write/NotebookEdit of a settings
+    /// path is Deny only; every other path keeps Allow once.
+    func testProj21_ASettingsPathEditCannotBeAllowed() async throws {
+        let session = try await liveSession()
+        let handlers = try makeHandlers()
+        let settings = try await request(session, tool: "Write", summary: "/tmp/acme/.claude/settings.local.json")
+
+        let refused = try await handlers.handle(answer(session, request: settings))
+
+        XCTAssertEqual(refused.reason, .answerOnMac)
+        XCTAssertEqual(refused.errorMessage, "Changes Watchtower or shell settings — answer on the Mac to allow")
+        XCTAssertEqual(try row(settings)?["status"], "pending")
+        let plain = try await request(session, tool: "Edit", summary: "/tmp/acme/main.go")
+        let allowed = try await handlers.handle(answer(session, request: plain))
+        XCTAssertEqual(allowed.status, .applied)
+        XCTAssertEqual(try row(plain)?["status"], "allowed")
+    }
+
+    /// The Mac answers between the handler's read and its write: the
+    /// compare-and-set changes nothing, and the outcome names the Mac.
+    func testAnAnswerThatLosesTheRaceIsNotPending() async throws {
+        let session = try await liveSession()
+        let id = try await request(session)
+        // The phone's UPDATE runs into the Mac's answer: the trigger closes
+        // the row answered_on_mac and drops the phone's write.
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER mac_answers_first BEFORE UPDATE OF status ON permission_requests
+                WHEN NEW.status IN ('allowed', 'denied')
+                BEGIN
+                    UPDATE permission_requests SET status = 'answered_on_mac' WHERE id = OLD.id;
+                    SELECT RAISE(IGNORE);
+                END
+                """)
+        }
+
+        let outcome = try await makeHandlers().handle(answer(session, request: id))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .notPending)
+        XCTAssertEqual(outcome.errorMessage, "Answered on the Mac")
+        XCTAssertEqual(try row(id)?["status"], "answered_on_mac")
+        XCTAssertNil(try row(id)?["decided_by"] as String?)
+    }
+
+    /// Codex keeps "Needs approval on the Mac": its rows are not the phone's.
+    func testAnAnswerForACodexSessionIsNotFound() async throws {
+        let session = try await liveSession(kind: .codex)
+        let id = try await request(session)
+
+        let outcome = try await makeHandlers().handle(answer(session, request: id))
+
+        XCTAssertEqual(outcome.reason, .notFound)
+        XCTAssertEqual(try row(id)?["status"], "pending")
+    }
+
     func testAnAnswerWithBadParamsIsInvalid() async throws {
         let session = try await liveSession()
         let id = try await request(session)
@@ -347,7 +437,7 @@ final class PermissionAnswerHandlersTests: XCTestCase {
 
         XCTAssertEqual(outcome.status, .failed)
         XCTAssertEqual(outcome.reason, .notWorking)
-        XCTAssertEqual(outcome.errorMessage, "Needs approval — use Deny")
+        XCTAssertEqual(outcome.errorMessage, "A permission prompt may be open — answer it on the Mac or with Deny")
         XCTAssertEqual(try row(id)?["status"], "pending")
         XCTAssertTrue(typed.isEmpty)
     }
@@ -373,6 +463,16 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         let outcome = try await makeHandlers().handle(interrupt(session, age: 121))
 
         XCTAssertEqual(outcome, .expired)
+        XCTAssertTrue(typed.isEmpty)
+    }
+
+    func testInterruptOfACodexSessionIsNotFound() async throws {
+        let session = try await liveSession(kind: .codex)
+        setState(session, .working)
+
+        let outcome = try await makeHandlers().handle(interrupt(session))
+
+        XCTAssertEqual(outcome.reason, .notFound)
         XCTAssertTrue(typed.isEmpty)
     }
 

@@ -33,4 +33,7 @@ public enum ActionReason: String, Codable, CaseIterable, Sendable {
     case notPending = "not_pending"
     /// An interrupt for a session that is not Working.
     case notWorking = "not_working"
+    /// An allow the phone may not give: the request was shortened, or edits a settings file (`PermissionAllowBlock`).
+    /// Deny still works; the request stays pending for the Mac.
+    case answerOnMac = "answer_on_mac"
 }

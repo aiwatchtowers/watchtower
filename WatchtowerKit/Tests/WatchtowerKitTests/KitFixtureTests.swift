@@ -56,7 +56,8 @@ final class KitFixtureTests: XCTestCase {
                 "needs_approval", "prompt_has_text",
                 "state_unknown", "cannot_type", "claude_not_found", "codex_not_found",
                 "expired", "cancelled", "outcome_unknown",
-                "unsupported_in_poc", "wrong_hub", "write_failed", "not_pending", "not_working"
+                "unsupported_in_poc", "wrong_hub", "write_failed", "not_pending", "not_working",
+                "answer_on_mac"
             ]
         )
     }
@@ -337,6 +338,21 @@ final class KitFixtureTests: XCTestCase {
         let oldDevice = #"{"app_version":"0.16.0","device_id":"D2","model":"iPhone16,1","name":"iPhone","scope":"private","start_sessions":true,"typing_requested":false,"updated_at":1700000000,"user_record_name":"_owner"}"#
         let device = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: Data(oldDevice.utf8))
         XCTAssertFalse(device.permissionsRequested)
+        // false is never written: the bytes stay the older peers'.
+        try assertFixture(
+            DeviceGrant(
+                deviceID: "D2", hubID: "hub-1", name: "iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true
+            ),
+            oldGrant
+        )
+        try assertFixture(
+            DevicePayload(
+                deviceID: "D2", name: "iPhone", model: "iPhone16,1", appVersion: "0.16.0", scope: .private,
+                userRecordName: "_owner", typingRequested: false, startSessions: true, updatedAt: t0
+            ),
+            oldDevice
+        )
 
         try assertFixture(
             DeviceGrant(

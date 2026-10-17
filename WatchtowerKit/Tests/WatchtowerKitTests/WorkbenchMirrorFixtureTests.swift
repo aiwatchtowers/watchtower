@@ -245,12 +245,12 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(request.sessionID, 31)
         XCTAssertEqual(request.workbenchID, 7)
         XCTAssertEqual(request.toolName, "Bash")
-        XCTAssertEqual(request.summary, "git push origin main\nPush the branch")
+        XCTAssertEqual(request.summary, "git push origin main\n# Push the branch")
         XCTAssertNil(request.summaryClipped)
         XCTAssertEqual(request.createdAt, t0)
         XCTAssertEqual(
-            ActionReason.allCases.suffix(2).map(\.rawValue),
-            ["not_pending", "not_working"]
+            ActionReason.allCases.suffix(3).map(\.rawValue),
+            ["not_pending", "not_working", "answer_on_mac"]
         )
     }
 

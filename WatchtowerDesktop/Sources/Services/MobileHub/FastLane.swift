@@ -170,7 +170,8 @@ final class FastLane: HubCompanion {
         return liveness.update(SessionLiveness(
             liveIDs: terminalCenter.liveIDs,
             startedAt: terminalCenter.startedAt,
-            displayOver: agentStates?.displayOver ?? [:]
+            displayOver: agentStates?.displayOver ?? [:],
+            settled: terminalCenter.hostRunsSettled
         ))
     }
 

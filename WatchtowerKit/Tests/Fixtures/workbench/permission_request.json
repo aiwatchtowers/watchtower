@@ -2,7 +2,7 @@
   "created_at": 1700000000,
   "id": 9,
   "session_id": 31,
-  "summary": "git push origin main\nPush the branch",
+  "summary": "git push origin main\n# Push the branch",
   "tool_name": "Bash",
   "workbench_id": 7
 }

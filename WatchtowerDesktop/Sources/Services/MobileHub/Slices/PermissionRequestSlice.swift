@@ -14,7 +14,15 @@ import WatchtowerSync
 /// its own short write before each read (the publisher runs it); `records`
 /// leaves such rows out on its own, so a failed or late write never
 /// publishes one. Liveness is `TerminalCenter.liveIDs` as the fast lane
-/// copies it (`SessionLivenessBox`), the same the session slice uses.
+/// copies it (`SessionLivenessBox`), the same the session slice uses. Until
+/// the launch's reattach of the session host's runs is done
+/// (`SessionLiveness.settled`), a session that survived the restart is not
+/// live yet: the expiry then goes by age alone, and `records` only hides
+/// the row (a hide is undone by the next pass, an `expired` write is not).
+///
+/// `summary_clipped` is Go's flag (the hook cut the summary at 2000 runes)
+/// or the wire's own cap (`wireSummary`): the phone offers Deny only for it
+/// (`PermissionAllowBlock`), and the hub refuses an allow the same way.
 ///
 /// Wire shape: the Kit mirror `WatchtowerKit.PermissionRequest`.
 struct PermissionRequestSlice: SliceSource {
@@ -27,6 +35,14 @@ struct PermissionRequestSlice: SliceSource {
     /// Go clips the summary to 2000 runes; the wire caps it again in
     /// graphemes and says so.
     static let maxSummary = 2000
+
+    /// The summary as the phone gets it, and whether it was shortened:
+    /// by Go (`clippedByGo`, the row's `summary_clipped`) or by this cap.
+    /// The hub's answer handler judges an allow on the same value.
+    static func wireSummary(_ raw: String, clippedByGo: Bool) -> (text: String, clipped: Bool) {
+        let clip = SliceClip.text(raw, limit: maxSummary)
+        return (clip.text, clippedByGo || clip.clipped == true)
+    }
 
     let liveness: @Sendable () -> SessionLiveness
     let now: @Sendable () -> Date
@@ -59,8 +75,8 @@ struct PermissionRequestSlice: SliceSource {
         let stamp = now()
         let live = liveness().liveIDs
         let rows = try Row.fetchAll(db, sql: """
-            SELECT r.id, r.terminal_session_id, r.workbench_id, r.tool_name, r.summary, r.created_at,
-                   s.project_id
+            SELECT r.id, r.terminal_session_id, r.workbench_id, r.tool_name, r.summary, r.summary_clipped,
+                   r.created_at, s.project_id
             FROM permission_requests r
             JOIN terminal_sessions s ON s.id = r.terminal_session_id
             WHERE r.status = 'pending' AND s.kind = 'claude'
@@ -74,10 +90,10 @@ struct PermissionRequestSlice: SliceSource {
             guard let project, published.contains(project),
                   !Self.isStale(created: created, live: live.contains(session), now: stamp) else { return nil }
             let id: Int64 = row["id"]
-            let summary = SliceClip.text(row["summary"] ?? "", limit: Self.maxSummary)
+            let summary = Self.wireSummary(row["summary"] ?? "", clippedByGo: row["summary_clipped"] ?? false)
             let payload = Payload(
                 id: id, sessionID: session, workbenchID: row["workbench_id"], toolName: row["tool_name"] ?? "",
-                summary: summary.text, summaryClipped: summary.clipped, createdAt: created ?? Date(timeIntervalSince1970: 0)
+                summary: summary.text, summaryClipped: summary.clipped ? true : nil, createdAt: created ?? Date(timeIntervalSince1970: 0)
             )
             return SliceRecord(kind: kind, id: String(id), modifiedAt: stamp, payload: try encoder.encode(payload))
         }
@@ -90,18 +106,21 @@ struct PermissionRequestSlice: SliceSource {
 
     /// Marks `expired` every pending request no hook waits on any more;
     /// how many. Reads first and writes only when there is one, so a pass
-    /// with nothing to expire takes no write lock.
+    /// with nothing to expire takes no write lock. Before liveness settled
+    /// only the age counts: every session reads as live.
     @discardableResult
     func expire(_ writer: any DatabaseWriter) throws -> Int {
         let stamp = now()
-        let live = liveness().liveIDs
+        let current = liveness()
+        let live = current.liveIDs
         let pending = try writer.read { db in
             try Row.fetchAll(db, sql: "SELECT id, terminal_session_id, created_at FROM permission_requests WHERE status = 'pending'")
         }
         let stale: [Int64] = pending.compactMap { row in
             let session: Int64 = row["terminal_session_id"]
             let created = SliceDate.parse(row["created_at"] ?? "")
-            return Self.isStale(created: created, live: live.contains(session), now: stamp) ? row["id"] : nil
+            let isLive = !current.settled || live.contains(session)
+            return Self.isStale(created: created, live: isLive, now: stamp) ? row["id"] : nil
         }
         guard !stale.isEmpty else { return 0 }
         let expired = try writer.write { db in

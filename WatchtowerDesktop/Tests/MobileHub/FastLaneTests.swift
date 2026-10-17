@@ -431,6 +431,22 @@ final class FastLaneTests: XCTestCase {
         XCTAssertEqual(liveness.current.liveIDs, [row.id])
         XCTAssertEqual(liveness.current.startedAt[row.id], started)
         XCTAssertEqual(log.nudges, [], "the session kinds ride the full tick")
+        XCTAssertFalse(liveness.current.settled, "the launch's reattach has not ended")
+    }
+
+    /// #517: the end of the launch's reattach reaches the copy on the
+    /// center's next read, so the permission expiry may judge liveness.
+    func testTheReattachsEndReachesTheLivenessCopy() async throws {
+        let center = makeCenter()
+        let liveness = SessionLivenessBox()
+        let lane = makeLane(center, liveness: liveness) { _ in }
+        lane.start()
+        XCTAssertFalse(liveness.current.settled)
+
+        terminals.markHostRunsSettled()
+        await center.poll()
+
+        XCTAssertTrue(liveness.current.settled)
     }
 
     // MARK: - Closure chaining

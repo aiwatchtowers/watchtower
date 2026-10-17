@@ -12,7 +12,10 @@ import WatchtowerSync
 /// `permissions_allowed` grant (never implied by typing; else
 /// `device_not_allowed`) → the row is this live board Claude session's
 /// (else `not_found`) and `pending` (else `not_pending`, its message naming
-/// why) → the session runs (else `session_not_running`) → one guarded
+/// why) → an allow the phone may give (`PermissionAllowBlock`: never for a
+/// shortened summary nor an Edit/Write/NotebookEdit of a settings path;
+/// else `answer_on_mac`, the row left pending; a deny always may) → the
+/// session runs (else `session_not_running`) → one guarded
 /// `UPDATE … WHERE status = 'pending'`, so a Mac answer or a second phone
 /// that got there first leaves this one `not_pending`. Only the hook's JSON
 /// decides the prompt: nothing is typed into the terminal (PROJ-16 holds).
@@ -40,7 +43,7 @@ final class PermissionAnswerHandlers {
     static let answeredOnMacMessage = "Answered on the Mac"
     static let tooLateMessage = "Too late — answer on the Mac"
     static let notFoundMessage = "This session no longer exists on the Mac"
-    static let needsApprovalMessage = "Needs approval — use Deny"
+    static let needsApprovalMessage = "A permission prompt may be open — answer it on the Mac or with Deny"
     static let notRunningMessage = "This session is not running on the Mac"
     /// `decided_by` when the device's name cannot be read.
     static let unnamedDevice = "phone"
@@ -109,10 +112,13 @@ final class PermissionAnswerHandlers {
             return .failed(.deviceNotAllowed, message: "This phone is not allowed to answer permission prompts")
         }
         guard try await isBoardSession(sessionID),
-              let current = try await requestStatus(requestID, sessionID: sessionID) else {
+              let current = try await storedRequest(requestID, sessionID: sessionID) else {
             return .failed(.notFound, message: "This permission request no longer exists on the Mac")
         }
-        guard current == "pending" else { return Self.notPending(current) }
+        guard current.status == "pending" else { return Self.notPending(current.status) }
+        if rawBehavior == "allow", let block = current.allowBlock {
+            return .failed(.answerOnMac, message: block.note)
+        }
         guard terminalCenter.liveIDs.contains(sessionID) else {
             return .failed(.sessionNotRunning, message: Self.notRunningMessage)
         }
@@ -130,18 +136,36 @@ final class PermissionAnswerHandlers {
             return db.changesCount
         }
         guard changed == 1 else {
-            let after = try await requestStatus(requestID, sessionID: sessionID)
-            return Self.notPending(after ?? "")
+            let after = try await storedRequest(requestID, sessionID: sessionID)
+            return Self.notPending(after?.status ?? "")
         }
         return .applied(["status": .string(decided)])
     }
 
-    /// The row's status when it is `sessionID`'s request; nil otherwise.
-    private func requestStatus(_ requestID: Int64, sessionID: Int64) async throws -> String? {
+    /// What an answer needs of a stored request.
+    private struct StoredRequest {
+        let status: String
+        /// Why the phone may only deny it; nil when it may allow it.
+        let allowBlock: PermissionAllowBlock?
+    }
+
+    /// The row when it is `sessionID`'s request; nil otherwise. Shortened
+    /// as the phone saw it: Go's flag or the slice's own cap.
+    private func storedRequest(_ requestID: Int64, sessionID: Int64) async throws -> StoredRequest? {
         try await dbPool.read { db in
-            try String.fetchOne(
-                db, sql: "SELECT status FROM permission_requests WHERE id = ? AND terminal_session_id = ?",
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT status, tool_name, summary, summary_clipped FROM permission_requests
+                    WHERE id = ? AND terminal_session_id = ?
+                    """,
                 arguments: [requestID, sessionID]
+            ) else { return nil }
+            let raw: String = row["summary"]
+            let clipped = PermissionRequestSlice.wireSummary(raw, clippedByGo: row["summary_clipped"]).clipped
+            return StoredRequest(
+                status: row["status"],
+                allowBlock: PermissionAllowBlock.check(toolName: row["tool_name"], summary: raw, clipped: clipped)
             )
         }
     }
@@ -212,10 +236,6 @@ final class PermissionAnswerHandlers {
     /// A board `claude` session of a workbench that still exists: the phone
     /// sees nothing else, and Codex keeps "Needs approval on the Mac".
     private func isBoardSession(_ sessionID: Int64) async throws -> Bool {
-        try await dbPool.read { db in
-            guard let row = try TerminalSessionQueries.fetch(db, id: sessionID),
-                  row.kind == .claude, let projectID = row.projectID else { return false }
-            return try WorkbenchQueries.fetch(db, id: projectID) != nil
-        }
+        try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID)?.kind == .claude }
     }
 }

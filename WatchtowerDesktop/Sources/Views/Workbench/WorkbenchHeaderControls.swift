@@ -361,6 +361,7 @@ extension WorkbenchInstallStatus {
             + "drift hook \(stopHook ? "on" : "missing") · "
             + "state hooks \(stateHooks ? "on" : "missing") · "
             + "ask guard \(askGuard && askToolBlock ? "on" : "missing") · "
+            + "permission wait \(permissionWait ? "on" : "missing") · "
             + "cleanup permission \(cleanupPermission ? "on" : "missing") · MCP \(mcp ? "on" : "missing")"
             + (codex.flatMap { $0.found || $0.trustError != nil ? "\n" + $0.summary : nil } ?? "")
     }
