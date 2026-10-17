@@ -853,10 +853,11 @@ func textMateChecks(_ page: Page) async {
           m.dispose();
           return hit ? "pair" : "none";
         }
-        return [match("const s = `a${f(x[0])}`;", "typescript", 16), match("{\\"k[]\\": 1}", "json", 4)].join(",");
+        return [match("const s = `a${f(x[0])}`;", "typescript", 16), match("{\\"k[]\\": 1}", "json", 4),
+          match("var s = \\"[]\\"", "go", 10), match("let s = format!(\\"{}\\", a);", "rust", 18)].join(",");
         """) as? String
-    check("textmate: a bracket in a template expression pairs, one in a JSON key does not",
-          brackets == "pair,none", "\(brackets ?? "nil")")
+    check("textmate: a bracket in a template expression pairs; one in a JSON key or a string does not",
+          brackets == "pair,none,none,none", "\(brackets ?? "nil")")
 
     // An edited import re-tokenizes the lines below it (the imported names
     // ride in the line state).

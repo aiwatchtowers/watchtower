@@ -76,10 +76,10 @@
       "constant.other.placeholder"]],
     // Code inside a string (`${…}`, `#{…}`, `\(…)`, JSX `{…}`) is code, not
     // string, as VS Code's themes reset it; the braces around it are
-    // delimiters (bracket pairs, like Monarch's).
-    ["embedded", ["meta.embedded", "meta.template.expression", "meta.interpolation"]],
-    ["delimiter.embedded", ["punctuation.section.embedded", "punctuation.definition.template-expression",
-      "punctuation.section.interpolation"]],
+    // delimiters (bracket pairs, like Monarch's). Rust's format `{}` is
+    // not code and stays string.
+    ["embedded", ["meta.embedded", "meta.template.expression"]],
+    ["delimiter.embedded", ["punctuation.section.embedded", "punctuation.definition.template-expression"]],
     ["regexp", ["string.regexp"]],
     ["number", ["constant.numeric", "keyword.other.unit"]],
     // Not "variable.other.constant": TypeScript gives it every `const`.
@@ -146,7 +146,7 @@
   // and Go's `string` type, a keyword whose scope name says "string".
   var TOKEN_TYPES = {
     "meta.template.expression": 0, "meta.template.expression string": 2, "meta.template.expression comment": 1,
-    "meta.interpolation": 0, "storage.type.string.go": 0
+    "storage.type.string.go": 0
   };
 
   var GRAMMAR_FOR_SCOPE = {};
