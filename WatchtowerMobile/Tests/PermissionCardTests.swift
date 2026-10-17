@@ -78,6 +78,34 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertEqual(noGrant.hint, .waitingForMac)
     }
 
+    /// The bar's footer points at a card this phone may answer; with no
+    /// card, or a read-only one, it keeps "Needs approval on the Mac".
+    func testTheBarFooterPointsAtAnAnswerableCard() throws {
+        let replica = try snapshot()
+        let session = try XCTUnwrap(replica.session(12))
+        func footer(_ access: PermissionAccess, in snapshot: WorkbenchReplicaSnapshot) -> String? {
+            SessionInputModel(
+                session: session, snapshot: snapshot, grant: grant(), typingRequested: true, delivered: nil, now: now,
+                answersPermission: PermissionCardModel.answerable(session, in: snapshot, access: access)
+            ).approvalText
+        }
+
+        XCTAssertEqual(footer(PermissionAccess(grant: grant(), requested: true), in: replica), "Answer the request above")
+        XCTAssertEqual(
+            footer(PermissionAccess(grant: grant(permissions: false), requested: true), in: replica),
+            "Needs approval on the Mac", "a read-only card"
+        )
+        XCTAssertEqual(footer(PermissionAccess(grant: grant(), requested: false), in: replica), "Needs approval on the Mac")
+        XCTAssertEqual(footer(PermissionAccess(grant: grant(), requested: true), in: try snapshot([])), "Needs approval on the Mac", "no card")
+        XCTAssertFalse(
+            SessionInputModel(
+                session: session, snapshot: replica, grant: grant(), typingRequested: true, delivered: nil, now: now,
+                answersPermission: true
+            ).canSend,
+            "still no send at a prompt"
+        )
+    }
+
     func testBashAllowAsksForConfirmation() throws {
         let bash = try XCTUnwrap(try detail(try snapshot()).permission)
         XCTAssertTrue(bash.confirmsAllow)

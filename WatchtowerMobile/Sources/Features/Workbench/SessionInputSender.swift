@@ -151,10 +151,12 @@ final class SessionInputSender {
 /// session…" bar and Finish show only on a phone whose typing the Mac
 /// allowed and whose own toggle is on, for a live session. A session at a
 /// permission prompt takes nothing from the phone: "Needs approval on the
-/// Mac", no send. Each line on its way shows how far the Mac got, a held
+/// Mac" (or "Answer the request above" when the screen's permission card
+/// takes this phone's answer, #517), no send. Each line on its way shows how far the Mac got, a held
 /// one why (with Cancel), a refused one the Mac's message (with Dismiss).
 struct SessionInputModel: Equatable {
     static let needsApproval = "Needs approval on the Mac"
+    static let answerAbove = "Answer the request above"
     static let footnote = "Delivered when the agent is idle"
 
     /// Why a live session takes no line from this phone (board #515): the
@@ -209,13 +211,14 @@ struct SessionInputModel: Equatable {
         grant: DeviceGrant?,
         typingRequested: Bool,
         delivered: SessionInputDelivery?,
-        now: Date
+        now: Date,
+        answersPermission: Bool = false
     ) {
         let allowed = typingRequested && grant?.typingAllowed == true
         showsBar = allowed && session.live
         showsFinish = showsBar
         typingHint = !session.live || allowed ? nil : (typingRequested ? .waitingForMac : .turnOn)
-        approvalText = session.stateKind == .needsApproval ? Self.needsApproval : nil
+        approvalText = session.stateKind == .needsApproval ? (answersPermission ? Self.answerAbove : Self.needsApproval) : nil
         notice = delivered?.text
         let entity = SessionStarter.sessionRecordName(session.id)
         let online = MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline

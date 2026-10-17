@@ -66,7 +66,7 @@ struct SessionDetailModel {
         agentLine = "\(Self.agentName(session.agent)) · \(CompactAge.string(from: session.createdAt, now: now))"
         let rows = PermissionAnswerRow.rows(sessionID: session.id, snapshot: snapshot, now: now)
         answerRows = rows
-        let request = session.live && session.agent == .claudeCode ? snapshot.pendingPermission(for: session.id) : nil
+        let request = PermissionCardModel.request(for: session, in: snapshot)
         let permission = request.map { PermissionCardModel(request: $0, session: session, rows: rows, access: permissions) }
         self.permission = permission
         approvalNotice = session.stateKind == .needsApproval && permission == nil ? SessionInputModel.needsApproval : nil

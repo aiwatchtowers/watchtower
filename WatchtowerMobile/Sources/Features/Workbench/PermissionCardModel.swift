@@ -52,6 +52,28 @@ struct PermissionCardModel: Equatable {
 
     var allowConfirmTitle: String { "Allow this command once?" }
 
+    /// The request the session's card shows: a live Claude session's
+    /// pending one (Codex keeps "Needs approval on the Mac").
+    static func request(for session: TerminalSessionState, in snapshot: WorkbenchReplicaSnapshot) -> PermissionRequest? {
+        session.live && session.agent == .claudeCode ? snapshot.pendingPermission(for: session.id) : nil
+    }
+
+    /// The session shows a card this phone may answer: the bar's footer
+    /// points at it instead of the Mac.
+    static func answerable(_ session: TerminalSessionState, in snapshot: WorkbenchReplicaSnapshot, access: PermissionAccess) -> Bool {
+        request(for: session, in: snapshot) != nil && hint(access) == nil
+    }
+
+    static func hint(_ access: PermissionAccess) -> PermissionHint? {
+        if !access.requested {
+            .turnOn
+        } else if access.grant?.permissionsAllowed == true {
+            nil
+        } else {
+            .waitingForMac
+        }
+    }
+
     init(request: PermissionRequest, session: TerminalSessionState, rows: [PermissionAnswerRow], access: PermissionAccess) {
         requestID = request.id
         sessionID = session.id
@@ -59,13 +81,7 @@ struct PermissionCardModel: Equatable {
         summary = request.summary
         clippedNote = request.summaryClipped == true ? Self.clippedNote : nil
         confirmsAllow = request.toolName == "Bash"
-        hint = if !access.requested {
-            .turnOn
-        } else if access.grant?.permissionsAllowed == true {
-            nil
-        } else {
-            .waitingForMac
-        }
+        hint = Self.hint(access)
         let answering = access.inFlight.contains(SessionInputSender.answerKey(session.id))
             || access.sentRequestID == request.id
             || rows.contains { $0.requestID == request.id && !$0.isFailed }

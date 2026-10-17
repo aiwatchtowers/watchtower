@@ -50,6 +50,9 @@ final class DeviceSettings {
     /// `lastError` when it explains the typing toggle; the session screen's
     /// Turn On shows only its own failure (board #515).
     var typingError: String? { errorSetting == .typingRequested ? lastError : nil }
+    /// `lastError` when it explains the permission-prompt toggle; the
+    /// permission card's Turn On shows only its own failure (#517).
+    var permissionsError: String? { errorSetting == .permissionsRequested ? lastError : nil }
 
     /// Set by the environment when the phone links or unlinks.
     var linkedDevice: LinkedDevice?

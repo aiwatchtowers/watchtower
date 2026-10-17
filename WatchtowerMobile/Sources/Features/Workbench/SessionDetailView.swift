@@ -139,7 +139,8 @@ struct SessionDetailView: View {
                 session: $0, snapshot: replica.snapshot,
                 grant: replica.snapshot.grant(for: env.linkedDevice?.deviceID),
                 typingRequested: env.deviceSettings.typingRequested,
-                delivered: env.sessionInputs.delivered[$0.id], now: now
+                delivered: env.sessionInputs.delivered[$0.id], now: now,
+                answersPermission: PermissionCardModel.answerable($0, in: replica.snapshot, access: permissions)
             )
         }
     }
@@ -253,6 +254,7 @@ struct SessionDetailView: View {
                             }
                         },
                         onDeny: { answer(card, .deny) },
+                        error: env.deviceSettings.permissionsError,
                         onTurnOn: turnOnPermissions
                     )
                 } else if let notice = detail.approvalNotice {
@@ -410,6 +412,8 @@ private struct PermissionCardView: View {
     let card: PermissionCardModel
     let onAllow: () -> Void
     let onDeny: () -> Void
+    /// Turn On's own failure (`DeviceSettings.permissionsError`).
+    let error: String?
     let onTurnOn: () -> Void
 
     var body: some View {
@@ -435,7 +439,11 @@ private struct PermissionCardView: View {
                 Text(hint.text).font(.caption).foregroundStyle(.secondary)
                 if hint == .turnOn {
                     Button("Turn On", action: onTurnOn)
+                        .buttonStyle(.bordered)
                         .frame(minHeight: 44)
+                }
+                if let error {
+                    Text(error).font(.caption).foregroundStyle(PhoneTone.red.color)
                 }
             } else {
                 HStack(spacing: Spacing.regular) {

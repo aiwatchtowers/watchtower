@@ -392,6 +392,25 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(settings.typingError)
     }
 
+    /// #517: a failed permission-prompt write is the card's error alone,
+    /// never the typing one, and the reverse.
+    func testAPermissionsFailureIsItsOwnError() async throws {
+        let transport = SpyTransport(failingSaves: [0, 1])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+
+        await settings.setPermissionsRequested(true)
+
+        XCTAssertFalse(settings.permissionsRequested, "the toggle went back")
+        XCTAssertNotNil(settings.permissionsError)
+        XCTAssertEqual(settings.permissionsError, settings.lastError)
+        XCTAssertNil(settings.typingError)
+
+        await settings.setTypingRequested(true)
+        XCTAssertNotNil(settings.typingError)
+        XCTAssertNil(settings.permissionsError)
+    }
+
     /// Two quick toggles: the writes never overlap, run in toggle order, and
     /// the first one's failure reverts only its own change before the second
     /// write reads the choices.
