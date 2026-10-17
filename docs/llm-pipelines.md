@@ -346,15 +346,9 @@ Run(ctx)
     │    │  UpsertPeriodSummary()
     │    │
     │
-    └─ PHASE: Social Graph (pure SQL, NO AI)
-         │
-         │  ComputeUserInteractions(currentUserID, from, to)
-         │    ├─ Shared channels (both users posted)
-         │    ├─ Messages to/from (by channel overlap)
-         │    ├─ Thread replies to/from
-         │    └─ Top 50 by volume
-         │
-         └─ UpsertUserInteractions()
+    └─ (Social graph phase removed: nothing computes user interactions any more.
+        `UpsertUserInteractions` remains in internal/db but has no production caller,
+        so the `user_interactions` table is no longer filled.)
 ```
 
 ### Output classification

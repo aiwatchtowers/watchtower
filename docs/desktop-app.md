@@ -314,7 +314,7 @@ LIMIT 50;
 - **Quick prompts:** "What happened today?", "Any decisions?", "Summarize #channel"
 
 **AI Context Building:**
-The app builds a system prompt with workspace context, similar to Go's `context_builder.go`:
+The app builds a system prompt with workspace context, in the same spirit as the Go chat system prompt (`internal/chat/prompt_sections.go`):
 ```
 You are Watchtower, an AI assistant analyzing Slack workspace "{workspace_name}".
 Current time: {now}. Domain: {domain}.slack.com
