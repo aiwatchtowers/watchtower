@@ -29,8 +29,9 @@ func TestClient_GetIssueComments_SinglePage(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	comments, err := c.GetIssueComments(context.Background(), "PROJ-1")
+	comments, complete, err := c.GetIssueComments(context.Background(), "PROJ-1")
 	require.NoError(t, err)
+	assert.True(t, complete)
 	require.Len(t, comments, 1)
 	assert.Equal(t, "10001", comments[0].ID)
 	assert.Equal(t, "A", comments[0].Author.DisplayName)
@@ -57,8 +58,9 @@ func TestClient_GetIssueComments_Paginates(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	comments, err := c.GetIssueComments(context.Background(), "PROJ-1")
+	comments, complete, err := c.GetIssueComments(context.Background(), "PROJ-1")
 	require.NoError(t, err)
+	assert.True(t, complete)
 	require.Len(t, comments, 3)
 	assert.Equal(t, []string{"1", "2", "3"}, []string{comments[0].ID, comments[1].ID, comments[2].ID})
 	assert.Equal(t, []string{"0", "2"}, starts)
@@ -73,9 +75,10 @@ func TestClient_GetIssueComments_StopsOnEmptyPage(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	comments, err := c.GetIssueComments(context.Background(), "PROJ-1")
+	comments, complete, err := c.GetIssueComments(context.Background(), "PROJ-1")
 	require.NoError(t, err)
 	assert.Empty(t, comments)
+	assert.False(t, complete)
 }
 
 // TestClient_GetIssueComments_PropagatesAuthRevoked ensures a persistent 401
@@ -89,7 +92,7 @@ func TestClient_GetIssueComments_PropagatesAuthRevoked(t *testing.T) {
 	stubTokenEndpoint(t)
 
 	c := makeTestClient(t, srv.URL)
-	_, err := c.GetIssueComments(context.Background(), "PROJ-1")
+	_, _, err := c.GetIssueComments(context.Background(), "PROJ-1")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrAuthRevoked)
 }
@@ -101,7 +104,7 @@ func TestClient_GetIssueComments_NonOKError(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	_, err := c.GetIssueComments(context.Background(), "PROJ-404")
+	_, _, err := c.GetIssueComments(context.Background(), "PROJ-404")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), fmt.Sprintf("comments for %s", "PROJ-404"))
 }

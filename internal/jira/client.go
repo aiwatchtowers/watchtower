@@ -400,7 +400,10 @@ var searchFields = []string{
 // startAt/maxResults=50 (the FetchAllBoards shape) until startAt+len(page) >=
 // total. An empty page always stops the loop, guarding against an infinite
 // loop if the API ever reports a total larger than it actually returns.
-func (c *Client) GetIssueComments(ctx context.Context, key string) ([]IssueComment, error) {
+// complete is false only when the loop stopped on an empty page while
+// startAt < total: the listing is then short and must not be taken as the
+// issue's full comment set.
+func (c *Client) GetIssueComments(ctx context.Context, key string) (comments []IssueComment, complete bool, err error) {
 	path := fmt.Sprintf("/rest/api/3/issue/%s/comment", url.PathEscape(key))
 	var all []IssueComment
 	startAt := 0
@@ -411,17 +414,19 @@ func (c *Client) GetIssueComments(ctx context.Context, key string) ([]IssueComme
 		}
 		var page CommentList
 		if err := c.getWithQuery(ctx, path, params, &page); err != nil {
-			return nil, fmt.Errorf("fetching comments for %s (startAt=%d): %w", key, startAt, err)
+			return nil, false, fmt.Errorf("fetching comments for %s (startAt=%d): %w", key, startAt, err)
 		}
 
 		all = append(all, page.Comments...)
 		startAt += len(page.Comments)
 
-		if len(page.Comments) == 0 || startAt >= page.Total {
-			break
+		if startAt >= page.Total {
+			return all, true, nil
+		}
+		if len(page.Comments) == 0 {
+			return all, false, nil
 		}
 	}
-	return all, nil
 }
 
 // GetProjectVersions fetches all fix versions (releases) for a project.
