@@ -303,7 +303,7 @@ func listedSkills(r io.Reader, limit int64) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
 	for {
-		raw, _, complete, err := nextLine(br, maxLineBytes)
+		raw, _, complete, err := NextLine(br, maxLineBytes)
 		if !complete {
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, err
@@ -342,7 +342,7 @@ func firstCWD(path string) string {
 	defer fh.Close()
 	br := bufio.NewReaderSize(fh, 64<<10)
 	for i := 0; i < 200; i++ {
-		raw, _, complete, _ := nextLine(br, maxLineBytes)
+		raw, _, complete, _ := NextLine(br, maxLineBytes)
 		if !complete {
 			return ""
 		}

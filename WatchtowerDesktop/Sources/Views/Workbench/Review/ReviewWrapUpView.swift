@@ -41,6 +41,10 @@ struct ReviewWrapUpView: View {
                         ForEach(group.comments) { commentRow($0) }
                     }
                 }
+                if !model.reverts.isEmpty {
+                    Divider()
+                    ReviewUndoneList(reverts: model.reverts)
+                }
                 Divider()
                 HStack {
                     Spacer()

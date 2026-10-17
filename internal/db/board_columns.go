@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-// Workbench board columns (migration 00125, PROJ-19, board #267): named
+// Workbench board columns (migration 00126, PROJ-19, board #267): named
 // columns inside the fixed status categories of one workbench. A status with
 // no defined columns has one implicit column, its standard label. The
 // triggers keep a target's column inside its workbench and current status.

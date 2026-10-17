@@ -13,18 +13,55 @@ struct ReviewCommentListView: View {
         model.comments.filter { $0.path == path && $0.status != .resolved }
     }
 
+    private var resolvedByAgent: [ReviewComment] { model.agentResolved.filter { $0.path == path } }
+    private var undone: [ReviewRevert] { model.reverts.filter { $0.path == path } }
+
     var body: some View {
-        if !shown.isEmpty {
+        if !shown.isEmpty || !resolvedByAgent.isEmpty || !undone.isEmpty {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(shown) { comment in
                         ReviewCommentRow(model: model, comment: comment)
                     }
+                    if !resolvedByAgent.isEmpty {
+                        Text("Resolved by the agent").font(.caption.weight(.semibold))
+                        ForEach(resolvedByAgent) { ResolvedByAgentRow(model: model, comment: $0) }
+                    }
+                    ReviewUndoneList(reverts: undone)
                 }
                 .padding(8)
             }
             .frame(maxHeight: 220)
         }
+    }
+}
+
+/// A comment the agent answered and resolved: the reply, and Reopen to take
+/// it back into the open round.
+private struct ResolvedByAgentRow: View {
+    let model: ReviewChangesModel
+    let comment: ReviewComment
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(comment.startLine == comment.endLine ? "Line \(comment.startLine)" : "Lines \(comment.startLine)–\(comment.endLine)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                // A failure lands in lastError, the pane's banner.
+                Button("Reopen") { try? model.reopen(comment.id) }
+                    .controlSize(.small)
+                    .disabled(model.round?.status != "open")
+            }
+            Text(comment.body).foregroundStyle(.secondary)
+            let reply = model.agentReply(for: comment)
+            if !reply.isEmpty {
+                Text("Agent: \(reply)").font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -72,8 +109,9 @@ private struct ReviewCommentRow: View {
     }
 
     @ViewBuilder private var reply: some View {
-        if !comment.agentReply.isEmpty {
-            Text("Agent: \(comment.agentReply)").font(.callout).foregroundStyle(.secondary)
+        let text = model.agentReply(for: comment)
+        if !text.isEmpty {
+            Text("Agent: \(text)").font(.callout).foregroundStyle(.secondary)
         }
     }
 

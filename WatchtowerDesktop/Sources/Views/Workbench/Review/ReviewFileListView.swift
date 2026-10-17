@@ -9,6 +9,7 @@ struct ReviewFileListView: View {
 
     var body: some View {
         List {
+            overviewSection
             if !model.context.isEmpty {
                 Section("Working on") {
                     ForEach(Array(model.context.enumerated()), id: \.offset) { _, item in
@@ -31,6 +32,24 @@ struct ReviewFileListView: View {
         .listStyle(.sidebar)
     }
 
+    /// The collapsed overview and, when the agent or the AI ordered the files, the reading order.
+    @ViewBuilder private var overviewSection: some View {
+        let ordered = model.chapters.contains { $0.source != .mechanical }
+        if model.overview != .idle || ordered {
+            Section("Overview") {
+                ReviewOverviewView(model: model, style: .compact)
+                if ordered {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reading order").font(.caption.weight(.semibold))
+                        ForEach(Array(model.chapters.enumerated()), id: \.element.key) { index, chapter in
+                            Text("\(index + 1). \(chapter.title)").font(.caption).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var shown: [ReviewDiffFile] { model.files.filter { $0.collapsedReason == nil } }
     private var folded: [ReviewDiffFile] { model.files.filter { $0.collapsedReason != nil } }
 
@@ -43,6 +62,7 @@ struct ReviewFileListView: View {
             selected: model.selectedPath == file.path,
             viewed: model.isViewed(file.path),
             comments: model.comments.filter { $0.path == file.path && $0.status != .resolved }.count,
+            risk: model.risk(for: file.path),
             select: { Task { await model.select(file.path) } },
             toggleViewed: { try? model.toggleViewed(file.path) } // a failure lands in lastError
         )
@@ -54,6 +74,7 @@ struct ReviewFileRow: View {
     let selected: Bool
     let viewed: Bool
     let comments: Int
+    var risk: ReviewOverview.Risk?
     let select: () -> Void
     let toggleViewed: () -> Void
 
@@ -74,6 +95,7 @@ struct ReviewFileRow: View {
                 }
             }
             Spacer(minLength: 4)
+            ReviewRiskBadge(level: risk?.level, why: risk?.why ?? "")
             if comments > 0 {
                 Text("\(comments)")
                     .font(.caption2.weight(.semibold))

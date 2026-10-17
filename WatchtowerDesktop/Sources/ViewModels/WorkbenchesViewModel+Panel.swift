@@ -198,9 +198,14 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.files)
         case .analytics:
             updated.showWorkbenchView(.analytics)
-        case .report, .changes:
+        case .report, .changes, .chat:
             guard let id = sessionViewTarget(projectID: project.id) else { return }
-            Self.placeBesideItsSession(view == .report ? .sessionReport(id) : .changes(id), sessionID: id, in: &updated)
+            let pane: WorkspacePane = switch view {
+            case .report: .sessionReport(id)
+            case .chat: .sessionChat(id)
+            default: .changes(id)
+            }
+            Self.placeBesideItsSession(pane, sessionID: id, in: &updated)
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
             // `openMostRecentSession` takes its own ticket — past its
@@ -236,6 +241,16 @@ extension WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
+    /// A session row's Show Chat: its workbench on screen, the session's chat
+    /// beside its terminal.
+    func showChat(sessionID: Int64, projectID: Int64) {
+        if selectedWorkbenchID != projectID { selectedWorkbenchID = projectID }
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        Self.placeBesideItsSession(.sessionChat(sessionID), sessionID: sessionID, in: &updated)
+        setLayout(updated, projectID: projectID)
+    }
+
     /// The session's Changes pane model, made once per session; nil without
     /// the watchtower CLI (the review runs through `workbench review …`).
     func reviewModel(sessionID: Int64, projectID: Int64) -> ReviewChangesModel? {
@@ -243,8 +258,22 @@ extension WorkbenchesViewModel {
         guard let cli else { return nil }
         let model = ReviewChangesModel(
             projectID: projectID, sessionID: sessionID, cli: cli, db: dbPool, lineDelivery: lineDelivery
-        )
+        ) { [weak self] in
+            guard let self else { return false }
+            return ReviewChangesModel.agentWorks(
+                sessionID: sessionID, liveIDs: self.terminalCenter?.liveIDs ?? [], statuses: self.sessionStatuses
+            )
+        }
         reviewModels[sessionID] = model
+        return model
+    }
+
+    /// The workbench's Find Repeats model, made once; nil without the watchtower CLI.
+    func reviewLessonsModel(projectID: Int64) -> ReviewLessonsModel? {
+        if let model = reviewLessonModels[projectID] { return model }
+        guard let cli else { return nil }
+        let model = ReviewLessonsModel(projectID: projectID, cli: cli, db: dbPool)
+        reviewLessonModels[projectID] = model
         return model
     }
 

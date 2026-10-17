@@ -50,7 +50,7 @@ struct WorkspacePaneView: View {
                 header
                 Divider()
             }
-            if isHidden, [.terminal, .report, .changes, .analytics].contains(WorkspaceView(pane)) {
+            if isHidden, [.terminal, .report, .changes, .analytics, .chat].contains(WorkspaceView(pane)) {
                 // A hidden Session view leaves the screen too: its report
                 // stops refreshing until it is back; so do a Changes pane
                 // and the Analytics pane.
@@ -98,6 +98,7 @@ struct WorkspacePaneView: View {
             Button("Analytics") { show(.analytics) }.disabled(pane == .analytics)
             if let id = currentSessionID {
                 Button("Changes") { show(.changes(id)) }.disabled(pane == .changes(id))
+                Button("Chat") { show(.sessionChat(id)) }.disabled(pane == .sessionChat(id))
             }
             Divider()
             Section("Sessions") {
@@ -154,11 +155,15 @@ struct WorkspacePaneView: View {
         case let .sessionReport(id):
             WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)
                 .id(id)
+        case let .sessionChat(id):
+            SessionChatView(vm: vm, sessionID: id, projectID: project.id)
+                .id(id)
         case let .changes(id):
             if let model = vm.reviewModel(sessionID: id, projectID: project.id) {
                 ReviewChangesPaneView(
                     model: model,
-                    agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind }
+                    agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind },
+                    lessons: vm.reviewLessonsModel(projectID: project.id)
                 )
                 .id(id)
             } else {
@@ -273,6 +278,7 @@ extension WorkspaceView {
         case .files: "Files"
         case .analytics: "Analytics"
         case .changes: "Changes"
+        case .chat: "Chat"
         }
     }
 
@@ -284,6 +290,7 @@ extension WorkspaceView {
         case .files: "chevron.left.forwardslash.chevron.right"
         case .analytics: "chart.bar.xaxis"
         case .changes: "plus.forwardslash.minus"
+        case .chat: "bubble.left.and.bubble.right"
         }
     }
 }

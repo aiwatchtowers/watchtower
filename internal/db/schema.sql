@@ -2656,6 +2656,16 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     PRIMARY KEY (session_id, root, branch)
 );
 
+-- Every agent session id a terminal tab has had (00127); the tab's own
+-- claude_session_id holds only the latest. Filled by AFTER INSERT / AFTER UPDATE
+-- OF claude_session_id triggers on terminal_sessions; ids and times only.
+CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
+    terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    agent_session_id    TEXT NOT NULL,
+    first_seen_at       TEXT NOT NULL, -- UTC ISO-8601 seconds
+    PRIMARY KEY (terminal_session_id, agent_session_id)
+);
+
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -3002,4 +3012,56 @@ CREATE TABLE IF NOT EXISTS review_checks (
   state       TEXT NOT NULL CHECK (state IN ('checked','commented','done','partial','not_done')), -- unticking deletes the row
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   PRIMARY KEY (round_id, chapter_key, lens, item_key)
+);
+
+CREATE TABLE IF NOT EXISTS review_notes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+  tree_sha   TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('note','chapter')),
+  ord        INTEGER NOT NULL,
+  path       TEXT NOT NULL DEFAULT '',
+  start_line INTEGER NOT NULL DEFAULT 0,
+  end_line   INTEGER NOT NULL DEFAULT 0,
+  quote      TEXT NOT NULL DEFAULT '',
+  text       TEXT NOT NULL,
+  paths_json TEXT NOT NULL DEFAULT '[]',
+  core       INTEGER NOT NULL DEFAULT 0 CHECK (core IN (0,1)),
+  why        TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS review_notes_session ON review_notes(project_id, session_id, kind, ord);
+
+CREATE TABLE IF NOT EXISTS review_overviews (
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  tree_sha    TEXT NOT NULL,
+  base_sha    TEXT NOT NULL,
+  intent_hash TEXT NOT NULL,
+  json        TEXT NOT NULL,
+  model       TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, tree_sha, base_sha, intent_hash)
+);
+
+CREATE TABLE IF NOT EXISTS review_reverts (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  hunk_id  TEXT NOT NULL,
+  path     TEXT NOT NULL,
+  header   TEXT NOT NULL,
+  patch    TEXT NOT NULL,
+  at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  UNIQUE (round_id, hunk_id)
+);
+
+CREATE TABLE IF NOT EXISTS review_lessons (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id         INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  lens               TEXT NOT NULL,
+  text               TEXT NOT NULL,
+  source_comment_ids TEXT NOT NULL DEFAULT '[]',
+  status             TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','accepted','dismissed')),
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  decided_at         TEXT
 );
