@@ -29,24 +29,31 @@ final class CodeEditorPageTests: XCTestCase {
     }
 
     func testPageDeclaresAStrictContentSecurityPolicy() throws {
-        let html = try String(contentsOf: Self.page, encoding: .utf8)
-        let policy = try XCTUnwrap(Self.contentSecurityPolicy(in: html), "index.html has no CSP meta")
+        // The Files pane's page and the Changes pane's diff page alike.
+        for page in [Self.page, Self.page.deletingLastPathComponent().appendingPathComponent("diff.html")] {
+            try assertStrictPolicy(page)
+        }
+    }
+
+    private func assertStrictPolicy(_ page: URL) throws {
+        let html = try String(contentsOf: page, encoding: .utf8)
+        let policy = try XCTUnwrap(Self.contentSecurityPolicy(in: html), "\(page.lastPathComponent) has no CSP meta")
         let pairs = policy.split(separator: ";").compactMap { part -> (String, String)? in
             let words = part.split(separator: " ").map(String.init)
             guard let name = words.first else { return nil }
             return (name, words.dropFirst().joined(separator: " "))
         }
         let directives = Dictionary(pairs) { first, _ in first }
-        XCTAssertEqual(directives["default-src"], "'none'")
+        XCTAssertEqual(directives["default-src"], "'none'", page.lastPathComponent)
         // 'wasm-unsafe-eval' lets the page compile the bundled Oniguruma
         // WebAssembly the TextMate highlighting runs on (board #738); it
         // allows no JavaScript eval.
-        XCTAssertEqual(directives["script-src"], "'self' 'wasm-unsafe-eval'")
-        XCTAssertEqual(directives["connect-src"], "'none'")
-        XCTAssertEqual(directives["base-uri"], "'none'")
+        XCTAssertEqual(directives["script-src"], "'self' 'wasm-unsafe-eval'", page.lastPathComponent)
+        XCTAssertEqual(directives["connect-src"], "'none'", page.lastPathComponent)
+        XCTAssertEqual(directives["base-uri"], "'none'", page.lastPathComponent)
         for (name, value) in directives {
-            XCTAssertFalse(value.contains("http"), "\(name) allows a remote origin: \(value)")
-            XCTAssertFalse(value.contains("'unsafe-eval'"), "\(name) allows eval")
+            XCTAssertFalse(value.contains("http"), "\(page.lastPathComponent): \(name) allows a remote origin: \(value)")
+            XCTAssertFalse(value.contains("'unsafe-eval'"), "\(page.lastPathComponent): \(name) allows eval")
         }
     }
 

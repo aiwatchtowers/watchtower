@@ -7,7 +7,9 @@
 // Nothing is loaded at startup: the engine on the first model of a
 // TextMate language, each grammar (and the grammars it embeds) on the
 // first model of its language. Monaco tokenizes lazily and incrementally,
-// line by line from the previous line's state, the viewport first.
+// line by line from the previous line's state, the viewport first. When
+// the engine or a grammar fails, the language falls back to Monaco's
+// Monarch grammar and the failure is posted once.
 //
 // Tokens carry a theme-independent class, not a colour: TOKEN_CLASSES maps
 // TextMate scope selectors to the class names the wt-dark/wt-light themes
@@ -71,7 +73,13 @@
       "comment.line.triple-slash.documentation punctuation.definition.comment"]],
     ["string", ["string", "constant.character", "punctuation.definition.string", "markup.raw.block.yaml"]],
     ["string.escape", ["constant.character.escape", "constant.character.format.placeholder",
-      "constant.other.placeholder", "punctuation.section.embedded", "punctuation.definition.template-expression"]],
+      "constant.other.placeholder"]],
+    // Code inside a string (`${…}`, `#{…}`, `\(…)`, JSX `{…}`) is code, not
+    // string, as VS Code's themes reset it; the braces around it are
+    // delimiters (bracket pairs, like Monarch's).
+    ["embedded", ["meta.embedded", "meta.template.expression", "meta.interpolation"]],
+    ["delimiter.embedded", ["punctuation.section.embedded", "punctuation.definition.template-expression",
+      "punctuation.section.interpolation"]],
     ["regexp", ["string.regexp"]],
     ["number", ["constant.numeric", "keyword.other.unit"]],
     // Not "variable.other.constant": TypeScript gives it every `const`.
@@ -132,6 +140,15 @@
     ["diff.hunk", ["meta.diff.range"]]
   ];
 
+  // Standard token types (0 other, 1 comment, 2 string, 3 regex) that
+  // vscode-textmate's scope-name rule gets wrong: code inside strings (as
+  // VS Code's TypeScript extension sets it; meta.embedded is code already)
+  // and Go's `string` type, a keyword whose scope name says "string".
+  var TOKEN_TYPES = {
+    "meta.template.expression": 0, "meta.template.expression string": 2, "meta.template.expression comment": 1,
+    "meta.interpolation": 0, "storage.type.string.go": 0
+  };
+
   var GRAMMAR_FOR_SCOPE = {};
   Object.keys(GRAMMARS).forEach(function (name) { GRAMMAR_FOR_SCOPE[GRAMMARS[name]] = name; });
 
@@ -155,10 +172,30 @@
     return bytes;
   }
 
+  // Each failure is posted once on the page's error channel.
+  var reported = {};
+  function reportOnce(key, message) {
+    if (reported[key]) { return; }
+    reported[key] = true;
+    post({ type: "error", message: "Editor: " + message });
+  }
+  // The AMD loader's errors name the module (their message is the script
+  // error event's "[object Event]").
+  function describe(err) {
+    if (err && err.moduleId) { return "could not load " + err.moduleId; }
+    return String((err && err.message) || err);
+  }
+
   var engine = null;   // Promise of {tm, registry, classOf}, made on first use
   function getEngine() {
     if (engine) { return engine; }
     engine = Promise.all([load("textmate/vscode-textmate"), load("textmate/vscode-oniguruma"), load("textmate/onig-wasm")])
+      .catch(function (err) {
+        // A build without textmate/ (scripts/fetch-monaco.sh not run).
+        reportOnce("engine", "the TextMate engine failed to load (" + describe(err) + "); files keep Monaco's " +
+          "Monarch colours. Run scripts/fetch-monaco.sh and rebuild.");
+        throw err;
+      })
       .then(function (modules) {
         var tm = modules[0], onig = modules[1];
         var onigLib = onig.loadWASM(decodeBase64(modules[2]).buffer).then(function () {
@@ -166,14 +203,23 @@
             createOnigScanner: function (patterns) { return onig.createOnigScanner(patterns); },
             createOnigString: function (text) { return onig.createOnigString(text); }
           };
+        }, function (err) {
+          reportOnce("engine", "the Oniguruma WebAssembly failed to start (" + describe(err) + "); files keep " +
+            "Monaco's Monarch colours");
+          throw err;
         });
         var registry = new tm.Registry({
           onigLib: onigLib,
           theme: classTheme(),
-          // An embedded language with no grammar here stays plain.
+          // An embedded language with no grammar here, or whose grammar
+          // fails, stays plain; a failing language's own grammar fails it
+          // in providerFor.
           loadGrammar: function (scope) {
             var name = GRAMMAR_FOR_SCOPE[scope];
-            return name ? load("textmate/grammars/" + name) : Promise.resolve(null);
+            return name ? load("textmate/grammars/" + name).catch(function (err) {
+              reportOnce("grammar " + name, "the TextMate grammar " + name + " failed to load (" + describe(err) + ")");
+              return null;
+            }) : Promise.resolve(null);
           }
         });
         // vscode-textmate's colour ids -> class names.
@@ -186,8 +232,22 @@
     return engine;
   }
 
-  // vscode-textmate's encoded token attributes: the colour id in bits 15–23.
+  // vscode-textmate's encoded token attributes: the standard token type in
+  // bits 8–9, the colour id in bits 15–23.
+  var TOKEN_TYPE_MASK = 0x300, TOKEN_TYPE_OFFSET = 8;
   var FOREGROUND_MASK = 0xFF8000, FOREGROUND_OFFSET = 15;
+  // Monaco reads a token's standard type off its name (the words comment,
+  // string, regex/regexp), and bracket matching, bracket colours and
+  // auto-closing go by it. A class whose name does not say its type gets
+  // it as a suffix ("property.string": a JSON key, coloured as a property
+  // by the "property" rule, a string to the brackets).
+  var TYPE_NAMES = ["", "comment", "string", "regexp"];
+  var TYPED_NAME = /\b(comment|string|regex|regexp)\b/;
+  function tokenName(cls, type) {
+    var word = TYPE_NAMES[type];
+    if (!word || TYPED_NAME.test(cls)) { return cls; }
+    return (cls || "plain") + "." + word;
+  }
   // A line taking longer than this is left where the tokenizer stopped (the
   // rest plain) and the next line starts from the state before it, as VS
   // Code does.
@@ -259,12 +319,18 @@
       });
       return names;
     },
-    // Modules: the names an import binds, and their uses before a ".".
+    // Modules: the names an `import` binds, and their uses before a ".".
     python: function (line, classes, names) {
-      var m = /^(\s*import\s+)(.*)$/.exec(line);
-      if (m) {
-        var at = m[1].length;
-        m[2].split(",").forEach(function (part) {
+      var m = /^(\s*)(import\s+)(.*)$/.exec(line);
+      // The grammar's import keyword, not the word in a docstring; the
+      // list ends where a comment starts.
+      if (m && classes[m[1].length] === "keyword") {
+        var at = m[1].length + m[2].length;
+        var list = m[3];
+        for (var c = 0; c < list.length; c++) {
+          if (/^comment/.test(classes[at + c] || "")) { list = list.slice(0, c); break; }
+        }
+        list.split(",").forEach(function (part) {
           var bound = /^(\s*)([\w.]+)(?:\s+as\s+(\w+))?/.exec(part);
           if (bound) {
             var start = at + bound[1].length;
@@ -274,16 +340,24 @@
           at += part.length + 1;
         });
       }
-      var from = /^(\s*from\s+)([\w.]+)/.exec(line);
-      if (from) { setRange(classes, from[1].length, from[1].length + from[2].length, "namespace"); }
+      // `from m import a`: m is a module; what it binds may not be.
+      var from = /^(\s*)(from\s+)([\w.]+)/.exec(line);
+      if (from && classes[from[1].length] === "keyword") {
+        var at2 = from[1].length + from[2].length;
+        setRange(classes, at2, at2 + from[3].length, "namespace");
+      }
       markQualifiers(line, classes, names, [""]);
       return names;
     },
     // Types: Swift's grammar leaves most type references unscoped, and
     // they are the identifiers in UpperCamelCase. Argument labels.
     swift: function (line, classes, names) {
-      var m = /^(\s*(?:@\w+\s+)*import\s+(?:\w+\s+)?)(\w+)/.exec(line);
-      if (m) { setRange(classes, m[1].length, m[1].length + m[2].length, "namespace"); }
+      var m = /^(\s*(?:@\w+\s+)*)(import\s+(?:\w+\s+)?)(\w+)/.exec(line);
+      // The grammar's import keyword, not the word in a string.
+      if (m && classes[m[1].length] === "keyword") {
+        var at = m[1].length + m[2].length;
+        setRange(classes, at, at + m[3].length, "namespace");
+      }
       eachIdentifier(line, classes, ["", "function"], function (name, start, end) {
         if (classes[start] === "" && /^[A-Z]/.test(name)) { setRange(classes, start, end, "type"); }
         // An argument label: the grammar scopes it as a method.
@@ -300,70 +374,94 @@
     return other instanceof LineState && other.names === this.names && other.stack.equals(this.stack);
   };
 
-  function tokensProvider(e, grammar, refine) {
+  function tokensProvider(e, grammar, languageId) {
+    var refine = REFINERS[languageId] || null;
     var initial = new LineState(e.tm.INITIAL, "");
+    function classAt(raw, i) { return e.classOf[(raw[i + 1] & FOREGROUND_MASK) >>> FOREGROUND_OFFSET] || ""; }
+    function typeAt(raw, i) { return (raw[i + 1] & TOKEN_TYPE_MASK) >>> TOKEN_TYPE_OFFSET; }
+    function tokenize(line, state) {
+      var result = grammar.tokenizeLine2(line, state.stack, LINE_TIME_LIMIT_MS);
+      var raw = result.tokens, names = state.names, tokens = [], last = null, i, name;
+      if (refine) {
+        var classes = new Array(line.length), types = new Array(line.length);
+        for (i = 0; i < raw.length; i += 2) {
+          var to = i + 2 < raw.length ? raw[i + 2] : line.length;
+          setRange(classes, raw[i], to, classAt(raw, i));
+          setRange(types, raw[i], to, typeAt(raw, i));
+        }
+        names = refine(line, classes, names);
+        for (i = 0; i < line.length; i++) {
+          name = tokenName(classes[i], types[i]);
+          if (name !== last) { tokens.push({ startIndex: i, scopes: name }); last = name; }
+        }
+        if (!tokens.length) { tokens.push({ startIndex: 0, scopes: "" }); }
+      } else {
+        for (i = 0; i < raw.length; i += 2) {
+          name = tokenName(classAt(raw, i), typeAt(raw, i));
+          if (name === last) { continue; }
+          tokens.push({ startIndex: raw[i], scopes: name });
+          last = name;
+        }
+      }
+      return { tokens: tokens, endState: result.stoppedEarly ? state : new LineState(result.ruleStack, names) };
+    }
     return {
       getInitialState: function () { return initial; },
+      // A throw (a pattern Oniguruma rejects, a refiner bug) leaves the
+      // line plain and is posted once per language, not once per line.
       tokenize: function (line, state) {
-        var result = grammar.tokenizeLine2(line, state.stack, LINE_TIME_LIMIT_MS);
-        var raw = result.tokens, names = state.names, tokens = [], last = null, i;
-        if (refine) {
-          var classes = new Array(line.length);
-          for (i = 0; i < raw.length; i += 2) {
-            var to = i + 2 < raw.length ? raw[i + 2] : line.length;
-            setRange(classes, raw[i], to, e.classOf[(raw[i + 1] & FOREGROUND_MASK) >>> FOREGROUND_OFFSET] || "");
-          }
-          names = refine(line, classes, names);
-          for (i = 0; i < line.length; i++) {
-            if (classes[i] !== last) { tokens.push({ startIndex: i, scopes: classes[i] }); last = classes[i]; }
-          }
-          if (!tokens.length) { tokens.push({ startIndex: 0, scopes: "" }); }
-        } else {
-          for (i = 0; i < raw.length; i += 2) {
-            var cls = e.classOf[(raw[i + 1] & FOREGROUND_MASK) >>> FOREGROUND_OFFSET] || "";
-            if (cls === last) { continue; }
-            tokens.push({ startIndex: raw[i], scopes: cls });
-            last = cls;
-          }
+        try {
+          return tokenize(line, state);
+        } catch (err) {
+          reportOnce("tokenize " + languageId, "TextMate tokenizing " + languageId + " failed (" + describe(err) + ")");
+          return { tokens: [{ startIndex: 0, scopes: "" }], endState: state };
         }
-        return { tokens: tokens, endState: result.stoppedEarly ? state : new LineState(result.ruleStack, names) };
       }
     };
   }
 
-  var ready = {};   // language id -> Promise of its provider (or null)
+  // Monaco's own Monarch grammar for `languageId`, or null: its
+  // basic-languages entry keeps the loader of the module.
+  function monarchFor(languageId) {
+    var entry = monaco.languages.getLanguages().filter(function (l) { return l.id === languageId; })[0];
+    if (!entry || typeof entry.loader !== "function") { return Promise.resolve(null); }
+    return entry.loader().then(function (mod) { return (mod && mod.language) || null; }, function () { return null; });
+  }
+
+  var ready = {};      // language id -> Promise of its tokenizer (TextMate, else Monarch, else null)
+  var textMate = {};   // language id -> true once its TextMate tokenizer is made
   function providerFor(languageId) {
     if (!ready[languageId]) {
       var scope = GRAMMARS[LANGUAGES[languageId]];
       ready[languageId] = getEngine().then(function (e) {
-        return e.registry.loadGrammar(scope).then(function (grammar) {
+        return e.registry.loadGrammarWithConfiguration(scope, 1, { tokenTypes: TOKEN_TYPES }).then(function (grammar) {
           if (!grammar) { throw new Error("no grammar for " + scope); }
-          return tokensProvider(e, grammar, REFINERS[languageId] || null);
+          textMate[languageId] = true;
+          return tokensProvider(e, grammar, languageId);
+        }, function (err) {
+          reportOnce("language " + languageId, "the TextMate grammar for " + languageId + " failed (" + describe(err) +
+            "); it keeps Monaco's Monarch colours");
+          throw err;
         });
-      }).catch(function (err) {
-        // The file stays plain text; the page's error channel says why (a
-        // build without textmate/: scripts/fetch-monaco.sh was not run).
-        post({ type: "error", message: "Editor: TextMate grammar for " + languageId + " failed: " +
-          String((err && err.message) || err) });
-        return null;
-      });
+      }).catch(function () { return monarchFor(languageId); });
     }
     return ready[languageId];
   }
 
   window.wtTextMate = {
     // A Promise of true once `languageId`'s TextMate tokenizer is in place
-    // (false: none, or it failed) — for the headless check.
+    // (false: none, or it failed and Monarch took over) — for the headless
+    // check.
     whenReady: function (languageId) {
       if (!LANGUAGES[languageId]) { return Promise.resolve(false); }
-      return providerFor(languageId).then(function (p) { return !!p; });
+      return providerFor(languageId).then(function () { return !!textMate[languageId]; });
     },
-    languages: function () { return Object.keys(LANGUAGES); },
-    grammars: function () { return Object.keys(GRAMMARS); }
+    languages: function () { return Object.keys(LANGUAGES); }
   };
 
   // After registerExtraLanguages (the languages must exist). The factories
-  // replace the Monarch ones Monaco registered for the same ids.
+  // replace the Monarch ones Monaco registered for the same ids, and fall
+  // back to them when TextMate fails.
   window.registerTextMateGrammars = function () {
     Object.keys(LANGUAGES).forEach(function (id) {
       monaco.languages.registerTokensProviderFactory(id, { create: function () { return providerFor(id); } });
@@ -374,6 +472,8 @@
     var defaults = json && json.jsonDefaults;
     if (defaults && defaults.setModeConfiguration) {
       defaults.setModeConfiguration(Object.assign({}, defaults.modeConfiguration, { tokens: false }));
+    } else {
+      reportOnce("json mode", "could not switch off the JSON mode's own colours; JSON may not use TextMate");
     }
   };
 })();

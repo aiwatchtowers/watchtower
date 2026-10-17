@@ -51,8 +51,11 @@ trap 'rm -rf "$TMP"' EXIT
 # into $TMP/<package>.
 fetch() {
     echo "==> Fetching $1 $2..."
-    curl -fsSL -o "$TMP/$1.tgz" "https://registry.npmjs.org/$1/-/$1-$2.tgz"
-    echo "$3  $TMP/$1.tgz" | shasum -a 256 -c - >/dev/null
+    curl -fsSL --retry 3 --max-time 120 -o "$TMP/$1.tgz" "https://registry.npmjs.org/$1/-/$1-$2.tgz"
+    if ! echo "$3  $TMP/$1.tgz" | shasum -a 256 -c - >/dev/null 2>&1; then
+        echo "$1 $2: the tarball's sha256 is not the pinned $3" >&2
+        exit 1
+    fi
     mkdir -p "$TMP/$1"
     tar xzf "$TMP/$1.tgz" -C "$TMP/$1"
 }

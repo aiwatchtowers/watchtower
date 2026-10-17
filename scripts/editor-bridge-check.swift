@@ -718,7 +718,7 @@ func tokenChecks(_ page: Page) async {
     }
     // setTheme falls back silently on an unknown name, so a theme counts as
     // defined only when Monaco's generated token colours include a colour
-    // that only its extraRules in languages.js set.
+    // that only its palette rows in languages.js set.
     for (theme, colour) in [("wt-dark", "#85e89d"), ("wt-light", "#22863a")] {
         let css = await page.evalString("""
             (function () {
@@ -741,6 +741,13 @@ func tokenChecks(_ page: Page) async {
 func textMateChecks(_ page: Page) async {
     let languages = await page.eval("wtTextMate.languages()") as? [String] ?? []
     check("textmate: languages listed", languages.count > 40, "\(languages.count)")
+    let unknown = await page.evalString("""
+        (function () {
+          var ids = monaco.languages.getLanguages().map(function (l) { return l.id; });
+          return wtTextMate.languages().filter(function (id) { return ids.indexOf(id) < 0; }).join(",");
+        })()
+        """)
+    check("textmate: every language id is one Monaco knows", unknown == "", "unknown: \(unknown ?? "nil")")
     let ready = await page.evalAsync("""
         var failed = [];
         for (const id of wtTextMate.languages()) {
@@ -804,10 +811,26 @@ func textMateChecks(_ page: Page) async {
             (3, "n", "parameter"), (4, "j", "namespace"), (4, "dumps", "function"), (4, "n)", "property")
         ]),
         ("json", "{\"name\": \"x\", \"n\": 1, \"ok\": true}\n", [
-            (0, "\"name\"", "property"), (0, "\"x\"", "string"), (0, "1", "number"), (0, "true", "constant.language")
+            (0, "\"name\"", "property.string"), (0, "\"x\"", "string"), (0, "1", "number"), (0, "true", "constant.language")
         ]),
-        ("yaml", "name: build\ncount: 3 # c\n", [(0, "name", "property"), (0, "build", "string"), (1, "3", "number"), (1, "# c", "comment")]),
-        ("markdown", "# Title\n\n```go\nfunc main() {}\n```\n", [(0, "# Title", "markup.heading"), (3, "func", "keyword"), (3, "main", "function")])
+        ("yaml", "name: build\ncount: 3 # c\n", [(0, "name", "property.string"), (0, "build", "string"), (1, "3", "number"), (1, "# c", "comment")]),
+        ("markdown", "# Title\n\n```go\nfunc main() {}\n```\n", [(0, "# Title", "markup.heading"), (3, "func", "keyword"), (3, "main", "function")]),
+        // Code inside a string is code; its braces are delimiters.
+        ("typescript", "const s = `a${f(x[0])}`;\n", [
+            (0, "`a", "string"), (0, "${", "delimiter.embedded"), (0, "f(", "function"), (0, "(x", "embedded"), (0, "`;", "string")
+        ]),
+        // Imports the grammar's keyword starts, not words in strings and comments.
+        ("python", "\"\"\"\nimport foo\n\"\"\"\nfoo.bar()\nimport os, sys  # see docs, also\nalso.x\nfrom pkg import mod\n", [
+            (1, "foo", "string"), (3, "foo", ""), (4, "sys", "namespace"), (4, "also", "comment"), (5, "also", ""),
+            (6, "pkg", "namespace")
+        ]),
+        ("swift", "let s = \"\"\"\nimport Foo\n\"\"\"\n", [(1, "Foo", "string")]),
+        // Go package names: the path's last element without decorations; an
+        // alias or a blank import binds its own name or none.
+        ("go", "package x\n\nimport (\n\t\"gopkg.in/yaml.v3\"\n\t\"example.com/go-foo\"\n\t_ \"embed\"\n\tstr \"strings\"\n)\n\nvar _ = yaml.A + foo.B + embed.C + strings.D + str.E\n", [
+            (9, "yaml", "namespace"), (9, "foo", "namespace"), (9, "embed", "variable"), (9, "strings", "variable"),
+            (9, "str.", "namespace")
+        ])
     ]
     for (language, sample, needles) in samples {
         let array = needles.map { "[\($0.0), \(jsonArgument($0.1))]" }.joined(separator: ", ")
@@ -818,6 +841,22 @@ func textMateChecks(_ page: Page) async {
                   "got \(actual.isEmpty ? "(plain)" : actual)")
         }
     }
+
+    // Standard token types, which bracket matching and colours go by:
+    // brackets in a template expression are code, brackets in a JSON key
+    // are string.
+    let brackets = await page.evalAsync("""
+        function match(text, lang, col) {
+          var m = monaco.editor.createModel(text, lang);
+          m.tokenization.forceTokenization(1);
+          var hit = m.bracketPairs.matchBracket({ lineNumber: 1, column: col });
+          m.dispose();
+          return hit ? "pair" : "none";
+        }
+        return [match("const s = `a${f(x[0])}`;", "typescript", 16), match("{\\"k[]\\": 1}", "json", 4)].join(",");
+        """) as? String
+    check("textmate: a bracket in a template expression pairs, one in a JSON key does not",
+          brackets == "pair,none", "\(brackets ?? "nil")")
 
     // An edited import re-tokenizes the lines below it (the imported names
     // ride in the line state).
@@ -1229,6 +1268,8 @@ func diffPageChecks(root: URL) async {
     ) as? [String]
     check("showDiff: both sides, the language from the path",
           sides == ["go", "package main\n\nfunc b() {}\n"], "\(String(describing: sides))")
+    let diffTextMate = await page.evalAsync("return await wtTextMate.whenReady('go');") as? Bool
+    check("diff page: Go is highlighted with its TextMate grammar", diffTextMate == true, "\(String(describing: diffTextMate))")
     let zone = await page.eval(
         "(function () { var n = document.querySelector('.wt-comment');"
             + " return n ? [n.textContent, n.querySelectorAll('b').length] : null; })()"
@@ -1307,6 +1348,54 @@ func diffNotesAndHunksChecks(_ page: Page) async {
     check("showDiff: clears the notes and hunk zones", cleared == 0, "\(String(describing: cleared))")
 }
 
+/// Without textmate/ (a build where scripts/fetch-monaco.sh did not run),
+/// a TextMate language keeps Monaco's Monarch grammar and the page posts
+/// the failure once. Served from a temporary copy of the page with vs/
+/// linked in and textmate/ left out.
+@MainActor
+func fallbackChecks(root: URL) async {
+    let fm = FileManager.default
+    let copy = fm.temporaryDirectory.appendingPathComponent("editor-bridge-fallback-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: copy) }
+    do {
+        try fm.createDirectory(at: copy, withIntermediateDirectories: true)
+        for name in try fm.contentsOfDirectory(atPath: root.path) where name != "textmate" && name != "vs" {
+            try fm.copyItem(at: root.appendingPathComponent(name), to: copy.appendingPathComponent(name))
+        }
+        try fm.createSymbolicLink(at: copy.appendingPathComponent("vs"), withDestinationURL: root.appendingPathComponent("vs"))
+    } catch {
+        check("fallback: copy the page without textmate/", false, error.localizedDescription)
+        return
+    }
+    let page = Page(root: copy)
+    page.load()
+    let loaded = await wait(30) { page.ready || page.loadError != nil }
+    check("fallback: the page loads without textmate/", loaded && page.ready, page.loadError ?? "no ready")
+    guard page.ready else { return }
+    let result = await page.evalAsync("""
+        var m = monaco.editor.createModel("package x\\nfunc f() {}\\n", "go");
+        m.tokenization.forceTokenization(2);
+        var textMate = await wtTextMate.whenReady("go");
+        await new Promise(function (r) { setTimeout(r, 50); });
+        var types = monaco.editor.tokenize("func f() {}", "go")[0].map(function (t) { return t.type; }).join(",");
+        m.dispose();
+        return textMate + " " + types;
+        """) as? String ?? ""
+    check("fallback: Go keeps Monaco's Monarch grammar", result.hasPrefix("false ") && result.contains("identifier.go"), result)
+    _ = await page.evalAsync("""
+        var m = monaco.editor.createModel("x = 1\\n", "python");
+        m.tokenization.forceTokenization(1);
+        await wtTextMate.whenReady("python");
+        m.dispose();
+        return true;
+        """)
+    let engineErrors = page.errors.filter { $0.contains("TextMate engine failed to load") }
+    check("fallback: the missing engine is posted once, with the remedy",
+          engineErrors.count == 1 && engineErrors.first?.contains("scripts/fetch-monaco.sh") == true
+              && page.errors.count == 1,
+          page.errors.joined(separator: "; "))
+}
+
 // MARK: - Main
 
 @MainActor
@@ -1333,6 +1422,7 @@ func run(root: URL) async -> Int32 {
     await textMateChecks(page)
     await readOnlyChecks(page)
     await diffPageChecks(root: root)
+    await fallbackChecks(root: root)
 
     check("no error posted by the page during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
     print("\n\(passes) passed, \(failures) failed")

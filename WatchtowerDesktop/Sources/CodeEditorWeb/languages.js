@@ -7,7 +7,7 @@
 //    CSV/TSV (tuned here, kept over their TextMate grammars), and TSX,
 //    which only its TextMate grammar colours (textmate.js).
 // 3. The editor themes: vs/vs-dark under the token palette below.
-/* global monaco */
+/* global monaco, post */
 (function () {
   "use strict";
 
@@ -248,18 +248,10 @@
       tokens: diff, config: {} },
     { language: { id: "log", aliases: ["Log"], extensions: [".log"], filenamePatterns: ["*.log.*"] },
       tokens: log, config: {} },
-    // Monaco reads .tsx as TypeScript, whose TextMate grammar has no JSX.
+    // Monaco reads .tsx as TypeScript, whose TextMate grammar has no JSX;
+    // the language configuration is TypeScript's (confFrom).
     { language: { id: "typescriptreact", aliases: ["TypeScript JSX", "tsx"], extensions: [".tsx"] },
-      tokens: null, config: {
-        comments: { lineComment: "//", blockComment: ["/*", "*/"] },
-        brackets: [["{", "}"], ["[", "]"], ["(", ")"]],
-        autoClosingPairs: [{ open: "{", close: "}" }, { open: "[", close: "]" }, { open: "(", close: ")" },
-          { open: "\"", close: "\"", notIn: ["string"] }, { open: "'", close: "'", notIn: ["string", "comment"] },
-          { open: "`", close: "`", notIn: ["string", "comment"] }, { open: "/**", close: " */", notIn: ["string"] }],
-        surroundingPairs: [{ open: "{", close: "}" }, { open: "[", close: "]" }, { open: "(", close: ")" },
-          { open: "\"", close: "\"" }, { open: "'", close: "'" }, { open: "`", close: "`" }, { open: "<", close: ">" }],
-        folding: { markers: { start: /^\s*\/\/\s*#?region\b/, end: /^\s*\/\/\s*#?endregion\b/ } }
-      } },
+      tokens: null, confFrom: "typescript" },
     { language: { id: "csv", aliases: ["CSV"], extensions: [".csv"] }, tokens: columns(","), config: {} },
     { language: { id: "tsv", aliases: ["TSV"], extensions: [".tsv", ".tab"] }, tokens: columns("\t"), config: {} }
   ];
@@ -282,6 +274,7 @@
     ["keyword", "CF8E6D", "0033B3"],
     ["operator", "BCBEC4", "080808"],
     ["delimiter", "BCBEC4", "080808"],
+    ["delimiter.embedded", "CF8E6D", "0033B3"],
     ["identifier", "BCBEC4", "080808"],
     ["variable", "BCBEC4", "080808"],
     ["variable.language", "CF8E6D", "0033B3"],
@@ -305,9 +298,6 @@
     ["markup.code", "C9A26D", "3A6C00"],
     ["markup.quote", "7A7E85", "8C8C8C", "italic"],
     ["markup.list", "CF8E6D", "0033B3"],
-    ["string.key.json", "C77DBB", "871094"],
-    ["string.value.json", "6AAB73", "067D17"],
-    ["keyword.json", "CF8E6D", "0033B3"],
     ["inserted", "85e89d", "22863a"],
     ["deleted", "f97583", "b31d28"],
     ["diff.meta", "b392f0", "6f42c1", "bold"],
@@ -336,12 +326,30 @@
     });
   }
 
+  // `id` takes `from`'s language configuration (brackets, comments, Enter
+  // rules, word pattern) from Monaco's basic-languages module, when a model
+  // of `id` first appears.
+  function borrowConfiguration(id, from) {
+    var entry = monaco.languages.getLanguages().filter(function (l) { return l.id === from; })[0];
+    if (!entry || typeof entry.loader !== "function") { return; }
+    monaco.languages.onLanguageEncountered(id, function () {
+      entry.loader().then(function (mod) {
+        if (mod && mod.conf) { monaco.languages.setLanguageConfiguration(id, mod.conf); }
+      }, function (err) {
+        post({ type: "error", message: "Editor: " + from + "'s language configuration for " + id + " failed: " +
+          String((err && err.message) || err) });
+      });
+    });
+  }
+
   window.registerExtraLanguages = function () {
     associations.forEach(function (a) { monaco.languages.register(a); });
     grammars.forEach(function (g) {
       monaco.languages.register(g.language);
       if (g.tokens) { monaco.languages.setMonarchTokensProvider(g.language.id, g.tokens); }
-      monaco.languages.setLanguageConfiguration(g.language.id, g.config);
+      if (g.confFrom) { borrowConfiguration(g.language.id, g.confFrom); } else {
+        monaco.languages.setLanguageConfiguration(g.language.id, g.config);
+      }
     });
     monaco.editor.defineTheme("wt-light", { base: "vs", inherit: true, rules: themeRules(2),
       colors: { "editor.foreground": "#080808" } });
