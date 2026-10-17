@@ -468,7 +468,6 @@ func TestState_RejectsUnserialisableValues(t *testing.T) {
 		"cyclic":          `(function () { var o = {}; o.self = o; return o })()`,
 		"NaN":             `NaN`,
 		"Infinity":        `Infinity`,
-		"BigInt":          `10n`,
 		"nested function": `{f: function () {}}`,
 		"nested NaN":      `[1, NaN]`,
 		"symbol":          `Symbol("s")`,
@@ -484,6 +483,15 @@ func TestState_RejectsUnserialisableValues(t *testing.T) {
 				t.Fatalf("steps = %v; want one error step", stepStatuses(steps))
 			}
 		})
+	}
+	// A BigInt never reaches state.set: BigInt is not available in automations
+	// (ask #331) and the script is refused before it runs.
+	var pe *automations.PreParseError
+	_, err := automations.NewSandbox(&automations.Env{Ctx: context.Background(),
+		Recipe: &automations.Recipe{Script: `state.set("k", 10n)`}, Journal: automations.NewMemoryJournal(),
+		Meter: automations.NewMeter(automations.Budget{Tokens: 1, Minutes: 1}, nil)}, nil)
+	if !errors.As(err, &pe) || !pe.BigInt {
+		t.Fatalf("NewSandbox with a BigInt literal = %v; want a BigInt PreParseError", err)
 	}
 }
 

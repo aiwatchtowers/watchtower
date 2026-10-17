@@ -193,7 +193,7 @@ final class GoogleConnectFlow {
         // syncers are wired only at daemon startup, and a restart runs an
         // immediate sync + AI pipeline cycle so data shows up right away.
         if (wantCalendar && calendar.isConnected) || (wantGmail && gmail.isConnected) {
-            Task { await DaemonManager.restartLogging() }
+            Task { await DaemonManager.restartLoggingQueued() }
         }
         isRunning = false
     }

@@ -485,7 +485,7 @@ final class AppStateTests: XCTestCase {
 
         appState.daemonControlOverride = FakeDaemon()
         await appState.leaveOnboardingStep(.connect, route: appState.onboardingRoute) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertFalse(appState.needsOnboarding)
@@ -712,7 +712,7 @@ final class AppStateTests: XCTestCase {
         await appState.leaveOnboardingStep(.connect, route: route) { retries += 1 }
         // A stray second click after finish starts nothing more.
         await appState.leaveOnboardingStep(.connect, route: route) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.starts, 1)
         XCTAssertEqual(daemon.restarts, 0)
@@ -741,7 +741,7 @@ final class AppStateTests: XCTestCase {
         appState.onboarding.goTo(.purpose)
 
         await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.restarts, 1)
         XCTAssertEqual(daemon.starts, 0)
@@ -849,7 +849,7 @@ final class AppStateTests: XCTestCase {
         await waitUntil { daemon.isRestartParked }
         XCTAssertEqual(daemon.restarts, 1, "the restart is still running")
         daemon.releaseRestart()
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
         XCTAssertNil(appState.daemonStartFailure)
     }
 
@@ -865,12 +865,12 @@ final class AppStateTests: XCTestCase {
         appState.onboarding.goTo(.purpose)
 
         await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.starts, 1)
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertNotNil(appState.daemonStartFailure, "the landing says the sync did not start")
-        appState.dismissDaemonStartFailure()
+        appState.dismissDaemonBanner()
         XCTAssertNil(appState.daemonStartFailure)
     }
 
@@ -901,6 +901,31 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(daemon.starts, 0)
         let left = try FileManager.default.contentsOfDirectory(atPath: dir)
         XCTAssertEqual(left, ["last_sync.json"], "only the stamps go; the sync record stays")
+    }
+
+    /// Reset LLM data is one start-queue item: a banner Start pressed while
+    /// it restarts waits for it, and finds the daemon it left running.
+    func testResetLLMDataBlocksABannerStart() async throws {
+        let dir = try workspaceWithStamps()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.holdRestart = true
+        appState.daemonControlOverride = daemon
+
+        let reset = Task { try await appState.resetLLMData(workspaceDir: dir) }
+        for _ in 0..<10_000 where !daemon.isRestartParked { await Task.yield() }
+        XCTAssertTrue(daemon.isRestartParked)
+        appState.startDaemonFromBanner()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(daemon.starts, 0, "the Start waits for the reset")
+        daemon.releaseRestart()
+        try await reset.value
+        await appState.daemonStartChain?.value
+        XCTAssertEqual(daemon.starts, 0, "the reset's restart left a daemon running")
+        XCTAssertNil(appState.daemonStartFailure)
     }
 
     func testResetLLMDataSurfacesAFailedRestart() async throws {
@@ -967,7 +992,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(screen(appState), .main)
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertFalse(appState.isOnboardingRerun)
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
         XCTAssertEqual(daemon.starts + daemon.restarts + daemon.stops, 0, "nothing changed: no restart")
         let role = try await dbManager.dbPool.read { db in try String.fetchOne(db, sql: "SELECT role FROM user_profile") }
         XCTAssertEqual(role, "kept", "the profile is untouched")
@@ -1042,7 +1067,7 @@ final class AppStateTests: XCTestCase {
         daemon.releaseRestart()
         await waitUntil { daemon.restarts == 2 && daemon.isRestartParked }
         daemon.releaseRestart()
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
         XCTAssertEqual(daemon.restarts, 2)
     }
 
@@ -1064,7 +1089,7 @@ final class AppStateTests: XCTestCase {
         try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
         await vm.refreshAsync()
         appState.cancelOnboardingRerun()
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.restarts, 1)
         XCTAssertEqual(daemon.starts, 0)
@@ -1084,7 +1109,7 @@ final class AppStateTests: XCTestCase {
         appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
         await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertEqual(daemon.restarts + daemon.starts, 0)
@@ -1102,7 +1127,7 @@ final class AppStateTests: XCTestCase {
         appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
         await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.starts, 1)
         XCTAssertEqual(daemon.restarts, 0)
@@ -1484,7 +1509,7 @@ final class AppStateTests: XCTestCase {
         let route = try XCTUnwrap(submitted)
         XCTAssertEqual(route.step(after: .purpose), .complete)
         await appState.leaveOnboardingStep(.purpose, route: route) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(spy.calls.first, "workspace init")
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
@@ -1588,7 +1613,7 @@ final class AppStateTests: XCTestCase {
         let route = try XCTUnwrap(submitted)
 
         await appState.leaveOnboardingStep(.purpose, route: route) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.restarts, 1)
         XCTAssertEqual(daemon.starts, 0)
@@ -1605,7 +1630,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(spy.calls.contains("language Polish"))
 
         appState.cancelOnboardingRerun()
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.restarts, 1)
         XCTAssertEqual(daemon.starts, 0)
@@ -1626,7 +1651,7 @@ final class AppStateTests: XCTestCase {
             .purpose, route: OnboardingRoute(goals: [.development]),
             onRetry: appState.reinitializeAfterOnboarding
         )
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
         // Had the retry re-run the launch, its daemon (re)start would count too.
         await appState.launchTask?.value
         await appState.ensureDaemonTask?.value
@@ -1654,7 +1679,7 @@ final class AppStateTests: XCTestCase {
         // No refresh before finish: its own reads must not count as new.
 
         await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: [.tasksAndJira])) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
         await appState.connectedSourcesRefresh?.value
         await appState.featureSuggestionCheck?.value
 
@@ -1692,7 +1717,7 @@ final class AppStateTests: XCTestCase {
         appState.needsOnboarding = true
         appState.onboarding.goTo(.purpose)
         await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
-        await appState.onboardingDaemonStart?.value
+        await appState.daemonStartChain?.value
         XCTAssertNotNil(appState.daemonStartFailure)
 
         appState.daemonManager.isRunning = true
@@ -1701,10 +1726,9 @@ final class AppStateTests: XCTestCase {
     }
 
     func testDaemonStartFailureTextEndsItsSentences() {
-        XCTAssertEqual(AppState.daemonStartFailureText("exit 1"),
-                       "The background sync did not start: exit 1. Open Settings → System to retry.")
-        XCTAssertEqual(AppState.daemonStartFailureText(nil),
-                       "The background sync did not start. Open Settings → System to retry.")
+        // The banner carries its own Retry: no pointer to Settings.
+        XCTAssertEqual(AppState.daemonStartFailureText("exit 1"), "The background sync did not start: exit 1.")
+        XCTAssertEqual(AppState.daemonStartFailureText(nil), "The background sync did not start.")
     }
 
     /// Finishing restarts the related-features baseline by itself: even
