@@ -1632,6 +1632,14 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 // re-polls and re-dispatches nothing already seen.
 func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 	if !d.config.ReactionCommands.Enabled {
+		// Nobody polls, so reactions placed now must not fire when the
+		// feature comes back: clear the event seed stamps (a no-op read when
+		// none is set).
+		if d.db != nil {
+			if err := d.db.ResetReactionEventsSeeded(); err != nil {
+				d.logger.Printf("reaction-commands: resetting event seeds: %v", err)
+			}
+		}
 		return
 	}
 	if d.reactionCmdPipe == nil || d.db == nil {
@@ -1656,8 +1664,14 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		}
 	}
 
+	// The cycle's bus, or a sink nobody listens on (never a typed nil), so
+	// the pipeline clears its event seed stamps while no bus can listen.
+	var sink reactioncmd.EventSink = noReactionBus{}
+	if d.cycleEvents != nil {
+		sink = d.cycleEvents
+	}
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
-		dispatched, err := d.reactionCmdPipe.Run(ctx, nil)
+		dispatched, err := d.reactionCmdPipe.Run(ctx, sink)
 		if err != nil {
 			d.logger.Printf("reaction-commands error: %v", err)
 		} else if dispatched > 0 {
@@ -1667,6 +1681,13 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		return pipelineRunStats{items: dispatched, err: err}
 	})
 }
+
+// noReactionBus is the reaction poll's sink when the cycle has no event bus
+// (automations off): it wants nothing and drops everything.
+type noReactionBus struct{}
+
+func (noReactionBus) Wants(string) bool            { return false }
+func (noReactionBus) Publish(...automations.Event) {}
 
 // memoryBackfillWaitMax is how long memory waits for a running history
 // backfill row, counted from the row's started_at (#578). Dual path with the

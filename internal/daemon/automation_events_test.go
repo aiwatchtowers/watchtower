@@ -508,7 +508,7 @@ func TestDaemon_NilOrFailingBusLeavesRunSyncUnchanged(t *testing.T) {
 	assert.Equal(t, []string{"begin"}, ev.callList())
 }
 
-func TestDaemon_ReactionCommandsUnchangedByBus(t *testing.T) {
+func TestDaemon_ReactionCommandsPublishToCycleBus(t *testing.T) {
 	// Statically: phaseReactionCommands(ctx) is the statement right after
 	// the observed phaseSlackSync, guarded by ctx.Err() == nil as before.
 	file, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
@@ -528,21 +528,75 @@ func TestDaemon_ReactionCommandsUnchangedByBus(t *testing.T) {
 	require.True(t, ok, "the poll is passed ctx")
 	assert.Equal(t, "ctx", arg.Name)
 
-	// At run time: the bus is asked only about event types of EventTypes.
+	// At run time: with an account to poll, the bus is asked whether it
+	// wants slack.reaction_added, and only about event types of EventTypes.
 	ev := newRecordingEvents("slack.new_messages")
-	d, _, _ := newEventsTestDaemon(t, nil)
+	d, database, _ := newEventsTestDaemon(t, nil)
+	_, err = database.CreateSlackAccount(db.SlackAccount{TeamDomain: "acme", Label: "work", CurrentUserID: "1:UOWNER"})
+	require.NoError(t, err)
+	reactionProbe(t, d, database, d.config)
 	d.SetAutomationEvents(ev)
 	d.config.ReactionCommands.Enabled = true
 	d.runSync(context.Background())
+	asked := false
 	for _, c := range ev.callList() {
 		if typ, ok := strings.CutPrefix(c, "wants:"); ok {
 			assert.Contains(t, automations.EventTypes, typ)
-			assert.False(t, strings.HasPrefix(typ, "reaction."))
+			asked = asked || typ == automations.SlackReactionAdded
 		}
 	}
+	assert.True(t, asked, "the reaction poll asks the bus for slack.reaction_added: %v", ev.callList())
 	for _, e := range ev.published {
 		assert.Contains(t, automations.EventTypes, e.Type)
 	}
+}
+
+// stampReactionSeed marks every Slack account's reaction events as seeded.
+func stampReactionSeed(t *testing.T, database *db.DB) {
+	t.Helper()
+	_, err := database.Exec(`UPDATE slack_accounts SET reaction_events_seeded_at = '2026-10-14T00:00:00Z'`)
+	require.NoError(t, err)
+}
+
+func reactionSeeded(t *testing.T, database *db.DB, id int64) bool {
+	t.Helper()
+	seeded, err := database.ReactionEventsSeeded(id)
+	require.NoError(t, err)
+	return seeded
+}
+
+// With no event bus (automations off) nobody can listen, so the poll clears
+// the event seed stamps through a non-nil sink that wants nothing.
+func TestDaemon_ReactionPollWithoutBusResetsEventSeeds(t *testing.T) {
+	d, database, _ := newEventsTestDaemon(t, nil)
+	id, err := database.CreateSlackAccount(db.SlackAccount{TeamDomain: "acme", Label: "work", CurrentUserID: "1:UOWNER"})
+	require.NoError(t, err)
+	d.config.ReactionCommands.Enabled = true
+	polls := reactionProbe(t, d, database, d.config)
+	stampReactionSeed(t, database)
+	require.True(t, reactionSeeded(t, database, id))
+
+	require.Nil(t, d.cycleEvents)
+	d.phaseReactionCommands(context.Background())
+
+	assert.Equal(t, 1, *polls)
+	assert.False(t, reactionSeeded(t, database, id), "no bus, no listener: the stamp is cleared")
+}
+
+// With the feature off nothing polls, and the stamps are cleared so
+// reactions placed meanwhile do not replay when it comes back on.
+func TestDaemon_ReactionCommandsOffResetsEventSeeds(t *testing.T) {
+	d, database, _ := newEventsTestDaemon(t, nil)
+	id, err := database.CreateSlackAccount(db.SlackAccount{TeamDomain: "acme", Label: "work", CurrentUserID: "1:UOWNER"})
+	require.NoError(t, err)
+	d.config.ReactionCommands.Enabled = false
+	polls := reactionProbe(t, d, database, d.config)
+	stampReactionSeed(t, database)
+
+	d.phaseReactionCommands(context.Background())
+
+	assert.Zero(t, *polls)
+	assert.False(t, reactionSeeded(t, database, id))
 }
 
 func TestDaemon_SnapshotErrorDoesNotSkipPhase(t *testing.T) {

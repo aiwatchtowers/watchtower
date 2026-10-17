@@ -100,7 +100,7 @@ func runReactionCommandsPoll(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	dispatched, err := pipe.Run(ctx, nil)
+	dispatched, err := pipe.Run(ctx, nil) // nil sink: a manual poll must not touch the event listening state
 	if err != nil {
 		return err
 	}
