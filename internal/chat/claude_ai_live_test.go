@@ -90,6 +90,17 @@ const (
 
 // probeMainSession runs the per-question turns on one warm session.
 func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
+	probeReadTurns(t, p)
+	probeEditWriteTurns(t, p)
+	probeArtifactTurns(t, p)
+	if docs {
+		probeDocsTurns(t, p)
+	}
+	probeInterruptTurn(t, p)
+}
+
+// probeReadTurns: Read inside, outside and through a symlink (Q1, Q3, Q8, Q9).
+func probeReadTurns(t *testing.T, p *liveProbe) {
 	cwd, out := p.cwd, p.outside
 
 	// Q3/Q9: Read inside the cwd runs without a permission request.
@@ -128,9 +139,14 @@ func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
 		}
 		probeAssertDenied(t, turn, r)
 	}
+}
+
+// probeEditWriteTurns: Edit and Write inside and outside the cwd (Q3, Q4).
+func probeEditWriteTurns(t *testing.T, p *liveProbe) {
+	cwd, out := p.cwd, p.outside
 
 	// Q3: Edit asks inside the cwd and outside it.
-	turn = p.turn("Use the Edit tool on "+cwd+"/inside.txt: replace 'inside file' with 'inside edited'. Then reply done.", probeAllow, "Edit")
+	turn := p.turn("Use the Edit tool on "+cwd+"/inside.txt: replace 'inside file' with 'inside edited'. Then reply done.", probeAllow, "Edit")
 	probeRequire(t, turn, "Edit", "Q3: Edit inside the cwd")
 	turn = p.turn("Use the Edit tool on "+out+"/outside.txt: replace 'outside file' with 'outside edited'. Then reply done.", probeAllow, "Edit", "Read")
 	probeRequire(t, turn, "Edit", "Q3: Edit outside the cwd")
@@ -164,17 +180,20 @@ func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
 	if _, err := os.Stat(filepath.Join(out, "w.txt")); !os.IsNotExist(err) {
 		t.Errorf("Q4: the denied Write outside the cwd ran (stat: %v)", err)
 	}
+}
 
-	// Q5: Artifact list runs without a request; publish, read of a foreign
-	// URL and pin ask; delete of an unknown URL is refused by the CLI itself.
-	turn = p.turn("Call the Artifact tool with action list and limit 1. Reply with only the number it returned.", probeDeny)
+// probeArtifactTurns: Artifact list runs without a request; publish, read of
+// a foreign URL and pin ask; delete of an unknown URL is refused by the CLI
+// itself (Q5).
+func probeArtifactTurns(t *testing.T, p *liveProbe) {
+	turn := p.turn("Call the Artifact tool with action list and limit 1. Reply with only the number it returned.", probeDeny)
 	if r := turn.request("Artifact"); r != nil {
 		t.Errorf("Q5: Artifact list asked permission: %v", r)
 	}
 	if !turn.toolRan("Artifact") {
 		t.Error("Q5: Artifact list did not run")
 	}
-	turn = p.turn("Call the Artifact tool to publish the file "+cwd+"/page.html (action publish, icon code). If it is refused, reply with the refusal text.", probeDeny, "Artifact")
+	turn = p.turn("Call the Artifact tool to publish the file "+p.cwd+"/page.html (action publish, icon code). If it is refused, reply with the refusal text.", probeDeny, "Artifact")
 	if r := probeRequire(t, turn, "Artifact", "Q5: Artifact publish"); r != nil {
 		in, _ := r["input"].(map[string]any)
 		if in["action"] != "publish" || in["__artifactPublishSourcePin"] == nil {
@@ -196,29 +215,34 @@ func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
 	probeRequire(t, turn, "Artifact", "Q5: Artifact read of a foreign URL")
 	turn = p.turn("Call the Artifact tool with action pin and url "+probeFakeURL+". Reply with the result or the refusal text.", probeDeny, "Artifact")
 	probeRequire(t, turn, "Artifact", "Q5: Artifact pin")
+}
 
-	if docs {
-		// Q1/Q7: a connector call carries mcp_server; the share vocabulary.
-		guide := "mcp__" + probeDocsToken + "__guide"
-		turn = p.turn(`Call mcp__claude_ai_Claude_Docs__guide with items ["topic.sharing"]. Reply with one sentence.`, probeAllow, guide)
-		if r := probeRequire(t, turn, guide, "Q1: Docs guide"); r != nil {
-			probeAssertCanUseTool(t, turn.requestLine(guide), guide)
-			srv, _ := r["mcp_server"].(map[string]any)
-			if srv["name"] != probeDocsName {
-				t.Errorf("Q1: mcp_server = %v, want an object {name: %q}", r["mcp_server"], probeDocsName)
-			}
-			if r["server_policy_ask_only"] != true {
-				t.Errorf("Q1: connector request without server_policy_ask_only: %v", r)
-			}
-			if res := probeContentText(turn.toolResult(r["tool_use_id"])["content"]); !strings.Contains(res, "no docs tool shares a doc") {
-				t.Errorf("Q7: topic.sharing no longer says no tool shares a doc: %.300q", res)
-			}
+// probeDocsTurns: a connector call carries mcp_server; the share vocabulary
+// and Docs delete (Q1, Q7).
+func probeDocsTurns(t *testing.T, p *liveProbe) {
+	guide := "mcp__" + probeDocsToken + "__guide"
+	turn := p.turn(`Call mcp__claude_ai_Claude_Docs__guide with items ["topic.sharing"]. Reply with one sentence.`, probeAllow, guide)
+	if r := probeRequire(t, turn, guide, "Q1: Docs guide"); r != nil {
+		probeAssertCanUseTool(t, turn.requestLine(guide), guide)
+		srv, _ := r["mcp_server"].(map[string]any)
+		if srv["name"] != probeDocsName {
+			t.Errorf("Q1: mcp_server = %v, want an object {name: %q}", r["mcp_server"], probeDocsName)
 		}
-		turn = p.turn("Call mcp__claude_ai_Claude_Docs__delete for the doc with id 'doc_probe_nonexistent'. If it is refused, reply with the refusal text.", probeDeny, "mcp__"+probeDocsToken+"__delete")
-		probeRequire(t, turn, "mcp__"+probeDocsToken+"__delete", "Q7: Docs delete")
+		if r["server_policy_ask_only"] != true {
+			t.Errorf("Q1: connector request without server_policy_ask_only: %v", r)
+		}
+		if res := probeContentText(turn.toolResult(r["tool_use_id"])["content"]); !strings.Contains(res, "no docs tool shares a doc") {
+			t.Errorf("Q7: topic.sharing no longer says no tool shares a doc: %.300q", res)
+		}
 	}
+	turn = p.turn("Call mcp__claude_ai_Claude_Docs__delete for the doc with id 'doc_probe_nonexistent'. If it is refused, reply with the refusal text.", probeDeny, "mcp__"+probeDocsToken+"__delete")
+	probeRequire(t, turn, "mcp__"+probeDocsToken+"__delete", "Q7: Docs delete")
+}
 
-	// Stop while a request waits: the CLI cancels it with control_cancel_request.
+// probeInterruptTurn: Stop while a request waits — the CLI cancels it with
+// control_cancel_request and the tool never runs.
+func probeInterruptTurn(t *testing.T, p *liveProbe) {
+	cwd := p.cwd
 	p.send(probeUserLine("Use the Write tool to create " + cwd + "/c.txt containing held. Then reply done."))
 	held := p.waitFor(func(d map[string]any) bool { return probeIsCanUseTool(d) }, 3*time.Minute)
 	reqID, _ := held["request_id"].(string)
@@ -262,24 +286,30 @@ func probeAssertMCPStatus(t *testing.T, servers []any) bool {
 		}
 		if name == probeDocsName {
 			docs = true
-			want := map[string]string{"read": "readOnly", "query": "readOnly", "guide": "readOnly",
-				"export": "readOnly", "delete": "destructive", "create": "", "update": "", "batch": ""}
-			for _, tool := range probeList(m["tools"]) {
-				tm, _ := tool.(map[string]any)
-				ann, _ := tm["annotations"].(map[string]any)
-				tool, _ := tm["name"].(string)
-				hint, ok := want[tool]
-				if ok && (hint == "" && len(ann) != 0 || hint != "" && ann[hint] != true) {
-					t.Errorf("Q7: Claude Docs %s annotations = %v, want %q", tool, ann, hint)
-				}
-				delete(want, tool)
-			}
-			for tool := range want {
-				t.Errorf("Q7: Claude Docs no longer lists the %s tool", tool)
-			}
+			probeAssertDocsTools(t, m)
 		}
 	}
 	return docs
+}
+
+// probeAssertDocsTools checks Claude Docs' tool annotations (Q7).
+func probeAssertDocsTools(t *testing.T, m map[string]any) {
+	t.Helper()
+	want := map[string]string{"read": "readOnly", "query": "readOnly", "guide": "readOnly",
+		"export": "readOnly", "delete": "destructive", "create": "", "update": "", "batch": ""}
+	for _, tool := range probeList(m["tools"]) {
+		tm, _ := tool.(map[string]any)
+		ann, _ := tm["annotations"].(map[string]any)
+		tool, _ := tm["name"].(string)
+		hint, ok := want[tool]
+		if ok && (hint == "" && len(ann) != 0 || hint != "" && ann[hint] != true) {
+			t.Errorf("Q7: Claude Docs %s annotations = %v, want %q", tool, ann, hint)
+		}
+		delete(want, tool)
+	}
+	for tool := range want {
+		t.Errorf("Q7: Claude Docs no longer lists the %s tool", tool)
+	}
 }
 
 // probeAssertCanUseTool checks the request envelope the gate decodes (Q1).
@@ -546,6 +576,62 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 	if bin == "" {
 		t.Skip("live claude.ai probe: no claude binary found")
 	}
+	p := newProbeDirs(t, rec, scenario)
+
+	// The claude.ai-mode argv of the main chat session (#737 plan, Global Constraints).
+	args := append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
+		"--verbose", "--setting-sources", "project,local", "--permission-prompt-tool", "stdio",
+		"--model", "haiku", "--tools", "ToolSearch,WebSearch,Artifact,Write,Edit,Read"}, extraArgs...)
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = p.cwd
+	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH(),
+		"CLAUDE_CODE_ARTIFACT=1", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN=0"), extraEnv...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 5 * time.Second // bounds the stderr copy if a grandchild keeps it open
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	var err error
+	if p.stdin, err = cmd.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pgid := cmd.Process.Pid
+	waited := make(chan struct{})
+	stop := make(chan struct{}) // closed at cleanup: the reader stops handing lines over
+	go p.pump(cmd, stdout, stop, waited)
+	t.Cleanup(func() {
+		close(stop)
+		p.stdin.Close()
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		select {
+		case <-waited:
+		case <-time.After(5 * time.Second):
+		}
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		_ = stdout.Close() // unblocks the reader if a process outside the group holds stdout
+		select {
+		case <-waited:
+		case <-time.After(10 * time.Second):
+			t.Errorf("%s: claude (pgid %d) not reaped", scenario, pgid)
+			return // stderr may still be written to
+		}
+		if t.Failed() && stderr.Len() > 0 {
+			t.Logf("%s stderr: %.2000s", scenario, stderr.String())
+		}
+	})
+	return p
+}
+
+// newProbeDirs makes the probe's temp root: a cwd with inside.txt, page.html
+// and link.txt (a symlink leaving it), and an outside dir with outside.txt.
+func newProbeDirs(t *testing.T, rec *probeRecorder, scenario string) *liveProbe {
+	t.Helper()
 	link, err := os.MkdirTemp("", "wtprobe")
 	if err != nil {
 		t.Fatal(err)
@@ -577,76 +663,33 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 	if err := os.Symlink(filepath.Join(p.outside, "outside.txt"), filepath.Join(p.cwd, "link.txt")); err != nil {
 		t.Fatal(err)
 	}
-
-	// The claude.ai-mode argv of the main chat session (#737 plan, Global Constraints).
-	args := append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--setting-sources", "project,local", "--permission-prompt-tool", "stdio",
-		"--model", "haiku", "--tools", "ToolSearch,WebSearch,Artifact,Write,Edit,Read"}, extraArgs...)
-	cmd := exec.Command(bin, args...)
-	cmd.Dir = p.cwd
-	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH(),
-		"CLAUDE_CODE_ARTIFACT=1", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN=0"), extraEnv...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.WaitDelay = 5 * time.Second // bounds the stderr copy if a grandchild keeps it open
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if p.stdin, err = cmd.StdinPipe(); err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	pgid := cmd.Process.Pid
-	waited := make(chan struct{})
-	stop := make(chan struct{}) // closed at cleanup: the reader stops handing lines over
-	go func() {
-		br := bufio.NewReaderSize(stdout, 1<<20)
-		for {
-			line, err := br.ReadBytes('\n')
-			if len(bytes.TrimSpace(line)) > 0 {
-				rec.write(scenario, "in", line)
-				var d map[string]any
-				if json.Unmarshal(line, &d) != nil {
-					d = map[string]any{"type": "probe_non_json"}
-				}
-				select {
-				case p.lines <- d:
-				case <-stop:
-				}
-			}
-			if err != nil {
-				break
-			}
-		}
-		_ = cmd.Wait()
-		close(p.lines)
-		close(waited)
-	}()
-	t.Cleanup(func() {
-		close(stop)
-		p.stdin.Close()
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-		select {
-		case <-waited:
-		case <-time.After(5 * time.Second):
-		}
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		_ = stdout.Close() // unblocks the reader if a process outside the group holds stdout
-		select {
-		case <-waited:
-		case <-time.After(10 * time.Second):
-			t.Errorf("%s: claude (pgid %d) not reaped", scenario, pgid)
-			return // stderr may still be written to
-		}
-		if t.Failed() && stderr.Len() > 0 {
-			t.Logf("%s stderr: %.2000s", scenario, stderr.String())
-		}
-	})
 	return p
+}
+
+// pump records and hands over the CLI's stdout lines until it closes, then
+// reaps cmd and closes p.lines and waited.
+func (p *liveProbe) pump(cmd *exec.Cmd, stdout io.Reader, stop, waited chan struct{}) {
+	br := bufio.NewReaderSize(stdout, 1<<20)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) > 0 {
+			p.rec.write(p.scenario, "in", line)
+			var d map[string]any
+			if json.Unmarshal(line, &d) != nil {
+				d = map[string]any{"type": "probe_non_json"}
+			}
+			select {
+			case p.lines <- d:
+			case <-stop:
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	_ = cmd.Wait()
+	close(p.lines)
+	close(waited)
 }
 
 func (p *liveProbe) send(v map[string]any) {

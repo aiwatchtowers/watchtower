@@ -230,10 +230,23 @@ func publishSources(in fields) ([]string, error) {
 	}
 	out = append(out, paths...)
 
-	files := bytes.TrimSpace(in["files"])
-	if len(files) == 0 || bytes.Equal(files, []byte("null")) {
-		return out, nil
+	srcs, err := filesSources(in["files"], resolve)
+	if err != nil {
+		return nil, err
 	}
+	out = append(out, srcs...)
+	return out, nil
+}
+
+// filesSources lists the local sources of an Artifact publish's files —
+// a list of paths or {path} entries, or a map of published path → source —
+// each passed through resolve.
+func filesSources(raw json.RawMessage, resolve func(string) string) ([]string, error) {
+	files := bytes.TrimSpace(raw)
+	if len(files) == 0 || bytes.Equal(files, []byte("null")) {
+		return nil, nil
+	}
+	var out []string
 	switch files[0] {
 	case '[':
 		var list []json.RawMessage

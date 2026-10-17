@@ -358,33 +358,8 @@ const claudeDocsBatchTool = "mcp__claude_ai_Claude_Docs__batch"
 // (gate.noteOwn). An Artifact update of the link its input names keeps that
 // link (not fresh).
 func publishedLink(call toolCall, result string) (src Source, fresh, ok bool) {
-	in, ok := decodeObject(call.args)
+	title, update, ok := publishTitle(call)
 	if !ok {
-		return Source{}, false, false
-	}
-	var title, update string
-	switch call.raw {
-	case "Artifact":
-		if action := in.str("action"); (action != "" && action != "publish") || string(in["asset"]) == "true" {
-			return Source{}, false, false
-		}
-		title, update = in.str("title"), in.str("url")
-		if path := in.str("file_path"); title == "" && path != "" {
-			title = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		}
-		if title == "" {
-			title = "claude.ai page"
-		}
-	case claudeDocsBatchTool:
-		container, _ := decodeObject(in["container"])
-		create, ok := decodeObject(container["create"])
-		if !ok {
-			return Source{}, false, false
-		}
-		if title = create.str("name"); title == "" {
-			title = "claude.ai doc"
-		}
-	default:
 		return Source{}, false, false
 	}
 	mentioned := inputText(call.args)
@@ -397,6 +372,41 @@ func publishedLink(call toolCall, result string) (src Source, fresh, ok bool) {
 		return publishedSource(update, title), false, true
 	}
 	return Source{}, false, false
+}
+
+// publishTitle is the card title of a call that publishes — an Artifact
+// publish (update = the url it names) or a Claude Docs batch that creates a
+// doc; false for any other call.
+func publishTitle(call toolCall) (title, update string, ok bool) {
+	in, ok := decodeObject(call.args)
+	if !ok {
+		return "", "", false
+	}
+	switch call.raw {
+	case "Artifact":
+		if action := in.str("action"); (action != "" && action != "publish") || string(in["asset"]) == "true" {
+			return "", "", false
+		}
+		title, update = in.str("title"), in.str("url")
+		if path := in.str("file_path"); title == "" && path != "" {
+			title = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		}
+		if title == "" {
+			title = "claude.ai page"
+		}
+		return title, update, true
+	case claudeDocsBatchTool:
+		container, _ := decodeObject(in["container"])
+		create, ok := decodeObject(container["create"])
+		if !ok {
+			return "", "", false
+		}
+		if title = create.str("name"); title == "" {
+			title = "claude.ai doc"
+		}
+		return title, "", true
+	}
+	return "", "", false
 }
 
 // inputText is everything a tool input says, lower-cased: its raw bytes and
