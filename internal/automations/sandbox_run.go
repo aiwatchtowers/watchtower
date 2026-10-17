@@ -3,6 +3,10 @@ package automations
 import (
 	"errors"
 	"fmt"
+	"math/big"
+	"reflect"
+	"runtime"
+	"runtime/metrics"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -108,11 +112,66 @@ func scriptShapeError(script string) error {
 	switch {
 	case err != nil:
 		return nil //nolint:nilerr // a syntax error is the sandbox's to report, with its line
-	case wrapperIntact(prog, src):
-		return nil
-	default:
+	case !wrapperIntact(prog, src):
 		return errors.New(errWrapperBroken)
+	default:
+		return bigIntRefusal(prog)
 	}
+}
+
+// bigIntRefusal refuses a program holding a BigInt literal (BigInt is not
+// available in automations, owner decision ask #331: its ** and <<
+// operators build a result of any size in one native step). It walks the
+// parsed program, so a literal can hide nowhere a lexical scan would miss
+// it. Line is the script's own 1-based line (the wrapper prefix sits on the
+// script's first line).
+func bigIntRefusal(prog *ast.Program) error {
+	lit := findBigIntLiteral(reflect.ValueOf(prog))
+	if lit == nil {
+		return nil
+	}
+	line := 0
+	if prog.File != nil {
+		line = prog.File.Position(int(lit.Idx) - prog.File.Base()).Line
+	}
+	return &PreParseError{Word: lit.Literal, Line: line, BigInt: true}
+}
+
+// findBigIntLiteral walks an AST value (pointers, interfaces, structs,
+// slices) for a number literal whose value is a BigInt.
+func findBigIntLiteral(v reflect.Value) *ast.NumberLiteral {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return nil
+		}
+		if lit, ok := v.Interface().(*ast.NumberLiteral); ok {
+			if _, big := lit.Value.(*big.Int); big {
+				return lit
+			}
+			return nil
+		}
+		if _, ok := v.Interface().(*file.File); ok {
+			return nil // source text and line tables, no nodes
+		}
+		return findBigIntLiteral(v.Elem())
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() {
+				if lit := findBigIntLiteral(v.Field(i)); lit != nil {
+					return lit
+				}
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			if lit := findBigIntLiteral(v.Index(i)); lit != nil {
+				return lit
+			}
+		}
+	default: // scalars, strings and maps hold no AST nodes
+	}
+	return nil
 }
 
 type runResult struct {
@@ -132,14 +191,19 @@ func (s *Sandbox) Run() (any, error) {
 	}
 	s.ran = true
 	s.mu.Unlock()
-	done, watched := make(chan struct{}), make(chan struct{})
+	done, watched, heapWatched := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watched)
 		s.watchDeadline(done)
 	}()
+	go func() {
+		defer close(heapWatched)
+		s.watchHeap(done)
+	}()
 	defer func() {
 		close(done)
 		<-watched
+		<-heapWatched
 		s.cancel()
 	}()
 	results := make(chan runResult, 1)
@@ -224,6 +288,55 @@ func (s *Sandbox) outcome(_ goja.Value, runErr error) (any, error) {
 		return nil, runErr
 	default:
 		return nil, &ScriptError{Message: runErr.Error()}
+	}
+}
+
+// RunHeapBudget is how far the Go heap may grow above where it stood when a
+// run started before the run is stopped ("the automation used too much
+// memory"). goja has no heap limit and many builtins allocate in proportion
+// to their input; the per-builtin caps stop single huge calls, this stops
+// everything else (a string doubled in a loop, many mid-sized calls). The
+// heap is the whole process's, so other work growing it at the same time
+// counts too; the overshoot is at most one native step past the budget.
+var RunHeapBudget uint64 = 512 << 20
+
+// heapPollInterval is how often watchHeap samples the heap.
+const heapPollInterval = 10 * time.Millisecond
+
+// errTooMuchMemory ends a run whose heap growth passed RunHeapBudget.
+func errTooMuchMemory() *ScriptError {
+	return &ScriptError{Name: "RangeError",
+		Message: fmt.Sprintf("the automation used too much memory (more than %d MiB)", RunHeapBudget>>20)}
+}
+
+// watchHeap stops the run (uncatchably, like an interrupt: the memory must
+// be released) once the live heap passed its start plus RunHeapBudget. A
+// sample over the budget is confirmed after a forced GC, so garbage the
+// collector has not reached yet does not count.
+func (s *Sandbox) watchHeap(done <-chan struct{}) {
+	sample := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	heap := func() uint64 {
+		metrics.Read(sample)
+		return sample[0].Value.Uint64()
+	}
+	limit := heap() + RunHeapBudget
+	tick := time.NewTicker(heapPollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-tick.C:
+		}
+		if heap() <= limit {
+			continue
+		}
+		runtime.GC()
+		if heap() <= limit {
+			continue
+		}
+		s.abort(errTooMuchMemory())
+		return
 	}
 }
 

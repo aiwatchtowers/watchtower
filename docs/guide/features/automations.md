@@ -71,7 +71,8 @@ On the card, **Run now** does the same, and **Dry run** works even before you co
 - **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
-- **Failed with a RangeError about nesting or size.** The data was nested more than 1000 levels deep, or one step would have built more than about 16 million characters or items. The script can catch it; otherwise handle the data in smaller pieces.
+- **Failed with a RangeError about nesting or size.** One step of the script would have built something too large: data nested more than 1000 levels deep, more than about 16 million characters or items, or more than 256 000 entries from one `JSON.parse` or `Object.entries`. The script can catch these; otherwise handle the data in smaller pieces.
+- **Failed with "the automation used too much memory".** The run used more than 512 MB in total. This error ends the run and the script cannot catch it; keep less data in the script at once. The automation stays enabled.
 - **An event recipe didn't run.** It runs only after a sync that brought something new and matched its `where`. A source's first sync, history backfill and your own Slack messages never count. Jira comment changes count only while Stream Digests is on (Settings, Features). In the edit form, **On an event** picks the event type; a `where` filter is written in the recipe text.
 
 ## Related

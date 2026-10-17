@@ -87,6 +87,9 @@ func (s *Sandbox) compile(script string) (*goja.Program, error) {
 	if !wrapperIntact(parsed, src) {
 		return nil, &ScriptError{Name: "SyntaxError", Message: errWrapperBroken}
 	}
+	if err := bigIntRefusal(parsed); err != nil {
+		return nil, err
+	}
 	prog, err := goja.CompileAST(parsed, false)
 	if err != nil {
 		return nil, s.syntaxError(err)

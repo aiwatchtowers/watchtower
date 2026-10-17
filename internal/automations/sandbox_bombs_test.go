@@ -20,7 +20,7 @@ var sandboxBombs = map[string]string{
 	"JSON.parse 16e6 deep":      `JSON.parse("[".repeat(16e6))`,
 	"JSON.parse deep objects":   `JSON.parse('{"a":'.repeat(3e6) + "1" + "}".repeat(3e6))`,
 	"JSON.parse reviver grafts": `var d = []; for (var i = 0; i < 5000; i++) { d = [d] } JSON.parse('{"a":1,"b":2}', function (k, v) { if (k === "a") { this.b = d } return v })`,
-	"flat(Infinity) 3e6 deep":   `var a = []; for (var i = 0; i < 3e6; i++) { a = [a] } a.flat(Infinity)`,
+	"flat(Infinity) 1e5 deep":   `var a = []; for (var i = 0; i < 1e5; i++) { a = [a] } a.flat(Infinity)`,
 	"flat(1e9) deep":            `var a = []; for (var i = 0; i < 5000; i++) { a = [a] } a.flat(1e9)`,
 	"JSON.stringify 200k deep":  `var o = {}, c = o; for (var i = 0; i < 200000; i++) { c.a = {}; c = c.a } JSON.stringify(o)`,
 	// One call, unbounded result. The $-backtick ones: 2e5 matches, about
@@ -41,6 +41,10 @@ var sandboxBombs = map[string]string{
 	"typed toLocaleString":       `var s = "x".repeat(9 * 1024 * 1024); Number.prototype.toLocaleString = function () { return s }; new Uint8Array(2).toLocaleString()`,
 	"bind chain":                 `var f = function () {}; for (var i = 0; i < 1e6; i++) { f = f.bind(null) }`,
 	"bind chain through Proxy":   `var f = function () {}; for (var i = 0; i < 1e6; i++) { f = new Proxy(f, {}).bind(null) }`,
+	"Object.entries of a string": `Object.entries("x".repeat(16e6))`,
+	"Object.keys of an array":    `var a = []; a.length = 1e6; Object.keys(new Array(5e5).fill(0))`,
+	"JSON.parse many containers": `JSON.parse("[" + "[],".repeat(5e5) + "[]]")`,
+	"JSON.parse many objects":    `JSON.parse("[" + "{},".repeat(5e5) + "{}]")`,
 	"typed join separator":       `new Uint8Array(1e5).join("x".repeat(1e4))`,
 	"typed join Float64":         `new Float64Array(16e6).fill(-1.2345678901234567e-300).join()`,
 	"typed toString":             `String(new Float64Array(1e6).fill(-1.2345678901234567e-300))`,
@@ -263,8 +267,9 @@ func TestSandbox_ToLocaleStringForwardsLocales(t *testing.T) {
 
 // BigInt is not available in automations (owner decision, ask #331): its
 // ** and << operators build a result of any size in one native step. A
-// BigInt literal is refused before the script runs, with a clear error, and
-// nothing else in the sandbox yields a BigInt.
+// BigInt literal is refused when the script compiles (the parsed program is
+// walked, so a regex literal holding a quote cannot hide one), with a clear
+// error, and nothing in the sandbox yields a BigInt.
 func TestSandbox_BigIntNotAvailable(t *testing.T) {
 	for _, script := range []string{
 		`return 2n ** 4000000000n`,
@@ -272,29 +277,56 @@ func TestSandbox_BigIntNotAvailable(t *testing.T) {
 		`var x = 0xffn`,
 		`var x = 1_000n`,
 		"var x = `${10n}`",
+		`var r = /'/; return 2n ** 40n`,
+		"var r = /`/; return 1n << 40n",
+		`return (0n).constructor`,
+		"var x = 1\nvar y = 5n",
 	} {
 		var pe *PreParseError
-		err := PreParse(script)
+		_, err := NewSandbox(&Env{Ctx: t.Context(), Recipe: &Recipe{Script: script}, Journal: NewMemoryJournal(),
+			Meter: NewMeter(Budget{Tokens: 1, Minutes: 1}, nil)}, nil)
 		if !errors.As(err, &pe) || !pe.BigInt || !strings.Contains(err.Error(), "BigInt is not available in automations") {
-			t.Errorf("PreParse(%q) = %v; want the BigInt refusal", script, err)
-		}
-		if _, err := NewSandbox(&Env{Ctx: t.Context(), Recipe: &Recipe{Script: script}, Journal: NewMemoryJournal(),
-			Meter: NewMeter(Budget{Tokens: 1, Minutes: 1}, nil)}, nil); !errors.As(err, &pe) {
 			t.Errorf("NewSandbox(%q) = %v; want the BigInt refusal", script, err)
 		}
-	}
-	for _, script := range []string{
-		`var n1 = 2, a1n = 3; return a1n + n1`, `return "10n"`, `// 5n`, `return 1e5 + 0x1f + 0b1 + 0o7 + 1.5`,
-		`return (1).toString() + x.n1`, `/* 3n */ return 1`,
-	} {
-		if err := PreParse(script); err != nil {
-			t.Errorf("PreParse(%q) = %v; want nil", script, err)
+		if _, err := ParseRecipe("x", []byte("---\nname: X\ntrigger:\n  manual: true\n---\n\n```js\n"+script+"\n```\n"), Scope{Kind: ScopePersonal}); err == nil ||
+			!strings.Contains(err.Error(), "BigInt is not available in automations") {
+			t.Errorf("ParseRecipe(%q) = %v; want the BigInt refusal", script, err)
 		}
 	}
-	got := mustRun(t, `return [typeof BigInt, typeof BigInt64Array, typeof BigUint64Array,
+	if _, err := ParseRecipe("x", []byte("---\nname: X\ntrigger:\n  manual: true\n---\n\n```js\nvar a = 1\nvar b = 5n\n```\n"), Scope{Kind: ScopePersonal}); err == nil ||
+		!strings.Contains(err.Error(), "line 9") {
+		t.Errorf("ParseRecipe of a BigInt on the script's second line = %v; want line 9", err)
+	}
+	got := mustRun(t, `var n1 = 2, a1n = 3; var s = "10n" + /5n/.source; // 7n
+		return [a1n + n1, s, 1e5 + 0x1f + 0b1 + 0o7, typeof BigInt, typeof BigInt64Array, typeof BigUint64Array,
 		typeof DataView.prototype.getBigInt64, typeof DataView.prototype.setBigInt64,
 		typeof DataView.prototype.getBigUint64, typeof DataView.prototype.setBigUint64].join(",")`, sbOpts{})
-	if want := strings.TrimSuffix(strings.Repeat("undefined,", 7), ","); got != want {
+	if want := "5,10n5n,100039," + strings.TrimSuffix(strings.Repeat("undefined,", 7), ","); got != want {
 		t.Fatalf("got %v; want %s", got, want)
+	}
+}
+
+// The heap watchdog stops a run whose heap grows past RunHeapBudget step by
+// step, where no single call is over a cap (lowered here to keep the test
+// light). The run fails with a RangeError; the process lives on.
+func TestSandbox_HeapBudgetStopsTheRun(t *testing.T) {
+	old := RunHeapBudget
+	RunHeapBudget = 64 << 20
+	t.Cleanup(func() { RunHeapBudget = old })
+	for name, script := range map[string]string{
+		"string doubling": `var s = "x"; try { for (;;) { s = s + s } } catch (e) { return "caught" }`,
+		"many arrays":     `var keep = []; try { for (;;) { keep.push(new Array(1000).fill(1)) } } catch (e) { return "caught" }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := runScript(t, script, sbOpts{})
+			var se *ScriptError
+			if !errors.As(err, &se) || se.Name != "RangeError" || !strings.Contains(se.Message, "too much memory") {
+				t.Fatalf("Run = %v; want the memory RangeError", err)
+			}
+		})
+	}
+	// Under the budget nothing happens.
+	if got := mustRun(t, `var a = []; for (var i = 0; i < 1e5; i++) { a.push(i) } return a.length`, sbOpts{}); got != float64(1e5) {
+		t.Fatalf("got %v", got)
 	}
 }

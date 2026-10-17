@@ -372,12 +372,16 @@ func TestSandbox_RegexTimeoutThrows(t *testing.T) {
 		t.Fatalf("took %v", took)
 	}
 	got := mustRun(t, `var out = [];
-		try { delete RegExp.prototype.exec } catch (e) { out.push(e.name) }
 		try { RegExp.prototype[Symbol.replace] = function () { return "fake" } } catch (e) { out.push(e.name) }
 		try { "a".repeat(33).replace(/(a+)+b(?=c)/, "x"); out.push("ran") } catch (e) { out.push(e.name) }
 		return out.join(",")`, sbOpts{})
-	if got != "TypeError,TypeError,RangeError" {
-		t.Fatalf("got %v; want TypeError,TypeError,RangeError", got)
+	if got != "TypeError,RangeError" {
+		t.Fatalf("got %v; want TypeError,RangeError", got)
+	}
+	// exec stays goja's own (wrapping it takes RegExp off goja's fast path):
+	// a script that deletes it only breaks its own run.
+	if _, err := runScript(t, `delete RegExp.prototype.exec; return "a".replace(/a/, "b")`, sbOpts{}); err == nil {
+		t.Fatal("a replace after deleting exec ran; want the run to fail")
 	}
 }
 

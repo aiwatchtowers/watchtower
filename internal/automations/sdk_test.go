@@ -467,8 +467,11 @@ func TestState_RejectsUnserialisableValues(t *testing.T) {
 	// A BigInt never reaches state.set: BigInt is not available in automations
 	// (ask #331) and the script is refused before it runs.
 	var pe *automations.PreParseError
-	if err := automations.PreParse(`state.set("k", 10n)`); !errors.As(err, &pe) || !pe.BigInt {
-		t.Fatalf("PreParse of a BigInt literal = %v; want a BigInt PreParseError", err)
+	_, err := automations.NewSandbox(&automations.Env{Ctx: context.Background(),
+		Recipe: &automations.Recipe{Script: `state.set("k", 10n)`}, Journal: automations.NewMemoryJournal(),
+		Meter: automations.NewMeter(automations.Budget{Tokens: 1, Minutes: 1}, nil)}, nil)
+	if !errors.As(err, &pe) || !pe.BigInt {
+		t.Fatalf("NewSandbox with a BigInt literal = %v; want a BigInt PreParseError", err)
 	}
 }
 
