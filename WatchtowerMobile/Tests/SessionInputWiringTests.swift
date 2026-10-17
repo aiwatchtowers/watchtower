@@ -99,6 +99,20 @@ final class SessionInputWiringTests: XCTestCase {
         XCTAssertFalse(stopped.showsBar, "a session that does not run takes no line")
     }
 
+    /// Board #515: a live session this phone may not type to says why in the
+    /// bar's place; an allowed phone or a stopped session gets no hint.
+    func testAMissingBarSaysWhy() throws {
+        let replica = try snapshot()
+        let live = try session()
+
+        XCTAssertEqual(model(live, replica, typing: false, requested: false).typingHint, .turnOn)
+        XCTAssertEqual(model(live, replica, typing: true, requested: false).typingHint, .turnOn, "the phone's own toggle is off")
+        XCTAssertEqual(model(live, replica, typing: false, requested: true).typingHint, .waitingForMac)
+        XCTAssertNil(model(live, replica).typingHint)
+        let stopped = try session(["live": false, "state_kind": "stopped", "is_ring": true])
+        XCTAssertNil(model(stopped, replica, typing: false, requested: false).typingHint)
+    }
+
     /// The toggle's caption in Settings: the Mac's answer.
     func testTheToggleStatusFollowsTheMacsAnswer() {
         XCTAssertEqual(SettingsView.typingCaption(grant: grant(typing: false)), "Waiting for your Mac to confirm")

@@ -51,10 +51,16 @@ struct SessionDetailView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let input = input(now: .now), input.showsBar {
-                TellSessionBar(model: input, isSending: env.sessionInputs.inFlight.contains(
-                    SessionInputSender.sendKey(viewModel.sessionID)
-                )) { text in await send(text) }
+            if let input = input(now: .now) {
+                if input.showsBar {
+                    TellSessionBar(model: input, isSending: env.sessionInputs.inFlight.contains(
+                        SessionInputSender.sendKey(viewModel.sessionID)
+                    )) { text in await send(text) }
+                } else if let hint = input.typingHint {
+                    TypingHintBar(hint: hint, error: env.deviceSettings.lastError) {
+                        Task { await env.deviceSettings.setTypingRequested(true) }
+                    }
+                }
             }
         }
         .toolbar {
@@ -464,6 +470,35 @@ private struct LineRowView: View {
             Label(text, systemImage: "clock").font(.caption).foregroundStyle(.secondary)
         case let .failed(text):
             Text(text).font(.caption).foregroundStyle(PhoneTone.red.color)
+        }
+    }
+}
+
+/// Why the bar is missing (board #515), with Turn On when the phone's own
+/// toggle is off — the same request as Settings' "Type into sessions".
+private struct TypingHintBar: View {
+    let hint: SessionInputModel.TypingHint
+    let error: String?
+    let onTurnOn: () -> Void
+
+    var body: some View {
+        BottomActionBar {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                HStack(spacing: Spacing.regular) {
+                    Label(hint.text, systemImage: "keyboard")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if hint == .turnOn {
+                        Button("Turn On", action: onTurnOn)
+                            .buttonStyle(.bordered)
+                            .frame(minHeight: 44)
+                    }
+                }
+                if let error {
+                    Text(error).font(.caption).foregroundStyle(PhoneTone.red.color)
+                }
+            }
         }
     }
 }

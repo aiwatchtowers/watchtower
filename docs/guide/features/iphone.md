@@ -51,6 +51,10 @@ Two switches under Settings → **Workbench** on the phone:
 - **Start sessions from this phone** lets you start a session from a target. It runs the Mac's default agent.
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
 
+Open a running session without this switch and its bottom bar says so, with **Turn On** right there; once asked, it says it waits for the Mac's **Allow…**.
+
+A running session's status shows how long it has been in that state, for example **Working · 12m** or **Needs approval · 40m**, so a session stuck at a prompt is easy to spot.
+
 A permission prompt in a session is never answered from the phone; the session shows **Needs approval on the Mac**.
 
 ### Link another Mac, or unlink
