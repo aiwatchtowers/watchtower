@@ -32,7 +32,7 @@ func seedWorkspace(t *testing.T, d *db.DB) {
 func seedMessage(t *testing.T, d *db.DB, channelID, ts string, deleted bool) {
 	t.Helper()
 	require.NoError(t, d.UpsertMessage(db.Message{
-		ChannelID: channelID, TS: ts, UserID: "U1", Text: "message text", IsDeleted: deleted, RawJSON: "{}",
+		ChannelID: channelID, TS: ts, UserID: "U1", Text: "message text", IsDeleted: deleted,
 	}))
 }
 
@@ -304,7 +304,7 @@ func TestIdeas02_SlackRefMissingFromMessages_NotRenderedNotCitable(t *testing.T)
 
 	// The valid-ref set itself, before any op is applied: only the real
 	// message's ref is offered.
-	in, err := p.gatherConsolidateInput(p.maxPromptChars(), time.Time{}, time.Time{})
+	in, err := p.gatherConsolidateInput(p.maxPromptChars(), time.Time{}, time.Time{}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"C1|1785746329.642879": "slack"}, in.validRefs)
 

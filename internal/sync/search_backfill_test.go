@@ -66,7 +66,7 @@ func TestBackfillSearch_SavesRangeWithoutTouchingWatermarkOrAuthState(t *testing
 	assert.Equal(t, 1, saved)
 	assert.Equal(t, []string{"after:2026-09-19 before:2026-09-23"}, queries)
 
-	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 10)
+	msgs, err := ts.db.GetMessages(db.MessageOpts{ChannelID: ts.ns("C001"), Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "old news", msgs[0].Text)

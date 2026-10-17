@@ -438,22 +438,36 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 	if floor == "" {
 		return p.initJiraFloor(acct)
 	}
+	reached, err := p.jiraDigestPass(ctx, acct, floor, bound)
+	if err != nil || reached == floor {
+		return err
+	}
+	if err := p.db.SetIdeasJiraFloor(acct.ID, reached); err != nil {
+		return fmt.Errorf("advancing ideas jira floor: %w", err)
+	}
+	return nil
+}
 
+// jiraDigestPass is emailDigestPass' Jira sibling: it mines one window of
+// the account's issues above floor and returns the floor it reached (floor
+// itself when there was nothing to mine), reading and writing no stored
+// floor.
+func (p *Pipeline) jiraDigestPass(ctx context.Context, acct db.JiraAccount, floor string, bound time.Time) (string, error) {
 	beforeISO, err := p.passBeforeISO(acct.ID, bound)
 	if err != nil {
-		return err
+		return floor, err
 	}
 	issues, err := p.db.ListJiraIssuesUpdatedSince(acct.ID, floor, beforeISO, jiraIssuesPerAccountLimit)
 	if err != nil {
-		return fmt.Errorf("listing jira issues: %w", err)
+		return floor, fmt.Errorf("listing jira issues: %w", err)
 	}
 	if len(issues) == 0 {
-		return nil
+		return floor, nil
 	}
 
 	commentsByIssue, err := p.gatherJiraComments(acct.ID, issues, floor)
 	if err != nil {
-		return err
+		return floor, err
 	}
 
 	budget := p.maxPromptChars()
@@ -462,13 +476,13 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		// Unreachable: the drain leaves every issue at the boundary timestamp
 		// rendered, so a non-empty issues always yields a floor. Fail loudly
 		// rather than claim an empty floor if that contract is ever broken.
-		return fmt.Errorf("no issue rendered from %d jira issues", len(issues))
+		return floor, fmt.Errorf("no issue rendered from %d jira issues", len(issues))
 	}
 
 	what := fmt.Sprintf("jira account %d", acct.ID)
-	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", what, block, tags)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", what, block, "", tags)
 	if err != nil {
-		return err
+		return floor, err
 	}
 
 	if err := p.insertStreamTopics(db.StreamDigest{
@@ -478,15 +492,12 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		PeriodFrom: normalizeJiraStreamPeriod(floor),
 		PeriodTo:   normalizeJiraStreamPeriod(renderedTo),
 	}, topics, what); err != nil {
-		return err
+		return floor, err
 	}
 
 	// renderedTo is the newest RENDERED issue's updated_at, never the newest
 	// loaded one: an issue the budget dropped stays above the floor and is
 	// mined next run. ListJiraIssuesUpdatedSince reloads with a strict >, so
 	// the boundary issue itself is not re-read; IDEA-05 covers the rest.
-	if err := p.db.SetIdeasJiraFloor(acct.ID, renderedTo); err != nil {
-		return fmt.Errorf("advancing ideas jira floor: %w", err)
-	}
-	return nil
+	return renderedTo, nil
 }

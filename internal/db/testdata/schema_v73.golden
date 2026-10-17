@@ -1167,7 +1167,7 @@ last_uid INTEGER NOT NULL DEFAULT 0, -- sync watermark: highest IMAP UID synced
 uidvalidity INTEGER NOT NULL DEFAULT 0, -- IMAP UIDVALIDITY; a change means last_uid must reset
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-)
+, ideas_email_floor REAL NOT NULL DEFAULT 0)
 
 table	ext_comments
 CREATE TABLE ext_comments (
@@ -1347,15 +1347,15 @@ chunk_failures INTEGER NOT NULL DEFAULT 0,
 last_error TEXT NOT NULL DEFAULT '',
 started_at TEXT NOT NULL,
 updated_at TEXT NOT NULL,
-done_at TEXT,
+done_at TEXT, held_since TEXT,
 UNIQUE (source_kind, account_id)
 )
 
 table	idea_mentions
-CREATE TABLE idea_mentions (
+CREATE TABLE "idea_mentions" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 idea_id INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-source TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner')),
+source TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap')),
 ref TEXT NOT NULL DEFAULT '',
 quote TEXT NOT NULL DEFAULT '',
 author TEXT NOT NULL DEFAULT '',
@@ -1445,7 +1445,7 @@ thread_digest TEXT NOT NULL DEFAULT '',
 draft_reply TEXT NOT NULL DEFAULT '',
 card_status TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
 card_generated_at TEXT,
-composed_at TEXT,
+composed_at TEXT, mentions TEXT NOT NULL DEFAULT '[]', mentions_earlier INTEGER NOT NULL DEFAULT 0, mentioned_at TEXT NOT NULL DEFAULT '',
 UNIQUE(channel_id, message_ts)
 )
 
@@ -2348,7 +2348,7 @@ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
 CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
 CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
-CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL, session_instructions TEXT NULL, target_procedure TEXT NULL)
+CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL, methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), ask_guard_carried_at TEXT NULL, finish_check_carried_at TEXT NULL, session_instructions TEXT NULL, target_procedure TEXT NULL)
 
 table	prompt_history
 CREATE TABLE prompt_history (
@@ -2583,16 +2583,17 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '')
 
 table	stream_digests
-CREATE TABLE stream_digests (
+CREATE TABLE "stream_digests" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
-source TEXT NOT NULL CHECK(source IN ('gmail','jira')),
+source TEXT NOT NULL CHECK(source IN ('gmail','jira','imap')),
 account_id INTEGER NOT NULL,
 scope TEXT NOT NULL DEFAULT '',
 period_from TEXT NOT NULL,
 period_to TEXT NOT NULL,
 topics_json TEXT NOT NULL DEFAULT '[]',
-created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-, read_at TEXT)
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+read_at TEXT
+)
 
 table	sync_state
 CREATE TABLE sync_state (
@@ -4053,6 +4054,7 @@ GROUP BY up.ancestor
 11	uidvalidity	INTEGER	notnull=1	dflt=0	pk=0
 12	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 13	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+14	ideas_email_floor	REAL	notnull=1	dflt=0	pk=0
 
 ## ext_comments
 0	source_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -4203,6 +4205,7 @@ GROUP BY up.ancestor
 10	started_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 12	done_at	TEXT	notnull=0	dflt=NULL	pk=0
+13	held_since	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## idea_mentions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -4282,6 +4285,9 @@ GROUP BY up.ancestor
 26	card_status	TEXT	notnull=1	dflt='none'	pk=0
 27	card_generated_at	TEXT	notnull=0	dflt=NULL	pk=0
 28	composed_at	TEXT	notnull=0	dflt=NULL	pk=0
+29	mentions	TEXT	notnull=1	dflt='[]'	pk=0
+30	mentions_earlier	INTEGER	notnull=1	dflt=0	pk=0
+31	mentioned_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## inbox_learned_rules
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -5092,8 +5098,11 @@ GROUP BY up.ancestor
 12	ask_guard_mode	TEXT	notnull=0	dflt=NULL	pk=0
 13	finish_check	TEXT	notnull=0	dflt=NULL	pk=0
 14	board_hidden_statuses	TEXT	notnull=0	dflt=NULL	pk=0
-15	session_instructions	TEXT	notnull=0	dflt=NULL	pk=0
-16	target_procedure	TEXT	notnull=0	dflt=NULL	pk=0
+15	methodology_carry_pending	INTEGER	notnull=1	dflt=0	pk=0
+16	ask_guard_carried_at	TEXT	notnull=0	dflt=NULL	pk=0
+17	finish_check_carried_at	TEXT	notnull=0	dflt=NULL	pk=0
+18	session_instructions	TEXT	notnull=0	dflt=NULL	pk=0
+19	target_procedure	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## prompt_history
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

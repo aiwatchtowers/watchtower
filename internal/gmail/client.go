@@ -82,7 +82,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		if isInvalidGrant(body) {
 			return fmt.Errorf("%w: %s", ErrAuthRevoked, body)
 		}
-		return fmt.Errorf("token refresh failed (%d): %s", resp.StatusCode, body)
+		return &StatusError{Op: "token refresh failed", Code: resp.StatusCode, Body: string(body)}
 	}
 
 	var result struct {
@@ -132,9 +132,34 @@ func (c *Client) doGetRetry(ctx context.Context, path string, params url.Values,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gmail GET %s (%d): %s", path, resp.StatusCode, body)
+		return nil, &StatusError{Op: "gmail GET " + path, Code: resp.StatusCode, Body: string(body)}
 	}
 	return body, nil
+}
+
+// StatusError is a Gmail API or token endpoint reply with a status other
+// than 200. Op names the request ("gmail GET /users/me/messages").
+type StatusError struct {
+	Op   string
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s (%d): %s", e.Op, e.Code, e.Body)
+}
+
+// Transient reports a status worth retrying later: rate limited (429, or a
+// 403 whose reason is rateLimitExceeded/userRateLimitExceeded, Gmail's
+// per-user quota) or a server-side failure.
+func (e *StatusError) Transient() bool {
+	switch {
+	case e.Code == http.StatusTooManyRequests, e.Code >= http.StatusInternalServerError:
+		return true
+	case e.Code == http.StatusForbidden:
+		return strings.Contains(e.Body, "rateLimitExceeded") || strings.Contains(e.Body, "userRateLimitExceeded")
+	}
+	return false
 }
 
 // listPageSize is the page size requested when maxResults is unlimited

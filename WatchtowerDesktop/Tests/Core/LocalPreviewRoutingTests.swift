@@ -30,6 +30,12 @@ final class LocalPreviewRoutingTests: XCTestCase {
         return LocalPreviewHTTP.respond(to: request, port: port) { $0 == "tok" ? self.root : nil }
     }
 
+    /// What goes on the wire after the head: the streamed file, or the
+    /// in-memory body.
+    private func bodyBytes(_ response: LocalPreviewResponse) throws -> Data {
+        try response.file.map { try Data(contentsOf: $0) } ?? response.body
+    }
+
     // MARK: parsing
 
     func testParseWaitsForTheEndOfTheHeadersAndReadsHost() {
@@ -55,12 +61,12 @@ final class LocalPreviewRoutingTests: XCTestCase {
         let css = get("/tok/style.css")
         XCTAssertEqual(css.status, 200)
         XCTAssertEqual(css.header("Content-Type"), "text/css; charset=utf-8")
-        XCTAssertEqual(css.body, Data("body{}".utf8))
+        XCTAssertEqual(try bodyBytes(css), Data("body{}".utf8))
         XCTAssertEqual(css.header("Referrer-Policy"), "no-referrer")
         let png = get("/tok/img/logo%20one.png")
         XCTAssertEqual(png.status, 200)
         XCTAssertEqual(png.header("Content-Type"), "image/png")
-        XCTAssertEqual(get("/tok/").body, Data("<h1>Deck</h1>".utf8))
+        XCTAssertEqual(try bodyBytes(get("/tok/")), Data("<h1>Deck</h1>".utf8))
         XCTAssertEqual(get("/tok/index.html#slide-2").status, 200)
         for response in [css, png, get("/tok/missing"), get("/tok/x", method: "POST"), get("/tok/", host: "evil.example:1")] {
             XCTAssertEqual(response.header("Content-Security-Policy"), LocalPreviewHTTP.contentSecurityPolicy)
@@ -76,6 +82,33 @@ final class LocalPreviewRoutingTests: XCTestCase {
                           "object-src 'none'", "form-action 'none'", "base-uri 'none'"] {
             XCTAssertTrue(policy.contains(directive), directive)
         }
+    }
+
+    /// Subresources come from the folder or the CDN allowlist only — never
+    /// any https host (#563).
+    func testThePolicyAllowsOnlyTheCDNAllowlist() {
+        let policy = LocalPreviewHTTP.contentSecurityPolicy
+        let cdns = "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com "
+            + "https://fonts.googleapis.com https://fonts.gstatic.com"
+        for directive in ["script-src 'self' 'unsafe-inline' \(cdns);", "style-src 'self' 'unsafe-inline' \(cdns);",
+                          "img-src 'self' data: blob: \(cdns);", "font-src 'self' data: \(cdns);"] {
+            XCTAssertTrue(policy.contains(directive), directive)
+        }
+        XCTAssertFalse(policy.contains("https:;"), "no bare https: source")
+        XCTAssertFalse(policy.contains("https: "), "no bare https: source")
+        XCTAssertFalse(policy.contains("http:"))
+    }
+
+    /// The file is streamed by the server, never read into the response
+    /// (#563): a HEAD or a big file costs no memory here.
+    func testAFileIsHandedToTheServerUnread() throws {
+        let response = get("/tok/style.css")
+        XCTAssertEqual(response.status, 200)
+        XCTAssertTrue(response.body.isEmpty, "the response holds no file bytes")
+        XCTAssertEqual(response.file?.lastPathComponent, "style.css")
+        XCTAssertEqual(response.header("Content-Length"), "6")
+        XCTAssertNil(get("/tok/.env").file)
+        XCTAssertNil(get("/tok/missing").file)
     }
 
     func testOnlyTheLoopbackHostOfThisPortIsServed() {

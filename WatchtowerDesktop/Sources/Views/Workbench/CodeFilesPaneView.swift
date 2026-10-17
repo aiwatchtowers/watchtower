@@ -124,7 +124,7 @@ struct CodeFilesPaneView: View {
         if let active = tabs.active, HTMLPreviewPolicy.isHTMLFile(active) {
             let buffer = files.buffer(for: root, relPath: active)
             if buffer.state == .loaded, htmlPreviews.contains(buffer.url.path) {
-                CodeHTMLPreviewPane(buffer: buffer, reload: htmlReload)
+                CodeHTMLPreviewPane(buffer: buffer, root: root.folder, reload: htmlReload)
                     .id(buffer.url)
             }
         }

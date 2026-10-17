@@ -545,7 +545,7 @@ struct SystemSettings: View {
             process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model]
         }
 
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         // The safe cwd every AI spawn uses: a child scanning a protected
         // inherited cwd would raise a TCC prompt.
         process.currentDirectoryURL = Constants.processWorkingDirectory()

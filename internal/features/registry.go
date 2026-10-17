@@ -144,10 +144,10 @@ var registry = []Feature{
 	{
 		ID:          "stream-digests",
 		Title:       "Stream Digests",
-		Description: "Summarizes new Gmail threads and changed Jira issues and comments into per-account digests, and syncs the Jira comments that let mention detection fire on them. Medium AI use, independent of Slack Digests even though it is shown nested under it. Feeds Ideas and Attention detection's Jira-comment detection.",
+		Description: "Summarizes new mail (Gmail, Outlook and IMAP) and changed Jira issues and comments into per-account digests, and syncs the Jira comments that let mention detection fire on them. Medium AI use, independent of Slack Digests even though it is shown nested under it. Feeds Ideas and Attention detection's Jira-comment detection.",
 		Tagline:     "Email and Jira, digested like Slack",
 		Benefits: []string{
-			"New Gmail threads and changed Jira issues summarized per account",
+			"New mail and changed Jira issues summarized per account",
 			"Jira comment mentions reach your inbox too",
 			"Feeds the Ideas registry alongside Slack",
 		},

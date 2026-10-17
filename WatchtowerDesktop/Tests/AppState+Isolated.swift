@@ -35,7 +35,19 @@ extension AppState {
         appState.wireAppDatabaseOverride = { _ in }
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()
         appState.homeDefaultsOverride = defaults
+        isolatedAppStates.append(WeakAppState(appState))
         return appState
+    }
+
+    /// Stops the sidebar counts of every `isolated()` app state made since
+    /// the last call (`stopSidebarCounts()`), for a test case whose tearDown
+    /// deletes the database after an onboarding finish built them.
+    static func stopIsolatedSidebarCounts() async {
+        let made = isolatedAppStates
+        isolatedAppStates = []
+        for state in made.compactMap(\.value) {
+            await state.stopSidebarCounts()?.value
+        }
     }
 
     /// The suite `isolated()` hands out. scripts/swift-test-sharded.sh runs
@@ -49,6 +61,18 @@ extension AppState {
 
     static var isolatedDefaults: UserDefaults {
         UserDefaults(suiteName: isolatedSuiteName) ?? .standard
+    }
+
+    /// Stops the sidebar counts `completeOnboarding()` builds before the
+    /// test's database goes (board #526): the build is cancelled — one not
+    /// started yet builds nothing — and a built view model stops observing.
+    /// Returns the build, for an async test to await.
+    @discardableResult
+    func stopSidebarCounts() -> Task<Void, Never>? {
+        let setup = sidebarCountsSetup
+        setup?.cancel()
+        sidebarCountsViewModel?.stopObserving()
+        return setup
     }
 }
 
@@ -101,5 +125,15 @@ final class FakeDaemon: DaemonControl {
     func releaseRestart() {
         parked?.resume()
         parked = nil
+    }
+}
+
+@MainActor private var isolatedAppStates: [WeakAppState] = []
+
+private struct WeakAppState {
+    weak var value: AppState?
+
+    init(_ value: AppState) {
+        self.value = value
     }
 }

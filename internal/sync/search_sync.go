@@ -3,7 +3,6 @@ package sync
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -334,12 +333,6 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 			// search.messages doesn't return thread_ts or reply_count,
 			// but permalink contains thread_ts for threaded replies:
 			//   ...p1234567890123456?thread_ts=1234567890.123456
-			rawJSON, err := json.Marshal(msg)
-			if err != nil {
-				o.logger.Printf("warning: failed to marshal search message %s: %v", msg.Timestamp, err)
-				rawJSON = []byte("{}")
-			}
-
 			threadTS := extractThreadTSFromPermalink(msg.Permalink)
 
 			dbMsgs = append(dbMsgs, db.Message{
@@ -353,7 +346,6 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 				IsDeleted:  false,
 				Subtype:    "",
 				Permalink:  msg.Permalink,
-				RawJSON:    string(rawJSON),
 			})
 		}
 

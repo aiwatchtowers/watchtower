@@ -12,6 +12,7 @@ final class FakeHomeEnvironment: HomeEnvironment {
     var now = Date()
     var calendar = Calendar.current
     var ownerKnown = true
+    var ownerPendingSource: String?
     var firstSync: FirstSyncLine?
     var allowedTodayCards = Set(TodayCardKind.allCases)
 }

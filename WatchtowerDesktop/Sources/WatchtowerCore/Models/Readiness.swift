@@ -60,8 +60,16 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
 }
 
 /// The source a feature reads.
-package enum ReadinessSource: Equatable, Sendable {
+package enum ReadinessSource: Hashable, Sendable {
     case none, slack, anySource, calendar, jira, jiraOrMail
+    /// A source that tells Watchtower who the owner is (the OWNER-01 ladder).
+    /// No feature reads it; Home names it on an owner-gated card while the
+    /// owner is unknown.
+    case ownerIdentity
+    /// The named connected source ("Jira", "Linear") will identify the owner
+    /// once it reports who connected it; Home waits on it instead of asking
+    /// to connect something.
+    case ownerIdentityPending(String)
 
     /// What a "Connect …" line or button names.
     package var displayName: String {
@@ -70,13 +78,23 @@ package enum ReadinessSource: Equatable, Sendable {
         case .calendar: "a calendar"
         case .jira: "Jira"
         case .jiraOrMail: "Jira or mail"
+        case .ownerIdentity: "Slack, Google, Jira, Linear or an email account"
+        case .ownerIdentityPending(let name): "your \(name) identity"
         case .anySource, .none: "a source"
+        }
+    }
+
+    /// The owner gate's sources: shown on the feature's card, never as a Connect row.
+    package var isOwnerIdentity: Bool {
+        switch self {
+        case .ownerIdentity, .ownerIdentityPending: true
+        default: false
         }
     }
 
     package func isConnected(in connected: ConnectedSources) -> Bool {
         switch self {
-        case .none: true
+        case .none, .ownerIdentity, .ownerIdentityPending: true
         case .slack: connected.slack
         case .anySource: connected.slack || connected.mail || connected.calendar || connected.jira
         case .calendar: connected.calendar
@@ -99,6 +117,8 @@ package enum Eta: Equatable, Sendable {
     case inAboutADay
     /// The ideas/streams interval, rounded up to whole hours.
     case inHours(Int)
+    /// Memory waits for a running history backfill (#578).
+    case afterHistoryLoads
 }
 
 /// One feature's readiness, in evaluation precedence order.
@@ -161,6 +181,14 @@ package struct ReadinessInputs: Equatable {
     package var briefingHour: Int
     package var dayPlanHour: Int
     package var pollIntervalMinutes: Int
+    /// `started_at` of every `history_backfill` row with status `running`
+    /// (a held row included), for memory's backfill wait (#578).
+    package var runningBackfillStarts: [Date]
+    /// A `memory` pipeline run finished `done` at least once: memory's
+    /// backfill wait is over for good (#578).
+    package var memoryHasRun: Bool
+    /// `sync.backfill_days <= 0` (the backfill kill switch).
+    package var backfillOff: Bool
 
     package init(
         now: Date,
@@ -174,7 +202,10 @@ package struct ReadinessInputs: Equatable {
         stamps: ReadinessStamps = ReadinessStamps(),
         briefingHour: Int = 8,
         dayPlanHour: Int = 8,
-        pollIntervalMinutes: Int = 15
+        pollIntervalMinutes: Int = 15,
+        runningBackfillStarts: [Date] = [],
+        memoryHasRun: Bool = false,
+        backfillOff: Bool = false
     ) {
         self.now = now
         self.disabledFeatureIDs = disabledFeatureIDs
@@ -188,5 +219,8 @@ package struct ReadinessInputs: Equatable {
         self.briefingHour = briefingHour
         self.dayPlanHour = dayPlanHour
         self.pollIntervalMinutes = pollIntervalMinutes
+        self.runningBackfillStarts = runningBackfillStarts
+        self.memoryHasRun = memoryHasRun
+        self.backfillOff = backfillOff
     }
 }

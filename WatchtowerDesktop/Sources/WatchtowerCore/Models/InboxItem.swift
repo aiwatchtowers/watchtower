@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 // MARK: - ItemClass
 
@@ -41,6 +42,12 @@ package struct InboxItem: FetchableRecord, Identifiable, Equatable {
     package let cardGeneratedAt: Date?  // column: card_generated_at (nullable TEXT ISO8601)
     package let createdAt: String
     package let updatedAt: String
+    /// The messages folded into a channel-level Slack item (#586), oldest first,
+    /// the 20 newest (column `mentions`, decoded once here); empty for every
+    /// other item.
+    package let mentionList: [Mention]
+    /// Older folded messages that fell off `mentionList` (column `mentions_earlier`).
+    package let mentionsEarlier: Int
 
     /// Typed item class derived from `item_class` column.
     package var itemClass: ItemClass {
@@ -106,6 +113,62 @@ package struct InboxItem: FetchableRecord, Identifiable, Equatable {
         }
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+        mentionList = Self.decodeMentions(row["mentions"] as String?, itemID: id)
+        mentionsEarlier = row["mentions_earlier"] ?? 0
+    }
+
+    // MARK: - Accumulated Mentions
+
+    /// One message of a channel-level item's `mentions` list (Go `db.InboxMention`).
+    package struct Mention: Decodable, Equatable {
+        package let ts: String
+        package let sender: String
+        package let trigger: String?
+        package let text: String
+        package let permalink: String?
+    }
+
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "inbox")
+
+    /// An absent column (an older schema) is simply no list; a malformed value
+    /// is logged and read as no list — the Go fold reseeds such a row.
+    static func decodeMentions(_ raw: String?, itemID: Int) -> [Mention] {
+        guard let raw else { return [] }
+        do {
+            return try JSONDecoder().decode([Mention].self, from: Data(raw.utf8))
+        } catch {
+            log.error("inbox item \(itemID, privacy: .public): malformed mentions: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    /// Who wrote an accumulated item: its distinct senders oldest first, "Ann,
+    /// Bob" when there are at most three and every one resolves to a name,
+    /// else "N people" (a raw id would read as noise). Same rule as Go
+    /// `db.InboxMentionSenders`.
+    package func mentionSendersLabel(names: [String: String]) -> String {
+        var who: [String] = []
+        var seen = Set<String>()
+        var allNamed = true
+        for mention in mentionList where seen.insert(mention.sender).inserted {
+            if let name = names[mention.sender], !name.isEmpty {
+                who.append(name)
+            } else {
+                allNamed = false
+            }
+        }
+        return seen.count <= 3 && allNamed ? who.joined(separator: ", ") : "\(seen.count) people"
+    }
+
+    /// True when the item lists more than one message.
+    package var isAccumulated: Bool { mentionList.count + mentionsEarlier > 1 }
+
+    /// "3 mentions" when every listed entry is a mention, otherwise
+    /// "3 messages"; the count includes the earlier ones. Same wording as Go
+    /// `db.InboxMentionCountLabel`.
+    package var mentionCountTitle: String {
+        let word = mentionList.allSatisfy { $0.trigger == "mention" } ? "mentions" : "messages"
+        return "\(mentionList.count + mentionsEarlier) \(word)"
     }
 
     // MARK: - Status Predicates

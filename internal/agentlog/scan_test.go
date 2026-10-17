@@ -377,3 +377,77 @@ func TestScan_ParserVersionBumpReparsesNewTargets(t *testing.T) {
 	}
 	assert.Equal(t, []string{"Agent|Explore|a1", "mcp__watchtower-workbench__update_target|#298|"}, got)
 }
+
+// #571: a transcript is stored in short slices, each with its own offset
+// compare-and-set; a stop between slices resumes from the last committed one,
+// and slicing never changes what is counted (a streaming duplicate and a
+// tool result on the far side of a slice boundary still fold and pair).
+func TestScan_LongTranscriptCommittedInSlicesAndResumes(t *testing.T) {
+	old := batchRows
+	batchRows = 2
+	t.Cleanup(func() { batchRows = old })
+	f := newFixture(t)
+	a := assistant("s1", "u1", "m1", "r1", 5, toolUse("t1", "Bash", map[string]any{"command": "make test"}))
+	a["cwd"] = f.folder
+	body := line(t, a) + // api_call m1 + tool t1: one full slice
+		call(t, "s1", f.folder, "u2", "m1", "r1", 9) + // streaming repeat of m1 in the next slice
+		toolResultLine(t, "s1", "r1", "t1", "ok", false, nil)
+	for i := 0; i < 6; i++ {
+		body += call(t, "s1", f.folder, "v"+string(rune('a'+i)), "n"+string(rune('a'+i)), "r", 1)
+	}
+	p := f.write(f.folder, "s1.jsonl", body)
+
+	// Out of time as soon as the first slice is committed (the file row
+	// exists), whatever the number of clock reads before it.
+	start := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time {
+		if fr, err := f.d.GetAgentLogFile(p); err == nil && fr != nil {
+			return start.Add(time.Hour)
+		}
+		return start
+	}
+	r, err := Scan(context.Background(), f.d, f.wb, Options{ClaudeDir: f.claude, Budget: time.Second, Now: now})
+	require.NoError(t, err)
+	assert.True(t, r.Incomplete)
+	assert.Equal(t, 2, r.EventsWritten)
+	fr, err := f.d.GetAgentLogFile(p)
+	require.NoError(t, err)
+	require.NotNil(t, fr)
+	fi, err := os.Stat(p)
+	require.NoError(t, err)
+	assert.Less(t, fr.ReadOffset, fi.Size())
+	assert.Empty(t, fr.MTime, "a partly read file must not look unchanged to the next scan")
+
+	r = f.scan()
+	assert.False(t, r.Incomplete)
+	fr, err = f.d.GetAgentLogFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, fi.Size(), fr.ReadOffset)
+	n, out := f.totals()
+	assert.Equal(t, int64(7), n)    // m1 once + six more
+	assert.Equal(t, int64(15), out) // m1's later record (9) + 6×1
+	var outcome string
+	require.NoError(t, f.d.QueryRow(`SELECT outcome FROM agent_log_events WHERE key = 'tool:t1'`).Scan(&outcome))
+	assert.Equal(t, "ok", outcome)
+	assert.Equal(t, 1, f.scan().FilesSkipped)
+}
+
+// #571 review: a slash command in a later slice of an incremental read still
+// finds the skill_listing that sits before the read's start offset.
+func TestScan_SlashSkillInLaterSliceOfIncrementalRead(t *testing.T) {
+	old := batchRows
+	batchRows = 2
+	t.Cleanup(func() { batchRows = old })
+	f := newFixture(t)
+	listing := line(t, map[string]any{"type": "attachment", "sessionId": "s1",
+		"attachment": map[string]any{"type": "skill_listing", "names": []string{"review"}}})
+	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.scan()
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u2", "m2", "r2", 5)+call(t, "s1", f.folder, "u3", "m3", "r3", 5)+
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "cwd": f.folder,
+			"message": map[string]any{"role": "user", "content": "<command-name>/review</command-name>"}}))
+	f.scan()
+	var n int
+	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE kind = 'skill' AND name = 'review' AND trigger = 'slash'`).Scan(&n))
+	assert.Equal(t, 1, n)
+}

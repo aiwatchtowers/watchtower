@@ -33,6 +33,9 @@ type validateJSON struct {
 	Permissions  []string `json:"permissions"`
 	Outputs      []string `json:"outputs"`
 	Widening     []string `json:"widening"`
+	// FeedsSourcesToLLM is Manifest.FeedsSourcesToLLM of the validated text
+	// (#559): the Save sheet warns next to "Keep auto for <tool>".
+	FeedsSourcesToLLM bool `json:"feeds_sources_to_llm"`
 }
 
 // validateRecipe parses data as the recipe slug in scope. A parse error is a
@@ -56,6 +59,7 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 	v.Permissions = append(v.Permissions, m.Normalized()...)
 	v.Outputs = append(v.Outputs, slices.Compact(slices.Sorted(slices.Values(r.Outputs)))...)
 	v.Widening = automations.Covers(baseline, v.Permissions)
+	v.FeedsSourcesToLLM = m.FeedsSourcesToLLM()
 	return v
 }
 

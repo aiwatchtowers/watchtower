@@ -191,7 +191,7 @@ func seedGuardExpertsFixture(t *testing.T, database *db.DB) {
 		t.Fatalf("seeding user: %v", err)
 	}
 	if err := database.UpsertMessage(db.Message{
-		ChannelID: "1:C1", TS: "1700000001.000001", UserID: "1:U1", Text: "the guard clause needs review", RawJSON: "{}",
+		ChannelID: "1:C1", TS: "1700000001.000001", UserID: "1:U1", Text: "the guard clause needs review",
 	}); err != nil {
 		t.Fatalf("seeding message: %v", err)
 	}

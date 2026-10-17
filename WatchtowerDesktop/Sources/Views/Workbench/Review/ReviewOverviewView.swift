@@ -1,7 +1,8 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The AI overview of the round (board #328, Plan 3): a spinner while it is
+/// The AI overview of the round (board #328, Plan 3): Make overview in Quick
+/// mode when none is cached (board #585), a spinner while it is
 /// prepared, the reason and Retry when it failed, else the summary, how the
 /// intent is covered, the files outside the intent and the size. Deep shows
 /// it whole in Meaning; Quick folds it into one disclosure line.
@@ -16,6 +17,13 @@ struct ReviewOverviewView: View {
         switch model.overview {
         case .idle:
             EmptyView()
+        case .onRequest:
+            makeRow("An AI summary, intent coverage, risk and reading order — one strong-model call.")
+        case let .outdated(earlier):
+            VStack(alignment: .leading, spacing: 4) {
+                makeRow("This overview is for an earlier version of the changes. A new one is one strong-model call.")
+                Text(ReviewPresentation.firstLine(earlier.summary)).font(.callout).lineLimit(2).foregroundStyle(.secondary)
+            }
         case .loading:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -33,6 +41,14 @@ struct ReviewOverviewView: View {
             case .full: full(overview)
             case .compact: compact(overview)
             }
+        }
+    }
+
+    private func makeRow(_ note: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(note).font(.callout).foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Button("Make overview") { model.makeOverview() }.controlSize(.small)
         }
     }
 

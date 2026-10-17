@@ -140,7 +140,7 @@ var DefaultVersions = map[string]int{
 	MemoryRenderMap:            2,  // v2: the secretary/assistant persona merge — one assistant everywhere
 	MemoryReflect:              2,  // v2: the secretary/assistant persona merge — one assistant everywhere
 	MemoryRenderChannelDigest:  2,  // v2: the secretary/assistant persona merge — one assistant everywhere
-	IdeasDigestEmail:           2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	IdeasDigestEmail:           3,  // v3: IMAP/Outlook mailboxes too — the ref tag is gmail:… or imap:… (#615)
 	IdeasDigestJira:            2,  // v2: the secretary/assistant persona merge — one assistant everywhere
 	IdeasConsolidate:           4,  // v4: the secretary/assistant persona merge — one assistant everywhere
 	DictationClean:             1,  // v1: dictation transcript cleanup (idea/note modes)
@@ -194,7 +194,7 @@ var Descriptions = map[string]string{
 	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
 	MemoryReflect:              "Memory: weekly reflection over the vault's own git history — flag unstable beliefs/entities (strong tier; code disposes)",
 	MemoryRenderChannelDigest:  "Memory: render a channel digest from the window's memory episodes (cheap tier; dark compare-mode against the legacy digest)",
-	IdeasDigestEmail:           "Ideas: mine ideas & decisions from Gmail threads (stage 1, light tier)",
+	IdeasDigestEmail:           "Ideas: mine ideas & decisions from email threads — Gmail, IMAP, Outlook (stage 1, light tier)",
 	IdeasDigestJira:            "Ideas: mine ideas & decisions from changed Jira issues (stage 1, light tier)",
 	IdeasConsolidate:           "Ideas: consolidate stage-1 material into the registry (stage 2, strong tier; code disposes)",
 	DictationClean:             "Cleans a voice-dictation transcript into destination-shaped text (idea / note)",
@@ -1350,22 +1350,24 @@ Rules:
 - do NOT restate confidence numbers or belief statuses — you only flag instability; the code decides what happens.`
 
 // defaultIdeasDigestEmail is the light-tier stage-1 idea/decision miner for
-// Gmail (ideas.digest_email — see "ideas.digest_email" in the model routing).
-// It reads a window of Gmail threads (one numbered line per message, tagged
-// with a "gmail:<account_id>:<thread_id>" ref) and extracts ideas/decisions
-// into the shared topics_json shape written to stream_digests(source='gmail').
+// email (ideas.digest_email — see "ideas.digest_email" in the model routing).
+// It reads a window of one mailbox's threads (one numbered line per thread,
+// tagged with a "gmail:<account_id>:<thread_id>" ref, or an
+// "imap:<account_id>:<message_id>" ref for an IMAP/Outlook mailbox, where
+// every message is its own thread) and extracts ideas/decisions into the
+// shared topics_json shape written to stream_digests(source='gmail'|'imap').
 // Arg: the language directive.
 const defaultIdeasDigestEmail = `%s
 
-You are the ideas-and-decisions miner of a workplace assistant. You read numbered email threads, each line formatted "[n] subject (gmail:<account_id>:<thread_id>): participants — excerpt", and extract IDEAS and DECISIONS worth tracking in the registry — not routine mail.
+You are the ideas-and-decisions miner of a workplace assistant. You read numbered email threads, each line formatted "[n] subject (<ref>): participants — excerpt", where <ref> is a tag such as "gmail:<account_id>:<thread_id>" or "imap:<account_id>:<message_id>", and extract IDEAS and DECISIONS worth tracking in the registry — not routine mail.
 
 An idea is a proposal of something new that has not yet been decided ("we should try X", "what if we..."). A decision is a made choice ("we're going with X", "agreed to ship Y"). Extract conservatively: most threads contain neither.
 
 Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
-{"topics": [{"title": "short headline", "summary": "1-2 sentence gist", "ideas": [{"text": "the idea", "author": "who proposed it", "ref": "gmail:<account_id>:<thread_id>"}], "decisions": [{"text": "the decision", "author": "who decided", "ref": "gmail:<account_id>:<thread_id>"}]}]}
+{"topics": [{"title": "short headline", "summary": "1-2 sentence gist", "ideas": [{"text": "the idea", "author": "who proposed it", "ref": "<ref>"}], "decisions": [{"text": "the decision", "author": "who decided", "ref": "<ref>"}]}]}
 
 Rules:
-- ref: copy the "gmail:<account_id>:<thread_id>" tag EXACTLY from the numbered line the idea/decision came from; never invent or adjust one.
+- ref: copy the <ref> tag in parentheses EXACTLY from the numbered line the idea/decision came from; never invent or adjust one.
 - most threads have nothing worth extracting: empty "ideas"/"decisions" arrays, or no topic at all, is the common and correct answer.
 - do not restate routine status updates, scheduling, or small talk as ideas or decisions.`
 

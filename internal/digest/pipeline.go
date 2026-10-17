@@ -201,7 +201,7 @@ type backfillScope struct {
 	mu         sync.Mutex
 	considered map[string]float64
 	failed     map[string]bool
-	lastErr    error
+	errs       []error // every failure of the call, in order
 }
 
 // inBackfill reports whether the pipeline is writing a backfill digest or
@@ -224,7 +224,7 @@ func (p *Pipeline) markBackfillFailed(err error, channelIDs ...string) {
 	for _, id := range channelIDs {
 		b.failed[id] = true
 	}
-	b.lastErr = err
+	b.errs = append(b.errs, err)
 }
 
 // SetJiraKeyDetector sets an optional Jira key detector for linking digest decisions to Jira issues.

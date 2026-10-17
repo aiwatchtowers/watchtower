@@ -53,6 +53,10 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 	if opts.Date == "" {
 		opts.Date = time.Now().Format("2006-01-02")
 	}
+	// A rung switch must not regenerate today's plan under the new owner id.
+	if err := p.db.AdoptOwnerRows(opts.UserID); err != nil {
+		return nil, fmt.Errorf("adopt owner rows: %w", err)
+	}
 
 	existing, err := p.db.GetDayPlan(opts.UserID, opts.Date)
 	if err != nil {

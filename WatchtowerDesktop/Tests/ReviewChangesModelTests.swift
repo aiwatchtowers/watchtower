@@ -962,8 +962,19 @@ final class ReviewChangesModelTests: XCTestCase {
         """
     }
 
+    /// Awaits the overview's load and any follow-up it started.
     private func awaitOverview(_ h: Harness) async {
-        await h.model.overviewTask?.value
+        var last: Task<Void, Never>?
+        while let task = h.model.overviewTask, task != last {
+            last = task
+            await task.value
+        }
+    }
+
+    /// Deep mode on `a.go`, with these trees answered by `start` in turn.
+    private func scriptDeepUndo(_ h: Harness, trees: [String]) {
+        h.cli.script(["context": deepContextJSON(), "diff": diffJSON(["a.go"])])
+        h.cli.script("start", trees.map { deepStartJSON(tree: $0) })
     }
 
     private func insertNote(
@@ -1152,6 +1163,133 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(overview.summary, "Of round 8.")
     }
 
+    /// Board #585: Quick mode only reads a cached overview; without one the
+    /// chapters stay mechanical until the owner presses Make overview.
+    func testQuickModeMakesTheOverviewOnlyOnRequest() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script("overview", [#"{"ok":true}"#, overviewJSON()])
+        await h.model.open()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .onRequest)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertEqual(h.cli.calls("overview"),
+                       [["workbench", "review", "overview", "--workbench", String(h.projectID), "--round", "7", "--cached-only", "--json"]])
+
+        await h.model.refresh()
+        await awaitOverview(h)
+        XCTAssertEqual(h.cli.calls("overview").count, 1, "the same tree asks nothing again")
+
+        h.model.makeOverview()
+        XCTAssertEqual(h.model.overview, .loading)
+        await awaitOverview(h)
+        guard case .ready(let overview) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(overview.summary, "Adds y.")
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertEqual(h.cli.calls("overview").last?.contains("--cached-only"), false)
+    }
+
+    /// A cached overview shows in Quick mode without a click.
+    func testQuickModeShowsACachedOverview() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script(["overview": overviewJSON()])
+        await h.model.open()
+        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true])
+    }
+
+    /// A Quick refresh onto a new tree without a cached overview drops the
+    /// old tree's risks and AI chapters.
+    func testQuickRefreshWithoutACachedOverviewDropsTheOldAIState() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
+        h.cli.script("overview", [overviewJSON(), #"{"ok":true}"#])
+        await h.model.open()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
+        await h.model.refresh()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .onRequest)
+        XCTAssertNil(h.model.risk(for: "pkg/y.go"))
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, true])
+    }
+
+    /// A refresh never cancels Make overview's model call: it lands, and with
+    /// no cached overview for the new tree it shows as an earlier version's.
+    func testRefreshDoesNotCancelMakeOverview() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
+        h.cli.script("overview", [#"{"ok":true}"#, overviewJSON(), #"{"ok":true}"#])
+        await h.model.open()
+        await awaitOverview(h)
+        h.cli.hold("overview")
+        h.model.makeOverview()
+        await h.cli.waitPending("overview")
+        await h.model.refresh()
+        XCTAssertEqual(h.model.round?.treeSha, "u7")
+        XCTAssertEqual(h.model.overview, .loading)
+        XCTAssertEqual(h.cli.calls("overview").count, 2, "no new call while the model call runs")
+        h.cli.release("overview")
+        await awaitOverview(h)
+        guard case .outdated(let earlier) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(earlier.summary, "Adds y.")
+        XCTAssertNil(h.model.risk(for: "pkg/y.go"))
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false, true])
+    }
+
+    /// A failed cached read retries the cached read, not the model call.
+    func testRetryOfAFailedCachedReadStaysACachedRead() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("overview", [#"{"ok":false,"error":"database is locked"}"#, #"{"ok":true}"#])
+        await h.model.open()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .failed("database is locked"))
+        h.model.retryOverview()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .onRequest)
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, true])
+    }
+
+    /// Switching to Deep during a cached read makes the overview.
+    func testSwitchingToDeepDuringACachedReadMakesTheOverview() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script("overview", [#"{"ok":true}"#, overviewJSON()])
+        h.cli.hold("overview")
+        await h.model.open()
+        await h.cli.waitPending("overview")
+        try h.model.setMode(.deep)
+        XCTAssertEqual(h.model.overview, .loading)
+        await h.cli.waitPending("overview", count: 2)
+        h.cli.release("overview")
+        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false])
+    }
+
+    /// Switching to Deep makes the overview Quick left on request.
+    func testSwitchingToDeepMakesTheOverview() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script("overview", [#"{"ok":true}"#, overviewJSON()])
+        await h.model.open()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .onRequest)
+        try h.model.setMode(.deep)
+        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false])
+    }
+
     func testNotesArePlacedOnTheSelectedFile() async throws {
         let h = try harness()
         let same = try await insertNote(h, kind: "note", path: "a.go", start: 1, end: 1, quote: "one", text: "entry")
@@ -1211,8 +1349,7 @@ final class ReviewChangesModelTests: XCTestCase {
     /// next refresh that finds a new tree regenerates it as usual.
     func testUndoDoesNotRegenerateTheOverview() async throws {
         let h = try harness()
-        h.baseScript()
-        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u"), startJSON(id: 7, prev: 0, tree: "v")])
+        scriptDeepUndo(h, trees: ["t7", "u7", "v7"])
         h.cli.script(["revert-hunk": #"{"ok":true,"revert":{"hunk_id":"0123456789abcdef","path":"a.go"}}"#])
         h.cli.script("overview", [
             #"{"ok":true,"overview":{"summary":"Before the undo."},"overview_cached":false}"#,
@@ -1239,8 +1376,7 @@ final class ReviewChangesModelTests: XCTestCase {
 
     func testRefreshAfterUndoRegeneratesTheOverview() async throws {
         let h = try harness()
-        h.baseScript()
-        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u"), startJSON(id: 7, prev: 0, tree: "u")])
+        scriptDeepUndo(h, trees: ["t7", "u7", "u7"])
         h.cli.script(["revert-hunk": #"{"ok":true,"revert":{"hunk_id":"0123456789abcdef","path":"a.go"}}"#])
         h.cli.script("overview", [
             #"{"ok":true,"overview":{"summary":"Before the undo."},"overview_cached":false}"#,

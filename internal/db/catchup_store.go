@@ -172,7 +172,7 @@ func (db *DB) AcknowledgeCatchupWindow(id int64, from, to float64) error {
 		{`UPDATE digests SET read_at=` + now + ` WHERE read_at IS NULL AND type='channel' AND period_to > ? AND period_from < ?`, []any{from, to}},
 		{`UPDATE stream_digests SET read_at=` + now + ` WHERE read_at IS NULL AND period_to > ? AND period_from < ?`, []any{fromISO, toISO}},
 		{`UPDATE tracks SET read_at=` + now + `, has_updates=0 WHERE dismissed_at='' AND updated_at > ? AND updated_at <= ? AND (read_at IS NULL OR has_updates=1)`, []any{fromISO, toISO}},
-		{`UPDATE inbox_items SET read_at=` + now + ` WHERE read_at IS NULL AND created_at > ? AND created_at <= ?`, []any{fromISO, toISO}},
+		{`UPDATE inbox_items SET read_at=` + now + ` WHERE read_at IS NULL AND MAX(created_at, mentioned_at) > ? AND MAX(created_at, mentioned_at) <= ?`, []any{fromISO, toISO}},
 		{`UPDATE briefings SET read_at=` + now + ` WHERE read_at IS NULL AND date >= ? AND date <= ?`, []any{fromDate, toDate}},
 		{`UPDATE catchup_recaps SET acknowledged_at=` + now + `, updated_at=` + now + ` WHERE id=? AND acknowledged_at IS NULL`, []any{id}},
 	}

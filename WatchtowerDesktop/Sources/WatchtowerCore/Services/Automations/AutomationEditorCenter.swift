@@ -381,6 +381,8 @@ extension AutomationDetail {
         changedBy = ""
         changedAt = nil
         autoTools = []
+        llmAutoWrites = []
+        feedsSourcesToLLM = false
     }
 
     package var isNewRecipe: Bool { id == AutomationEditorCenter.newRecipeID }

@@ -458,7 +458,7 @@ func TestIdeasMine_Incremental_ReportsDropCounters(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "Test"}))
 
 	require.NoError(t, database.UpsertMessage(db.Message{
-		ChannelID: "C1", TS: "1785746329.642879", UserID: "U1", Text: "we should try X", RawJSON: "{}",
+		ChannelID: "C1", TS: "1785746329.642879", UserID: "U1", Text: "we should try X",
 	}))
 	ideasJSON, err := json.Marshal([]digest.IdeaCandidate{
 		{Text: "real idea", By: "Ann", MessageTS: "1785746329.642879"},

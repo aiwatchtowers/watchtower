@@ -254,6 +254,76 @@ type WorkbenchMethodology struct {
 	FinishCheck string // on | off
 }
 
+// WorkbenchChecksCarried is when each check was carried over from the folder
+// file by the board #558 upgrade (migration 00133); "" = the owner's own
+// pick, or never carried.
+type WorkbenchChecksCarried struct {
+	AskGuard    string
+	FinishCheck string
+}
+
+// GetWorkbenchChecksCarried returns workbench id's carry-over moments.
+func (db *DB) GetWorkbenchChecksCarried(id int64) (WorkbenchChecksCarried, error) {
+	var guard, finish sql.NullString
+	err := db.QueryRow(`SELECT ask_guard_carried_at, finish_check_carried_at FROM projects WHERE id = ?`, id).Scan(&guard, &finish)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkbenchChecksCarried{}, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)
+	}
+	if err != nil {
+		return WorkbenchChecksCarried{}, fmt.Errorf("reading workbench %d carried checks: %w", id, err)
+	}
+	return WorkbenchChecksCarried{AskGuard: guard.String, FinishCheck: finish.String}, nil
+}
+
+// WorkbenchCarryPending is a workbench still marked carry-pending by migration 00133.
+type WorkbenchCarryPending struct {
+	ID         int64
+	FolderPath string
+}
+
+// ListWorkbenchesCarryPending returns the workbenches that existed at the
+// 00133 upgrade and have not been through the carry-over yet.
+func (db *DB) ListWorkbenchesCarryPending() ([]WorkbenchCarryPending, error) {
+	rows, err := db.Query(`SELECT id, folder_path FROM projects WHERE methodology_carry_pending = 1 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing carry-pending workbenches: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkbenchCarryPending
+	for rows.Next() {
+		var w WorkbenchCarryPending
+		if err := rows.Scan(&w.ID, &w.FolderPath); err != nil {
+			return nil, fmt.Errorf("scanning carry-pending workbench: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// CarryWorkflowChecks is the one-time board #558 carry-over of workbench id,
+// in one statement: only while it is carry-pending, askGuard / finishCheck
+// ("" = the file asks for nothing weaker) become the owner's setting where
+// that setting is unset at write time — a value the owner set meanwhile is
+// never overwritten — with now as the carry moment, and the mark is cleared
+// either way. It reports whether a pending row was processed.
+func (db *DB) CarryWorkflowChecks(id int64, askGuard, finishCheck, now string) (bool, error) {
+	res, err := db.Exec(`UPDATE projects SET
+		ask_guard_mode = CASE WHEN ask_guard_mode IS NULL AND ?1 <> '' THEN ?1 ELSE ask_guard_mode END,
+		ask_guard_carried_at = CASE WHEN ask_guard_mode IS NULL AND ?1 <> '' THEN ?3 ELSE ask_guard_carried_at END,
+		finish_check = CASE WHEN finish_check IS NULL AND ?2 <> '' THEN ?2 ELSE finish_check END,
+		finish_check_carried_at = CASE WHEN finish_check IS NULL AND ?2 <> '' THEN ?3 ELSE finish_check_carried_at END,
+		methodology_carry_pending = 0
+		WHERE id = ?4 AND methodology_carry_pending = 1`, askGuard, finishCheck, now, id)
+	if err != nil {
+		return false, fmt.Errorf("carrying workbench %d checks over: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("carrying workbench %d checks over: %w", id, err)
+	}
+	return n == 1, nil
+}
+
 // GetWorkbenchMethodology returns workbench id's overrides, or
 // ErrWorkbenchNotFound.
 func (db *DB) GetWorkbenchMethodology(id int64) (WorkbenchMethodology, error) {
@@ -271,10 +341,14 @@ func (db *DB) GetWorkbenchMethodology(id int64) (WorkbenchMethodology, error) {
 
 // SetWorkbenchMethodology writes all three overrides of workbench id ("" stores
 // NULL). The only production writer is `watchtower workbench methodology`,
-// which the Desktop runs; the column CHECKs are the value rules.
+// which the Desktop runs; the column CHECKs are the value rules. A check whose
+// value changes loses its carry-over moment (00133): it is now the owner's pick.
 func (db *DB) SetWorkbenchMethodology(id int64, m WorkbenchMethodology) error {
-	res, err := db.Exec(`UPDATE projects SET methodology_preset = ?, ask_guard_mode = ?, finish_check = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
+	res, err := db.Exec(`UPDATE projects SET methodology_preset = ?1,
+		ask_guard_carried_at = CASE WHEN ask_guard_mode IS ?2 THEN ask_guard_carried_at ELSE NULL END,
+		finish_check_carried_at = CASE WHEN finish_check IS ?3 THEN finish_check_carried_at ELSE NULL END,
+		ask_guard_mode = ?2, finish_check = ?3,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?4`,
 		methodologyValue(m.Preset), methodologyValue(m.AskGuard), methodologyValue(m.FinishCheck), id)
 	if err != nil {
 		return fmt.Errorf("setting workbench %d methodology: %w", id, err)

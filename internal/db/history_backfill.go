@@ -21,6 +21,7 @@ type HistoryBackfill struct {
 	StartedAt     time.Time
 	UpdatedAt     time.Time
 	DoneAt        *time.Time
+	HeldSince     *time.Time // when transient failures began holding the row; nil = not held (#580)
 }
 
 // StartHistoryBackfill creates the source's row; a second call is a no-op so
@@ -45,7 +46,7 @@ func (db *DB) StartHistoryBackfill(kind string, accountID int64, floorTS, upperT
 // ListHistoryBackfills returns every row, by id.
 func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 	rows, err := db.Query(`SELECT id, source_kind, account_id, floor_ts, upper_ts, reached_ts,
-		status, waiting, chunk_failures, last_error, started_at, updated_at, done_at
+		status, waiting, chunk_failures, last_error, started_at, updated_at, done_at, held_since
 		FROM history_backfill ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("history backfill: list: %w", err)
@@ -55,9 +56,9 @@ func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 	for rows.Next() {
 		var b HistoryBackfill
 		var started, updated string
-		var done sql.NullString
+		var done, held sql.NullString
 		if err := rows.Scan(&b.ID, &b.SourceKind, &b.AccountID, &b.FloorTS, &b.UpperTS, &b.ReachedTS,
-			&b.Status, &b.Waiting, &b.ChunkFailures, &b.LastError, &started, &updated, &done); err != nil {
+			&b.Status, &b.Waiting, &b.ChunkFailures, &b.LastError, &started, &updated, &done, &held); err != nil {
 			return nil, fmt.Errorf("history backfill: scan: %w", err)
 		}
 		if b.StartedAt, err = parsePlanTime(started); err != nil {
@@ -73,6 +74,13 @@ func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 			}
 			b.DoneAt = &t
 		}
+		if held.Valid && held.String != "" {
+			t, err := parsePlanTime(held.String)
+			if err != nil {
+				return nil, fmt.Errorf("history backfill: held_since: %w", err)
+			}
+			b.HeldSince = &t
+		}
 		out = append(out, b)
 	}
 	if err := rows.Err(); err != nil {
@@ -82,7 +90,8 @@ func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 }
 
 // AdvanceHistoryBackfill moves reached_ts, clears failures, error and the
-// waiting flag, and marks the row done once reached_ts is at or below the floor.
+// waiting flag (held_since stays: the runner clears it on a successful Process,
+// #580), and marks the row done once reached_ts is at or below the floor.
 func (db *DB) AdvanceHistoryBackfill(id int64, reachedTS float64, now time.Time) error {
 	ts := planTime(now)
 	_, err := db.Exec(`UPDATE history_backfill SET
@@ -137,11 +146,43 @@ func (db *DB) SetHistoryBackfillLastError(id int64, msg string, now time.Time) e
 	return nil
 }
 
+// HoldHistoryBackfill marks the row held by a transient failure since now,
+// with msg as last_error (replacing an older strike's reason).
+func (db *DB) HoldHistoryBackfill(id int64, msg string, now time.Time) error {
+	ts := planTime(now)
+	if _, err := db.Exec(`UPDATE history_backfill SET held_since = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+		ts, msg, ts, id); err != nil {
+		return fmt.Errorf("history backfill: hold: %w", err)
+	}
+	return nil
+}
+
+// ReleaseHistoryBackfillHold clears held_since; last_error is left as is.
+func (db *DB) ReleaseHistoryBackfillHold(id int64, now time.Time) error {
+	if _, err := db.Exec(`UPDATE history_backfill SET held_since = NULL, updated_at = ? WHERE id = ?`,
+		planTime(now), id); err != nil {
+		return fmt.Errorf("history backfill: release hold: %w", err)
+	}
+	return nil
+}
+
 // HasActiveHistoryBackfill reports whether any row is running or paused.
 func (db *DB) HasActiveHistoryBackfill() (bool, error) {
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM history_backfill WHERE status IN ('running','paused')`).Scan(&n); err != nil {
 		return false, fmt.Errorf("history backfill: active: %w", err)
+	}
+	return n > 0, nil
+}
+
+// HasRunningHistoryBackfillSince reports whether a row is running (a held row
+// included: a hold leaves its status running) and started after since. It is
+// memory's gate (#578): paused, done and off rows never hold memory back.
+func (db *DB) HasRunningHistoryBackfillSince(since time.Time) (bool, error) {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM history_backfill WHERE status = 'running' AND started_at > ?`,
+		planTime(since)).Scan(&n); err != nil {
+		return false, fmt.Errorf("history backfill: running: %w", err)
 	}
 	return n > 0, nil
 }
