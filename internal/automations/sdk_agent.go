@@ -195,7 +195,7 @@ func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if env.DryRun && env.Run != nil && env.Run.ID == 0 {
+	if env.InMemoryDraft() {
 		// A draft's in-memory dry run has no run row for the child's
 		// server to bind to: spawn nothing, spend nothing.
 		return dryRunResult(step, map[string]any{"note": agentDraftNote}), nil

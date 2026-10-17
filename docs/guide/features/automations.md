@@ -40,7 +40,7 @@ The Save sheet then lists each tool with a "Keep auto for ..." box, unchecked. T
 
 1. Open **Automations** in the sidebar and click **+ New**.
 2. Pick **Describe in words** and tell the assistant what you want, or **Template** (see [Recipes and templates](automations-recipes.md)). **Form** is the manual route.
-3. Check the **Draft** panel: when it runs, **Each run may spend**, what it asks to do. **Dry run** shows what it would do and writes nothing.
+3. Check the **Draft** panel: when it runs, **Each run may spend**, what it asks to do. **Dry run** shows what it would do and writes nothing. A draft does not call Quick Connections or start agents: it stops at the first Quick Connection call and says so. Save it and use **Dry run** on its card to see the rest.
 4. Save. The confirmation sheet lists what the recipe may do and the script; **Confirm** approves it; a disabled recipe also offers **Confirm and enable**.
 
 ### Run one now

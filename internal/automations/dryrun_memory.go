@@ -17,6 +17,18 @@ type DryRunOptions struct {
 	Modules func(Backends) []Module
 }
 
+// DryRunStopped is DryRunReport.Status when a draft stopped at a call a
+// draft never makes (mcp(), ask #326); Error says why. Not a failure: the
+// steps before it ran as usual.
+const DryRunStopped = "stopped"
+
+// InMemoryDraft reports whether e is DryRunInMemory's run (draft_automation:
+// a chat-written, unconfirmed script with the synthetic run ID 0), where
+// agent() and mcp() call nothing.
+func (e *Env) InMemoryDraft() bool {
+	return e.DryRun && e.Run != nil && e.Run.ID == 0
+}
+
 // DryRunReport is what a dry run in memory did.
 type DryRunReport struct {
 	Steps                     []db.AutomationRunStep
@@ -24,7 +36,8 @@ type DryRunReport struct {
 	InputTokens, OutputTokens int64
 	Estimated                 bool
 	// Status is the terminal status the run would have had (succeeded,
-	// failed, budget_exceeded, timed_out, cancelled); Error its message.
+	// failed, budget_exceeded, timed_out, cancelled), or DryRunStopped;
+	// Error its message.
 	Status, Error string
 }
 
@@ -68,7 +81,11 @@ func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptio
 		InputTokens: totals.InputTokens, OutputTokens: totals.OutputTokens, Estimated: totals.Estimated,
 		Status: db.RunSucceeded,
 	}
-	if runErr != nil {
+	var ri *RunInterrupted
+	switch {
+	case errors.As(runErr, &ri) && ri.Reason == InterruptDraftStop:
+		rep.Status, rep.Error = DryRunStopped, MCPDraftStop
+	case runErr != nil:
 		end := classifyRunError(runErr)
 		rep.Status, rep.Error = end.status, end.msg
 	}
