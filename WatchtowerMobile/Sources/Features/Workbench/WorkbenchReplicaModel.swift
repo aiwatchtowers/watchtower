@@ -15,6 +15,9 @@ struct WorkbenchReplicaSnapshot: Equatable {
     var sessions: [TerminalSessionState] = []
     var asks: [OwnerAsk] = []
     var comments: [WorkbenchComment] = []
+    /// The Claude Code permission prompts live board sessions wait on
+    /// (#517); the hub publishes only pending ones.
+    var permissionRequests: [PermissionRequest] = []
     var heartbeat: HeartbeatPayload?
     /// The hub's `device_grant` records (spec §4.13); `grant(for:)` picks
     /// this phone's. An undecodable one is left out.
@@ -29,7 +32,7 @@ struct WorkbenchReplicaSnapshot: Equatable {
     /// The slice kinds this snapshot decodes.
     static let kinds: [SliceKind] = [
         Workbench.sliceKind, WorkbenchTarget.sliceKind, TerminalSessionState.sliceKind,
-        OwnerAsk.sliceKind, WorkbenchComment.sliceKind, .heartbeat, .deviceGrant
+        OwnerAsk.sliceKind, WorkbenchComment.sliceKind, PermissionRequest.sliceKind, .heartbeat, .deviceGrant
     ]
 
     /// Reads from an ALREADY-OPEN database, so it runs inside a
@@ -43,6 +46,9 @@ struct WorkbenchReplicaSnapshot: Equatable {
         snapshot.sessions = try snapshot.decodeAll(TerminalSessionState.self, store: store, from: db, cache: cache, versions: versions)
         snapshot.asks = try snapshot.decodeAll(OwnerAsk.self, store: store, from: db, cache: cache, versions: versions)
         snapshot.comments = try snapshot.decodeAll(WorkbenchComment.self, store: store, from: db, cache: cache, versions: versions)
+        snapshot.permissionRequests = try snapshot.decodeAll(
+            PermissionRequest.self, store: store, from: db, cache: cache, versions: versions
+        )
         snapshot.heartbeat = try cache.value(HeartbeatPayload.recordName, version: versions[.heartbeat] ?? 0) {
             try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
         }
@@ -118,6 +124,27 @@ struct WorkbenchReplicaSnapshot: Equatable {
             .sorted(by: Self.newestFirst)
     }
 
+    /// The pending permission requests, newest first (the hub closes a
+    /// session's older one when the next opens: one per session).
+    var pendingPermissions: [PermissionRequest] {
+        permissionRequests.sorted { Self.olderRequest($1, $0) }
+    }
+
+    /// The prompt `sessionID` waits on; nil without one.
+    func pendingPermission(for sessionID: Int64) -> PermissionRequest? {
+        permissionRequests.filter { $0.sessionID == sessionID }.max(by: Self.olderRequest)
+    }
+
+    /// The Workbench tab's badge: open asks plus pending permission
+    /// requests.
+    var openAskCount: Int {
+        openAsks().count + pendingPermissions.count
+    }
+
+    private static func olderRequest(_ lhs: PermissionRequest, _ rhs: PermissionRequest) -> Bool {
+        lhs.createdAt != rhs.createdAt ? lhs.createdAt < rhs.createdAt : lhs.id < rhs.id
+    }
+
     static func newestFirst(_ lhs: OwnerAsk, _ rhs: OwnerAsk) -> Bool {
         lhs.createdAt != rhs.createdAt ? lhs.createdAt > rhs.createdAt : lhs.id > rhs.id
     }
@@ -129,7 +156,8 @@ struct WorkbenchReplicaSnapshot: Equatable {
 @Observable
 final class WorkbenchReplicaModel {
     private(set) var snapshot = WorkbenchReplicaSnapshot()
-    /// The open asks across all workbenches: the Workbench tab's badge.
+    /// The open asks and pending permission requests across all
+    /// workbenches: the Workbench tab's badge.
     /// Its own property, so the tab bar re-renders only when it changes.
     private(set) var openAskCount = 0
     /// The decoded kinds between reads (and the tests' decode counter).
@@ -171,9 +199,9 @@ final class WorkbenchReplicaModel {
             }
         }
         snapshot = value
-        let openAsks = value.openAsks().count
-        if openAsks != openAskCount {
-            openAskCount = openAsks
+        let waiting = value.openAskCount
+        if waiting != openAskCount {
+            openAskCount = waiting
         }
     }
 }

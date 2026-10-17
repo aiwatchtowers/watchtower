@@ -19,11 +19,13 @@ enum SessionInputDelivery: String, Equatable {
 /// The phone's lines to a session (spec §5.2, §6.6, PROJ-16): "Tell the
 /// session…" (`session_input`), Finish (`session_finish_request`) and a
 /// held line's Cancel (`session_input_cancel`), through the outbox. Owned by
-/// `AppEnvironment`, so a line's way survives leaving the session.
+/// `AppEnvironment`, so a line's way survives leaving the session. Also a
+/// permission prompt's answer (`permission_answer`) and Interrupt
+/// (`session_interrupt`, #517): neither types anything the phone wrote.
 ///
-/// One send per session at a time (`SendGuard`); nothing retries on its
-/// own. An `applied` echo removes its overlay row, so the outbox's applied
-/// observer brings its delivery (`receiveApplied(_:)`).
+/// One send per session and kind at a time (`SendGuard`); nothing retries
+/// on its own. An `applied` echo removes its overlay row, so the outbox's
+/// applied observer brings its delivery (`receiveApplied(_:)`).
 @MainActor
 @Observable
 final class SessionInputSender {
@@ -31,6 +33,9 @@ final class SessionInputSender {
 
     /// Session id → where its last applied line went this run.
     private(set) var delivered: [Int64: SessionInputDelivery] = [:]
+    /// Session id → the permission request whose answer the Mac applied
+    /// this run.
+    private(set) var answered: [Int64: Int64] = [:]
     var inFlight: Set<String> { sendGuard.inFlight }
 
     @ObservationIgnored private let sendGuard = SendGuard()
@@ -56,6 +61,14 @@ final class SessionInputSender {
         BoardWriter.key(.sessionInput, SessionStarter.sessionRecordName(sessionID))
     }
 
+    nonisolated static func answerKey(_ sessionID: Int64) -> String {
+        BoardWriter.key(.permissionAnswer, SessionStarter.sessionRecordName(sessionID))
+    }
+
+    nonisolated static func interruptKey(_ sessionID: Int64) -> String {
+        BoardWriter.key(.sessionInterrupt, SessionStarter.sessionRecordName(sessionID))
+    }
+
     /// Sends `text` to the session, normalized as the Mac does
     /// (`SessionInputText`); false for blank text, text over the Mac's
     /// limit, or while another line to it is on its way.
@@ -72,6 +85,29 @@ final class SessionInputSender {
         try await run(.sessionFinishRequest, sessionID: sessionID, params: try SessionFinishRequestParams().wireParams())
     }
 
+    /// Allow once or Deny on the session's prompt `requestID`; nothing
+    /// (false) while an answer to the session is on its way.
+    @discardableResult
+    func answer(sessionID: Int64, requestID: Int64, behavior: PermissionAnswerParams.Behavior) async throws -> Bool {
+        let params = try PermissionAnswerParams(requestID: requestID, behavior: behavior).wireParams()
+        let entity = SessionStarter.sessionRecordName(sessionID)
+        return try await sendGuard.run(Self.answerKey(sessionID)) {
+            // Inside the guard: a refused duplicate keeps the last success.
+            answered[sessionID] = nil
+            _ = try await enqueue(.permissionAnswer, entity, params)
+        }
+    }
+
+    /// Interrupt: the Mac sends one Esc while the session works.
+    @discardableResult
+    func interrupt(sessionID: Int64) async throws -> Bool {
+        let params = try SessionInterruptParams().wireParams()
+        let entity = SessionStarter.sessionRecordName(sessionID)
+        return try await sendGuard.run(Self.interruptKey(sessionID)) {
+            _ = try await enqueue(.sessionInterrupt, entity, params)
+        }
+    }
+
     /// Cancel on a held line: the Mac drops it if it was not typed yet.
     func cancel(_ row: PendingAction) async throws {
         let params = try SessionInputCancelParams().wireParams()
@@ -85,9 +121,15 @@ final class SessionInputSender {
         try remove(row.id)
     }
 
-    /// An `applied` echo of a line: keeps where it went. Other kinds are
-    /// not ours.
+    /// An `applied` echo of a line: keeps where it went; of an answer: its
+    /// request. Other kinds are not ours.
     func receiveApplied(_ action: ActionRequestPayload) {
+        if action.kind == .permissionAnswer,
+           let sessionID = action.entityID.flatMap(Int64.init),
+           case let .integer(requestID)? = action.params["request_id"] {
+            answered[sessionID] = requestID
+            return
+        }
         guard action.kind == .sessionInput || action.kind == .sessionFinishRequest,
               let sessionID = action.entityID.flatMap(Int64.init) else { return }
         if case let .string(value)? = action.result?["delivery"], let delivery = SessionInputDelivery(rawValue: value) {
@@ -110,10 +152,12 @@ final class SessionInputSender {
 /// session…" bar and Finish show only on a phone whose typing the Mac
 /// allowed and whose own toggle is on, for a live session. A session at a
 /// permission prompt takes nothing from the phone: "Needs approval on the
-/// Mac", no send. Each line on its way shows how far the Mac got, a held
+/// Mac" (or "Answer the request above" when the screen's permission card
+/// takes this phone's answer, #517), no send. Each line on its way shows how far the Mac got, a held
 /// one why (with Cancel), a refused one the Mac's message (with Dismiss).
 struct SessionInputModel: Equatable {
     static let needsApproval = "Needs approval on the Mac"
+    static let answerAbove = "Answer the request above"
     static let footnote = "Delivered when the agent is idle"
 
     /// Why a live session takes no line from this phone (board #515): the
@@ -168,13 +212,14 @@ struct SessionInputModel: Equatable {
         grant: DeviceGrant?,
         typingRequested: Bool,
         delivered: SessionInputDelivery?,
-        now: Date
+        now: Date,
+        answersPermission: Bool = false
     ) {
         let allowed = typingRequested && grant?.typingAllowed == true
         showsBar = allowed && session.live
         showsFinish = showsBar
         typingHint = !session.live || allowed ? nil : (typingRequested ? .waitingForMac : .turnOn)
-        approvalText = session.stateKind == .needsApproval ? Self.needsApproval : nil
+        approvalText = session.stateKind == .needsApproval ? (answersPermission ? Self.answerAbove : Self.needsApproval) : nil
         notice = delivered?.text
         let entity = SessionStarter.sessionRecordName(session.id)
         let online = MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline

@@ -1,23 +1,46 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Shared chrome for every pill in the bottom-trailing indicator stack. A free
+/// Shared chrome for every pill in the corner indicator stack. A free
 /// function rather than a method, so `RecordingJobPill` renders the same capsule
-/// without going through `RecordingIndicatorView`.
+/// without going through `RecordingIndicatorView`. `moveGesture` sits on the
+/// capsule's background only: a press that starts on anything drawn over it —
+/// Stop, the chevron, Retry — never reaches it, so a button can never lose
+/// its click to a drag.
 @ViewBuilder
-private func indicatorCapsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+private func indicatorCapsule<Content: View>(
+    moveGesture: AnyGesture<Void>? = nil,
+    @ViewBuilder _ content: () -> Content
+) -> some View {
     HStack(spacing: 10) { content() }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(.regularMaterial, in: Capsule())
+        .background {
+            Capsule().fill(.regularMaterial)
+                .contentShape(Capsule())
+                .movesIndicator(moveGesture)
+        }
         .overlay(Capsule().strokeBorder(.separator))
         .shadow(radius: 8, y: 2)
 }
 
-/// Global bottom-trailing overlay reflecting `MeetingRecorderCenter` state, so an
-/// in-flight recording / transcription / summarization is visible from every
-/// screen and survives navigation. Hidden only when nothing is capturing, the
-/// queue is empty, and nothing is waiting for the user.
+private extension View {
+    @ViewBuilder
+    func movesIndicator(_ gesture: AnyGesture<Void>?) -> some View {
+        if let gesture { self.gesture(gesture) } else { self }
+    }
+}
+
+/// Global overlay reflecting `MeetingRecorderCenter` state, so an in-flight
+/// recording / transcription / summarization is visible from every screen and
+/// survives navigation. Hidden only when nothing is capturing, the queue is
+/// empty, and nothing is waiting for the user.
+///
+/// It sits in one of the window's corners (`RecordingIndicatorCorner`, kept
+/// across launches): dragging a pill by its capsule background moves the
+/// stack, and on release it snaps to the corner nearest the pointer. Only
+/// the backgrounds carry the drag, so every button keeps its clicks; the
+/// expanded live panel carries none (a drag there selects transcript text).
 ///
 /// Capture and post-processing are decoupled in the Center, so the stack renders
 /// `captureState` and the `jobs` queue side by side (a recording capsule plus one
@@ -28,18 +51,29 @@ struct RecordingIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
-    /// Receives the bottom space composers must keep free while pills show
-    /// (`RecordingIndicatorInset.reservedHeight`), 0 once the stack is empty.
-    var onReservedInsetChange: (CGFloat) -> Void = { _ in }
+    @AppStorage(RecordingIndicatorCorner.storageKey) private var corner = RecordingIndicatorCorner.default
+    /// The window's content size, which the release point is snapped in.
+    var windowSize: CGSize = .zero
+    /// Receives the space the window must keep free on the corner's edge
+    /// while pills show (`RecordingIndicatorInset.reservedHeight`) and the
+    /// stack's full extent, both 0 once the stack is empty.
+    var onLayoutChange: (RecordingIndicatorLayout) -> Void = { _ in }
+    /// The stack's offset while it is being dragged. A gesture state, so it
+    /// returns to zero however the drag ends — released, or cancelled when
+    /// the pill under the pointer goes away.
+    @GestureState(resetTransaction: Transaction(animation: .snappy)) private var dragOffset = CGSize.zero
     @State private var stackHeight: CGFloat = 0
-    /// Height of the model-download capsule drawn below the recorder pills,
-    /// read only while one shows.
+    /// Height of the model-download capsules drawn between the recorder
+    /// pills and the window's edge, read only while one shows.
     @State private var provisionerHeight: CGFloat = 0
 
-    private var reservedInset: CGFloat {
+    private var layout: RecordingIndicatorLayout {
         let provisionerShown = !appState.transcriptionModelProvisioner.downloads.isEmpty
-        return RecordingIndicatorInset.reservedHeight(stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
-                                                      belowPanelHeight: provisionerShown ? provisionerHeight : 0)
+        let reserved = RecordingIndicatorInset.reservedHeight(
+            stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
+            belowPanelHeight: provisionerShown ? provisionerHeight : 0)
+        return RecordingIndicatorLayout(reservedInset: reserved,
+                                        occupiedHeight: RecordingIndicatorInset.occupiedHeight(stackHeight: stackHeight))
     }
 
     /// The same condition `recordingView` renders the expanded panel under.
@@ -64,24 +98,51 @@ struct RecordingIndicatorView: View {
     var body: some View {
         let center = appState.meetingRecorderCenter
         let provisioner = appState.transcriptionModelProvisioner
-        VStack(alignment: .trailing, spacing: RecordingIndicatorInset.stackSpacing) {
-            recorderContent(center)
-            provisionerContent(provisioner)
+        // Top to bottom in the corner's order (`RecordingIndicatorCorner.stackParts`).
+        VStack(alignment: corner.horizontalAlignment, spacing: RecordingIndicatorInset.stackSpacing) {
+            ForEach(corner.stackParts, id: \.self) { part in
+                switch part {
+                case .interrupted: interruptedContent(center)
+                case .jobs: jobQueue(center)
+                case .recording: recordingContent(center)
+                case .downloads: provisionerContent(provisioner)
+                }
+            }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stackHeight = $0 }
-        .onChange(of: reservedInset, initial: true) { _, inset in onReservedInsetChange(inset) }
+        .onChange(of: layout, initial: true) { _, layout in onLayoutChange(layout) }
+        .offset(dragOffset)
         .padding(RecordingIndicatorInset.outerPadding)
     }
 
+    /// Moves the stack with the pointer and, on release, snaps it to the
+    /// corner nearest the pointer. Carried by the pills' capsule backgrounds
+    /// (`indicatorCapsule`); the minimum distance leaves a click on one a
+    /// click.
+    private var moveGesture: AnyGesture<Void> {
+        AnyGesture(
+            DragGesture(minimumDistance: 6, coordinateSpace: .named(RecordingIndicatorCorner.coordinateSpace))
+                .updating($dragOffset) { value, offset, _ in offset = value.translation }
+                .onEnded { value in
+                    withAnimation(.snappy) { corner = corner.snapped(releasedAt: value.location, in: windowSize) }
+                }
+                .map { _ in () }
+        )
+    }
+
+    /// A capture that failed, then the recordings recovered after a crash.
     @ViewBuilder
-    private func recorderContent(_ center: MeetingRecorderCenter) -> some View {
+    private func interruptedContent(_ center: MeetingRecorderCenter) -> some View {
         if let message = center.captureError {
             captureFailedCapsule(center, message: message)
         }
         if !center.recoverable.isEmpty {
             recoveredPill(center)
         }
-        jobQueue(center)
+    }
+
+    @ViewBuilder
+    private func recordingContent(_ center: MeetingRecorderCenter) -> some View {
         if case let .recording(startedAt) = center.captureState {
             recordingView(center, startedAt: startedAt)
         }
@@ -103,7 +164,8 @@ struct RecordingIndicatorView: View {
                 canRetry: job.id == retriable,
                 canDismiss: job.id == dismissable,
                 retry: { retry(center) },
-                dismiss: { center.dismissFailure() })
+                dismiss: { center.dismissFailure() },
+                moveGesture: moveGesture)
         }
         if split.overflow > 0 {
             Text("+\(split.overflow) more").font(.caption).foregroundStyle(.secondary)
@@ -115,12 +177,13 @@ struct RecordingIndicatorView: View {
     @ViewBuilder
     private func provisionerContent(_ provisioner: TranscriptionModelProvisioner) -> some View {
         if !provisioner.downloads.isEmpty {
-            VStack(alignment: .trailing, spacing: RecordingIndicatorInset.stackSpacing) {
+            VStack(alignment: corner.horizontalAlignment, spacing: RecordingIndicatorInset.stackSpacing) {
                 ForEach(provisioner.downloads) { download in
                     ModelDownloadPill(
                         download: download,
                         retry: { provisioner.retry(download.key) },
-                        dismiss: { provisioner.dismiss(download.key) })
+                        dismiss: { provisioner.dismiss(download.key) },
+                        moveGesture: moveGesture)
                 }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
@@ -162,7 +225,7 @@ struct RecordingIndicatorView: View {
     }
 
     private func recordingCapsule(_ center: MeetingRecorderCenter, startedAt: Date) -> some View {
-        indicatorCapsule {
+        indicatorCapsule(moveGesture: moveGesture) {
             Circle().fill(.red).frame(width: 10, height: 10)
             captureLevelIndicators(center)
             TimelineView(.periodic(from: startedAt, by: 1)) { context in
@@ -171,7 +234,8 @@ struct RecordingIndicatorView: View {
             }
             if showsLiveAffordance(center) {
                 liveEngineIndicator(center.liveEngineState)
-                Button { expanded = true } label: { Image(systemName: "chevron.up") }
+                // The panel opens toward the window's interior.
+                Button { expanded = true } label: { Image(systemName: corner.expandChevron) }
                     .buttonStyle(.plain)
                     .controlSize(.small)
                     .help("Show live transcript")
@@ -181,9 +245,8 @@ struct RecordingIndicatorView: View {
             } label: {
                 Label("Stop", systemImage: "stop.fill")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.destructivePrimary)
             .controlSize(.small)
-            .tint(.red)
         }
         // Ideal width, never compressed: a squeezed capsule blanked the Stop
         // label and pushed the button out past the capsule's (and the
@@ -214,10 +277,10 @@ struct RecordingIndicatorView: View {
                     Text(Self.elapsed(from: startedAt, to: context.date)).font(.callout.monospacedDigit())
                 }
                 Spacer()
-                Button { expanded = false } label: { Image(systemName: "chevron.down") }
+                Button { expanded = false } label: { Image(systemName: corner.collapseChevron) }
                     .buttonStyle(.plain).controlSize(.small)
                 Button { stop(center) } label: { Label("Stop", systemImage: "stop.fill") }
-                    .buttonStyle(.borderedProminent).controlSize(.small).tint(.red)
+                    .buttonStyle(.destructivePrimary).controlSize(.small)
             }
             Divider()
             liveTranscriptBody(center)
@@ -282,7 +345,7 @@ struct RecordingIndicatorView: View {
     /// A capture that failed before any audio existed. No file, so no job and
     /// nothing to retry — the only action is dismissing the message.
     private func captureFailedCapsule(_ center: MeetingRecorderCenter, message: String) -> some View {
-        indicatorCapsule {
+        indicatorCapsule(moveGesture: moveGesture) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
@@ -300,7 +363,7 @@ struct RecordingIndicatorView: View {
     }
 
     private func recoveredPill(_ center: MeetingRecorderCenter) -> some View {
-        indicatorCapsule {
+        indicatorCapsule(moveGesture: moveGesture) {
             Image(systemName: "waveform.badge.exclamationmark")
                 .foregroundStyle(.blue)
             Text(Self.recoveredLabel(count: center.recoverable.count)).font(.callout)
@@ -398,9 +461,11 @@ struct RecordingJobPill: View {
     let canDismiss: Bool
     let retry: () -> Void
     let dismiss: () -> Void
+    /// Moves the stack when dragged by the pill's background.
+    var moveGesture: AnyGesture<Void>?
 
     var body: some View {
-        indicatorCapsule {
+        indicatorCapsule(moveGesture: moveGesture) {
             switch phase {
             case let .failed(message):
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -452,9 +517,11 @@ struct ModelDownloadPill: View {
     let download: TranscriptionModelProvisioner.Download
     let retry: () -> Void
     let dismiss: () -> Void
+    /// Moves the stack when dragged by the pill's background.
+    var moveGesture: AnyGesture<Void>?
 
     var body: some View {
-        indicatorCapsule {
+        indicatorCapsule(moveGesture: moveGesture) {
             switch download.state {
             case let .downloading(progress):
                 ProgressView(value: progress).controlSize(.small).frame(width: 80)

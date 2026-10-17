@@ -241,12 +241,13 @@ final class MobileLinkCenterTests: XCTestCase {
         name: String = "iPhone",
         unlinked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         typingRequested: Bool = false,
-        startSessions: Bool = true
+        startSessions: Bool = true,
+        permissionsRequested: Bool = false
     ) -> DevicePayload {
         DevicePayload(
             deviceID: deviceID, name: name, model: "iPhone18,1", appVersion: "0.0.0-test", scope: scope,
             userRecordName: user, linkNonce: nonce, unlinked: unlinked, typingRequested: typingRequested,
-            startSessions: startSessions, updatedAt: clock.now
+            startSessions: startSessions, permissionsRequested: permissionsRequested, updatedAt: clock.now
         )
     }
 
@@ -260,11 +261,12 @@ final class MobileLinkCenterTests: XCTestCase {
         name: String = "iPhone",
         unlinked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         typingRequested: Bool = false,
-        startSessions: Bool = true
+        startSessions: Bool = true,
+        permissionsRequested: Bool = false
     ) throws -> CloudRecord {
         let payload = devicePayload(
             deviceID, nonce: nonce, scope: scope, user: user, name: name, unlinked: unlinked,
-            typingRequested: typingRequested, startSessions: startSessions)
+            typingRequested: typingRequested, startSessions: startSessions, permissionsRequested: permissionsRequested)
         let record = try CloudRecordFactory.record(for: payload, modifiedAt: clock.now)
         return CloudRecord(
             recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,

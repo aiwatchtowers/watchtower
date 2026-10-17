@@ -205,4 +205,32 @@ struct WhisperPromptFallbackTests {
         }
         #expect(decoder.calls == [[1]])
     }
+
+    // MARK: - Drop counts (board #564)
+
+    @Test("The drops of both passes are added up when the prompted pass is retried")
+    func dropsOfEveryPassAreSummed() async throws {
+        let decoder = Decoder()
+        let clean = speech("clean")
+        let decode: ([Int]?) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) = { tokens in
+            _ = try await decoder.decode(tokens)
+            return tokens == nil
+                ? (clean, WindowDropCounts(confidence: 0, phrase: 2, droppedChars: 7))
+                : ([], WindowDropCounts(confidence: 1, phrase: 0, droppedChars: 3))
+        }
+        let out = try await decodeWithPromptFallback(promptTokens: [5], countingDrops: decode)
+        #expect(decoder.calls == [[5], nil])
+        #expect(out.segments == speech("clean"))
+        #expect(out.drops == WindowDropCounts(confidence: 1, phrase: 2, droppedChars: 10))
+    }
+
+    @Test("A single pass reports its own drops")
+    func singlePassDrops() async throws {
+        let segments = speech("x")
+        let decode: ([Int]?) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) = { _ in
+            (segments, WindowDropCounts(confidence: 2, phrase: 0, droppedChars: 4))
+        }
+        let out = try await decodeWithPromptFallback(promptTokens: nil, countingDrops: decode)
+        #expect(out.drops == WindowDropCounts(confidence: 2, phrase: 0, droppedChars: 4))
+    }
 }

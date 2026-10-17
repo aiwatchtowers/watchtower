@@ -310,9 +310,6 @@ struct WatchtowerApp: App {
     /// never mounts one), and a singleton is what makes "the SwiftUI-managed
     /// state" and "the state the delegate initialized" provably identical.
     @State private var appState = AppState.shared
-    /// Bottom space the recorder pills need, handed to every composer so the
-    /// pills never cover what the owner is typing.
-    @State private var recordingIndicatorInset: CGFloat = 0
     /// Settings → Claude plan toggle for the menu bar text; absent = on.
     @AppStorage(PlanUsageCenter.menuBarKey) private var showPlanUsageInMenuBar = true
     /// Read here — not inside `TrayMenuView`, which has its own copy for the
@@ -371,20 +368,10 @@ struct WatchtowerApp: App {
     }
 
     private var rootContent: some View {
-        NavigationRoot()
-            .environment(\.recordingIndicatorInset, recordingIndicatorInset)
+        // The recorder pills, the extract pill and the meeting banner over
+        // every screen, with a band kept free for the pills (#397).
+        RecordingIndicatorHost { NavigationRoot() }
             .frame(minWidth: 800, minHeight: 600)
-            .overlay(alignment: .bottomTrailing) {
-                RecordingIndicatorView { recordingIndicatorInset = $0 }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                ExtractIndicatorView()
-            }
-            // Separate alignment from the recording/extract indicators'
-            // corner, so the banner and the pills never overlap.
-            .overlay(alignment: .top) {
-                UpcomingMeetingBannerView()
-            }
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
             .modifier(RunAutomationPaletteHost(appState: appState))
             // ⌘/ "Ask Watchtower" over every destination; the Workbench tab

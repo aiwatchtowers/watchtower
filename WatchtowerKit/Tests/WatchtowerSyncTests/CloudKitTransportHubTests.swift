@@ -91,7 +91,7 @@ final class CloudKitTransportHubTests: XCTestCase {
         let legacy = CKRecordZone.ID(zoneName: "RelayZone", ownerName: CKCurrentUserDefaultName)
         let own = HubZones.test().zoneID(for: .relay)
 
-        await transport.bufferFetched(
+        _ = await transport.bufferFetched(
             modifications: [ckRecord("action-other", in: other), ckRecord("action-legacy", in: legacy), ckRecord("action-own", in: own)],
             deletions: [CKRecord.ID(recordName: "action-gone", zoneID: other)]
         )

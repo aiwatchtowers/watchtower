@@ -40,6 +40,10 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public let typingAllowed: Bool
     /// Default true.
     public let startSessionsAllowed: Bool
+    /// Answering permission prompts from the phone needs its own allow, never implied by typing
+    /// (`permissionsAllowed`). Absent on the wire reads false, and false is not written, so older peers' bytes
+    /// stay as they were.
+    let permissionsGranted: Bool? // swiftlint:disable:this discouraged_optional_boolean
     /// nil while the hub has not decided yet.
     public let decidedAt: Date?
     /// The hub read the hello and waits for the owner; absent otherwise.
@@ -54,6 +58,8 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public let revoked: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     public var recordName: String { SliceKind.deviceGrant.recordName(id: deviceID) }
+    /// Default false.
+    public var permissionsAllowed: Bool { permissionsGranted ?? false }
 
     // convertFromSnakeCase maps "device_id" -> "deviceId" and "hub_id" ->
     // "hubId" (lowercase d), so the CodingKey stringValues use that form.
@@ -67,6 +73,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         case linkedAt
         case typingAllowed
         case startSessionsAllowed
+        case permissionsGranted = "permissionsAllowed"
         case decidedAt
         case awaitingConfirmation
         case confirmNonce
@@ -84,6 +91,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         linkedAt: Date? = nil,
         typingAllowed: Bool,
         startSessionsAllowed: Bool,
+        permissionsAllowed: Bool = false,
         decidedAt: Date? = nil,
         awaitingConfirmation: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         confirmNonce: String? = nil,
@@ -99,6 +107,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         self.linkedAt = linkedAt
         self.typingAllowed = typingAllowed
         self.startSessionsAllowed = startSessionsAllowed
+        permissionsGranted = permissionsAllowed ? true : nil
         self.decidedAt = decidedAt
         self.awaitingConfirmation = awaitingConfirmation
         self.confirmNonce = confirmNonce

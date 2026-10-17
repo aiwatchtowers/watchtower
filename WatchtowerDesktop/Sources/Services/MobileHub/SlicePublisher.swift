@@ -12,6 +12,15 @@ import WatchtowerSync
 protocol SliceSource: Sendable {
     var kind: SliceKind { get }
     func records(_ db: Database) throws -> [SliceRecord]
+    /// Runs before each read of the kind, outside it: the source's own
+    /// short write to the main DB, if it keeps one (`PermissionRequestSlice`
+    /// expires the requests no hook waits on). A failure is logged and the
+    /// read goes on, so `records` must not depend on it. Default: nothing.
+    func prepare(_ writer: any DatabaseWriter) throws
+}
+
+extension SliceSource {
+    func prepare(_ writer: any DatabaseWriter) throws {}
 }
 
 /// Pushes the DataZone slices to the cloud transport (mobile POC spec §3,
@@ -21,9 +30,9 @@ protocol SliceSource: Sendable {
 /// - the full diff tick (30 s) over every kind: the only cycle that
 ///   publishes the normal kinds, so they cost at most one save batch per
 ///   30 s, sent when CKSyncEngine schedules it;
-/// - the urgent kinds (`urgentKinds`: asks, ask alerts, link grants) are
-///   also diffed every 10 s on their own (Go's writes, which no nudge
-///   sees), and the fast lane: `nudge(kinds:)` keeps only urgent kinds,
+/// - the urgent kinds (`urgentKinds`: asks, ask alerts, link grants,
+///   permission requests) are also diffed every 10 s on their own (Go's
+///   writes, which no nudge sees), and the fast lane: `nudge(kinds:)` keeps only urgent kinds,
 ///   coalesces them for 1 s, then diffs only them, with at least 2 s
 ///   between two fast sends. Any cycle that saved or deleted an urgent
 ///   record asks the transport to send at once (`sendNow`, spec §4.5);
@@ -92,9 +101,10 @@ final class SlicePublisher: Sendable {
     }
 
     /// What the owner waits for at once (owner decision Q3): an ask, its
-    /// alert, and a phone's link grant (the phone waits 60 s for it). Every
-    /// other kind rides the 30 s full tick.
-    static let urgentKinds: Set<SliceKind> = [.ownerAsk, .askAlert, .deviceGrant]
+    /// alert, a phone's link grant (the phone waits 60 s for it) and a
+    /// permission prompt a session waits on (#517). Every other kind rides
+    /// the 30 s full tick.
+    static let urgentKinds: Set<SliceKind> = [.ownerAsk, .askAlert, .deviceGrant, .permissionRequest]
 
     /// The order a cycle diffs the kinds in: the urgent ones first.
     static let publishOrder: [SliceKind] =
