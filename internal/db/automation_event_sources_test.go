@@ -142,52 +142,74 @@ func TestAutomationEventSources_MailWatermarks(t *testing.T) {
 	}
 }
 
-func TestAutomationEventSources_MailNewsFloor(t *testing.T) {
+// mailConnected is when seedConnectedMail's accounts were connected.
+const mailConnected = "2026-10-10T00:00:00Z"
+
+// seedConnectedMail is seedMailEventSources with both accounts connected at
+// mailConnected.
+func seedConnectedMail(t *testing.T) (*DB, map[string]int64) {
+	t.Helper()
 	d, g, im := seedMailEventSources(t)
-	const connected = "2026-10-10T00:00:00Z"
 	for _, q := range []string{`UPDATE google_accounts SET created_at = ?`, `UPDATE email_accounts SET created_at = ?`} {
-		if _, err := d.Exec(q, connected); err != nil {
+		if _, err := d.Exec(q, mailConnected); err != nil {
 			t.Fatal(err)
 		}
 	}
-	ids := map[string]int64{"gmail": g, "imap": im}
-	store := func(provider, date string, n int64) {
-		var err error
-		if provider == "gmail" {
-			err = d.UpsertGmailMessage(g, GmailMessage{ID: date, InternalDate: date})
-		} else {
-			err = d.UpsertImapMessage(ImapMessage{AccountID: im, UID: n, UIDValidity: 1, InternalDate: date}, date)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
+	return d, map[string]int64{"gmail": g, "imap": im}
+}
+
+// storeMail stores one message of a mail account dated date (n numbers it).
+func storeMail(t *testing.T, d *DB, provider string, accountID int64, date string, n int64) {
+	t.Helper()
+	var err error
+	if provider == "gmail" {
+		err = d.UpsertGmailMessage(accountID, GmailMessage{ID: date, InternalDate: date})
+	} else {
+		err = d.UpsertImapMessage(ImapMessage{AccountID: accountID, UID: n, UIDValidity: 1, InternalDate: date}, date)
 	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// checkMailNewsFloor asserts one account's floor and counts around it.
+func checkMailNewsFloor(t *testing.T, d *DB, p string, id int64) {
+	t.Helper()
+	// Only mail older than the connect: the floor is the connect.
+	storeMail(t, d, p, id, "2026-10-05T00:00:00Z", 1)
+	if floor, err := d.MailNewsFloor(p, id); err != nil || floor != mailConnected {
+		t.Errorf("%s floor = %q, %v; want %q", p, floor, err, mailConnected)
+	}
+	storeMail(t, d, p, id, "2026-10-12T00:00:00Z", 2)
+	storeMail(t, d, p, id, "2026-10-11T00:00:00Z", 3)
+	floor, err := d.MailNewsFloor(p, id)
+	if err != nil || floor != "2026-10-12T00:00:00Z" {
+		t.Errorf("%s floor = %q, %v; want the newest message", p, floor, err)
+	}
+	if n, err := d.CountMailAfter(p, id, mailConnected); err != nil || n != 2 {
+		t.Errorf("%s count after connect = %d, %v; want 2", p, n, err)
+	}
+	if n, err := d.CountMailAfter(p, id, floor); err != nil || n != 0 {
+		t.Errorf("%s count after floor = %d, %v; want 0", p, n, err)
+	}
+}
+
+func TestAutomationEventSources_MailNewsFloor(t *testing.T) {
+	d, ids := seedConnectedMail(t)
 	for p, id := range ids {
-		// No mail, or only mail older than the connect: the floor is the connect.
-		store(p, "2026-10-05T00:00:00Z", 1)
-		if floor, err := d.MailNewsFloor(p, id); err != nil || floor != connected {
-			t.Errorf("%s floor = %q, %v; want %q", p, floor, err, connected)
-		}
-		store(p, "2026-10-12T00:00:00Z", 2)
-		store(p, "2026-10-11T00:00:00Z", 3)
-		floor, err := d.MailNewsFloor(p, id)
-		if err != nil || floor != "2026-10-12T00:00:00Z" {
-			t.Errorf("%s floor = %q, %v; want the newest message", p, floor, err)
-		}
-		if n, err := d.CountMailAfter(p, id, connected); err != nil || n != 2 {
-			t.Errorf("%s count after connect = %d, %v; want 2", p, n, err)
-		}
-		if n, err := d.CountMailAfter(p, id, floor); err != nil || n != 0 {
-			t.Errorf("%s count after floor = %d, %v; want 0", p, n, err)
-		}
+		checkMailNewsFloor(t, d, p, id)
 	}
+}
+
+func TestAutomationEventSources_MailNewsFloorErrors(t *testing.T) {
+	d, ids := seedConnectedMail(t)
 	if _, err := d.MailNewsFloor("gmail", 99); err == nil {
 		t.Error("missing account: want an error")
 	}
-	if _, err := d.MailNewsFloor("pop3", g); err == nil {
+	if _, err := d.MailNewsFloor("pop3", ids["gmail"]); err == nil {
 		t.Error("unknown provider: want an error")
 	}
-	if _, err := d.CountMailAfter("pop3", g, connected); err == nil {
+	if _, err := d.CountMailAfter("pop3", ids["gmail"], mailConnected); err == nil {
 		t.Error("unknown provider: want an error")
 	}
 }

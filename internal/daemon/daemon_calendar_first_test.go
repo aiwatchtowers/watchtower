@@ -20,18 +20,39 @@ func TestDaemon_Run_SyncsCalendarsBeforeFirstCycle(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
 	require.NoError(t, err)
 
-	var run *ast.FuncDecl
+	order := topLevelCallOrder(daemonFunc(t, file, "Run", true))
+	firstCycle, ok := order["runSync"]
+	require.True(t, ok, "Run must start with an immediate runSync")
+	at, ok := order["startupCalendarSync"]
+	require.True(t, ok, "Run must call startupCalendarSync before the first cycle")
+	assert.Less(t, at, firstCycle, "startupCalendarSync must run before the first runSync")
+
+	// startupCalendarSync runs both calendar phases.
+	called := calledMethods(daemonFunc(t, file, "startupCalendarSync", true))
+	for _, phase := range []string{"phaseCalendarSync", "phaseCalDAVSync"} {
+		assert.True(t, called[phase], "startupCalendarSync must call %s", phase)
+	}
+}
+
+// daemonFunc returns the named function (a method when method) of daemon.go.
+func daemonFunc(t *testing.T, file *ast.File, name string, method bool) *ast.FuncDecl {
+	t.Helper()
 	for _, decl := range file.Decls {
-		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "Run" && fd.Recv != nil {
-			run = fd
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == name && (fd.Recv != nil) == method {
+			return fd
 		}
 	}
-	require.NotNil(t, run, "Daemon.Run not found in daemon.go")
+	t.Fatalf("%s not found in daemon.go", name)
+	return nil
+}
 
-	// Top-level statements only: the ticker loop's runSync calls sit inside
-	// the for statement and must not count as the first cycle.
+// topLevelCallOrder maps each method called as a top-level statement of fn
+// to the index of its first such statement. Top-level only: Run's ticker
+// loop's runSync calls sit inside the for statement and must not count as
+// the first cycle.
+func topLevelCallOrder(fn *ast.FuncDecl) map[string]int {
 	order := map[string]int{}
-	for i, stmt := range run.Body.List {
+	for i, stmt := range fn.Body.List {
 		expr, ok := stmt.(*ast.ExprStmt)
 		if !ok {
 			continue
@@ -46,22 +67,13 @@ func TestDaemon_Run_SyncsCalendarsBeforeFirstCycle(t *testing.T) {
 			}
 		}
 	}
-	firstCycle, ok := order["runSync"]
-	require.True(t, ok, "Run must start with an immediate runSync")
-	at, ok := order["startupCalendarSync"]
-	require.True(t, ok, "Run must call startupCalendarSync before the first cycle")
-	assert.Less(t, at, firstCycle, "startupCalendarSync must run before the first runSync")
+	return order
+}
 
-	// startupCalendarSync runs both calendar phases.
-	var startup *ast.FuncDecl
-	for _, decl := range file.Decls {
-		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "startupCalendarSync" {
-			startup = fd
-		}
-	}
-	require.NotNil(t, startup, "startupCalendarSync not found in daemon.go")
+// calledMethods is the set of methods fn calls anywhere in its body.
+func calledMethods(fn *ast.FuncDecl) map[string]bool {
 	called := map[string]bool{}
-	ast.Inspect(startup.Body, func(n ast.Node) bool {
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
 			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
 				called[sel.Sel.Name] = true
@@ -69,7 +81,5 @@ func TestDaemon_Run_SyncsCalendarsBeforeFirstCycle(t *testing.T) {
 		}
 		return true
 	})
-	for _, phase := range []string{"phaseCalendarSync", "phaseCalDAVSync"} {
-		assert.True(t, called[phase], "startupCalendarSync must call %s", phase)
-	}
+	return called
 }
