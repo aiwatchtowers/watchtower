@@ -9,6 +9,7 @@ struct ClaudeAIConnectorsSection: View {
 
     /// Where a connector the chat lists as not connected gets connected.
     private static let connectURL = URL(string: "https://claude.ai/customize/connectors")
+    private static let refreshInterval: Duration = .seconds(5)
 
     var body: some View {
         Section {
@@ -31,25 +32,30 @@ struct ClaudeAIConnectorsSection: View {
             ForEach(model.servers) { server in
                 serverRow(server)
             }
-            if let error = model.lastError {
+            ForEach([model.readError, model.writeError].compactMap { $0 }, id: \.self) { error in
                 Text(error).font(.caption).foregroundStyle(.red)
             }
         } header: {
             Text("claude.ai tools")
         } footer: {
-            Text("The main chat can use your claude.ai account's connectors; anything that writes through one "
-                 + "waits for your approval. Switches apply to new chat turns — a turn already running keeps "
-                 + "the tools it started with.")
+            Text("The main chat on the Claude provider can use your claude.ai account's connectors. A write "
+                 + "through one waits for your approval, except a private Claude Docs doc the chat made itself. "
+                 + "Switches apply to new chat turns — a turn already running keeps the tools it started with.")
         }
-        .task { model.reload() }
+        .task {
+            // The main chat's session rewrites the list when it starts.
+            while !Task.isCancelled {
+                model.reload()
+                try? await Task.sleep(for: Self.refreshInterval)
+            }
+        }
     }
 
     private func serverRow(_ server: ClaudeAIConnectorsFile.Server) -> some View {
-        let switchedOn = model.switches.connectors && model.isEnabled(server.name)
-        return VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(server.name)
-                Text(ClaudeAIConnectorsModel.statusText(server.status, switchedOn: switchedOn))
+                Text(ClaudeAIConnectorsModel.statusText(server.status, switchedOn: model.isActive(server.name)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()

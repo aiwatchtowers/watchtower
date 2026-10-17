@@ -1,5 +1,4 @@
 import Foundation
-import Yams
 
 /// The claude.ai connector list the main chat's `ai session` writes beside
 /// the database (#737, spec D2). Go is the only writer; the contract is the
@@ -112,68 +111,31 @@ package struct ClaudeAIConnectorsFile: Decodable, Equatable, Sendable {
         } catch CocoaError.fileReadNoSuchFile {
             return nil
         }
-        return try JSONDecoder().decode(Self.self, from: data)
+        do {
+            return try JSONDecoder().decode(Self.self, from: data)
+        } catch let error as DecodingError {
+            throw ClaudeAIConnectorsReadError(message: "\(fileName) is not in the expected shape: \(error.detail)")
+        }
     }
 }
 
-/// `ai.claude_ai.*` in config.yaml (Go: `config.ClaudeAIConfig`): everything
-/// is on by default (ask #236); the owner narrows it in Settings.
-package struct ClaudeAIConnectorSwitches: Equatable, Sendable {
-    /// `ai.claude_ai.connectors`: false loads no connector at all.
-    package var connectors = true
-    /// `ai.claude_ai.disabled_connectors`: display names switched off one by one.
-    package var disabled: [String] = []
+/// A file the claude.ai section reads is present but can't be used; the
+/// message says which and why.
+package struct ClaudeAIConnectorsReadError: LocalizedError, Equatable {
+    package let message: String
+    package var errorDescription: String? { message }
+}
 
-    package init(connectors: Bool = true, disabled: [String] = []) {
-        self.connectors = connectors
-        self.disabled = disabled
-    }
-
-    package struct ReadError: LocalizedError {
-        package let message: String
-        package var errorDescription: String? { message }
-    }
-
-    /// The switches in the config file at `path`; the defaults when the file
-    /// or the keys are missing. Go's loader reads `disabled_connectors` as a
-    /// list or as one comma-separated string — both are read here too.
-    package static func read(configPath path: String) throws -> Self {
-        guard let data = FileManager.default.contents(atPath: path) else {
-            if FileManager.default.fileExists(atPath: path) {
-                throw ReadError(message: "config.yaml can't be read")
-            }
-            return Self()
+private extension DecodingError {
+    /// The coding path and the decoder's own description, which
+    /// `localizedDescription` drops.
+    var detail: String {
+        let context: Context
+        switch self {
+        case let .typeMismatch(_, c), let .valueNotFound(_, c), let .keyNotFound(_, c), let .dataCorrupted(c): context = c
+        @unknown default: return String(describing: self)
         }
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw ReadError(message: "config.yaml is not UTF-8 text")
-        }
-        let loaded = try Yams.load(yaml: text)
-        guard let yaml = loaded as? [String: Any] else { return Self() }
-        guard let claudeAI = (yaml["ai"] as? [String: Any])?["claude_ai"] as? [String: Any] else { return Self() }
-        var switches = Self()
-        if let raw = claudeAI["connectors"] {
-            guard let on = raw as? Bool else {
-                throw ReadError(message: "ai.claude_ai.connectors in config.yaml is not true or false")
-            }
-            switches.connectors = on
-        }
-        switch claudeAI["disabled_connectors"] {
-        case let list as [Any]:
-            switches.disabled = normalized(list.map { String(describing: $0) })
-        case let csv as String:
-            switches.disabled = normalized(csv.components(separatedBy: ","))
-        default:
-            break
-        }
-        return switches
-    }
-
-    /// Trimmed, non-empty, first spelling kept — as `config set` stores them.
-    private static func normalized(_ names: [String]) -> [String] {
-        var out: [String] = []
-        for name in names.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !name.isEmpty && !out.contains(name) {
-            out.append(name)
-        }
-        return out
+        let path = context.codingPath.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
+        return path.isEmpty ? context.debugDescription : "\(path): \(context.debugDescription)"
     }
 }

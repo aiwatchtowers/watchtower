@@ -78,7 +78,7 @@ final class ClaudeAIConnectorsModelTests: XCTestCase {
         XCTAssertEqual(runner.calls.last, ["config", "set", "ai.claude_ai.connectors", "false"])
         XCTAssertFalse(model.switches.connectors)
         XCTAssertEqual(retired, 4)
-        XCTAssertNil(model.lastError)
+        XCTAssertNil(model.writeError)
 
         // Everything back on: an empty list is written as "" (none disabled).
         await model.setEnabled(name: "Connector A", true)
@@ -108,17 +108,34 @@ final class ClaudeAIConnectorsModelTests: XCTestCase {
 
         await model.setEnabled(name: "Connector A", false)
         XCTAssertTrue(model.isEnabled("Connector A"), "a failed write keeps the old state")
-        XCTAssertEqual(try XCTUnwrap(model.lastError).contains("config is locked"), true)
+        XCTAssertTrue(try XCTUnwrap(model.writeError).contains("config is locked"))
 
         await model.setAllEnabled(false)
         XCTAssertTrue(model.switches.connectors)
         XCTAssertEqual(retired, 0, "nothing changed, so no session retires")
         XCTAssertFalse(model.isWriting)
 
+        // Settings closed and opened again: the refusal is still shown.
+        model.reload()
+        XCTAssertNotNil(model.writeError)
+
         runner.failure = nil
         await model.setAllEnabled(false)
-        XCTAssertNil(model.lastError, "a later success clears the error")
+        XCTAssertNil(model.writeError, "a later success clears the error")
         XCTAssertEqual(retired, 1)
+    }
+
+    /// A list that can't be read stays reported when a switch is saved: the
+    /// section never falls back to "no connectors listed yet".
+    func testSavedSwitchKeepsAReadError() async throws {
+        let path = dir.appendingPathComponent(ClaudeAIConnectorsFile.fileName).path
+        try Data("not json".utf8).write(to: URL(fileURLWithPath: path))
+        let model = Self.makeModel(filePath: path, configPath: configPath, runner: ConfigSetRunner(configPath: configPath))
+        model.reload()
+        XCTAssertNotNil(model.readError)
+        await model.setAllEnabled(false)
+        XCTAssertNil(model.writeError)
+        XCTAssertNotNil(model.readError)
     }
 
     /// `config set` splits on commas: such a name is refused, visibly, and nothing runs.
@@ -127,6 +144,6 @@ final class ClaudeAIConnectorsModelTests: XCTestCase {
         let model = Self.makeModel(filePath: nil, configPath: configPath, runner: runner)
         await model.setEnabled(name: "Mail, Calendar", false)
         XCTAssertEqual(runner.calls, [])
-        XCTAssertNotNil(model.lastError)
+        XCTAssertNotNil(model.writeError)
     }
 }

@@ -185,6 +185,17 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
+    /// Only Claude sessions load claude.ai tools: a Codex one stays warm.
+    func testChatPoolRetireIdleLeavesOtherProviders() async {
+        let codex = pool.session(for: 1, config: config(1, provider: "codex"))
+        let claude = pool.session(for: 2, config: config(2))
+        pool.retireIdleSessions()
+        XCTAssertTrue(pool.client(for: 1) === codex)
+        XCTAssertTrue(codex.isAlive)
+        XCTAssertNil(pool.client(for: 2))
+        XCTAssertFalse(claude.isAlive)
+    }
+
     /// A queued session has not started: it reads the new switches when it
     /// launches, so it is left alone and keeps its held turn.
     func testChatPoolRetireIdleLeavesPendingSessions() async throws {

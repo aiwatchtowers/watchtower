@@ -51,7 +51,7 @@ final class ClaudeAIConnectorsFileTests: XCTestCase {
         model.reload()
         XCTAssertNil(model.file)
         XCTAssertEqual(model.servers, [])
-        XCTAssertNil(model.lastError, "no file yet is not an error")
+        XCTAssertNil(model.readError, "no file yet is not an error")
         XCTAssertEqual(model.switches, ClaudeAIConnectorSwitches(connectors: true, disabled: []),
                        "everything is on by default (ask #236)")
     }
@@ -64,7 +64,8 @@ final class ClaudeAIConnectorsFileTests: XCTestCase {
         let model = ClaudeAIConnectorsModelTests.makeModel(filePath: path,
                                                            configPath: dir.appendingPathComponent("config.yaml").path)
         model.reload()
-        XCTAssertNotNil(model.lastError)
+        XCTAssertNotNil(model.readError)
+        XCTAssertNil(model.file)
     }
 
     /// Unknown keys are ignored, an unknown status reads as failed (as Go
@@ -102,6 +103,48 @@ final class ClaudeAIConnectorsFileTests: XCTestCase {
 
         try "ai:\n  claude_ai:\n    connectors: maybe\n".write(toFile: path, atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try ClaudeAIConnectorSwitches.read(configPath: path))
+    }
+
+    /// Absent keys are the defaults; a key present with a type Go can't load
+    /// is an error naming it, never "everything on".
+    func testSwitchesOfTheWrongTypeAreAnError() throws {
+        let path = dir.appendingPathComponent("config.yaml").path
+        for yaml in ["ai: claude\n", "ai:\n  claude_ai: false\n", "ai:\n  claude_ai:\n    disabled_connectors: 42\n",
+                     "ai:\n  claude_ai:\n    disabled_connectors:\n      - {a: 1}\n", "- a\n", "ai: [\n"] {
+            try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+            XCTAssertThrowsError(try ClaudeAIConnectorSwitches.read(configPath: path), yaml) { error in
+                XCTAssertFalse((error as? ClaudeAIConnectorsReadError)?.message.isEmpty ?? true, yaml)
+            }
+        }
+        for yaml in ["", "# nothing\n", "ai:\n", "ai:\n  claude_ai:\n"] {
+            try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+            XCTAssertEqual(try ClaudeAIConnectorSwitches.read(configPath: path), ClaudeAIConnectorSwitches(), yaml)
+        }
+    }
+
+    /// Go's `TestServerToken_Mapping` cases (with the prefix Go adds) and
+    /// `DisabledConnectorTokens`: every spelling Go switches off reads off here.
+    func testServerTokenMatchesGo() {
+        let cases = [
+            "Claude Docs": "claude_ai_Claude_Docs",
+            "claude.ai Google Calendar": "claude_ai_Google_Calendar",
+            "Atlassian-Rovo": "claude_ai_Atlassian-Rovo",
+            "Café/Notes v2.1": "claude_ai_Caf_Notes_v2_1",
+            "Notes 📝": "claude_ai_Notes",
+            " Connector A ": "claude_ai_Connector_A",
+            "Example Tool (2)": "claude_ai_Example_Tool_2"
+        ]
+        for (name, token) in cases {
+            XCTAssertEqual(ClaudeAIConnectorSwitches.serverToken(name), token, name)
+        }
+        let switches = ClaudeAIConnectorSwitches(disabled: ["claude.ai Gmail", "Connector_A"])
+        XCTAssertTrue(switches.isDisabled("Gmail"))
+        XCTAssertTrue(switches.isDisabled("Connector A"))
+        XCTAssertFalse(switches.isDisabled("Connector B"))
+        XCTAssertEqual(switches.disabling("Gmail", false), ["Connector_A"], "on drops every spelling")
+        XCTAssertEqual(switches.disabling("Connector A", true), ["Connector_A", "claude.ai Gmail"],
+                       "already off: no second spelling")
+        XCTAssertEqual(switches.disabling("Zeta", true), ["Connector_A", "Zeta", "claude.ai Gmail"])
     }
 
     func testStatusAndToolsText() {

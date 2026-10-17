@@ -43,9 +43,9 @@ A new recipe stays off until you turn it on in the Automations tab. See [Automat
 
 ### claude.ai connectors
 
-On the Claude provider, the main chat can also use the connectors of your claude.ai account. Reading through one is a step in the reply; anything that writes through one waits for your Approve like every other external tool.
+On the Claude provider, the main chat can also use the connectors of your claude.ai account. Reading through one is a step in the reply. A write through one waits for your Approve like every other external tool; the one exception is a private Claude Docs doc the chat made itself.
 
-1. Open **Settings → Profile → claude.ai tools**. The list fills in after your first main-chat reply on the Claude provider.
+1. Open **Settings → Profile → claude.ai tools**. The list fills in once a main chat on the Claude provider has started.
 2. Turn **Connectors** off to stop them all, or switch one connector off.
 3. For a connector shown **Not connected**, click **Connect on claude.ai** and connect it there.
 

@@ -153,9 +153,10 @@ final class ChatSessionPool {
     /// turn starts a new process with the new switches. A pending session has
     /// not started yet and reads them when it launches. Unlike
     /// `retireSessions(projectID:deleted:)` the prompt did not change, so the
-    /// stored session id stays and the next session resumes it.
+    /// stored session id stays and the next session resumes it. Only Claude
+    /// sessions load claude.ai tools; the others are left alone.
     func retireIdleSessions() {
-        for (id, client) in clients where !client.isPending {
+        for (id, client) in clients where !client.isPending && client.config.provider == AIProvider.claude.rawValue {
             if client.isBusy {
                 client.retireAfterTurn(keepingSessionID: true)
             } else {
