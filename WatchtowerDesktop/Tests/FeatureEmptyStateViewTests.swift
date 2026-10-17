@@ -257,6 +257,41 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertNil(appState.turningOnFeatureID)
     }
 
+    /// #575 review R1: a failed restart's error (and Try again) goes once
+    /// the daemon comes up some other way — a start or restart elsewhere.
+    func testRestartFailedErrorClearsWhenTheDaemonComesUp() async {
+        let runner = LiveFeaturesRunner(disabled: ["slack-digests"])
+        let (appState, daemon) = makeAppState(runner)
+        daemon.restartError = DaemonRestartError.startFailed(status: 1, stderr: "boom")
+        await appState.turnOnFeatureFromEmptyState("slack-digests")
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+
+        appState.daemonManager.isRunning = false
+        appState.daemonManager.isRunning = true
+
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+    }
+
+    /// Another feature's successful Turn on restarted the daemon: an earlier
+    /// failed restart is moot, but a not-yet-enabled feature's error stays.
+    func testAnotherTurnOnClearsRestartFailedErrors() async {
+        let runner = LiveFeaturesRunner(disabled: ["slack-digests", "memory", "ideas"])
+        let (appState, daemon) = makeAppState(runner)
+        daemon.restartError = DaemonRestartError.startFailed(status: 1, stderr: "boom")
+        await appState.turnOnFeatureFromEmptyState("slack-digests")
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+        daemon.restartError = nil
+        appState.featureManager.isApplying = true
+        await appState.turnOnFeatureFromEmptyState("ideas")
+        appState.featureManager.isApplying = false
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "ideas"))
+
+        await appState.turnOnFeatureFromEmptyState("memory")
+
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "ideas"), "ideas never came on")
+    }
+
     func testOffErrorGoesStaleWhenTurnedOnElsewhere() async {
         let runner = LiveFeaturesRunner(disabled: ["memory"])
         let (appState, _) = makeAppState(runner)

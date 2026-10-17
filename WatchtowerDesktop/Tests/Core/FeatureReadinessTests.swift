@@ -128,18 +128,21 @@ final class FeatureReadinessTests: XCTestCase {
             .deletingLastPathComponent() // WatchtowerDesktop
             .deletingLastPathComponent() // repo root
             .appendingPathComponent("internal/daemon")
-        let section = #"d\.config\.(\w+)\.Enabled"#
-        let digest = #"d\.config\.Digest\.Enabled"#
-        let gate = try NSRegularExpression(pattern: [
-            #"\#(section)\s*&&\s*\#(digest)"#, #"\#(digest)\s*&&\s*\#(section)"#,
-            #"!\#(section)\s*\|\|\s*!\#(digest)"#, #"!\#(digest)\s*\|\|\s*!\#(section)"#
-        ].joined(separator: "|"))
+        let goFiles = try FileManager.default.contentsOfDirectory(atPath: daemonDir.path)
+            .filter { $0.hasSuffix(".go") && !$0.hasSuffix("_test.go") }
+        XCTAssertTrue(goFiles.contains("daemon.go"), "the daemon package moved: \(daemonDir.path)")
+        // A gate is a line joining `Digest.Enabled` with another feature's
+        // `X.Enabled` by && or ||, adjacent or not.
+        let section = try NSRegularExpression(pattern: #"\bd\.config\.(\w+)\.Enabled\b"#)
         var sections: Set<String> = []
-        for name in ["daemon.go", "history_backfill.go"] {
-            let source = try String(contentsOf: daemonDir.appendingPathComponent(name), encoding: .utf8) as NSString
-            for match in gate.matches(in: source as String, range: NSRange(location: 0, length: source.length)) {
-                for group in 1..<match.numberOfRanges where match.range(at: group).location != NSNotFound {
-                    sections.insert(source.substring(with: match.range(at: group)))
+        for name in goFiles {
+            let source = try String(contentsOf: daemonDir.appendingPathComponent(name), encoding: .utf8)
+            for line in source.split(separator: "\n").map(String.init)
+            where line.contains("d.config.Digest.Enabled") && (line.contains("&&") || line.contains("||")) {
+                let range = NSRange(line.startIndex..., in: line)
+                for match in section.matches(in: line, range: range) {
+                    let sectionName = (line as NSString).substring(with: match.range(at: 1))
+                    if sectionName != "Digest" { sections.insert(sectionName) }
                 }
             }
         }

@@ -140,6 +140,22 @@ final class HomeViewTests: XCTestCase {
         try failed.inspect().find(button: "Try again").tap()
         XCTAssertEqual(tapped, .turnOn(featureID: "slack-digests"))
 
+        // R3: two cards with the same error show it, and its retry, once.
+        let both = [
+            Self.card(.tracks, "Tracks", .scheduled(.nextCycle(minutes: 15))),
+            Self.card(.peopleCards, "People cards", .needsDigests)
+        ]
+        let once = HomeContent(
+            snapshot: viewSnapshot(.shown(cards: both, sourceRows: [])), today: Date(),
+            digestsTurnOn: DigestsTurnOnState(error: "boom"), onLink: { _ in }, onHideGettingReady: {})
+        XCTAssertEqual(try once.inspect().findAll(ViewType.Text.self) { try $0.string() == "boom" }.count, 1)
+        XCTAssertEqual(try once.inspect().findAll(ViewType.Button.self) {
+            try $0.labelView().text().string() == "Try again"
+        }.count, 1)
+        XCTAssertThrowsError(try once.inspect().find(button: "Turn on Slack Digests"))
+        XCTAssertEqual(GettingReadyZoneView.digestsOfferingCards(both, DigestsTurnOnState()), [.tracks, .peopleCards])
+        XCTAssertEqual(GettingReadyZoneView.digestsOfferingCards(both, DigestsTurnOnState(error: "boom")), [.tracks])
+
         // Other cards never offer it.
         let other = makeContent(viewSnapshot(.shown(cards: [Self.card(.ideas, "Ideas", .scheduled(.inHours(6)))], sourceRows: [])))
         XCTAssertThrowsError(try other.inspect().find(button: "Turn on Slack Digests"))

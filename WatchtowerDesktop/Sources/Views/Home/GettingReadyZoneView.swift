@@ -55,14 +55,25 @@ struct GettingReadyZoneView: View {
                 FirstSyncBanner(line: firstSync)
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12, alignment: .top)], spacing: 12) {
+                let offering = Self.digestsOfferingCards(cards, digestsTurnOn)
                 ForEach(cards, id: \.feature) { card in
-                    GettingReadyCardView(card: card, digestsTurnOn: digestsTurnOn, onLink: onLink)
+                    GettingReadyCardView(
+                        card: card, digestsTurnOn: offering.contains(card.feature) ? digestsTurnOn : nil, onLink: onLink)
                 }
             }
             ForEach(sourceRows, id: \.source) { row in
                 GettingReadySourceRowView(text: Self.connectLine(row), source: row.source, onLink: onLink)
             }
         }
+    }
+
+    /// The cards that may offer the Slack Digests Turn on: each one waiting
+    /// on it, but a failed Turn on's error and Try again only once, on the
+    /// first card it concerns (#575).
+    static func digestsOfferingCards(_ cards: [GettingReadyCard], _ state: DigestsTurnOnState) -> Set<ReadinessFeature> {
+        let concerned = cards.filter { $0.feature.runsOnlyWithDigests && $0.readiness != nil && $0.readiness != .ready }
+        guard state.error != nil else { return Set(concerned.map(\.feature)) }
+        return Set(concerned.prefix(1).map(\.feature))
     }
 
     /// "Connect Jira to get Boards, Workload, Blockers, Project Map and
@@ -133,10 +144,11 @@ struct DigestsTurnOnState: Equatable {
 /// One feature: its name, what it makes, and its readiness.
 struct GettingReadyCardView: View {
     let card: GettingReadyCard
-    let digestsTurnOn: DigestsTurnOnState
+    /// nil: this card offers no Slack Digests Turn on (another card carries it).
+    let digestsTurnOn: DigestsTurnOnState?
     let onLink: (HomeLink) -> Void
 
-    init(card: GettingReadyCard, digestsTurnOn: DigestsTurnOnState = .idle, onLink: @escaping (HomeLink) -> Void) {
+    init(card: GettingReadyCard, digestsTurnOn: DigestsTurnOnState? = .idle, onLink: @escaping (HomeLink) -> Void) {
         self.card = card
         self.digestsTurnOn = digestsTurnOn
         self.onLink = onLink
@@ -146,7 +158,9 @@ struct GettingReadyCardView: View {
     /// waits on it, or its Turn on failed and only a retry restarts
     /// (`FeatureReadiness.turnOnFeatureID`, as the tabs do).
     private var digestsTurnOnID: String? {
-        guard card.feature.runsOnlyWithDigests, card.readiness != .ready, card.readiness != nil else { return nil }
+        guard let digestsTurnOn, card.feature.runsOnlyWithDigests, card.readiness != .ready, card.readiness != nil else {
+            return nil
+        }
         let id = FeatureReadiness.turnOnFeatureID(
             for: card.feature, readiness: card.readiness, digestsTurnOnFailed: digestsTurnOn.error != nil)
         return id == ReadinessFeature.digests.featureID ? id : nil
@@ -186,7 +200,7 @@ struct GettingReadyCardView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if let featureID = digestsTurnOnID {
+                if let featureID = digestsTurnOnID, let digestsTurnOn {
                     Spacer(minLength: 0)
                     if digestsTurnOn.isTurningOn {
                         ProgressView().controlSize(.small)
@@ -204,7 +218,7 @@ struct GettingReadyCardView: View {
                         .buttonStyle(.link)
                 }
             }
-            if digestsTurnOnID != nil, let error = digestsTurnOn.error {
+            if digestsTurnOnID != nil, let error = digestsTurnOn?.error {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)

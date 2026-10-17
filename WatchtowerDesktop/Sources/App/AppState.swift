@@ -466,7 +466,9 @@ final class AppState {
         // A daemon that came up after all (a later poll, a Settings start)
         // takes the "did not start" banner with it.
         daemonManager.onRunningChanged = { [weak self] running in
-            if running { self?.daemonStartFailure = nil }
+            guard running else { return }
+            self?.daemonStartFailure = nil
+            self?.clearRestartFailedTurnOnErrors()
         }
     }
 
@@ -1276,6 +1278,9 @@ final class AppState {
         return error.featureWasOn || !nowOn ? error.message : nil
     }
 
+    /// A later successful start or restart picked the feature up: drop its Try again.
+    func clearRestartFailedTurnOnErrors() { emptyStateTurnOnErrors = emptyStateTurnOnErrors.filter { !$0.value.featureWasOn } }
+
     private func recordTurnOnError(_ featureID: String, _ message: String, featureWasOn: Bool = false) {
         emptyStateTurnOnErrors[featureID] = (message, featureWasOn)
     }
@@ -1321,7 +1326,7 @@ final class AppState {
                 return
             }
         }
-        emptyStateTurnOnErrors[featureID] = nil
+        emptyStateTurnOnErrors = emptyStateTurnOnErrors.filter { $0.key != featureID && !$0.value.featureWasOn }
     }
 
     /// A first run of onboarding opens Home, whatever the goals.

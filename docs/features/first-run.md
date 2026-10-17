@@ -33,8 +33,10 @@ until the next morning's hour.
      the people backfill hook in `history_backfill.go`); the Go guard rows
      `tracks_starved_without_digest` / `people_starved_without_digest` pin the
      gates, and `FeatureReadinessTests.testRunsOnlyWithDigestsMatchesTheDaemonGates`
-     reads both Go files and fails when a `Digest.Enabled` gate appears or
-     goes without a matching `runsOnlyWithDigests` entry. Content beats it so
+     scans every non-test `internal/daemon/*.go` file (any line joining
+     `Digest.Enabled` with another `X.Enabled` by `&&`/`||`) and fails when
+     such a gate appears or goes without a matching `runsOnlyWithDigests`
+     entry. Content beats it so
      a tab with data keeps showing it and Home keeps "Ready — Open". Line
      "Needs Slack Digests" (every place that shows it follows it with a
      **Turn on Slack Digests** button, named because it starts a heavy,
@@ -43,7 +45,13 @@ until the next morning's hour.
      feature waits on it **and** while a Slack Digests Turn on has an error
      (an enable whose restart failed leaves Digests on, the state moves on to
      `scheduled`, and only the retry restarts — the tab and the Home card keep
-     the error and **Try again**). Home's card button goes through
+     the error and **Try again**). A failed restart's error
+     (`featureWasOn`) is cleared by any later successful restart or start:
+     the next successful empty-state Turn on
+     and `DaemonManager.onRunningChanged(true)` (a start or Settings restart
+     after the failed one left no daemon, `clearRestartFailedTurnOnErrors`). Home shows that error and its
+     **Try again** once, on the first card it concerns
+     (`GettingReadyZoneView.digestsOfferingCards`). Home's card button goes through
      `HomeLink.turnOn` → `performEmptyStateAction(.turnOn)` with the same busy,
      progress and error (`AppState.digestsTurnOnState`). Onboarding's Customize
      row of a feature on while Slack Digests is off shows **Needs Slack
