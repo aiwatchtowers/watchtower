@@ -65,7 +65,7 @@ func hitCallback(t *testing.T, redirectURI string, params map[string]string) (st
 	}
 	u.RawQuery = q.Encode()
 
-	resp, err := http.Get(u.String()) //nolint:noctx // a one-shot call to the test's local callback server
+	resp, err := http.Get(u.String())
 	if err != nil {
 		t.Fatalf("GET %s: %v", u, err)
 	}
@@ -623,7 +623,7 @@ func TestLogin_DeadlineDuringExchangeIsNotErrLoginTimedOut(t *testing.T) {
 	cb.RawQuery = url.Values{"code": {as.AuthCode}, "state": {q.Get("state")}}.Encode()
 	// In a goroutine: the callback only answers once the exchange gives up.
 	go func() {
-		if resp, err := http.Get(cb.String()); err == nil { //nolint:noctx // a one-shot call to the test's local callback server
+		if resp, err := http.Get(cb.String()); err == nil {
 			resp.Body.Close()
 		}
 	}()

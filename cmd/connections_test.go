@@ -222,7 +222,7 @@ func captureConnectionsAuthorizeCallbackRecordingQuery(t *testing.T, record func
 			q.Set("code", "any")
 			q.Set("state", state)
 			cb.RawQuery = q.Encode()
-			resp, err := http.Get(cb.String()) //nolint:noctx // a one-shot call to the test's local callback server
+			resp, err := http.Get(cb.String())
 			if err == nil {
 				resp.Body.Close()
 			}

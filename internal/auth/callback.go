@@ -66,7 +66,7 @@ func NewCallbackHandler(state, successPage string, errorPage func(reason string)
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if res.Err != "" {
-			fmt.Fprint(w, errorPage(res.Err)) // G705: errorPage is oauthpage.Error, rendered by html/template
+			fmt.Fprint(w, errorPage(res.Err)) // errorPage is oauthpage.Error, rendered by html/template
 			return
 		}
 		fmt.Fprint(w, successPage)

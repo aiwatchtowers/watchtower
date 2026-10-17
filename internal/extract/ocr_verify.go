@@ -189,7 +189,7 @@ func (v *helperVerifier) readSelf(ctx context.Context) {
 		v.skip = true
 		return
 	}
-	v.fail(fmt.Errorf("reading own signature: %w: %s", err, bytes.TrimSpace(out)))
+	v.fail(fmt.Errorf("reading own signature: %v: %s", err, bytes.TrimSpace(out)))
 }
 
 func (v *helperVerifier) fail(err error) {
