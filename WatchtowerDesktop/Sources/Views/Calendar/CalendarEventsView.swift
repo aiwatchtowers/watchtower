@@ -138,11 +138,17 @@ struct CalendarEventsView: View {
     private func restartSync() async {
         isRestartingSync = true
         defer { isRestartingSync = false }
-        do {
-            try await DaemonManager.restart()
-            restartError = nil
-            restartErrorOutlivesDaemon = false
-        } catch {
+        // On the app's one start chain (launch, banner, Settings).
+        let daemon = appState.daemonControl
+        let failure = await appState.enqueueDaemonStart { () -> (any Error)? in
+            do {
+                try await daemon.restartWaiting()
+                return nil
+            } catch {
+                return error
+            }
+        }.value
+        if let error = failure {
             NSLog("CalendarEventsView: sync restart failed: %@", error.localizedDescription)
             restartError = "Couldn't restart the sync: \(error.localizedDescription)"
             if case DaemonRestartError.stopTimedOut = error {
@@ -150,6 +156,9 @@ struct CalendarEventsView: View {
             } else {
                 restartErrorOutlivesDaemon = false
             }
+        } else {
+            restartError = nil
+            restartErrorOutlivesDaemon = false
         }
         await refreshSyncHealth()
     }
@@ -746,12 +755,13 @@ struct CalendarEventsView: View {
                 reconnectButton(account)
             }
         case .daemonStopped:
-            healthBanner(
-                icon: "exclamationmark.triangle",
-                text: "Watchtower's sync isn't running, so your calendar hasn't synced yet.",
-                error: restartError
-            ) {
-                syncButton("Start Sync") { await restartSync() }
+            // The app-wide banner says the daemon isn't running and starts
+            // it: one control, one start path. A restart that failed here
+            // still shows its reason.
+            if let restartError {
+                healthBanner(icon: "exclamationmark.triangle", text: "The sync didn't restart.", error: restartError) {
+                    EmptyView()
+                }
             }
         }
     }

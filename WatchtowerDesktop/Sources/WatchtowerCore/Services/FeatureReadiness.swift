@@ -28,13 +28,14 @@ package enum FeatureReadiness {
     package static let ownerGated: Set<ReadinessFeature> = [.briefing, .dayPlan, .inbox]
 
     /// With the owner unknown, an owner-gated feature promises no run: a
-    /// scheduled or waiting state reads nil, so no line (Briefings, Day Plan
+    /// scheduled, waiting or daemon-stopped state reads nil (the owner gap is
+    /// the fix to name, even with the daemon down), so no line (Briefings, Day Plan
     /// and Inbox say why in their no-owner box; Home's card names
     /// `.ownerIdentity` instead). The other states are facts and stay.
     package static func honoringOwner(_ readiness: Readiness?, of feature: ReadinessFeature, ownerKnown: Bool) -> Readiness? {
         guard !ownerKnown, ownerGated.contains(feature) else { return readiness }
         switch readiness {
-        case .scheduled, .waitingForSync: return nil
+        case .scheduled, .waitingForSync, .daemonStopped: return nil
         default: return readiness
         }
     }
@@ -43,7 +44,9 @@ package enum FeatureReadiness {
         if let id = feature.featureID, inputs.disabledFeatureIDs.contains(id) { return .off }
         if !feature.source.isConnected(in: inputs.connected) { return .needsSource(feature.source) }
         if inputs.contentPresent.contains(feature) { return .ready }
-        if isDaemonDown(inputs) { return .daemonStopped }
+        if isDaemonDown(running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now) {
+            return .daemonStopped
+        }
 
         let syncing = inputs.syncProgress?.isSyncing(now: inputs.now) == true
         let syncDetail = syncing ? inputs.syncProgress?.summary : nil
@@ -61,10 +64,11 @@ package enum FeatureReadiness {
     }
 
     /// Down for the grace period: every "preparing", "retries" or ETA would
-    /// be a promise nothing keeps until the daemon is started.
-    private static func isDaemonDown(_ inputs: ReadinessInputs) -> Bool {
-        guard !inputs.daemonRunning, let since = inputs.daemonNotRunningSince else { return false }
-        return inputs.now.timeIntervalSince(since) >= daemonDownGrace
+    /// be a promise nothing keeps until the daemon is started. Also the
+    /// app-wide banner's rule (`ReadinessCenter.daemonDown`).
+    package static func isDaemonDown(running: Bool, since: Date?, now: Date) -> Bool {
+        guard !running, let since else { return false }
+        return now.timeIntervalSince(since) >= daemonDownGrace
     }
 
     private static func eta(of feature: ReadinessFeature, _ inputs: ReadinessInputs, syncing: Bool) -> Eta {
@@ -135,7 +139,7 @@ package enum FeatureReadiness {
         case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
         case .needsSource(let source): "Connect \(source.displayName) to get this"
         case .ready: "Ready — Open"
-        case .daemonStopped: "Watchtower isn't running — Start"
+        case .daemonStopped: "Watchtower isn't running"
         case .preparing(let detail): withDetail("Preparing now", detail)
         case .error(let message): withDetail("Didn't work yet — retries automatically", shortError(message))
         case .waitingForSync(let detail): withDetail("Starts after the first sync", detail)

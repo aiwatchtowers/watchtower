@@ -62,7 +62,7 @@ No recording? In the same pane, **Recap from text** under **Meeting Notes** writ
 - **No Calendar tab:** no Google Calendar or CalDAV/ICS calendar is connected. Connect one in **Settings → Connections**.
 - **"No meetings yet":** the tab is there but nothing has synced. A banner above the list says why.
 - **"Calendar sync is off":** Google Calendar is connected but sync is switched off. Click **Turn On Calendar Sync**.
-- **"Watchtower's sync isn't running":** click **Start Sync**.
+- **"Watchtower isn't running"** (the banner at the top of the window): click **Start**.
 - **"Google Calendar for … can't sync":** the reason follows. Click **Reconnect** if it keeps failing.
 - **"The sync didn't restart":** click **Restart Sync**.
 - **No Record button:** it shows from 10 minutes before the start until the end of the event, and stays while that event is recording.

@@ -102,8 +102,6 @@ package enum HomeLink: Equatable, Sendable {
     case feature(ReadinessFeature)
     /// Getting ready's Connect row.
     case connect(ReadinessSource)
-    /// A card's Start while the daemon is down.
-    case startDaemon
 }
 
 /// A target row's status dot.

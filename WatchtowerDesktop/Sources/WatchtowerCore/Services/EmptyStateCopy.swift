@@ -42,8 +42,6 @@ package enum EmptyStateAction: Equatable, Sendable {
     case turnOn(featureID: String)
     /// Shown only when readiness is `.needsSource`.
     case connect(ReadinessSource)
-    /// Shown only when readiness is `.daemonStopped`.
-    case startDaemon
     /// A Settings tab, e.g. "features" for the briefing and day plan hours,
     /// under the button's own label.
     case openSettings(tab: String, label: String)

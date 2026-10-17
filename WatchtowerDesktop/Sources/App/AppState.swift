@@ -1080,40 +1080,17 @@ final class AppState {
         }
     }
 
-    /// Finish's daemon bring-up, held so tests can await it.
-    @ObservationIgnored private(set) var onboardingDaemonStart: Task<Void, Never>?
+    /// Every daemon start or restart (launch, onboarding, the banner's Start
+    /// and Retry, the Calendar tab, Settings) runs on this one chain
+    /// (`enqueueDaemonStart`, AppState+DaemonStart.swift); held so tests can
+    /// await it.
+    @ObservationIgnored var daemonStartChain: Task<Void, Never>?
+    /// How long the banner's Start waits before checking the daemon stayed up.
+    @ObservationIgnored var daemonStartVerifyDelay: Duration = .seconds(3)
 
-    /// Starts (or, with `startOnly` false, restarts) the daemon in the
-    /// background, after any earlier bring-up still running: two restarts
-    /// overlapping would read as a failed start.
-    func bringUpDaemonInBackground(startOnly: Bool) {
-        let daemon = daemonControl
-        let previous = onboardingDaemonStart
-        onboardingDaemonStart = Task {
-            await previous?.value
-            let up = startOnly && daemon.daemonIsRunning()
-                ? true
-                : await OnboardingFinishPlan.bringUpDaemon(daemon)
-            if up {
-                daemonStartFailure = nil
-            } else {
-                daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
-            }
-        }
-    }
-
-    /// The background sync did not come up after setup: shown over the tab
-    /// setup landed on, not only in the tray.
-    private(set) var daemonStartFailure: String?
-
-    func dismissDaemonStartFailure() {
-        daemonStartFailure = nil
-    }
-
-    static func daemonStartFailureText(_ detail: String?) -> String {
-        let reason = detail.map { ": \($0)." } ?? "."
-        return "The background sync did not start\(reason) Open Settings → System to retry."
-    }
+    /// The background sync did not come up, or died right after a start:
+    /// the app-wide banner shows it with Retry.
+    var daemonStartFailure: String?
 
     // MARK: - Features for a source connected from Settings
 
@@ -1254,7 +1231,7 @@ final class AppState {
         onboardingGoals.wroteChanges || accountFingerprint != rerunAccountsAtStart
     }
 
-    private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
+    var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
 
     /// Why the last Turn on from a tab's empty state didn't work, per feature
     /// id, so one tab's error never shows under another's Turn on; cleared
@@ -1487,7 +1464,7 @@ final class AppState {
         // 1. Stop the daemon so nothing writes while the tables are wiped —
         // after a finish still bringing one up, and only once its process is
         // really gone (a timeout wipes nothing).
-        await onboardingDaemonStart?.value
+        await daemonStartChain?.value
         let daemon = daemonControl
         if daemon.daemonIsRunning() {
             await daemon.stopDaemonNow()
@@ -1517,11 +1494,12 @@ final class AppState {
     /// Ensure the daemon is running against the current CLI binary.
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
-    /// so UI quit/launch cycles the daemon lifecycle.
+    /// so UI quit/launch cycles the daemon lifecycle. On the one start chain.
     private func ensureDaemonRunning() {
         let daemon = daemonControl
-        ensureDaemonTask = Task {
-            daemonManager.resolvePathIfNeeded()
+        let manager = daemonManager
+        ensureDaemonTask = enqueueDaemonStart {
+            manager.resolvePathIfNeeded()
             if daemon.daemonIsRunning() {
                 await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))

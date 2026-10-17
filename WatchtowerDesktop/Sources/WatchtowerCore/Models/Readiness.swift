@@ -125,7 +125,8 @@ package enum Readiness: Equatable, Sendable {
     case needsSource(ReadinessSource)
     case ready
     /// The daemon has been down for `FeatureReadiness.daemonDownGrace`:
-    /// nothing scheduled will happen until it is started.
+    /// nothing scheduled will happen until it is started (from the app-wide
+    /// banner; the state itself carries no button).
     case daemonStopped
     case preparing(detail: String?)
     case error(message: String)

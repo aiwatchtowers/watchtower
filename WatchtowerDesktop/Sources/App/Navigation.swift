@@ -67,6 +67,7 @@ struct SplashView: View {
 
 struct MainNavigationView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.openWindow) private var openWindow
     /// The full menu (true) or the icon rail ⌘B folds it into, kept across launches.
     @AppStorage("sidebar.menuExpanded") private var showMenu = true
     /// Reuses `GoogleConnectFlow.shared.calendar` (rather than a locally-
@@ -133,17 +134,13 @@ struct MainNavigationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .detailBackground()
                     .safeAreaInset(edge: .top, spacing: 0) {
-                        if let failure = appState.daemonStartFailure {
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                                Text(failure).font(.callout).lineLimit(2)
-                                Spacer()
-                                Button("Dismiss") { appState.dismissDaemonStartFailure() }
-                                    .buttonStyle(.borderless)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(Color.orange.opacity(0.12))
+                        if let banner = appState.daemonBanner {
+                            DaemonBannerView(
+                                banner: banner,
+                                onStart: { appState.startDaemonFromBanner() },
+                                onOpenLogs: { openWindow(id: "logs") },
+                                onDismiss: { appState.dismissDaemonStartFailure() }
+                            )
                         }
                     }
             }
@@ -239,12 +236,12 @@ struct MainNavigationView: View {
                 try? await Task.sleep(for: .milliseconds(250))
             }
             guard googleAuth.isConnected else { return }
-            let daemon = DaemonManager()
-            daemon.resolvePathIfNeeded()
-            guard DaemonManager.checkDaemonRunning() else { return }
-            await daemon.stopDaemon()
-            try? await Task.sleep(for: .milliseconds(500))
-            await daemon.startDaemon()
+            // On the app's one start chain; a stopped daemon is the banner's.
+            let daemon = appState.daemonControl
+            await appState.enqueueDaemonStart {
+                guard daemon.daemonIsRunning() else { return }
+                try? await daemon.restartWaiting()
+            }.value
         }
     }
 

@@ -54,7 +54,6 @@ extension AppState {
         case .catchUp: selectedDestination = .catchUp
         case .feature(let feature): selectedDestination = Self.homeDestination(for: feature)
         case .connect(let source): performEmptyStateAction(.connect(source))
-        case .startDaemon: performEmptyStateAction(.startDaemon)
         }
     }
 

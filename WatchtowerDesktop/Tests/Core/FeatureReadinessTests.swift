@@ -115,7 +115,23 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.peopleCards, input), .daemonStopped)
         input.lastSyncTime = nil
         XCTAssertEqual(evaluate(.ideas, input), .daemonStopped)
-        XCTAssertEqual(FeatureReadiness.line(.daemonStopped), "Watchtower isn't running — Start")
+        XCTAssertEqual(FeatureReadiness.line(.daemonStopped), "Watchtower isn't running")
+    }
+
+    /// The owner gap is the fix to name even with the daemon down: an
+    /// owner-gated feature drops `daemonStopped` like any promise.
+    func testOwnerGapBeatsDaemonStopped() {
+        XCTAssertNil(FeatureReadiness.honoringOwner(.daemonStopped, of: .briefing, ownerKnown: false))
+        XCTAssertEqual(FeatureReadiness.honoringOwner(.daemonStopped, of: .briefing, ownerKnown: true), .daemonStopped)
+        XCTAssertEqual(FeatureReadiness.honoringOwner(.daemonStopped, of: .digests, ownerKnown: false), .daemonStopped)
+        XCTAssertTrue(FeatureReadiness.isDaemonDown(running: false, since: Date(timeIntervalSince1970: 0), now: Date()))
+        XCTAssertFalse(FeatureReadiness.isDaemonDown(running: false, since: nil, now: Date()))
+    }
+
+    func testDaemonBannerFailureWinsOverStopped() {
+        XCTAssertEqual(DaemonBanner.current(failure: "boom", daemonDown: true), .failed("boom"))
+        XCTAssertEqual(DaemonBanner.current(failure: nil, daemonDown: true), .stopped)
+        XCTAssertNil(DaemonBanner.current(failure: nil, daemonDown: false))
     }
 
     /// A restart (down a few seconds) or no status read yet keeps the schedule.

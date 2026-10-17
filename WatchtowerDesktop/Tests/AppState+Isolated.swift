@@ -59,6 +59,8 @@ extension AppState {
 final class FakeDaemon: DaemonControl {
     var running = false
     var startSucceeds = true
+    /// The start exits 0 but the daemon is gone right after.
+    var diesAfterStart = false
     var restartError: Error?
     var holdRestart = false
     /// The stopped daemon's process never goes.
@@ -75,7 +77,7 @@ final class FakeDaemon: DaemonControl {
 
     func startDetached() async -> Bool {
         starts += 1
-        running = startSucceeds
+        running = startSucceeds && !diesAfterStart
         return startSucceeds
     }
 

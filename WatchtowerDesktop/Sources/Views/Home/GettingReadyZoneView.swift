@@ -158,11 +158,6 @@ struct GettingReadyCardView: View {
                     // No owner yet (OWNER-02): the fix is in Settings → Connections.
                     Button("Open Connections") { onLink(.connect(source)) }
                         .buttonStyle(.link)
-                } else if readiness == .daemonStopped {
-                    Spacer(minLength: 0)
-                    Button("Start") { onLink(.startDaemon) }
-                        .buttonStyle(.link)
-                        .accessibilityLabel("Start Watchtower")
                 }
             }
         }

@@ -5,7 +5,8 @@ The **Calendar** tab is not in the sidebar, it says "No meetings yet", or one me
 ## What you see
 
 - No **Calendar** tab at all.
-- A banner above the list: "Calendar sync is off — your Google Calendar is connected, but Watchtower isn't syncing it." (**Turn On Calendar Sync**), "Watchtower's sync isn't running, so your calendar hasn't synced yet." (**Start Sync**), "Google Calendar for <name> can't sync …" (**Reconnect**) or "The sync didn't restart." (**Restart Sync**).
+- A banner above the list: "Calendar sync is off — your Google Calendar is connected, but Watchtower isn't syncing it." (**Turn On Calendar Sync**), "Google Calendar for <name> can't sync …" (**Reconnect**) or "The sync didn't restart." (**Restart Sync**).
+- At the top of the window: "Watchtower isn't running, so nothing new arrives." (**Start**).
 - "No upcoming events", or a single meeting absent.
 
 ## Why

@@ -71,18 +71,6 @@ final class HomeLinkTests: XCTestCase {
         XCTAssertEqual(appState.selectedDestination, .home, "Connect opens Settings, not a tab")
     }
 
-    func testStartDaemonStartsIt() async {
-        let appState = AppState.isolated()
-        let daemon = FakeDaemon()
-        appState.daemonControlOverride = daemon
-        appState.selectedDestination = .home
-        appState.openHomeLink(.startDaemon)
-        await appState.onboardingDaemonStart?.value
-        XCTAssertEqual(daemon.starts, 1)
-        XCTAssertNil(appState.daemonStartFailure)
-        XCTAssertEqual(appState.selectedDestination, .home)
-    }
-
     /// Each feature opens a tab whose empty state is about that feature (or
     /// its sibling: stream digests on Digests, Jira on its views); Knowledge
     /// search opens Search, which keeps its own empty state.

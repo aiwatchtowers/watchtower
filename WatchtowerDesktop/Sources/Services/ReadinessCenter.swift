@@ -39,6 +39,9 @@ final class ReadinessCenter {
     /// after HH:00" (Go's `config.DefaultBriefingHour`/`DefaultDayPlanHour` until then).
     private(set) var briefingHour = 8
     private(set) var dayPlanHour = 8
+    /// The daemon has been down past `FeatureReadiness.daemonDownGrace`:
+    /// the app-wide banner's Start shows. Follows the status poll and the tick.
+    private(set) var daemonDown = false
 
     /// The daemon's throttle stamps read here, a subset of
     /// `DaemonStampFiles.names`.
@@ -149,6 +152,9 @@ final class ReadinessCenter {
         if next != readiness { readiness = next }
         if inputs.briefingHour != briefingHour { briefingHour = inputs.briefingHour }
         if inputs.dayPlanHour != dayPlanHour { dayPlanHour = inputs.dayPlanHour }
+        let down = FeatureReadiness.isDaemonDown(
+            running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now)
+        if down != daemonDown { daemonDown = down }
     }
 
     func readiness(for feature: ReadinessFeature) -> Readiness? {

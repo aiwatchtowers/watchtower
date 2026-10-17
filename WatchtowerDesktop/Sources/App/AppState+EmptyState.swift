@@ -21,8 +21,7 @@ extension AppState {
         )
     }
 
-    /// Turn on goes through `turnOnFeatureFromEmptyState`; Start brings the
-    /// daemon up (a failure shows the start banner); Connect and Open
+    /// Turn on goes through `turnOnFeatureFromEmptyState`; Connect and Open
     /// Settings open the Settings window on their tab. A tab's own action is
     /// the tab's (`TabEmptyState.onTabAction`).
     func performEmptyStateAction(_ action: EmptyStateAction) {
@@ -32,8 +31,6 @@ extension AppState {
         case .connect:
             settingsTab = .connections
             openSettingsWindow?()
-        case .startDaemon:
-            bringUpDaemonInBackground(startOnly: true)
         case .openSettings(let name, _):
             if let tab = SettingsTab(emptyStateTab: name) { settingsTab = tab }
             openSettingsWindow?()

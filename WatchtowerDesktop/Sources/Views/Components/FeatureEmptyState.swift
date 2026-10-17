@@ -96,8 +96,8 @@ struct FeatureEmptyState<Extra: View>: View {
     }
 
     /// The one button: Turn on while off (for a feature with a switch),
-    /// Connect while its source is missing, Start while the daemon is down,
-    /// otherwise the tab's own action —
+    /// Connect while its source is missing, otherwise (daemon down included:
+    /// Start lives in the app-wide banner) the tab's own action —
     /// never a Turn on or Connect the state doesn't call for. A failed Turn
     /// on keeps its retry: an enable whose restart failed leaves the feature
     /// on (no longer `.off`), and only the retry restarts the daemon.
@@ -112,8 +112,6 @@ struct FeatureEmptyState<Extra: View>: View {
             return copy.feature?.featureID.map { .turnOn(featureID: $0) }
         case .needsSource(let source):
             return .connect(source)
-        case .daemonStopped:
-            return .startDaemon
         default:
             if turnOnError != nil, let featureID = copy.feature?.featureID {
                 return .turnOn(featureID: featureID)
@@ -126,7 +124,6 @@ struct FeatureEmptyState<Extra: View>: View {
         switch action {
         case .turnOn: retry ? "Try again" : "Turn on"
         case .connect(let source): "Connect \(source.displayName)"
-        case .startDaemon: "Start Watchtower"
         case .openSettings(_, let label): label
         case .tabAction(let label): label
         }
@@ -134,7 +131,7 @@ struct FeatureEmptyState<Extra: View>: View {
 
     private static func isStateGated(_ action: EmptyStateAction) -> Bool {
         switch action {
-        case .turnOn, .connect, .startDaemon: true
+        case .turnOn, .connect: true
         case .openSettings, .tabAction: false
         }
     }

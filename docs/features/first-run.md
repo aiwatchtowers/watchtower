@@ -32,8 +32,12 @@ until the next morning's hour.
      set by the first status read or stop that finds it down, cleared when it
      runs, nil before the first read). Every later state is a promise a stopped
      daemon does not keep, so it wins over all of them; the grace keeps a
-     restart (stop, then start) from flickering. With the 10 s status poll and
-     the 30 s readiness tick it shows 30–60 s after the daemon went down;
+     restart (stop, then start) from flickering. The 30 s readiness tick
+     re-evaluates the clock, so it shows 30–60 s after the daemon went down.
+     The state is a line only ("Watchtower isn't running"); the one Start
+     control is the app-wide banner (below). With the owner unknown,
+     `honoringOwner` drops it for the owner-gated features like any promise,
+     so the owner gap is what Home names;
   5. `preparing(detail)` — the newest `pipeline_runs` row is `running`, the
      daemon is running and `started_at` is under `preparingMaxAge` (2 h,
      `FeatureReadiness.swift:9`). An older `running` row is a dead process's
@@ -56,7 +60,7 @@ until the next morning's hour.
   from `last_ideas.txt`/`last_streams.txt`, rounded up). No countdowns. Phrases
   and the one-line state wording live in `FeatureReadiness.phrase`/`line`
   (`FeatureReadiness.swift:94-115`): "Off — Turn on", "Connect Slack to get
-  this", "Watchtower isn't running — Start", "Preparing now", "Didn't work yet — retries automatically · <first line
+  this", "Watchtower isn't running", "Preparing now", "Didn't work yet — retries automatically · <first line
   of error_msg, ≤ 80 chars>", "Starts after the first sync", "Within ~15 min",
   "Today at 08:00", "In about a day". The spec's "link to Usage → Pipelines" on
   `error` is not built.
@@ -85,6 +89,33 @@ until the next morning's hour.
   readiness through `FeatureReadiness.honoringOwner`: a `scheduled` or
   `waitingForSync` state reads nil then (no line); off, needs-source, error,
   preparing and ready stay.
+
+### The daemon banner (#577)
+
+One banner over every tab (`MainNavigationView`'s top inset,
+`DaemonBannerView`, `AppState.daemonBanner` → `DaemonBanner.current`):
+
+- `failed(reason)` — `AppState.daemonStartFailure`: a start that exited
+  non-zero ("The background sync did not start: <reason>.") or a daemon gone
+  again `daemonStartVerifyDelay` (3 s) after a start that exited 0
+  (`daemonDiedAfterStartText`). **Retry**, **Open Logs** (the Logs window),
+  **Dismiss**. It wins over `stopped`, and goes when the status poll sees a
+  daemon (`DaemonManager.onRunningChanged`).
+- `stopped` — `ReadinessCenter.daemonDown`, the same
+  `FeatureReadiness.isDaemonDown` rule as the readiness state (30 s grace):
+  "Watchtower isn't running, so nothing new arrives." with **Start**.
+
+Start and Retry run `AppState.startDaemonFromBanner`: a daemon already running
+is not a failure; otherwise `startDetached`, then the alive check.
+
+**One start chain.** Every daemon start or restart from the app — the launch
+`ensureDaemonRunning`, onboarding's and Run setup again's
+`bringUpDaemonInBackground`, the banner, the Calendar tab's restart, the Google
+reconnect restart and Settings → Slack disconnect's stop/start — goes through
+`AppState.enqueueDaemonStart`, which runs each after the previous one
+(`daemonStartChain`). The Calendar tab's own "sync isn't running" banner and
+its Start Sync are gone: the app-wide banner covers it, and a failed Calendar
+restart still shows its reason there.
 
 ### Fresh-install rule — Go ↔ Swift dual path
 
@@ -159,10 +190,7 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   before its empty state. "No matches" filter states are untouched.
 - **The one button** (`FeatureEmptyState.visibleAction`, `:103`): Turn on while
   `off` — for **any** off feature with a registry id, hiding the tab's own
-  action while off (R13); Connect <source> while `needsSource`; **Start
-  Watchtower** while `daemonStopped` (`EmptyStateAction.startDaemon` →
-  `AppState.bringUpDaemonInBackground(startOnly: true)`; a failed start shows
-  the "did not start" banner); otherwise the
+  action while off (R13); Connect <source> while `needsSource`; otherwise the
   table's action ("Change the hour" for the hours, which opens Settings →
   Features — owner, ask #299 —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
   never show in a state that doesn't call for them.
@@ -306,7 +334,8 @@ the zone and the memory to persist out. Rules, first match wins:
    Connect rows for the bare Slack/Calendar/Jira sources) does not open it.
 6. Some card with a source, and every card terminal (ready or error) →
    (`daemonStopped` is not terminal — tone `waiting` — so a stopped daemon
-   never completes the zone; its cards carry a **Start** link, `HomeLink.startDaemon`)
+   never completes the zone; its cards only carry the line, Start is the
+   app-wide banner's)
    `completedAt = now`; "Everything's ready" if the zone showed unready cards
    during this launch, else hidden. A zone of Connect rows only (perhaps with
    the knowledge-index card) is never complete: it stays until a source
