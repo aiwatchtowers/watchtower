@@ -11,7 +11,10 @@ struct AgentSettingsSheet: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var appState
     @State private var busy = false
+    @State private var drafts: [InstructionField: String] = [:]
+    @State private var showPreview = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -26,6 +29,8 @@ struct AgentSettingsSheet: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Divider()
+                instructionsSection
                 Divider()
                 fileRow(state)
             } else if vm.methodologyErrors[project.id] == nil {
@@ -44,8 +49,13 @@ struct AgentSettingsSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 460, alignment: .leading)
-        .task { await vm.loadMethodology(projectID: project.id) }
+        .frame(width: 520, alignment: .leading)
+        .task {
+            async let methodology: Void = vm.loadMethodology(projectID: project.id)
+            async let instructions: Void = vm.loadInstructions(projectID: project.id)
+            _ = await (methodology, instructions)
+        }
+        .sheet(isPresented: $showPreview) { InstructionsPreviewSheet(workbenchID: project.id) }
     }
 
     private func setting(_ key: WorkbenchMethodologyKey, state: WorkbenchMethodologyState) -> some View {
@@ -69,16 +79,59 @@ struct AgentSettingsSheet: View {
         }
     }
 
+    @ViewBuilder
+    private var instructionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Your instructions — this workbench").font(.subheadline.weight(.semibold))
+            if let state = vm.instructions[project.id] {
+                instructionField(.session, title: "Session instructions",
+                                 caption: "Added after your global text in every new session here.", state: state)
+                instructionField(.procedure, title: "Target procedure",
+                                 caption: "Added after your global procedure when a target here goes In progress.", state: state)
+                Button("Preview what the agent gets…") { showPreview = true }.buttonStyle(.link)
+            } else if let error = vm.instructionErrors[project.id]?[.session] {
+                Text(error).font(.caption).foregroundStyle(.red)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+    }
+
+    private func instructionField(_ field: InstructionField, title: String, caption: String, state: OwnerInstructionsState) -> some View {
+        InstructionFieldBlock(
+            title: title, caption: caption, stored: state.workbench?.text(field) ?? "", limit: state.limit,
+            suggestions: state.suggestions(for: field, workbenchID: project.id),
+            detail: { "\($0.sessionCount) sessions in this workbench" },
+            error: vm.instructionErrors[project.id]?[field], busy: busy,
+            draft: Binding(get: { drafts[field] }, set: { drafts[field] = $0 }),
+            onSave: { body in
+                run { if await vm.saveInstruction(projectID: project.id, field: field, body: body) { drafts[field] = nil } }
+            },
+            onDecide: { row, add in
+                run { await vm.decideSuggestion(projectID: project.id, field: field, id: row.id, add: add) }
+            },
+            globalText: state.global.text(field),
+            onEditGlobal: {
+                appState.settingsTab = .system
+                appState.openSettingsWindow?()
+            }
+        )
+    }
+
+    private func run(_ work: @escaping () async -> Void) {
+        guard !busy else { return }
+        busy = true
+        Task {
+            await work()
+            busy = false
+        }
+    }
+
     private func fileRow(_ state: WorkbenchMethodologyState) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button(state.fileButtonTitle) {
-                if state.file.present {
-                    NSWorkspace.shared.open(project.folderURL.appending(path: ".watchtower/workflow.md"))
-                } else {
-                    createFile()
-                }
-            }
-            .disabled(busy)
+            Text("Folder rules: .watchtower/workflow.md (team, committed)").font(.subheadline)
+            Button(state.fileButtonTitle, action: { openOrCreateFile(state) })
+                .disabled(busy)
             if let note = state.fileNote {
                 Text(note).font(.caption).foregroundStyle(.orange)
             }
@@ -86,6 +139,14 @@ struct AgentSettingsSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func openOrCreateFile(_ state: WorkbenchMethodologyState) {
+        if state.file.present {
+            NSWorkspace.shared.open(project.folderURL.appending(path: ".watchtower/workflow.md"))
+        } else {
+            createFile()
         }
     }
 

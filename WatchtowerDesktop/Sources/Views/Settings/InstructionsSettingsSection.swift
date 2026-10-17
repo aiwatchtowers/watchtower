@@ -36,55 +36,14 @@ struct InstructionsSettingsSection: View {
     }
 
     private func fieldBlock(_ field: InstructionField, title: String, caption: String, state: OwnerInstructionsState) -> some View {
-        let stored = state.global.text(field)
-        let draft = drafts[field] ?? stored
-        let count = OwnerInstructionsState.runeCount(draft)
-        return VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-            Text(caption).font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: Binding(get: { drafts[field] ?? stored }, set: { drafts[field] = $0 }))
-                .font(.body)
-                .frame(minHeight: 70)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
-            HStack {
-                Text("\(count) / \(state.limit)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(count > state.limit ? .red : .secondary)
-                Spacer()
-                Button("Save") { Task { await save(field, body: draft) } }
-                    .disabled(draft == stored || busy)
-            }
-            if let error = errors[field] {
-                Text(error).font(.caption).foregroundStyle(.red)
-            }
-            suggestionsBlock(field, state: state)
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private func suggestionsBlock(_ field: InstructionField, state: OwnerInstructionsState) -> some View {
-        let rows = state.suggestions.filter { $0.field == field }
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("You keep saying this — \(rows.count) suggestion\(rows.count == 1 ? "" : "s")")
-                    .font(.caption.weight(.semibold))
-                ForEach(rows) { row in
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("“\(row.text)”")
-                            Text(detail(row)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Add") { Task { await decide(row, add: true, field: field) } }
-                        Button("Dismiss") { Task { await decide(row, add: false, field: field) } }
-                    }
-                    .disabled(busy)
-                }
-            }
-            .padding(8)
-            .background(Color.yellow.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
-        }
+        InstructionFieldBlock(
+            title: title, caption: caption, stored: state.global.text(field), limit: state.limit,
+            suggestions: state.suggestions.filter { $0.field == field },
+            detail: detail, error: errors[field], busy: busy,
+            draft: Binding(get: { drafts[field] }, set: { drafts[field] = $0 }),
+            onSave: { body in Task { await save(field, body: body) } },
+            onDecide: { row, add in Task { await decide(row, add: add, field: field) } }
+        )
     }
 
     private func detail(_ row: InstructionSuggestion) -> String {
