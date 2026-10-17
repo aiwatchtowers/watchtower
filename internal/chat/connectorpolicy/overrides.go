@@ -7,11 +7,11 @@ const claudeDocsToken = "claude_ai_Claude_Docs"
 // known misannotated tools and the Claude Docs operation rules. Data only —
 // each row says why it exists, and policy_test.go covers every row.
 var overrides = []override{
-	{Server: claudeDocsToken, Tool: "create", Verdict: Allow, Inspect: inspectDocsWrite,
+	{Server: claudeDocsToken, Tool: "create", Verdict: Allow, CheckDocsWrite: true,
 		Why: "creates a doc or comment in the owner's private claude.ai account (ask #236); a share, delete or mention still asks"},
-	{Server: claudeDocsToken, Tool: "update", Verdict: Allow, Inspect: inspectDocsWrite,
+	{Server: claudeDocsToken, Tool: "update", Verdict: Allow, CheckDocsWrite: true,
 		Why: "edits the owner's private doc, every revision kept in its history; a share, delete or mention still asks"},
-	{Server: claudeDocsToken, Tool: "batch", Verdict: Allow, Inspect: inspectDocsWrite,
+	{Server: claudeDocsToken, Tool: "batch", Verdict: Allow, CheckDocsWrite: true,
 		Why: "creates or edits the owner's private doc in one call; a share, delete or mention still asks"},
 	{Server: claudeDocsToken, Tool: "read", Verdict: Allow,
 		Why: "reads a doc the owner can open"},

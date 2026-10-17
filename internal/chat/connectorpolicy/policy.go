@@ -63,9 +63,11 @@ type Catalog interface {
 	Lookup(serverToken, tool string) (Annotations, bool)
 }
 
-// Policy is the per-session input of the decision table. Every nil field fails
-// closed: no Catalog asks for every connector call, no PathCheck denies every
-// path, no OwnArtifact asks before updating any existing artifact.
+// Policy is the per-session input of the decision table. A nil Catalog asks
+// for every connector call, a nil PathCheck denies every path and a nil
+// OwnArtifact asks before updating any existing artifact. Disabled is the
+// one field whose nil value allows: it means nothing is switched off, so the
+// caller must not pass nil when it failed to load the owner's switches.
 type Policy struct {
 	Catalog Catalog
 	// Disabled holds the server tokens switched off in Settings → AI.
@@ -76,11 +78,6 @@ type Policy struct {
 	// OwnArtifact reports whether this session published the artifact at url.
 	OwnArtifact func(url string) bool
 }
-
-const (
-	mcpPrefix         = "mcp__"
-	claudeAITokenHead = "claude_ai_"
-)
 
 // Decide classifies one call. Rules apply in order, first match wins.
 func (p Policy) Decide(c Call) Decision {
@@ -93,13 +90,10 @@ func (p Policy) Decide(c Call) Decision {
 		}
 	}
 
-	server, tool, ok := ParseToolName(c.Tool)
-	if !ok || !strings.HasPrefix(server, claudeAITokenHead) {
-		return deny("%s is not available in this chat", c.Tool)
-	}
 	// The request's own server name must map to the token in the tool name;
-	// a mismatch means the classification below would be about another server.
-	if c.Server == "" || ServerToken(c.Server) != server {
+	// a mismatch means the rules below would classify another server's tool.
+	server, tool, ok := ParseToolName(c.Tool)
+	if !ok || !strings.HasPrefix(server, "claude_ai_") || ServerToken(c.Server) != server {
 		return deny("%s is not available in this chat", c.Tool)
 	}
 	name := displayName(c.Server)
@@ -123,43 +117,37 @@ func (p Policy) Decide(c Call) Decision {
 
 // decideFileTool confines the file built-ins to the publish dir.
 func (p Policy) decideFileTool(c Call) Decision {
-	var in struct {
-		FilePath *string `json:"file_path"`
+	in, err := parseObject(c.Input)
+	if err == nil {
+		var path string
+		path, _, err = in.str("file_path")
+		if err == nil {
+			err = p.checkPath(path)
+		}
 	}
-	if err := json.Unmarshal(c.Input, &in); err != nil || in.FilePath == nil || *in.FilePath == "" ||
-		p.checkPath(*in.FilePath) != nil {
-		return deny("%s may only write inside %s", c.Tool, p.PublishDir)
+	if err != nil {
+		return deny("%s may only use files inside %s", c.Tool, p.PublishDir)
 	}
 	return Decision{Verdict: Allow, Reason: "inside the publish dir"}
 }
 
-// artifactInput holds the Artifact fields the gate reads. Raw fields are
-// decoded on use so an unexpected shape denies instead of being skipped.
-type artifactInput struct {
-	Action    *string         `json:"action"`
-	FilePath  *string         `json:"file_path"`
-	FilePaths []string        `json:"file_paths"`
-	Files     json.RawMessage `json:"files"`
-	Root      *string         `json:"root"`
-	URL       *string         `json:"url"`
-	Force     *bool           `json:"force"`
-	OutDir    *string         `json:"out_dir"`
-}
-
 func (p Policy) decideArtifact(input json.RawMessage) Decision {
-	var in artifactInput
-	if err := json.Unmarshal(input, &in); err != nil {
-		return deny("Artifact input is not a JSON object")
+	in, err := parseObject(input)
+	if err != nil {
+		return deny("Artifact input: %v", err)
 	}
-	action := "publish"
-	if in.Action != nil {
-		action = *in.Action
+	action, present, err := in.str("action")
+	if err != nil {
+		return deny("Artifact input: %v", err)
+	}
+	if !present {
+		action = "publish"
 	}
 	switch action {
 	case "publish":
 		return p.decideArtifactPublish(in)
 	case "read":
-		return p.decideArtifactRead(input, in)
+		return p.decideArtifactRead(in)
 	case "list", "open", "quickstart":
 		return Decision{Verdict: Allow, Reason: "Artifact " + action}
 	case "delete", "pin", "unpin":
@@ -169,7 +157,7 @@ func (p Policy) decideArtifact(input json.RawMessage) Decision {
 	}
 }
 
-func (p Policy) decideArtifactPublish(in artifactInput) Decision {
+func (p Policy) decideArtifactPublish(in fields) Decision {
 	sources, err := publishSources(in)
 	if err != nil {
 		return deny("Artifact publish: %v", err)
@@ -179,10 +167,24 @@ func (p Policy) decideArtifactPublish(in artifactInput) Decision {
 			return deny("Artifact may only publish files inside %s", p.PublishDir)
 		}
 	}
-	if in.Force != nil && *in.Force {
-		return Decision{Verdict: Ask, Reason: "Artifact publish with force overwrites a newer version"}
+	force, err := in.flag("force")
+	if err != nil {
+		return deny("Artifact publish: %v", err)
 	}
-	if in.URL != nil && *in.URL != "" && (p.OwnArtifact == nil || !p.OwnArtifact(*in.URL)) {
+	pin, err := in.flag("pin")
+	if err != nil {
+		return deny("Artifact publish: %v", err)
+	}
+	url, _, err := in.str("url")
+	if err != nil {
+		return deny("Artifact publish: %v", err)
+	}
+	switch {
+	case force:
+		return Decision{Verdict: Ask, Reason: "Artifact publish with force overwrites a newer version"}
+	case pin:
+		return Decision{Verdict: Ask, Reason: "Artifact publish also pins the artifact"}
+	case url != "" && (p.OwnArtifact == nil || !p.OwnArtifact(url)):
 		return Decision{Verdict: Ask, Reason: "Artifact publish updates an artifact this chat did not publish"}
 	}
 	return Decision{Verdict: Allow, Reason: "private publish from the publish dir"}
@@ -191,11 +193,13 @@ func (p Policy) decideArtifactPublish(in artifactInput) Decision {
 // publishSources lists every local path an Artifact publish reads: file_path,
 // file_paths, each files source and root. A files source relative to root is
 // joined to it, the way the CLI resolves it.
-func publishSources(in artifactInput) ([]string, error) {
-	var root string
+func publishSources(in fields) ([]string, error) {
 	var out []string
-	if in.Root != nil {
-		root = *in.Root
+	root, hasRoot, err := in.str("root")
+	if err != nil {
+		return nil, err
+	}
+	if hasRoot {
 		out = append(out, dirProbe(root))
 	}
 	resolve := func(p string) string {
@@ -204,28 +208,37 @@ func publishSources(in artifactInput) ([]string, error) {
 		}
 		return p
 	}
-	if in.FilePath != nil {
-		out = append(out, *in.FilePath)
+	if path, ok, err := in.str("file_path"); err != nil {
+		return nil, err
+	} else if ok {
+		out = append(out, path)
 	}
-	out = append(out, in.FilePaths...)
+	paths, err := in.strList("file_paths")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, paths...)
 
-	files := bytes.TrimSpace(in.Files)
+	files := bytes.TrimSpace(in["files"])
 	if len(files) == 0 || bytes.Equal(files, []byte("null")) {
 		return out, nil
 	}
 	switch files[0] {
 	case '[':
-		var list []struct {
-			Path *string `json:"path"`
-		}
+		var list []json.RawMessage
 		if err := json.Unmarshal(files, &list); err != nil {
 			return nil, fmt.Errorf("files list has an unexpected shape")
 		}
-		for _, f := range list {
-			if f.Path == nil {
-				return nil, fmt.Errorf("files entry without a path")
+		for i, raw := range list {
+			entry, err := parseObject(raw)
+			if err != nil {
+				return nil, fmt.Errorf("files[%d]: %w", i, err)
 			}
-			out = append(out, resolve(*f.Path))
+			path, ok, err := entry.str("path")
+			if err != nil || !ok {
+				return nil, fmt.Errorf("files[%d] has no path", i)
+			}
+			out = append(out, resolve(path))
 		}
 	case '{':
 		var m map[string]json.RawMessage
@@ -258,46 +271,65 @@ func filesMapSource(raw json.RawMessage) (src string, local bool, err error) {
 	if json.Unmarshal(raw, &s) == nil {
 		return s, true, nil
 	}
-	var obj struct {
-		From     *string `json:"from"`
-		Artifact *string `json:"artifact"`
-	}
-	if err := json.Unmarshal(raw, &obj); err != nil {
+	obj, err := parseObject(raw)
+	if err != nil {
 		return "", false, fmt.Errorf("unexpected source shape")
 	}
+	from, hasFrom, err := obj.str("from")
+	if err != nil {
+		return "", false, err
+	}
+	_, hasArtifact, err := obj.str("artifact")
+	if err != nil {
+		return "", false, err
+	}
 	switch {
-	case obj.From != nil && obj.Artifact == nil:
-		return *obj.From, true, nil
-	case obj.Artifact != nil && obj.From == nil:
+	case hasFrom && !hasArtifact:
+		return from, true, nil
+	case hasArtifact && !hasFrom:
 		return "", false, nil
 	default:
 		return "", false, fmt.Errorf("unexpected source shape")
 	}
 }
 
-func (p Policy) decideArtifactRead(input json.RawMessage, in artifactInput) Decision {
-	if in.OutDir != nil {
-		if p.checkPath(dirProbe(*in.OutDir)) != nil {
-			return deny("Artifact may only save inside %s", p.PublishDir)
+// decideArtifactRead keeps a read's saved files in the publish dir: an
+// out_dir must be inside it, a missing one is set to it, and a published
+// path that could climb out of out_dir is refused.
+func (p Policy) decideArtifactRead(in fields) Decision {
+	paths, err := in.strList("paths")
+	if err != nil {
+		return deny("Artifact read: %v", err)
+	}
+	path, hasPath, err := in.str("path")
+	if err != nil {
+		return deny("Artifact read: %v", err)
+	}
+	if hasPath {
+		paths = append(paths, path)
+	}
+	for _, rel := range paths {
+		if filepath.IsAbs(rel) || hasDotDot(rel) {
+			return deny("Artifact read path %q must stay inside %s", rel, p.PublishDir)
 		}
+	}
+
+	outDir, hasOutDir, err := in.str("out_dir")
+	if err != nil {
+		return deny("Artifact read: %v", err)
+	}
+	if !hasOutDir {
+		outDir = p.PublishDir
+	}
+	if p.checkPath(dirProbe(outDir)) != nil {
+		return deny("Artifact may only save inside %s", p.PublishDir)
+	}
+	if hasOutDir {
 		return Decision{Verdict: Allow, Reason: "read into the publish dir"}
 	}
-	if p.PublishDir == "" {
-		return deny("Artifact read has no publish dir to save into")
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(input, &m); err != nil || m == nil {
-		return deny("Artifact input is not a JSON object")
-	}
-	dir, err := json.Marshal(p.PublishDir)
-	if err != nil {
-		return deny("Artifact read: %v", err)
-	}
-	m["out_dir"] = dir
-	updated, err := json.Marshal(m)
-	if err != nil {
-		return deny("Artifact read: %v", err)
-	}
+	// Marshalling a string and a map of valid raw values cannot fail.
+	in["out_dir"], _ = json.Marshal(p.PublishDir)
+	updated, _ := json.Marshal(map[string]json.RawMessage(in))
 	return Decision{Verdict: Allow, Reason: "read into the publish dir", UpdatedInput: updated}
 }
 
@@ -311,16 +343,88 @@ func dirProbe(dir string) string {
 	return filepath.Join(dir, "probe")
 }
 
+// checkPath refuses a ".." component before PathCheck sees the path: a
+// lexical clean would fold "dir/link/../x" without looking at "link".
 func (p Policy) checkPath(path string) error {
 	if p.PathCheck == nil || path == "" {
 		return fmt.Errorf("no publish dir")
 	}
+	if hasDotDot(path) {
+		return fmt.Errorf("path climbs with ..")
+	}
 	return p.PathCheck(path)
+}
+
+func hasDotDot(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// fields is a tool input read by exact key. encoding/json matches struct
+// fields case-insensitively while the CLI reads exact keys, so a struct would
+// let {"file_path": outside, "FILE_PATH": inside} check one path and run the
+// other.
+type fields map[string]json.RawMessage
+
+func parseObject(raw json.RawMessage) (fields, error) {
+	var m fields
+	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
+		return nil, fmt.Errorf("input is not a JSON object")
+	}
+	return m, nil
+}
+
+func isNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// str reads a string field; present but null or not a string is an error.
+func (f fields) str(key string) (string, bool, error) {
+	raw, ok := f[key]
+	if !ok {
+		return "", false, nil
+	}
+	var s string
+	if isNull(raw) || json.Unmarshal(raw, &s) != nil {
+		return "", true, fmt.Errorf("%s is not a string", key)
+	}
+	return s, true, nil
+}
+
+// flag reads a bool field; absent is false, null or not a bool is an error.
+func (f fields) flag(key string) (bool, error) {
+	raw, ok := f[key]
+	if !ok {
+		return false, nil
+	}
+	var b bool
+	if isNull(raw) || json.Unmarshal(raw, &b) != nil {
+		return false, fmt.Errorf("%s is not a boolean", key)
+	}
+	return b, nil
+}
+
+// strList reads a list of strings; absent is empty, anything else is an error.
+func (f fields) strList(key string) ([]string, error) {
+	raw, ok := f[key]
+	if !ok {
+		return nil, nil
+	}
+	var list []string
+	if isNull(raw) || json.Unmarshal(raw, &list) != nil {
+		return nil, fmt.Errorf("%s is not a list of strings", key)
+	}
+	return list, nil
 }
 
 // ServerToken maps a server display name to the CLI's mcp__<token>__ form:
 // every rune outside [A-Za-z0-9_-] becomes "_" ("claude.ai Claude Docs" →
-// "claude_ai_Claude_Docs").
+// "claude_ai_Claude_Docs"). For a claude.ai connector the CLI also folds runs
+// of "_" into one and trims them from both ends.
 func ServerToken(displayName string) string {
 	var b strings.Builder
 	for _, r := range displayName {
@@ -330,13 +434,20 @@ func ServerToken(displayName string) string {
 			b.WriteByte('_')
 		}
 	}
-	return b.String()
+	token := b.String()
+	if !strings.HasPrefix(displayName, "claude.ai ") {
+		return token
+	}
+	for strings.Contains(token, "__") {
+		token = strings.ReplaceAll(token, "__", "_")
+	}
+	return strings.Trim(token, "_")
 }
 
 // ParseToolName splits mcp__<server>__<tool> the way the CLI does: the server
 // token runs to the first "__" after the prefix, the rest is the tool.
 func ParseToolName(raw string) (serverToken, tool string, ok bool) {
-	rest, found := strings.CutPrefix(raw, mcpPrefix)
+	rest, found := strings.CutPrefix(raw, "mcp__")
 	if !found {
 		return "", "", false
 	}
@@ -362,24 +473,15 @@ func deny(format string, args ...any) Decision {
 	return Decision{Verdict: Deny, Reason: fmt.Sprintf(format, args...)}
 }
 
-// override is one row of overrides.go.
+// override is one row of overrides.go. CheckDocsWrite asks instead of the
+// row's verdict when a Claude Docs write could reach beyond the owner's
+// private doc (docsWriteRisk).
 type override struct {
-	Server, Tool string
-	Verdict      Verdict
-	Inspect      inspection
-	Why          string
+	Server, Tool   string
+	Verdict        Verdict
+	CheckDocsWrite bool
+	Why            string
 }
-
-// inspection names an input check an override row runs before its verdict.
-type inspection int
-
-const (
-	inspectNone inspection = iota
-	// inspectDocsWrite asks when a Claude Docs write could reach beyond the
-	// owner's private doc: an object delete, a JSON-patch remove, a share
-	// field, or a mention of someone else (a mention can email them).
-	inspectDocsWrite
-)
 
 func findOverride(server, tool string) (override, bool) {
 	for _, row := range overrides {
@@ -391,7 +493,7 @@ func findOverride(server, tool string) (override, bool) {
 }
 
 func (o override) decide(input json.RawMessage) Decision {
-	if o.Inspect == inspectDocsWrite {
+	if o.CheckDocsWrite {
 		if reason, risky := docsWriteRisk(input); risky {
 			return Decision{Verdict: Ask, Reason: reason}
 		}
@@ -408,10 +510,14 @@ var shareKeys = map[string]bool{
 }
 
 // docsWriteRisk walks a Claude Docs write input and reports the first reason
-// it must go through Approve. Input that does not parse asks too.
+// it must go through Approve: an object delete, a JSON-patch remove, a share
+// field, a mention of anyone but the owner (a mention can email them), or a
+// payload sent as a string the walk cannot see into. Input that is not a JSON
+// object asks too. Keys and values compare case-insensitively, so a spelling
+// the server would ignore only asks more often.
 func docsWriteRisk(input json.RawMessage) (string, bool) {
-	var v any
-	if err := json.Unmarshal(input, &v); err != nil {
+	var v map[string]any
+	if err := json.Unmarshal(input, &v); err != nil || v == nil {
 		return "Claude Docs input could not be read", true
 	}
 	return walkDocsValue(v)
@@ -420,21 +526,10 @@ func docsWriteRisk(input json.RawMessage) (string, bool) {
 func walkDocsValue(v any) (string, bool) {
 	switch t := v.(type) {
 	case map[string]any:
-		if verb, _ := t["verb"].(string); verb == "delete" {
-			return "Claude Docs call deletes a doc object", true
+		if reason, risky := docsObjectRisk(t); risky {
+			return reason, true
 		}
-		if op, _ := t["op"].(string); op == "remove" {
-			return "Claude Docs call removes part of a doc", true
-		}
-		if typ, _ := t["type"].(string); typ == "mention" {
-			if user, has := t["user"]; has && user != "me" {
-				return "Claude Docs call mentions someone, which can email them", true
-			}
-		}
-		for k, child := range t {
-			if shareKeys[strings.ToLower(k)] {
-				return "Claude Docs call may change who can see a doc", true
-			}
+		for _, child := range t {
 			if reason, risky := walkDocsValue(child); risky {
 				return reason, true
 			}
@@ -445,6 +540,35 @@ func walkDocsValue(v any) (string, bool) {
 				return reason, true
 			}
 		}
+	}
+	return "", false
+}
+
+func docsObjectRisk(obj map[string]any) (string, bool) {
+	var mention, refMention bool
+	userKeys := 0
+	for k, val := range obj {
+		s, isString := val.(string)
+		switch key := strings.ToLower(k); {
+		case shareKeys[key]:
+			return "Claude Docs call may change who can see a doc", true
+		case key == "verb" && strings.EqualFold(s, "delete"):
+			return "Claude Docs call deletes a doc object", true
+		case key == "op" && strings.EqualFold(s, "remove"):
+			return "Claude Docs call removes part of a doc", true
+		case key == "payload" && isString:
+			return "Claude Docs call sends a payload the gate cannot inspect", true
+		case key == "type" && strings.EqualFold(s, "mention"):
+			mention = true
+		case key == "user":
+			userKeys++
+		case key == "ref":
+			refMention = isString
+		}
+	}
+	ownerMention := userKeys == 1 && obj["user"] == "me"
+	if mention && !ownerMention && (userKeys > 0 || !refMention) {
+		return "Claude Docs call mentions someone, which can email them", true
 	}
 	return "", false
 }

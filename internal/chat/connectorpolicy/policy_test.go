@@ -83,15 +83,18 @@ var decideCases = []decideCase{
 	{name: "write nested new path", call: builtin("Write", `{"file_path":"/work/publish/7/sub/a.html"}`), want: Allow},
 	{name: "write relative inside", call: builtin("Write", `{"file_path":"publish/7/a.html"}`), want: Allow},
 	{name: "write relative outside", call: builtin("Write", `{"file_path":"a.html"}`), want: Deny,
-		reason: "Write may only write inside /work/publish/7"},
+		reason: "Write may only use files inside /work/publish/7"},
 	{name: "write dotdot", call: builtin("Write", `{"file_path":"/work/publish/7/../x"}`), want: Deny},
 	{name: "write the dir itself", call: builtin("Write", `{"file_path":"/work/publish/7"}`), want: Deny},
+	{name: "write aliased key hides the real path", call: builtin("Write", `{"file_path":"/etc/x","FILE_PATH":"/work/publish/7/a"}`), want: Deny},
+	{name: "write symlink climb", call: builtin("Write", `{"file_path":"/work/publish/7/link/../a"}`), want: Deny},
+	{name: "write null path", call: builtin("Write", `{"file_path":null}`), want: Deny},
 	{name: "write documents", call: builtin("Write", `{"file_path":"/Users/someone/Documents/x"}`), want: Deny},
 	{name: "write no path", call: builtin("Write", `{"content":"x"}`), want: Deny},
 	{name: "write bad json", call: builtin("Write", `[`), want: Deny},
 	{name: "edit inside", call: builtin("Edit", `{"file_path":"/work/publish/7/a.html"}`), want: Allow},
 	{name: "read outside", call: builtin("Read", `{"file_path":"/etc/hosts"}`), want: Deny,
-		reason: "Read may only write inside"},
+		reason: "Read may only use files inside"},
 
 	// Rule 2: Artifact.
 	{name: "artifact no action publishes", call: builtin("Artifact", `{"file_path":"/work/publish/7/a.html"}`), want: Allow},
@@ -116,6 +119,19 @@ var decideCases = []decideCase{
 		`{"file_path":"/work/publish/7/a.html","root":"/work/publish/7","files":{"s.css":"../../../x.css"}}`), want: Deny},
 	{name: "artifact root outside", call: builtin("Artifact",
 		`{"file_path":"/work/publish/7/a.html","root":"/work","files":{"s.css":"publish/7/s.css"}}`), want: Deny},
+	{name: "artifact aliased file_path", call: builtin("Artifact", `{"file_path":"/tmp/a.html","FILE_PATH":"/work/publish/7/a.html"}`), want: Deny},
+	{name: "artifact aliased files null", call: builtin("Artifact",
+		`{"file_path":"/work/publish/7/a.html","files":{"x":"/tmp/x"},"Files":null}`), want: Deny},
+	{name: "artifact aliased from", call: builtin("Artifact",
+		`{"file_path":"/work/publish/7/a.html","files":{"x":{"from":"/tmp/x","FROM":"/work/publish/7/x"}}}`), want: Deny},
+	{name: "artifact aliased list path", call: builtin("Artifact",
+		`{"file_path":"/work/publish/7/a.html","files":[{"path":"/tmp/x","PATH":"/work/publish/7/x"}]}`), want: Deny},
+	{name: "artifact aliased action", call: builtin("Artifact", `{"action":"delete","Action":"list","url":"`+ownURL+`"}`), want: Ask},
+	{name: "artifact aliased url", call: builtin("Artifact", `{"file_path":"/work/publish/7/a.html","url":"`+foreignURL+`","URL":""}`), want: Ask},
+	{name: "artifact aliased force", call: builtin("Artifact", `{"file_path":"/work/publish/7/a.html","force":true,"Force":false}`), want: Ask},
+	{name: "artifact force not a bool", call: builtin("Artifact", `{"file_path":"/work/publish/7/a.html","force":"yes"}`), want: Deny},
+	{name: "artifact publish pins", call: builtin("Artifact", `{"file_path":"/work/publish/7/a.html","pin":true}`), want: Ask,
+		reason: "pins"},
 	{name: "artifact own url", call: builtin("Artifact", `{"file_path":"/work/publish/7/a.html","url":"`+ownURL+`"}`), want: Allow},
 	{name: "artifact foreign url", call: builtin("Artifact", `{"file_path":"/work/publish/7/a.html","url":"`+foreignURL+`"}`), want: Ask},
 	{name: "artifact foreign url outside source", call: builtin("Artifact", `{"file_path":"/tmp/a.html","url":"`+foreignURL+`"}`), want: Deny},
@@ -125,6 +141,10 @@ var decideCases = []decideCase{
 	{name: "artifact read out_dir inside", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","out_dir":"/work/publish/7/r"}`), want: Allow},
 	{name: "artifact read out_dir is the dir", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","out_dir":"/work/publish/7"}`), want: Allow},
 	{name: "artifact read out_dir parent", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","out_dir":"/work/publish"}`), want: Deny},
+	{name: "artifact read aliased out_dir", call: builtin("Artifact",
+		`{"action":"read","out_dir":"/Users/someone/Downloads","Out_Dir":"/work/publish/7"}`), want: Deny},
+	{name: "artifact read path climbs", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","path":"../../x"}`), want: Deny},
+	{name: "artifact read paths absolute", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","paths":["a.js","/etc/x"]}`), want: Deny},
 	{name: "artifact read out_dir outside", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","out_dir":"/Users/someone/Downloads"}`), want: Deny},
 	{name: "artifact list", call: builtin("Artifact", `{"action":"list"}`), want: Allow},
 	{name: "artifact open", call: builtin("Artifact", `{"action":"open","url":"`+ownURL+`"}`), want: Allow},
@@ -139,6 +159,7 @@ var decideCases = []decideCase{
 	// Rule 3: not a claude.ai tool.
 	{name: "hidden built-in", call: builtin("Bash", `{"command":"ls"}`), want: Deny, reason: "Bash is not available in this chat"},
 	{name: "other mcp server", call: Call{Tool: "mcp__github__create_issue", Server: "github", Input: json.RawMessage(`{}`)}, want: Deny},
+	{name: "collapsed connector token", call: Call{Tool: "mcp__claude_ai_Caf_Notes__read", Server: "claude.ai Café/Notes", Input: json.RawMessage(`{}`)}, want: Ask},
 	{name: "server name mismatch", call: Call{Tool: "mcp__claude_ai_Gmail__search", Server: "claude.ai Drive", Input: json.RawMessage(`{}`)}, want: Deny},
 	{name: "connector without server", call: Call{Tool: "mcp__claude_ai_Gmail__search", Input: json.RawMessage(`{}`)}, want: Deny},
 	{name: "built-in name with a server", call: Call{Tool: "Write", Server: gmailServer, Input: json.RawMessage(`{"file_path":"/work/publish/7/a"}`)}, want: Deny},
@@ -158,6 +179,16 @@ var decideCases = []decideCase{
 		reason: "mentions someone"},
 	{name: "docs update", call: docs("update",
 		`{"ref":{"object":"node","id":"n1"},"payload":{"ops":[{"op":"delete","target":{"kind":"find","text":" draft"}}]}}`), want: Allow},
+	{name: "docs mention without user", call: docs("create",
+		`{"payload":{"value":{"blocks":{"m":{"type":"mention","id":"someone"}}}}}`), want: Ask},
+	{name: "docs mention in attrs", call: docs("update",
+		`{"payload":{"ops":[{"op":"insert","source":{"as":"blocks","from":{"content":[{"type":"mention","attrs":{"user":"u-other"}}]}}}]}}`), want: Ask},
+	{name: "docs mention aliased user", call: docs("create",
+		`{"payload":{"value":{"blocks":{"m":{"type":"mention","user":"me","User":"someone@example.com"}}}}}`), want: Ask},
+	{name: "docs mention of a tab", call: docs("update",
+		`{"payload":{"ops":[{"op":"insert","with":{"blocks":{"t":{"type":"mention","ref":"file/f2"}}}}]}}`), want: Allow},
+	{name: "docs string payload", call: docs("update", `{"ref":{"object":"node","id":"n1"},"payload":"{\"op\":\"remove\"}"}`), want: Ask},
+	{name: "docs null input", call: docs("update", `null`), want: Ask},
 	{name: "docs update patch remove", call: docs("update",
 		`{"ref":{"object":"project","id":"p1"},"payload":{"kind":"patch","patch":[{"op":"remove","path":["tabs","f2"]}]}}`), want: Ask},
 	{name: "docs batch birth with me mention", call: docs("batch",
@@ -269,7 +300,7 @@ func TestPolicy_OverridesAreData(t *testing.T) {
 		if row.Verdict != Allow && row.Verdict != Ask {
 			t.Errorf("%s: verdict %v; a Deny belongs in Disabled or rule 3", key, row.Verdict)
 		}
-		if row.Inspect != inspectNone && row.Verdict != Allow {
+		if row.CheckDocsWrite && row.Verdict != Allow {
 			t.Errorf("%s: an input check only narrows an Allow", key)
 		}
 	}
@@ -280,7 +311,10 @@ func TestServerToken_Mapping(t *testing.T) {
 		"claude.ai Claude Docs":     "claude_ai_Claude_Docs",
 		"claude.ai Google Calendar": "claude_ai_Google_Calendar",
 		"claude.ai Atlassian-Rovo":  "claude_ai_Atlassian-Rovo",
-		"claude.ai Café/Notes v2.1": "claude_ai_Caf__Notes_v2_1",
+		"claude.ai Café/Notes v2.1": "claude_ai_Caf_Notes_v2_1",
+		"claude.ai Notes 📝":         "claude_ai_Notes",
+		"local server/v2":           "local_server_v2",
+		"local  server":             "local__server",
 		"":                          "",
 	}
 	for in, want := range cases {
