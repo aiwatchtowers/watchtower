@@ -39,6 +39,8 @@ var sandboxBombs = map[string]string{
 	"toLocaleString":             `var s = "x".repeat(9 * 1024 * 1024); [s, s].toLocaleString()`,
 	"typed toLocaleString":       `var s = "x".repeat(9 * 1024 * 1024); Number.prototype.toLocaleString = function () { return s }; new Uint8Array(2).toLocaleString()`,
 	"bind chain":                 `var f = function () {}; for (var i = 0; i < 1e6; i++) { f = f.bind(null) }`,
+	"bind chain through Proxy":   `var f = function () {}; for (var i = 0; i < 1e6; i++) { f = new Proxy(f, {}).bind(null) }`,
+	"JSON.stringify toString":    `var big = "x".repeat(10 * 1024 * 1024), s = new String("a"); s.toString = function () { return big }; JSON.stringify([s, s, s])`,
 	// Sparse (cheap to build): flat counts an array's length, holes included.
 	"flat result size":    `var big = []; big.length = 9 * 1024 * 1024; [big, big].flat()`,
 	"flatMap result size": `var big = []; big.length = 9 * 1024 * 1024; [1, 2].flatMap(function () { return big })`,
@@ -62,11 +64,12 @@ func TestSandbox_NativeBombsEndTheRunNotTheProcess(t *testing.T) {
 // however many brackets follow; deep JSON gets the depth RangeError.
 func TestSandbox_JSONParseNotJSONIsASyntaxError(t *testing.T) {
 	got := mustRun(t, `var out = [];
-		[ "note: " + "[".repeat(1001), "1 " + "[".repeat(1001), '{"a" ' + "[".repeat(1001), "[".repeat(1001) ].forEach(function (text) {
+		[ "note: " + "[".repeat(1001), "1 " + "[".repeat(1001), '{"a" ' + "[".repeat(1001), "[01" + "[".repeat(1001),
+			'["\\x"' + "[".repeat(1001), '["a\x01b"' + "[".repeat(1001), "[".repeat(1001) ].forEach(function (text) {
 			try { JSON.parse(text); out.push("ran") } catch (e) { out.push(e.name) }
 		});
 		return out.join(",")`, sbOpts{})
-	if got != "SyntaxError,SyntaxError,SyntaxError,RangeError" {
+	if got != "SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,RangeError" {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -97,6 +100,16 @@ func TestJSONNestsDeeper(t *testing.T) {
 		{`[tru [[[`, false},            // a broken literal
 		{`["unterminated [[[[`, false}, // the string never closes
 		{`[{"k":[{"k":[1]}]}]`, true},
+		// goja stops at an invalid number, escape or raw control character.
+		{`[[01, [[`, false},
+		{`[1., [[[`, false},
+		{`[-, [[[`, false},
+		{`[1e, [[[`, false},
+		{`["\x", [[[`, false},
+		{`["\u12G4", [[[`, false},
+		{"[\"a\x01b\", [[[", false},
+		{`["é\n\/", [[1]]]`, true},
+		{`[-0.5e-3, 10E+2, [[1]]]`, true},
 	}
 	for _, c := range cases {
 		if got := jsonNestsDeeper(c.text, 2); got != c.want {
@@ -184,6 +197,11 @@ func TestSandbox_WrappedBuiltinsMatchGoja(t *testing.T) {
 		// JSON.stringify with space and escapes.
 		`JSON.stringify({ a: [1, { b: "x\ny\"z" }] }, null, {})`,
 		`JSON.stringify({ a: [1] }, null, new Number(2))`,
+		`JSON.stringify([new Number(3), new String("s"), new Boolean(false), { b: new Boolean(true) }])`,
+		`JSON.stringify({ a: new String("x"), b: new Number(1), c: 2 }, ["a", "b"])`,
+		`(function () { var n = 0, s = new String("a"); s.toString = function () { n++; return "T" }; return JSON.stringify([s]) + n })()`,
+		`(function () { var x = new Number(1); x.valueOf = function () { return 42 }; return JSON.stringify({ x: x }) })()`,
+		`(function () { var B = function () {}; var P = new Proxy(B, {}).bind(null); return P.name })()`,
 		`JSON.stringify({ a: [1] }, null, new String("--"))`,
 		`JSON.stringify({ "k\u0001": "\ud800é" })`,
 		// JSON.parse with and without a reviver.

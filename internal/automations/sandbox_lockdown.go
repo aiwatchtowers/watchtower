@@ -81,6 +81,7 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 	var arrayIncludes = uncurry(Array.prototype.includes), arrayPush = uncurry(Array.prototype.push);
 	var arrayPop = uncurry(Array.prototype.pop);
 	var objectToString = uncurry(Object.prototype.toString);
+	var booleanValueOf = uncurry(Boolean.prototype.valueOf), getOwnDescriptor = Object.getOwnPropertyDescriptor;
 	var strIndexOf = uncurry(String.prototype.indexOf), strSlice = uncurry(String.prototype.slice);
 	var strCharAt = uncurry(String.prototype.charAt), strCharCodeAt = uncurry(String.prototype.charCodeAt);
 	var SymbolIterator = Symbol.iterator, SymbolSpreadable = Symbol.isConcatSpreadable, TypeErrorCtor = TypeError;
@@ -210,14 +211,18 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 			return localeJoin(o, toLen(o.length), arguments);
 		} });
 
-	// bind chains: each bound name is "bound " + the target's name.
-	var bindDepth = new WeakMapCtor(), origBind = FunctionProto.bind;
+	// bind: each bound name is "bound " + the target's name, so a chain
+	// (through Proxies too) grows quadratically; a bound name longer than
+	// maxBoundName is refused (the bound function is dropped), which keeps
+	// a whole chain's names under maxBoundName^2/12 characters.
+	var origBind = FunctionProto.bind, maxBoundName = 10000;
 	defineProperty(FunctionProto, "bind", { writable: true, configurable: true, enumerable: false,
 		value: function bind(thisArg) {
-			var d = (typeof this === "function" ? wmGet(bindDepth, this) : undefined) || 0;
-			if (d >= maxDepth) { limit("bind: a chain of more than " + maxDepth + " bound functions"); }
 			var f = apply(origBind, this, arguments);
-			wmSet(bindDepth, f, d + 1);
+			var name = getOwnDescriptor(f, "name"); // the fresh bound function's own data property
+			if (name !== undefined && typeof name.value === "string" && name.value.length > maxBoundName) {
+				limit("bind: the bound function's name would pass " + maxBoundName + " characters");
+			}
 			return f;
 		} });
 
@@ -488,6 +493,16 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 				var d = wmGet(depths, this);
 				if (d === undefined) { d = 0; }
 				if (userFn !== null) { val = apply(userFn, this, [key, val]); }
+				// Number, String and Boolean objects become their primitive
+				// here, once, as stringify itself would right after the
+				// replacer (so a custom toString is called once and its
+				// result is what gets counted and written).
+				if (val !== null && typeof val === "object") {
+					var cls = classOf(val);
+					if (cls === "Number") { val = NumberCtor(val); }
+					else if (cls === "String") { val = StringCtor(val); }
+					else if (cls === "Boolean") { val = booleanValueOf(val); }
+				}
 				// size: about what stringify writes for this value — the
 				// value (an object or array: its brackets), the key in an
 				// object, a separator and the indent.
@@ -500,8 +515,7 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 					if (d + 1 > maxDepth) { limit("JSON.stringify: nesting deeper than " + maxDepth); }
 					if (list !== null && !isArray(val)) { val = pick(val, list); }
 					wmSet(depths, val, d + 1);
-					// a String object: its own fixed length, each unit escaped at worst
-					n = classOf(val) === "String" ? val.length * 6 + 2 : 2;
+					n = 2;
 				}
 				if (d > 0 && !isArray(this)) { n += quotedLength(key) + 1; }
 				size += n + 1 + gap * d;
@@ -676,107 +690,139 @@ const (
 	scanDone                          // the top-level value ended
 )
 
+// jsonScan follows JSON text the way goja's parser (encoding/json's
+// Decoder) does, up to its first syntax error.
+type jsonScan struct {
+	text  string
+	i     int
+	stack []byte
+	state scanState
+}
+
 // jsonNestsDeeper reports whether JSON text opens more than limit arrays or
 // objects inside each other before its first syntax error. goja's parser
 // recurses once per "[" or "{" it accepts and stops at the first error, so it
-// never recurses deeper than this count. The scan is never stricter than
-// goja (numbers and string escapes are only skimmed), so it cannot stop
-// before goja does; text that is not JSON from its first character (a note
-// followed by brackets) counts nothing and gets goja's SyntaxError.
+// never recurses deeper than this count. The scan follows the JSON grammar
+// exactly (numbers, escapes, raw control characters), so it stops where goja
+// does: text that is not JSON gets goja's SyntaxError, never this limit.
 func jsonNestsDeeper(text string, limit int) bool {
-	var stack []byte
-	state := scanValue
-	for i := 0; ; {
-		for i < len(text) && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r') {
-			i++
+	s := jsonScan{text: text}
+	for {
+		for s.i < len(text) && isSpace(text[s.i]) {
+			s.i++
 		}
-		if i >= len(text) {
+		if s.i >= len(text) {
 			return false
 		}
-		c := text[i]
-		switch state {
+		var ok bool
+		switch s.state {
 		case scanValue, scanValueOrClose:
-			if c == ']' && state == scanValueOrClose {
-				stack = stack[:len(stack)-1]
-				i++
-				state = jsonAfterValue(stack)
-				continue
-			}
-			if c == '[' || c == '{' {
-				if stack = append(stack, c); len(stack) > limit {
-					return true
-				}
-				i++
-				state = scanValueOrClose
-				if c == '{' {
-					state = scanKeyOrClose
-				}
-				continue
-			}
-			if i = jsonScalarEnd(text, i); i < 0 {
-				return false
-			}
-			state = jsonAfterValue(stack)
+			ok = s.value()
 		case scanKey, scanKeyOrClose:
-			if c == '}' && state == scanKeyOrClose {
-				stack = stack[:len(stack)-1]
-				i++
-				state = jsonAfterValue(stack)
-				continue
-			}
-			if c != '"' {
-				return false
-			}
-			if i = jsonStringEnd(text, i); i < 0 {
-				return false
-			}
-			state = scanColon
+			ok = s.key()
 		case scanColon:
-			if c != ':' {
-				return false
-			}
-			i++
-			state = scanValue
+			ok = s.expect(':', scanValue)
 		case scanCommaOrClose:
-			top := stack[len(stack)-1]
-			switch {
-			case c == ',' && top == '[':
-				state = scanValue
-			case c == ',':
-				state = scanKey
-			case c == ']' && top == '[', c == '}' && top == '{':
-				stack = stack[:len(stack)-1]
-				state = jsonAfterValue(stack)
-			default:
-				return false
-			}
-			i++
+			ok = s.commaOrClose()
 		default: // scanDone: goja reads one more token and fails, without recursing
 			return false
 		}
+		if len(s.stack) > limit {
+			return true
+		}
+		if !ok {
+			return false
+		}
 	}
 }
 
-func jsonAfterValue(stack []byte) scanState {
-	if len(stack) == 0 {
-		return scanDone
+func (s *jsonScan) value() bool {
+	c := s.text[s.i]
+	switch {
+	case c == ']' && s.state == scanValueOrClose:
+		return s.close()
+	case c == '[':
+		s.open(c, scanValueOrClose)
+		return true
+	case c == '{':
+		s.open(c, scanKeyOrClose)
+		return true
 	}
-	return scanCommaOrClose
+	end := jsonScalarEnd(s.text, s.i)
+	if end < 0 {
+		return false
+	}
+	s.i = end
+	s.afterValue()
+	return true
+}
+
+func (s *jsonScan) key() bool {
+	if s.text[s.i] == '}' && s.state == scanKeyOrClose {
+		return s.close()
+	}
+	end := -1
+	if s.text[s.i] == '"' {
+		end = jsonStringEnd(s.text, s.i)
+	}
+	if end < 0 {
+		return false
+	}
+	s.i = end
+	s.state = scanColon
+	return true
+}
+
+func (s *jsonScan) commaOrClose() bool {
+	c, top := s.text[s.i], s.stack[len(s.stack)-1]
+	switch {
+	case c == ',' && top == '[':
+		return s.expect(',', scanValue)
+	case c == ',':
+		return s.expect(',', scanKey)
+	case c == ']' && top == '[', c == '}' && top == '{':
+		return s.close()
+	}
+	return false
+}
+
+func (s *jsonScan) expect(c byte, next scanState) bool {
+	if s.text[s.i] != c {
+		return false
+	}
+	s.i++
+	s.state = next
+	return true
+}
+
+func (s *jsonScan) open(c byte, next scanState) {
+	s.stack = append(s.stack, c)
+	s.i++
+	s.state = next
+}
+
+func (s *jsonScan) close() bool {
+	s.stack = s.stack[:len(s.stack)-1]
+	s.i++
+	s.afterValue()
+	return true
+}
+
+func (s *jsonScan) afterValue() {
+	s.state = scanCommaOrClose
+	if len(s.stack) == 0 {
+		s.state = scanDone
+	}
 }
 
 // jsonScalarEnd returns the index after the string, number or literal at i,
-// or -1 when there is none.
+// or -1 when what is there is not one.
 func jsonScalarEnd(text string, i int) int {
-	c := text[i]
-	switch {
+	switch c := text[i]; {
 	case c == '"':
 		return jsonStringEnd(text, i)
-	case c == '-' || (c >= '0' && c <= '9'):
-		j := i + 1
-		for j < len(text) && strings.IndexByte("0123456789.eE+-", text[j]) >= 0 {
-			j++
-		}
-		return j
+	case c == '-' || isDigit(c):
+		return jsonNumberEnd(text, i)
 	}
 	for _, lit := range []string{"true", "false", "null"} {
 		if strings.HasPrefix(text[i:], lit) {
@@ -786,16 +832,78 @@ func jsonScalarEnd(text string, i int) int {
 	return -1
 }
 
+// digitsEnd returns the index after the run of digits at i, or -1 for none.
+func digitsEnd(text string, i int) int {
+	j := i
+	for j < len(text) && isDigit(text[j]) {
+		j++
+	}
+	if j == i {
+		return -1
+	}
+	return j
+}
+
+// jsonNumberEnd returns the index after the JSON number at i
+// (-?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?), or -1 when it is invalid.
+func jsonNumberEnd(text string, i int) int {
+	if text[i] == '-' {
+		i++
+	}
+	if i < len(text) && text[i] == '0' {
+		i++
+	} else if i = digitsEnd(text, i); i < 0 {
+		return -1
+	}
+	if i < len(text) && text[i] == '.' {
+		if i = digitsEnd(text, i+1); i < 0 {
+			return -1
+		}
+	}
+	if i < len(text) && (text[i] == 'e' || text[i] == 'E') {
+		i++
+		if i < len(text) && (text[i] == '+' || text[i] == '-') {
+			i++
+		}
+		return digitsEnd(text, i)
+	}
+	return i
+}
+
 // jsonStringEnd returns the index after the string that opens at i, or -1
-// when it never closes.
+// when it never closes, holds a raw control character or a bad escape.
 func jsonStringEnd(text string, i int) int {
 	for j := i + 1; j < len(text); j++ {
-		switch text[j] {
-		case '\\':
-			j++
-		case '"':
+		switch c := text[j]; {
+		case c == '"':
 			return j + 1
+		case c < 0x20:
+			return -1
+		case c == '\\':
+			if j = jsonEscapeEnd(text, j); j < 0 {
+				return -1
+			}
 		}
 	}
 	return -1
+}
+
+// jsonEscapeEnd returns the index of the escape's last byte (the backslash
+// at i), or -1 when it is not one of \" \\ \/ \b \f \n \r \t \uXXXX.
+func jsonEscapeEnd(text string, i int) int {
+	if i+1 >= len(text) {
+		return -1
+	}
+	if strings.IndexByte(`"\/bfnrt`, text[i+1]) >= 0 {
+		return i + 1
+	}
+	if text[i+1] != 'u' || i+5 >= len(text) {
+		return -1
+	}
+	for _, h := range []byte(text[i+2 : i+6]) {
+		if !isDigit(h) && strings.IndexByte("abcdefABCDEF", h) < 0 {
+			return -1
+		}
+	}
+	return i + 5
 }

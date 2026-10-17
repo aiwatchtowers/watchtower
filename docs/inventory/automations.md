@@ -332,8 +332,9 @@ a native builtin past `AbandonGrace` (2 s) after an interrupt is abandoned:
 its run ends, and its automation is disabled ("runaway script — check and
 re-enable"). Deep or huge data cannot end the daemon process through the
 builtins the sandbox caps (the Hardening list in `docs/features/automations.md`:
-nesting deeper than 1000 in `JSON.parse`, `JSON.stringify`, `flat` and `bind`
-chains, and one capped call past 16 Mi characters or elements): each throws a
+nesting deeper than 1000 in `JSON.parse`, `JSON.stringify` and `flat`, a bound
+name past 10 000 characters, and one capped call past 16 Mi characters or
+elements): each throws a
 `RangeError` the script can catch, and nothing is disabled for it.
 Every run reaches exactly one terminal status, including after a
 daemon restart: on start the executor ends every `running`/`waiting` run
