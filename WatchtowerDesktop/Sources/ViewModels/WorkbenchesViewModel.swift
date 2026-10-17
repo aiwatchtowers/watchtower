@@ -332,10 +332,12 @@ final class WorkbenchesViewModel {
     /// Every deferred DELETE write in flight (the timer's and the quit's):
     /// the quit waits on it, bounded by `quitDeleteWait`.
     @ObservationIgnored let deleteWrites = DispatchGroup()
-    /// How long the quit commit of the Undo batch may hold the quit: longer
-    /// than the write's 5 s busy budget, so a briefly locked database still
-    /// lets it land (board #588). A seam for tests.
-    @ObservationIgnored var quitDeleteWait: TimeInterval = 8
+    /// How long the quit commit of the Undo batch may hold the quit: the
+    /// write's busy budget plus 3 s, so a write that waited the whole budget
+    /// still lands (board #588).
+    nonisolated static let defaultQuitDeleteWait = TimeInterval(DBLockInstrumentation.busyTimeoutMS) / 1000 + 3
+    /// `defaultQuitDeleteWait`; a seam for tests.
+    @ObservationIgnored var quitDeleteWait: TimeInterval = WorkbenchesViewModel.defaultQuitDeleteWait
     /// The Undo window's wait. A seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Runs deferred DELETEs in one write — the only DELETE path of the

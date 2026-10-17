@@ -286,14 +286,23 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                 await app.terminalCenter.detachAll()
             },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
-            finishPendingDeletes: {
-                guard let workbenches = app.workbenchesViewModel else { return }
-                await QuitProgressPanel.showing("Finishing session deletes…") {
-                    _ = await workbenches.commitPendingDeletesForQuit()
-                }
-            },
+            finishPendingDeletes: { await Self.finishPendingDeletes(app.workbenchesViewModel) },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
+    }
+
+    /// The quit's PROJ-17 step (board #588): the Undo batch is committed,
+    /// with the progress panel if it takes a moment. `present` is a seam for
+    /// tests.
+    @MainActor
+    static func finishPendingDeletes(
+        _ workbenches: WorkbenchesViewModel?,
+        present: @escaping @MainActor (String) -> () -> Void = QuitProgressPanel.present
+    ) async {
+        guard let workbenches else { return }
+        await QuitProgressPanel.showing("Finishing session deletes…", present: present) {
+            _ = await workbenches.commitPendingDeletesForQuit()
+        }
     }
 
     /// The terminate decision, extracted from `applicationShouldTerminate` so

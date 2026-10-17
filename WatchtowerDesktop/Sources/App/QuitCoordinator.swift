@@ -40,6 +40,12 @@ enum QuitCoordinator {
             return .terminateCancel
         }
         Task { @MainActor in
+            // PROJ-17: the sessions waiting in the Undo batch are deleted
+            // from the start, alongside the steps below, so the two bounds
+            // overlap rather than add up (board #588) — on every quit,
+            // sessions kept or stopped. Bounded inside; awaited before the
+            // reply.
+            let deletes = Task { @MainActor in await finishPendingDeletes() }
             // CHAT-03: every chat session gets `close`, then SIGTERM after
             // its grace — bounded, and each keeps its partial text (CHAT-01).
             await closeChatSessions()
@@ -53,10 +59,7 @@ enum QuitCoordinator {
                 await closeTerminals()
             }
             await stopDaemon()
-            // PROJ-17: the sessions waiting in the Undo batch are deleted
-            // now, with the daemon's write lock gone (board #588) — on every
-            // quit, sessions kept or stopped. Bounded inside.
-            await finishPendingDeletes()
+            await deletes.value
             // Always let termination proceed: a stuck daemon must never trap
             // the user in a quit — the next launch adopts or replaces it.
             reply(true)

@@ -564,17 +564,22 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         XCTAssertNotNil(kept, "listed again next launch")
     }
 
-    /// Board #588: the quit's wait never holds the main thread — a write
-    /// that needs the main actor to make progress (here: the lock is let go
-    /// by main-actor work, as a busy database is by the app's own writes)
-    /// still lands, instead of timing out under a blocked main thread.
-    func testQuitWaitKeepsTheMainActorFree() async throws {
+    /// Board #588: the quit's bound outlasts the write's busy budget, so a
+    /// write that waited the whole budget still lands.
+    func testQuitBoundOutlastsTheBusyBudget() {
+        let busy = TimeInterval(DBLockInstrumentation.busyTimeoutMS) / 1000
+        XCTAssertGreaterThan(WorkbenchesViewModel.defaultQuitDeleteWait, busy)
+        XCTAssertEqual(makeVM().quitDeleteWait, WorkbenchesViewModel.defaultQuitDeleteWait)
+    }
+
+    /// Board #588: a write slower than the old 2 s quit wait (a busy
+    /// database) commits under the default bound instead of being lost.
+    func testQuitCommitsAWriteSlowerThanTheOldWait() async throws {
         let p = try await workbench()
         let row = try await insertSession(p)
         let vm = makeVM()
-        vm.quitDeleteWait = 1
         vm.commitSessionDeletes = { [pool] ids in
-            await Task { @MainActor in }.value
+            try await Task.sleep(for: .milliseconds(2300))
             try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
         }
         await vm.reload()
@@ -582,9 +587,55 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
 
         let finished = await vm.commitPendingDeletesForQuit()
 
-        XCTAssertTrue(finished, "the write ran while the quit waited")
+        XCTAssertTrue(finished)
+        let gone = try await stored(row.id)
+        XCTAssertNil(gone, "the slow write landed")
+    }
+
+    /// Board #588: the quit waits for every delete write as one set — a
+    /// commit the window's timer started and the quit's own batch.
+    func testQuitWaitsForTheTimersCommitAndItsOwnBatch() async throws {
+        let p = try await workbench()
+        let first = try await insertSession(p, title: "Session A")
+        let second = try await insertSession(p, title: "Session B")
+        let vm = makeVM()
+        let (started, didStart) = AsyncStream<Void>.makeStream()
+        vm.commitSessionDeletes = { [pool] ids in
+            didStart.yield()
+            try await Task.sleep(for: .milliseconds(300))
+            try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
+        }
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.loadSessions(projectID: p)
+        await vm.delete(first)
+        gate.open()
+        var iterator = started.makeAsyncIterator()
+        _ = await iterator.next() // the timer's commit of `first` is in flight
+        await vm.delete(second)
+
+        let finished = await vm.commitPendingDeletesForQuit()
+
+        XCTAssertTrue(finished)
+        for id in [first.id, second.id] {
+            let gone = try await stored(id)
+            XCTAssertNil(gone)
+        }
+    }
+
+    /// Board #588: the real quit step commits the Undo batch.
+    func testTheQuitStepCommitsTheBatch() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        await vm.reload()
+        await vm.delete(row)
+
+        await TrayAppDelegate.finishPendingDeletes(vm) { _ in {} }
+
         let gone = try await stored(row.id)
         XCTAssertNil(gone)
+        XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
     }
 
     func testQuitWriteFailureKeepsTheRow() async throws {

@@ -6,26 +6,39 @@ import AppKit
 /// quick quit shows nothing, and it closes when the step ends.
 @MainActor
 enum QuitProgressPanel {
+    /// Runs `work`; if it is still running after `delay`, `present` shows
+    /// the panel and the closer it returns is called once `work` ends.
+    /// `sleep` and `present` are seams for tests.
     static func showing(
         _ message: String,
         after delay: Duration = .milliseconds(500),
+        sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        present: @escaping @MainActor (String) -> () -> Void = Self.present,
         _ work: () async -> Void
     ) async {
+        let state = RevealState()
         let reveal = Task { @MainActor in
-            try? await Task.sleep(for: delay)
-            guard !Task.isCancelled else { return }
-            let panel = makePanel(message)
-            panel.orderFrontRegardless()
-            // Stays up until the step ends (the cancel wakes the sleep).
-            try? await Task.sleep(for: .seconds(3600))
-            panel.close()
+            await sleep(delay)
+            guard !state.done else { return }
+            state.close = present(message)
         }
         await work()
+        state.done = true
         reveal.cancel()
-        await reveal.value
+        state.close?()
+        state.close = nil
     }
 
-    private static func makePanel(_ message: String) -> NSPanel {
+    @MainActor
+    private final class RevealState {
+        var done = false
+        var close: (() -> Void)?
+    }
+
+    /// Puts the panel on screen over every app — it stays up while
+    /// Watchtower is inactive or runs as a menu-bar app — and returns its
+    /// closer.
+    static func present(_ message: String) -> () -> Void {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 64),
             styleMask: [.titled, .utilityWindow, .nonactivatingPanel],
@@ -34,6 +47,8 @@ enum QuitProgressPanel {
         )
         panel.title = "Watchtower"
         panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isReleasedWhenClosed = false
         let spinner = NSProgressIndicator()
         spinner.style = .spinning
@@ -45,6 +60,7 @@ enum QuitProgressPanel {
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 16, right: 20)
         panel.contentView = stack
         panel.center()
-        return panel
+        panel.orderFrontRegardless()
+        return { panel.close() }
     }
 }

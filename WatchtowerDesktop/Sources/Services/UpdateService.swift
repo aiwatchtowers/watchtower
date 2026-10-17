@@ -633,7 +633,8 @@ final class UpdateService {
 
     /// How long `relaunch` waits for the app to actually quit before telling
     /// the user to restart by hand. Covers the quit path's own bounded work
-    /// (chat sessions, terminals, the 12 s daemon stop).
+    /// (chat sessions, terminals, the 12 s daemon stop, and the deferred
+    /// session deletes' 8 s bound, which runs alongside those steps).
     nonisolated static let quitGrace: Duration = .seconds(30)
 
     /// How long the relaunch waiter keeps waiting for this process to exit
