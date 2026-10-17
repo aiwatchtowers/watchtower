@@ -24,7 +24,7 @@ HTML the owner wants to look at, such as a slide deck or a visual report, render
 - **`LocalPreviewServer`** (WatchtowerCore, Network.framework): workbench folders only.
   - Lifetime: one per app, started by the first **Open in Browser**, stopped on quit (`TrayAppDelegate`'s quit path, beside the terminals).
   - Binding: `NWListener` with `requiredLocalEndpoint` 127.0.0.1, port `.any`, `acceptLocalOnly`.
-  - Registrations: each folder (`folder:<path>`) gets a 32-byte random hex token as the first path segment. Registering the folder again keeps its token. `unregister(id:)` removes one; `stop()` forgets all.
+  - Registrations: each folder (`folder:<path>`) gets a 32-byte random hex token as the first path segment. A folder is registered only when `LocalPreviewHTTP.servableFolder` accepts it within the tab's code root (the workbench folder or its session worktree). It must lie inside the root, and no component of its path below the root may be hidden. The root itself may sit in a hidden folder (`<repo>/.claude/worktrees/<slug>`), but `~/.ssh` under a home-folder workbench is refused (`Failure.refused`). Registering the folder again keeps its token. `unregister(id:)` removes one; `stop()` forgets all.
   - Threads: requests are read on a serial queue and answered on a concurrent queue, so a big file never holds up another connection. A client that has not finished its request header within 15 s is dropped; the send itself is not timed.
   - URLs: file names are percent-encoded with `%` itself encoded, so `report%20final.html` round-trips.
 - **`LocalPreviewHTTP`** (`LocalPreviewRouting.swift`), the pure half of the server:
@@ -32,6 +32,7 @@ HTML the owner wants to look at, such as a slide deck or a visual report, render
   - Host check: the Host must be `127.0.0.1:<port>` or `localhost:<port>`, else 403 (DNS rebinding).
   - Methods: GET/HEAD only (405 with `Allow`). Routing: by token (an unknown token is 404), with percent-decoding per segment.
   - `resolve`: no empty, `.`, `..` or dot-prefixed segment, and no separator or NUL inside one. The symlink-resolved file must lie under the symlink-resolved root, and no component of its real path below the root may be hidden, so a symlink to `.env` or `.git/config` is refused. Only regular files are served, so there is no directory listing.
+  - Size: a file over 100 MB (`maxFileBytes`) is refused with 413 after a stat, never read.
   - Content types: a fixed table. No video, since there is no Range support and Safari needs it; audio plays but may not seek.
   - On every response: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Connection: close`, and `LocalPreviewHTTP.contentSecurityPolicy`:
     `sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; media-src 'self' blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'`.
@@ -48,7 +49,7 @@ HTML in a chat artifact can come from synced data (a Slack message, a mail, a Ji
   - **It can still navigate to other sites** (`location = …`, a link). That is fine for the owner's own files; the token never leaks in a Referer.
 - **The loopback server is not a door.**
   - Binding: 127.0.0.1 only, local connections only, and a Host other than its own loopback name is refused.
-  - Token: without a registration's 256-bit token a request gets 404. A known token reaches only that folder: never `..`, a hidden file or folder (directly or through a symlink), a directory listing, or a symlink out of it.
+  - Token: without a registration's 256-bit token a request gets 404. A known token reaches only that folder: never `..`, a hidden file or folder (directly or through a symlink), a directory listing, or a symlink out of it. A folder hidden below the workbench (such as `~/.ssh` when the workbench is the home folder) is never registered.
   - Read-only: GET/HEAD only.
   - Outbound: it opens no connection (`testChat05LoopbackServerNeverConnectsOut` scans `LocalPreviewServer.swift` for `URLSession`, `NWConnection(`, `Process(`, `CLIRunner`).
 - **CHAT-05 holds.** `ArtifactChat05ScanTests` scans `SandboxedHTMLView.swift` and `HTMLPreviewPolicy.swift` too, and forbids `LocalPreviewServer`, `HTMLBrowserOpener`, `NWConnection` and `NWListener` on every artifact-side file.
@@ -71,6 +72,7 @@ HTML in a chat artifact can come from synced data (a Slack message, a mail, a Ji
 - The browser does not live-reload; refresh by hand.
 - A preview's resources outside the file's folder (`../assets/…`) do not load, in the app or the browser.
 - Links inside a page open nothing in the app.
-- No video in the browser (no Range support).
+- No video in the browser (no Range support), and no file over 100 MB.
+- Frames showing the folder's other files work in the app but are blank in the browser (`frame-src 'none'`).
 - Html artifacts take no passage comments.
 - Folder registrations are not removed before quit.

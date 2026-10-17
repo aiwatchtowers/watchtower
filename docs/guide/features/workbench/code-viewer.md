@@ -57,6 +57,7 @@ The **+** in **FILES** and each row's menu create files and folders, rename, cop
 - **"Git status unavailable — the marks may be out of date."** Git failed to answer. The last marks stay.
 - **A banner says the file changed.** Another program wrote it. Choose **Reload from disk**, or keep your version.
 - **Navigate items are grey.** The workbench window is not in front.
+- **"Files in a hidden folder are not opened in the browser."** The file sits in a folder whose name starts with a dot, inside the workbench (for example `.config`). Move it, or use **Preview**. Files over 100 MB are not served either.
 - **The HTML preview misses images or styles.** They live outside the file's folder (for example `../assets`), come over plain `http://`, or are fetched by a script rather than linked. Move them next to the file, or load them over `https://` with a `<script>`, `<link>` or `<img>` tag.
 
 ## Related

@@ -151,8 +151,8 @@ Extends QC-03's "secrets never on argv" to all chat content.
 **Observable:** Artifact actions only open or copy: an `email` artifact
 opens a Gmail compose URL (or a `mailto:` fallback), a `slack` artifact
 copies its body and opens the channel/thread deep link, an `event` artifact
-opens a Google Calendar template URL, `document`/`table`/`code` artifacts
-copy or export (.md/.csv/.txt) locally — every action any artifact kind can
+opens a Google Calendar template URL, `document`/`table`/`code`/`html` artifacts
+copy or export (.md/.csv/.txt/.html) locally — every action any artifact kind can
 produce is a `copy`, an `open` of a compose/deep-link URL, or a
 `copyThenOpen`, never a value that could perform a network or CLI write.
 Nothing is sent, posted or created in an external system from an artifact.

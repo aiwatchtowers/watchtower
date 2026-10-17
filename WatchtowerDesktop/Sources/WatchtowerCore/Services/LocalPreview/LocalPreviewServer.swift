@@ -13,10 +13,13 @@ package final class LocalPreviewServer: @unchecked Sendable {
 
     package enum Failure: Error, LocalizedError {
         case unavailable(String)
+        /// The folder is hidden, or hidden inside the workbench.
+        case refused
 
         package var errorDescription: String? {
             switch self {
             case let .unavailable(reason): "The local preview server could not start: \(reason)"
+            case .refused: "Files in a hidden folder are not opened in the browser."
             }
         }
     }
@@ -39,8 +42,13 @@ package final class LocalPreviewServer: @unchecked Sendable {
 
     /// Registers `folder` under `id` (its token kept across calls) and
     /// returns the URL of `file` in it, starting the server on first use.
-    package func url(forFile file: String, inFolder folder: URL, id: String) async throws -> URL {
-        let token = lock.withLock { registry.register(id: id, folder: folder) }
+    /// `folder` must be servable within the code root `root`
+    /// (`LocalPreviewHTTP.servableFolder`: no hidden folder below it).
+    package func url(forFile file: String, inFolder folder: URL, within root: URL, id: String) async throws -> URL {
+        guard let servable = LocalPreviewHTTP.servableFolder(folder, within: root) else {
+            throw Failure.refused
+        }
+        let token = lock.withLock { registry.register(id: id, folder: servable) }
         let port = try await ensureStarted()
         // No "%" either: a literal "%20" in a file name must stay a name.
         let allowed = CharacterSet.urlPathAllowed.subtracting(["/", "?", "#", "%"])

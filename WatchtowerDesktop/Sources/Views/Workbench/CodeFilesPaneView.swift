@@ -54,7 +54,7 @@ struct CodeFilesPaneView: View {
                     Divider()
                     CodeFileBanners(buffer: buffer)
                     if HTMLPreviewPolicy.isHTMLFile(active) {
-                        CodeHTMLPreviewBar(buffer: buffer, isOn: htmlPreviewShown(buffer), reload: $htmlReload)
+                        CodeHTMLPreviewBar(buffer: buffer, root: root.folder, isOn: htmlPreviewShown(buffer), reload: $htmlReload)
                         Divider()
                     }
                 }

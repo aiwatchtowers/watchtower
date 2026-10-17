@@ -2,8 +2,11 @@ import Foundation
 
 /// The rules of the sandboxed in-app HTML view (html chat artifacts and the
 /// workbench html preview, board #535). HTML there may come from synced data
-/// through a prompt injection, so the page gets JavaScript but no network,
-/// no bridge to the app and no way to leave its own content.
+/// through a prompt injection, so the page gets JavaScript but no bridge to
+/// the app and no way to leave its own content. A chat artifact gets no
+/// network at all; a workbench file preview gets only https scripts, style
+/// sheets, fonts and images (CDN decks) — never fetch/XHR, sockets, media
+/// or documents.
 package enum HTMLPreviewPolicy {
     /// WebKit content rules: block every load, then let back in only the
     /// schemes that stay on the machine — `about:`/`data:`/`blob:` always,

@@ -29,7 +29,7 @@ final class SandboxedHTMLViewTests: XCTestCase {
     func testAPageReachesNoServerWhileItsScriptRuns() async throws {
         let base = counter.base
         let page = """
-        <html><body><img src="\(base)/img.png"><script>
+        <html><body><img src="\(base)/img.png"><iframe id="srcdoc" srcdoc="<p>frame</p>"></iframe><script>
         try { new WebSocket("ws://\(counter.hostPort)/ws"); } catch (e) {}
         fetch("\(base)/fetch", { mode: "no-cors" }).then(r => { document.title = "leak:" + r.type })
           .catch(() => { document.title = "blocked" });
@@ -45,12 +45,24 @@ final class SandboxedHTMLViewTests: XCTestCase {
             "[typeof RTCPeerConnection, typeof webkitRTCPeerConnection, typeof RTCDataChannel].join()"
         ) as? String
         XCTAssertEqual(webRTC, "undefined,undefined,undefined", "WebRTC is removed before page script runs")
+        let frames = try await webView.evaluateJavaScript("""
+        (() => {
+          const blank = document.createElement("iframe");
+          document.body.appendChild(blank);
+          const doc = document.getElementById("srcdoc").contentWindow;
+          return [typeof blank.contentWindow.RTCPeerConnection, typeof blank.contentWindow.RTCDataChannel,
+                  typeof doc.RTCPeerConnection, typeof doc.RTCDataChannel].join();
+        })()
+        """) as? String
+        XCTAssertEqual(frames, "undefined,undefined,undefined,undefined", "a fresh about:blank and a srcdoc iframe have no WebRTC")
 
         let plain = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         plain.loadHTMLString(page, baseURL: nil)
         let control = try await settledTitle(plain)
         XCTAssertEqual(control, "leak:opaque")
         XCTAssertGreaterThan(counter.hits, 0, "control: the same page in a plain web view does reach it")
+        let plainRTC = try await plain.evaluateJavaScript("typeof RTCPeerConnection") as? String
+        XCTAssertEqual(plainRTC, "function", "control: WebKit has WebRTC unless the sandbox removes it")
     }
 
     func testLocationAndFormNavigationAreCancelled() async throws {

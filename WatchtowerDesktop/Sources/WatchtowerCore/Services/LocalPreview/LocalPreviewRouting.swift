@@ -85,6 +85,9 @@ package struct LocalPreviewResponse: Equatable, Sendable {
 package enum LocalPreviewHTTP {
     /// A request whose header block is bigger is refused.
     package static let maxHeaderBytes = 16 * 1024
+    /// A bigger file is refused (413) without being read: a reply is built
+    /// in memory.
+    package static let maxFileBytes = 100 * 1024 * 1024
 
     /// On every response. `sandbox` without `allow-same-origin` gives the
     /// page an opaque origin: no cookies or storage shared with anything
@@ -146,9 +149,29 @@ package enum LocalPreviewHTTP {
             guard let name = segment.removingPercentEncoding else { return error(400) }
             decoded.append(name)
         }
-        guard let file = resolve(decoded, under: root, fileManager: fileManager),
-              let data = try? Data(contentsOf: file) else { return error(404) }
+        guard let file = resolve(decoded, under: root, fileManager: fileManager) else { return error(404) }
+        // Sized before it is read: nothing over the cap is ever loaded.
+        guard let size = (try? fileManager.attributesOfItem(atPath: file.path))?[.size] as? Int else { return error(404) }
+        guard size <= maxFileBytes else { return error(413) }
+        guard let data = try? Data(contentsOf: file) else { return error(404) }
         return ok(data, type: contentType(forExtension: file.pathExtension))
+    }
+
+    /// The folder a workbench html file may be served from: `folder`
+    /// (symlinks resolved) when it lies in the code root `within` (the
+    /// workbench folder or its session worktree) and no component of its
+    /// path below that root is hidden. The root itself may sit in a hidden
+    /// folder (`<repo>/.claude/worktrees/<slug>`); `~/.ssh` under a home-folder
+    /// workbench is refused. Nil otherwise.
+    package static func servableFolder(_ folder: URL, within root: URL) -> URL? {
+        let base = root.standardizedFileURL.resolvingSymlinksInPath().path
+        let resolved = folder.standardizedFileURL.resolvingSymlinksInPath()
+        if resolved.path == base { return resolved }
+        let prefix = base.hasSuffix("/") ? base : base + "/"
+        guard resolved.path.hasPrefix(prefix) else { return nil }
+        let below = resolved.path.dropFirst(prefix.count).split(separator: "/")
+        let hidden = below.contains { $0.hasPrefix(".") }
+        return hidden ? nil : resolved
     }
 
     /// The regular file `segments` names under `root`, or nil: no empty,
@@ -205,6 +228,7 @@ package enum LocalPreviewHTTP {
         case 403: "Forbidden"
         case 404: "Not Found"
         case 405: "Method Not Allowed"
+        case 413: "Content Too Large"
         default: "Error"
         }
     }

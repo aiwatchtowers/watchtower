@@ -147,6 +147,47 @@ final class LocalPreviewRoutingTests: XCTestCase {
         XCTAssertNotNil(LocalPreviewHTTP.resolve(["deck.html"], under: hidden))
     }
 
+    func testAFileOverTheCapIsRefusedUnread() throws {
+        let big = root.appendingPathComponent("huge.html")
+        XCTAssertTrue(FileManager.default.createFile(atPath: big.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(LocalPreviewHTTP.maxFileBytes + 1)) // sparse: nothing written
+        try handle.close()
+        XCTAssertEqual(get("/tok/huge.html").status, 413)
+        let shrink = try FileHandle(forWritingTo: big)
+        try shrink.truncate(atOffset: UInt64(LocalPreviewHTTP.maxFileBytes))
+        try shrink.close()
+        XCTAssertEqual(get("/tok/huge.html", method: "HEAD").status, 200, "exactly the cap is served")
+    }
+
+    // MARK: servable folders
+
+    func testAHiddenCodeRootAndAFolderInsideItAreServable() throws {
+        // A session worktree: the code root itself is under `.claude/`.
+        let worktree = root.appendingPathComponent(".claude/worktrees/wt")
+        let slides = worktree.appendingPathComponent("slides")
+        try FileManager.default.createDirectory(at: slides, withIntermediateDirectories: true)
+        XCTAssertNotNil(LocalPreviewHTTP.servableFolder(worktree, within: worktree))
+        XCTAssertNotNil(LocalPreviewHTTP.servableFolder(slides, within: worktree))
+        XCTAssertNotNil(LocalPreviewHTTP.servableFolder(root, within: root))
+        XCTAssertNotNil(LocalPreviewHTTP.servableFolder(root.appendingPathComponent("img"), within: root))
+    }
+
+    func testAHiddenFolderBelowTheCodeRootOrOutsideItIsNot() throws {
+        // A home-folder workbench must not serve `~/.ssh` or `~/.aws`.
+        let ssh = root.appendingPathComponent(".ssh")
+        let nested = root.appendingPathComponent(".aws/sub")
+        try FileManager.default.createDirectory(at: ssh, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        XCTAssertNil(LocalPreviewHTTP.servableFolder(ssh, within: root))
+        XCTAssertNil(LocalPreviewHTTP.servableFolder(nested, within: root))
+        XCTAssertNil(LocalPreviewHTTP.servableFolder(root.appendingPathComponent(".git"), within: root))
+        XCTAssertNil(LocalPreviewHTTP.servableFolder(outside, within: root), "outside the code root")
+        let link = root.appendingPathComponent("keys")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: ssh)
+        XCTAssertNil(LocalPreviewHTTP.servableFolder(link, within: root), "a symlink into a hidden folder")
+    }
+
     // MARK: registry
 
     func testRegistryKeepsATokenPerIDAndForgetsOnUnregister() {

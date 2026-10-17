@@ -23,7 +23,7 @@ final class LocalPreviewServerTests: XCTestCase {
         try write("<p>deck</p>", "index.html")
         let server = LocalPreviewServer()
         defer { server.stop() }
-        let url = try await server.url(forFile: "index.html", inFolder: folder, id: "folder:a")
+        let url = try await server.url(forFile: "index.html", inFolder: folder, within: folder, id: "folder:a")
         XCTAssertEqual(url.host, "127.0.0.1")
         XCTAssertEqual(url.lastPathComponent, "index.html")
 
@@ -38,12 +38,32 @@ final class LocalPreviewServerTests: XCTestCase {
         let (_, postResponse) = try await session.data(for: post)
         XCTAssertEqual((postResponse as? HTTPURLResponse)?.statusCode, 405)
 
-        let again = try await server.url(forFile: "index.html", inFolder: folder, id: "folder:a")
+        let again = try await server.url(forFile: "index.html", inFolder: folder, within: folder, id: "folder:a")
         XCTAssertEqual(again, url, "the same id keeps its URL")
 
         server.unregister(id: "folder:a")
         let (_, gone) = try await session.data(from: url)
         XCTAssertEqual((gone as? HTTPURLResponse)?.statusCode, 404)
+    }
+
+    func testAHiddenFolderBelowTheCodeRootIsNeverRegistered() async throws {
+        let ssh = folder.appendingPathComponent(".ssh")
+        try FileManager.default.createDirectory(at: ssh, withIntermediateDirectories: true)
+        try "<p>key</p>".write(to: ssh.appendingPathComponent("id.html"), atomically: true, encoding: .utf8)
+        let server = LocalPreviewServer()
+        defer { server.stop() }
+        do {
+            _ = try await server.url(forFile: "id.html", inFolder: ssh, within: folder, id: "folder:ssh")
+            XCTFail("a hidden folder below the workbench must be refused")
+        } catch LocalPreviewServer.Failure.refused {
+            // expected
+        }
+        let worktree = folder.appendingPathComponent(".claude/worktrees/wt")
+        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+        try "<p>wt</p>".write(to: worktree.appendingPathComponent("deck.html"), atomically: true, encoding: .utf8)
+        let url = try await server.url(forFile: "deck.html", inFolder: worktree, within: worktree, id: "folder:wt")
+        let (data, _) = try await session.data(from: url)
+        XCTAssertEqual(String(bytes: data, encoding: .utf8), "<p>wt</p>", "a session worktree root may be hidden")
     }
 
     func testFileNamesRoundTripIncludingALiteralPercent() async throws {
@@ -53,12 +73,12 @@ final class LocalPreviewServerTests: XCTestCase {
         let server = LocalPreviewServer()
         defer { server.stop() }
 
-        let spaced = try await server.url(forFile: "my deck.html", inFolder: folder, id: "folder:b")
+        let spaced = try await server.url(forFile: "my deck.html", inFolder: folder, within: folder, id: "folder:b")
         XCTAssertTrue(spaced.absoluteString.hasSuffix("/my%20deck.html"))
         let (spacedData, _) = try await session.data(from: spaced)
         XCTAssertEqual(String(bytes: spacedData, encoding: .utf8), "<h1>space</h1>")
 
-        let percent = try await server.url(forFile: "report%20final.html", inFolder: folder, id: "folder:b")
+        let percent = try await server.url(forFile: "report%20final.html", inFolder: folder, within: folder, id: "folder:b")
         XCTAssertTrue(percent.absoluteString.hasSuffix("/report%2520final.html"))
         let (percentData, _) = try await session.data(from: percent)
         XCTAssertEqual(String(bytes: percentData, encoding: .utf8), "<h1>percent</h1>", "not the file named with a space")
@@ -72,8 +92,8 @@ final class LocalPreviewServerTests: XCTestCase {
         try write("small", "small.txt")
         let server = LocalPreviewServer()
         defer { server.stop() }
-        let bigURL = try await server.url(forFile: "big.txt", inFolder: folder, id: "folder:c")
-        let smallURL = try await server.url(forFile: "small.txt", inFolder: folder, id: "folder:c")
+        let bigURL = try await server.url(forFile: "big.txt", inFolder: folder, within: folder, id: "folder:c")
+        let smallURL = try await server.url(forFile: "small.txt", inFolder: folder, within: folder, id: "folder:c")
         async let bigFetch = session.data(from: bigURL)
         async let smallFetch = session.data(from: smallURL)
         let (bigData, _) = try await bigFetch

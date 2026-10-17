@@ -8,6 +8,9 @@ import WatchtowerCore
 /// view; its relative css/js/images load from the file's own folder only.
 struct CodeHTMLPreviewBar: View {
     let buffer: CodeFileBuffer
+    /// The code root the file is in (the workbench folder or its session
+    /// worktree): the browser serves no hidden folder below it.
+    let root: URL
     @Binding var isOn: Bool
     @Binding var reload: Int
     @State private var notice: String?
@@ -36,7 +39,7 @@ struct CodeHTMLPreviewBar: View {
             Button {
                 let folder = buffer.url.deletingLastPathComponent()
                 let name = buffer.url.lastPathComponent
-                Task { notice = await HTMLBrowserOpener.open(file: name, inFolder: folder) }
+                Task { notice = await HTMLBrowserOpener.open(file: name, inFolder: folder, within: root) }
             } label: { Image(systemName: "safari") }
                 .buttonStyle(.borderless)
                 .help("Open in your browser from a private local address that serves only this file's folder")
@@ -78,9 +81,11 @@ enum CodeHTMLPreview {
 @MainActor
 enum HTMLBrowserOpener {
     /// Nil on success, else a sentence for the caller to show.
-    static func open(file: String, inFolder folder: URL) async -> String? {
+    static func open(file: String, inFolder folder: URL, within root: URL) async -> String? {
         do {
-            let url = try await LocalPreviewServer.shared.url(forFile: file, inFolder: folder, id: "folder:\(folder.path)")
+            let url = try await LocalPreviewServer.shared.url(
+                forFile: file, inFolder: folder, within: root, id: "folder:\(folder.path)"
+            )
             return NSWorkspace.shared.open(url) ? nil : "Could not open the browser."
         } catch {
             return error.localizedDescription
