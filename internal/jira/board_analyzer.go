@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net/url"
 	"os"
 	"sort"
@@ -569,9 +570,7 @@ func (a *BoardAnalyzer) mergeUserOverrides(boardID int, profile *BoardProfile, o
 	if profile.StaleThresholds == nil {
 		profile.StaleThresholds = make(map[string]int)
 	}
-	for k, v := range overrides.StaleThresholds {
-		profile.StaleThresholds[k] = v
-	}
+	maps.Copy(profile.StaleThresholds, overrides.StaleThresholds)
 
 	// Re-save profile with merged thresholds.
 	profileJSON, err := json.Marshal(profile)
@@ -622,9 +621,7 @@ func GetEffectiveStaleThresholds(board db.JiraBoard) (map[string]int, error) {
 	if board.LLMProfileJSON != "" {
 		var profile BoardProfile
 		if err := json.Unmarshal([]byte(board.LLMProfileJSON), &profile); err == nil {
-			for k, v := range profile.StaleThresholds {
-				result[k] = v
-			}
+			maps.Copy(result, profile.StaleThresholds)
 		}
 	}
 
@@ -632,9 +629,7 @@ func GetEffectiveStaleThresholds(board db.JiraBoard) (map[string]int, error) {
 	if board.UserOverridesJSON != "" {
 		var overrides UserOverrides
 		if err := json.Unmarshal([]byte(board.UserOverridesJSON), &overrides); err == nil {
-			for k, v := range overrides.StaleThresholds {
-				result[k] = v
-			}
+			maps.Copy(result, overrides.StaleThresholds)
 		}
 	}
 
@@ -856,13 +851,13 @@ Guidelines:
 // extractJSON extracts JSON from a response that may be wrapped in markdown code blocks.
 func extractJSON(s string) string {
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```json") {
-		s = strings.TrimPrefix(s, "```json")
+	if after, ok := strings.CutPrefix(s, "```json"); ok {
+		s = after
 		if idx := strings.LastIndex(s, "```"); idx >= 0 {
 			s = s[:idx]
 		}
-	} else if strings.HasPrefix(s, "```") {
-		s = strings.TrimPrefix(s, "```")
+	} else if after, ok := strings.CutPrefix(s, "```"); ok {
+		s = after
 		if idx := strings.LastIndex(s, "```"); idx >= 0 {
 			s = s[:idx]
 		}

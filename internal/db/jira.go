@@ -956,7 +956,7 @@ func (db *DB) GetJiraIssuesForTracks(trackIDs []int) (map[int][]JiraIssue, error
 
 	// Step 1: Get track_id → issue_key mappings
 	placeholders := make([]string, len(trackIDs))
-	args := make([]interface{}, len(trackIDs))
+	args := make([]any, len(trackIDs))
 	for i, id := range trackIDs {
 		placeholders[i] = "?"
 		args[i] = id
@@ -1220,10 +1220,7 @@ func (db *DB) GetJiraActiveSprintStats(accountID int64, boardID int) (*SprintSta
 		}
 		if !endTime.IsZero() {
 			days := time.Until(endTime).Hours() / 24
-			stats.DaysLeft = int(math.Ceil(days))
-			if stats.DaysLeft < 0 {
-				stats.DaysLeft = 0
-			}
+			stats.DaysLeft = max(int(math.Ceil(days)), 0)
 		}
 	}
 

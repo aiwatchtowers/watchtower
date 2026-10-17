@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,13 +38,7 @@ func TestClient_BuildArgs(t *testing.T) {
 	assertContains(t, args, "sandbox_mode=read-only")
 
 	// System prompt passed via developer_instructions.
-	found := false
-	for _, a := range args {
-		if a == "developer_instructions=you are a helper" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(args, "developer_instructions=you are a helper")
 	if !found {
 		t.Error("expected developer_instructions arg with system prompt")
 	}
@@ -237,21 +232,17 @@ func TestChat04_CodexSessionArgvCarriesNoContent(t *testing.T) {
 
 func assertContains(t *testing.T, args []string, want string) {
 	t.Helper()
-	for _, a := range args {
-		if a == want {
-			return
-		}
+	if slices.Contains(args, want) {
+		return
 	}
 	t.Errorf("args %v should contain %q", args, want)
 }
 
 func assertNotContains(t *testing.T, args []string, unwanted string) {
 	t.Helper()
-	for _, a := range args {
-		if a == unwanted {
-			t.Errorf("args %v should not contain %q", args, unwanted)
-			return
-		}
+	if slices.Contains(args, unwanted) {
+		t.Errorf("args %v should not contain %q", args, unwanted)
+		return
 	}
 }
 

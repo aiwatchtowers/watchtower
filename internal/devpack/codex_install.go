@@ -52,6 +52,9 @@ type CodexStatus struct {
 	TrustError         string
 
 	SkillState State
+	// GroupPrompt: the skill copy knows the group first prompt
+	// (skillKnowsGroupPrompt); set by a status only.
+	GroupPrompt bool
 	// FlowState and SingleFileLayout are the preset's outcome beside the
 	// skill copy, as WorkbenchInstallReport's Flow and SingleFileLayout.
 	FlowState         State
@@ -221,6 +224,7 @@ func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, resolve func() 
 		return CodexStatus{}, err
 	}
 	st.SkillState = sk.State
+	st.GroupPrompt = skillKnowsGroupPrompt(sk.Path)
 	// An outdated copy (StateUpdated: a previously shipped version) is set
 	// up and needs a Repair, not "never set up"; SkillState says which.
 	st.Skill = sk.State != StateMissing
@@ -619,7 +623,7 @@ func normalizeHooksDoc(doc map[string]any) map[string]any {
 // onlyEmptyHooksTable: nothing is left but blank lines and a bare [hooks]
 // header, so the file held only our hooks.
 func onlyEmptyHooksTable(text string) bool {
-	for _, l := range strings.Split(text, "\n") {
+	for l := range strings.SplitSeq(text, "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" && l != "[hooks]" {
 			return false

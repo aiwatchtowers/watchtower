@@ -291,7 +291,7 @@ func TestComputeAllUserStats(t *testing.T) {
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
 
 	// U1: 3 messages
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ts := "1500000.00000" + string(rune('1'+i))
 		require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: ts, UserID: "U1", Text: "msg from U1"}))
 	}

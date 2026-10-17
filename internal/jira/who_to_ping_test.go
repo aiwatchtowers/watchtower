@@ -220,7 +220,7 @@ func TestComputeWhoToPing_ExpertFromComponent(t *testing.T) {
 	d := setupWhoToPingTestDB(t)
 
 	// Create several resolved issues with same component to establish expertise.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		insertTestIssue(t, d, db.JiraIssue{
 			Key:                 fmt.Sprintf("RES-%d", i),
 			ID:                  fmt.Sprintf("6%03d", i),

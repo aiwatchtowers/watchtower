@@ -108,7 +108,7 @@ func TestBuildOverviewUser_CapsPerFileAndOverall(t *testing.T) {
 	assert.Contains(t, out, "big.go (+1000 −0) — not shown")
 
 	in = Input{}
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		in.Diff.Files = append(in.Diff.Files, fileOf(fmt.Sprintf("f%02d.go", i), 300))
 	}
 	out = BuildOverviewUser(in)

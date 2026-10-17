@@ -220,7 +220,7 @@ const meetingPrepShortTermSampleLimit = 5
 func firstSectionLine(body, heading string) string {
 	want := "## " + heading
 	in := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## ") {
 			in = trimmed == want

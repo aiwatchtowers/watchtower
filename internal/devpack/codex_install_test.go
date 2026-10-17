@@ -117,7 +117,7 @@ func sessionFlagHooks(args []string) []codex.HookEntry {
 		}
 		for g, grp := range doc.V {
 			for h, hk := range grp.Hooks {
-				sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d", grp.Matcher, hk.Command, hk.Timeout)))
+				sum := sha256.Sum256(fmt.Appendf(nil, "%s|%s|%d", grp.Matcher, hk.Command, hk.Timeout))
 				out = append(out, codex.HookEntry{
 					Key:         fmt.Sprintf("/<session-flags>/config.toml:%s:%d:%d", snakeEvent(event), g, h),
 					Command:     hk.Command,
@@ -328,7 +328,7 @@ func TestStatusCodex_NullTrustWhenAppServerUnavailable(t *testing.T) {
 	}
 	st, err := StatusCodex(context.Background(), codexOpts(folder), codexResolves, unavailable)
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, Skill: true, SkillState: StateUnchanged,
+	assert.Equal(t, CodexStatus{Found: true, Skill: true, SkillState: StateUnchanged, GroupPrompt: true,
 		TrustError: "codex hook trust unavailable: no answer within 10s"}, st)
 
 	f := newFakeAppServer(t)
@@ -373,7 +373,7 @@ func TestStatusCodex_ReportsEachPartAndWritesNothing(t *testing.T) {
 	require.NoError(t, err)
 	st, err = StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateUnchanged}, st)
+	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateUnchanged, GroupPrompt: true}, st)
 
 	// An owner-edited skill is theirs and counts as installed (PROJ-04).
 	writeTestFile(t, codexSkillFile(folder), readTestFile(t, codexSkillFile(folder))+"\nmy note\n")

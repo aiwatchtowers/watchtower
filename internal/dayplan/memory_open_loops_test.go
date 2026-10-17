@@ -113,7 +113,7 @@ func TestGatherMemoryOpenLoops_CapsAtTen(t *testing.T) {
 	vaultPath := initLoopsVault(t, cfg)
 	d := gatherTestDB(t)
 	loops := make([]string, 0, 15)
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		loops = append(loops, "loop item")
 	}
 	writeEntityWithLoops(t, d, vaultPath, "ent_big", "Big entity", loops)

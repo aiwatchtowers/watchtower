@@ -35,7 +35,7 @@ func TestWorkerPoolProcessesTasks(t *testing.T) {
 		return nil
 	})
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wp.Submit(context.Background(), SyncTask{
 			ChannelID: "C001",
 			Priority:  PriorityMember,
@@ -129,7 +129,7 @@ func TestWorkerPoolConcurrency(t *testing.T) {
 		return nil
 	})
 
-	for i := 0; i < 9; i++ {
+	for range 9 {
 		wp.Submit(context.Background(), SyncTask{ChannelID: "C001"})
 	}
 	wp.Close()

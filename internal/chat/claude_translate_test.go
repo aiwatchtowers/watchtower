@@ -320,7 +320,7 @@ func testRecordedResumeMissing(t *testing.T) {
 	stdout, err := os.ReadFile(filepath.Join("testdata", "claude_resume_missing.jsonl"))
 	require.NoError(t, err)
 	tr := NewClaudeTranslator(fixedTurn("t1"))
-	for _, l := range strings.Split(string(stdout), "\n") {
+	for l := range strings.SplitSeq(string(stdout), "\n") {
 		evs, err := tr.Feed([]byte(l))
 		if err != nil {
 			continue

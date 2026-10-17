@@ -106,10 +106,7 @@ func (s *slackSource) Changed(ctx context.Context, q Queryer, cursor string, now
 		// content-hash gate keeps the re-render write-free).
 		lo = 0
 	}
-	hi := lo + slackRange
-	if hi > maxID {
-		hi = maxID
-	}
+	hi := min(lo+slackRange, maxID)
 	set := map[string]bool{}
 	if hi > lo {
 		if err := s.collectKeys(ctx, q, set, `SELECT channel_id, COALESCE(thread_ts, ''), ts_unix FROM messages WHERE rowid > ? AND rowid <= ?`, lo, hi); err != nil {

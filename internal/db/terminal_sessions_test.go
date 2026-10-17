@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -642,11 +643,11 @@ func terminalRowSnapshot(t *testing.T, d *DB, id int64) string {
 	if err := rows.Scan(ptrs...); err != nil {
 		t.Fatal(err)
 	}
-	out := ""
+	var out strings.Builder
 	for i, c := range cols {
-		out += fmt.Sprintf("%s=%#v;", c, vals[i])
+		out.WriteString(fmt.Sprintf("%s=%#v;", c, vals[i]))
 	}
-	return out
+	return out.String()
 }
 
 // otherAgentColumns renders the columns LowerTerminalBackground must never
@@ -1762,13 +1763,13 @@ func rowExcept(t *testing.T, d *DB, id int64, skip ...string) string {
 	for _, c := range skip {
 		skipped[c] = true
 	}
-	out := ""
+	var out strings.Builder
 	for i, c := range cols {
 		if !skipped[c] {
-			out += fmt.Sprintf("%s=%#v;", c, vals[i])
+			out.WriteString(fmt.Sprintf("%s=%#v;", c, vals[i]))
 		}
 	}
-	return out
+	return out.String()
 }
 
 // cwdRowSkip is what a cwd write may change, plus the row id that differs

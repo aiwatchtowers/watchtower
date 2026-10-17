@@ -36,7 +36,7 @@ type focusDirectives struct {
 func parseFocus(raw string) focusDirectives {
 	var fd focusDirectives
 	section := "" // "" | "now" | "cooled"
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		trimmed := strings.TrimSpace(line)
 		switch strings.ToLower(trimmed) {
 		case "## now":
@@ -200,7 +200,7 @@ func (p *Pipeline) resolveBulletsInto(bullets []string, titles []focusTitle, dst
 // fetch-and-lower-per-pass snapshot).
 func (p *Pipeline) matchBullet(bullet string, titles []focusTitle) (map[string]bool, error) {
 	candidates := []string{bullet}
-	for _, frag := range strings.Split(bullet, ",") {
+	for frag := range strings.SplitSeq(bullet, ",") {
 		frag = strings.TrimSpace(frag)
 		if frag != "" && frag != bullet {
 			candidates = append(candidates, frag)

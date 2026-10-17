@@ -135,7 +135,7 @@ func dumpTableInfo(t *testing.T, db *DB, table string, b *strings.Builder) {
 func normalizeWhitespace(s string) string {
 	// Collapse runs of whitespace to single spaces, trim each line, drop empties.
 	var out []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -151,11 +151,8 @@ func normalizeWhitespace(s string) string {
 func firstDiff(want, got string) string {
 	wantLines := strings.Split(want, "\n")
 	gotLines := strings.Split(got, "\n")
-	limit := len(wantLines)
-	if len(gotLines) > limit {
-		limit = len(gotLines)
-	}
-	for i := 0; i < limit; i++ {
+	limit := max(len(gotLines), len(wantLines))
+	for i := range limit {
 		var w, g string
 		if i < len(wantLines) {
 			w = wantLines[i]
@@ -164,14 +161,8 @@ func firstDiff(want, got string) string {
 			g = gotLines[i]
 		}
 		if w != g {
-			start := i - 3
-			if start < 0 {
-				start = 0
-			}
-			end := i + 4
-			if end > limit {
-				end = limit
-			}
+			start := max(i-3, 0)
+			end := min(i+4, limit)
 			var b strings.Builder
 			for j := start; j < end; j++ {
 				marker := "  "

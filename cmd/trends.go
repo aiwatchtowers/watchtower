@@ -325,9 +325,6 @@ func progressBar(done, total, width int) string {
 	if total <= 0 {
 		return strings.Repeat("░", width)
 	}
-	filled := done * width / total
-	if filled > width {
-		filled = width
-	}
+	filled := min(done*width/total, width)
 	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }

@@ -43,7 +43,7 @@ func TestGetFeedbackForPrompt(t *testing.T) {
 func TestGetFeedbackWithLimit(t *testing.T) {
 	db := openTestDB(t)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_, _ = db.AddFeedback(Feedback{EntityType: "digest", EntityID: "1", Rating: 1})
 	}
 

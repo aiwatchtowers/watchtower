@@ -155,7 +155,7 @@ func TestRunChannelDigests(t *testing.T) {
 
 	// Seed 5 recent messages (meets min_messages=3)
 	now := time.Now().Unix()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ts := fmt.Sprintf("%d.%06d", now-3600+int64(i*60), i)
 		seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("message %d about deployment", i))
 	}
@@ -189,7 +189,7 @@ func TestRunChannelDigests_BelowMinMessages(t *testing.T) {
 	seedUser(t, database, "U1", "alice", "Alice")
 
 	now := time.Now().Unix()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ts := fmt.Sprintf("%d.%06d", now-3600+int64(i*60), i)
 		seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("msg %d", i))
 	}
@@ -427,7 +427,7 @@ func TestRunChannelDigests_AIError(t *testing.T) {
 	seedUser(t, database, "U1", "alice", "Alice")
 
 	now := time.Now().Unix()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ts := fmt.Sprintf("%d.%06d", now-3600+int64(i*60), i)
 		seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("msg %d", i))
 	}
@@ -696,7 +696,7 @@ func TestRunWeeklyTrends(t *testing.T) {
 	cfg := testConfig()
 
 	// Pre-populate daily digests
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		dayOffset := int64(i * 86400)
 		_, err := database.UpsertDigest(db.Digest{
 			Type:         "daily",
@@ -850,7 +850,7 @@ func TestProfileContextInjectedIntoDigestPrompt(t *testing.T) {
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
 
 	// Insert enough messages.
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		ts := fmt.Sprintf("%d.000000", 1000000000+i*10)
 		require.NoError(t, database.UpsertMessage(db.Message{
 			ChannelID: "C1", TS: ts, UserID: "U001",
@@ -892,7 +892,7 @@ func TestNoProfileContextWhenProfileEmpty(t *testing.T) {
 	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
 
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		ts := fmt.Sprintf("%d.000000", 1000000000+i*10)
 		require.NoError(t, database.UpsertMessage(db.Message{
 			ChannelID: "C1", TS: ts, UserID: "U001",
@@ -940,7 +940,7 @@ func validDigestJSON() string {
 func seedMessagesForChannel(t *testing.T, database *db.DB, channelID, userID string, n int) {
 	t.Helper()
 	now := time.Now().Unix()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		ts := fmt.Sprintf("%d.%06d", now-3600+int64(i*60), i)
 		seedMessage(t, database, channelID, ts, userID, fmt.Sprintf("message %d content", i))
 	}
@@ -1044,7 +1044,7 @@ func TestRunPeriodSummary(t *testing.T) {
 	from := now.AddDate(0, 0, -3)
 
 	// Seed multiple digests in the time range.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		dayOffset := int64(i * 86400)
 		_, err := database.UpsertDigest(db.Digest{
 			ChannelID: "C1", Type: "channel",
@@ -1211,7 +1211,7 @@ func TestRunChannelDigests_MultipleWorkers(t *testing.T) {
 	cfg.Digest.BatchMaxChannels = 1 // force individual processing to test worker parallelism
 
 	seedUser(t, database, "U1", "alice", "Alice")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		chID := fmt.Sprintf("C%d", i)
 		seedChannel(t, database, chID, fmt.Sprintf("chan%d", i))
 		// Use 35 messages per channel (medium tier ≥30) so BatchMaxChannels=1 forces individual processing.
@@ -1385,7 +1385,7 @@ func TestRunWeeklyTrends_WithDecisions(t *testing.T) {
 	cfg := testConfig()
 
 	decisions := `[{"text":"adopt microservices","by":"@cto","message_ts":"999.001","importance":"high"}]`
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		dayOffset := int64(i * 86400)
 		_, err := database.UpsertDigest(db.Digest{
 			Type:         "daily",
@@ -2078,7 +2078,7 @@ func TestRunChannelDigests_SkipsEmptyMessages(t *testing.T) {
 
 	now := time.Now().Unix()
 	// 5 messages but all empty text — should skip.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ts := fmt.Sprintf("%d.%06d", now-3600+int64(i*60), i)
 		seedMessage(t, database, "C1", ts, "U1", "")
 	}
@@ -2471,7 +2471,7 @@ func TestRunChannelDigests_SinceOverride(t *testing.T) {
 
 	now := time.Now().Unix()
 	// Messages 2 hours ago.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ts := fmt.Sprintf("%d.%06d", now-3600+int64(i*60), i)
 		seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("msg %d", i))
 	}
@@ -2498,7 +2498,7 @@ func TestRunFirstRun_SingleWindow(t *testing.T) {
 	for d := 2; d >= 0; d-- {
 		day := now.AddDate(0, 0, -d)
 		dayStart := time.Date(day.Year(), day.Month(), day.Day(), 8, 0, 0, 0, time.UTC)
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			ts := fmt.Sprintf("%d.%06d", dayStart.Unix()+int64(i*60), i)
 			seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("day%d msg%d", d, i))
 		}
@@ -2553,7 +2553,7 @@ func TestRunWeeklyTrends_AIError(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, _ = database.UpsertDigest(db.Digest{
 			Type:         "daily",
 			PeriodFrom:   float64(time.Now().Unix() - int64(i*86400) - 86400),

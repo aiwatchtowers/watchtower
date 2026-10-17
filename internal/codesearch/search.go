@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -233,18 +234,11 @@ func regexHasUpper(pattern string) (bool, error) {
 	var walk func(*syntax.Regexp) bool
 	walk = func(re *syntax.Regexp) bool {
 		if re.Op == syntax.OpLiteral && re.Flags&syntax.FoldCase == 0 {
-			for _, r := range re.Rune {
-				if unicode.IsUpper(r) {
-					return true
-				}
-			}
-		}
-		for _, sub := range re.Sub {
-			if walk(sub) {
+			if slices.ContainsFunc(re.Rune, unicode.IsUpper) {
 				return true
 			}
 		}
-		return false
+		return slices.ContainsFunc(re.Sub, walk)
 	}
 	return walk(re), nil
 }

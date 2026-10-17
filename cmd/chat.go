@@ -174,7 +174,7 @@ func firstChatExchange(path []db.ChatMessage) (owner, assistant string) {
 // quotes of any script, emphasis and a trailing period; then caps it at
 // chatTitleMaxRunes runes.
 func cleanChatTitle(reply string) string {
-	for _, line := range strings.Split(reply, "\n") {
+	for line := range strings.SplitSeq(reply, "\n") {
 		s := strings.TrimSpace(line)
 		s = strings.TrimLeft(s, "#>-* ")
 		if strings.HasPrefix(strings.ToLower(s), "title:") {

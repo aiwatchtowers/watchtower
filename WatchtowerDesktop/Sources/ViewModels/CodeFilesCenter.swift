@@ -9,7 +9,8 @@ import WatchtowerCore
 // it, so one FSEvents stream per folder (started the first time FILES or the
 // Files pane is shown) refreshes the tree, the git marks and the open files
 // — a clean buffer reloads silently, one with unsaved edits is never
-// written over (`CodeFileBuffer`).
+// written over (`CodeFileBuffer`). With the UI off screen its batches wait
+// and are handled once it shows again (`setOnScreen`, board #731).
 
 /// What the Files pane's editor page can be asked for: the edits typed in
 /// it that it has not sent yet (its 300 ms debounce). Pulled before
@@ -111,6 +112,10 @@ final class CodeFilesCenter {
     /// and, once it makes a buffer dirty, joins `orphanedEdits`.
     @ObservationIgnored private var removedBuffers: [String: OrphanedEdit] = [:]
     @ObservationIgnored private var watchers: [CodeRoot: FolderWatcher] = [:]
+    /// Whether the UI is on screen (`setOnScreen`); off it the streams'
+    /// batches wait in `heldBatches`.
+    @ObservationIgnored private(set) var isOnScreen = true
+    @ObservationIgnored private var heldBatches: [CodeRoot: FolderWatcher.Batch] = [:]
     /// The roots shown at least once (their folder watched, git read).
     @ObservationIgnored private var watched: Set<CodeRoot> = []
     @ObservationIgnored private var bridges: [CodeRoot: WeakBridge] = [:]
@@ -197,7 +202,7 @@ final class CodeFilesCenter {
         if isNew, !root.isMain { rescanRoot(root) }
         if watchesFolders, isNew || watchers[root] == nil {
             let watcher = FolderWatcher(root: root.folder, hidden: CodeFileTree.hiddenNames) { [weak self] batch in
-                self?.handle(batch, root: root)
+                self?.receive(batch, root: root)
             }
             watchers[root] = watcher
             if watcher == nil {
@@ -224,6 +229,7 @@ final class CodeFilesCenter {
     /// flight finds the root unwatched after its await and lands nothing.
     private func unwatchRoot(_ root: CodeRoot) {
         watched.remove(root)
+        heldBatches[root] = nil
         watchers[root] = nil
         watchErrors[root] = nil
         showing[root] = nil
@@ -270,6 +276,45 @@ final class CodeFilesCenter {
         }
         stopShowing(root)
     }
+
+    /// The UI went on or off screen (board #731). Off screen the folder's
+    /// batches are held, merged per root, instead of refreshing a tree, git
+    /// marks and the symbol index nobody sees; back on screen each root's
+    /// held batch is handled once. A buffer's save checks the disk itself,
+    /// so holding its reload loses nothing.
+    func setOnScreen(_ onScreen: Bool) {
+        isOnScreen = onScreen
+        guard onScreen else { return }
+        let held = heldBatches
+        heldBatches = [:]
+        for (root, batch) in held { handle(batch, root: root) }
+    }
+
+    /// A batch from a root's stream: handled now on screen, held off it.
+    func receive(_ batch: FolderWatcher.Batch, root: CodeRoot) {
+        guard !isOnScreen else {
+            handle(batch, root: root)
+            return
+        }
+        guard watched.contains(root) else { return }
+        heldBatches[root] = Self.merge(heldBatches[root] ?? FolderWatcher.Batch(), batch)
+    }
+
+    /// Two batches as one. Past `heldPathCap` paths the merge turns into a
+    /// rescan, so a long absence over a busy folder holds no unbounded set.
+    nonisolated static func merge(_ held: FolderWatcher.Batch, _ batch: FolderWatcher.Batch) -> FolderWatcher.Batch {
+        var merged = held
+        merged.paths.formUnion(batch.paths)
+        merged.gitChanged = merged.gitChanged || batch.gitChanged
+        merged.mustRescan = merged.mustRescan || batch.mustRescan
+        if merged.paths.count > heldPathCap {
+            merged.mustRescan = true
+            merged.paths = []
+        }
+        return merged
+    }
+
+    nonisolated static let heldPathCap = 1000
 
     /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, root: CodeRoot) {

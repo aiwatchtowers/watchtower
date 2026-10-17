@@ -1078,9 +1078,7 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 	agg := &batchAggregator{}
 	var wg sync.WaitGroup
 	for range min(workers, len(batches)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for batch := range batchCh {
 				if ctx.Err() != nil {
 					return
@@ -1091,7 +1089,7 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 					p.processBatchEntry(ctx, batch, total, agg, nowUnix)
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -2021,13 +2019,13 @@ func groupIntoBatches(entries []batchEntry, maxChannels, maxMessages int) [][]ba
 // Filters out entries with empty ChannelID or Summary.
 func parseBatchDigestResult(raw string) ([]BatchChannelResult, error) {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
@@ -2526,13 +2524,13 @@ func blankInventedMessageRefs(topics []Topic, msgs []db.Message) int {
 func parseDigestResult(raw string) (*DigestResult, error) {
 	// Try to extract JSON from markdown fences
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}

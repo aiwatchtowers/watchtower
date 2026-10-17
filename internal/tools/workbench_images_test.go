@@ -215,9 +215,9 @@ func TestUpdateTarget_AddsAndRemovesImagesKeepingSharedCopies(t *testing.T) {
 func TestUpdateTarget_ImageCapFailsTheWholeUpdate(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg, store := imageRegistry(t, fx.d)
-	for batch := 0; batch < 2; batch++ {
+	for batch := range 2 {
 		var paths []string
-		for i := 0; i < maxImagesPerCall; i++ {
+		for i := range maxImagesPerCall {
 			paths = append(paths, fmt.Sprintf("%q", fakeImage(t, "x.png", fmt.Sprintf("%d-%d", batch, i))))
 		}
 		mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"add_images":[%s],"reason":"r"}`,

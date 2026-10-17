@@ -261,7 +261,7 @@ func TestBackfillShortlistChunksAndCandidateCap(t *testing.T) {
 	seed := func(t *testing.T) (*db.DB, int, []int) {
 		d, id, base := newScanFixture(t)
 		var ids []int
-		for i := 0; i < shortlistChunk+1; i++ {
+		for i := range shortlistChunk + 1 {
 			ts := base.Add(time.Duration(i) * time.Second).Format("2006-01-02T15:04:05Z")
 			ids = append(ids, seedInboxAt(t, d, fmt.Sprintf("item-%04d", i), ts))
 		}

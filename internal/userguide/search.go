@@ -66,7 +66,7 @@ with without would yes you your`
 
 var stopwords = func() map[string]bool {
 	m := map[string]bool{}
-	for _, w := range strings.Fields(stopwordList) {
+	for w := range strings.FieldsSeq(stopwordList) {
 		m[w] = true
 	}
 	return m
@@ -99,7 +99,7 @@ func Page(sections []Section, page string) ([]Section, bool) {
 // words of two or more characters.
 func splitWords(s string) []string {
 	out := []string{}
-	for _, w := range strings.Fields(strings.ReplaceAll(strings.ToLower(s), "’", "'")) {
+	for w := range strings.FieldsSeq(strings.ReplaceAll(strings.ToLower(s), "’", "'")) {
 		w = strings.TrimFunc(w, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 		w = strings.TrimSuffix(w, "'s")
 		if len([]rune(w)) >= 2 {
