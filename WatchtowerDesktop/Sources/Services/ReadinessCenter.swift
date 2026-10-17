@@ -45,6 +45,9 @@ final class ReadinessCenter {
     struct DBSnapshot: Equatable, Sendable {
         var contentPresent: Set<ReadinessFeature>
         var latestRuns: [String: RunSnapshot]
+        /// `history_backfill` is outside the observed region (only the daemon
+        /// writes it), so the tick's re-read picks its changes up.
+        var runningBackfillStarts: [Date]
     }
 
     @ObservationIgnored private let environment: any ReadinessEnvironment
@@ -102,7 +105,8 @@ final class ReadinessCenter {
 
     nonisolated private static func readSnapshot(_ db: Database) throws -> DBSnapshot {
         DBSnapshot(contentPresent: try ReadinessQueries.contentPresent(db),
-                   latestRuns: try ReadinessQueries.latestRuns(db))
+                   latestRuns: try ReadinessQueries.latestRuns(db),
+                   runningBackfillStarts: try ReadinessQueries.runningBackfillStarts(db))
     }
 
     /// The tick's one-shot read: picks up the daemon's writes, and a table a
@@ -171,7 +175,8 @@ final class ReadinessCenter {
             ),
             briefingHour: environment.briefingHour,
             dayPlanHour: environment.dayPlanHour,
-            pollIntervalMinutes: FeatureReadiness.parsePollInterval(environment.pollInterval)
+            pollIntervalMinutes: FeatureReadiness.parsePollInterval(environment.pollInterval),
+            runningBackfillStarts: snapshot.runningBackfillStarts
         )
     }
 }

@@ -183,6 +183,23 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.ideas, input), .scheduled(.inHours(5)))
     }
 
+    /// #578, dual path with Go's memory gate: a running backfill row holds
+    /// memory for `memoryBackfillWaitMax` from its start; none, or an older
+    /// one, is the plain cycle.
+    func testMemoryWaitsForHistoryOnlyInsideTheWindow() {
+        let now = today(10)
+        var input = inputs(now: now)
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.nextCycle(minutes: 15)))
+
+        input.runningBackfillStarts = [now.addingTimeInterval(-FeatureReadiness.memoryBackfillWaitMax + 60)]
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.afterHistoryLoads))
+        XCTAssertEqual(FeatureReadiness.line(.scheduled(.afterHistoryLoads)), "Waiting for history to load")
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)), "memory only")
+
+        input.runningBackfillStarts = [now.addingTimeInterval(-FeatureReadiness.memoryBackfillWaitMax - 60)]
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.nextCycle(minutes: 15)))
+    }
+
     func testCalendarHasNoPreparingOrError() {
         let now = today(10)
         var input = inputs(now: now)
@@ -222,7 +239,7 @@ final class FeatureReadinessTests: XCTestCase {
         let poll = 15
         let etas: [Eta] = [
             .afterCurrentSync, .nextCycle(minutes: poll), .at(hour: 8, tomorrow: false),
-            .at(hour: 8, tomorrow: true), .inAboutADay, .inHours(6)
+            .at(hour: 8, tomorrow: true), .inAboutADay, .inHours(6), .afterHistoryLoads
         ]
         let minutes = try NSRegularExpression(pattern: #"~?\d+ min"#)
         for eta in etas {

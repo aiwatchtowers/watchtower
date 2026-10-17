@@ -73,6 +73,16 @@ package enum ReadinessQueries {
         return runs
     }
 
+    /// `started_at` of every running `history_backfill` row (a held row
+    /// included), for memory's backfill wait; a database without the table
+    /// reads as none. A `started_at` that doesn't parse is skipped (it can't
+    /// be placed in the wait window).
+    package static func runningBackfillStarts(_ db: Database) throws -> [Date] {
+        guard try existingTables(db, among: ["history_backfill"]).contains("history_backfill") else { return [] }
+        return try String.fetchAll(db, sql: "SELECT started_at FROM history_backfill WHERE status = 'running'")
+            .compactMap { SyncProgress.parseTimestamp($0) }
+    }
+
     private static func existingTables(_ db: Database, among names: [String]) throws -> Set<String> {
         let placeholders = names.map { _ in "?" }.joined(separator: ", ")
         return Set(try String.fetchAll(

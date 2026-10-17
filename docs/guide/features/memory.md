@@ -10,7 +10,7 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 
 **Plain files you can read.** The memory is markdown files in a git repository in your workspace folder (`memory/`). The files are the memory; the app's database only keeps a search index, which can be rebuilt from them at any time. Open the folder in Obsidian or any editor if you like. Before each run Watchtower saves your manual edits as a separate "owner edit" entry, so nothing you wrote is overwritten and history shows who changed what.
 
-**How it fills itself.** Each daemon cycle, after inbox detection and the ideas phase, one consolidation pass seeds skeleton pages (a person needs about 20 messages in the last 30 days) and extracts notable episodes from channel history in bounded chunks, so a long backlog is worked off gradually. While the history backfill of a new source is still running, memory waits and does nothing, so expect no pages for the first stretch after connecting a source. Every message link is validated before a note is written.
+**How it fills itself.** Each daemon cycle, after inbox detection and the ideas phase, one consolidation pass seeds skeleton pages (a person needs about 20 messages in the last 30 days) and extracts notable episodes from channel history in bounded chunks, so a long backlog is worked off gradually. While the history backfill of a new source is still running, memory waits and does nothing (the tab says "Waiting for history to load"), at most a day after the backfill started, so expect no pages for the first stretch after connecting a source. Every message link is validated before a note is written.
 
 **Beyond Slack.** In **Settings → Features → Memory → Advanced** each switch below is off by default.
 
@@ -39,7 +39,7 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 
 ## When it's empty or wrong
 
-- **The tab says "Nothing remembered yet".** Memory is off (use **Turn on**), or it has not run yet. Check `watchtower memory status`. Remember it waits for any running history backfill, and a person needs about 20 recent messages to get a page.
+- **The tab says "Nothing remembered yet".** Memory is off (use **Turn on**), or it has not run yet. Check `watchtower memory status`. With "Waiting for history to load" it waits for a running history backfill (at most a day), and a person needs about 20 recent messages to get a page.
 - **A belief shows "Dispute pending".** The memory marked it unsettled: it keeps flip-flopping or new evidence contradicts something you said. The Memory tab badge counts these marks; nothing else brings them to you. Settle it by editing the page, or pin the right fact with `remember this:` in a target or track chat (see the Chats source).
 - **A note looks wrong.** Open its sources through the links; edit the page if needed. Treat memory as notes the assistant built, possibly out of date, not as your own words.
 - **A switch seems to do nothing.** Reflection, belief revisions and `remember this:` need the Semantic tier. The Day Plan surface needs Targets & Tracks mirrors.

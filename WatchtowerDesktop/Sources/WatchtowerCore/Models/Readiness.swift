@@ -117,6 +117,8 @@ package enum Eta: Equatable, Sendable {
     case inAboutADay
     /// The ideas/streams interval, rounded up to whole hours.
     case inHours(Int)
+    /// Memory waits for a running history backfill (#578).
+    case afterHistoryLoads
 }
 
 /// One feature's readiness, in evaluation precedence order.
@@ -179,6 +181,9 @@ package struct ReadinessInputs: Equatable {
     package var briefingHour: Int
     package var dayPlanHour: Int
     package var pollIntervalMinutes: Int
+    /// `started_at` of every `history_backfill` row with status `running`
+    /// (a held row included), for memory's backfill wait (#578).
+    package var runningBackfillStarts: [Date]
 
     package init(
         now: Date,
@@ -192,7 +197,8 @@ package struct ReadinessInputs: Equatable {
         stamps: ReadinessStamps = ReadinessStamps(),
         briefingHour: Int = 8,
         dayPlanHour: Int = 8,
-        pollIntervalMinutes: Int = 15
+        pollIntervalMinutes: Int = 15,
+        runningBackfillStarts: [Date] = []
     ) {
         self.now = now
         self.disabledFeatureIDs = disabledFeatureIDs
@@ -206,5 +212,6 @@ package struct ReadinessInputs: Equatable {
         self.briefingHour = briefingHour
         self.dayPlanHour = dayPlanHour
         self.pollIntervalMinutes = pollIntervalMinutes
+        self.runningBackfillStarts = runningBackfillStarts
     }
 }

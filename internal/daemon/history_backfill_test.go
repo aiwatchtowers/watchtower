@@ -124,13 +124,41 @@ func TestPhaseMemory_SkipsWhileBackfillActive(t *testing.T) {
 
 	rows, err := database.ListHistoryBackfills()
 	require.NoError(t, err)
-	require.NoError(t, database.SetHistoryBackfillStatus(rows[0].ID, "paused", time.Now()))
-	d.phaseMemory(context.Background())
-	assert.Equal(t, 0, opens, "a paused backfill still holds memory")
-
 	require.NoError(t, database.AdvanceHistoryBackfill(rows[0].ID, 0, time.Now()))
 	d.phaseMemory(context.Background())
 	assert.Equal(t, 1, opens, "a done backfill lets memory run")
+}
+
+// #578: a paused row (a revoked account) never holds memory, and a running
+// row holds it for at most memoryBackfillWaitMax after it started.
+func TestPhaseMemory_NoWaitForPausedOrOverdueBackfill(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Memory = enabledMemoryConfig()
+	opens := 0
+	d.SetMemoryPipelineOpener(func() (*memory.Pipeline, error) {
+		opens++
+		return nil, fmt.Errorf("vault unavailable in test")
+	})
+	started := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	now := started.Add(time.Hour)
+	d.memoryNow = func() time.Time { return now }
+	_, err := database.StartHistoryBackfill("slack", 1, 0, 100, started)
+	require.NoError(t, err)
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+
+	require.NoError(t, database.SetHistoryBackfillStatus(rows[0].ID, "paused", now))
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 1, opens, "a paused backfill does not hold memory")
+
+	require.NoError(t, database.SetHistoryBackfillStatus(rows[0].ID, "running", now))
+	now = started.Add(memoryBackfillWaitMax - time.Minute)
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 1, opens, "a running backfill holds memory inside the window")
+
+	now = started.Add(memoryBackfillWaitMax + time.Minute)
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 2, opens, "memory stops waiting after memoryBackfillWaitMax")
 }
 
 // F3: a failing backfill query must not fail open — memory skips the cycle

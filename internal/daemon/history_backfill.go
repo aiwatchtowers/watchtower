@@ -53,8 +53,8 @@ func (d *Daemon) startHistoryBackfill(kind string, accountID int64, from time.Ti
 // also runs once all rows are done until the one-time Slack-done hooks have
 // stamped (R14), so a hook failure is retried on later cycles.
 // sync.backfill_days <= 0 is the kill switch (R20): the phase does not run
-// and the rows stay as they are; setting it back resumes them. Memory keeps
-// waiting while a row is still running or paused.
+// and the rows stay as they are; setting it back resumes them. Memory waits
+// for a running row at most memoryBackfillWaitMax (phaseMemory, #578).
 func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 	if d.db == nil || d.config.Sync.BackfillDays <= 0 {
 		return
