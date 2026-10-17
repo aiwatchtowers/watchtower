@@ -5,9 +5,11 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/dlclark/regexp2/v2"
 	"github.com/dop251/goja"
+	"golang.org/x/text/unicode/norm"
 )
 
 // RegexpMatchTimeout bounds one backtracking regular-expression match (goja
@@ -68,7 +70,7 @@ func init() {
 //     regexp2 match that timed out).
 //
 // It returns the function that neutralises one more function prototype.
-const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNestsDeeper, quotedLength, classOf) {
+const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNestsDeeper, quotedLength, classOf, expandedLength) {
 	"use strict";
 	var FunctionProto = Function.prototype;
 	var uncurry = FunctionProto.bind.bind(FunctionProto.call);
@@ -156,10 +158,37 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 		return (spread === undefined ? isArray(v) : !!spread) ? toLen(v.length) : 1;
 	}
 	guarded(AP, "sort", function (arr, a) {
-		if (a[0] === undefined && toLen(arr.length) > maxSort) {
+		var len = toLen(arr.length);
+		cap("sort", len); // goja copies an array-like's elements into a list of its length first
+		if (a[0] === undefined && len > maxSort) {
 			throw new RangeErrorCtor("sort: arrays longer than " + maxSort + " need a comparator function");
 		}
 	});
+	// Builtins that build a list or an array as long as their receiver (an
+	// array-like's length can be 2^53 - 1): capped by that length.
+	function lengthCapped(name) {
+		guarded(AP, name, function (arr) { cap(name, toLen(arr.length)); });
+	}
+	lengthCapped("toSorted");
+	lengthCapped("toReversed");
+	lengthCapped("toSpliced");
+	lengthCapped("with");
+	lengthCapped("splice");
+	guarded(AP, "slice", function (arr, a) {
+		var len = toLen(arr.length);
+		cap("slice", relIndex(a[1], len, len) - relIndex(a[0], len, 0));
+	});
+	// apply and Reflect.apply/construct copy an array-like argument list into
+	// a list of its length.
+	function argListCapped(obj, key, at) {
+		guarded(obj, key, function (self, a) {
+			var list = a[at];
+			if (list !== null && (typeof list === "object" || typeof list === "function")) { cap(key, toLen(list.length)); }
+		});
+	}
+	argListCapped(FunctionProto, "apply", 1);
+	argListCapped(g.Reflect, "apply", 2);
+	argListCapped(g.Reflect, "construct", 1);
 
 	// join converts each element once, checking the running result length.
 	defineProperty(AP, "join", { writable: true, configurable: true, enumerable: false,
@@ -383,6 +412,34 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 		return apply(origJoin, out, [""]);
 	}
 
+	// normalize (NFKD: up to 18 units per unit) and the URI encoders (up to 9
+	// characters per unit) run goja's when the worst case fits; otherwise the
+	// result is measured first (expandedLength, in Go).
+	var origNormalize = SP.normalize;
+	defineProperty(SP, "normalize", { writable: true, configurable: true, enumerable: false,
+		value: function normalize() {
+			if (this === null || this === undefined) { throw new TypeErrorCtor("String.prototype.normalize called on null or undefined"); }
+			var str = StringCtor(this);
+			var form = arguments.length > 0 && arguments[0] !== undefined ? StringCtor(arguments[0]) : "NFC";
+			if (str.length * 18 > maxAlloc && (form === "NFC" || form === "NFD" || form === "NFKC" || form === "NFKD")) {
+				cap("normalize", expandedLength(form, str, maxAlloc));
+			}
+			return apply(origNormalize, str, [form]);
+		} });
+	function encoderCapped(name) {
+		var orig = g[name];
+		var encoder = function (value) {
+			var str = StringCtor(value);
+			if (str.length * 9 > maxAlloc) { cap(name, expandedLength("uri", str, maxAlloc)); }
+			return apply(orig, undefined, [str]);
+		};
+		defineProperty(encoder, "name", { value: name, configurable: true });
+		defineProperty(g, name, { value: encoder, writable: true, enumerable: false, configurable: true });
+	}
+	encoderCapped("encodeURI");
+	encoderCapped("encodeURIComponent");
+	encoderCapped("escape");
+
 	// concat converts each argument once.
 	var origConcat = SP.concat, origReplace = SP.replace, origReplaceAll = SP.replaceAll;
 	defineProperty(SP, "concat", { writable: true, configurable: true, enumerable: false,
@@ -429,7 +486,10 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 	}
 	function lengthArg(what, perElement) {
 		return function (args) {
-			if (args.length >= 1 && typeof args[0] === "number") { cap(what, args[0] * perElement); }
+			var a0 = args[0];
+			if (args.length >= 1 && typeof a0 === "number") { cap(what, a0 * perElement); }
+			// an array-like source: one element per index up to its length
+			if (a0 !== null && typeof a0 === "object" && classOf(a0) !== "ArrayBuffer") { cap(what, toLen(a0.length) * perElement); }
 		};
 	}
 	capConstructor("Array", false, function (args) {
@@ -448,6 +508,30 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 	var typedLength = uncurry(Object.getOwnPropertyDescriptor(TypedProto, "length").get); // throws for a non-typed array
 	defineProperty(TypedProto, "toLocaleString", { writable: true, configurable: true, enumerable: false,
 		value: function toLocaleString() { return localeJoin(this, typedLength(this), arguments); } });
+	// A typed array's join (and so its toString): goja's runs when even the
+	// longest elements (25 characters) and the separator fit; otherwise each
+	// element is converted and counted.
+	var origTypedJoin = TypedProto.join;
+	defineProperty(TypedProto, "join", { writable: true, configurable: true, enumerable: false,
+		value: function join(separator) {
+			var len = typedLength(this);
+			var sep = separator === undefined ? "," : StringCtor(separator);
+			if (len * (25 + sep.length) <= maxAlloc) { return apply(origTypedJoin, this, [sep]); }
+			var parts = [], total = 0;
+			for (var i = 0; i < len; i++) {
+				var str = StringCtor(this[i]);
+				total += str.length + (i > 0 ? sep.length : 0);
+				cap("join", total);
+				arrayPush(parts, str);
+			}
+			return apply(origJoin, parts, [sep]);
+		} });
+	// BigInt.asIntN/asUintN build 2^bits first: bits capped at maxAlloc bytes.
+	function bitsCapped(key) {
+		guarded(g.BigInt, key, function (self, a) { cap("BigInt." + key, toLen(a[0]) / 8); });
+	}
+	bitsCapped("asIntN");
+	bitsCapped("asUintN");
 
 	var stringify = JSON.stringify;
 	// propertyList is JSON.stringify's array replacer as the spec builds it:
@@ -626,9 +710,12 @@ func (s *Sandbox) lockdown() error {
 		}
 		return s.rt.ToValue("")
 	}
+	expanded := func(call goja.FunctionCall) goja.Value {
+		return s.rt.ToValue(expandedLength(call.Argument(0).String(), call.Argument(1).String(), int(call.Argument(2).ToInteger())))
+	}
 	nv, err := lock(goja.Undefined(), s.rt.GlobalObject(), s.rt.ToValue(MaxBuiltinAlloc), s.rt.ToValue(MaxJSONDepth),
 		s.rt.ToValue(RegexpMatchTimeout.Milliseconds()), s.rt.ToValue(MaxDefaultSortLength),
-		s.rt.ToValue(nestsDeeper), s.rt.ToValue(quoted), s.rt.ToValue(classOf))
+		s.rt.ToValue(nestsDeeper), s.rt.ToValue(quoted), s.rt.ToValue(classOf), s.rt.ToValue(expanded))
 	if err != nil {
 		return fmt.Errorf("automation sandbox: locking down the runtime: %w", err)
 	}
@@ -906,4 +993,37 @@ func jsonEscapeEnd(text string, i int) int {
 		}
 	}
 	return i + 5
+}
+
+// expandedLength is the UTF-16 length of str after kind ("NFC", "NFD",
+// "NFKC", "NFKD": exact; "uri": an upper bound for encodeURI,
+// encodeURIComponent and escape — every non-alphanumeric character escaped
+// from its UTF-8 bytes), counted only until it passes limit.
+func expandedLength(kind, str string, limit int) int {
+	n := 0
+	if kind == "uri" {
+		for _, r := range str {
+			switch {
+			case r < utf8.RuneSelf && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'):
+				n++
+			default:
+				n += 3 * utf8.RuneLen(max(r, 0))
+			}
+			if n > limit {
+				return n
+			}
+		}
+		return n
+	}
+	var it norm.Iter
+	it.InitString(map[string]norm.Form{"NFC": norm.NFC, "NFD": norm.NFD, "NFKC": norm.NFKC, "NFKD": norm.NFKD}[kind], str)
+	for !it.Done() {
+		for _, r := range string(it.Next()) {
+			n += utf16.RuneLen(r)
+		}
+		if n > limit {
+			return n
+		}
+	}
+	return n
 }
