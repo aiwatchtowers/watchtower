@@ -1,7 +1,7 @@
 # Chat — claude.ai tools: publish artifacts and docs, use the account's connectors
 
-**Date:** 2026-10-16 · **Board:** #737 · **Owner decisions:** ask #236 (2026-10-13), open questions in §6
-**Status:** research done, design proposed; awaits the owner's review. No product code yet.
+**Date:** 2026-10-16 · **Board:** #737 · **Owner decisions:** ask #236 (2026-10-13), ask #326 (Q1–Q4, §6)
+**Status:** approved (ask #325); Q1–Q4 decided (ask #326). Plan: `docs/superpowers/plans/2026-10-17-chat-claude-ai-tools.md`.
 
 ## 1. For the owner (one page)
 
@@ -30,8 +30,8 @@ we start it with every claude.ai tool switched off.
 
 **What stays as it is:** the in-app artifact side panel (copy / open / export);
 Codex and Ollama chats (they have no claude.ai — the chat says so honestly and
-keeps the in-app artifact); the daemon's pipelines; meeting, idea and track chats
-(see question Q2).
+keeps the in-app artifact); the daemon's pipelines; meeting, idea, track and target chats
+(decision Q2).
 
 **Limits.** Needs a claude.ai login (subscription). With an API key, Bedrock or
 Vertex the claude.ai tools are not offered and the chat says why. A connector the
@@ -60,7 +60,7 @@ What else could now load: a `.mcp.json`/local-scope entry for that private cwd
 (none; the dir is ours and checked private) and admin `managed-mcp.json` (org
 policy, acceptable). Every tool of an unexpected server is denied by the gate (D3),
 so a stray server fails closed. The one-shot `ai query` client, embedded chats and
-daemon pipelines keep `--strict-mcp-config` (§6 Q2). F4 is the fallback if dropping
+daemon pipelines keep `--strict-mcp-config` (§6, decision Q2). F4 is the fallback if dropping
 strict ever loads something we do not want.
 
 **D2 — Settings list and switches.** At session start `ai session` sends
@@ -104,7 +104,7 @@ approval" step and the existing action card. Approve uses the existing
 `ApproveSeen` (args digest; owner edits allowed). The **session** is the only
 applier: it claims `approved → executing` (AGENT-05's claim), answers allow with
 `updatedInput` = the approved args, records the tool result and lands the row
-`applied`/`failed`. Reject, Stop, or a timeout (Q3) answers deny and lands the row
+`applied`/`failed`. Reject, Stop, or the 15-minute timeout (decision Q3) answers deny and lands the row
 `rejected`. A row whose session died is landed `failed` ("session ended before
 approval") at the next start — it can never be re-executed: only the live CLI
 request can run it.
@@ -166,23 +166,22 @@ a Desktop "Publish" button on an in-app artifact (would break CHAT-05's scan —
 assistant publishes instead); connectors in daemon pipelines and automations; Codex
 equivalents.
 
-## 6. Open owner questions
+## 6. Decided (ask #326)
 
-- **Q1 — How to tell a connector read from a write.** (a) **The server's own
-  read-only marks plus our override list; anything unmarked asks you** *(recommended:
-  most reads just work, unknown is safe)*; (b) ask for every connector call except
-  Claude Docs (safest, many clicks); (c) our own name list only (get_/list_/search_ —
-  breaks on new tools, a server picks its own names).
-- **Q2 — Embedded chats (meeting, idea, track, target).** (a) **Unchanged in v1 —
-  main chat only** *(recommended: they are draft-only by contract AGENT-04, one-shot
-  processes where connectors do not arrive in time, F3)*; (b) target chat gets
-  publishing + connector reads; (c) every embedded chat gets publishing only.
-- **Q3 — How long a write waits for Approve.** (a) **15 min, then it is cancelled and
-  the chat says so** *(recommended: keeps one of the 3 chat slots from hanging,
-  CHAT-03)*; (b) until you answer or press Stop; (c) 2 min.
-- **Q4 — Codex chats.** (a) **Say honestly that publishing needs the Claude provider
-  and keep the in-app artifact** *(recommended)*; (b) also file a separate target to
-  research Codex's own connectors.
+The owner picked the recommended option on all four questions.
+
+- **Q1 — How to tell a connector read from a write: (a).** The server's own
+  read-only annotations plus our override list (`internal/chat/connectorpolicy`);
+  a tool without an annotation, or marked destructive, goes through Approve.
+- **Q2 — Embedded chats (meeting, idea, track, target): (a).** Nothing changes in
+  v1; only the main AI Chat gets the claude.ai tools. Embedded chats keep
+  `ai query` with `--strict-mcp-config` (AGENT-04 draft-only surfaces untouched).
+- **Q3 — How long a write waits for Approve: (a).** 15 minutes, then the call is
+  cancelled (the row lands `rejected`, the model is told, the step says so). The
+  wait is bounded so a waiting turn never holds one of the 3 CHAT-03 slots for
+  longer than that.
+- **Q4 — Codex chats: (a).** The prompt says honestly that publishing to claude.ai
+  needs the Claude provider and keeps the in-app artifact; no Codex research target.
 
 ## 7. Done when / manual check
 
