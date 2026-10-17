@@ -736,6 +736,5 @@ struct RecordingChatTab: View {
     var body: some View {
         EmbeddedChatView(engine: engine, placeholder: "Ask about this meeting…",
                          dictationTargetID: "chat.meeting.\(transcriptID)")
-            .clearsRecordingIndicator()
     }
 }

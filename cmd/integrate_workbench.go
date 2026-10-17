@@ -397,7 +397,7 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 		fmt.Fprintln(w, "  still present: Stop hook")
 		left = true
 	}
-	if st.StateHooks {
+	if st.StateHooks || st.PermissionWait {
 		fmt.Fprintln(w, "  still present: session state hooks")
 		left = true
 	}
@@ -462,6 +462,10 @@ type workbenchStatusJSON struct {
 	// workbench missing either is offered Repair.
 	AskGuard     bool `json:"ask_guard"`
 	AskToolBlock bool `json:"ask_tool_block"`
+	// PermissionWait: the PermissionRequest hook holding a permission dialog
+	// for an answer from the phone (#517). Additive; a workbench missing it
+	// is offered Repair.
+	PermissionWait bool `json:"permission_wait"`
 	// CleanupPermission: the permissions.allow rule for `watchtower
 	// workbench cleanup` (session cleanup §10) is there. Additive; a
 	// Re-run Setup adds it to a folder set up before it.
@@ -519,6 +523,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			Legacy: st.Legacy, LegacySkill: legacySkillState(st.LegacySkill),
 			CurrentMCP: st.CurrentMCP, StateHooks: st.StateHooks,
 			AskGuard: st.AskGuard, AskToolBlock: st.AskToolBlock,
+			PermissionWait:    st.PermissionWait,
 			CleanupPermission: st.CleanupPermission,
 			Codex: codexStatusJSON{
 				Found: cs.Found, Skill: cs.Skill, SkillState: string(cs.SkillState),

@@ -94,7 +94,10 @@ package enum CatchUpQueries {
     /// the run's own coverage top-up stamps its `period_to` with its own
     /// `time.Now()`, landing a second or two past `to`, and a `period_to <= to`
     /// ack would leave such a cited digest unread forever. `tracks` and
-    /// `inbox_items` compare a single instant, so they keep `(from, to]`;
+    /// `inbox_items` compare a single instant, so they keep `(from, to]` — for
+    /// `inbox_items` that instant is `MAX(created_at, mentioned_at)`, so a
+    /// mention folded into an older channel item (#586) is acknowledged with the
+    /// window that gathered it, as Go `AcknowledgeCatchupWindow` does;
     /// `briefings` compares LOCAL calendar dates inclusively.
     ///
     /// Runs inside the caller's `write` block, which supplies the transaction the
@@ -138,7 +141,8 @@ package enum CatchUpQueries {
         try db.execute(
             sql: """
                 UPDATE inbox_items SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                WHERE read_at IS NULL AND created_at > ? AND created_at <= ?
+                WHERE read_at IS NULL
+                  AND MAX(created_at, mentioned_at) > ? AND MAX(created_at, mentioned_at) <= ?
                 """,
             arguments: [fromISO, toISO]
         )

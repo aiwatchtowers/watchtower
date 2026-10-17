@@ -46,16 +46,34 @@ Asks come in three kinds: a question, a review (select text, **Comment on the se
 
 ### Let the phone do more
 
-Two switches under Settings → **Workbench** on the phone:
+Three switches under Settings → **Workbench** on the phone:
 
 - **Start sessions from this phone** lets you start a session from a target. It runs the Mac's default agent.
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
+- **Answer permission prompts from this phone** lets you answer a Claude Code permission prompt. It is a separate grant: the Mac's phone row shows **Asks to answer permission prompts**, with its own **Allow…**.
 
-Open a running session without this switch and its bottom bar says so, with **Turn On** right there; once asked, it says it waits for the Mac's **Allow…**.
+Open a running session without the typing switch and its bottom bar says so, with **Turn On** right there; once asked, it says it waits for the Mac's **Allow…**.
 
 A running session's status shows how long it has been in that state, for example **Working · 12m** or **Needs approval · 40m**, so a session stuck at a prompt is easy to spot.
 
-A permission prompt in a session is never answered from the phone; the session shows **Needs approval on the Mac**.
+### Answer a permission prompt
+
+A Claude Code session at a permission prompt shows a card with the tool and what it will run, plus **Allow once** and **Deny**. **Allow once** approves that one call, never a rule (a shell command asks first). Nothing is typed into the session.
+
+Two kinds of prompt offer only **Deny** on the phone, so you answer them on the Mac to allow:
+
+- one too long to show in full, which says **Shortened — answer on the Mac to allow**;
+- a file edit that changes Claude Code's, an agent's, git or shell settings (a `.claude`, `.codex` or `.agents` folder, `.git/hooks`, `.git/config`, `.watchtower/workflow.md`, or a file such as `.zshrc`, `.bash_profile`, `.mcp.json`, `.envrc` or `.gitconfig`), which says **Changes Watchtower or shell settings — answer on the Mac to allow**.
+
+The prompt stays open on the Mac too, and the first answer wins. If you already answered on the Mac, the phone's answer usually comes back **Answered on the Mac**. Once the Mac takes a phone answer, the card says **Sent to the session**.
+
+If you allowed a long-running command on the Mac, the phone keeps showing the prompt until the command ends. Answering it then does nothing; to stop the command, use the Mac.
+
+Prompts show in **Now** under **Waiting for you** and in the Workbench badge, with no push alert. Codex sessions keep **Needs approval on the Mac**.
+
+### Interrupt a working agent
+
+**Interrupt**, next to **Stop** in a session's menu, sends the agent an Esc. It needs **Type into sessions from this phone** and shows only while a Claude Code session is **Working** with no prompt open. One that reaches the Mac over two minutes late is dropped.
 
 ### Link another Mac, or unlink
 
@@ -72,6 +90,9 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"<Mac> hasn't synced for a day".** The phone has had no heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes on the phone: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
 - **"iCloud is slowing sync down"** on the Mac's Mobile tab means iCloud has held sync back for over a minute. It clears on its own.
+- **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
+- **"Too late — answer on the Mac"** after Allow once or Deny. The prompt waited too long or its session stopped.
+- **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.
 - **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit Watchtower. Closing the window is fine; the app keeps running in the menu bar.
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).

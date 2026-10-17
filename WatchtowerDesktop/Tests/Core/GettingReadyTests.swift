@@ -207,12 +207,30 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertTrue(result.sawUnready)
     }
 
-    func testOwnerUnknownCardHasNoLine() throws {
+    /// With no owner the daemon never runs Briefing, so its card promises no
+    /// time; it names what to connect instead (it used to show no line).
+    func testOwnerUnknownCardNamesWhatToConnect() throws {
         let result = step(readinessMap([.briefing: .scheduled(.at(hour: 8, tomorrow: false))]), ownerKnown: false)
         let card = try XCTUnwrap(cards(result.zone).first { $0.feature == .briefing })
-        XCTAssertNil(card.readiness)
+        XCTAssertEqual(card.readiness, .needsSource(.ownerIdentity))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.ownerIdentity)),
+                       "Connect Slack, Google, Jira, Linear or an email account to get this")
         XCTAssertEqual(card.tone, .waiting)
         XCTAssertFalse(card.isTerminal)
+        XCTAssertTrue(sourceRows(result.zone).isEmpty, "a card, not a Connect row: the zone stays open")
+    }
+
+    /// Jira (or Linear) is connected but has not reported who the owner is
+    /// yet: the card waits on it instead of asking to connect something.
+    func testOwnerPendingCardWaitsOnTheSource() throws {
+        let result = GettingReadyPolicy.step(
+            readiness: readinessMap([.briefing: .scheduled(.at(hour: 8, tomorrow: false))]),
+            ownerKnown: false, ownerPendingSource: "Jira", memory: empty, sawUnready: false,
+            now: now, briefingHour: 8, dayPlanHour: 8)
+        let card = try XCTUnwrap(cards(result.zone).first { $0.feature == .briefing })
+        XCTAssertEqual(card.readiness, .needsSource(.ownerIdentityPending("Jira")))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.ownerIdentityPending("Jira"))), "Waiting for your Jira identity…")
+        XCTAssertTrue(sourceRows(result.zone).isEmpty)
     }
 
     func testToneMapping() {

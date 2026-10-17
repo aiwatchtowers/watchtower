@@ -58,11 +58,14 @@ final class GoogleAuthService {
         } else {
             process.arguments = ["calendar", "login", "--app-return"]
         }
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
         Task.detached {
+            // The login environment is awaited here, off the main actor; a
+            // Cancel (or a newer attempt) while it resolves drops this launch.
+            process.environment = await Constants.resolvedEnvironmentAsync()
+            guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process)
             await MainActor.run {
                 self.authProcess = nil

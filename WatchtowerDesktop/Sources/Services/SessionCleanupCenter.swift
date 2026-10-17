@@ -58,7 +58,7 @@ final class SessionCleanupCenter {
     @ObservationIgnored var liveSessionIDs: () -> Set<Int64> = { [] }
     /// The environment the cleanup child starts from, before the terminal
     /// session variable is dropped. A seam for tests.
-    @ObservationIgnored var baseEnvironment: () -> [String: String] = { Constants.resolvedEnvironment() }
+    @ObservationIgnored var baseEnvironment: () async -> [String: String] = { await Constants.resolvedEnvironmentAsync() }
 
     /// nil: the watchtower binary was not found; every run fails with that.
     @ObservationIgnored private let runner: (any SessionCleanupRunning)?
@@ -247,7 +247,7 @@ final class SessionCleanupCenter {
 
     private func runCleanup(_ args: [String]) async -> Outcome {
         guard let runner else { return .failure(CLIRunnerError.binaryNotFound.localizedDescription) }
-        let environment = Self.cleanupEnvironment(baseEnvironment())
+        let environment = Self.cleanupEnvironment(await baseEnvironment())
         do {
             let data = try await runner.runCleanupCommand(args: args, environment: environment)
             return .success(try JSONDecoder().decode(SessionCleanupPlan.self, from: data))

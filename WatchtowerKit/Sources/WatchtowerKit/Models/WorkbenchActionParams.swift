@@ -219,3 +219,33 @@ public struct SessionReportRequestParams: ActionParams {
     public static let actionKind = ActionKind.sessionReportRequest
     public init() {}
 }
+
+/// `permission_answer`, entity: the session id. Allow is for this one call.
+public struct PermissionAnswerParams: ActionParams {
+    public static let actionKind = ActionKind.permissionAnswer
+
+    /// rawValues are wire format.
+    public enum Behavior: String, Codable, Hashable, Sendable {
+        case allow
+        case deny
+    }
+
+    public let requestID: Int64
+    public let behavior: Behavior
+
+    public init(requestID: Int64, behavior: Behavior) {
+        self.requestID = requestID
+        self.behavior = behavior
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "requestId"
+        case behavior
+    }
+}
+
+/// `session_interrupt`, entity: the session id. The Mac sends Esc while the session is Working.
+public struct SessionInterruptParams: ActionParams {
+    public static let actionKind = ActionKind.sessionInterrupt
+    public init() {}
+}

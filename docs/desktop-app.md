@@ -136,7 +136,7 @@ The app reads the existing database created by the Go CLI. Schema version 4, WAL
 | subtype | TEXT | Slack message subtype |
 | permalink | TEXT | Slack permalink |
 | ts_unix | REAL | **GENERATED** column: unix timestamp from ts |
-| raw_json | TEXT | Always `'{}'`: kept empty since migration 00130 (Slack minimum retention, 2026-10-17); the original Slack JSON is no longer stored |
+| raw_json | TEXT | Always `'{}'`: kept empty since migration 00134 (Slack minimum retention, 2026-10-17); the original Slack JSON is no longer stored |
 
 **Important:** `ts_unix` is a `GENERATED ALWAYS AS (...) STORED` column. GRDB handles this fine for reads but must never try to write it.
 

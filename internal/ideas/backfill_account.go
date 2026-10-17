@@ -9,16 +9,19 @@ import (
 )
 
 // BackfillEmail is the history backfill's stage-1 pass for ONE Google
-// account (docs/features/history-backfill.md, R28): it lowers only that
-// account's ideas_email_floor to from, drains its email pre-digests in
-// (from, to] (the process side of the chunk convention in
-// internal/historybackfill/chunk.go), and restores the floor to max(saved, reached). No other account, no
-// Jira pass and no consolidator: the stream digests it writes are
+// account (docs/features/history-backfill.md, R28): it drains that account's
+// email pre-digests in (from, to] (the process side of the chunk convention
+// in internal/historybackfill/chunk.go) from a floor it keeps in memory —
+// from, or the stored ideas_email_floor when that is already lower — and
+// then raises the stored floor to what it reached when that is higher. The
+// stored floor is never lowered, so a process killed mid-drain leaves the
+// forward run exactly where it was instead of weeks back. No other account,
+// no Jira pass and no consolidator: the stream digests it writes are
 // consolidated by the regular ideas run, which keeps the ideas.enabled gate.
 // complete is false when the drain hit its cycle cap before the window was
 // empty; the caller retries the chunk. reached is the floor the drain got to
-// before the restore — also on an error or a cut ctx — so a retry can start
-// there instead of re-paying the passes already done (F2).
+// — also on an error or a cut ctx — so a retry can start there instead of
+// re-paying the passes already done (F2).
 func (p *Pipeline) BackfillEmail(ctx context.Context, accountID int64, from, to time.Time) (reached time.Time, complete bool, err error) {
 	if p.generator == nil {
 		return to, true, nil
@@ -31,34 +34,45 @@ func (p *Pipeline) BackfillEmail(ctx context.Context, accountID int64, from, to 
 	if err != nil {
 		return from, false, fmt.Errorf("backfill email: reading floor for account %d: %w", accountID, err)
 	}
-	// Never raise a floor that is already below the window: that would skip
-	// the mail between it and from, and the restore would then jump past it.
-	lowered := float64(from.Unix())
-	if saved > 0 && saved < lowered {
-		lowered = saved
+	// Never start above a floor that is already below the window: that would
+	// skip the mail between it and from.
+	floor := float64(from.Unix())
+	if saved > 0 && saved < floor {
+		floor = saved
 	}
-	if err := p.db.SetIdeasEmailFloor(accountID, lowered); err != nil {
-		return from, false, fmt.Errorf("backfill email: lowering floor for account %d: %w", accountID, err)
-	}
-	defer p.restoreEmailFloors(map[int64]float64{accountID: saved})
-
-	floor := func() (string, error) {
-		f, err := p.db.IdeasEmailFloor(accountID)
-		return fmt.Sprint(f), err
-	}
-	complete, err = p.drainAccount(floor, func() error { return p.runEmailDigestAccount(ctx, acct, to) },
+	complete, err = p.drainAccount(
+		func() (string, error) { return fmt.Sprint(floor), nil },
+		func() error {
+			var perr error
+			floor, perr = p.emailDigestPass(ctx, acct, floor, to)
+			return perr
+		},
 		fmt.Sprintf("email account %d", accountID))
-	reached = from
-	if f, ferr := p.db.IdeasEmailFloor(accountID); ferr == nil && f > 0 {
-		reached = time.Unix(int64(f), 0).UTC() // floors are whole seconds (maxTS of a rendered window)
-	}
-	return reached, complete, err
+	p.raiseEmailFloor(accountID, floor)
+	return time.Unix(int64(floor), 0).UTC(), complete, err // floors are whole seconds (maxTS of a rendered window)
 }
 
-// BackfillJira is BackfillEmail's Jira counterpart (R29): it lowers only
-// that Jira account's ideas_jira_floor to from, drains its Jira pre-digests
-// bounded by to, and restores max(saved, reached). No email, no consolidator.
-// reached is as in BackfillEmail.
+// raiseEmailFloor moves the account's stored floor up to reached when the
+// drain got past it (also when it was never initialized), so the forward run
+// does not mine the drained window again; it never lowers it.
+func (p *Pipeline) raiseEmailFloor(accountID int64, reached float64) {
+	live, err := p.db.IdeasEmailFloor(accountID)
+	if err != nil {
+		p.logf("ideas: backfill: reading email floor for account %d: %v", accountID, err)
+		return
+	}
+	if reached <= live {
+		return
+	}
+	if err := p.db.SetIdeasEmailFloor(accountID, reached); err != nil {
+		p.logf("ideas: backfill: raising email floor for account %d: %v", accountID, err)
+	}
+}
+
+// BackfillJira is BackfillEmail's Jira counterpart (R29): it drains that
+// Jira account's pre-digests bounded by to from an in-memory floor and
+// raises the stored ideas_jira_floor to what it reached. No email, no
+// consolidator. reached is as in BackfillEmail.
 func (p *Pipeline) BackfillJira(ctx context.Context, accountID int64, from, to time.Time) (reached time.Time, complete bool, err error) {
 	if p.generator == nil {
 		return to, true, nil
@@ -71,29 +85,42 @@ func (p *Pipeline) BackfillJira(ctx context.Context, accountID int64, from, to t
 	if err != nil {
 		return from, false, fmt.Errorf("backfill jira: reading floor for account %d: %w", accountID, err)
 	}
-	lowered := db.FormatJiraTime(from)
+	floor := db.FormatJiraTime(from)
 	if savedTS, ok := db.ParseJiraTime(saved); ok {
-		if fromTS, _ := db.ParseJiraTime(lowered); savedTS < fromTS {
-			lowered = saved
+		if fromTS, _ := db.ParseJiraTime(floor); savedTS < fromTS {
+			floor = saved
 		}
 	}
-	if err := p.db.SetIdeasJiraFloor(accountID, lowered); err != nil {
-		return from, false, fmt.Errorf("backfill jira: lowering floor for account %d: %w", accountID, err)
-	}
-	defer p.restoreJiraFloors(map[int64]string{accountID: saved})
-
-	floor := func() (string, error) { return p.db.IdeasJiraFloor(accountID) }
-	complete, err = p.drainAccount(floor, func() error { return p.runJiraDigestAccount(ctx, acct, to) },
+	complete, err = p.drainAccount(
+		func() (string, error) { return floor, nil },
+		func() error {
+			var perr error
+			floor, perr = p.jiraDigestPass(ctx, acct, floor, to)
+			return perr
+		},
 		fmt.Sprintf("jira account %d", accountID))
+	p.raiseJiraFloor(accountID, floor)
 	reached = from
 	// The floor keeps milliseconds (FormatJiraTime); parse it whole, since a
 	// floor truncated to the second would re-mine the issue at the boundary.
-	if f, ferr := p.db.IdeasJiraFloor(accountID); ferr == nil {
-		if t, perr := time.Parse(time.RFC3339, f); perr == nil {
-			reached = t.UTC()
-		}
+	if t, perr := time.Parse(time.RFC3339, floor); perr == nil {
+		reached = t.UTC()
 	}
 	return reached, complete, err
+}
+
+// raiseJiraFloor is raiseEmailFloor's Jira sibling.
+func (p *Pipeline) raiseJiraFloor(accountID int64, reached string) {
+	live, err := p.db.IdeasJiraFloor(accountID)
+	if err != nil {
+		p.logf("ideas: backfill: reading jira floor for account %d: %v", accountID, err)
+		return
+	}
+	if raised := maxJiraFloor(live, reached); raised != live {
+		if err := p.db.SetIdeasJiraFloor(accountID, raised); err != nil {
+			p.logf("ideas: backfill: raising jira floor for account %d: %v", accountID, err)
+		}
+	}
 }
 
 // drainAccount repeats one account's stage-1 pass until a pass leaves its

@@ -32,8 +32,7 @@ struct DayPlanConflictBanner: View {
             if owner.isKnown {
                 HStack(spacing: 8) {
                     Button("Regenerate", action: onRegenerate)
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
+                        .buttonStyle(.destructivePrimary)
                         .controlSize(.small)
 
                     Button("Check again", action: onCheckAgain)

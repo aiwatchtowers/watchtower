@@ -107,10 +107,14 @@ final class RelayProcessor: Sendable {
     /// record window, so hygiene has had a full window of daily scans first.
     private static let retentionMargin: TimeInterval = 86_400
 
-    /// Applied more than once they would write twice (spec §5.2 table).
+    /// Applied more than once they would write twice (spec §5.2 table). A
+    /// permission answer is a guarded write, claimed anyway so a replay is
+    /// `outcome_unknown`, never a misleading `not_pending`; an interrupt
+    /// replayed would send a second Esc (#517).
     static let nonIdempotentKinds: Set<ActionKind> = [
         .boardCommentAdd, .boardCommentReply, .boardTargetCreate,
-        .sessionStart, .sessionInput, .sessionFinishRequest
+        .sessionStart, .sessionInput, .sessionFinishRequest,
+        .permissionAnswer, .sessionInterrupt
     ]
     /// Echoed `received` as soon as they are dequeued (§5.2 rule 6).
     static let receivedEchoKinds: Set<ActionKind> = [.sessionStart, .sessionInput, .boardTargetCreate]

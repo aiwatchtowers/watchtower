@@ -118,6 +118,20 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	return p.RunForDate(ctx, today)
 }
 
+// runOwner is the owner a run is for (db.ErrNoOwner when none), with any
+// briefing written under an earlier owner id adopted first, so a rung switch
+// never regenerates today's briefing under the new id.
+func (p *Pipeline) runOwner() (db.Owner, error) {
+	owner, err := p.db.RequireOwner()
+	if err != nil {
+		return db.Owner{}, fmt.Errorf("briefing: %w", err)
+	}
+	if err := p.db.AdoptOwnerRows(owner.ID); err != nil {
+		return db.Owner{}, fmt.Errorf("briefing: %w", err)
+	}
+	return owner, nil
+}
+
 // RunForDate generates a briefing for the given date (YYYY-MM-DD).
 func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	if !p.cfg.Briefing.Enabled {
@@ -126,9 +140,9 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 
 	// No owner is db.ErrNoOwner, never (0, nil): that shape means "nothing to
 	// summarize", and the daemon must be able to tell the two apart.
-	owner, err := p.db.RequireOwner()
+	owner, err := p.runOwner()
 	if err != nil {
-		return 0, fmt.Errorf("briefing: %w", err)
+		return 0, err
 	}
 	currentUserID := owner.ID
 
@@ -407,6 +421,16 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 		return "(No pending inbox items.)\n", false
 	}
 
+	raws := make([]string, len(items))
+	for i, item := range items {
+		raws[i] = item.Mentions
+	}
+	names, err := p.db.InboxMentionSenderNames(raws...)
+	if err != nil {
+		p.logger.Printf("briefing: error resolving inbox mention senders: %v", err)
+		names = nil // entries then show the sender ids
+	}
+
 	var sb strings.Builder
 	for _, item := range items {
 		typeLabel := "@mention"
@@ -414,9 +438,24 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 			typeLabel = "DM"
 		}
 		p.shown.addInbox(item.ID)
-		p.shown.addPerson(item.SenderUserID)
-		sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] from %s: %s\n",
-			item.ID, item.Priority, typeLabel, item.SenderUserID, item.Snippet))
+		// A channel-level item that accumulated several messages (#586):
+		// one line per message, each sender by name and id, instead of the
+		// newest message alone.
+		if lines := db.InboxMentionLines(item.Mentions, item.MentionsEarlier, names, true); lines != nil {
+			list, _ := db.ParseInboxMentions(item.Mentions)
+			for _, m := range list {
+				p.shown.addPerson(m.SenderID)
+			}
+			sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] %s in this channel:\n",
+				item.ID, item.Priority, typeLabel, db.InboxMentionCountLabel(list, item.MentionsEarlier)))
+			for _, line := range lines {
+				sb.WriteString("  - " + line + "\n")
+			}
+		} else {
+			p.shown.addPerson(item.SenderUserID)
+			sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] from %s: %s\n",
+				item.ID, item.Priority, typeLabel, item.SenderUserID, item.Snippet))
+		}
 		if item.AIReason != "" {
 			sb.WriteString(fmt.Sprintf("  Reason: %s\n", item.AIReason))
 		}

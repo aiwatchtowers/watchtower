@@ -175,10 +175,10 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	}
 
 	// A Ctrl-C/SIGTERM mid-run must still hit runIdeasBackfill's deferred
-	// lock-release-and-floor-restore (internal/ideas/backfill.go's Backfill,
-	// `defer p.restoreBackfillFloors(...)`) instead of the process dying
-	// with the lock held or a lowered floor left behind (GB8, IDEA-01 floor
-	// honesty). notifyShutdownContext's second-signal-kills behavior would
+	// lock release and floor raise (internal/ideas/backfill.go's Backfill,
+	// `defer p.raiseBackfillFloors(...)`) instead of the process dying with
+	// the lock held or the reached floors unwritten (GB8). Backfill never
+	// writes a lowered floor, so a kill cannot leave one behind. notifyShutdownContext's second-signal-kills behavior would
 	// terminate the process outright — including mid-defer, if the second
 	// signal lands while the restore is still running — so the backfill
 	// path deliberately stays on plain signal.NotifyContext: the first

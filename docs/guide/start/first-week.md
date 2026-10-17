@@ -24,7 +24,7 @@ By now the sync has had time to write something for you.
 
 - **Try:** open **Briefings**. The first one on a new install skips the 08:00 hour, so it may already be there from Day 1.
 - **See:** one morning read with **Needs Attention**, **Your Day** and **What Happened**, each line linking to its source.
-- **Needs:** **Daily Briefing** on, and Slack, Google or Jira connected so Watchtower knows who you are.
+- **Needs:** **Daily Briefing** on, and Slack, Google, Jira, Linear or an email account connected so Watchtower knows who you are.
 
 No briefing yet? **Generate Briefing** in the empty tab builds one now. Details: [Briefings](../features/briefings.md).
 

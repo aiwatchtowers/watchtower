@@ -27,12 +27,17 @@ struct Qwen3Windower {
     /// a blocking MLX call; tests: a fake). Called serially, never concurrently.
     let decode: ([Float]) throws -> String
     let speechDetector: SpeechDetector?
+    /// The run's one wait for a detector model still loading
+    /// (`WindowSpeechGate.liveModelWait` / `batchModelWait`).
+    let modelWait: Duration
 
     init(config: TranscriptionConfig,
          speechDetector: SpeechDetector? = nil,
+         modelWait: Duration = WindowSpeechGate.liveModelWait,
          decode: @escaping ([Float]) throws -> String) {
         self.config = config
         self.speechDetector = speechDetector
+        self.modelWait = modelWait
         self.decode = decode
     }
 
@@ -55,9 +60,9 @@ struct Qwen3Windower {
         var lastDecodeError: Error?
         var chunkIndex = 0
         var processed = 0
-        var gate = WindowSpeechGate(detector: speechDetector, config: config)
+        var gate = WindowSpeechGate(detector: speechDetector, config: config, modelWait: modelWait)
         var phraseDrops = WindowDropCounts()
-        defer { gate.logSummary(engineDrops: phraseDrops) }
+        defer { gate.logSummary(callerDrops: phraseDrops) }
 
         func process(window: [Float], windowStart: Int) async {
             processed += 1

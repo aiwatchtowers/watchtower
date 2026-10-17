@@ -30,14 +30,14 @@ func TestMessagesRawJSONStaysEmpty(t *testing.T) {
 	assert.Equal(t, "{}", rawJSONOf(t, db, "C1", "1700000002.000001"))
 }
 
-func TestMigration00130_ClearsMessagesRawJSON(t *testing.T) {
-	raw := rawDBAt(t, 129)
+func TestMigration00134_ClearsMessagesRawJSON(t *testing.T) {
+	raw := rawDBAt(t, 133)
 	_, err := raw.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, raw_json) VALUES
 		('C1', '1700000001.000001', 'U1', 'full', '{"ts":"1700000001.000001","blocks":[1]}'),
 		('C1', '1700000002.000001', 'U1', 'empty', '{}')`)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.UpTo(raw, "migrations", 130))
+	require.NoError(t, goose.UpTo(raw, "migrations", 134))
 
 	var n int
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM messages WHERE raw_json != '{}'`).Scan(&n))

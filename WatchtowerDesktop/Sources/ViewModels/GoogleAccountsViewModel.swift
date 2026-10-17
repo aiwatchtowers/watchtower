@@ -31,6 +31,10 @@ final class GoogleAccountsViewModel {
     /// Resolves the CLI binary; injectable so tests can run a stand-in.
     private let cliPath: () -> String?
     private var authProcess: Process?
+    /// The sign-in child's environment; injectable so tests can hold it.
+    @ObservationIgnored var loginEnvironment: @Sendable () async -> [String: String] = {
+        await Constants.resolvedEnvironmentAsync()
+    }
 
     init(
         dbPool: DatabasePool,
@@ -127,14 +131,18 @@ final class GoogleAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if hasCustomClient {
             process.standardInput = Pipe()
         }
         authProcess = process
 
+        let environment = loginEnvironment
         addTask = Task.detached {
+            // The login environment is awaited here, off the main actor; a
+            // Cancel (or a newer attempt) while it resolves drops this launch.
+            process.environment = await environment()
+            guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process, stdin: hasCustomClient ? clientSecret + "\n" : nil)
             await MainActor.run {
                 self.authProcess = nil
@@ -192,11 +200,15 @@ final class GoogleAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
+        let environment = loginEnvironment
         Task.detached {
+            // The login environment is awaited here, off the main actor; a
+            // Cancel (or a newer attempt) while it resolves drops this launch.
+            process.environment = await environment()
+            guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process)
             await MainActor.run {
                 self.authProcess = nil
@@ -288,7 +300,7 @@ final class GoogleAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if stdin != nil {
             process.standardInput = Pipe()

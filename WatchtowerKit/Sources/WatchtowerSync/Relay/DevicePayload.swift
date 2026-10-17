@@ -41,9 +41,13 @@ public struct DevicePayload: Codable, Equatable, Sendable {
     public let typingRequested: Bool
     /// The phone asks to start sessions (the Mac decides).
     public let startSessions: Bool
+    /// The phone asks to answer permission prompts (the Mac decides; `permissionsRequested`). Absent reads false;
+    /// false is not written.
+    let permissionsAsked: Bool? // swiftlint:disable:this discouraged_optional_boolean
     public let updatedAt: Date
 
     public var recordName: String { "device-\(deviceID)" }
+    public var permissionsRequested: Bool { permissionsAsked ?? false }
 
     // convertFromSnakeCase maps "device_id" -> "deviceId" (lowercase d), so
     // the CodingKey stringValue must be "deviceId" to round-trip.
@@ -58,6 +62,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         case unlinked
         case typingRequested
         case startSessions
+        case permissionsAsked = "permissionsRequested"
         case updatedAt
     }
 
@@ -72,6 +77,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         unlinked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         typingRequested: Bool,
         startSessions: Bool,
+        permissionsRequested: Bool = false,
         updatedAt: Date
     ) {
         self.deviceID = deviceID
@@ -84,6 +90,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         self.unlinked = unlinked
         self.typingRequested = typingRequested
         self.startSessions = startSessions
+        permissionsAsked = permissionsRequested ? true : nil
         self.updatedAt = updatedAt
     }
 }

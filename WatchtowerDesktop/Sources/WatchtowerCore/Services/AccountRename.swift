@@ -22,7 +22,7 @@ package enum AccountRename {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args(source: source, id: id, name: name)
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         let result = await ProcessPipes.run(process).trimmed
         if result.exitCode == 0 { return nil }

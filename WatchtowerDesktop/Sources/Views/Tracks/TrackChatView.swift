@@ -11,7 +11,5 @@ struct TrackChatSection: View {
     var body: some View {
         EmbeddedChatView(engine: engine, density: .compact, placeholder: "Ask about this track…",
                          dictationTargetID: "chat.track.\(trackID)")
-            // The track pane's bottom-most content.
-            .clearsRecordingIndicator()
     }
 }

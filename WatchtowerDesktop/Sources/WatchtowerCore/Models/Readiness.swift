@@ -60,8 +60,16 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
 }
 
 /// The source a feature reads.
-package enum ReadinessSource: Equatable, Sendable {
+package enum ReadinessSource: Hashable, Sendable {
     case none, slack, anySource, calendar, jira, jiraOrMail
+    /// A source that tells Watchtower who the owner is (the OWNER-01 ladder).
+    /// No feature reads it; Home names it on an owner-gated card while the
+    /// owner is unknown.
+    case ownerIdentity
+    /// The named connected source ("Jira", "Linear") will identify the owner
+    /// once it reports who connected it; Home waits on it instead of asking
+    /// to connect something.
+    case ownerIdentityPending(String)
 
     /// What a "Connect …" line or button names.
     package var displayName: String {
@@ -70,13 +78,23 @@ package enum ReadinessSource: Equatable, Sendable {
         case .calendar: "a calendar"
         case .jira: "Jira"
         case .jiraOrMail: "Jira or mail"
+        case .ownerIdentity: "Slack, Google, Jira, Linear or an email account"
+        case .ownerIdentityPending(let name): "your \(name) identity"
         case .anySource, .none: "a source"
+        }
+    }
+
+    /// The owner gate's sources: shown on the feature's card, never as a Connect row.
+    package var isOwnerIdentity: Bool {
+        switch self {
+        case .ownerIdentity, .ownerIdentityPending: true
+        default: false
         }
     }
 
     package func isConnected(in connected: ConnectedSources) -> Bool {
         switch self {
-        case .none: true
+        case .none, .ownerIdentity, .ownerIdentityPending: true
         case .slack: connected.slack
         case .anySource: connected.slack || connected.mail || connected.calendar || connected.jira
         case .calendar: connected.calendar
