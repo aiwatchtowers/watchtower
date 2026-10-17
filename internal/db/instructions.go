@@ -21,13 +21,6 @@ type OwnerInstructions struct{ Session, Procedure string }
 
 func (f InstructionField) valid() bool { return f == InstructionSession || f == InstructionProcedure }
 
-func (f InstructionField) workbenchColumn() string {
-	if f == InstructionSession {
-		return "session_instructions"
-	}
-	return "target_procedure"
-}
-
 func instructionStamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 // GetOwnerInstructions returns the global instructions; a missing row is "".
@@ -102,9 +95,11 @@ func setWorkbenchInstructionTx(tx *sql.Tx, id int64, f InstructionField, body st
 	if !f.valid() {
 		return fmt.Errorf("unknown instruction field %q", f)
 	}
-	// The column name comes from the closed set in workbenchColumn.
-	res, err := tx.Exec(`UPDATE projects SET `+f.workbenchColumn()+` = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, methodologyValue(body), id)
+	query := `UPDATE projects SET target_procedure = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`
+	if f == InstructionSession {
+		query = `UPDATE projects SET session_instructions = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`
+	}
+	res, err := tx.Exec(query, methodologyValue(body), id)
 	if err != nil {
 		return fmt.Errorf("setting workbench %d %s instruction: %w", id, f, err)
 	}
