@@ -51,12 +51,22 @@ On the Claude provider, the main chat can also use the connectors of your claude
 
 A switch applies to the next reply: idle chats restart, and a reply already running keeps the tools it started with.
 
+When the chat wants to write through a connector (send a mail, create an event, post a message), the reply shows an orange **Waiting for your approval** step and a card below it naming the connector and the tool, with the exact input it will send:
+
+1. Read the input. You can edit it in the box; it must stay a JSON object ("Edited — Approve sends your version").
+2. **Approve** sends it once, from the chat that asked. **Reject** cancels it and the chat says nothing was sent.
+3. Answer within 15 minutes. After that the call is cancelled ("Cancelled — not approved in time"). **Stop** on the reply cancels it too ("Cancelled — chat stopped").
+
+The card can be approved only while that reply is still running. Once the chat's session is gone the card says **Chat session ended** and nothing is sent; to send it, ask the chat again. These cards have no **Retry** and are not part of **Approve all**. They also wait in the Inbox while the reply runs.
+
 ## When it's empty or wrong
 
 - **The send fails with "sign in again to grant send".** Your Slack workspace was connected before send existed. Click **Reconnect Slack** on the card, approve Slack's page in the browser, then **Retry**.
 - **The assistant says it cannot edit Confluence.** The site needs **Allow editing** in **Settings → Connections → Jira → Confluence**. If Confluence sync is off, that section says "Confluence sync is turned off"; click its **Enable** button first.
 - **An archived page.** It can be read but not edited; restore it in Confluence first.
 - **A Confluence card says the edit "may have been saved".** The page moved one version but not to this edit. Ask the assistant to read the page again before trying again.
+- **A connector card says "Chat session ended".** The chat stopped, quit or restarted before the call ran, so it was not sent. Ask again.
+- **The chat says a connector is switched off or not connected.** Turn it on, or click **Connect on claude.ai**, in **Settings → Profile → claude.ai tools**, then ask again.
 - **A chat offers no proposals.** You are in a draft-only chat. Use the main chat or the target's chat.
 
 ## Related

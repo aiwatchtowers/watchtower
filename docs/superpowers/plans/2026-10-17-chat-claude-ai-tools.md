@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26 (cobra, `database/sql` + modernc sqlite), Claude Code stream-json control protocol (`control_request`/`control_response`), SwiftUI + GRDB (WatchtowerCore).
 
-**Spec:** `docs/superpowers/specs/2026-10-16-chat-claude-ai-tools-design.md` (approved ask #325; Q1–Q4 decided ask #326). No migration: `agent_actions` and `chat_turn_steps` already carry everything.
+**Spec:** `docs/superpowers/specs/2026-10-16-chat-claude-ai-tools-design.md` (approved ask #325; Q1–Q4 decided ask #326). No migration: `agent_actions` and `chat_turn_steps` already carry everything. (Task 6 later added one: migration `00131`, `agent_actions.session_token`.)
 
 ## Global Constraints
 
@@ -33,7 +33,7 @@
 1. **The owner approves after the call can no longer run** (turn stopped, child crashed, app quit between Approve and the claim) — the row lands `failed` ("session ended before approval"), nothing is sent, no other process ever runs it (Task 8 `TestChat05_DeadSessionNeverRunsAnApprovedCall`, Task 6 `TestAgent05_ApplyRefusesASessionCall`).
 2. **Approve lands in the same second the 15-minute timeout fires** — exactly one outcome: either the call runs once or it is cancelled; never both, never neither (Task 8 `TestGate_ApproveRacingTimeoutHasOneOutcome`).
 3. **A path that tries to leave the publish dir** — `../`, an absolute `~/Documents/x`, a symlink planted inside the dir, a relative path (resolved against the cwd, not the publish dir), one bad entry in an `Artifact` `files` map — denied, and no file outside the publish dir is ever stat'ed (no TCC prompt) (Task 5 table test + `TestPublishDir_NeverTouchesOutsidePaths`).
-4. **A connector that appears or changes mid-session** (owner connects Gmail on claude.ai while a session is warm; a tool lost its annotation) — the gate refreshes `mcp_status` once, then classifies; still unknown → approval card, never a silent allow (Task 9 `TestConnectors_UnknownServerRefreshesOnceThenAsks`).
+4. **A connector that appears or changes mid-session** (owner connects Gmail on claude.ai while a session is warm; a tool lost its annotation) — the gate refreshes `mcp_status` once, then classifies; a server still unknown → denied (spec D1/D3: only a listed claude.ai connector passes), a tool of a listed connector still unknown → approval card; never a silent allow (Task 9 `TestConnectors_UnknownServerRefreshesOnceThenDenies`, `TestConnectors_UnknownToolRefreshesOnceThenAsks`).
 5. **Two connector writes in one turn** — two rows, two cards, each answered on its own; rejecting one does not cancel the other (Task 8 `TestGate_TwoParallelAsksAreIndependent`).
 
 ## Planning notes (deviations found while reading the code)
