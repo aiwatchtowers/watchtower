@@ -253,7 +253,7 @@ func checkSealedAsset(t *testing.T, name string, desc, sealed, plain []byte, cou
 		t.Fatal(err)
 	}
 	var out []byte
-	for c := uint32(0); c < dCount; c++ {
+	for c := range dCount {
 		chunk := sealed[int(c)*(assetChunkSize+16) : int(c+1)*(assetChunkSize+16)]
 		p, err := aead.Open(nil, chunkNonce(c), chunk, chunkAAD(dHeader, c, dCount))
 		if err != nil {

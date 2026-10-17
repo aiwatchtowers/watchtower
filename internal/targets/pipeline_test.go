@@ -157,7 +157,7 @@ func TestPipeline_Extract_HappyPath(t *testing.T) {
 func TestPipeline_Extract_CapEnforcement(t *testing.T) {
 	// AI returns 12 items — should be trimmed to 10, OmittedCount += 2.
 	var items []string
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		items = append(items, fmt.Sprintf(`{
 			"text": "Target %d",
 			"level": "day",
@@ -171,16 +171,17 @@ func TestPipeline_Extract_CapEnforcement(t *testing.T) {
 		}`, i))
 	}
 	// Build JSON manually.
-	jsonItems := "["
+	var jsonItems strings.Builder
+	jsonItems.WriteString("[")
 	for i, item := range items {
 		if i > 0 {
-			jsonItems += ","
+			jsonItems.WriteString(",")
 		}
-		jsonItems += item
+		jsonItems.WriteString(item)
 	}
-	jsonItems += "]"
+	jsonItems.WriteString("]")
 
-	response := fmt.Sprintf(`{"extracted": %s, "omitted_count": 0, "notes": ""}`, jsonItems)
+	response := fmt.Sprintf(`{"extracted": %s, "omitted_count": 0, "notes": ""}`, jsonItems.String())
 	gen := &mockGenerator{responses: []string{response}}
 	p, _ := makeTestPipeline(t, gen)
 
@@ -293,7 +294,7 @@ func TestPipeline_Extract_SingleGoalWithSubItems(t *testing.T) {
 // TestPipeline_Extract_SubItemsCapped ensures runaway AI responses are trimmed.
 func TestPipeline_Extract_SubItemsCapped(t *testing.T) {
 	var items []string
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		items = append(items, fmt.Sprintf(`{"text": "step %d"}`, i))
 	}
 	response := fmt.Sprintf(`{
@@ -392,11 +393,12 @@ func stringJoin(parts []string, sep string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	out := parts[0]
+	var out strings.Builder
+	out.WriteString(parts[0])
 	for i := 1; i < len(parts); i++ {
-		out += sep + parts[i]
+		out.WriteString(sep + parts[i])
 	}
-	return out
+	return out.String()
 }
 
 func TestPipeline_Extract_SecondaryLinksCapped(t *testing.T) {

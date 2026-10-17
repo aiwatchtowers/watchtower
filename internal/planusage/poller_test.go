@@ -74,7 +74,7 @@ func TestPollOnce_BackoffKeepsLastNumbers(t *testing.T) {
 	require.NoError(t, err)
 	fetch.body, fetch.err = nil, &HTTPError{Status: 429}
 	var delays []time.Duration
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		next, err := p.PollOnce(context.Background())
 		require.Error(t, err)
 		delays = append(delays, next)

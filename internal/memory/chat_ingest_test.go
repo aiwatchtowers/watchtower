@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -650,7 +651,7 @@ func TestRunSemanticRememberThisTrackFlagOffNoEvidence(t *testing.T) {
 // situation_signals rows as an ordered string, for MEM-05 byte-identity checks.
 func dumpInboxSituationState(t *testing.T, d *db.DB) string {
 	t.Helper()
-	var out string
+	var out strings.Builder
 	for _, q := range []string{
 		`SELECT COALESCE(GROUP_CONCAT(id || ':' || channel_id || ':' || COALESCE(snippet,'')), '') FROM (SELECT * FROM inbox_items ORDER BY id)`,
 		`SELECT COALESCE(GROUP_CONCAT(id || ':' || title || ':' || status), '') FROM (SELECT * FROM situations ORDER BY id)`,
@@ -658,7 +659,7 @@ func dumpInboxSituationState(t *testing.T, d *db.DB) string {
 	} {
 		var s string
 		require.NoError(t, d.QueryRow(q).Scan(&s))
-		out += s + "|"
+		out.WriteString(s + "|")
 	}
-	return out
+	return out.String()
 }

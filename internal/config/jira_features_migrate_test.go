@@ -243,11 +243,10 @@ func TestMigrateJiraFeatureKeys_PreservesCommentsAndWorkspaceCasing(t *testing.T
 // the readable one is the mapstructure tag. A renamed or added field that
 // skips the table would leave that toggle unrepairable, silently.
 func TestSquashedJiraFeatureKeys_MatchStruct(t *testing.T) {
-	typ := reflect.TypeOf(JiraFeatureToggles{})
+	typ := reflect.TypeFor[JiraFeatureToggles]()
 	require.Len(t, squashedJiraFeatureKeys, typ.NumField(), "every toggle needs an entry")
 
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 		squashed := strings.ToLower(field.Name)
 		long, ok := squashedJiraFeatureKeys[squashed]
 		require.True(t, ok, "no entry for %s (squashed spelling %q)", field.Name, squashed)

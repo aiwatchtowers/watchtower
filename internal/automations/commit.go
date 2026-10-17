@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"slices"
 	"sync"
 
 	"watchtower/internal/db"
@@ -105,10 +106,8 @@ func hasBigInt(v any) bool {
 			}
 		}
 	case []any:
-		for _, e := range x {
-			if hasBigInt(e) {
-				return true
-			}
+		if slices.ContainsFunc(x, hasBigInt) {
+			return true
 		}
 	}
 	return false

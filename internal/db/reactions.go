@@ -34,7 +34,7 @@ func (db *DB) GetReactionsForMessages(channelID string, messageTSs []string) (ma
 	}
 
 	placeholders := make([]string, len(messageTSs))
-	args := make([]interface{}, 0, len(messageTSs)+1)
+	args := make([]any, 0, len(messageTSs)+1)
 	args = append(args, channelID)
 	for i, ts := range messageTSs {
 		placeholders[i] = "?"

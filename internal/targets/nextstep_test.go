@@ -799,7 +799,7 @@ func TestBuildNextStepPrompt_ChatExcerptIsCapped(t *testing.T) {
 		t.Fatalf("create target: %v", err)
 	}
 	turns := make([][2]string, 0, 40)
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		turns = append(turns, [2]string{"user", fmt.Sprintf("turn-%02d %s", i, strings.Repeat("padding ", 60))})
 	}
 	seedTargetChat(t, d, id, turns)
@@ -844,7 +844,7 @@ func TestBuildNextStepPrompt_CyrillicExcerptGetsTheSameBudget(t *testing.T) {
 		t.Fatalf("create target: %v", err)
 	}
 	turns := make([][2]string, 0, nextStepChatTurnLimit)
-	for i := 0; i < nextStepChatTurnLimit; i++ {
+	for i := range nextStepChatTurnLimit {
 		turns = append(turns, [2]string{"user", fmt.Sprintf("ход-%02d %s", i, strings.Repeat("текст ", 20))})
 	}
 	seedTargetChat(t, d, id, turns)

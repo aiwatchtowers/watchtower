@@ -1865,4 +1865,12 @@ Entry format:
 - miss: no lane ran or cited lint. The 4 SwiftLint violations (AppState file_length / function_body_length pushed over by the new hand-off lines, `Self.` in RestartBackoff) came only from the orchestrator's `make lint-swift`. Codex was absent. [3]
 - weak-dimension: 7. Bimodal again: tight pure-core tests (gate, backoff, policy, query oracle) beside zero tests for the AppState wiring that is the actual fix.
 - rule-gap: candidate for review-rules §4: "a single range query replacing N per-item queries must stay bounded when the items are non-contiguous". The pinned-day gap was found by 3 lanes. Promote if it recurs.
+
+## 2026-10-17 — chore/modernize-fix PR #369 (mechanical `golangci-lint run --fix` modernize pass: 543 rewrites over 279 Go files, plus 3a072ece1 tidying five leftovers; panel: prosecutor (5 nits) + codex (0, default prompt), 3 specialists DOWN (not installed); judge verified against 3a072ece1 by reading the fix diff, grep spot checks of the SplitSeq / min-max / wg.Go categories, `go vet` + cached `go test` of the five touched packages) — verdict: approve
+
+- contested: none. Two compound clamps (`max(min(budget-tokensUsed, searchBudget), 0)` and `max((budget-overhead)/700, 20)`) were checked against the deleted if-chains and match, including the order of the clamps. [6]
+- false-positive: none dismissed. All five prosecutor nits held (an empty statement, a misplaced import group, a half-inlined helper, a no-op write, a string round trip). These are the residue a `--fix` pass leaves behind: it rewrites the expression and never cleans up its surroundings. [3]
+- miss: none. A `git diff origin/main..HEAD` (two dots) on a branch behind main showed 427 files, Swift and inventory edits included. The real PR is the merge-base diff (`...`, 279 Go-only files). Judge scope on a stale branch must use three dots. [8]
+- weak-dimension: none. Codex on its default prompt again added nothing on a mechanical PR, the same as on chore/revdiff-linters.
+- rule-gap (candidate, dim 3): *a PR that applies an autofixer (modernize, gofmt -r, errorlint --fix) gets a human tidy pass over the files the fixer touched: a leftover statement, an import group, a wrapper the rewrite made trivial. Reviewers check the residue, not only equivalence.*
 - outcome: TBD

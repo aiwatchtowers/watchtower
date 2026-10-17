@@ -162,7 +162,7 @@ func worktreeTops(porcelainZ []byte) []string {
 		}
 		path, usable = "", false
 	}
-	for _, field := range bytes.Split(porcelainZ, []byte{0}) {
+	for field := range bytes.SplitSeq(porcelainZ, []byte{0}) {
 		f := string(field)
 		switch {
 		case strings.HasPrefix(f, "worktree "):

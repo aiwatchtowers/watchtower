@@ -602,7 +602,7 @@ func recomputeParentProgressOn(q targetsQuerier, parentID int64) error {
 	visited := make(map[int64]bool)
 	current := parentID
 
-	for depth := 0; depth < recomputeParentProgressMaxDepth; depth++ {
+	for range recomputeParentProgressMaxDepth {
 		if visited[current] {
 			log.Printf("db: RecomputeParentProgress detected cycle at target %d — stopping", current)
 			return nil

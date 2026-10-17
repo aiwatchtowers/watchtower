@@ -30,7 +30,7 @@ func createAutomationBody(t *testing.T) string {
 func markdownBlocks(body string) []string {
 	var out, cur []string
 	fence := ""
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if fence == "" {
 			if m := regexp.MustCompile("^(`{4,})markdown$").FindStringSubmatch(line); m != nil {
 				fence, cur = m[1], nil

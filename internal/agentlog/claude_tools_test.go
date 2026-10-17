@@ -2,6 +2,7 @@ package agentlog
 
 import (
 	"encoding/json"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,9 +16,7 @@ func toolUse(id, name string, input map[string]any) map[string]any {
 func toolResultLine(t *testing.T, sid, uuid, id, content string, isErr bool, extra map[string]any) string {
 	m := map[string]any{"type": "user", "sessionId": sid, "uuid": uuid, "timestamp": "2026-10-01T10:00:03.000Z",
 		"message": map[string]any{"role": "user", "content": []map[string]any{{"type": "tool_result", "tool_use_id": id, "content": content, "is_error": isErr}}}}
-	for k, v := range extra {
-		m[k] = v
-	}
+	maps.Copy(m, extra)
 	return line(t, m)
 }
 
