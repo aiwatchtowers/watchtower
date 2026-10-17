@@ -138,6 +138,9 @@ func TestIntegrateProjectStatusJSON(t *testing.T) {
 	if !got.StopHook || !got.StateHooks || !got.AskGuard || !got.AskToolBlock || !got.PermissionWait {
 		t.Fatalf("every hook is installed: %+v", got)
 	}
+	if !got.GroupPrompt {
+		t.Fatalf("the shipped skill knows the group prompt: %+v", got)
+	}
 }
 
 // state_hooks is false while any one of the session state entries is
@@ -385,7 +388,7 @@ func TestIntegrateStatusJSON_CodexNotFoundIsNullTrust(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"found": false, "skill": false, "skill_state": "missing", "hooks_trusted": nil, "imported_duplicates": false}
+	want := map[string]any{"found": false, "skill": false, "skill_state": "missing", "hooks_trusted": nil, "imported_duplicates": false, "group_prompt": false}
 	if fmt.Sprint(got["codex"]) != fmt.Sprint(want) {
 		t.Fatalf("codex = %v, want %v", got["codex"], want)
 	}
