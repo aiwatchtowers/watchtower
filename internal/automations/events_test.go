@@ -82,6 +82,8 @@ var noContentCases = []struct {
 	{"synthetic", func(*testing.T) []Event {
 		return []Event{{Type: "slack.new_messages", Fields: map[string]any{"account": "work", "channel": "releases", "channel_id": "C1", "count": 2}}}
 	}},
+	{"slack", slackContentEvents},
+	{"mail", mailContentEvents},
 }
 
 func TestBus_EventsCarryNoContent(t *testing.T) {
