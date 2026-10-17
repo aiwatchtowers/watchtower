@@ -198,6 +198,32 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(center.saving[id], .failed("A recipe named digest.md already exists — pick another name."))
     }
 
+    /// #582: an unreadable recipe's banner follows the fix typed in Monaco:
+    /// `recheckParse` validates the text as it is now; the loaded text needs no call.
+    func testRecheckParseFollowsTheFixedText() async throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Fixtures.showJSON()) as? [String: Any])
+        object["parse_error"] = "permissions[0]: placeholder"
+        let show = try JSONSerialization.data(withJSONObject: object)
+        runner.on("show") { _ in show }
+        let center = makeCenter()
+        await center.beginEdit(7)
+        let form = try XCTUnwrap(center.drafts[7]?.form)
+
+        await center.recheckParse(7)
+        XCTAssertEqual(form.currentParseError, "permissions[0]: placeholder")
+        XCTAssertFalse(runner.invocations.contains { $0.count > 1 && $0[1] == "validate" }, "the loaded text is not re-validated")
+
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2", ok: false, errors: ["line 3: still broken"]) }
+        form.buffer.pageSent(text: Fixtures.recipe + "\n", base: form.buffer.revision)
+        await center.recheckParse(7)
+        XCTAssertEqual(form.currentParseError, "line 3: still broken")
+
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2") }
+        await center.recheckParse(7)
+        XCTAssertEqual(form.currentParseError, "")
+        XCTAssertTrue(form.paused, "the form stays off until the fixed recipe is saved")
+    }
+
     func testSlugForName() {
         XCTAssertEqual(AutomationEditorCenter.slug(forName: "Morning Mail digest!"), "morning-mail-digest")
         XCTAssertEqual(AutomationEditorCenter.slug(forName: "  --Q4 plan--  "), "q4-plan")
