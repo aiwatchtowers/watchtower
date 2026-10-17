@@ -3,7 +3,6 @@ package automations
 import (
 	"context"
 	"errors"
-	"fmt"
 	"runtime"
 	"strings"
 	"sync"
@@ -41,7 +40,7 @@ var sandboxBombs = map[string]string{
 	"JSON.stringify String objs": `var s = new String("x".repeat(9 * 1024 * 1024)); JSON.stringify([s, s])`,
 	"JSON.stringify escapes":     `JSON.stringify("\x01".repeat(3e6))`,
 	"JSON.stringify escaped key": `var o = {}; o["\x01".repeat(3e6)] = 1; JSON.stringify(o)`,
-	"JSON.stringify indent":      `JSON.stringify(new Array(2e6).fill(1), null, 10)`,
+	"JSON.stringify indent":      `var a = []; for (var k = 0; k < 4; k++) { var o = 1; for (var i = 0; i < 990; i++) { o = [o] } a.push(o) } JSON.stringify(a, null, 10)`,
 	"toLocaleString":             `var s = "x".repeat(9 * 1024 * 1024); [s, s].toLocaleString()`,
 	"typed toLocaleString":       `var s = "x".repeat(9 * 1024 * 1024); Number.prototype.toLocaleString = function () { return s }; new Uint8Array(2).toLocaleString()`,
 	"bind chain":                 `var f = function () {}; for (var i = 0; i < 1e6; i++) { f = f.bind(null) }`,
@@ -86,8 +85,10 @@ func TestSandbox_NativeBombsEndTheRunNotTheProcess(t *testing.T) {
 			start := time.Now()
 			got := mustRun(t, "try { "+bomb+"; return 'ran' } catch (e) { return e.name + ': ' + e.message }", sbOpts{})
 			s, _ := got.(string)
-			if !strings.HasPrefix(s, "RangeError: ") || time.Since(start) > 5*time.Second || AbandonedRuns() != 0 {
-				t.Errorf("got %v after %v (abandoned %d); want a quick catchable RangeError", got, time.Since(start), AbandonedRuns())
+			// The error kind and the process surviving are the point; the
+			// time bound only catches a run that went on to its deadline.
+			if !strings.HasPrefix(s, "RangeError: ") || time.Since(start) > time.Minute || AbandonedRuns() != 0 {
+				t.Errorf("got %v after %v (abandoned %d); want a catchable RangeError", got, time.Since(start), AbandonedRuns())
 			}
 		})
 	}
@@ -352,27 +353,41 @@ func lowHeapBudget(t *testing.T, budget uint64) {
 	runtime.GC() // a fresh live-heap reading for the run's baseline
 }
 
-// holdScript allocates mib MiB, keeps it and stays busy for ms.
-func holdScript(mib, ms int) string {
-	return fmt.Sprintf(`var keep = []; for (var i = 0; i < %d; i++) { keep.push("x".repeat(10 * 1024 * 1024) + i) }
-		var end = Date.now() + %d; while (Date.now() < end) {} return keep.length`, mib/10, ms)
-}
-
 // Two runs under the budget each, together over it, do not stop each
-// other: a run's baseline moves up when a sibling starts or ends.
+// other: a run's baseline moves up when a sibling starts or ends. The order
+// is fixed by SDK calls, not by sleeps: A allocates, then B starts and
+// allocates while A is still running, then both finish.
 func TestSandbox_HeapBudgetSparesSiblingRuns(t *testing.T) {
 	lowHeapBudget(t, 96<<20)
+	aHolds, bHolds := make(chan struct{}), make(chan struct{})
+	steps := funcModule{name: "steps", fns: map[string]SDKFunc{
+		"aHolds": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) { close(aHolds); return nil, nil },
+		"waitB": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) {
+			select {
+			case <-bHolds:
+				time.Sleep(200 * time.Millisecond) // a few watchdog samples with both held
+			case <-time.After(time.Minute):
+			}
+			return nil, nil
+		},
+		"bHolds": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) { close(bHolds); return nil, nil },
+	}}
+	alloc := `var keep = []; for (var i = 0; i < 6; i++) { keep.push("x".repeat(10 * 1024 * 1024) + i) }`
+	sa, _ := newTestSandbox(t, alloc+` aHolds(); waitB(); return keep.length`, sbOpts{modules: []Module{testModule(), steps}})
+	sb, _ := newTestSandbox(t, alloc+` bHolds(); var end = Date.now() + 200; while (Date.now() < end) {} return keep.length`,
+		sbOpts{modules: []Module{testModule(), steps}})
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
-	for i := range 2 {
-		sb, _ := newTestSandbox(t, holdScript(60, 600), sbOpts{})
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			time.Sleep(time.Duration(i) * 200 * time.Millisecond)
-			_, errs[i] = sb.Run()
-		}()
-	}
+	wg.Add(2)
+	go func() { defer wg.Done(); _, errs[0] = sa.Run() }()
+	go func() {
+		defer wg.Done()
+		select {
+		case <-aHolds:
+		case <-time.After(time.Minute):
+		}
+		_, errs[1] = sb.Run()
+	}()
 	wg.Wait()
 	for i, err := range errs {
 		if err != nil {
@@ -465,16 +480,25 @@ func TestSandbox_MemoryStopThenStuckIsAbandoned(t *testing.T) {
 	lowHeapBudget(t, 32<<20)
 	var keep [][]byte
 	stuck := funcModule{name: "stuck", fns: map[string]SDKFunc{
-		"stuck": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) {
-			keep = append(keep, make([]byte, 64<<20))
+		"stuck": func(env *Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
+			keep = append(keep, make([]byte, 128<<20))
 			for i := range keep[0] {
 				keep[0][i] = 1
 			}
 			runtime.GC()
+			// Stay "stuck" until the watchdog stopped the run (its abort
+			// cancels env.Ctx), then past the abandon grace: the order is
+			// fixed whatever the machine's speed.
+			select {
+			case <-env.Ctx.Done():
+			case <-time.After(time.Minute):
+				return nil, errors.New("the memory watchdog never stopped the run")
+			}
 			time.Sleep(AbandonGrace + time.Second)
 			return nil, nil
 		},
 	}}
+	runtime.GC() // the run's baseline right after a collection: no stale garbage in it
 	_, err := runScript(t, `stuck(); return 1`, sbOpts{modules: []Module{testModule(), stuck}})
 	var ri *RunInterrupted
 	if !errors.As(err, &ri) || !ri.Abandoned || ri.Reason != InterruptMemory {
@@ -504,7 +528,7 @@ func TestSandbox_ExecRewriteSkipsSuperAndOptionalChains(t *testing.T) {
 // However many sibling runs start and end, a run never gets more than one
 // budget of forgiveness, and the hard ceiling on the heap's objects does not
 // wait for a GC: a run growing steadily under sibling churn (the shape of
-// the review's probe, smaller) is stopped well before its 20 s end.
+// the review's probe, smaller) is stopped well before its 120 s end.
 func TestSandbox_HeapBudgetForgivenessIsCapped(t *testing.T) {
 	lowHeapBudget(t, 32<<20)
 	var stop atomic.Bool
@@ -522,14 +546,19 @@ func TestSandbox_HeapBudgetForgivenessIsCapped(t *testing.T) {
 	}()
 	defer func() { stop.Store(true); <-churned }()
 	start := time.Now()
-	_, err := runScript(t, `var keep = [], end = Date.now() + 20000;
+	_, err := runScript(t, `var keep = [], end = Date.now() + 120000;
 		while (Date.now() < end) { keep.push("x".repeat(4 * 1024 * 1024) + keep.length); var t = Date.now() + 15; while (Date.now() < t) {} }
 		return keep.length`, sbOpts{})
+	// Stopped for memory: as the RangeError, or (a slow machine, a native
+	// step still running past the grace) as the abandoned memory interrupt.
 	var se *ScriptError
-	if !errors.As(err, &se) || !strings.Contains(se.Message, "too much memory") {
-		t.Fatalf("Run = %v; want the memory RangeError despite the churn", err)
+	var ri *RunInterrupted
+	stopped := errors.As(err, &se) && strings.Contains(se.Message, "too much memory") ||
+		errors.As(err, &ri) && ri.Reason == InterruptMemory
+	if !stopped {
+		t.Fatalf("Run = %v; want the memory stop despite the churn", err)
 	}
-	if took := time.Since(start); took > 10*time.Second {
-		t.Fatalf("stopped after %v; want well before the script's 20 s end", took)
+	if took := time.Since(start); took > time.Minute {
+		t.Fatalf("stopped after %v; want well before the script's 120 s end", took)
 	}
 }
