@@ -2,6 +2,7 @@ package db
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/pressly/goose/v3"
@@ -71,8 +72,14 @@ func TestMigration00125_ColumnsAlreadyPresent(t *testing.T) {
 			_, err := d.Exec(c.ddl)
 			require.NoError(t, err)
 		}
-		_, err := d.Exec(`DROP TABLE review_checks`)
-		require.NoError(t, err)
+		for _, s := range []string{
+			`DROP VIEW agent_log_session_totals`,
+			sessionTotalsView00125(ownerTurns00125),
+			`DROP TABLE review_checks`,
+		} {
+			_, err := d.Exec(s)
+			require.NoError(t, err)
+		}
 	})
 	reopenAndCheck(t, path, wantTable, wantView)
 
@@ -80,4 +87,32 @@ func TestMigration00125_ColumnsAlreadyPresent(t *testing.T) {
 	require.NoError(t, err)
 	defer d.Close()
 	require.NoError(t, d.CheckSchemaDrift(), "00124's review_checks is replayed")
+}
+
+// A present column with another definition is not taken as 00125's.
+func TestMigration00125_MismatchedColumnFails(t *testing.T) {
+	path, _, _ := openAt124(t, func(d *DB) {
+		_, err := d.Exec(`ALTER TABLE agent_log_events ADD COLUMN background TEXT NOT NULL DEFAULT ''`)
+		require.NoError(t, err)
+	})
+	_, err := Open(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent_log_events.background already exists as TEXT")
+}
+
+// The drift check sees the Go migration: the real newest version and the
+// tables 00125 changes.
+func TestLoadMigrations_IncludesGoMigrations(t *testing.T) {
+	migrations, err := loadMigrations()
+	require.NoError(t, err)
+	want, err := embeddedMigrationVersions()
+	require.NoError(t, err)
+	require.Len(t, migrations, len(want))
+	assert.Equal(t, want[len(want)-1], migrations[len(migrations)-1].version)
+
+	i := slices.IndexFunc(migrations, func(m migration) bool { return m.version == 125 })
+	require.GreaterOrEqual(t, i, 0)
+	assert.Equal(t, "00125_agent_analytics_history.go", migrations[i].file)
+	assert.True(t, laterMigrationTouches(migrations[i:], []string{"agent_log_events"}))
+	assert.NotContains(t, replayableMigrations(migrations), migrations[i].file)
 }

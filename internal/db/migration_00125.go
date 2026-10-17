@@ -3,27 +3,42 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/pressly/goose/v3"
 )
 
 // Migration 00125 (agent analytics parser v2, #298) is a Go migration so it
-// tolerates columns that already exist: an earlier dev build added
-// agent_log_events.spawned_agent_id and background outside goose, and on
-// such a database the plain ALTERs failed with "duplicate column" and the
-// file never opened again (#667). Each column is added only when
-// pragma_table_info lacks it; the statements are the ones the SQL file ran,
-// so the resulting schema is unchanged. SQLite has no ADD COLUMN IF NOT
-// EXISTS.
+// tolerates columns that already exist: a branch build applied these columns
+// inside goose under its own version 124 (main's 00124 is review_checks), so
+// such a file records 124 with agent_log_events.spawned_agent_id and
+// background present, and the plain ALTERs failed every open with
+// "duplicate column" (#667). Each column is added only when
+// pragma_table_info lacks it; a present one must match the definition below,
+// or the migration fails. The statements are the ones the SQL file ran, so
+// the resulting schema is unchanged. SQLite has no ADD COLUMN IF NOT EXISTS.
 func init() {
 	goose.AddNamedMigrationContext("00125_agent_analytics_history.go", up00125, down00125)
 }
 
-var columns00125 = []struct{ name, ddl string }{
-	{"spawned_agent_id", `ALTER TABLE agent_log_events ADD COLUMN spawned_agent_id TEXT NOT NULL DEFAULT ''`},
-	{"background", `ALTER TABLE agent_log_events ADD COLUMN background INTEGER NOT NULL DEFAULT 0`},
+// goMigrationTouches names, per registered Go migration, the tables and
+// views it changes. The schema-drift check reads migrations as SQL text, so
+// this is how it learns what a Go migration touches; loadMigrations refuses a
+// Go migration missing here.
+var goMigrationTouches = map[int64][]string{
+	125: {"agent_log_events", "agent_log_session_totals"},
 }
+
+// columns00125 are the columns 00125 adds, with the pragma_table_info type
+// and default a column already present must have (both are NOT NULL).
+var columns00125 = []struct{ name, ddl, typ, dflt string }{
+	{"spawned_agent_id", `ALTER TABLE agent_log_events ADD COLUMN spawned_agent_id TEXT NOT NULL DEFAULT ''`, "TEXT", "''"},
+	{"background", `ALTER TABLE agent_log_events ADD COLUMN background INTEGER NOT NULL DEFAULT 0`, "INTEGER", "0"},
+}
+
+// ownerTurns00125 is the owner_turns expression 00125 installs.
+const ownerTurns00125 = `SUM(CASE WHEN kind = 'owner_turn' AND trigger NOT IN ('notification','hook') THEN 1 ELSE 0 END)`
 
 // sessionTotalsView00125 builds agent_log_session_totals; ownerTurns is the
 // owner_turns expression, the only part 00125 changes.
@@ -50,22 +65,38 @@ FROM agent_log_events GROUP BY session_uuid`
 
 func up00125(ctx context.Context, tx *sql.Tx) error {
 	for _, c := range columns00125 {
-		var n int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM pragma_table_info('agent_log_events') WHERE name = ?`, c.name).Scan(&n); err != nil {
-			return fmt.Errorf("checking agent_log_events.%s: %w", c.name, err)
-		}
-		if n > 0 {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, c.ddl); err != nil {
-			return fmt.Errorf("adding agent_log_events.%s: %w", c.name, err)
+		if err := addColumn00125(ctx, tx, c.name, c.ddl, c.typ, c.dflt); err != nil {
+			return err
 		}
 	}
 	return execAll(ctx, tx,
 		`DROP VIEW agent_log_session_totals`,
-		sessionTotalsView00125(`SUM(CASE WHEN kind = 'owner_turn' AND trigger NOT IN ('notification','hook') THEN 1 ELSE 0 END)`),
+		sessionTotalsView00125(ownerTurns00125),
 	)
+}
+
+// addColumn00125 runs ddl unless the column exists; an existing one must be
+// typ NOT NULL DEFAULT dflt.
+func addColumn00125(ctx context.Context, tx *sql.Tx, name, ddl, typ, dflt string) error {
+	var gotType string
+	var notNull int
+	var gotDflt sql.NullString
+	err := tx.QueryRowContext(ctx,
+		`SELECT type, "notnull", dflt_value FROM pragma_table_info('agent_log_events') WHERE name = ?`,
+		name).Scan(&gotType, &notNull, &gotDflt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("adding agent_log_events.%s: %w", name, err)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("checking agent_log_events.%s: %w", name, err)
+	case gotType != typ || notNull != 1 || !gotDflt.Valid || gotDflt.String != dflt:
+		return fmt.Errorf("agent_log_events.%s already exists as %s (notnull=%d, default %q); "+
+			"migration 00125 needs %s NOT NULL DEFAULT %s", name, gotType, notNull, gotDflt.String, typ, dflt)
+	}
+	return nil
 }
 
 func down00125(ctx context.Context, tx *sql.Tx) error {
@@ -80,7 +111,7 @@ func down00125(ctx context.Context, tx *sql.Tx) error {
 func execAll(ctx context.Context, tx *sql.Tx, stmts ...string) error {
 	for _, s := range stmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
-			return err
+			return fmt.Errorf("executing %q: %w", firstLine(s), err)
 		}
 	}
 	return nil
