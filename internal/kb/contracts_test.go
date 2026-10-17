@@ -114,6 +114,9 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 	msg(t, d, "1:D1", "1758000450.000550", "1:U1", "ответ в тред", "1758000400.000500", "")
 	exec(t, d, `DELETE FROM jira_comments`)
 	exec(t, d, `DELETE FROM jira_issues`)
+	// An in-place edit of a message far older than the 48h tail: the
+	// kb_dirty mark (migration 00136) carries it to the index.
+	exec(t, d, `UPDATE messages SET text = 'ревизия: релиз в четверг' WHERE ts = '1758000100.000200'`)
 	// A Confluence comment is removed (the engine stamps children_changed_at)
 	// and an attachment is hard-deleted (the reconcile drops it).
 	exec(t, d, `DELETE FROM ext_comments WHERE ext_id = '501'`)
@@ -126,6 +129,8 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 	require.NoError(t, err)
 	incremental := dumpKB(t, d)
 	assert.NotContains(t, incremental, "ответ, который потом удалят")
+	assert.Contains(t, incremental, "ревизия: релиз в четверг")
+	assert.NotContains(t, incremental, "ok, пятница")
 	assert.NotContains(t, incremental, "jira:1:PROJ-123")
 	assert.Contains(t, incremental, "Урезать на треть")
 	assert.Contains(t, incremental, "кэш на уровне CDN")
