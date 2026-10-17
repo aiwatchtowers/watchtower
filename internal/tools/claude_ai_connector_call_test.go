@@ -13,6 +13,9 @@ import (
 	"watchtower/internal/db"
 )
 
+// sessionToken is the session process the test proposes as.
+const sessionToken = "session-a"
+
 const connectorCallArgsJSON = `{"server":"claude.ai Connector A","tool":"send_mail",` +
 	`"input":{"to":"someone@example.com","body":"hi"},"reason":"the owner asked to reply"}`
 
@@ -28,7 +31,7 @@ func newSessionRegistry(t *testing.T) (*Registry, *db.DB) {
 func proposeConnectorCall(t *testing.T, reg *Registry, conversationID int64) int64 {
 	t.Helper()
 	rc, err := reg.ProposeSessionCall(context.Background(), ClaudeAIConnectorCallTool,
-		json.RawMessage(connectorCallArgsJSON), Binding{Surface: "main", ConversationID: conversationID})
+		json.RawMessage(connectorCallArgsJSON), Binding{Surface: "main", ConversationID: conversationID, SessionToken: sessionToken})
 	require.NoError(t, err)
 	require.Equal(t, "pending", rc.Status)
 	return rc.ActionID
@@ -84,7 +87,7 @@ func TestAgent05_SessionCallClaimsOnce(t *testing.T) {
 	wins := make(chan bool, 2)
 	for range 2 {
 		wg.Go(func() {
-			_, ok, err := reg.ClaimSessionCall(id)
+			_, ok, err := reg.ClaimSessionCall(id, sessionToken)
 			assert.NoError(t, err)
 			wins <- ok
 		})
@@ -125,7 +128,7 @@ func TestAgent05_ApplyRefusesASessionCall(t *testing.T) {
 	assert.Equal(t, "approved", status)
 	assert.Zero(t, executed)
 
-	_, ok, err := reg.ClaimSessionCall(id)
+	_, ok, err := reg.ClaimSessionCall(id, sessionToken)
 	require.NoError(t, err)
 	assert.True(t, ok, "the session can still claim the row Apply refused")
 }
@@ -133,7 +136,7 @@ func TestAgent05_ApplyRefusesASessionCall(t *testing.T) {
 func TestSessionCall_ClaimFinishRecordsTheOutcome(t *testing.T) {
 	reg, database := newSessionRegistry(t)
 
-	before, ok, err := reg.ClaimSessionCall(proposeConnectorCall(t, reg, 7))
+	before, ok, err := reg.ClaimSessionCall(proposeConnectorCall(t, reg, 7), sessionToken)
 	require.NoError(t, err)
 	assert.False(t, ok, "a pending row is not claimable")
 	require.NotNil(t, before)
@@ -141,72 +144,141 @@ func TestSessionCall_ClaimFinishRecordsTheOutcome(t *testing.T) {
 
 	id := proposeConnectorCall(t, reg, 7)
 	approveRow(t, database, id)
-	row, ok, err := reg.ClaimSessionCall(id)
+	row, ok, err := reg.ClaimSessionCall(id, sessionToken)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.JSONEq(t, connectorCallArgsJSON, row.ArgsJSON)
-	require.NoError(t, reg.FinishSessionCall(id, "Message sent.", ""))
+	require.NoError(t, reg.FinishSessionCall(id, sessionToken, "Message sent.", ""))
 	row, err = database.GetAgentAction(id)
 	require.NoError(t, err)
 	assert.Equal(t, "applied", row.Status)
 	assert.JSONEq(t, `"Message sent."`, row.ResultJSON, "plain text is stored as a JSON string")
-	assert.ErrorIs(t, reg.FinishSessionCall(id, "", ""), ErrBadTransition, "finished once")
+	assert.ErrorIs(t, reg.FinishSessionCall(id, sessionToken, "", ""), ErrBadTransition, "finished once")
 
 	// Expiry won the race while the call ran: the outcome the row could not
 	// record still reaches the caller.
 	expired := proposeConnectorCall(t, reg, 7)
 	approveRow(t, database, expired)
-	_, ok, err = reg.ClaimSessionCall(expired)
+	_, ok, err = reg.ClaimSessionCall(expired, sessionToken)
 	require.NoError(t, err)
 	require.True(t, ok)
 	_, err = reg.ExpireSessionCalls(7, time.Now())
 	require.NoError(t, err)
-	err = reg.FinishSessionCall(expired, "Message sent.", "")
+	err = reg.FinishSessionCall(expired, sessionToken, "Message sent.", "")
 	require.ErrorIs(t, err, ErrBadTransition)
 	assert.Contains(t, err.Error(), "Message sent.")
 
 	failed := proposeConnectorCall(t, reg, 7)
 	approveRow(t, database, failed)
-	_, ok, err = reg.ClaimSessionCall(failed)
+	_, ok, err = reg.ClaimSessionCall(failed, sessionToken)
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.NoError(t, reg.FinishSessionCall(failed, `{"isError":true}`, "connector refused"))
+	require.NoError(t, reg.FinishSessionCall(failed, sessionToken, `{"isError":true}`, "connector refused"))
 	status, msg := rowStatus(t, database, failed)
 	assert.Equal(t, "failed", status)
 	assert.Equal(t, "connector refused", msg)
 }
 
-func TestSessionCall_CancelOnlyFromPendingOrApproved(t *testing.T) {
+// Cancel (timeout, Stop) takes only a pending row: an Approve that landed
+// just before it wins, and the caller learns the row is approved so it goes
+// on to claim it. Expire is the explicit path for an approved row the
+// session will not run.
+func TestSessionCall_CancelOnlyFromPending(t *testing.T) {
 	reg, database := newSessionRegistry(t)
 
 	pending := proposeConnectorCall(t, reg, 7)
-	ok, err := reg.CancelSessionCall(pending, "stopped")
+	row, ok, err := reg.CancelSessionCall(pending, sessionToken, "stopped")
 	require.NoError(t, err)
 	assert.True(t, ok)
+	assert.Equal(t, "rejected", row.Status)
 	status, msg := rowStatus(t, database, pending)
 	assert.Equal(t, "rejected", status)
 	assert.Equal(t, "stopped", msg)
 
 	approved := proposeConnectorCall(t, reg, 7)
 	approveRow(t, database, approved)
-	ok, err = reg.CancelSessionCall(approved, "not approved within 15 minutes")
+	row, ok, err = reg.CancelSessionCall(approved, sessionToken, "not approved within 15 minutes")
 	require.NoError(t, err)
-	assert.True(t, ok)
+	assert.False(t, ok, "the owner's Approve wins over the timeout")
+	assert.Equal(t, "approved", row.Status, "the caller learns it may claim")
+	_, won, err := reg.ClaimSessionCall(approved, sessionToken)
+	require.NoError(t, err)
+	assert.True(t, won)
 
 	claimed := proposeConnectorCall(t, reg, 7)
 	approveRow(t, database, claimed)
-	_, won, err := reg.ClaimSessionCall(claimed)
+	_, won, err = reg.ClaimSessionCall(claimed, sessionToken)
 	require.NoError(t, err)
 	require.True(t, won)
-	ok, err = reg.CancelSessionCall(claimed, "stopped")
+	_, ok, err = reg.CancelSessionCall(claimed, sessionToken, "stopped")
 	require.NoError(t, err)
 	assert.False(t, ok, "a claimed call is running; cancel cannot take it back")
+	ok, err = reg.ExpireSessionCall(claimed, sessionToken, "closed")
+	require.NoError(t, err)
+	assert.False(t, ok, "nor can expire")
 	status, _ = rowStatus(t, database, claimed)
 	assert.Equal(t, "executing", status)
 
-	ok, err = reg.CancelSessionCall(pending, "again")
+	_, ok, err = reg.CancelSessionCall(pending, sessionToken, "again")
 	require.NoError(t, err)
 	assert.False(t, ok, "rejected is terminal")
+}
+
+func TestSessionCall_ExpireOneFailsAnUnclaimedCall(t *testing.T) {
+	reg, database := newSessionRegistry(t)
+	for _, approve := range []bool{false, true} {
+		id := proposeConnectorCall(t, reg, 7)
+		if approve {
+			approveRow(t, database, id)
+		}
+		ok, err := reg.ExpireSessionCall(id, sessionToken, "the chat closed before the call ran")
+		require.NoError(t, err)
+		assert.True(t, ok)
+		status, msg := rowStatus(t, database, id)
+		assert.Equal(t, "failed", status)
+		assert.Equal(t, "the chat closed before the call ran", msg)
+		_, won, err := reg.ClaimSessionCall(id, sessionToken)
+		require.NoError(t, err)
+		assert.False(t, won)
+		_, err = reg.Apply(context.Background(), id)
+		assert.ErrorIs(t, err, ErrSessionApplied)
+	}
+}
+
+// AGENT-05 (#737): a row is bound to the session process that proposed it,
+// not just to its conversation — another process of the same conversation (a
+// respawn, a --resume, a replay) can neither claim, finish, cancel nor expire
+// it, and a call without a token is never recorded.
+func TestAgent05_SessionCallBelongsToItsSessionProcess(t *testing.T) {
+	reg, database := newSessionRegistry(t)
+	id := proposeConnectorCall(t, reg, 7)
+	approveRow(t, database, id)
+	row, err := database.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, sessionToken, row.SessionToken)
+
+	for _, other := range []string{"session-b", ""} {
+		_, ok, err := reg.ClaimSessionCall(id, other)
+		assert.ErrorIs(t, err, ErrNotThisSession, other)
+		assert.False(t, ok)
+		_, _, err = reg.CancelSessionCall(id, other, "stopped")
+		assert.ErrorIs(t, err, ErrNotThisSession, other)
+		_, err = reg.ExpireSessionCall(id, other, "closed")
+		assert.ErrorIs(t, err, ErrNotThisSession, other)
+		assert.ErrorIs(t, reg.FinishSessionCall(id, other, "{}", ""), ErrNotThisSession, other)
+	}
+	status, _ := rowStatus(t, database, id)
+	assert.Equal(t, "approved", status, "another process moved nothing")
+	_, ok, err := reg.ClaimSessionCall(id, sessionToken)
+	require.NoError(t, err)
+	assert.True(t, ok, "its own process still claims it")
+
+	_, err = reg.ProposeSessionCall(context.Background(), ClaudeAIConnectorCallTool,
+		json.RawMessage(connectorCallArgsJSON), Binding{Surface: "main", ConversationID: 7})
+	assert.Error(t, err, "no token, no row")
+	var rows int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&rows))
+	assert.Equal(t, 1, rows)
 }
 
 // The session methods never move a row Apply owns.
@@ -220,17 +292,20 @@ func TestSessionCall_MethodsRefuseOtherTools(t *testing.T) {
 	require.NoError(t, err)
 	approveRow(t, database, rc.ActionID)
 
-	_, _, err = reg.ClaimSessionCall(rc.ActionID)
+	_, _, err = reg.ClaimSessionCall(rc.ActionID, sessionToken)
 	assert.ErrorIs(t, err, ErrBadTransition)
-	_, err = reg.CancelSessionCall(rc.ActionID, "x")
+	_, _, err = reg.CancelSessionCall(rc.ActionID, sessionToken, "x")
 	assert.ErrorIs(t, err, ErrBadTransition)
-	assert.ErrorIs(t, reg.FinishSessionCall(rc.ActionID, "", ""), ErrBadTransition)
-	_, _, err = reg.ClaimSessionCall(9999)
+	_, err = reg.ExpireSessionCall(rc.ActionID, sessionToken, "x")
+	assert.ErrorIs(t, err, ErrBadTransition)
+	assert.ErrorIs(t, reg.FinishSessionCall(rc.ActionID, sessionToken, "", ""), ErrBadTransition)
+	_, _, err = reg.ClaimSessionCall(9999, sessionToken)
 	assert.ErrorIs(t, err, ErrNotFound)
 	status, _ := rowStatus(t, database, rc.ActionID)
 	assert.Equal(t, "approved", status)
 
-	_, err = reg.ProposeSessionCall(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{Surface: "main"})
+	_, err = reg.ProposeSessionCall(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`),
+		Binding{Surface: "main", SessionToken: sessionToken})
 	assert.Error(t, err, "ProposeSessionCall takes only a session-applied tool")
 	assert.Empty(t, executed)
 }
@@ -252,7 +327,7 @@ func TestSessionCall_ExpireLandsFailed(t *testing.T) {
 	approveRow(t, database, ownFresh)
 	ownRunning := proposeConnectorCall(t, reg, own)
 	approveRow(t, database, ownRunning)
-	_, ok, err := reg.ClaimSessionCall(ownRunning)
+	_, ok, err := reg.ClaimSessionCall(ownRunning, sessionToken)
 	require.NoError(t, err)
 	require.True(t, ok)
 	otherFresh := proposeConnectorCall(t, reg, other)
@@ -260,12 +335,12 @@ func TestSessionCall_ExpireLandsFailed(t *testing.T) {
 	setCreated(otherStale, now.Add(-21*time.Minute))
 	ownApplied := proposeConnectorCall(t, reg, own)
 	approveRow(t, database, ownApplied)
-	_, ok, err = reg.ClaimSessionCall(ownApplied)
+	_, ok, err = reg.ClaimSessionCall(ownApplied, sessionToken)
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.NoError(t, reg.FinishSessionCall(ownApplied, "{}", ""))
+	require.NoError(t, reg.FinishSessionCall(ownApplied, sessionToken, "{}", ""))
 	ownRejected := proposeConnectorCall(t, reg, own)
-	ok, err = reg.CancelSessionCall(ownRejected, "stopped")
+	_, ok, err = reg.CancelSessionCall(ownRejected, sessionToken, "stopped")
 	require.NoError(t, err)
 	require.True(t, ok)
 
@@ -288,7 +363,7 @@ func TestSessionCall_ExpireLandsFailed(t *testing.T) {
 	status, _ = rowStatus(t, database, ownRejected)
 	assert.Equal(t, "rejected", status)
 
-	_, ok, err = reg.ClaimSessionCall(ownFresh)
+	_, ok, err = reg.ClaimSessionCall(ownFresh, sessionToken)
 	require.NoError(t, err)
 	assert.False(t, ok, "an expired row can never be claimed")
 	_, err = reg.Apply(context.Background(), ownFresh)
@@ -351,7 +426,8 @@ func TestSessionCall_ValidateRefusesBadArgs(t *testing.T) {
 		`{"server":"S","tool":"t","input":{},"reason":""}`,
 		`{"server":"S","tool":"t","input":{},"reason":"r","extra":1}`,
 	} {
-		_, err := reg.ProposeSessionCall(context.Background(), ClaudeAIConnectorCallTool, json.RawMessage(args), Binding{Surface: "main"})
+		_, err := reg.ProposeSessionCall(context.Background(), ClaudeAIConnectorCallTool, json.RawMessage(args),
+			Binding{Surface: "main", SessionToken: sessionToken})
 		assert.Error(t, err, args)
 	}
 	var rows int

@@ -95,6 +95,10 @@ type Binding struct {
 	// grant or trust row exists (spec §6.5, proposals stay pending). Not
 	// persisted — a later Apply does not need it.
 	AutomationAgent bool
+	// SessionToken identifies one chat-session process (a warm `ai session`
+	// child's gate). ProposeSessionCall requires it and stores it on the row;
+	// only that token claims, finishes or cancels the row. Unused elsewhere.
+	SessionToken string
 }
 
 // turnID is the turn a proposal attaches to right now.
@@ -456,8 +460,13 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 
 // ProposeSessionCall records a call of an AppliedBySession tool for the chat
 // session's permission gate: always a pending row (the tool is AlwaysAsk),
-// through every gate Propose runs. Any other tool is refused.
+// through every gate Propose runs, stamped with b.SessionToken — required,
+// it is what binds the row to this one session process. Any other tool is
+// refused.
 func (r *Registry) ProposeSessionCall(ctx context.Context, name string, args json.RawMessage, b Binding) (Receipt, error) {
+	if strings.TrimSpace(b.SessionToken) == "" {
+		return Receipt{}, errors.New("a session call needs the session token of the process that will run it")
+	}
 	return r.propose(ctx, name, args, b, true)
 }
 
@@ -814,7 +823,7 @@ func newProposalRow(t *Tool, args json.RawMessage, trust Trust, b Binding) db.Ag
 		Tool: t.Name, External: t.External, ArgsJSON: string(args), Reason: reasonOf(args),
 		Surface: b.Surface, ConversationID: b.ConversationID,
 		ContextType: ctxType, ContextID: ctxID, TurnID: b.turnID(),
-		Status: "pending", TrustAtCreate: string(trust),
+		Status: "pending", TrustAtCreate: string(trust), SessionToken: b.SessionToken,
 	}
 	if trust == TrustExecute {
 		row.Status = "approved"
