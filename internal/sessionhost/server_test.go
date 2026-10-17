@@ -267,7 +267,9 @@ func TestServer_ExitWhileDetachedIsKeptUntilForget(t *testing.T) {
 	}
 }
 
-func TestServer_ExitWhileAttachedDropsRecord(t *testing.T) {
+// A delivered exit may still be lost on its way; the record stays until
+// the client forgets it.
+func TestServer_ExitWhileAttachedIsKeptUntilForget(t *testing.T) {
 	path := startServer(t, Options{})
 	c := dial(t, path)
 	c.launch(1, `sleep 0.1; exit 3`)
@@ -278,8 +280,14 @@ func TestServer_ExitWhileAttachedDropsRecord(t *testing.T) {
 	if msg.Code == nil || *msg.Code != 3 {
 		t.Fatalf("exit code = %v, want 3", msg.Code)
 	}
-	if got := dial(t, path).list(); len(got) != 0 {
-		t.Fatalf("list = %+v, want empty", got)
+	ctl := dial(t, path)
+	if got := ctl.list(); len(got) != 1 || !got[0].Exited || got[0].Code == nil || *got[0].Code != 3 {
+		t.Fatalf("list = %+v, want the exited run with code 3", got)
+	}
+	ctl.send(Forget, AttachReq{Row: 1, Run: "r1"})
+	ctl.expect(Forgot)
+	if got := ctl.list(); len(got) != 0 {
+		t.Fatalf("list after forget = %+v, want empty", got)
 	}
 }
 
@@ -315,18 +323,16 @@ func TestServer_AttachTakesOver(t *testing.T) {
 	c2 := dial(t, path)
 	c2.send(Attach, AttachReq{Row: 1, Run: "r1"})
 	c2.expect(Attached)
-	for {
-		ft, _, err := c1.readErr()
-		if err != nil {
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				t.Fatal("first connection still open after takeover")
-			}
-			break
-		}
-		if ft != Output {
-			t.Fatalf("first connection got frame %#x, want only output then EOF", ft)
-		}
+	if msg := errMsg(t, c1.expect(Error)); msg != TakenOver {
+		t.Fatalf("first connection error = %q, want %q", msg, TakenOver)
+	}
+	ft, p, err := c1.readErr()
+	if err == nil {
+		t.Fatalf("first connection got frame %#x (%s) after the takeover error, want EOF", ft, p)
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Fatal("first connection still open after takeover")
 	}
 	c2.outputUntil(func(s string) bool { return strings.Contains(s, "tick") })
 }
@@ -428,6 +434,64 @@ func TestServer_IdleExit(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Serve did not exit when idle")
+	}
+}
+
+// The app's control connection is bound to no session: it does not keep an
+// idle host alive, so a newer host binary can take over.
+func TestServer_IdleExitIgnoresUnboundConnection(t *testing.T) {
+	path := socketPath(t)
+	l, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- NewServer(Options{IdleExit: 200 * time.Millisecond}).Serve(context.Background(), l) }()
+	c := dial(t, path)
+	if got := c.list(); len(got) != 0 {
+		t.Fatalf("list = %+v", got)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not exit with only an unbound connection open")
+	}
+}
+
+// A connection attached to a session keeps the host up.
+func TestServer_IdleExitWaitsForBoundConnection(t *testing.T) {
+	path := socketPath(t)
+	l, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- NewServer(Options{IdleExit: 200 * time.Millisecond}).Serve(ctx, l) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	c := dial(t, path)
+	c.launch(1, `exit 0`)
+	c.expect(Exit)
+	ctl := dial(t, path)
+	ctl.send(Forget, AttachReq{Row: 1, Run: "r1"})
+	ctl.expect(Forgot)
+	select {
+	case err := <-done:
+		t.Fatalf("Serve returned (%v) while a connection is still bound", err)
+	case <-time.After(600 * time.Millisecond):
+	}
+	_ = c.nc.Close()
+	select {
+	case err := <-done:
+		done <- err // for the cleanup
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not exit after the bound connection closed")
 	}
 }
 

@@ -15,7 +15,8 @@ import (
 )
 
 // sessionHostIdleExit and sessionHostRingSize are the host's fixed policy:
-// exit after 60 s with no sessions and no clients, keep 2 MiB per session.
+// exit after 60 s with no sessions and no attached terminal, keep 2 MiB per
+// session.
 const (
 	sessionHostIdleExit = 60 * time.Second
 	sessionHostRingSize = 2 << 20
@@ -29,7 +30,7 @@ var sessionHostCmd = &cobra.Command{
 	Long: `Run the workbench session host on a unix socket. The Desktop starts it
 detached; it owns each workbench terminal's PTY so the session keeps running
 while the app quits or updates, and exits on its own after 60 s with no
-sessions and no clients. A host already running on the socket makes this a
+sessions and no attached terminal. A host already running on the socket makes this a
 no-op (exit 0).`,
 	Args: cobra.NoArgs,
 	// No config or database: the host only serves terminals.

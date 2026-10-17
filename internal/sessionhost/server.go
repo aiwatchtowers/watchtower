@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,10 +44,21 @@ const helloTimeout = 10 * time.Second
 // defaultRingSize is used when Options.RingSize is not set.
 const defaultRingSize = 2 << 20
 
+// TakenOver is the Error message a connection gets just before the host
+// closes it because a newer attach took its session over. The app matches
+// it by value (HostedTerminalSession) and does not reattach.
+const TakenOver = "taken over"
+
+// finishTimeout bounds how long a taken-over connection may take to read
+// its last frame before the host closes it anyway.
+const finishTimeout = 2 * time.Second
+
 // Options configures a Server.
 type Options struct {
-	// IdleExit ends Serve once no session is held and no client is connected
-	// for this long; zero or less disables it.
+	// IdleExit ends Serve once no session is held and no connection is
+	// bound to one for this long; zero or less disables it. A connection
+	// bound to nothing (the app's control connection) does not keep the
+	// host alive, so a newer host binary takes over once it is idle.
 	IdleExit time.Duration
 	// RingSize is the per-session output tail kept for a re-attach.
 	RingSize int
@@ -194,7 +206,15 @@ func (s *Server) notify() {
 func (s *Server) isIdle() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.sessions) == 0 && len(s.conns) == 0
+	if len(s.sessions) > 0 {
+		return false
+	}
+	for c := range s.conns {
+		if c.bound {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) register(nc net.Conn) *conn {
@@ -212,7 +232,10 @@ func (s *Server) register(nc net.Conn) *conn {
 }
 
 func (s *Server) unregister(c *conn) {
-	c.close()
+	// A taken-over connection closes itself once its last frame is out.
+	if !c.finishing.Load() {
+		c.close()
+	}
 	s.mu.Lock()
 	delete(s.conns, c)
 	s.mu.Unlock()
@@ -334,6 +357,7 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 		return nil
 	}
 	s.sessions[key] = sess
+	c.bound = true
 	// Bind and queue Launched before the reader starts, so it precedes
 	// every Output frame.
 	sess.mu.Lock()
@@ -348,22 +372,19 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 	return sess
 }
 
-// watch records the child's exit. With a connection bound the exit is
-// delivered and the record dropped; otherwise it is kept until Forget.
+// watch records the child's exit and delivers it to a bound connection.
+// The record is kept until Forget either way: the delivery may still be
+// lost (the connection drops before the client reads it), and a client
+// that did read it forgets the run.
 func (s *Server) watch(sess *session) {
 	code := sess.wait()
-	s.mu.Lock()
 	sess.mu.Lock()
 	sess.exited = true
 	sess.code = code
-	// A connection that closed but has not unbound yet counts as unbound,
-	// so the exit is kept for the next attach instead of being lost.
-	if sess.conn != nil && !sess.conn.isClosed() {
+	if sess.conn != nil {
 		sess.conn.send(Exit, encode(ExitMsg{Code: code}))
-		delete(s.sessions, sess.key)
 	}
 	sess.mu.Unlock()
-	s.mu.Unlock()
 	s.notify()
 }
 
@@ -402,8 +423,14 @@ func (s *Server) attach(c *conn, bound *session, p []byte) *session {
 	old := sess.conn
 	sess.conn = c
 	sess.mu.Unlock()
+	s.mu.Lock()
+	c.bound = true
+	s.mu.Unlock()
+	s.notify()
 	if old != nil {
-		old.close() // a newer attach takes the session over
+		// A newer attach takes the session over; the old client is told
+		// why, so it does not attach back.
+		old.closeWith(Error, encode(ErrorMsg{Message: TakenOver}))
 	}
 	return sess
 }
@@ -475,8 +502,9 @@ func encode(v any) []byte {
 }
 
 type outFrame struct {
-	t FrameType
-	p []byte
+	t    FrameType
+	p    []byte
+	last bool // the writer closes the connection after it
 }
 
 // conn is one client connection. All writes after Hello go through out and
@@ -486,6 +514,10 @@ type conn struct {
 	out  chan outFrame
 	done chan struct{}
 	once sync.Once
+	// finishing: closeWith queued the last frame; nothing else is sent.
+	finishing atomic.Bool
+	// bound: the connection launched or attached a session (Server.mu).
+	bound bool
 }
 
 func newConn(nc net.Conn) *conn {
@@ -495,6 +527,9 @@ func newConn(nc net.Conn) *conn {
 // send queues a frame without blocking; a full queue closes the connection
 // so a slow client never stalls the PTY reader.
 func (c *conn) send(t FrameType, p []byte) {
+	if c.finishing.Load() {
+		return
+	}
 	select {
 	case <-c.done:
 		return
@@ -502,6 +537,25 @@ func (c *conn) send(t FrameType, p []byte) {
 	}
 	select {
 	case c.out <- outFrame{t: t, p: p}:
+	default:
+		c.close()
+	}
+}
+
+// closeWith stops reading from the connection, queues t as its last frame
+// and lets the writer close the connection once that frame is written
+// (within finishTimeout). Frames already queued go out before it.
+func (c *conn) closeWith(t FrameType, p []byte) {
+	if !c.finishing.CompareAndSwap(false, true) {
+		return
+	}
+	_ = c.nc.SetWriteDeadline(time.Now().Add(finishTimeout))
+	if rc, ok := c.nc.(interface{ CloseRead() error }); ok {
+		_ = rc.CloseRead() // the old client's input no longer reaches the PTY
+	}
+	select {
+	case c.out <- outFrame{t: t, p: p, last: true}:
+	case <-c.done:
 	default:
 		c.close()
 	}
@@ -515,22 +569,13 @@ func (c *conn) writeLoop() {
 	for {
 		select {
 		case f := <-c.out:
-			if err := WriteFrame(c.nc, f.t, f.p); err != nil {
+			if err := WriteFrame(c.nc, f.t, f.p); err != nil || f.last {
 				c.close()
 				return
 			}
 		case <-c.done:
 			return
 		}
-	}
-}
-
-func (c *conn) isClosed() bool {
-	select {
-	case <-c.done:
-		return true
-	default:
-		return false
 	}
 }
 
