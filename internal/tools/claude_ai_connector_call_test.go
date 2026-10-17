@@ -62,7 +62,7 @@ func TestAgent03_ConnectorCallIsAlwaysAsk(t *testing.T) {
 	assert.Equal(t, []string{"main"}, tool.Surfaces)
 
 	for _, surface := range []string{"main", "target", "reaction", WorkbenchSurface, AutomationSurface, AutomationEditorSurface} {
-		assert.Error(t, reg.SetTrust(ClaudeAIConnectorCallTool, surface, TrustExecute), surface)
+		assert.ErrorIs(t, reg.SetTrust(ClaudeAIConnectorCallTool, surface, TrustExecute), ErrExternalExecute, surface)
 	}
 	require.NoError(t, database.SetToolTrust(ClaudeAIConnectorCallTool, "main", "execute"))
 	id := proposeConnectorCall(t, reg, 7)
@@ -133,9 +133,11 @@ func TestAgent05_ApplyRefusesASessionCall(t *testing.T) {
 func TestSessionCall_ClaimFinishRecordsTheOutcome(t *testing.T) {
 	reg, database := newSessionRegistry(t)
 
-	_, ok, err := reg.ClaimSessionCall(proposeConnectorCall(t, reg, 7))
+	before, ok, err := reg.ClaimSessionCall(proposeConnectorCall(t, reg, 7))
 	require.NoError(t, err)
 	assert.False(t, ok, "a pending row is not claimable")
+	require.NotNil(t, before)
+	assert.Equal(t, "pending", before.Status, "a lost claim says what the row is, so the caller keeps waiting")
 
 	id := proposeConnectorCall(t, reg, 7)
 	approveRow(t, database, id)
@@ -149,6 +151,19 @@ func TestSessionCall_ClaimFinishRecordsTheOutcome(t *testing.T) {
 	assert.Equal(t, "applied", row.Status)
 	assert.JSONEq(t, `"Message sent."`, row.ResultJSON, "plain text is stored as a JSON string")
 	assert.ErrorIs(t, reg.FinishSessionCall(id, "", ""), ErrBadTransition, "finished once")
+
+	// Expiry won the race while the call ran: the outcome the row could not
+	// record still reaches the caller.
+	expired := proposeConnectorCall(t, reg, 7)
+	approveRow(t, database, expired)
+	_, ok, err = reg.ClaimSessionCall(expired)
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, err = reg.ExpireSessionCalls(7, time.Now())
+	require.NoError(t, err)
+	err = reg.FinishSessionCall(expired, "Message sent.", "")
+	require.ErrorIs(t, err, ErrBadTransition)
+	assert.Contains(t, err.Error(), "Message sent.")
 
 	failed := proposeConnectorCall(t, reg, 7)
 	approveRow(t, database, failed)

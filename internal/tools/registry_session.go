@@ -14,6 +14,10 @@ import (
 // approved input and records the call's outcome. Every transition is the same
 // conditional update Apply uses, so a row runs at most once (AGENT-05).
 
+// agentActionTimeLayout is agent_actions.created_at's own layout
+// (strftime('%Y-%m-%dT%H:%M:%SZ')), so a cutoff compares as a string.
+const agentActionTimeLayout = "2006-01-02T15:04:05Z"
+
 // Error texts of rows a dead session left behind (ExpireSessionCalls).
 const (
 	sessionEndedBeforeApproval = "session ended before approval"
@@ -38,16 +42,23 @@ func (r *Registry) sessionRow(id int64) (*db.AgentAction, error) {
 
 // ClaimSessionCall takes an approved session call for running:
 // `approved → executing` in one conditional update, so of two claims only one
-// wins. False (no error) means the row was not approved — still pending,
-// rejected, expired or already claimed. The returned row carries the
-// approved args (the owner's edits included).
+// wins. On success the returned row carries the approved args (the owner's
+// edits included). False (no error) means the row was not approved; the row
+// returned then is the one read just before the claim, so the caller can
+// tell "still pending, keep waiting" from a row that will never run here
+// (rejected, expired, claimed by another) — and re-reads when it read
+// "approved" (another claim won in between).
 func (r *Registry) ClaimSessionCall(id int64) (*db.AgentAction, bool, error) {
-	if _, err := r.sessionRow(id); err != nil {
+	before, err := r.sessionRow(id)
+	if err != nil {
 		return nil, false, err
 	}
 	ok, err := r.db.TransitionAgentAction(id, []string{"approved"}, "executing", "", "")
-	if err != nil || !ok {
+	if err != nil {
 		return nil, false, err
+	}
+	if !ok {
+		return before, false, nil
 	}
 	row, err := r.db.GetAgentAction(id)
 	if err != nil {
@@ -60,27 +71,28 @@ func (r *Registry) ClaimSessionCall(id int64) (*db.AgentAction, bool, error) {
 }
 
 // FinishSessionCall records a claimed call's outcome: `executing → applied`
-// when callErr is empty, else `failed` with callErr. A result that is not
-// JSON (a tool result's text) is stored as a JSON string, so result_json
-// always decodes. A row no longer executing (expired meanwhile) is
-// ErrBadTransition.
+// when callErr is empty, else `failed` with callErr — so the caller passes a
+// non-empty callErr for every error result, a fixed text when the connector
+// gave none. A result that is not JSON (a tool result's text) is stored as a
+// JSON string, so result_json always decodes. A row no longer executing
+// (expired meanwhile) is ErrBadTransition, and the error carries the outcome
+// the row could not record, for the caller to log.
 func (r *Registry) FinishSessionCall(id int64, resultJSON string, callErr string) error {
 	if _, err := r.sessionRow(id); err != nil {
 		return err
 	}
 	if resultJSON != "" && !json.Valid([]byte(resultJSON)) {
-		quoted, err := json.Marshal(resultJSON)
-		if err != nil {
-			return fmt.Errorf("encoding the result of #%d: %w", id, err)
-		}
+		quoted, _ := json.Marshal(resultJSON) // a Go string always marshals
 		resultJSON = string(quoted)
 	}
 	to := "applied"
 	if callErr != "" {
 		to = "failed"
 	}
-	_, err := r.finishTransition(id, []string{"executing"}, to, resultJSON, callErr)
-	return err
+	if _, err := r.finishTransition(id, []string{"executing"}, to, resultJSON, callErr); err != nil {
+		return fmt.Errorf("recording the %s outcome (result %s, call error %q): %w", to, resultJSON, callErr, err)
+	}
+	return nil
 }
 
 // CancelSessionCall withdraws a call that has not run — `pending|approved →
@@ -104,7 +116,7 @@ func (r *Registry) CancelSessionCall(id int64, reason string) (bool, error) {
 // row moves by its own conditional update, so a row a live session claims
 // meanwhile is left alone. Returns how many rows it failed.
 func (r *Registry) ExpireSessionCalls(conversationID int64, staleBefore time.Time) (int, error) {
-	cutoff := staleBefore.UTC().Format("2006-01-02T15:04:05Z") // created_at's own layout
+	cutoff := staleBefore.UTC().Format(agentActionTimeLayout)
 	n := 0
 	for _, status := range []string{"pending", "approved", "executing"} {
 		rows, err := r.db.ListAgentActions(db.AgentActionFilter{Status: status})

@@ -284,9 +284,11 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	}
 	defer database.Close()
 	if execute {
-		if execute, err = mayApplyHere(reg, database, id, to); err != nil {
+		applyHere, err := mayApplyHere(reg, database, id, to)
+		if err != nil {
 			return err
 		}
+		execute = applyHere
 	}
 	env := actionEnvelope{OK: true}
 	switch {
@@ -358,14 +360,17 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 // written, so not even an `executing` row is reclaimed here.
 func mayApplyHere(reg *tools.Registry, database *db.DB, id int64, to string) (bool, error) {
 	row, err := database.GetAgentAction(id)
-	if err != nil || row == nil {
-		return true, err // a missing row is reported by the usual path
+	if err != nil {
+		return false, fmt.Errorf("reading action #%d: %w", id, err)
+	}
+	if row == nil {
+		return true, nil // reported as "no action #N" by the usual path
 	}
 	t, ok := reg.Get(row.Tool)
-	switch {
-	case !ok || !t.AppliedBySession:
+	if !ok || !t.AppliedBySession {
 		return true, nil
-	case to == "":
+	}
+	if to == "" {
 		return false, fmt.Errorf("action #%d: %s %w", id, t.Name, tools.ErrSessionApplied)
 	}
 	return false, nil

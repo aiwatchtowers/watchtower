@@ -469,10 +469,12 @@ func (r *Registry) propose(ctx context.Context, name string, args json.RawMessag
 	if t.Access != AccessWrite {
 		return Receipt{}, ErrNotWritable
 	}
-	if t.AppliedBySession != session {
-		if session {
-			return Receipt{}, fmt.Errorf("%s is not a session-applied tool", t.Name)
-		}
+	if session && !t.AppliedBySession {
+		return Receipt{}, fmt.Errorf("%s is not a session-applied tool", t.Name)
+	}
+	if !session && t.AppliedBySession {
+		// Worded like any tool the surface does not offer: the model was
+		// never shown this one.
 		return Receipt{}, &ValidationError{Msg: fmt.Sprintf("%s is not available on the %s surface", t.Name, b.Surface)}
 	}
 	args, b, err := r.admitProposal(ctx, t, args, b)

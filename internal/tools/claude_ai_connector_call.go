@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/jsonschema-go/jsonschema"
-
 	"watchtower/internal/db"
 )
 
@@ -17,6 +15,8 @@ import (
 // Approve (spec 2026-10-16-chat-claude-ai-tools-design D5).
 const ClaudeAIConnectorCallTool = "claude_ai_connector_call"
 
+// connectorCallArgs is the schema shape only (jsonschema.For makes input an
+// object); Validate and Revise decode into storedConnectorCall.
 type connectorCallArgs struct {
 	// Server is the connector's display name (e.g. "claude.ai Gmail"), Tool
 	// the connector tool the model called, Input the exact arguments the
@@ -46,15 +46,11 @@ type connectorCallPatch struct {
 // surface lists it and Apply refuses it — only the chat session whose CLI
 // request is waiting claims the approved row and runs the call itself.
 func NewClaudeAIConnectorCall() *Tool {
-	schema, err := jsonschema.For[connectorCallArgs](nil)
-	if err != nil {
-		panic(ClaudeAIConnectorCallTool + " schema: " + err.Error())
-	}
 	return &Tool{
 		Name: ClaudeAIConnectorCallTool,
 		Description: "A write through one of the owner's claude.ai connectors, held by the chat session until the " +
 			"owner approves it. Recorded by the session's permission gate; never offered to a model.",
-		InputSchema:      schema,
+		InputSchema:      mustWriteSchema[connectorCallArgs](ClaudeAIConnectorCallTool),
 		Access:           AccessWrite,
 		External:         true,
 		AlwaysAsk:        true,
