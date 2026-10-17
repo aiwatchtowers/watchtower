@@ -1,4 +1,5 @@
 import AppKit
+import WatchtowerCore
 import WebKit
 
 extension AppState {
@@ -9,7 +10,11 @@ extension AppState {
         }
         ensureChatViewModels()
         resumeLastChatIfUnopened()
-        isHelpChatShown = chatViewModel != nil
+        guard chatViewModel != nil else { return }
+        // From the Settings window or tray-only mode the popup's window
+        // comes forward first.
+        bringMainWindowForward()
+        isHelpChatShown = true
     }
 
     /// After a relaunch the AI Chat tab has not made its resume decision yet:
@@ -54,6 +59,26 @@ extension AppState {
         case .togglePopup:
             toggleHelpChat()
         }
+    }
+
+    /// The sidebar destinations shown right now (feature and source rules):
+    /// the only screens a `watchtower-nav://` link in a chat answer may open.
+    var visibleHelpScreenIDs: Set<String> {
+        let disabled = featureVisibility.disabledFeatureIDs
+        let connected = featureVisibility.connectedSources
+        return Set(SidebarDestination.allCases
+            .filter { $0.isVisible(disabledFeatures: disabled, connected: connected) }
+            .map(\.rawValue))
+    }
+
+    /// A `watchtower-nav://<screen>` link from AI Chat or the popup: opens a
+    /// visible screen and closes the popup. An unknown or hidden screen is
+    /// ignored (the link does nothing).
+    func openNavLink(_ url: URL) {
+        guard let raw = NavLink.destination(from: url, allowed: visibleHelpScreenIDs),
+              let destination = SidebarDestination(rawValue: raw) else { return }
+        selectedDestination = destination
+        isHelpChatShown = false
     }
 
     /// The web view that is, or contains, the key window's first responder.

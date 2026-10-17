@@ -320,10 +320,6 @@ final class AppState {
     private(set) var automationSessionCenter: AutomationSessionCenter?
     /// The "Run Automation…" palette (⌃⌘R) is up.
     var isRunAutomationPaletteShown = false
-    /// The ⌘/ "Ask Watchtower" panel is up.
-    var isAskPanelShown = false
-    /// The panel's guide index and help conversation; the CLI is resolved on the first ⌘/.
-    @ObservationIgnored private(set) lazy var askCenter = makeAskCenter()
     /// The main window's link gate (`AllowedURLSchemes` + screen links); one instance across re-renders.
     @ObservationIgnored private(set) lazy var mainWindowOpenURL = AllowedURLSchemes.openURLAction { [weak self] url in
         self?.openNavLink(url)
