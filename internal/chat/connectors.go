@@ -511,7 +511,8 @@ func (b *claudeBackend) routeStatusAnswer(line []byte) bool {
 // watchConnectors builds the connector catalog of a freshly spawned child:
 // mcp_status until the account's connectors arrived and none is pending,
 // for at most connSettle; then the chat goes on with whatever it has. An
-// answer listing no account connector is kept only as the last one. With
+// answer listing no account connector is kept only as the last one, and
+// only when nothing better was stored. With
 // no answer at all the sidecar says the list could not be read. With the
 // connectors switched off the CLI lists none, and the sidecar keeps the
 // last known list as disabled instead.
@@ -534,12 +535,13 @@ func (b *claudeBackend) watchConnectors(p *claudeProc) {
 			fmt.Fprintf(b.warn(), "chat: reading the claude.ai connectors: %v\n", err)
 		}
 		final := (err == nil && connectorsSettled(servers)) || !time.Now().Before(deadline)
-		if err == nil && (hasAccountConnector(servers) || final) {
+		if err == nil && (hasAccountConnector(servers) || (final && !stored)) {
 			b.storeConnectors(servers)
 			stored = true
 		}
 		if final {
-			if !stored {
+			// A gate refresh may have filled the catalog meanwhile.
+			if !stored && !hasAccountConnector(b.catalog.get().Servers) {
 				b.publishConnectors(UnavailableConnectors(time.Now(),
 					"The claude.ai connector list could not be read ("+lastErr.Error()+")."))
 			}

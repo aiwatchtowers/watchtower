@@ -366,6 +366,22 @@ func TestConnectors_UnknownToolRefreshesOnceThenAsks(t *testing.T) {
 	require.NoError(t, h.finish())
 }
 
+// A refresh answer listing only local servers (transient) keeps the
+// catalog: Gmail stays a connector, its unknown tool asks.
+func TestConnectors_RefreshWithoutAccountConnectorsKeepsTheCatalog(t *testing.T) {
+	fx := gateFake(t, canUseTool("r1", "tu1", "mcp__claude_ai_Gmail__label", "claude.ai Gmail", `{}`))
+	fx.setStatus(t, testConnectors, `[`+localServerJSON("connected")+`]`)
+	h := startSession(t, NewClaudeBackend(fx.opts), nil)
+	h.next(EventSessionReady)
+	waitUntil(t, "the first mcp_status", func() bool { return mcpStatusRequests(t, fx) >= 1 })
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "label"})
+	wait := h.next(EventToolWait)
+	assert.Equal(t, 2, mcpStatusRequests(t, fx))
+	require.True(t, fx.sink.reject(wait.ActionID))
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+}
+
 // The owner connects a connector on claude.ai while the session is warm: the
 // refresh finds it and its read-only tool runs without a card.
 func TestConnectors_ServerConnectedMidSessionIsFoundByTheRefresh(t *testing.T) {
