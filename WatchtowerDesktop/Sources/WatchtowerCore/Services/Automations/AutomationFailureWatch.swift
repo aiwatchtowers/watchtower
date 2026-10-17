@@ -84,7 +84,7 @@ package final class AutomationFailureWatch {
         existing: Set<Int64>,
         now: Date
     ) {
-        var state = State(
+        var state = Ledger(
             handled: numbers(Self.handledKey, \.int64Value),
             notices: numbers(Self.noticeKey, \.doubleValue),
             disabled: numbers(Self.disabledKey, \.doubleValue)
@@ -100,7 +100,7 @@ package final class AutomationFailureWatch {
             notifier.automationsDisabled(count: disabled.count)
         } else {
             for item in disabled {
-                notifier.automationDisabled(name: Self.name(item.automation), reason: item.automation.disabledReason,
+                notifier.automationDisabled(name: Self.displayName(item.automation), reason: item.automation.disabledReason,
                                             automationID: item.id, runID: runs[item.id]?.id)
             }
         }
@@ -108,7 +108,7 @@ package final class AutomationFailureWatch {
             notifier.automationsFailed(count: due.count)
         } else {
             for (item, run) in due {
-                notifier.runFinished(name: Self.name(item.automation), status: run.status, summary: run.summary,
+                notifier.runFinished(name: Self.displayName(item.automation), status: run.status, summary: run.summary,
                                      error: run.error, automationID: item.id, runID: run.id)
             }
         }
@@ -119,14 +119,14 @@ package final class AutomationFailureWatch {
 
     // MARK: - Private
 
-    private struct State: Equatable {
+    private struct Ledger: Equatable {
         var handled: [String: Int64]
         var notices: [String: Double]
         var disabled: [String: Double]
     }
 
     /// The automation's `disabled_at` was not notified yet.
-    private func dueDisabled(_ item: AutomationListItem, state: inout State) -> Bool {
+    private func dueDisabled(_ item: AutomationListItem, state: inout Ledger) -> Bool {
         guard let at = item.automation.disabledAt?.timeIntervalSince1970,
               at > (state.disabled[key(item.id)] ?? 0) else { return false }
         state.disabled[key(item.id)] = at
@@ -136,7 +136,7 @@ package final class AutomationFailureWatch {
     /// The run's failure notice is due: a background failure not handled
     /// yet, recent, not a restart, that did not disable its automation,
     /// outside the automation's daily window.
-    private func dueFailure(_ item: AutomationListItem, run: AutomationRun?, now: Date, state: inout State)
+    private func dueFailure(_ item: AutomationListItem, run: AutomationRun?, now: Date, state: inout Ledger)
         -> AutomationRun? {
         guard let run = Self.failure(run), Self.backgroundTriggers.contains(run.trigger),
               run.id > (state.handled[key(item.id)] ?? 0) else { return nil }
@@ -148,7 +148,7 @@ package final class AutomationFailureWatch {
         return run
     }
 
-    private func prune(_ state: inout State, keeping ids: Set<Int64>) {
+    private func prune(_ state: inout Ledger, keeping ids: Set<Int64>) {
         let kept = Set(ids.map(key))
         let prefix = workspace + "|"
         func gone(_ name: String) -> Bool { name.hasPrefix(prefix) && !kept.contains(name) }
@@ -161,7 +161,7 @@ package final class AutomationFailureWatch {
         if seen.count != count { defaults.set(seen, forKey: Self.seenKey) }
     }
 
-    private func save(_ state: State, before: State) {
+    private func save(_ state: Ledger, before: Ledger) {
         if state.handled != before.handled { defaults.set(state.handled, forKey: Self.handledKey) }
         if state.notices != before.notices { defaults.set(state.notices, forKey: Self.noticeKey) }
         if state.disabled != before.disabled { defaults.set(state.disabled, forKey: Self.disabledKey) }
@@ -173,7 +173,7 @@ package final class AutomationFailureWatch {
         return at >= (run.startedAt ?? run.queuedAt ?? .distantPast)
     }
 
-    nonisolated private static func name(_ a: Automation) -> String {
+    nonisolated private static func displayName(_ a: Automation) -> String {
         a.name.isEmpty ? a.slug : a.name
     }
 
