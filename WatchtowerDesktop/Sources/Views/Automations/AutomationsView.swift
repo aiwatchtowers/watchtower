@@ -157,6 +157,7 @@ struct AutomationsView: View {
             case .reactions:
                 ReactionsSectionView(items: vm.items, onOpenAutomation: { id in
                     storedSection = AutomationsSection.automations.rawValue
+                    searchText = ""
                     vm.select(id)
                 }, onNew: cardActions.onNew)
             case .tracks:

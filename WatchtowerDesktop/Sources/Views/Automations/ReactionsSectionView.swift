@@ -14,14 +14,19 @@ struct ReactionCommandsOffNote: View {
 
     var body: some View {
         if isOff {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text(text)
-                    .font(.callout)
-                Spacer()
-                Button("Turn on") { turnOn() }
-                    .disabled(appState.featureManager.isApplying)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(text)
+                        .font(.callout)
+                    Spacer()
+                    Button("Turn on") { turnOn() }
+                        .disabled(appState.featureManager.isApplying)
+                }
+                if let error = appState.featureManager.loadError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
             }
             .padding(10)
             .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))

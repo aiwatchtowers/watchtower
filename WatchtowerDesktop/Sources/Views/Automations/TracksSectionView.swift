@@ -1,4 +1,5 @@
 import GRDB
+import os
 import SwiftUI
 import WatchtowerCore
 
@@ -7,9 +8,12 @@ import WatchtowerCore
 /// Tracks tab; **New track** opens the same sheet that tab uses.
 struct TracksSectionView: View {
     @Environment(AppState.self) private var appState
+    private static let log = Logger(subsystem: Constants.bundleID, category: "automations-tracks")
+
     @State private var tracks: [Track] = []
     @State private var eventCounts: [Int: Int] = [:]
     @State private var creating = false
+    @State private var loadError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -18,7 +22,11 @@ struct TracksSectionView: View {
                 Spacer()
                 Button("New track") { creating = true }
             }
-            if tracks.isEmpty {
+            if let loadError {
+                Text("Couldn't load tracks: \(loadError)")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            } else if tracks.isEmpty {
                 Text("A track watches Slack, mail and Jira for one thing you describe, and "
                     + "reports what it finds. You have none yet.")
                     .font(.callout)
@@ -47,7 +55,7 @@ struct TracksSectionView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.text).lineLimit(1)
-                Text(track.lastRunAt.isEmpty ? "Not scanned yet" : "Last scan \(track.lastRunAt)")
+                Text(CustomTrackTimelineViewModel.lastScannedText(lastRunAt: track.lastRunAt))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -75,9 +83,11 @@ struct TracksSectionView: View {
             for try await (found, counts) in observation.values(in: pool) {
                 tracks = found
                 eventCounts = counts
+                loadError = nil
             }
         } catch {
-            tracks = []
+            Self.log.error("custom tracks observation failed: \(error.localizedDescription, privacy: .public)")
+            loadError = error.localizedDescription
         }
     }
 }

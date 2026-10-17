@@ -299,15 +299,25 @@ struct SlackConnectionDetail: View {
         }
     }
 
-    /// The dictionary editor lives in Automations → Reactions now.
+    /// The dictionary editor lives in Automations → Reactions; while that tab
+    /// is hidden (the `automations` feature is off) it is edited here instead.
     private var reactionDictionarySection: some View {
         Section("Reaction commands") {
-            HStack {
-                Text("Reaction commands moved to Automations → Reactions")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Open") { appState.navigateToAutomations(section: .reactions) }
+            if SidebarDestination.automations.isVisible(
+                disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
+                connected: appState.featureVisibility.connectedSources
+            ) {
+                HStack {
+                    Text("Reaction commands moved to Automations → Reactions")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Open") { appState.navigateToAutomations(section: .reactions) }
+                }
+            } else if let vm = appState.reactionDictionaryViewModel {
+                ReactionDictionaryEditor(vm: vm)
+            } else {
+                Text("Loading...").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
