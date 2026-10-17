@@ -119,7 +119,14 @@ func (cl *Client) SearchNewSince(lastUID uint32) ([]uint32, error) {
 // everything — when lastUID is still 0). Mirrors Gmail's newer_than:Nd
 // initial backfill. Like SearchNewSince, this is the cheap phase — no
 // envelope/flags/body is fetched; see FetchUIDs for the expensive phase.
+//
+// IMAP dates carry no zone and go-imap formats a time in its own location,
+// so both searches send the UTC date: the first sync's SINCE (taken from the
+// local clock) and the history backfill's BEFORE (UTC) then meet on the same
+// day — east of UTC a local SINCE would be a day later and leave one day of
+// mail to neither side.
 func (cl *Client) SearchSince(since time.Time) ([]uint32, error) {
+	since = since.UTC()
 	data, err := cl.c.UIDSearch(&imap.SearchCriteria{Since: since}, nil).Wait()
 	if err != nil {
 		return nil, fmt.Errorf("imap: search since %s: %w", since.Format("2006-01-02"), err)
@@ -129,8 +136,10 @@ func (cl *Client) SearchSince(since time.Time) ([]uint32, error) {
 
 // SearchRange returns the UIDs of messages received in [since, before) —
 // IMAP SINCE/BEFORE are day-granular, SINCE inclusive and BEFORE exclusive.
-// It is the history backfill's cheap listing phase.
+// It is the history backfill's cheap listing phase. Both bounds are sent as
+// UTC dates (see SearchSince).
 func (cl *Client) SearchRange(since, before time.Time) ([]uint32, error) {
+	since, before = since.UTC(), before.UTC()
 	data, err := cl.c.UIDSearch(&imap.SearchCriteria{Since: since, Before: before}, nil).Wait()
 	if err != nil {
 		return nil, fmt.Errorf("imap: search %s..%s: %w", since.Format("2006-01-02"), before.Format("2006-01-02"), err)
