@@ -165,6 +165,30 @@ func TestGatherInbox_WithItems(t *testing.T) {
 	assert.Equal(t, "U1", resolved)
 }
 
+// A channel-level item that accumulated several messages (#586) lists each
+// one, not only the newest.
+func TestGatherInbox_AccumulatedChannelItemListsEveryMessage(t *testing.T) {
+	p := newTestPipeline(t)
+	mentions, earlier := db.PackInboxMentions([]db.InboxMention{
+		{TS: "1.000001", SenderID: "U1", Trigger: "mention", Text: "budget question"},
+		{TS: "2.000001", SenderID: "U2", Trigger: "mention", Text: "deck review"},
+	})
+	_, err := p.db.CreateInboxItem(db.InboxItem{
+		ChannelID: "C1", MessageTS: "2.000001", SenderUserID: "U2", TriggerType: "mention",
+		Snippet: "deck review", Mentions: mentions, MentionsEarlier: earlier,
+	})
+	require.NoError(t, err)
+
+	p.shown = newShownIDs()
+	got, hasItems := p.gatherInbox()
+	assert.True(t, hasItems)
+	assert.Contains(t, got, "2 mentions in this channel")
+	assert.Contains(t, got, "U1: budget question")
+	assert.Contains(t, got, "U2: deck review")
+	_, ok := p.shown.resolvePerson("U1")
+	assert.True(t, ok, "an earlier sender was shown too")
+}
+
 func TestGatherInbox_DMTriggerType(t *testing.T) {
 	p := newTestPipeline(t)
 	require.NoError(t, p.db.UpsertChannel(db.Channel{ID: "C2", Name: "alice", Type: "dm"}))

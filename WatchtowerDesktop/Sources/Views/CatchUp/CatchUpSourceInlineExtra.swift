@@ -131,25 +131,31 @@ struct DecisionInline: View {
 }
 
 /// An actionable inbox item: what was said, who said it and where, and a way out
-/// to Slack. `origin` is resolved by the ViewModel — the row itself carries only
-/// namespaced Slack ids.
+/// to Slack. `origin` and `senderNames` are resolved by the ViewModel — the row
+/// itself carries only namespaced Slack ids.
 struct InboxItemInline: View {
     let item: InboxItem
     let origin: String
     let url: URL?
+    /// Display names of an accumulated item's senders, keyed by namespaced id.
+    var senderNames: [String: String] = [:]
 
     var body: some View {
-        let mentions = item.decodedMentions
         VStack(alignment: .leading, spacing: 6) {
-            if mentions.count > 1 {
+            if item.isAccumulated {
                 // A channel-level item that accumulated several messages (#586):
-                // every one listed with its own link, oldest first.
-                Text(Self.countTitle(count: mentions.count, triggerType: item.triggerType))
+                // every listed one with its sender and own link, oldest first.
+                Text(item.mentionCountTitle)
                     .font(.caption)
                     .fontWeight(.medium)
-                ForEach(Array(mentions.enumerated()), id: \.offset) { _, mention in
+                if item.mentionsEarlier > 0 {
+                    Text("+\(item.mentionsEarlier) earlier")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(item.mentionList, id: \.ts) { mention in
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(mention.text)
+                        Text(Self.mentionLine(mention, senderNames: senderNames))
                             .font(.caption)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -168,7 +174,7 @@ struct InboxItemInline: View {
             Text(caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if mentions.count <= 1, let url {
+            if !item.isAccumulated, let url {
                 Link("Open in Slack", destination: url)
                     .font(.caption2)
             }
@@ -182,9 +188,11 @@ struct InboxItemInline: View {
         [item.triggerType, origin].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
-    /// "3 mentions" for a mention item, "3 messages" for a DM or reaction fold.
-    nonisolated static func countTitle(count: Int, triggerType: String) -> String {
-        "\(count) \(triggerType == "mention" ? "mentions" : "messages")"
+    /// "Ann: text" — the bare text when the sender does not resolve (a raw
+    /// namespaced id would read as noise).
+    nonisolated static func mentionLine(_ mention: InboxItem.Mention, senderNames: [String: String]) -> String {
+        guard let name = senderNames[mention.sender], !name.isEmpty else { return mention.text }
+        return "\(name): \(mention.text)"
     }
 }
 

@@ -133,3 +133,116 @@ func TestInbox09_PendingItemLookupErrorFreezesWatermark(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, frozen, ts, "a failed lookup must freeze the watermark")
 }
+
+// TestInbox09_ChannelMentionsOverlapRescanIsNotNews: a re-scan of a window
+// whose messages an item already lists — the pending item read by the owner,
+// or one already resolved or dismissed — neither mints a new item nor flags
+// the old one unread again.
+func TestInbox09_ChannelMentionsOverlapRescanIsNotNews(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	for _, status := range []string{"pending", "resolved", "dismissed"} {
+		t.Run(status, func(t *testing.T) {
+			d := newTestDB(t)
+			seedWorkspaceAndUser(t, d, "1:U_ME1")
+			insertChannel(t, d, "1:C1", "public")
+			insertMessage(t, d, "1:C1", recentTS(30), "1:U_BOB", "<@U_ME1> first question")
+			insertMessage(t, d, "1:C1", recentTS(20), "1:U_CAROL", "<@U_ME1> second question")
+
+			p := New(d, testConfig(), nil, log.Default())
+			_, _, err := p.Run(context.Background())
+			require.NoError(t, err)
+			_, err = d.Exec(`UPDATE inbox_items SET read_at = 'R', status = ?, updated_at = 'U'`, status)
+			require.NoError(t, err)
+
+			// The overlap: the next cycle scans the same window again.
+			require.NoError(t, d.SetInboxLastProcessedTS(0))
+			p = New(d, testConfig(), nil, log.Default())
+			created, _, err := p.Run(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, 0, created, "an already-listed message is not news")
+
+			var n int
+			var readAt, updatedAt, mentions string
+			require.NoError(t, d.QueryRow(`SELECT COUNT(*), MAX(read_at), MAX(updated_at), MAX(mentions) FROM inbox_items`).Scan(&n, &readAt, &updatedAt, &mentions))
+			assert.Equal(t, 1, n)
+			assert.Equal(t, "R", readAt, "the item is not flagged unread again")
+			assert.Equal(t, "U", updatedAt, "the item is not touched")
+			var list []db.InboxMention
+			require.NoError(t, json.Unmarshal([]byte(mentions), &list))
+			assert.Len(t, list, 2)
+		})
+	}
+}
+
+// TestInbox09_ChannelMentionsTwoDetectorsOneEntry: a DM that also @mentions
+// the owner comes from both the mention and the DM detector — it is one
+// entry, not two.
+func TestInbox09_ChannelMentionsTwoDetectorsOneEntry(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	insertChannel(t, d, "1:D1", "dm")
+	insertMessage(t, d, "1:D1", recentTS(30), "1:U_BOB", "<@U_ME1> got a sec?")
+
+	p := New(d, testConfig(), nil, log.Default())
+	created, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, created)
+	items, err := d.GetInboxItems(db.InboxFilter{Status: "pending"})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	var list []db.InboxMention
+	require.NoError(t, json.Unmarshal([]byte(items[0].Mentions), &list))
+	require.Len(t, list, 1, "one message, one entry")
+	assert.Equal(t, "mention", list[0].Trigger)
+}
+
+// TestInbox09_ChannelMentionsThanksAndReactionMix: in a channel group a
+// closing signal is skipped on its own — it never hides an earlier question —
+// and a reaction request joins the same item, which then counts "messages".
+func TestInbox09_ChannelMentionsThanksAndReactionMix(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	t.Run("thanks", func(t *testing.T) {
+		d := newTestDB(t)
+		seedWorkspaceAndUser(t, d, "1:U_ME1")
+		insertChannel(t, d, "1:D1", "dm")
+		insertMessage(t, d, "1:D1", recentTS(40), "1:U_ME1", "hi")
+		insertMessage(t, d, "1:D1", recentTS(30), "1:U_BOB", "can you check the budget?")
+		insertMessage(t, d, "1:D1", recentTS(20), "1:U_BOB", "thanks!")
+
+		p := New(d, testConfig(), nil, log.Default())
+		_, _, err := p.Run(context.Background())
+		require.NoError(t, err)
+		items, err := d.GetInboxItems(db.InboxFilter{Status: "pending"})
+		require.NoError(t, err)
+		require.Len(t, items, 1, "the question survives the later thanks")
+		var list []db.InboxMention
+		require.NoError(t, json.Unmarshal([]byte(items[0].Mentions), &list))
+		require.Len(t, list, 1)
+		assert.Contains(t, list[0].Text, "budget")
+	})
+	t.Run("reaction", func(t *testing.T) {
+		d := newTestDB(t)
+		seedWorkspaceAndUser(t, d, "1:U_ME1")
+		insertChannel(t, d, "1:C1", "public")
+		own := recentTS(40)
+		insertMessage(t, d, "1:C1", own, "1:U_ME1", "shipping the release today")
+		_, err := d.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('1:C1', ?, '1:U_CAROL', 'eyes')`, own)
+		require.NoError(t, err)
+		insertMessage(t, d, "1:C1", recentTS(30), "1:U_BOB", "<@U_ME1> budget?")
+
+		p := New(d, testConfig(), nil, log.Default())
+		_, _, err = p.Run(context.Background())
+		require.NoError(t, err)
+		items, err := d.GetInboxItems(db.InboxFilter{Status: "pending"})
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		list, ok := db.ParseInboxMentions(items[0].Mentions)
+		require.True(t, ok)
+		require.Len(t, list, 2)
+		assert.Equal(t, "2 messages", db.InboxMentionCountLabel(list, items[0].MentionsEarlier))
+	})
+}

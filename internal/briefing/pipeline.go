@@ -420,6 +420,17 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 		if item.AIReason != "" {
 			sb.WriteString(fmt.Sprintf("  Reason: %s\n", item.AIReason))
 		}
+		// A channel-level item that accumulated several messages (#586).
+		if lines := p.db.InboxMentionLines(item.Mentions, item.MentionsEarlier); lines != nil {
+			list, _ := db.ParseInboxMentions(item.Mentions)
+			for _, m := range list {
+				p.shown.addPerson(m.SenderID)
+			}
+			sb.WriteString(fmt.Sprintf("  %s in this channel:\n", db.InboxMentionCountLabel(list, item.MentionsEarlier)))
+			for _, line := range lines {
+				sb.WriteString("  - " + line + "\n")
+			}
+		}
 	}
 	return sb.String(), true
 }

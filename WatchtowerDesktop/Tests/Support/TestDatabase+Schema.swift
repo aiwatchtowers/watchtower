@@ -626,7 +626,7 @@ CREATE TABLE IF NOT EXISTS "inbox_items" (
     draft_reply     TEXT NOT NULL DEFAULT '',
     card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
     card_generated_at TEXT,
-    composed_at     TEXT, mentions TEXT NOT NULL DEFAULT '[]',
+    composed_at     TEXT, mentions TEXT NOT NULL DEFAULT '[]', mentions_earlier INTEGER NOT NULL DEFAULT 0, mentioned_at TEXT NOT NULL DEFAULT '',
     UNIQUE(channel_id, message_ts)
 );
 CREATE TABLE IF NOT EXISTS memory_aliases (

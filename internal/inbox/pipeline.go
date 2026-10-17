@@ -547,7 +547,16 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 		senders map[string]bool
 	}
 	threadGroups := make(map[threadKey]*threadGroup)
+	// One message can come from two detectors (a DM that also @mentions
+	// the owner); the first one — the mention, in detectSlackTriggers'
+	// order — wins.
+	type msgKey struct{ channelID, ts string }
+	seenMsg := make(map[msgKey]bool, len(candidates))
 	for _, c := range candidates {
+		if seenMsg[msgKey{c.ChannelID, c.MessageTS}] {
+			continue
+		}
+		seenMsg[msgKey{c.ChannelID, c.MessageTS}] = true
 		key := threadKey{c.ChannelID, c.ThreadTS}
 		grp, ok := threadGroups[key]
 		if !ok {
@@ -593,7 +602,7 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 			}
 			c, snippet = k, truncateRunes(s, 500)
 			mentions = append(mentions, db.InboxMention{
-				TS: k.MessageTS, SenderID: k.SenderUserID, Text: truncateRunes(s, 300), Permalink: k.Permalink,
+				TS: k.MessageTS, SenderID: k.SenderUserID, Trigger: k.TriggerType, Text: s, Permalink: k.Permalink,
 			})
 		}
 		if len(mentions) == 0 {
@@ -620,7 +629,7 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 			WaitingUserIDs: waitingJSON,
 		}
 		if key.threadTS == "" {
-			latest.Mentions = db.MarshalInboxMentions(mentions)
+			latest.Mentions, latest.MentionsEarlier = db.PackInboxMentions(mentions)
 		}
 
 		existingID, err := p.db.FindPendingInboxByThread(c.ChannelID, c.ThreadTS)
@@ -632,13 +641,17 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 			if dryRun {
 				continue
 			}
+			grew := true
 			if key.threadTS == "" {
-				err = p.db.AppendInboxMentions(existingID, latest, mentions)
+				grew, err = p.db.AppendInboxMentions(existingID, latest, mentions)
 			} else {
 				err = p.db.UpdateInboxItemSnippet(existingID, c.MessageTS, c.SenderUserID, snippet, itemCtx, c.Text, c.Permalink)
 			}
 			if err != nil {
 				errs = append(errs, fmt.Errorf("folding into item %d: %w", existingID, err))
+			}
+			if !grew {
+				continue // nothing new: the item is left exactly as it was
 			}
 			if err := p.db.MergeWaitingUserIDs(existingID, senderList); err != nil {
 				errs = append(errs, fmt.Errorf("merging waiting users for item %d: %w", existingID, err))

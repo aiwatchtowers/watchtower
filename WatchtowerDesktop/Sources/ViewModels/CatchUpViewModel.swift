@@ -462,6 +462,22 @@ final class CatchUpViewModel {
         return parts.joined(separator: " ")
     }
 
+    /// Display names of the senders an accumulated channel item lists (#586),
+    /// keyed by namespaced user id; an unresolved sender is simply absent.
+    func inboxMentionSenders(_ item: InboxItem) -> [String: String] {
+        guard item.isAccumulated else { return [:] }
+        let names = resolve("inbox mention senders for item \(item.id)") { db -> [String: String]? in
+            var names: [String: String] = [:]
+            for id in Set(item.mentionList.map(\.sender)) {
+                if let name = try UserQueries.fetchByID(db, id: id)?.bestName, !name.isEmpty {
+                    names[id] = name
+                }
+            }
+            return names
+        }
+        return names ?? [:]
+    }
+
     /// Message deep link for an inbox source: the item's stored permalink when
     /// present, else an archives link built from channel + message ts. Channel
     /// ids are namespaced "<accountID>:C…" since migration 00048; Slack wants the
