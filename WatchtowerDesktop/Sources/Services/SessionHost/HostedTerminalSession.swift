@@ -18,6 +18,9 @@ final class HostedTerminalSession: TerminalSessionProcess {
     private static let logger = Logger(subsystem: Constants.bundleID, category: "SessionHost")
 
     private let client: SessionHostClient
+    /// The workspace scope a launch carries (`SessionHostPaths.scope`), read
+    /// at each launch.
+    private let scope: () -> String
     private let terminal: PalettedTerminalView
     private var transport: (any SessionHostTransport)?
     /// The host's key of the current run.
@@ -61,8 +64,9 @@ final class HostedTerminalSession: TerminalSessionProcess {
     }
     var isHosted: Bool { true }
 
-    init(client: SessionHostClient) {
+    init(client: SessionHostClient, scope: @escaping () -> String = { "" }) {
         self.client = client
+        self.scope = scope
         terminal = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         terminal.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         terminal.hostInput = { [weak self] bytes in self?.sendToHost(bytes) }
@@ -85,11 +89,12 @@ final class HostedTerminalSession: TerminalSessionProcess {
         let key = SessionHostAttachRequest(row: row, run: UUID().uuidString.lowercased())
         pid = 0
         terminal.dropsTerminalReplies = false
+        let scope = scope()
         connect(key) { [terminal] in
             .json(.launch, SessionHostLaunchRequest(
                 row: key.row, run: key.run, executable: launch.executable, args: launch.args,
                 env: launch.processEnvironment, cwd: launch.currentDirectory,
-                cols: terminal.getTerminal().cols, rows: terminal.getTerminal().rows
+                cols: terminal.getTerminal().cols, rows: terminal.getTerminal().rows, scope: scope
             ))
         }
     }

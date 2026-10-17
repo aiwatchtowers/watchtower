@@ -631,10 +631,13 @@ extension WorkbenchesViewModel {
         }
     }
 
-    /// Reattaches once the terminal center's session host connection
-    /// (`TerminalCenter.startSessionHost`) is done; with none begun it ends
-    /// at once. `activate` waits for it (`hostReattach`).
+    /// Scopes the terminal center's hosted runs to this workspace (its
+    /// database path, `SessionHostPaths.scope`), then reattaches once the
+    /// session host connection (`TerminalCenter.startSessionHost`) is done;
+    /// with none begun it ends at once. `activate` waits for it
+    /// (`hostReattach`), not for the stops of stray runs.
     func startHostReattach() {
+        terminalCenter?.sessionHostScope = SessionHostPaths.scope(databasePath: dbPool.path)
         let connection = terminalCenter?.sessionHostConnection
         hostReattach = Task { [weak self] in
             await connection?.value

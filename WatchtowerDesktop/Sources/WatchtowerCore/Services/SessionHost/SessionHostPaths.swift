@@ -11,4 +11,13 @@ package enum SessionHostPaths {
         let dir = tempDir.hasSuffix("/") ? tempDir : tempDir + "/"
         return dir + "watchtower-sh-" + hex + ".sock"
     }
+
+    /// The session host scope of a workspace: the first 16 hex of
+    /// SHA-256 of its database path (standardized). Row ids are per
+    /// workspace database, the host is one per user: a run is this
+    /// workspace's only when its scope matches.
+    package static func scope(databasePath: String) -> String {
+        let path = URL(fileURLWithPath: databasePath).standardizedFileURL.path
+        return SHA256.hash(data: Data(path.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
 }

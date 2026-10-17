@@ -28,6 +28,7 @@ type sessionKey struct {
 // session is one hosted PTY and its child.
 type session struct {
 	key       sessionKey
+	scope     string
 	pid       int
 	startedAt time.Time
 	ptmx      *os.File
@@ -58,6 +59,7 @@ func startSession(req LaunchReq, ringSize int, now time.Time) (*session, error) 
 	}
 	return &session{
 		key:       sessionKey{row: req.Row, run: req.Run},
+		scope:     req.Scope,
 		pid:       cmd.Process.Pid,
 		startedAt: now,
 		ptmx:      ptmx,
@@ -126,6 +128,7 @@ func (s *session) infoLocked() SessionInfo {
 		StartedAtMs: s.startedAt.UnixMilli(),
 		Exited:      s.exited,
 		Code:        s.code,
+		Scope:       s.scope,
 	}
 }
 

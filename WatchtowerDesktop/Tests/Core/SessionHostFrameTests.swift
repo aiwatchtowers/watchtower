@@ -59,6 +59,21 @@ final class SessionHostFrameTests: XCTestCase {
     func testLaunchRequestJSONKeys() throws {
         let req = SessionHostLaunchRequest(row: 1, run: "r", executable: "/bin/sh", args: ["-l"], env: ["A=b"], cwd: "/", cols: 80, rows: 24)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any])
-        XCTAssertEqual(Set(object.keys), ["row", "run", "executable", "args", "env", "cwd", "cols", "rows"])
+        XCTAssertEqual(Set(object.keys), ["row", "run", "executable", "args", "env", "cwd", "cols", "rows", "scope"])
+        XCTAssertEqual(object["scope"] as? String, "")
+    }
+
+    func testSessionInfoScopeDecodesAndDefaultsToEmpty() throws {
+        let scoped = #"{"row":5,"run":"r","pid":42,"started_at_ms":1,"exited":false,"code":null,"scope":"ws-a"}"#
+        XCTAssertEqual(try JSONDecoder().decode(SessionHostSessionInfo.self, from: Data(scoped.utf8)).scope, "ws-a")
+        let older = #"{"row":5,"run":"r","pid":42,"started_at_ms":1,"exited":false}"#
+        XCTAssertEqual(try JSONDecoder().decode(SessionHostSessionInfo.self, from: Data(older.utf8)).scope, "")
+    }
+
+    func testWorkspaceScopeIsStableAndPerPath() {
+        let a = SessionHostPaths.scope(databasePath: "/tmp/acme/watchtower.db")
+        XCTAssertEqual(a.count, 16)
+        XCTAssertEqual(a, SessionHostPaths.scope(databasePath: "/tmp/acme/./watchtower.db"))
+        XCTAssertNotEqual(a, SessionHostPaths.scope(databasePath: "/tmp/other/watchtower.db"))
     }
 }

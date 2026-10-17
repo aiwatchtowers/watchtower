@@ -65,6 +65,9 @@ type LaunchReq struct {
 	Cwd        string   `json:"cwd"`
 	Cols       uint16   `json:"cols"`
 	Rows       uint16   `json:"rows"`
+	// Scope names the app-side namespace of Row (the workspace whose
+	// database the row lives in); stored and listed back unchanged.
+	Scope string `json:"scope"`
 }
 
 // AttachReq attaches a client to a running session.
@@ -81,6 +84,8 @@ type SessionInfo struct {
 	StartedAtMs int64  `json:"started_at_ms"`
 	Exited      bool   `json:"exited"`
 	Code        *int   `json:"code"`
+	// Scope is the launch's LaunchReq.Scope.
+	Scope string `json:"scope"`
 }
 
 // ListResp is the payload of a Listed frame.

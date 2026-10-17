@@ -12,6 +12,9 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
     package let cwd: String
     package let cols: Int
     package let rows: Int
+    /// The workspace the row id belongs to (`SessionHostPaths.scope`); the
+    /// host stores it and lists it back.
+    package let scope: String
 
     package init(
         row: Int64,
@@ -21,7 +24,8 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
         env: [String],
         cwd: String,
         cols: Int,
-        rows: Int
+        rows: Int,
+        scope: String = ""
     ) {
         self.row = row
         self.run = run
@@ -31,6 +35,20 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
         self.cwd = cwd
         self.cols = cols
         self.rows = rows
+        self.scope = scope
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        row = try container.decode(Int64.self, forKey: .row)
+        run = try container.decode(String.self, forKey: .run)
+        executable = try container.decode(String.self, forKey: .executable)
+        args = try container.decode([String].self, forKey: .args)
+        env = try container.decode([String].self, forKey: .env)
+        cwd = try container.decode(String.self, forKey: .cwd)
+        cols = try container.decode(Int.self, forKey: .cols)
+        rows = try container.decode(Int.self, forKey: .rows)
+        scope = try container.decodeIfPresent(String.self, forKey: .scope) ?? ""
     }
 }
 
@@ -52,18 +70,32 @@ package struct SessionHostSessionInfo: Codable, Equatable, Sendable {
     package let exited: Bool
     /// Nil while running, or when the process died by a signal.
     package let code: Int?
+    /// The launch's scope; "" from a host older than the field.
+    package let scope: String
 
-    package init(row: Int64, run: String, pid: Int, startedAtMs: Int64, exited: Bool, code: Int?) {
+    package init(row: Int64, run: String, pid: Int, startedAtMs: Int64, exited: Bool, code: Int?, scope: String = "") {
         self.row = row
         self.run = run
         self.pid = pid
         self.startedAtMs = startedAtMs
         self.exited = exited
         self.code = code
+        self.scope = scope
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        row = try container.decode(Int64.self, forKey: .row)
+        run = try container.decode(String.self, forKey: .run)
+        pid = try container.decode(Int.self, forKey: .pid)
+        startedAtMs = try container.decode(Int64.self, forKey: .startedAtMs)
+        exited = try container.decode(Bool.self, forKey: .exited)
+        code = try container.decodeIfPresent(Int.self, forKey: .code)
+        scope = try container.decodeIfPresent(String.self, forKey: .scope) ?? ""
     }
 
     enum CodingKeys: String, CodingKey {
-        case row, run, pid, exited, code
+        case row, run, pid, exited, code, scope
         case startedAtMs = "started_at_ms"
     }
 }

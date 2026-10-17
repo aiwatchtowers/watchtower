@@ -208,6 +208,39 @@ func TestSessionHost19_SessionSurvivesClientDisconnect(t *testing.T) {
 	c3.outputUntil(func(s string) bool { return strings.Contains(s, "tick") })
 }
 
+func TestServer_ScopeRoundTrips(t *testing.T) {
+	path := startServer(t, Options{})
+	c := dial(t, path)
+	c.send(Launch, LaunchReq{
+		Row: 1, Run: "r1", Executable: "/bin/sh", Args: []string{"-c", "sleep 30"},
+		Cwd: os.TempDir(), Cols: 80, Rows: 24, Scope: "ws-a",
+	})
+	var launched SessionInfo
+	if err := json.Unmarshal(c.expect(Launched), &launched); err != nil {
+		t.Fatal(err)
+	}
+	if launched.Pid <= 0 {
+		t.Fatalf("launched pid = %d", launched.Pid)
+	}
+	t.Cleanup(func() { reap(t, launched.Pid) })
+	if launched.Scope != "ws-a" {
+		t.Fatalf("launched scope = %q, want ws-a", launched.Scope)
+	}
+	got := dial(t, path).list()
+	if len(got) != 1 || got[0].Scope != "ws-a" {
+		t.Fatalf("list = %+v, want one session of scope ws-a", got)
+	}
+	a := dial(t, path)
+	a.send(Attach, AttachReq{Row: 1, Run: "r1"})
+	var attached SessionInfo
+	if err := json.Unmarshal(a.expect(Attached), &attached); err != nil {
+		t.Fatal(err)
+	}
+	if attached.Scope != "ws-a" {
+		t.Fatalf("attached scope = %q, want ws-a", attached.Scope)
+	}
+}
+
 func TestServer_LaunchUsesOnlyGivenEnv(t *testing.T) {
 	path := startServer(t, Options{})
 	c := dial(t, path)

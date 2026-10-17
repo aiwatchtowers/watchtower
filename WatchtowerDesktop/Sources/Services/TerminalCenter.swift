@@ -168,6 +168,10 @@ final class TerminalCenter {
     /// The session host new sessions launch in (board #496); nil while no
     /// host is available — they then run locally and stop with the app.
     @ObservationIgnored var sessionHost: SessionHostClient?
+    /// The current workspace's session host scope
+    /// (`SessionHostPaths.scope`): hosted launches carry it, and a reattach
+    /// touches only runs of it ("" from an older host counts as it).
+    @ObservationIgnored var sessionHostScope = ""
     /// The one client `connectSessionHost` made, answering or not.
     @ObservationIgnored private var sessionHostClient: SessionHostClient?
     /// Sessions whose current process runs locally, not in the session
@@ -230,7 +234,7 @@ final class TerminalCenter {
         self.signaller = signaller
         self.makeProcess = makeProcess ?? { [weak self] in
             guard let self else { return SwiftTermSession() }
-            return sessionHost.map { HostedTerminalSession(client: $0) } ?? self.makeLocalProcess()
+            return sessionHost.map { self.makeHosted($0) } ?? self.makeLocalProcess()
         }
     }
 
@@ -242,6 +246,10 @@ final class TerminalCenter {
     func startSessionHost(_ makeClient: @escaping () -> SessionHostClient) {
         guard sessionHostConnection == nil else { return }
         sessionHostConnection = Task { await self.connectSessionHost(makeClient) }
+    }
+
+    private func makeHosted(_ client: SessionHostClient) -> HostedTerminalSession {
+        HostedTerminalSession(client: client) { [weak self] in self?.sessionHostScope ?? "" }
     }
 
     /// Connects to the session host once per app run: a second call (the
@@ -978,24 +986,42 @@ final class TerminalCenter {
     /// runs here or no host is connected.
     func adopt(_ session: TerminalSession, info: SessionHostSessionInfo) {
         guard let host = sessionHost, states[session.id] != .running else { return }
-        let process = processes[session.id] as? HostedTerminalSession ?? HostedTerminalSession(client: host)
+        let process: HostedTerminalSession
+        if let hosted = processes[session.id] as? HostedTerminalSession {
+            process = hosted
+        } else {
+            // A local process of an earlier, ended run: its view leaves
+            // the pane for the adopted one.
+            if let local = processes.removeValue(forKey: session.id) {
+                local.onExit = nil
+                local.onOwnerInput = nil
+                local.onOwnerFocus = nil
+                local.detach()
+            }
+            process = makeHosted(host)
+        }
         wire(process, session: session, startedAt: Date(timeIntervalSince1970: Double(info.startedAtMs) / 1000))
         process.attach(info)
     }
 
     /// Sorts out what the host listed at launch against the rows that still
-    /// exist (`rows`, by id): a running run of a row this center does not
-    /// run yet is adopted (the newest, when the host holds several); a
-    /// running run whose row is gone — or a second one for a row — is
-    /// stopped (hang-up, then kill after `killGrace`) and forgotten; an
-    /// exited run of a row nothing runs for is reported once through
-    /// `onSessionExit` as a natural exit, and every exited run is
-    /// forgotten. Runs this center already holds are left to their session.
-    /// Safe to call again: a second call finds its own runs held.
+    /// exist (`rows`, by id). Only runs of this workspace's scope
+    /// (`sessionHostScope`, or "" from an older host) are touched: row ids
+    /// of another workspace's database mean other rows. A running run of a
+    /// row this center does not run yet is adopted (the newest, when the
+    /// host holds several); an exited run of a row nothing runs for is
+    /// reported once through `onSessionExit` as a natural exit, and every
+    /// exited run is forgotten. A running run whose row is gone — or that
+    /// is not the one the row runs — is stopped (hang-up, then kill after
+    /// `killGrace`) and forgotten in `strayStops`, which the caller need
+    /// not wait for. Runs this center already holds are left to their
+    /// session. Safe to call again: a second call finds its own runs held.
     func reattach(_ listed: [SessionHostSessionInfo], rows existing: [Int64: TerminalSession]) async {
         guard let host = sessionHost else { return }
+        let scope = sessionHostScope
         let unheld = listed.filter { info in
-            (processes[info.row] as? HostedTerminalSession)?.key != SessionHostAttachRequest(row: info.row, run: info.run)
+            (info.scope.isEmpty || info.scope == scope)
+                && (processes[info.row] as? HostedTerminalSession)?.key != SessionHostAttachRequest(row: info.row, run: info.run)
         }
         var strays: [SessionHostSessionInfo] = []
         let running = Dictionary(grouping: unheld.filter { !$0.exited }, by: \.row)
@@ -1017,12 +1043,22 @@ final class TerminalCenter {
         for info in unheld where info.exited {
             await host.forget(row: info.row, run: info.run)
         }
-        await withTaskGroup(of: Void.self) { group in
-            for info in strays {
-                group.addTask { @MainActor in await self.stopStray(info, host: host) }
+        guard !strays.isEmpty else { return }
+        strayStops = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for info in strays {
+                    group.addTask { @MainActor in await self.stopStray(info, host: host) }
+                }
             }
         }
     }
+
+    /// The stops of the last `reattach`'s stray runs (tests await it).
+    @ObservationIgnored private(set) var strayStops: Task<Void, Never>?
+
+    /// After a kill, how many `pollStep`s a stray's stop waits for the host
+    /// to reap the child, so the host accepts its forget.
+    static let reapPolls = 10
 
     /// A run that ended while the app was away: the row reads as exited
     /// with its code, and the exit goes out as one the app did not cause.
@@ -1044,7 +1080,12 @@ final class TerminalCenter {
                 await signaller.sleep(Self.pollStep)
                 waited += Self.pollStep
             }
-            if signaller.isAlive(pid) { signaller.signal(pid, SIGKILL) }
+            if signaller.isAlive(pid) {
+                signaller.signal(pid, SIGKILL)
+                for _ in 0..<Self.reapPolls where signaller.isAlive(pid) {
+                    await signaller.sleep(Self.pollStep)
+                }
+            }
         }
         await host.forget(row: info.row, run: info.run)
     }

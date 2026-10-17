@@ -176,6 +176,7 @@ final class TerminalCenterReattachTests: XCTestCase {
         ]
 
         await vm.reattachHostedSessions()
+        await center.strayStops?.value
 
         let stubborn = signals.filter { $0.0 == 6000 }.map(\.1)
         XCTAssertEqual(stubborn, [SIGHUP, SIGKILL], "alive after the grace: killed")
@@ -190,6 +191,114 @@ final class TerminalCenterReattachTests: XCTestCase {
         XCTAssertEqual(transports.count, 1, "nothing attached")
         XCTAssertEqual(factoryCalls, 0)
         XCTAssertTrue(exits.isEmpty)
+    }
+
+    /// Row ids are per workspace database: a run another workspace
+    /// launched is never stopped, adopted, forgotten or reported here.
+    func testReattachIgnoresAnotherWorkspacesRuns() async throws {
+        let row = try await sessionRow()
+        center.sessionHostScope = "ws-a"
+        alive = [6100, 6101]
+        control.listed = [
+            SessionHostSessionInfo(row: 9001, run: "run-o", pid: 6100, startedAtMs: 1, exited: false, code: nil, scope: "ws-b"),
+            SessionHostSessionInfo(row: row.id, run: "run-p", pid: 6101, startedAtMs: 1, exited: false, code: nil, scope: "ws-b"),
+            SessionHostSessionInfo(row: row.id, run: "run-q", pid: 6102, startedAtMs: 1, exited: true, code: 0, scope: "ws-b")
+        ]
+
+        await vm.reattachHostedSessions()
+        await center.strayStops?.value
+
+        XCTAssertTrue(signals.isEmpty, "another workspace's agents are not stopped")
+        XCTAssertNil(center.strayStops)
+        XCTAssertNil(center.states[row.id], "a colliding row id is not adopted")
+        XCTAssertNil(center.process(for: row.id))
+        XCTAssertTrue(try forgotten().isEmpty)
+        XCTAssertTrue(exits.isEmpty)
+        XCTAssertEqual(transports.count, 1, "nothing attached")
+    }
+
+    /// The host listed one row twice: the newest run is adopted, the other stopped.
+    func testReattachAdoptsTheNewestOfSeveralRuns() async throws {
+        let row = try await sessionRow()
+        center.sessionHostScope = "ws-a"
+        alive = [7001, 7002]
+        diesOnHangup = [7001]
+        control.listed = [
+            SessionHostSessionInfo(row: row.id, run: "run-old", pid: 7001, startedAtMs: 1, exited: false, code: nil, scope: "ws-a"),
+            SessionHostSessionInfo(row: row.id, run: "run-new", pid: 7002, startedAtMs: 2, exited: false, code: nil, scope: "ws-a")
+        ]
+
+        await vm.reattachHostedSessions()
+        await center.strayStops?.value
+
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        XCTAssertEqual(hosted.key, SessionHostAttachRequest(row: row.id, run: "run-new"))
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertEqual(signals.map(\.0), [7001])
+        XCTAssertEqual(signals.map(\.1), [SIGHUP])
+        XCTAssertEqual(try forgotten(), [SessionHostAttachRequest(row: row.id, run: "run-old")])
+        await hosted.connecting?.value
+        hosted.detachFromHost()
+    }
+
+    /// An old exited run beside the running one: only forgotten, never reported.
+    func testExitedRunIsNotReportedBesideARunningOne() async throws {
+        let row = try await sessionRow()
+        control.listed = [
+            SessionHostSessionInfo(row: row.id, run: "run-done", pid: 7101, startedAtMs: 1, exited: true, code: 1),
+            SessionHostSessionInfo(row: row.id, run: "run-live", pid: 7102, startedAtMs: 2, exited: false, code: nil)
+        ]
+
+        await vm.reattachHostedSessions()
+
+        XCTAssertTrue(exits.isEmpty)
+        XCTAssertEqual(center.states[row.id], .running)
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        XCTAssertEqual(hosted.key, SessionHostAttachRequest(row: row.id, run: "run-live"))
+        XCTAssertEqual(try forgotten(), [SessionHostAttachRequest(row: row.id, run: "run-done")])
+        XCTAssertTrue(signals.isEmpty)
+        await hosted.connecting?.value
+        hosted.detachFromHost()
+    }
+
+    /// A hosted run of a row that already runs locally is a second agent
+    /// on the row: stopped, and the local run kept.
+    func testHostedRunOfALocallyRunningRowIsStopped() async throws {
+        let row = try await sessionRow()
+        center.start(row, fresh: false)
+        let local = try XCTUnwrap(center.process(for: row.id) as? FakeTerminalSession)
+        alive = [7200]
+        diesOnHangup = [7200]
+        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-h", pid: 7200, startedAtMs: 1, exited: false, code: nil)]
+
+        await vm.reattachHostedSessions()
+        await center.strayStops?.value
+
+        XCTAssertTrue(center.process(for: row.id) === local)
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertEqual(signals.map(\.0), [7200])
+        XCTAssertEqual(signals.map(\.1), [SIGHUP])
+        XCTAssertEqual(try forgotten(), [SessionHostAttachRequest(row: row.id, run: "run-h")])
+        XCTAssertEqual(transports.count, 1, "nothing attached")
+    }
+
+    /// Adoption replaces a row's ended local process, detaching its view.
+    func testAdoptionDetachesAnEndedLocalProcess() async throws {
+        let row = try await sessionRow()
+        center.start(row, fresh: false)
+        let local = try XCTUnwrap(center.process(for: row.id) as? FakeTerminalSession)
+        local.exit(0)
+        exits = []
+        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-l", pid: 7300, startedAtMs: 1, exited: false, code: nil)]
+
+        await vm.reattachHostedSessions()
+
+        XCTAssertTrue(local.detached)
+        XCTAssertNil(local.onExit)
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        XCTAssertEqual(center.states[row.id], .running)
+        await hosted.connecting?.value
+        hosted.detachFromHost()
     }
 
     func testReattachReportsExitOnceAndForgets() async throws {
