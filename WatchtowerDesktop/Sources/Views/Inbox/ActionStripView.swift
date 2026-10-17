@@ -54,6 +54,7 @@ struct ActionStripView: View {
                             appState.openAutomationRun(automationID: output.automationID, runID: output.runID)
                         },
                         onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
+                        sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
                         emptyState: appState.emptyStateContext
                     )
                 } else {
@@ -147,6 +148,8 @@ struct ActionStripActionsView: View {
     var onOpenAutomation: ((AutomationOutputCard) -> Void)?
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> String?)?
+    /// `AgentActionCardView.sessionHoldsCall` for a row (a connector call).
+    var sessionHoldsCall: ((AgentAction) -> Bool)?
     /// The empty strip's readiness and actions (`AppState.emptyStateContext`).
     var emptyState: EmptyStateContext = .neutral
 
@@ -235,7 +238,8 @@ struct ActionStripActionsView: View {
             onApproveEdited: { patch in Task { await vm.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
             onReconnectSlack: onReconnectSlack,
             contextLabel: vm.actionLabels[action.id],
-            onOpenContext: openContext(action)
+            onOpenContext: openContext(action),
+            sessionHoldsCall: sessionHoldsCall?(action) ?? false
         )
     }
 

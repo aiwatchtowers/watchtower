@@ -421,4 +421,18 @@ final class ChatSessionPoolTests: XCTestCase {
         let forwarded = await waitForCondition { finished == [1] }
         XCTAssertTrue(forwarded)
     }
+
+    /// A connector call is held only inside its session's running turn
+    /// (#737): no session, an idle one, or a dead one runs no turn.
+    func testRunningTurnIDOnlyWhileALiveSessionRunsATurn() async throws {
+        XCTAssertNil(pool.runningTurnID(conversationID: 1), "no session")
+        let client = pool.session(for: 1, config: config(1))
+        XCTAssertNil(pool.runningTurnID(conversationID: 1), "an idle session runs no turn")
+        client.startTurn(turn("t1", row: try assistantRow()))
+        XCTAssertEqual(pool.runningTurnID(conversationID: 1), "t1")
+        XCTAssertNil(pool.runningTurnID(conversationID: 2), "another conversation's session")
+        fakes[0].exit(status: 1)
+        let gone = await waitForCondition { self.pool.runningTurnID(conversationID: 1) == nil }
+        XCTAssertTrue(gone, "a dead session holds nothing")
+    }
 }

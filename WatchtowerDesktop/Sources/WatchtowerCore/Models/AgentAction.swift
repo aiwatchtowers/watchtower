@@ -44,13 +44,21 @@ package struct AgentAction: FetchableRecord, Identifiable, Equatable, Sendable {
     }
 
     package var isPending: Bool { status == "pending" }
-    package var isTerminal: Bool { status == "applied" || status == "rejected" }
+    /// A failed session-applied call is terminal too: nothing can retry it.
+    package var isTerminal: Bool {
+        status == "applied" || status == "rejected" || (status == "failed" && isSessionApplied)
+    }
     /// `Registry.Apply`'s claim: the tool is running right now, in some other
     /// process. Nothing on the card may act on the row while it holds.
     package var isExecuting: Bool { status == "executing" }
     /// `Registry.Apply` accepts `approved` as well as `failed`, so an approve
-    /// whose CLI process died before the claim is retriable, not a dead end.
-    package var canRetry: Bool { status == "failed" || status == "approved" }
+    /// whose CLI process died before the claim is retriable, not a dead end —
+    /// except a session-applied call, which Apply refuses outright (only the
+    /// chat session that proposed it runs it).
+    package var canRetry: Bool { !isSessionApplied && (status == "failed" || status == "approved") }
+    /// Go `Tool.AppliedBySession`: approve stops at `approved`, `actions
+    /// apply` is refused, and nothing waits on the owner once it failed.
+    package var isSessionApplied: Bool { tool == ConnectorCallProposal.tool }
 
     /// Decodes `argsJSON` — which for `edit_confluence_page` holds the whole
     /// new page storage (up to 4 MiB) — on every access: never call it from a

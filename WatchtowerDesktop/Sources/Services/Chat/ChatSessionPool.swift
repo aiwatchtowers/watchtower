@@ -56,6 +56,22 @@ final class ChatSessionPool {
         conversationID.flatMap { clients[$0] }
     }
 
+    /// The turn this conversation's live session is running now; nil when it
+    /// has no session, the process is gone, or no turn runs. A session-applied
+    /// connector call is held only inside such a turn
+    /// (`ConnectorCallProposal.sessionHolds`).
+    func runningTurnID(conversationID: Int64) -> String? {
+        guard let client = clients[conversationID], client.isAlive,
+              let turn = client.liveTurn, turn.isRunning else { return nil }
+        return turn.turnID
+    }
+
+    /// Whether this conversation's live session still waits on a
+    /// session-applied call — the card's "Chat session ended" when not.
+    func holdsSessionCall(_ action: AgentAction) -> Bool {
+        ConnectorCallProposal.sessionHolds(action, runningTurnID: runningTurnID(conversationID: action.conversationID))
+    }
+
     /// The session for this conversation — reused when compatible and alive,
     /// otherwise a new one (pending until admitted). Never throws: a spawn
     /// failure yields a dead client whose next turn fails visibly with

@@ -37,6 +37,12 @@ struct AgentActionCardView: View {
     /// The editor chat's newest draft text (the Draft panel's); a pending
     /// `save_automation` card whose text differs warns. nil elsewhere.
     var latestDraftText: String?
+    /// A session-applied call (`claude_ai_connector_call`): whether the live
+    /// chat session that proposed it still waits on it
+    /// (`ConnectorCallProposal.sessionHolds`). False shows "Chat session
+    /// ended" and offers no Approve, so an approval nobody can run never
+    /// reads as a call about to run. Unused for every other tool.
+    var sessionHoldsCall = false
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
@@ -45,6 +51,8 @@ struct AgentActionCardView: View {
     /// the outcome of Reconnect Slack (shown here, not only in Settings).
     @State private var slackMessage: String?
     @State private var reconnecting = false
+    /// The connector call's input while the owner edits it; nil = not editing.
+    @State private var connectorDraft: String?
 
     /// The shared human name (`ReactionToolCatalog`) — the same words the
     /// Inbox cheat sheet and the Settings reaction dictionary use.
@@ -197,6 +205,9 @@ struct AgentActionCardView: View {
     }
 
     private var statusLabel: String {
+        if action.isSessionApplied {
+            return ConnectorCallProposal.statusLabel(for: action, sessionHolds: sessionHoldsCall)
+        }
         switch action.status {
         case "pending": return "Awaiting your approval"
         case "approved": return "Approved"
@@ -211,6 +222,7 @@ struct AgentActionCardView: View {
     var body: some View {
         // One args decode per render for a save_automation card.
         let save = action.tool == SaveAutomationCardModel.tool ? SaveAutomationCardModel(action: action) : nil
+        let connector = ConnectorCallProposal(action: action)
         VStack(alignment: .leading, spacing: 8) {
             if let contextLabel {
                 contextLine(contextLabel)
@@ -219,6 +231,8 @@ struct AgentActionCardView: View {
             if let save {
                 SaveAutomationCardDetails(model: save, actionID: action.id,
                                           differsFromDraft: action.isPending && save.differsFromDraft(latestDraftText))
+            } else if let connector {
+                ConnectorCallDetails(proposal: connector, draft: connectorDraftBinding)
             } else if let slack = SlackSendProposal(action: action) {
                 SlackRecipientLine(proposal: slack)
                 // The text is in the editor while the row can still be edited.
@@ -242,7 +256,8 @@ struct AgentActionCardView: View {
             }
             outcome
             links
-            if !action.error.isEmpty {
+            // A session-applied call's status line already carries its error.
+            if !action.error.isEmpty, !action.isSessionApplied {
                 Text(action.error).font(.caption).foregroundStyle(.red)
             }
             if let shownGestureError {
@@ -256,7 +271,7 @@ struct AgentActionCardView: View {
             // Apply claims the row before it runs the tool, so an `approved`
             // one provably never reached Jira. (A Confluence edit is version-
             // checked, so its note says why a retry cannot double-write.)
-            if action.status == "failed", action.external {
+            if action.status == "failed", action.external, !action.isSessionApplied {
                 Text(action.tool == SlackSendProposal.tool ? Self.slackRetryNote() : Self.retryNote(for: action))
                     .font(.caption).foregroundStyle(.orange)
             }
@@ -282,7 +297,7 @@ struct AgentActionCardView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("agentAction.slackMessage")
             }
-            actions
+            actions(connector: connector)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -384,16 +399,46 @@ struct AgentActionCardView: View {
         return "Open →"
     }
 
+    /// The editor's binding while the owner edits a pending call's input.
+    private var connectorDraftBinding: Binding<String>? {
+        guard action.isPending, connectorDraft != nil else { return nil }
+        return Binding(get: { connectorDraft ?? "" }, set: { connectorDraft = $0 })
+    }
+
+    /// Approve for a connector call: plain while the input is untouched,
+    /// with the edited input otherwise (`onApproveEdited`).
     @ViewBuilder
-    private var actions: some View {
+    private func connectorButtons(_ connector: ConnectorCallProposal) -> some View {
+        let approval = connector.approval(editedInput: connectorDraft ?? connector.inputJSON)
+        if ConnectorCallProposal.canApprove(action, sessionHolds: sessionHoldsCall) {
+            Button(gestureError?.isApprove == true ? "Retry" : "Approve") {
+                if case .edited(let patch)? = approval { onApproveEdited?(patch) } else { onApprove() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(approval == nil)
+            if onApproveEdited != nil, connectorDraft == nil {
+                Button("Edit Input") { connectorDraft = connector.inputJSON }
+                    .accessibilityIdentifier("agentAction.connectorEdit")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actions(connector: ConnectorCallProposal?) -> some View {
         HStack {
             // A claimed row is being executed by another process: there is
-            // nothing the owner can decide about it until it lands.
+            // nothing the owner can decide about it until it lands. (A
+            // session call whose session is gone will not land: no spinner.)
             if action.isExecuting {
-                ProgressView().controlSize(.small)
+                if !action.isSessionApplied || sessionHoldsCall { ProgressView().controlSize(.small) }
             } else {
                 if action.isPending {
-                    if let slack = editableSlack {
+                    if let connector {
+                        connectorButtons(connector)
+                    } else if action.isSessionApplied {
+                        // An unreadable connector call: nothing to approve, Reject only.
+                        EmptyView()
+                    } else if let slack = editableSlack {
                         let text = slackDraft ?? slack.text
                         Button(gestureError?.isApprove == true ? "Retry" : "Approve & send") {
                             approveSlack(slack, text: text)
