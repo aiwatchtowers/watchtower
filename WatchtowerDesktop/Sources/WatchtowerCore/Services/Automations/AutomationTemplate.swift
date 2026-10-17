@@ -53,7 +53,7 @@ package enum AutomationTemplateGallery {
     }
 
     /// A workbench a workbench template can go into.
-    package struct Workbench: Equatable, Sendable, Identifiable {
+    package struct InstallTarget: Equatable, Sendable, Identifiable {
         package let id: Int64
         package let name: String
 
@@ -69,7 +69,7 @@ package enum AutomationTemplateGallery {
         /// Install at once (a personal template, or the only workbench).
         case install(workbenchID: Int64?)
         /// A workbench template with several workbenches: the button is a menu of them.
-        case pickWorkbench([Workbench])
+        case pickWorkbench([InstallTarget])
         /// A workbench template and no workbench yet: the button is off.
         case needsWorkbench
     }
@@ -81,7 +81,7 @@ package enum AutomationTemplateGallery {
         return values.isEmpty ? nil : "Covers: " + values.joined(separator: ", ")
     }
 
-    package static func installChoice(_ template: AutomationTemplate, workbenches: [Workbench]) -> InstallChoice {
+    package static func installChoice(_ template: AutomationTemplate, workbenches: [InstallTarget]) -> InstallChoice {
         guard template.scope == "workbench" else { return .install(workbenchID: nil) }
         switch workbenches.count {
         case 0: return .needsWorkbench

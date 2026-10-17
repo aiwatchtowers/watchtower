@@ -149,8 +149,8 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         typealias Gallery = AutomationTemplateGallery
         let personal = try template()
         let workbench = try template("release-buttons", scope: "workbench")
-        let acme = Gallery.Workbench(id: 3, name: "acme")
-        let docs = Gallery.Workbench(id: 5, name: "docs")
+        let acme = Gallery.InstallTarget(id: 3, name: "acme")
+        let docs = Gallery.InstallTarget(id: 5, name: "docs")
         XCTAssertEqual(Gallery.installChoice(personal, workbenches: []), .install(workbenchID: nil))
         XCTAssertEqual(Gallery.installChoice(personal, workbenches: [acme]), .install(workbenchID: nil))
         XCTAssertEqual(Gallery.installChoice(workbench, workbenches: []), .needsWorkbench)

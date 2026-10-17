@@ -9,7 +9,7 @@ import WatchtowerCore
 /// workbench, or into the one picked from the button's menu (#582).
 struct AutomationTemplateGalleryView: View {
     @Bindable var vm: AutomationsViewModel
-    var workbenches: [AutomationTemplateGallery.Workbench] = []
+    var workbenches: [AutomationTemplateGallery.InstallTarget] = []
     let onDescribeInWords: () -> Void
     let onClose: () -> Void
 

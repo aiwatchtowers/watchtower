@@ -46,7 +46,7 @@ struct AutomationsView: View {
     var actions = AutomationsTabActions()
     var workbenchName: (Int64) -> String? = { _ in nil }
     /// The workbenches a workbench template can install into.
-    var workbenches: [AutomationTemplateGallery.Workbench] = []
+    var workbenches: [AutomationTemplateGallery.InstallTarget] = []
     var emptyStateContext: EmptyStateContext = .neutral
     var editor: AutomationEditorCenter?
     var chats: AutomationEditorChatHooks?
