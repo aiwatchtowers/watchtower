@@ -2453,7 +2453,9 @@ CREATE TABLE IF NOT EXISTS projects (
     methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00123)
     ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00123)
     finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), -- the owner's finish check; NULL = the folder file, else on (00123)
-    board_hidden_statuses TEXT NULL -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
+    board_hidden_statuses TEXT NULL, -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
+    session_instructions TEXT NULL, -- the owner's instructions for sessions in this workbench; NULL = none (00131)
+    target_procedure TEXT NULL -- the owner's procedure for working a target in this workbench; NULL = none (00131)
 );
 
 -- Workbench board columns (00125, PROJ-19): named columns inside one status
@@ -3081,3 +3083,25 @@ CREATE TABLE IF NOT EXISTS permission_requests (
     decided_by          TEXT                                 -- the phone's name; NULL otherwise
 );
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
+
+-- Agent instructions (00131): the owner's global session instructions / target procedure
+-- (one row per scope; an empty body deletes the row) and mined repeat suggestions.
+CREATE TABLE IF NOT EXISTS owner_instructions (
+    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
+    body       TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS instruction_suggestions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    text            TEXT NOT NULL,
+    field           TEXT NOT NULL CHECK (field IN ('session','procedure')),
+    workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
+    session_count   INTEGER NOT NULL DEFAULT 0,
+    workbench_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_at   TEXT NOT NULL,
+    last_seen_at    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
+    fingerprint     TEXT NOT NULL UNIQUE,                                   -- normalised direction; a dismissed repeat stays dismissed
+    decided_at      TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);

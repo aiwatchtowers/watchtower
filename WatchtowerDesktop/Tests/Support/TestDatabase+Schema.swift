@@ -1327,7 +1327,7 @@ CREATE TABLE IF NOT EXISTS projects (
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
     CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
     CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
-  CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL);
+  CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL, session_instructions TEXT NULL, target_procedure TEXT NULL);
 CREATE TABLE IF NOT EXISTS project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -2068,6 +2068,24 @@ CREATE TABLE IF NOT EXISTS permission_requests (
   decided_at          TEXT,
   decided_by          TEXT
 );
+CREATE TABLE IF NOT EXISTS owner_instructions (
+    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
+    body       TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS instruction_suggestions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    text            TEXT NOT NULL,
+    field           TEXT NOT NULL CHECK (field IN ('session','procedure')),
+    workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_count   INTEGER NOT NULL DEFAULT 0,
+    workbench_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_at   TEXT NOT NULL,
+    last_seen_at    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
+    fingerprint     TEXT NOT NULL UNIQUE,
+    decided_at      TEXT NULL
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2392,6 +2410,7 @@ CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id
 CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 CREATE INDEX IF NOT EXISTS review_notes_session ON review_notes(project_id, session_id, kind, ord);
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
+CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
