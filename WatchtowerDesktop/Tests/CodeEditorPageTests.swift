@@ -4,7 +4,7 @@ import XCTest
 
 /// The Files pane's editor page is locked to the bundle: its web view never
 /// navigates away from the editor, and the page's CSP allows no inline or
-/// remote script and no network.
+/// remote script, no eval and no network.
 final class CodeEditorPageTests: XCTestCase {
     func testOnlyTheEditorPageInTheMainFrameIsAllowed() {
         XCTAssertTrue(CodeEditorSchemeHandler.allowsNavigation(to: CodeEditorSchemeHandler.pageURL, mainFrame: true))
@@ -38,7 +38,10 @@ final class CodeEditorPageTests: XCTestCase {
         }
         let directives = Dictionary(pairs) { first, _ in first }
         XCTAssertEqual(directives["default-src"], "'none'")
-        XCTAssertEqual(directives["script-src"], "'self'")
+        // 'wasm-unsafe-eval' lets the page compile the bundled Oniguruma
+        // WebAssembly the TextMate highlighting runs on (board #738); it
+        // allows no JavaScript eval.
+        XCTAssertEqual(directives["script-src"], "'self' 'wasm-unsafe-eval'")
         XCTAssertEqual(directives["connect-src"], "'none'")
         XCTAssertEqual(directives["base-uri"], "'none'")
         for (name, value) in directives {

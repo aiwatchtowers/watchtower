@@ -10,6 +10,7 @@
   require.config({ paths: { vs: "vs" } });
   require(["vs/editor/editor.main"], function () {
     registerExtraLanguages();
+    registerTextMateGrammars();
 
     // The TypeScript worker is trimmed from the bundle (fetch-monaco.sh):
     // switch the TS/JS language service off so nothing asks for it.

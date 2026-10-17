@@ -1,7 +1,9 @@
-// Headless check of the Files pane's editor page (CodeEditorWeb/index.html)
-// and of the Monarch grammars in CodeEditorWeb/languages.js. Run through
+// Headless check of the Files pane's editor page (CodeEditorWeb/index.html),
+// of the Monarch grammars in CodeEditorWeb/languages.js and of the TextMate
+// highlighting in CodeEditorWeb/textmate.js. Run through
 // scripts/editor-bridge-check.sh, which compiles this file and passes the
-// CodeEditorWeb folder; it needs the Monaco build from scripts/fetch-monaco.sh.
+// CodeEditorWeb folder; it needs the Monaco build and the TextMate grammars
+// from scripts/fetch-monaco.sh.
 //
 // The page is driven the way MonacoEditorView.Coordinator drives it
 // (WatchtowerDesktop/Sources/Views/Workbench/CodeFilesPaneView.swift):
@@ -258,6 +260,16 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     func evalString(_ script: String) async -> String? { await eval(script) as? String }
     func evalInt(_ script: String) async -> Int? { await eval(script) as? Int }
+
+    /// callAsyncJavaScript: `body` may `await`; its `return` is the result.
+    func evalAsync(_ body: String) async -> Any? {
+        do {
+            return try await webView.callAsyncJavaScript(body, contentWorld: .page)
+        } catch {
+            errors.append("callAsyncJavaScript: \(error.localizedDescription) — \(body.prefix(80))")
+            return nil
+        }
+    }
 }
 
 // MARK: - Harness helpers injected into the page
@@ -640,7 +652,9 @@ func detectionChecks(_ page: Page) async {
         ("server.log", "", "log"),
         ("server.log.1", "", "log"),
         ("data.csv", "", "csv"),
-        ("data.tsv", "", "tsv")
+        ("data.tsv", "", "tsv"),
+        ("App.tsx", "", "typescriptreact"),
+        ("app.ts", "", "typescript")
     ]
     for item in cases {
         let got = await page.evalString("__h.detect(\(jsonArgument(item.path)), \(jsonArgument(item.text)))")
@@ -717,6 +731,126 @@ func tokenChecks(_ page: Page) async {
         check("themes: \(theme) is defined (its diff colour \(colour) is in the token colours)",
               css.contains(colour), css.isEmpty ? "no token colour style found" : "colour absent")
     }
+}
+
+/// TextMate highlighting (textmate.js, board #738): every language with a
+/// grammar gets its tokenizer, the token classes the themes colour come
+/// out where the grammars (and the Go/Python/Swift refiners) put them,
+/// and both themes carry the palette.
+@MainActor
+func textMateChecks(_ page: Page) async {
+    let languages = await page.eval("wtTextMate.languages()") as? [String] ?? []
+    check("textmate: languages listed", languages.count > 40, "\(languages.count)")
+    let ready = await page.evalAsync("""
+        var failed = [];
+        for (const id of wtTextMate.languages()) {
+          // A model asks Monaco for the language's tokenizer (as opening a
+          // file does); monaco.editor.tokenize alone would not.
+          var m = monaco.editor.createModel("", id);
+          m.tokenization.forceTokenization(1);
+          if (!(await wtTextMate.whenReady(id))) { failed.push(id); }
+          m.dispose();
+        }
+        await new Promise(function (r) { setTimeout(r, 50); });
+        return failed.join(",");
+        """) as? String
+    check("textmate: every language's grammar loads", ready == "", "failed: \(ready ?? "nil")")
+    let gone = await page.evalAsync("return await wtTextMate.whenReady('plaintext');") as? Bool
+    check("textmate: a language without a grammar keeps Monarch (no TextMate tokenizer)", gone == false)
+
+    // (language, sample, [(line, needle, expected class)])
+    let samples: [(String, String, [(Int, String, String)])] = [
+        ("go", """
+            // Package x does things.
+            package x
+
+            import (
+            \t"fmt"
+            \tstr "strings"
+            \t"example.com/kit/v2"
+            )
+
+            type Item struct {
+            \tName string
+            }
+
+            func (it *Item) Label(n int) string {
+            \tfmt.Println(it.Name, str.ToUpper("a"), kit.Max, 42)
+            \treturn it.Name
+            }
+            """, [
+            (0, "// Package", "comment"), (1, "package", "keyword"), (1, "x", "namespace"),
+            (4, "\"fmt\"", "string"), (5, "str", "namespace"),
+            (9, "Item", "type"), (10, "Name", "property"), (10, "string", "keyword"),
+            (13, "func", "keyword"), (13, "it", "parameter"), (13, "Label", "function"), (13, "n int", "parameter"),
+            (14, "fmt", "namespace"), (14, "Println", "function"), (14, "Name", "property"),
+            (14, "str", "namespace"), (14, "kit", "namespace"), (14, "42", "number"),
+            (15, "return", "keyword")
+        ]),
+        ("swift", "import SwiftUI\n/// Doc.\n@MainActor\nstruct Row: View {\n    let item: Item\n    func f(for x: Int) -> Int { g(at: x) }\n}\n", [
+            (0, "SwiftUI", "namespace"), (1, "/// Doc.", "comment.doc"), (2, "MainActor", "annotation"),
+            (3, "struct", "keyword"), (3, "Row", "type"), (3, "View", "type"), (4, "Item", "type"),
+            (5, "f(", "function"), (5, "at", "parameter")
+        ]),
+        ("typescript", "import * as path from \"path\";\nexport function load(dir: string): number {\n  return this.items.size + 1;\n}\n", [
+            (0, "import", "keyword"), (0, "\"path\"", "string"), (1, "load", "function"), (1, "dir", "parameter"),
+            (1, "string", "keyword"), (2, "this", "variable.language"), (2, "items", "property"), (2, "1", "number")
+        ]),
+        ("typescriptreact", "const a = <div className=\"x\">{v}</div>;\n", [
+            (0, "div", "tag"), (0, "className", "attribute.name"), (0, "\"x\"", "string")
+        ]),
+        ("python", "import json as j\n@dataclass\nclass P:\n    def f(self, n):\n        return j.dumps(self.n)\n", [
+            (0, "json", "namespace"), (1, "dataclass", "annotation"), (2, "P", "type"), (3, "f(", "function"),
+            (3, "n", "parameter"), (4, "j", "namespace"), (4, "dumps", "function"), (4, "n)", "property")
+        ]),
+        ("json", "{\"name\": \"x\", \"n\": 1, \"ok\": true}\n", [
+            (0, "\"name\"", "property"), (0, "\"x\"", "string"), (0, "1", "number"), (0, "true", "constant.language")
+        ]),
+        ("yaml", "name: build\ncount: 3 # c\n", [(0, "name", "property"), (0, "build", "string"), (1, "3", "number"), (1, "# c", "comment")]),
+        ("markdown", "# Title\n\n```go\nfunc main() {}\n```\n", [(0, "# Title", "markup.heading"), (3, "func", "keyword"), (3, "main", "function")])
+    ]
+    for (language, sample, needles) in samples {
+        let array = needles.map { "[\($0.0), \(jsonArgument($0.1))]" }.joined(separator: ", ")
+        let got = await page.eval("__h.tokens(\(jsonArgument(sample)), \(jsonArgument(language)), [\(array)])") as? [String] ?? []
+        for (index, needle) in needles.enumerated() {
+            let actual = index < got.count ? got[index] : "<missing>"
+            check("textmate \(language): line \(needle.0) \"\(needle.1)\" → \(needle.2)", actual == needle.2,
+                  "got \(actual.isEmpty ? "(plain)" : actual)")
+        }
+    }
+
+    // An edited import re-tokenizes the lines below it (the imported names
+    // ride in the line state).
+    let retokenized = await page.evalAsync("""
+        var m = monaco.editor.createModel("package x\\nimport \\"fmt\\"\\nvar _ = fmt.X\\n", "go");
+        function colours() {
+          m.tokenization.forceTokenization(3);
+          var t = m.tokenization.getLineTokens(3), out = [];
+          for (var i = 0; i < t.getCount(); i++) { out.push(t.getForeground(i)); }
+          return out.join(",");
+        }
+        var before = colours();
+        m.applyEdits([{ range: new monaco.Range(2, 9, 2, 12), text: "log" }]);
+        var after = colours();
+        m.dispose();
+        return before + " | " + after;
+        """) as? String ?? ""
+    let halves = retokenized.components(separatedBy: " | ")
+    check("textmate go: an edited import re-colours the lines below it (the names ride in the line state)",
+          halves.count == 2 && !halves[0].isEmpty && halves[0] != halves[1], retokenized)
+
+    for (theme, colour) in [("wt-dark", "#16baac"), ("wt-light", "#a65e00")] {
+        let css = await page.evalString("""
+            (function () {
+              monaco.editor.setTheme(\(jsonArgument(theme)));
+              return Array.prototype.map.call(document.querySelectorAll('style'), function (s) {
+                return s.textContent.indexOf('.mtk') >= 0 ? s.textContent : '';
+              }).join('').toLowerCase();
+            })()
+            """) ?? ""
+        check("themes: \(theme) carries the TextMate palette (type colour \(colour))", css.contains(colour), "colour absent")
+    }
+    _ = await page.evalString("(function () { monaco.editor.setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'wt-dark' : 'wt-light'); return ''; })()")
 }
 
 /// Go to definition, the cursor stream and the §10 chords (spec §8.2,
@@ -1185,6 +1319,9 @@ func run(root: URL) async -> Int32 {
         return 1
     }
     check("page load: posts ready with no error", page.errors.isEmpty, "\(page.errors)")
+    // Nothing of the TextMate engine loads before a file needs it.
+    let early = await page.evalInt("document.querySelectorAll('script[src*=\"textmate/\"]').length")
+    check("textmate: nothing loaded at startup", early == 0, "\(String(describing: early)) scripts")
     _ = await page.eval(helpers)
 
     await protocolChecks(page)
@@ -1193,6 +1330,7 @@ func run(root: URL) async -> Int32 {
     await questionChecks(page)
     await detectionChecks(page)
     await tokenChecks(page)
+    await textMateChecks(page)
     await readOnlyChecks(page)
     await diffPageChecks(root: root)
 

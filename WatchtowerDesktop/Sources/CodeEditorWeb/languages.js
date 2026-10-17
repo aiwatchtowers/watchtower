@@ -2,10 +2,11 @@
 // 1. File associations for languages Monaco already has (by extension, by
 //    file name, by shebang for scripts with no extension). Registering an
 //    existing id again merges into it.
-// 2. Monarch grammars for formats Monaco ships nothing for: dotenv,
-//    Makefile, TOML, ignore files, go.mod/go.sum, diff/patch, logs, CSV/TSV.
-// 3. The editor themes: vs/vs-dark plus colors for the tokens the stock
-//    themes have no rule for (diff lines, log levels, CSV columns).
+// 2. Languages Monaco ships nothing for: Monarch grammars for dotenv,
+//    Makefile, TOML, ignore files, go.mod/go.sum, diff/patch, logs and
+//    CSV/TSV (tuned here, kept over their TextMate grammars), and TSX,
+//    which only its TextMate grammar colours (textmate.js).
+// 3. The editor themes: vs/vs-dark under the token palette below.
 /* global monaco */
 (function () {
   "use strict";
@@ -247,55 +248,104 @@
       tokens: diff, config: {} },
     { language: { id: "log", aliases: ["Log"], extensions: [".log"], filenamePatterns: ["*.log.*"] },
       tokens: log, config: {} },
+    // Monaco reads .tsx as TypeScript, whose TextMate grammar has no JSX.
+    { language: { id: "typescriptreact", aliases: ["TypeScript JSX", "tsx"], extensions: [".tsx"] },
+      tokens: null, config: {
+        comments: { lineComment: "//", blockComment: ["/*", "*/"] },
+        brackets: [["{", "}"], ["[", "]"], ["(", ")"]],
+        autoClosingPairs: [{ open: "{", close: "}" }, { open: "[", close: "]" }, { open: "(", close: ")" },
+          { open: "\"", close: "\"", notIn: ["string"] }, { open: "'", close: "'", notIn: ["string", "comment"] },
+          { open: "`", close: "`", notIn: ["string", "comment"] }, { open: "/**", close: " */", notIn: ["string"] }],
+        surroundingPairs: [{ open: "{", close: "}" }, { open: "[", close: "]" }, { open: "(", close: ")" },
+          { open: "\"", close: "\"" }, { open: "'", close: "'" }, { open: "`", close: "`" }, { open: "<", close: ">" }],
+        folding: { markers: { start: /^\s*\/\/\s*#?region\b/, end: /^\s*\/\/\s*#?endregion\b/ } }
+      } },
     { language: { id: "csv", aliases: ["CSV"], extensions: [".csv"] }, tokens: columns(","), config: {} },
     { language: { id: "tsv", aliases: ["TSV"], extensions: [".tsv", ".tab"] }, tokens: columns("\t"), config: {} }
   ];
 
-  var extraRules = {
-    light: [
-      { token: "inserted", foreground: "22863a" },
-      { token: "deleted", foreground: "b31d28" },
-      { token: "diff.meta", foreground: "6f42c1", fontStyle: "bold" },
-      { token: "diff.hunk", foreground: "005cc5" },
-      { token: "log.error", foreground: "d73a49", fontStyle: "bold" },
-      { token: "log.warn", foreground: "b08800", fontStyle: "bold" },
-      { token: "log.info", foreground: "0366d6" },
-      { token: "log.debug", foreground: "6a737d" },
-      { token: "log.date", foreground: "6a737d" },
-      { token: "csv.c0", foreground: "0451a5" },
-      { token: "csv.c1", foreground: "a31515" },
-      { token: "csv.c2", foreground: "098658" },
-      { token: "csv.c3", foreground: "af00db" },
-      { token: "csv.c4", foreground: "795e26" },
-      { token: "csv.c5", foreground: "267f99" }
-    ],
-    dark: [
-      { token: "inserted", foreground: "85e89d" },
-      { token: "deleted", foreground: "f97583" },
-      { token: "diff.meta", foreground: "b392f0", fontStyle: "bold" },
-      { token: "diff.hunk", foreground: "79b8ff" },
-      { token: "log.error", foreground: "f97583", fontStyle: "bold" },
-      { token: "log.warn", foreground: "ffdf5d", fontStyle: "bold" },
-      { token: "log.info", foreground: "79b8ff" },
-      { token: "log.debug", foreground: "959da5" },
-      { token: "log.date", foreground: "959da5" },
-      { token: "csv.c0", foreground: "9cdcfe" },
-      { token: "csv.c1", foreground: "ce9178" },
-      { token: "csv.c2", foreground: "b5cea8" },
-      { token: "csv.c3", foreground: "c586c0" },
-      { token: "csv.c4", foreground: "dcdcaa" },
-      { token: "csv.c5", foreground: "4ec9b0" }
-    ]
-  };
+  // The themes' token colours, after JetBrains' Dark (New UI) and IntelliJ
+  // Light schemes: [token, dark, light, font style]. The tokens are the
+  // classes textmate.js gives TextMate grammars and the names Monarch
+  // grammars use; Monaco matches a rule by prefix ("type" colours
+  // "type.identifier.swift"), so one rule covers both.
+  var palette = [
+    ["", "BCBEC4", "080808"],
+    ["comment", "7A7E85", "8C8C8C", "italic"],
+    ["comment.doc", "5F826B", "8C8C8C", "italic"],
+    ["string", "6AAB73", "067D17"],
+    ["string.escape", "CF8E6D", "0037A6"],
+    ["regexp", "42C3D4", "264EFF"],
+    ["number", "2AACB8", "1750EB"],
+    ["constant", "C77DBB", "871094", "italic"],
+    ["constant.language", "CF8E6D", "0033B3"],
+    ["keyword", "CF8E6D", "0033B3"],
+    ["operator", "BCBEC4", "080808"],
+    ["delimiter", "BCBEC4", "080808"],
+    ["identifier", "BCBEC4", "080808"],
+    ["variable", "BCBEC4", "080808"],
+    ["variable.language", "CF8E6D", "0033B3"],
+    ["variable.predefined", "C77DBB", "871094"],
+    ["type", "16BAAC", "A65E00"],
+    ["type.parameter", "16BAAC", "A65E00"],
+    ["function", "56A8F5", "00627A"],
+    ["predefined", "56A8F5", "00627A"],
+    ["namespace", "AFBF7E", "56677A"],
+    ["property", "C77DBB", "871094"],
+    ["parameter", "B189F5", "6A3DB8"],
+    ["annotation", "B3AE60", "9E880D"],
+    ["tag", "D5B778", "0033B3"],
+    ["metatag", "D5B778", "0033B3"],
+    ["attribute.name", "BABABA", "174AD4"],
+    ["attribute.value", "6AAB73", "067D17"],
+    ["markup.heading", "CF8E6D", "0033B3", "bold"],
+    ["markup.bold", "", "", "bold"],
+    ["markup.italic", "", "", "italic"],
+    ["markup.link", "56A8F5", "006DCC", "underline"],
+    ["markup.code", "C9A26D", "3A6C00"],
+    ["markup.quote", "7A7E85", "8C8C8C", "italic"],
+    ["markup.list", "CF8E6D", "0033B3"],
+    ["string.key.json", "C77DBB", "871094"],
+    ["string.value.json", "6AAB73", "067D17"],
+    ["keyword.json", "CF8E6D", "0033B3"],
+    ["inserted", "85e89d", "22863a"],
+    ["deleted", "f97583", "b31d28"],
+    ["diff.meta", "b392f0", "6f42c1", "bold"],
+    ["diff.hunk", "79b8ff", "005cc5"],
+    ["log.error", "f97583", "d73a49", "bold"],
+    ["log.warn", "ffdf5d", "b08800", "bold"],
+    ["log.info", "79b8ff", "0366d6"],
+    ["log.debug", "959da5", "6a737d"],
+    ["log.date", "959da5", "6a737d"],
+    ["csv.c0", "9cdcfe", "0451a5"],
+    ["csv.c1", "ce9178", "a31515"],
+    ["csv.c2", "b5cea8", "098658"],
+    ["csv.c3", "c586c0", "af00db"],
+    ["csv.c4", "dcdcaa", "795e26"],
+    ["csv.c5", "4ec9b0", "267f99"]
+  ];
+
+  function themeRules(column) {
+    return palette.map(function (p) {
+      var rule = { token: p[0] };
+      if (p[column]) { rule.foreground = p[column]; }
+      // "" too: a rule without a style must not inherit its parent's
+      // ("constant.language" is not italic like "constant").
+      rule.fontStyle = p[3] || "";
+      return rule;
+    });
+  }
 
   window.registerExtraLanguages = function () {
     associations.forEach(function (a) { monaco.languages.register(a); });
     grammars.forEach(function (g) {
       monaco.languages.register(g.language);
-      monaco.languages.setMonarchTokensProvider(g.language.id, g.tokens);
+      if (g.tokens) { monaco.languages.setMonarchTokensProvider(g.language.id, g.tokens); }
       monaco.languages.setLanguageConfiguration(g.language.id, g.config);
     });
-    monaco.editor.defineTheme("wt-light", { base: "vs", inherit: true, rules: extraRules.light, colors: {} });
-    monaco.editor.defineTheme("wt-dark", { base: "vs-dark", inherit: true, rules: extraRules.dark, colors: {} });
+    monaco.editor.defineTheme("wt-light", { base: "vs", inherit: true, rules: themeRules(2),
+      colors: { "editor.foreground": "#080808" } });
+    monaco.editor.defineTheme("wt-dark", { base: "vs-dark", inherit: true, rules: themeRules(1),
+      colors: { "editor.foreground": "#BCBEC4" } });
   };
 })();

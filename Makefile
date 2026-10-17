@@ -342,8 +342,8 @@ periphery-baseline:
 	echo "Periphery baseline saved: $$count warnings"
 
 # Manual check of the Files pane's editor page (CodeEditorWeb/index.html
-# protocol + languages.js grammars) in a headless WKWebView. Not in any gate;
-# needs scripts/fetch-monaco.sh first.
+# protocol + languages.js grammars + textmate.js highlighting) in a headless
+# WKWebView. Not in any gate; needs scripts/fetch-monaco.sh first.
 editor-bridge-check:
 	bash scripts/editor-bridge-check.sh
 
