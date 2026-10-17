@@ -50,4 +50,17 @@ final class SourceLinkResolverTests: XCTestCase {
         let src = source(kind: "jira", ref: "jira:")
         XCTAssertNil(SourceLinkResolver.url(for: src, jiraSiteURL: "https://acme.atlassian.net"))
     }
+
+    /// #737: a published source follows the link card's rule — any URL but
+    /// an https claude.ai page is plain text, never a link.
+    func testPublishedSourceLinksOnlyAClaudeAIPage() {
+        let kind = PublishedLink.sourceKind
+        XCTAssertEqual(SourceLinkResolver.url(for: source(kind: kind, url: "https://claude.ai/artifact/abc", ref: "r"),
+                                              jiraSiteURL: nil)?.absoluteString,
+                       "https://claude.ai/artifact/abc")
+        XCTAssertNil(SourceLinkResolver.url(for: source(kind: kind, url: "https://example.com/x", ref: "r"), jiraSiteURL: nil))
+        XCTAssertNil(SourceLinkResolver.url(for: source(kind: kind, url: "http://claude.ai/artifact/abc", ref: "r"),
+                                            jiraSiteURL: nil))
+        XCTAssertNil(SourceLinkResolver.url(for: source(kind: kind, ref: "https://claude.ai/artifact/abc"), jiraSiteURL: nil))
+    }
 }
