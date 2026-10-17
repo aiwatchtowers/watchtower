@@ -4,7 +4,8 @@ import WatchtowerSync
 /// The `permission_request` slice (#517), record name
 /// `permission_request-<permission_requests.id>`: a Claude Code permission
 /// prompt a board session waits on. Only pending requests are published; the
-/// phone answers through `PermissionAnswerParams` and draws no rules of its own.
+/// phone answers through `PermissionAnswerParams`, offering Allow once only
+/// where `PermissionAllowBlock` (the hub's own rule) lets it.
 public struct PermissionRequest: SliceMirror, Identifiable {
     public static let sliceKind = SliceKind.permissionRequest
 
@@ -14,6 +15,7 @@ public struct PermissionRequest: SliceMirror, Identifiable {
     public let toolName: String
     /// What the tool is about to do. Cap 2000.
     public let summary: String
+    /// true when the summary was cut short (by the hook or the wire): Deny only.
     public let summaryClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
     public let createdAt: Date
 

@@ -60,7 +60,14 @@ A running session's status shows how long it has been in that state, for example
 
 A Claude Code session at a permission prompt shows a card with the tool and what it will run, plus **Allow once** and **Deny**. **Allow once** approves that one call, never a rule (a shell command asks first). Nothing is typed into the session.
 
-The prompt stays open on the Mac too, and the first answer wins. A phone answer after yours on the Mac usually says **Answered on the Mac**; one that went says **Sent to the session**.
+Two kinds of prompt offer only **Deny** on the phone, so you answer them on the Mac to allow:
+
+- one too long to show in full, which says **Shortened — answer on the Mac to allow**;
+- a file edit that changes Claude Code's, an agent's, git hook or shell settings (a `.claude`, `.codex` or `.agents` folder, `.git/hooks`, or a file such as `.zshrc` or `.bash_profile`), which says **Changes Watchtower or shell settings — answer on the Mac to allow**.
+
+The prompt stays open on the Mac too, and the first answer wins. If you already answered on the Mac, the phone's answer usually comes back **Answered on the Mac**. Once the Mac takes a phone answer, the card says **Sent to the session**.
+
+If you allowed a long-running command on the Mac, the phone keeps showing the prompt until the command ends. Answering it then does nothing; to stop the command, use the Mac.
 
 Prompts show in **Now** under **Waiting for you** and in the Workbench badge, with no push alert. Codex sessions keep **Needs approval on the Mac**.
 
@@ -85,6 +92,7 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"iCloud is slowing sync down"** on the Mac's Mobile tab means iCloud has held sync back for over a minute. It clears on its own.
 - **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
 - **"Too late — answer on the Mac"** after Allow once or Deny. The prompt waited too long or its session stopped.
+- **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.
 - **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit Watchtower. Closing the window is fine; the app keeps running in the menu bar.
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
