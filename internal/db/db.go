@@ -39,9 +39,15 @@ type DB struct {
 type pragmaConnector struct {
 	dsn string
 
-	mu            sync.Mutex
-	busyTimeoutMS int64 // 0: the DSN's busy_timeout
-	queryOnly     bool
+	mu    sync.Mutex
+	state connState
+}
+
+// connState is what SetBusyTimeout and SetReadOnly set on a handle.
+type connState struct {
+	busyTimeoutSet bool // false: the DSN's busy_timeout
+	busyTimeoutMS  int64
+	queryOnly      bool
 }
 
 func (c *pragmaConnector) Connect(ctx context.Context) (driver.Conn, error) {
@@ -50,14 +56,15 @@ func (c *pragmaConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, err
 	}
 	c.mu.Lock()
+	st := c.state
+	c.mu.Unlock()
 	var pragmas []string
-	if c.busyTimeoutMS > 0 {
-		pragmas = append(pragmas, fmt.Sprintf("PRAGMA busy_timeout=%d", c.busyTimeoutMS))
+	if st.busyTimeoutSet {
+		pragmas = append(pragmas, fmt.Sprintf("PRAGMA busy_timeout=%d", st.busyTimeoutMS))
 	}
-	if c.queryOnly {
+	if st.queryOnly {
 		pragmas = append(pragmas, "PRAGMA query_only=ON")
 	}
-	c.mu.Unlock()
 	if len(pragmas) == 0 {
 		return conn, nil
 	}
@@ -127,11 +134,25 @@ var seedNewFileHook func(dbPath string) error
 // plain path before opening the file (see sqliteDSN).
 const immediateTxDSN = "?_txlock=immediate"
 
+// connPragmas are the per-connection pragmas of a writing handle (Open,
+// OpenExistingRW) besides busy_timeout, which each opener sets itself; in
+// the "name(value)" form both a DSN _pragma param and a PRAGMA statement take.
+var connPragmas = []string{"foreign_keys(1)", "synchronous(NORMAL)"}
+
+// connPragmaParams is connPragmas as DSN params ("_pragma=…").
+func connPragmaParams() []string {
+	out := make([]string, len(connPragmas))
+	for i, p := range connPragmas {
+		out[i] = "_pragma=" + p
+	}
+	return out
+}
+
 // openDSN is Open's DSN params: the tx lock mode plus the per-connection
 // pragmas, which the driver runs on every new pool connection (journal_mode
 // WAL is stored in the file, so setPragmas runs it once).
-var openDSN = fmt.Sprintf("%s&_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)",
-	immediateTxDSN, busyTimeoutMS)
+var openDSN = fmt.Sprintf("%s&_pragma=busy_timeout(%d)&%s",
+	immediateTxDSN, busyTimeoutMS, strings.Join(connPragmaParams(), "&"))
 
 // busyTimeoutMS is how long a connection waits for another process's write
 // lock before failing with SQLITE_BUSY — Open's default (SetBusyTimeout
@@ -261,8 +282,8 @@ func openExistingDSN(dbPath, dsn string) (*DB, error) {
 // caller needs is found with HasColumns, never by the goose version (a
 // crossed migration line is possible).
 func OpenExistingRW(dbPath string, busy time.Duration) (*DB, error) {
-	d, err := openExistingDSN(dbPath, existingDSN(dbPath, busy, strings.TrimPrefix(immediateTxDSN, "?"),
-		"_pragma=foreign_keys(1)", "_pragma=synchronous(NORMAL)"))
+	params := append([]string{strings.TrimPrefix(immediateTxDSN, "?")}, connPragmaParams()...)
+	d, err := openExistingDSN(dbPath, existingDSN(dbPath, busy, params...))
 	if err != nil {
 		return nil, err
 	}
@@ -325,11 +346,9 @@ func tightenDBFilePerms(dbPath string) {
 // connection; the test-only in-memory clone needs them here because
 // deserializing its snapshot resets synchronous.
 func (db *DB) setPragmas() error {
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS),
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=NORMAL",
+	pragmas := []string{"PRAGMA journal_mode=WAL", fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS)}
+	for _, p := range connPragmas {
+		pragmas = append(pragmas, "PRAGMA "+p)
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
@@ -354,13 +373,12 @@ func (db *DB) migrate() error {
 // chat proposal) raise it so a background daemon transaction cannot fail them.
 // It holds for every later pool connection of the handle too.
 func (db *DB) SetBusyTimeout(d time.Duration) error {
-	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", d.Milliseconds())); err != nil {
+	ms := d.Milliseconds()
+	err := db.setConnPragma(fmt.Sprintf("PRAGMA busy_timeout=%d", ms), func(st *connState) {
+		st.busyTimeoutSet, st.busyTimeoutMS = true, ms
+	})
+	if err != nil {
 		return fmt.Errorf("setting busy_timeout: %w", err)
-	}
-	if c := db.connector; c != nil {
-		c.mu.Lock()
-		c.busyTimeoutMS = d.Milliseconds()
-		c.mu.Unlock()
 	}
 	return nil
 }
@@ -373,13 +391,31 @@ func (db *DB) SetBusyTimeout(d time.Duration) error {
 // It holds for every later pool connection of the handle too, so the fence
 // survives a connection the pool replaced after a cancelled query.
 func (db *DB) SetReadOnly() error {
-	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
+	if err := db.setConnPragma("PRAGMA query_only=ON", func(st *connState) { st.queryOnly = true }); err != nil {
 		return fmt.Errorf("setting query_only: %w", err)
 	}
-	if c := db.connector; c != nil {
+	return nil
+}
+
+// setConnPragma records change on the handle's connector before running
+// pragma on the current connection, so a connection the pool opens in
+// between already gets it; a failed pragma restores the previous state.
+func (db *DB) setConnPragma(pragma string, change func(*connState)) error {
+	c := db.connector
+	var prev connState
+	if c != nil {
 		c.mu.Lock()
-		c.queryOnly = true
+		prev = c.state
+		change(&c.state)
 		c.mu.Unlock()
+	}
+	if _, err := db.Exec(pragma); err != nil {
+		if c != nil {
+			c.mu.Lock()
+			c.state = prev
+			c.mu.Unlock()
+		}
+		return err
 	}
 	return nil
 }

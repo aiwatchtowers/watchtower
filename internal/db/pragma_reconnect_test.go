@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,9 +11,21 @@ import (
 
 // interruptQuery runs a query that cannot finish before its context
 // deadline, so SQLite interrupts it. modernc then reports the connection as
-// bad and database/sql replaces it with a fresh one on the next call.
+// bad and database/sql replaces it with a fresh one on the next call —
+// which interruptQuery checks with a per-connection marker (cache_size, a
+// pragma no opener sets and query_only does not refuse), so the callers'
+// assertions never run against the old connection.
 func interruptQuery(t *testing.T, d *DB) {
 	t.Helper()
+	const marker = -1234
+	if _, err := d.Exec(fmt.Sprintf("PRAGMA cache_size=%d", marker)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if got := pragmaInt(t, d, "cache_size"); got == marker {
+			t.Fatal("the interrupted connection was not replaced; the test proves nothing")
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	var n int64
@@ -79,6 +92,21 @@ func TestPragmasSurviveInterruptedQuery(t *testing.T) {
 		}
 		if _, err := d.Exec(`CREATE TABLE fence_probe (x INTEGER)`); err == nil {
 			t.Error("a write went through on a read-only handle after a reconnect")
+		}
+	})
+
+	t.Run("SetBusyTimeout zero", func(t *testing.T) {
+		d, err := Open(filepath.Join(t.TempDir(), "watchtower.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = d.Close() })
+		if err := d.SetBusyTimeout(0); err != nil {
+			t.Fatal(err)
+		}
+		interruptQuery(t, d)
+		if got := pragmaInt(t, d, "busy_timeout"); got != 0 {
+			t.Errorf("busy_timeout = %d, want 0 (the explicit value, not the DSN's)", got)
 		}
 	})
 
