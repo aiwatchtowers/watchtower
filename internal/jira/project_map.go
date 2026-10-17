@@ -348,10 +348,7 @@ func computeDaysInStatus(changedAt string, now time.Time) int {
 	}
 	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05.000Z", "2006-01-02"} {
 		if t, err := time.Parse(layout, changedAt); err == nil {
-			days := int(now.Sub(t).Hours() / 24)
-			if days < 0 {
-				days = 0
-			}
+			days := max(int(now.Sub(t).Hours()/24), 0)
 			return days
 		}
 	}

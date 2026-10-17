@@ -61,7 +61,7 @@ func fakeStarts(t *testing.T, path string) []int {
 	}
 	require.NoError(t, err)
 	var pids []int
-	for _, line := range strings.Fields(string(data)) {
+	for line := range strings.FieldsSeq(string(data)) {
 		pid, err := strconv.Atoi(line)
 		require.NoError(t, err)
 		pids = append(pids, pid)

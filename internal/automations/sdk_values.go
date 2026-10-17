@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"slices"
 	"strconv"
 
 	"github.com/dop251/goja"
@@ -32,7 +33,7 @@ var errArgUndefined = errors.New("the argument is undefined")
 // run's context itself.
 const ctxCheckEvery = 1024
 
-var bigIntType = reflect.TypeOf((*big.Int)(nil))
+var bigIntType = reflect.TypeFor[*big.Int]()
 
 // exportPlain converts a script value to a plain Go JSON value (nil, bool,
 // int64, float64, string, []any, map[string]any) following JSON.stringify
@@ -160,10 +161,8 @@ func (c *plainConverter) object(obj *goja.Object, depth int) (any, error) {
 
 // nested converts a container with cycle detection.
 func (c *plainConverter) nested(obj *goja.Object, depth int, conv func(*goja.Object, int) (any, error)) (any, error) {
-	for _, o := range c.stack {
-		if o == obj {
-			return nil, &SDKError{Name: ErrNameValidation, Message: "the value is cyclic and is not a JSON value"}
-		}
+	if slices.Contains(c.stack, obj) {
+		return nil, &SDKError{Name: ErrNameValidation, Message: "the value is cyclic and is not a JSON value"}
 	}
 	c.stack = append(c.stack, obj)
 	defer func() { c.stack = c.stack[:len(c.stack)-1] }()

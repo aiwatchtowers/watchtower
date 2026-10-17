@@ -347,7 +347,7 @@ func psFor(procs map[int]Proc) cmdRunner {
 		if !ok {
 			return nil, errors.New("exit status 1")
 		}
-		return []byte(fmt.Sprintf("%d %d %d S %s /bin/sleep\n", p.PID, p.PPID, p.UID, p.Start)), nil
+		return fmt.Appendf(nil, "%d %d %d S %s /bin/sleep\n", p.PID, p.PPID, p.UID, p.Start), nil
 	}
 }
 

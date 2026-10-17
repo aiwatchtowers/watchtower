@@ -255,7 +255,7 @@ var gmailSeedSeq int
 // a sender can cross the MinMessages seed threshold.
 func seedGmailSenderN(t *testing.T, d *db.DB, email, name string, n int) {
 	t.Helper()
-	for i := 0; i < n; i++ {
+	for range n {
 		gmailSeedSeq++
 		id := fmt.Sprintf("%s-m%d", email, gmailSeedSeq)
 		seedGmailMessage(t, d, id, id, email, name, "Subj", "body", recentISO(gmailSeedSeq))

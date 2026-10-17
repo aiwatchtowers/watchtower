@@ -1440,7 +1440,7 @@ func runJiraFeatures(cmd *cobra.Command, _ []string) error {
 		if roleDisplay == "" {
 			roleDisplay = role
 		}
-		output := map[string]interface{}{
+		output := map[string]any{
 			"role":         role,
 			"role_display": roleDisplay,
 			"features":     features,
@@ -1729,7 +1729,7 @@ func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
 		if overrides.StaleThresholds == nil {
 			overrides.StaleThresholds = make(map[string]int)
 		}
-		for _, part := range strings.Split(staleFlag, ",") {
+		for part := range strings.SplitSeq(staleFlag, ",") {
 			kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
 			if len(kv) != 2 {
 				return fmt.Errorf("invalid stale threshold format: %q (expected 'Name=days')", part)
@@ -1746,7 +1746,7 @@ func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
 		if overrides.TerminalStages == nil {
 			overrides.TerminalStages = make(map[string]bool)
 		}
-		for _, part := range strings.Split(terminalFlag, ",") {
+		for part := range strings.SplitSeq(terminalFlag, ",") {
 			kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
 			if len(kv) != 2 {
 				return fmt.Errorf("invalid terminal format: %q (expected 'StageName=true|false')", part)
@@ -1761,7 +1761,7 @@ func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
 		if overrides.PhaseOverrides == nil {
 			overrides.PhaseOverrides = make(map[string]string)
 		}
-		for _, part := range strings.Split(phaseFlag, ",") {
+		for part := range strings.SplitSeq(phaseFlag, ",") {
 			kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
 			if len(kv) != 2 {
 				return fmt.Errorf("invalid phase format: %q (expected 'StatusName=phase')", part)

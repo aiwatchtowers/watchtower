@@ -513,7 +513,7 @@ func weighAll(ev []beliefEvidence, now time.Time) []evidence {
 func parseBeliefEvidence(body string, logf func(string, ...any)) []beliefEvidence {
 	var ev []beliefEvidence
 	inEvidence := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## ") {
 			inEvidence = trimmed == "## Evidence"
@@ -710,7 +710,7 @@ type HistoryBullet struct {
 func ParseHistory(body string) []HistoryBullet {
 	var out []HistoryBullet
 	inHistory := false
-	for _, raw := range strings.Split(body, "\n") {
+	for raw := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(raw, "## ") {
 			inHistory = strings.TrimSpace(raw) == "## History"
 			continue
@@ -855,9 +855,9 @@ func describeChange(cause string, confDelta float64) string {
 // its digest, stripping a trailing " (downgraded)" so a downgraded op is still
 // classified by its base op. A cause without a dash has an empty rationale.
 func splitCauseRationale(rest string) (cause, rationale string) {
-	if idx := strings.Index(rest, " — "); idx >= 0 {
-		cause = strings.TrimSpace(rest[:idx])
-		rationale = strings.TrimSpace(rest[idx+len(" — "):])
+	if before, after, ok := strings.Cut(rest, " — "); ok {
+		cause = strings.TrimSpace(before)
+		rationale = strings.TrimSpace(after)
 	} else {
 		cause = strings.TrimSpace(rest)
 	}

@@ -110,11 +110,11 @@ func appendNew(list []string, values ...string) []string {
 // urlSegmentAfter returns the path segment following marker in ref ("" when
 // ref has no marker), cut at the next '/', '?' or '#'.
 func urlSegmentAfter(ref, marker string) string {
-	i := strings.Index(ref, marker)
-	if i < 0 {
+	_, after, ok := strings.Cut(ref, marker)
+	if !ok {
 		return ""
 	}
-	seg := ref[i+len(marker):]
+	seg := after
 	if j := strings.IndexAny(seg, "/?#"); j >= 0 {
 		seg = seg[:j]
 	}

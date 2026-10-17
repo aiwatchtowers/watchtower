@@ -69,7 +69,7 @@ func jiraErrorMessage(body []byte) string {
 // lines separate paragraphs, single newlines stay inside a paragraph.
 func ADFDocument(text string) map[string]any {
 	var paragraphs []map[string]any
-	for _, block := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n\n") {
+	for block := range strings.SplitSeq(strings.ReplaceAll(text, "\r\n", "\n"), "\n\n") {
 		block = strings.TrimSpace(block)
 		if block == "" {
 			continue
@@ -87,7 +87,7 @@ func ADFDocument(text string) map[string]any {
 
 // DescriptionText is the exported face of extractDescriptionText (sync.go)
 // so callers outside the syncer can flatten an ADF description.
-func DescriptionText(desc interface{}) string { return extractDescriptionText(desc) }
+func DescriptionText(desc any) string { return extractDescriptionText(desc) }
 
 // CreateIssue creates an issue via POST /rest/api/3/issue.
 func (c *Client) CreateIssue(ctx context.Context, req CreateIssueRequest) (CreatedIssue, error) {

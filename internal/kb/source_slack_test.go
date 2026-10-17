@@ -180,7 +180,7 @@ func TestSlack_HugeDayRendersAllMessagesIntoManyChunks(t *testing.T) {
 	exec(t, d, `INSERT INTO users (id, name) VALUES ('1:U1','bot')`)
 	tx, err := d.Begin()
 	require.NoError(t, err)
-	for i := 0; i < 3000; i++ {
+	for i := range 3000 {
 		_, err := tx.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C2', ?, '1:U1', ?)`,
 			fmt.Sprintf("1758000%03d.%06d", i%1000, i), strings.Repeat("alert payload ", 5))
 		require.NoError(t, err)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,11 +20,12 @@ func rangeMux(n int, queries *[]string, mu *sync.Mutex) *http.ServeMux {
 		mu.Lock()
 		*queries = append(*queries, r.URL.Query().Get("q"))
 		mu.Unlock()
-		ids := `{"id":"promo"}`
+		var ids strings.Builder
+		ids.WriteString(`{"id":"promo"}`)
 		for i := n - 1; i >= 0; i-- { // newest first, like Gmail
-			ids += fmt.Sprintf(`,{"id":"r%d"}`, i)
+			ids.WriteString(fmt.Sprintf(`,{"id":"r%d"}`, i))
 		}
-		fmt.Fprintf(w, `{"messages":[%s]}`, ids)
+		fmt.Fprintf(w, `{"messages":[%s]}`, ids.String())
 	})
 	mux.HandleFunc("/users/me/messages/", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Path[len("/users/me/messages/"):]

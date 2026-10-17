@@ -36,7 +36,7 @@ func TestSectionsHoldNoHeadingsOrCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range sections {
-		for _, line := range strings.Split(s.Text, "\n") {
+		for line := range strings.SplitSeq(s.Text, "\n") {
 			if strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "### ") {
 				t.Fatalf("%s / %s contains heading line %q", s.Page, s.Heading, line)
 			}

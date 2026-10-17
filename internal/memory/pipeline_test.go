@@ -403,7 +403,7 @@ func TestPipelineChunkCapLeavesDebt(t *testing.T) {
 	seedUserRow(t, d, "U1ALICE", "alice")
 	seedChannelRow(t, d, "C1GEN", "general")
 	base := time.Now().Add(-time.Hour).Unix()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.%06d", base+int64(i)*60, i+1), "U1ALICE",
 			fmt.Sprintf("message number %d", i+1))
 	}
@@ -727,7 +727,7 @@ func TestMemory01_LookupErrorFreezesWatermark(t *testing.T) {
 // order (M3 poison-window bound).
 func TestBuildWindowsSplitsOversizedChannel(t *testing.T) {
 	var msgs []db.MemoryExtractMessage
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msgs = append(msgs, db.MemoryExtractMessage{
 			ChannelID: "C1GEN", ChannelName: "general",
 			TS: fmt.Sprintf("%d.000001", 1000+i), TSUnix: float64(1000 + i),
@@ -757,7 +757,7 @@ func TestMemory04_LaterWindowNeverPassesEarlierFailedWindow(t *testing.T) {
 	seedUserRow(t, d, "U1ALICE", "alice")
 	seedChannelRow(t, d, "C1GEN", "general")
 	base := time.Now().Add(-time.Hour).Unix()
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.%06d", base+int64(i)*60, i+1), "U1ALICE",
 			fmt.Sprintf("split message %d", i+1))
 	}
@@ -829,7 +829,7 @@ func TestPipelineSurfacesQuarantinedFiles(t *testing.T) {
 func TestGroupWindowsIntoBatches(t *testing.T) {
 	mk := func(n int) runWindow {
 		w := runWindow{channelWindow: channelWindow{ChannelID: "C", ChannelName: "c"}}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			w.Messages = append(w.Messages, extractMsg{})
 			w.tsUnix = append(w.tsUnix, float64(i))
 		}
@@ -1633,7 +1633,7 @@ func TestMemory04_QuarantineIsTieSafeWithinOneSecond(t *testing.T) {
 	cfg.MaxWindowMessages = 2 // the third message starts a new window inside the same second
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
-	for run := 0; run < extractBatchAttempts+extractSoloAttempts; run++ {
+	for range extractBatchAttempts + extractSoloAttempts {
 		_, err := p.Run(context.Background())
 		require.NoError(t, err)
 	}
@@ -1671,7 +1671,7 @@ func TestMemory04_TransientFailureNeverSpendsBudget(t *testing.T) {
 			v, d := newTestVault(t), newTestDB(t)
 			pipelineFixture(t, d)
 			p := NewPipeline(d, v, &fakeGen{reply: tc.reply}, tc.cfg, t.Logf)
-			for run := 0; run < 3*(extractBatchAttempts+extractSoloAttempts); run++ {
+			for range 3 * (extractBatchAttempts + extractSoloAttempts) {
 				stats, err := p.Run(context.Background())
 				require.NoError(t, err)
 				assert.Zero(t, stats.WindowsQuarantined)
@@ -1697,7 +1697,7 @@ func TestMemory04_MidRunCutoffNeverSpendsBudget(t *testing.T) {
 		return "[]", nil
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
-	for run := 0; run < 3*(extractBatchAttempts+extractSoloAttempts); run++ {
+	for range 3 * (extractBatchAttempts + extractSoloAttempts) {
 		_, err := p.Run(context.Background())
 		require.NoError(t, err)
 	}
@@ -1760,7 +1760,7 @@ func TestMemory04_SuccessResetsBudget(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_, err := p.Run(context.Background())
 		require.NoError(t, err)
 	}

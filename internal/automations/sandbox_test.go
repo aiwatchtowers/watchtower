@@ -344,13 +344,11 @@ func TestSandbox_TriggerIsReadOnly(t *testing.T) {
 		return [threw, trigger.kind, trigger.run_id, trigger.dry_run, trigger.catch_up,
 			typeof trigger.button, trigger.scheduled_for].join(",")`,
 		sbOpts{trigger: TriggerInfo{Kind: "schedule", RunID: 7, DryRun: true,
-			ScheduledFor: ptrTime(time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC))}})
+			ScheduledFor: new(time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC))}})
 	if got != "true,schedule,7,true,false,undefined,2026-10-14T09:00:00Z" {
 		t.Fatalf("got %q", got)
 	}
 }
-
-func ptrTime(t time.Time) *time.Time { return &t }
 
 func TestSandbox_TriggerEventsAreReadOnly(t *testing.T) {
 	events := []map[string]any{{"channel": "releases", "nested": map[string]any{"a": 1}}}

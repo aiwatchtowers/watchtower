@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"path/filepath"
 	"time"
 
@@ -443,9 +444,7 @@ func applyOAuthCredentials(
 	}
 
 	headers := make(map[string]string, len(secret.Headers)+1)
-	for k, v := range secret.Headers {
-		headers[k] = v
-	}
+	maps.Copy(headers, secret.Headers)
 	headers["Authorization"] = "Bearer " + secret.OAuth.AccessToken
 
 	if changed {

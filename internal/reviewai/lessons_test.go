@@ -36,7 +36,7 @@ func TestParseLessons_KeepsGroupsOfTwoOrMoreKnownIDs(t *testing.T) {
 func TestParseLessons_CapsAtTwenty(t *testing.T) {
 	var b []byte
 	b = append(b, `{"lessons":[`...)
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		if i > 0 {
 			b = append(b, ',')
 		}

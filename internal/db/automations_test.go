@@ -487,7 +487,7 @@ func TestMigration00113_PartialUniqueIndexes(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, event_cycle) VALUES (?, 'event', ?)`, id, cycle); err == nil {
 		t.Error("second run of one event cycle accepted; want unique error")
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'event', 'failed')`, id); err != nil {
 			t.Errorf("event run %d without a cycle refused: %v", i, err)
 		}

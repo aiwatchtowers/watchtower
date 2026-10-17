@@ -27,7 +27,7 @@ func TestArtifactsContract_EmbedsTheSharedExamples(t *testing.T) {
 	c := ArtifactsContract()
 	assert.Contains(t, c, strings.TrimSpace(artifactExamples))
 	openers, closers := 0, 0
-	for _, line := range strings.Split(artifactExamples, "\n") {
+	for line := range strings.SplitSeq(artifactExamples, "\n") {
 		if strings.HasPrefix(line, ":::artifact ") {
 			openers++
 		}
