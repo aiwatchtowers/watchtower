@@ -33,6 +33,7 @@ struct TodayZoneView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)], spacing: 12) {
                         ForEach(cards, id: \.kind) { card in
                             TodayCardView(card: card, onLink: onLink, onDecideSuggestion: onDecideSuggestion)
+                                .id(card.suggestionID)
                         }
                     }
                 } else if readFailed {

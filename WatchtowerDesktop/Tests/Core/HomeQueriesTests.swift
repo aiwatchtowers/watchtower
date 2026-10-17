@@ -336,7 +336,7 @@ final class HomeQueriesTests: XCTestCase {
 
     func testObservedTablesCoverEveryRead() {
         for table in ["agent_actions", "reminders", "calendar_events", "meeting_prep_cache", "briefings",
-                      "targets", "owner_asks", "projects", "catchup_recaps"] {
+                      "targets", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"] {
             XCTAssertTrue(HomeQueries.observedTables.contains(table), table)
         }
     }
@@ -377,5 +377,30 @@ final class HomeQueriesTests: XCTestCase {
             try insertSuggestion(d, "dismissed", status: "dismissed")
         }
         XCTAssertNil(try suggestionRead().suggestion)
+    }
+
+    func testSecondOpenSuggestionShowsAfterFirstIsDecided() throws {
+        try db.write { d in
+            try insertSuggestion(d, "first", daysAgo: 1)
+            try insertSuggestion(d, "second", daysAgo: 2)
+        }
+        XCTAssertEqual(try suggestionRead().suggestion?.text, "first")
+        try db.write { try $0.execute(sql: "UPDATE instruction_suggestions SET status = 'added' WHERE text = 'first'") }
+        XCTAssertEqual(try suggestionRead().suggestion?.text, "second")
+    }
+
+    func testFailedSuggestionReadIsNamedAndShowsNoCard() throws {
+        let data = try db.write { d in
+            try d.execute(sql: """
+                DROP TABLE instruction_suggestions;
+                CREATE TABLE instruction_suggestions (id INTEGER PRIMARY KEY, body TEXT);
+                """)
+            return HomeQueries.today(d, now: Date(), calendar: .current)
+        }
+        XCTAssertEqual(data.failed, [.instructionSuggestion])
+        XCTAssertNil(data.suggestion)
+        XCTAssertFalse(HomeTodayBuilder.cards(
+            data, allowed: Set(TodayCardKind.allCases), now: Date(), calendar: .current)
+            .contains { $0.kind == .instructionSuggestion })
     }
 }

@@ -8,7 +8,6 @@ struct TodayCardView: View {
     let onLink: (HomeLink) -> Void
     /// Add (true) / Dismiss (false) a suggestion; the error to show, nil on success.
     let onDecideSuggestion: (Int64, Bool) async -> String?
-    @State private var decided = false
     @State private var busy = false
     @State private var errorText: String?
 
@@ -37,8 +36,6 @@ struct TodayCardView: View {
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(HomeCardBackground())
-        .opacity(decided ? 0 : 1)
-        .frame(height: decided ? 0 : nil)
     }
 
     private func suggestionActions(id: Int64) -> some View {
@@ -59,9 +56,9 @@ struct TodayCardView: View {
         busy = true
         Task {
             let failure = await onDecideSuggestion(id, add)
-            busy = false
             errorText = failure
-            decided = failure == nil
+            // A decision stays disabled until the re-read replaces or removes the card.
+            busy = failure == nil
         }
     }
 
