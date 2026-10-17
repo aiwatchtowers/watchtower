@@ -247,12 +247,10 @@ func TestLoginShellWhich_AcceptsValidNames(t *testing.T) {
 // tests. Currently a smoke test for race detector.
 func TestResetCache_RaceFree(t *testing.T) {
 	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 4 {
+		wg.Go(func() {
 			resetCache()
-		}()
+		})
 	}
 	wg.Wait()
 }

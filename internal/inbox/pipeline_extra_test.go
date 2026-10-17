@@ -63,7 +63,7 @@ func TestLoadContext_TruncatesByRunesNotBytes(t *testing.T) {
 	ctx := p.loadContext("C1", "100.9", "")
 	require.NotEmpty(t, ctx)
 	assert.True(t, utf8.ValidString(ctx), "item context must stay valid UTF-8")
-	for _, line := range strings.Split(ctx, "\n") {
+	for line := range strings.SplitSeq(ctx, "\n") {
 		assert.LessOrEqual(t, utf8.RuneCountInString(line), len("[U2] ")+200+len("..."), "each line is capped at 200 runes of text")
 	}
 }
@@ -114,7 +114,7 @@ func TestLoadContext_BlockCapCountsRunes(t *testing.T) {
 	p := New(d, testConfig(), nil, log.Default())
 	insertChannel(t, d, "C1", "public")
 	long := strings.Repeat("ж", 400)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES (?, ?, ?, ?, ?)`,
 			"C1", fmt.Sprintf("200.%d", i+1), "U2", long, "200.1")
 		require.NoError(t, err)

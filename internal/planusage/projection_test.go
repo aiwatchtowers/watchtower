@@ -10,8 +10,7 @@ import (
 	"watchtower/internal/db"
 )
 
-func at(h, m int) time.Time      { return time.Date(2026, 10, 15, h, m, 0, 0, time.UTC) }
-func ptr(t time.Time) *time.Time { return &t }
+func at(h, m int) time.Time { return time.Date(2026, 10, 15, h, m, 0, 0, time.UTC) }
 
 func series(reset time.Time, start time.Time, step time.Duration, pcts ...float64) []db.PlanUsageSample {
 	out := make([]db.PlanUsageSample, len(pcts))
@@ -42,7 +41,7 @@ func TestProject(t *testing.T) {
 			series(reset, at(10, 0), 10*time.Minute, 40, 41.6667, 43.3333, 45), "safe", nil},
 		// 60%/h: 40 at 10:00 → 70 at 10:30; 30 % left → 0.5 h → 11:00
 		{"will hit", at(10, 30), Limit{Group: "session", Percent: 70, ResetsAt: &reset},
-			series(reset, at(10, 0), 10*time.Minute, 40, 50, 60, 70), "will_hit", ptr(at(11, 0))},
+			series(reset, at(10, 0), 10*time.Minute, 40, 50, 60, 70), "will_hit", new(at(11, 0))},
 		{"decreasing floors to zero", at(10, 30), Limit{Group: "session", Percent: 30, ResetsAt: &reset},
 			series(reset, at(10, 0), 10*time.Minute, 60, 50, 40, 30), "safe", nil},
 	}

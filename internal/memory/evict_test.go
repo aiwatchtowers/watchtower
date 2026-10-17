@@ -194,7 +194,7 @@ func TestEvictSkipsRecentAndHighScore(t *testing.T) {
 	linked := oldEpNode(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5EV3", "Well linked", "done", "C2CHAN", 100)
 	writeAndIndex(t, v, d, linked)
 	// Three live entity pages link to the old episode → importance high.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		e := vaultTestNode(fmt.Sprintf("ent_01ARZ3NDEKTSV4RRFFQ69G5EL%d", i), "entity", "Linker")
 		e.Body = "# Linker\n\n## Links\n- [[" + linked.ID + "]]\n"
 		writeAndIndex(t, v, d, e)
@@ -267,7 +267,7 @@ func TestEvictAppendsToExistingRollup(t *testing.T) {
 // is evicted per run.
 func TestEvictCapRespected(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ep := oldEpNode(t, fmt.Sprintf("ep_01ARZ3NDEKTSV4RRFFQ69G5EC%d", i), "Cold", "done", fmt.Sprintf("C5CHA%d", i), 100)
 		writeAndIndex(t, v, d, ep)
 	}
@@ -359,7 +359,7 @@ func TestEvictOwnerTouchedKept(t *testing.T) {
 func TestEvictEpisodes_OwnerTouchReadsHistoryOnce(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	var cold []Node
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ep := oldEpNode(t, fmt.Sprintf("ep_01ARZ3NDEKTSV4RRFFQ69G5HO%d", i), "Cold", "done", fmt.Sprintf("C8CHA%d", i), 100)
 		writeAndIndex(t, v, d, ep)
 		cold = append(cold, ep)

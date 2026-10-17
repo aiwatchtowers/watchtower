@@ -243,7 +243,7 @@ func TestSearchMessagesDefaultLimit(t *testing.T) {
 	defer db.Close()
 
 	// Insert more messages than default limit (50)
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		ts := fmt.Sprintf("17000%05d.000001", i)
 		require.NoError(t, db.UpsertMessage(Message{
 			ChannelID: "C001", TS: ts, UserID: "U001",

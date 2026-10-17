@@ -11,7 +11,7 @@ Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows 
 | Keys | Action |
 |---|---|
 | **⌘B** | Collapse or expand the menu |
-| **⌘/** | Ask Watchtower: search the guide or ask how to do something |
+| **⌘/** | Ask Watchtower: the chat over any tab |
 | **⌃⌘R** | Run Automation… (with Automations turned on) |
 | **⌃⌥D** | New Voice Idea, from anywhere in macOS |
 | **⌘,** | Settings |

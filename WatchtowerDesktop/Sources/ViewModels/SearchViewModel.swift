@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import OSLog
 import WatchtowerCore
 
 @MainActor
@@ -7,6 +8,7 @@ import WatchtowerCore
 final class SearchViewModel {
     var query = ""
     var results: [SearchResult] = []
+    var guideHits: [GuideHit] = []
     var isSearching = false
     var errorMessage: String?
     private(set) var slackLinks: SlackLinkResolver?
@@ -28,6 +30,8 @@ final class SearchViewModel {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             results = []
+            guideHits = []
+            isSearching = false
             return
         }
 
@@ -37,18 +41,39 @@ final class SearchViewModel {
             do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
 
             self.isSearching = true
+            // A stale search (cancelled, or the query moved on) writes nothing.
+            @MainActor func isCurrent() -> Bool {
+                if Task.isCancelled { return false }
+                return self.query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
+            }
+            // Guide pages ride along; a failure here must not hide Slack results.
             do {
-                self.results = try await dbManager.dbPool.read { db in
+                let hits = try await dbManager.dbPool.read { db in
+                    try GuideQueries.search(db, query: trimmed)
+                }
+                if isCurrent() { self.guideHits = hits }
+            } catch {
+                if isCurrent() {
+                    Logger(subsystem: "com.watchtower.desktop", category: "search")
+                        .error("guide search failed: \(error.localizedDescription, privacy: .public)")
+                    self.guideHits = []
+                }
+            }
+            do {
+                let found = try await dbManager.dbPool.read { db in
                     try SearchQueries.search(db, query: trimmed)
                 }
-                self.errorMessage = nil
+                if isCurrent() {
+                    self.results = found
+                    self.errorMessage = nil
+                }
             } catch {
-                if !Task.isCancelled {
+                if isCurrent() {
                     self.errorMessage = error.localizedDescription
                     self.results = []
                 }
             }
-            self.isSearching = false
+            if isCurrent() { self.isSearching = false }
         }
     }
 }

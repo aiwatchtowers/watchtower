@@ -386,7 +386,7 @@ func TestBuildProjectMap_MultipleEpicsSorted(t *testing.T) {
 		Key: "PROJ-500", ID: "500", IssueType: "Epic",
 		Summary: "Complete Epic", Status: "Done", StatusCategory: "done",
 	})
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		insertTestIssue(t, d, db.JiraIssue{
 			Key: fmt.Sprintf("A-%d", i+1), ID: fmt.Sprintf("50%d", i),
 			EpicKey: "PROJ-500", Summary: "Done task",
@@ -402,7 +402,7 @@ func TestBuildProjectMap_MultipleEpicsSorted(t *testing.T) {
 		Key: "PROJ-600", ID: "600", IssueType: "Epic",
 		Summary: "Behind Epic", Status: "In Progress", StatusCategory: "in_progress",
 	})
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		insertTestIssue(t, d, db.JiraIssue{
 			Key: fmt.Sprintf("B-%d", i+1), ID: fmt.Sprintf("60%d", i),
 			EpicKey: "PROJ-600", Summary: "Todo task",
@@ -447,7 +447,7 @@ func TestBuildProjectMap_NoOwnerWhenNoAssignee(t *testing.T) {
 		Summary: "Unowned Epic", Status: "In Progress", StatusCategory: "in_progress",
 	})
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		insertTestIssue(t, d, db.JiraIssue{
 			Key: fmt.Sprintf("C-%d", i+1), ID: fmt.Sprintf("70%d", i),
 			EpicKey: "PROJ-700", Summary: "Task",

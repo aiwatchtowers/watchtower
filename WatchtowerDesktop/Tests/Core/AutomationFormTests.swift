@@ -162,6 +162,28 @@ final class AutomationFormTests: XCTestCase {
         XCTAssertEqual(form.problems, [])
     }
 
+    /// #582: a recipe that does not parse is loaded with column defaults; the
+    /// form never splices them over the real frontmatter and blocks nothing.
+    func testUnparsedRecipePausesTheForm() throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Fixtures.showJSON()) as? [String: Any])
+        object["parse_error"] = "permissions[0]: jira: @<PROJECT> is a template placeholder"
+        object["name"] = ""
+        let detail = try JSONDecoder().decode(AutomationDetail.self,
+                                              from: JSONSerialization.data(withJSONObject: object))
+        let form = AutomationFormModel(detail: detail)
+        XCTAssertTrue(form.recipeUnparsed)
+        XCTAssertTrue(form.paused)
+        form.fields.name = "Typed in the form"
+        form.fields.budgetTokens = 1000
+        XCTAssertEqual(form.renderedText(), Fixtures.recipe, "the recipe's own frontmatter is kept")
+        XCTAssertFalse(form.buffer.isDirty)
+        XCTAssertEqual(form.problems, [], "column defaults never block a Save of the fixed recipe")
+
+        let parsed = AutomationFormModel(detail: try Fixtures.detail())
+        XCTAssertFalse(parsed.recipeUnparsed)
+        XCTAssertFalse(parsed.paused)
+    }
+
     /// A Monaco edit typed before a form change reached the page replaced
     /// the text; it touched only the script, so the form change is spliced back.
     func testFormEditLostToAScriptEditIsSplicedBack() throws {

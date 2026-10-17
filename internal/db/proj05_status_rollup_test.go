@@ -122,7 +122,7 @@ func TestProj05_DeepChainWithParentIDsAboveChildren(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	leaf := insertWorkbenchTargetRow(t, d, pid, "leaf")
 	chain := []int64{leaf}
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		p := insertWorkbenchTargetRow(t, d, pid, "level")
 		_, err := d.Exec(`UPDATE targets SET parent_id = ? WHERE id = ?`, p, chain[len(chain)-1])
 		require.NoError(t, err)
@@ -291,9 +291,9 @@ func TestProj05_DeleteProjectWithMultiLevelBoardLeavesNoRows(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	keep := newTestWorkbench(t, d)
 	root := insertWorkbenchTargetRow(t, d, pid, "plan")
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		mid := insertBoardChild(t, d, pid, root, "in_progress")
-		for j := 0; j < 3; j++ {
+		for range 3 {
 			leaf := insertBoardChild(t, d, pid, mid, "todo")
 			insertBoardChild(t, d, pid, leaf, "done")
 		}

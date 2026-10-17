@@ -94,11 +94,11 @@ func TestSessionPoolConcurrency(t *testing.T) {
 
 	done := make(chan struct{})
 
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
 			defer func() { done <- struct{}{} }()
 			ctx := context.Background()
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				w, err := p.Acquire(ctx)
 				if err != nil {
 					t.Errorf("acquire failed: %v", err)
@@ -111,7 +111,7 @@ func TestSessionPoolConcurrency(t *testing.T) {
 		}()
 	}
 
-	for i := 0; i < workers; i++ {
+	for range workers {
 		<-done
 	}
 }
@@ -207,10 +207,10 @@ func TestSessionLogConcurrent(t *testing.T) {
 	sl := NewSessionLog(path)
 
 	done := make(chan struct{})
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			for j := 0; j < 5; j++ {
+			for range 5 {
 				sl.Log(SessionEvent{
 					Timestamp: "t",
 					SessionID: "s",
@@ -220,7 +220,7 @@ func TestSessionLogConcurrent(t *testing.T) {
 			}
 		}()
 	}
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		<-done
 	}
 

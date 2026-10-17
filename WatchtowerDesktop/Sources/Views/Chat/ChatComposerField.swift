@@ -39,6 +39,8 @@ struct ChatComposerField: View {
     /// quote batch): enables Send with an empty field. Defaults to none, so
     /// every other call site is unchanged.
     var hasPendingContent = false
+    /// Focus the input when it is created (the ⌘/ popup).
+    var autoFocus = false
     /// Each new value puts the keyboard in the field, caret at the end.
     var focusRequest: UUID?
     @Environment(\.dictationCenter) private var dictationCenter
@@ -63,6 +65,7 @@ struct ChatComposerField: View {
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
             hasPendingContent: hasPendingContent,
+            autoFocus: autoFocus,
             focusRequest: focusRequest
         )
     }
@@ -91,6 +94,7 @@ struct ChatComposerFieldContent: View {
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     var hasPendingContent = false
+    var autoFocus = false
     var focusRequest: UUID?
     @State private var inputHeight: CGFloat = 22
     /// The text of a long paste the field offers to attach as a file
@@ -163,6 +167,7 @@ struct ChatComposerFieldContent: View {
                     onLongTextPaste: offerLongPaste,
                     onCursorChange: onCursorChange,
                     onPickerKey: onPickerKey,
+                    autoFocus: autoFocus,
                     focusRequest: focusRequest
                 ) {
                     guard canSend else { return }
@@ -260,6 +265,8 @@ struct ExpandingTextInput: NSViewRepresentable {
     var onCursorChange: ((String, Int) -> Void)?
     /// Offered Up/Down/Enter/Tab/Esc first while a picker may be open.
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// Makes the text view first responder once it is in its window.
+    var autoFocus = false
     /// Each new value makes the text view first responder, caret at the end.
     var focusRequest: UUID?
     var onSubmit: () -> Void
@@ -305,7 +312,18 @@ struct ExpandingTextInput: NSViewRepresentable {
             object: textView
         )
 
+        if autoFocus { Self.focus(textView) }
         return scrollView
+    }
+
+    /// Next run-loop turn (the view is in its window by then): first
+    /// responder, caret at the end.
+    private static func focus(_ textView: NSTextView) {
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, let window = textView.window else { return }
+            window.makeFirstResponder(textView)
+            textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+        }
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
@@ -322,12 +340,7 @@ struct ExpandingTextInput: NSViewRepresentable {
         }
         if focusRequest != context.coordinator.focusRequest {
             context.coordinator.focusRequest = focusRequest
-            if focusRequest != nil {
-                DispatchQueue.main.async {
-                    textView.window?.makeFirstResponder(textView)
-                    textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
-                }
-            }
+            if focusRequest != nil { Self.focus(textView) }
         }
     }
 

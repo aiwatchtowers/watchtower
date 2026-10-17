@@ -1323,3 +1323,49 @@ func TestGetJiraIssues(t *testing.T) {
 	require.NoError(t, err, "GetJiraIssues status")
 	assert.Len(t, byStatus, 2)
 }
+
+// The owner's active projects: synced (watermark or selected board), with an
+// open issue the account's own connecting person is assigned to or reported;
+// done, deleted and unsynced projects, another account's person, and a
+// disabled or removed account do not count.
+func TestOwnerActiveJiraProjects(t *testing.T) {
+	db := openTestDB(t)
+	first := SeedTestJiraAccount(t, db)
+	second, err := db.CreateJiraAccount(JiraAccount{CloudID: "c2", SiteURL: "https://two.example.com", SiteName: "Two"})
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE jira_accounts SET owner_account_id = CASE id WHEN ? THEN 'me' ELSE 'me2' END`, first)
+	require.NoError(t, err)
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: first, ID: 1, Name: "B", ProjectKey: "BRD", IsSelected: true, SyncedAt: "now"}))
+	for _, p := range []string{"PAY", "OLD"} {
+		require.NoError(t, db.UpdateJiraSyncState(first, p, "now", 1))
+	}
+	require.NoError(t, db.UpdateJiraSyncState(second, "OPS", "now", 1))
+	issue := func(acct int64, key, project, category, assignee, reporter string) {
+		require.NoError(t, db.UpsertJiraIssue(JiraIssue{AccountID: acct, Key: key, ProjectKey: project, Summary: "S", Status: "S",
+			StatusCategory: category, AssigneeAccountID: assignee, ReporterAccountID: reporter,
+			CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	}
+	issue(first, "PAY-1", "PAY", "indeterminate", "me", "")
+	issue(first, "PAY-2", "PAY", "new", "", "me")
+	issue(first, "OLD-1", "OLD", "done", "me", "")
+	issue(first, "BRD-1", "BRD", "new", "me2", "") // the other account's person
+	issue(first, "MIR-1", "MIR", "new", "me", "")  // not a synced project
+	issue(second, "OPS-1", "OPS", "new", "me2", "")
+
+	got, err := db.OwnerActiveJiraProjects()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"OPS", "PAY"}, got)
+
+	issue(first, "BRD-2", "BRD", "new", "", "me")
+	_, err = db.Exec(`UPDATE jira_accounts SET enabled = 0 WHERE id = ?`, second)
+	require.NoError(t, err)
+	got, err = db.OwnerActiveJiraProjects()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"BRD", "PAY"}, got)
+
+	_, err = db.Exec(`UPDATE jira_accounts SET status = 'removed'`)
+	require.NoError(t, err)
+	got, err = db.OwnerActiveJiraProjects()
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}

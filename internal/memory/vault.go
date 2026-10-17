@@ -280,7 +280,7 @@ func (v *Vault) Lock() (func(), error) {
 	// (LockHolderPID). Best-effort by design: the lock is held either way, and
 	// a diagnostic that cannot be written must never fail the run that holds it.
 	if terr := f.Truncate(0); terr == nil {
-		_, _ = f.WriteAt([]byte(fmt.Sprintf("pid=%d\n", os.Getpid())), 0)
+		_, _ = f.WriteAt(fmt.Appendf(nil, "pid=%d\n", os.Getpid()), 0)
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
@@ -492,8 +492,8 @@ func parseMemoryCommit(message string) (op, summary string, nodeIDs []string, ok
 	rest := head[closeIdx+1:]
 	summary = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ":"))
 	for _, l := range lines[1:] {
-		if strings.HasPrefix(l, "Nodes: ") {
-			nodeIDs = strings.Fields(strings.TrimPrefix(l, "Nodes: "))
+		if after, ok0 := strings.CutPrefix(l, "Nodes: "); ok0 {
+			nodeIDs = strings.Fields(after)
 			break
 		}
 	}

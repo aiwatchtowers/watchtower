@@ -439,8 +439,8 @@ func formatDayPlanShow(p *db.DayPlan, items []db.DayPlanItem) string {
 			// Simple extraction: find first quoted string.
 			if idx := strings.Index(p.FeedbackHistory, `"`); idx >= 0 {
 				rest := p.FeedbackHistory[idx+1:]
-				if end := strings.Index(rest, `"`); end >= 0 {
-					feedbacks = append(feedbacks, rest[:end])
+				if before, _, ok := strings.Cut(rest, `"`); ok {
+					feedbacks = append(feedbacks, before)
 				}
 			}
 			if len(feedbacks) > 0 {

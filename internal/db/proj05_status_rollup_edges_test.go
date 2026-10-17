@@ -171,7 +171,7 @@ func TestProj05_HundredLevelChainRollsUpToTheRoot(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	root := insertWorkbenchTargetRow(t, d, pid, "root")
 	parent := root
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		parent = insertBoardChild(t, d, pid, parent, "todo")
 	}
 	setStatusRaw(t, d, parent, "done")

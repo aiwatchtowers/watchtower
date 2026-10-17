@@ -12,8 +12,7 @@ import (
 )
 
 func TestWatchTrigger_FiresOnSignal(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	ch := WatchTrigger(ctx)
 	require.NoError(t, syscall.Kill(os.Getpid(), TriggerSignal))
@@ -30,11 +29,10 @@ func TestWatchTrigger_FiresOnSignal(t *testing.T) {
 // daemon syncs sequentially, so extra triggers collapse into the queued one
 // rather than piling up into a queue of identical syncs.
 func TestWatchTrigger_CoalescesBurst(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	ch := WatchTrigger(ctx)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		require.NoError(t, syscall.Kill(os.Getpid(), TriggerSignal))
 	}
 

@@ -57,7 +57,7 @@ func newXOAUTH2Client(username, accessToken string) sasl.Client {
 
 func (a *xoauth2Client) Start() (mech string, ir []byte, err error) {
 	mech = "XOAUTH2"
-	ir = []byte(fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", a.username, a.accessToken))
+	ir = fmt.Appendf(nil, "user=%s\x01auth=Bearer %s\x01\x01", a.username, a.accessToken)
 	return mech, ir, nil
 }
 
