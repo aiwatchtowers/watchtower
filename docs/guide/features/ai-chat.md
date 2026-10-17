@@ -25,8 +25,9 @@ Only the main chat, the target chat and the automation editor can act, through p
 1. Open **AI Chat**. A start page offers a composer, starter prompts, and your pinned and recent chats. If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
 2. Type and press Enter (Shift+Enter adds a line). **Stop** (Esc) keeps what was written and offers **Continue**. Hover your message to **Edit**; hover a reply to **Regenerate**. Every version is kept, switch with the arrows.
 3. Type `@` to point at a person, Slack channel, Jira issue, target or track. Type `/` at the start to load one of your enabled skills.
-4. Attach files with the paperclip, drag and drop, or paste. Images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB. One message's files together stay under 30 MB. Anything else is refused with the reason. Files are stored privately in the workspace and deleted with their chat.
-5. **New chat** is ⌘N; ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title is written after the first reply, and one you set is never replaced.
+4. Attach files with the paperclip, drag and drop, or ⌘V. Images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB. One message's files together stay under 30 MB. Anything else, or a folder, is refused with the file's name and the reason. Files are stored privately in the workspace and deleted with their chat.
+5. ⌘V attaches files copied in Finder, a screenshot or copied image (as a PNG, shrunk if it is over 5 MB), and copied PDF data. Copied text always pastes as text, even when the copy also carries a picture of it. A paste of 10,000 characters or more offers **Attach as File** (it becomes `Pasted text.txt`) or **Keep as Text**.
+6. **New chat** is ⌘N; ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title is written after the first reply, and one you set is never replaced.
 
 ### Artifacts
 
