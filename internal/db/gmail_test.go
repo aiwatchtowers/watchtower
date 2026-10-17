@@ -345,4 +345,3 @@ func TestClearGmailData_Degenerate(t *testing.T) {
 	assert.Equal(t, after, gmailPurgeWatermarks(t, d))
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM gmail_messages WHERE account_id = ?`, acctB))
 }
-

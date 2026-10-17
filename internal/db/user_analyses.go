@@ -491,15 +491,6 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 	return results, nil
 }
 
-// Interaction score weights — higher = stronger signal of real connection.
-const (
-	weightDM          = 5.0 // DM = strongest intentional signal
-	weightMention     = 4.0 // @-mention = explicit addressing
-	weightThreadReply = 3.0 // thread reply = active conversation
-	weightReaction    = 1.0 // reaction = light engagement
-	weightChannelMsg  = 0.5 // shared channel message = ambient noise
-)
-
 // classifyConnection determines connection type from directional scores.
 // peer: balanced bidirectional (±30%), i_depend: I reach out more,
 // depends_on_me: they reach out more, weak: low total score.

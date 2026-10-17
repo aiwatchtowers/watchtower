@@ -228,4 +228,3 @@ func (db *DB) GmailMessagesSyncedAfter(accountID int64, sinceISO string) ([]Gmai
 	}
 	return out, rows.Err()
 }
-
