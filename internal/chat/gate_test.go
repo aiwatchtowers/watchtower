@@ -950,6 +950,15 @@ func TestGate_ApprovedForeignUpdateIsNoStandingGrant(t *testing.T) {
 }
 
 // unitGate is a gate over sink answering on a pipe the test reads.
+// claimedByGate reports whether the gate holds toolUseID as claimed: the
+// sink row turns executing before the gate records the claim.
+func claimedByGate(g *gate, toolUseID string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.claimed[toolUseID]
+	return ok
+}
+
 func unitGate(t *testing.T, sink *fakeSink) (*gate, *claudeProc, *os.File) {
 	t.Helper()
 	g, err := newGate(GateOptions{Sink: sink, Policy: connectorpolicy.Policy{Disabled: map[string]bool{}},
@@ -991,7 +1000,7 @@ func TestGate_ClaimedCallOfAGoneChildIsOfUnknownOutcome(t *testing.T) {
 	g.dispatch(p, req)
 	sink.waitRows(t, 1)
 	require.True(t, sink.approve(1, ""))
-	waitUntil(t, "the claim", func() bool { return sink.row(1).status == "executing" })
+	waitUntil(t, "the claim", func() bool { return claimedByGate(g, "tu1") })
 
 	g.procGone(p) // the child died before its tool_result
 	row := sink.row(1)
@@ -1054,7 +1063,7 @@ func TestGate_ErrorResultLandsFailed(t *testing.T) {
 			g.dispatch(p, req)
 			sink.waitRows(t, 1)
 			require.True(t, sink.approve(1, ""))
-			waitUntil(t, "the claim", func() bool { return sink.row(1).status == "executing" })
+			waitUntil(t, "the claim", func() bool { return claimedByGate(g, "tu1") })
 
 			g.onResult(toolResult{toolUseID: "tu1", text: tc.text, isError: true})
 			row := sink.row(1)

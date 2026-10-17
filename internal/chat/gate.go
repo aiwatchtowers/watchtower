@@ -370,10 +370,7 @@ func childGone(p *claudeProc) bool {
 
 // ask proposes the call, shows the waiting step and waits for the owner.
 func (g *gate) ask(p *claudeProc, req permissionRequest, w *gateWait) {
-	if stop, why := g.stopRequested(w); stop {
-		if why == stopByOwner {
-			g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
-		}
+	if g.settledByStop(p, req, w) {
 		return
 	}
 	turn := g.turnID()
