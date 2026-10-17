@@ -558,6 +558,9 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
     card_generated_at TEXT,
     composed_at     TEXT,
+    mentions        TEXT NOT NULL DEFAULT '[]', -- channel-level Slack items: JSON [{ts,sender,trigger,text,permalink}] of the folded messages, oldest first, the 20 newest
+    mentions_earlier INTEGER NOT NULL DEFAULT 0, -- older folded messages that fell off the 20-entry list
+    mentioned_at    TEXT NOT NULL DEFAULT '', -- when a fold last added a message ('' = never); Catch-Up windows use MAX(created_at, mentioned_at)
     UNIQUE(channel_id, message_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);

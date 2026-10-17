@@ -407,6 +407,16 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 		return "(No pending inbox items.)\n", false
 	}
 
+	raws := make([]string, len(items))
+	for i, item := range items {
+		raws[i] = item.Mentions
+	}
+	names, err := p.db.InboxMentionSenderNames(raws...)
+	if err != nil {
+		p.logger.Printf("briefing: error resolving inbox mention senders: %v", err)
+		names = nil // entries then show the sender ids
+	}
+
 	var sb strings.Builder
 	for _, item := range items {
 		typeLabel := "@mention"
@@ -414,9 +424,24 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 			typeLabel = "DM"
 		}
 		p.shown.addInbox(item.ID)
-		p.shown.addPerson(item.SenderUserID)
-		sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] from %s: %s\n",
-			item.ID, item.Priority, typeLabel, item.SenderUserID, item.Snippet))
+		// A channel-level item that accumulated several messages (#586):
+		// one line per message, each sender by name and id, instead of the
+		// newest message alone.
+		if lines := db.InboxMentionLines(item.Mentions, item.MentionsEarlier, names, true); lines != nil {
+			list, _ := db.ParseInboxMentions(item.Mentions)
+			for _, m := range list {
+				p.shown.addPerson(m.SenderID)
+			}
+			sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] %s in this channel:\n",
+				item.ID, item.Priority, typeLabel, db.InboxMentionCountLabel(list, item.MentionsEarlier)))
+			for _, line := range lines {
+				sb.WriteString("  - " + line + "\n")
+			}
+		} else {
+			p.shown.addPerson(item.SenderUserID)
+			sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] from %s: %s\n",
+				item.ID, item.Priority, typeLabel, item.SenderUserID, item.Snippet))
+		}
 		if item.AIReason != "" {
 			sb.WriteString(fmt.Sprintf("  Reason: %s\n", item.AIReason))
 		}
