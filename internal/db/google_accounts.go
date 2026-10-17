@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // GoogleAccount is one row of google_accounts — a connected Google account
@@ -161,6 +162,37 @@ func (db *DB) SetGmailAccountWatermark(accountID int64, ts float64) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("setting gmail watermark: no google_accounts row %d", accountID)
+	}
+	return nil
+}
+
+// GmailDeletionsCheckedAt returns when the daily source-deletions diff last
+// finished for accountID; zero when never or unparseable.
+func (db *DB) GmailDeletionsCheckedAt(accountID int64) (time.Time, error) {
+	var s string
+	err := db.QueryRow(`SELECT deletions_checked_at FROM google_accounts WHERE id = ?`, accountID).Scan(&s)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("getting gmail deletions stamp for account %d: %w", accountID, err)
+	}
+	t, perr := time.Parse(time.RFC3339, s)
+	if perr != nil {
+		return time.Time{}, nil //nolint:nilerr // an empty or unparseable stamp means "never checked".
+	}
+	return t, nil
+}
+
+// SetGmailDeletionsCheckedAt stamps the daily source-deletions diff.
+func (db *DB) SetGmailDeletionsCheckedAt(accountID int64, t time.Time) error {
+	res, err := db.Exec(`UPDATE google_accounts SET deletions_checked_at = ? WHERE id = ?`,
+		t.UTC().Format(time.RFC3339), accountID)
+	if err != nil {
+		return fmt.Errorf("setting gmail deletions stamp for account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting gmail deletions stamp: no google_accounts row %d", accountID)
 	}
 	return nil
 }
