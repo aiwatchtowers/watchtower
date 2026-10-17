@@ -182,8 +182,16 @@ var (
 	// exits 0.
 	askToolBlockSpec = hookSpec{event: "PreToolUse", subcommand: "workbench ask-guard --workbench",
 		flags: " --pre-tool-use", timeoutSec: 5, matcher: "AskUserQuestion"}
+	// permissionWaitSpec: the synchronous PermissionRequest hook that holds a
+	// permission dialog open for an answer from the phone (#517). Claude only;
+	// 86400 s holds past the 600 s default (probe on Claude Code 2.1.302).
+	// Installed and removed with the state hooks but not one of them, so it
+	// does not count in HasStateHooks / HasCoreStateHooks and status does not
+	// report it.
+	permissionWaitSpec = hookSpec{event: "PermissionRequest", subcommand: "workbench permission-wait --workbench",
+		timeoutSec: 86400, matcher: "*"}
 	// ownedHookSpecs is every event the workbench install owns an entry in.
-	ownedHookSpecs = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec}, stateHookSpecs...)
+	ownedHookSpecs = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec, permissionWaitSpec}, stateHookSpecs...)
 )
 
 // askGuardMarkerTemplate opens the Stop prompt hook an install from before
@@ -257,7 +265,7 @@ func InstallStopHook(dir, command string, workbenchID int64) (bool, error) {
 // reported once and none is attempted.
 func InstallStateHooks(dir, bin string, workbenchID int64) (bool, error) {
 	changed := false
-	for _, spec := range stateHookSpecs {
+	for _, spec := range append([]hookSpec{permissionWaitSpec}, stateHookSpecs...) {
 		c, err := installHook(dir, spec, spec.command(bin, workbenchID), workbenchID)
 		if err != nil {
 			return changed, err
@@ -339,7 +347,7 @@ func RemoveStopHook(dir string, workbenchID int64) (bool, error) {
 // (PROJ-02/04); the owner's own entries under those events stay.
 func RemoveStateHooks(dir string, workbenchID int64) (bool, error) {
 	changed := false
-	for _, spec := range stateHookSpecs {
+	for _, spec := range append([]hookSpec{permissionWaitSpec}, stateHookSpecs...) {
 		c, err := removeHook(dir, spec, workbenchID)
 		if err != nil {
 			return changed, err
