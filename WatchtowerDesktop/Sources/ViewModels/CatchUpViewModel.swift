@@ -456,9 +456,19 @@ final class CatchUpViewModel {
             return ""
         }
 
+        // An accumulated channel item (#586) names everyone who wrote, not
+        // only the newest sender.
+        let sender = item.isAccumulated
+            ? item.mentionSendersLabel(names: inboxMentionSenders(item))
+            : names.sender
+        return Self.originCaption(sender: sender, channel: names.channel)
+    }
+
+    /// "from Ann in #eng"; either half dropped when empty.
+    nonisolated static func originCaption(sender: String, channel: String) -> String {
         var parts: [String] = []
-        if !names.sender.isEmpty { parts.append("from \(names.sender)") }
-        if !names.channel.isEmpty { parts.append("in #\(names.channel)") }
+        if !sender.isEmpty { parts.append("from \(sender)") }
+        if !channel.isEmpty { parts.append("in #\(channel)") }
         return parts.joined(separator: " ")
     }
 

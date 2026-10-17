@@ -3,6 +3,7 @@ package inbox
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"testing"
 
@@ -173,6 +174,36 @@ func TestInbox09_ChannelMentionsOverlapRescanIsNotNews(t *testing.T) {
 			assert.Len(t, list, 2)
 		})
 	}
+}
+
+// TestInbox09_ChannelMentionsOverflowRescanIsNotNews: a message that fell off
+// the 20-entry list (counted in mentions_earlier) is still not news on a
+// re-scan — dismissing the overflowed item never re-mints it.
+func TestInbox09_ChannelMentionsOverflowRescanIsNotNews(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	insertChannel(t, d, "1:C1", "public")
+	for i := 0; i <= db.InboxMentionsKeep; i++ { // 21 mentions
+		insertMessage(t, d, "1:C1", recentTS(60-i), "1:U_BOB", fmt.Sprintf("<@U_ME1> question %d", i))
+	}
+	p := New(d, testConfig(), nil, log.Default())
+	created, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+	items, err := d.GetInboxItems(db.InboxFilter{Status: "pending"})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, 1, items[0].MentionsEarlier)
+
+	_, err = d.Exec(`UPDATE inbox_items SET status = 'dismissed'`)
+	require.NoError(t, err)
+	require.NoError(t, d.SetInboxLastProcessedTS(0))
+	p = New(d, testConfig(), nil, log.Default())
+	created, _, err = p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, created, "the message that fell off the list is not minted again")
 }
 
 // TestInbox09_ChannelMentionsTwoDetectorsOneEntry: a DM that also @mentions

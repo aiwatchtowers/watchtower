@@ -142,6 +142,24 @@ package struct InboxItem: FetchableRecord, Identifiable, Equatable {
         }
     }
 
+    /// Who wrote an accumulated item: its distinct senders oldest first, "Ann,
+    /// Bob" when there are at most three and every one resolves to a name,
+    /// else "N people" (a raw id would read as noise). Same rule as Go
+    /// `db.InboxMentionSenders`.
+    package func mentionSendersLabel(names: [String: String]) -> String {
+        var who: [String] = []
+        var seen = Set<String>()
+        var allNamed = true
+        for mention in mentionList where seen.insert(mention.sender).inserted {
+            if let name = names[mention.sender], !name.isEmpty {
+                who.append(name)
+            } else {
+                allNamed = false
+            }
+        }
+        return seen.count <= 3 && allNamed ? who.joined(separator: ", ") : "\(seen.count) people"
+    }
+
     /// True when the item lists more than one message.
     package var isAccumulated: Bool { mentionList.count + mentionsEarlier > 1 }
 

@@ -109,11 +109,13 @@ func (db *DB) FindPendingInboxByThread(channelID, threadTS string) (int, error) 
 
 // UpdateInboxItemSnippet updates the snippet, context, raw_text, sender,
 // message_ts and permalink of an existing inbox item (the detector's
-// thread-fold path).
+// thread-fold path), marks it unread and stamps mentioned_at, so a reply
+// folded into an older thread item reaches Catch-Up's window (#586).
 func (db *DB) UpdateInboxItemSnippet(id int, messageTS, senderUserID, snippet, context, rawText, permalink string) error {
 	_, err := db.Exec(`UPDATE inbox_items SET
 		message_ts = ?, sender_user_id = ?, snippet = ?, context = ?, raw_text = ?, permalink = ?,
 		ai_reason = '', read_at = NULL,
+		mentioned_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ?`,
 		messageTS, senderUserID, snippet, context, rawText, permalink, id)
@@ -308,7 +310,7 @@ func (db *DB) GetInboxItemsForBriefing() ([]InboxItem, error) {
 		WHERE status = 'pending' AND archived_at IS NULL
 		ORDER BY
 			CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
-			created_at DESC
+			MAX(created_at, mentioned_at) DESC
 		LIMIT 20`)
 	if err != nil {
 		return nil, fmt.Errorf("querying inbox items for briefing: %w", err)

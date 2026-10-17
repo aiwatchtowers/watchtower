@@ -148,6 +148,21 @@ final class SlackLinkViewModelTests: XCTestCase {
         XCTAssertEqual(mixed.mentionCountTitle, "2 messages")
     }
 
+    /// The caption of an accumulated item names everyone who wrote — "Ann, Bob"
+    /// when all resolve and there are at most three, else "N people" — like Go
+    /// `db.InboxMentionSenders`.
+    func testAccumulatedItemCaptionNamesEverySender() {
+        let item = InboxItem(row: [
+            "id": 1,
+            "mentions": """
+            [{"ts":"1","sender":"U1","text":"a"},{"ts":"2","sender":"U2","text":"b"},{"ts":"3","sender":"U1","text":"c"}]
+            """
+        ])
+        XCTAssertEqual(item.mentionSendersLabel(names: ["U1": "Ann", "U2": "Bob"]), "Ann, Bob")
+        XCTAssertEqual(item.mentionSendersLabel(names: ["U1": "Ann"]), "2 people")
+        XCTAssertEqual(CatchUpViewModel.originCaption(sender: "Ann, Bob", channel: "eng"), "from Ann, Bob in #eng")
+    }
+
     /// An absent column is no list; a malformed value is no list too (logged).
     func testMentionsAbsentOrMalformed() {
         XCTAssertTrue(InboxItem(row: ["id": 2, "mentions": "not json"]).mentionList.isEmpty)

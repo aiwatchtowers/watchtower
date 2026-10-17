@@ -317,22 +317,22 @@ func (db *DB) ListCatchupInbox(from, to float64, limit int) ([]CatchupItem, erro
 	}
 	defer rows.Close()
 	type listed struct {
-		raw     string
-		earlier int
+		raw, channel string
+		earlier      int
 	}
 	var out []CatchupItem
 	var lists []listed
 	for rows.Next() {
 		var it CatchupItem
-		var sender, channel string
+		var sender string
 		var l listed
-		if err := rows.Scan(&it.ID, &it.Title, &it.Body, &it.ChannelID, &it.SenderID, &sender, &channel, &l.raw, &l.earlier); err != nil {
+		if err := rows.Scan(&it.ID, &it.Title, &it.Body, &it.ChannelID, &it.SenderID, &sender, &l.channel, &l.raw, &l.earlier); err != nil {
 			return nil, fmt.Errorf("scanning catchup inbox item: %w", err)
 		}
 		it.Area = "inbox"
 		it.Meta = "from " + sender
-		if channel != "" {
-			it.Meta += " in #" + channel
+		if l.channel != "" {
+			it.Meta += " in #" + l.channel
 		}
 		out = append(out, it)
 		lists = append(lists, l)
@@ -340,14 +340,28 @@ func (db *DB) ListCatchupInbox(from, to float64, limit int) ([]CatchupItem, erro
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	_ = rows.Close() // before the name lookups below, which need the one connection
-	// After the rows are closed: the name lookups need the one connection.
+	_ = rows.Close() // before the name lookup below, which needs the one connection
+
+	// An accumulated channel item (#586): who wrote, how many, and every
+	// message — the senders resolved in one query for the whole gather.
+	raws := make([]string, len(lists))
 	for i, l := range lists {
-		lines := db.InboxMentionLines(l.raw, l.earlier)
+		raws[i] = l.raw
+	}
+	names, err := db.InboxMentionSenderNames(raws...)
+	if err != nil {
+		return nil, err
+	}
+	for i, l := range lists {
+		lines := InboxMentionLines(l.raw, l.earlier, names, false)
 		if lines == nil {
 			continue
 		}
 		list, _ := ParseInboxMentions(l.raw)
+		out[i].Meta = "from " + InboxMentionSenders(list, names)
+		if l.channel != "" {
+			out[i].Meta += " in #" + l.channel
+		}
 		out[i].Meta += " · " + InboxMentionCountLabel(list, l.earlier)
 		out[i].Body = strings.Join(lines, "\n")
 	}

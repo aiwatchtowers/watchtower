@@ -22,14 +22,24 @@ const (
 )
 
 // notListedInMentions is the detectors' second dedupe clause (alias m =
-// messages): a message already listed in any inbox item's mentions for its
-// channel — pending, resolved or dismissed — is not news. A malformed list
-// reads as empty instead of failing the detector.
+// messages): a message already listed in an inbox item's mentions for its
+// channel — pending, resolved or dismissed — is not news, and neither is one
+// at or before the oldest kept entry of a list that has dropped older ones
+// (it was counted in mentions_earlier). Only items written at or after the
+// message was posted (less an hour of clock slack) can list it, which keeps
+// the JSON scan to the recent items of the channel. A malformed list reads as
+// empty instead of failing the detector.
 const notListedInMentions = `NOT EXISTS (
-			SELECT 1 FROM inbox_items il,
-				json_each(CASE WHEN json_valid(il.mentions) THEN il.mentions ELSE '[]' END) je
+			SELECT 1 FROM inbox_items il
 			WHERE il.channel_id = m.channel_id AND il.mentions <> '[]'
-			  AND json_extract(je.value, '$.ts') = m.ts
+			  AND MAX(il.created_at, il.mentioned_at) >= strftime('%Y-%m-%dT%H:%M:%SZ', m.ts_unix - 3600, 'unixepoch')
+			  AND (
+			    (il.mentions_earlier > 0 AND m.ts_unix <= CAST(json_extract(
+			        CASE WHEN json_valid(il.mentions) THEN il.mentions ELSE '[]' END, '$[0].ts') AS REAL))
+			    OR EXISTS (
+			      SELECT 1 FROM json_each(CASE WHEN json_valid(il.mentions) THEN il.mentions ELSE '[]' END) je
+			      WHERE json_extract(je.value, '$.ts') = m.ts)
+			  )
 		)`
 
 // InboxMention is one message folded into a channel-level Slack inbox item.
@@ -89,10 +99,73 @@ func InboxMentionCountLabel(list []InboxMention, earlier int) string {
 	return fmt.Sprintf("%d %s", len(list)+earlier, word)
 }
 
+// InboxMentionSenderNames resolves the senders listed in the given mentions
+// values in one query: namespaced id -> display name (else name). An
+// unresolved or malformed entry is simply absent.
+func (db *DB) InboxMentionSenderNames(raws ...string) (map[string]string, error) {
+	seen := map[string]bool{}
+	var ids []any
+	for _, raw := range raws {
+		list, _ := ParseInboxMentions(raw)
+		for _, m := range list {
+			if m.SenderID != "" && !seen[m.SenderID] {
+				seen[m.SenderID] = true
+				ids = append(ids, m.SenderID)
+			}
+		}
+	}
+	names := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return names, nil
+	}
+	rows, err := db.Query(`SELECT id, COALESCE(NULLIF(display_name, ''), NULLIF(real_name, ''), name)
+		FROM users WHERE id IN (?`+strings.Repeat(",?", len(ids)-1)+`)`, ids...)
+	if err != nil {
+		return nil, fmt.Errorf("resolving mention senders: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("scanning mention sender: %w", err)
+		}
+		if name != "" {
+			names[id] = name
+		}
+	}
+	return names, rows.Err()
+}
+
+// InboxMentionSenders is the "who" of an accumulated item, shared with the
+// Desktop (InboxItem.mentionSendersLabel): its distinct senders oldest first,
+// "Ann, Bob" when there are at most three and every one resolves to a name,
+// else "N people".
+func InboxMentionSenders(list []InboxMention, names map[string]string) string {
+	var who []string
+	seen := map[string]bool{}
+	allNamed := true
+	for _, m := range list {
+		if seen[m.SenderID] {
+			continue
+		}
+		seen[m.SenderID] = true
+		if name := names[m.SenderID]; name != "" {
+			who = append(who, name)
+		} else {
+			allNamed = false
+		}
+	}
+	if len(seen) > 3 || !allNamed {
+		return fmt.Sprintf("%d people", len(seen))
+	}
+	return strings.Join(who, ", ")
+}
+
 // InboxMentionLines renders an item's list for an AI prompt, oldest first:
-// "<sender name>: <text>" per entry and "(+N earlier)" when some fell off.
-// Nil when the item lists fewer than two messages.
-func (db *DB) InboxMentionLines(raw string, earlier int) []string {
+// "(+N earlier)" when some fell off, then "<name>: <text>" per entry (the
+// sender id when names has none, or withIDs to always add " (<id>)"). Nil
+// when the item lists fewer than two messages.
+func InboxMentionLines(raw string, earlier int, names map[string]string, withIDs bool) []string {
 	list, ok := ParseInboxMentions(raw)
 	if !ok || len(list)+earlier < 2 {
 		return nil
@@ -102,11 +175,14 @@ func (db *DB) InboxMentionLines(raw string, earlier int) []string {
 		lines = append(lines, fmt.Sprintf("(+%d earlier)", earlier))
 	}
 	for _, m := range list {
-		name, err := db.UserNameByID(m.SenderID)
-		if err != nil || name == "" {
-			name = m.SenderID
+		who := names[m.SenderID]
+		switch {
+		case who == "":
+			who = m.SenderID
+		case withIDs:
+			who += " (" + m.SenderID + ")"
 		}
-		lines = append(lines, name+": "+strings.Join(strings.Fields(m.Text), " "))
+		lines = append(lines, who+": "+strings.Join(strings.Fields(m.Text), " "))
 	}
 	return lines
 }

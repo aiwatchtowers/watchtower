@@ -541,139 +541,163 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 // joined into the returned error (a UNIQUE conflict is an already-surfaced
 // message, not a failure) so the caller's watermark gate sees it (INBOX-09).
 func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) (int, error) {
-	type threadKey struct{ channelID, threadTS string }
-	type threadGroup struct {
-		all     []db.InboxCandidate
-		senders map[string]bool
+	created := 0
+	var errs []error
+	for key, grp := range groupCandidates(candidates) {
+		n, err := p.surfaceGroup(key, grp, currentUserID, dryRun)
+		created += n
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
-	threadGroups := make(map[threadKey]*threadGroup)
-	// One message can come from two detectors (a DM that also @mentions
-	// the owner); the first one — the mention, in detectSlackTriggers'
-	// order — wins.
+	return created, errors.Join(errs...)
+}
+
+// candidateKey groups candidates: a thread (threadTS != "") or a channel's
+// messages outside threads (threadTS == "").
+type candidateKey struct{ channelID, threadTS string }
+
+type candidateGroup struct {
+	all     []db.InboxCandidate
+	senders map[string]bool
+}
+
+// groupCandidates groups candidates by (channel, thread). One message can
+// come from two detectors (a DM that also @mentions the owner); the first
+// one — the mention, in detectSlackTriggers' order — wins.
+func groupCandidates(candidates []db.InboxCandidate) map[candidateKey]*candidateGroup {
 	type msgKey struct{ channelID, ts string }
-	seenMsg := make(map[msgKey]bool, len(candidates))
+	seen := make(map[msgKey]bool, len(candidates))
+	groups := make(map[candidateKey]*candidateGroup)
 	for _, c := range candidates {
-		if seenMsg[msgKey{c.ChannelID, c.MessageTS}] {
+		if seen[msgKey{c.ChannelID, c.MessageTS}] {
 			continue
 		}
-		seenMsg[msgKey{c.ChannelID, c.MessageTS}] = true
-		key := threadKey{c.ChannelID, c.ThreadTS}
-		grp, ok := threadGroups[key]
+		seen[msgKey{c.ChannelID, c.MessageTS}] = true
+		key := candidateKey{c.ChannelID, c.ThreadTS}
+		grp, ok := groups[key]
 		if !ok {
-			grp = &threadGroup{senders: map[string]bool{}}
-			threadGroups[key] = grp
+			grp = &candidateGroup{senders: map[string]bool{}}
+			groups[key] = grp
 		}
 		grp.all = append(grp.all, c)
 		grp.senders[c.SenderUserID] = true
 	}
+	return groups
+}
 
-	created := 0
-	var errs []error
-	for key, grp := range threadGroups {
-		// The messages this group surfaces: a thread group only its latest,
-		// a channel group every one.
-		var kept []db.InboxCandidate
-		if key.threadTS != "" {
-			latest := grp.all[0]
-			for _, c := range grp.all[1:] {
-				if c.TSUnix > latest.TSUnix {
-					latest = c
-				}
+// candidates returns the messages a group surfaces, oldest first: a thread
+// group only its latest, a channel group every one.
+func (g *candidateGroup) candidates(thread bool) []db.InboxCandidate {
+	if thread {
+		latest := g.all[0]
+		for _, c := range g.all[1:] {
+			if c.TSUnix > latest.TSUnix {
+				latest = c
 			}
-			kept = []db.InboxCandidate{latest}
-		} else {
-			kept = append(kept, grp.all...)
-			sort.SliceStable(kept, func(i, j int) bool { return kept[i].TSUnix < kept[j].TSUnix })
 		}
-		var mentions []db.InboxMention
-		var c db.InboxCandidate // the newest surfaced message
-		var snippet string
-		for _, k := range kept {
-			s := enrichSnippet(k.Text, p.db)
-			if s == "" {
-				continue
-			}
-			// Pre-filter: skip closing signals ("thanks", "ok", etc.) when user already replied before.
-			if isClosingSignal(k.Text) {
-				repliedBefore, _ := p.db.CheckUserRepliedBefore(currentUserID, k.ChannelID, k.MessageTS, k.ThreadTS)
-				if repliedBefore {
-					continue
-				}
-			}
-			c, snippet = k, truncateRunes(s, 500)
-			mentions = append(mentions, db.InboxMention{
-				TS: k.MessageTS, SenderID: k.SenderUserID, Trigger: k.TriggerType, Text: s, Permalink: k.Permalink,
-			})
-		}
-		if len(mentions) == 0 {
-			continue
-		}
-		itemCtx := p.loadContext(c.ChannelID, c.MessageTS, c.ThreadTS)
-
-		var senderList []string
-		for uid := range grp.senders {
-			senderList = append(senderList, uid)
-		}
-		waitingJSON := toWaitingJSON(senderList)
-
-		latest := db.InboxItem{
-			ChannelID:      c.ChannelID,
-			MessageTS:      c.MessageTS,
-			ThreadTS:       c.ThreadTS,
-			SenderUserID:   c.SenderUserID,
-			TriggerType:    c.TriggerType,
-			Snippet:        snippet,
-			Context:        itemCtx,
-			RawText:        c.Text,
-			Permalink:      c.Permalink,
-			WaitingUserIDs: waitingJSON,
-		}
-		if key.threadTS == "" {
-			latest.Mentions, latest.MentionsEarlier = db.PackInboxMentions(mentions)
-		}
-
-		existingID, err := p.db.FindPendingInboxByThread(c.ChannelID, c.ThreadTS)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if existingID > 0 {
-			if dryRun {
-				continue
-			}
-			grew := true
-			if key.threadTS == "" {
-				grew, err = p.db.AppendInboxMentions(existingID, latest, mentions)
-			} else {
-				err = p.db.UpdateInboxItemSnippet(existingID, c.MessageTS, c.SenderUserID, snippet, itemCtx, c.Text, c.Permalink)
-			}
-			if err != nil {
-				errs = append(errs, fmt.Errorf("folding into item %d: %w", existingID, err))
-			}
-			if !grew {
-				continue // nothing new: the item is left exactly as it was
-			}
-			if err := p.db.MergeWaitingUserIDs(existingID, senderList); err != nil {
-				errs = append(errs, fmt.Errorf("merging waiting users for item %d: %w", existingID, err))
-			}
-			continue
-		}
-
-		if dryRun {
-			created++
-			continue
-		}
-
-		if _, err := p.db.CreateInboxItem(latest); err != nil {
-			if isUniqueConflict(err) {
-				continue
-			}
-			errs = append(errs, fmt.Errorf("creating item for %s/%s: %w", c.ChannelID, c.MessageTS, err))
-			continue
-		}
-		created++
+		return []db.InboxCandidate{latest}
 	}
-	return created, errors.Join(errs...)
+	kept := append([]db.InboxCandidate(nil), g.all...)
+	sort.SliceStable(kept, func(i, j int) bool { return kept[i].TSUnix < kept[j].TSUnix })
+	return kept
+}
+
+// surfaceable drops the messages with nothing to show and the closing
+// signals ("thanks", "ok", …) the owner already answered, each on its own.
+// It returns one mention per message left, the newest of them and its
+// snippet; ok is false when nothing is left.
+func (p *Pipeline) surfaceable(kept []db.InboxCandidate, currentUserID string) (mentions []db.InboxMention, newest db.InboxCandidate, snippet string, ok bool) {
+	for _, k := range kept {
+		s := enrichSnippet(k.Text, p.db)
+		if s == "" {
+			continue
+		}
+		if isClosingSignal(k.Text) {
+			repliedBefore, _ := p.db.CheckUserRepliedBefore(currentUserID, k.ChannelID, k.MessageTS, k.ThreadTS)
+			if repliedBefore {
+				continue
+			}
+		}
+		newest, snippet = k, truncateRunes(s, 500)
+		mentions = append(mentions, db.InboxMention{
+			TS: k.MessageTS, SenderID: k.SenderUserID, Trigger: k.TriggerType, Text: s, Permalink: k.Permalink,
+		})
+	}
+	return mentions, newest, snippet, len(mentions) > 0
+}
+
+// surfaceGroup creates the group's item, or folds it into the pending item
+// already covering the thread or channel. It returns 1 when it created one.
+func (p *Pipeline) surfaceGroup(key candidateKey, grp *candidateGroup, currentUserID string, dryRun bool) (int, error) {
+	thread := key.threadTS != ""
+	mentions, c, snippet, ok := p.surfaceable(grp.candidates(thread), currentUserID)
+	if !ok {
+		return 0, nil
+	}
+	senderList := make([]string, 0, len(grp.senders))
+	for uid := range grp.senders {
+		senderList = append(senderList, uid)
+	}
+	latest := db.InboxItem{
+		ChannelID:      c.ChannelID,
+		MessageTS:      c.MessageTS,
+		ThreadTS:       c.ThreadTS,
+		SenderUserID:   c.SenderUserID,
+		TriggerType:    c.TriggerType,
+		Snippet:        snippet,
+		Context:        p.loadContext(c.ChannelID, c.MessageTS, c.ThreadTS),
+		RawText:        c.Text,
+		Permalink:      c.Permalink,
+		WaitingUserIDs: toWaitingJSON(senderList),
+	}
+	if !thread {
+		latest.Mentions, latest.MentionsEarlier = db.PackInboxMentions(mentions)
+	}
+
+	existingID, err := p.db.FindPendingInboxByThread(c.ChannelID, c.ThreadTS)
+	if err != nil {
+		return 0, err
+	}
+	if dryRun {
+		if existingID > 0 {
+			return 0, nil
+		}
+		return 1, nil
+	}
+	if existingID > 0 {
+		return 0, p.foldInto(existingID, thread, latest, mentions, senderList)
+	}
+	if _, err := p.db.CreateInboxItem(latest); err != nil {
+		if isUniqueConflict(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("creating item for %s/%s: %w", c.ChannelID, c.MessageTS, err)
+	}
+	return 1, nil
+}
+
+// foldInto folds a group into the pending item already covering it: a thread
+// item takes the thread's latest message, a channel item appends the new
+// messages (and is left untouched when none is new).
+func (p *Pipeline) foldInto(id int, thread bool, latest db.InboxItem, mentions []db.InboxMention, senders []string) error {
+	grew := true
+	var err error
+	if thread {
+		err = p.db.UpdateInboxItemSnippet(id, latest.MessageTS, latest.SenderUserID, latest.Snippet, latest.Context, latest.RawText, latest.Permalink)
+	} else {
+		grew, err = p.db.AppendInboxMentions(id, latest, mentions)
+	}
+	if err != nil {
+		return fmt.Errorf("folding into item %d: %w", id, err)
+	}
+	if !grew {
+		return nil // nothing new: the item is left exactly as it was
+	}
+	if err := p.db.MergeWaitingUserIDs(id, senders); err != nil {
+		return fmt.Errorf("merging waiting users for item %d: %w", id, err)
+	}
+	return nil
 }
 
 // isUniqueConflict reports whether an inbox_items insert failed on

@@ -110,6 +110,40 @@ func TestAppendInboxMentions_CapAndEarlier(t *testing.T) {
 	assert.False(t, grew, "the message that fell off is not counted again")
 }
 
+// A reply folded into an older thread item stamps mentioned_at, so it
+// reaches the Catch-Up window too.
+func TestUpdateInboxItemSnippet_StampsMentionedAt(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.CreateInboxItem(InboxItem{ChannelID: "1:C1", MessageTS: "100.0", ThreadTS: "50.0",
+		SenderUserID: "1:U1", TriggerType: "thread_reply"})
+	require.NoError(t, err)
+	require.NoError(t, d.UpdateInboxItemSnippet(int(id), "200.0", "1:U2", "reply", "", "reply", ""))
+	it, err := d.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	var mentionedAt string
+	require.NoError(t, d.QueryRow(`SELECT mentioned_at FROM inbox_items WHERE id = ?`, id).Scan(&mentionedAt))
+	assert.NotEmpty(t, mentionedAt)
+	assert.Equal(t, "200.0", it.MessageTS)
+}
+
+func TestInboxMentionSendersAndBatchedNames(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO users (id, name, display_name) VALUES ('1:U1', 'ann', 'Ann'), ('1:U2', 'bob', '')`)
+	require.NoError(t, err)
+	raw, _ := PackInboxMentions([]InboxMention{{TS: "1", SenderID: "1:U1"}, {TS: "2", SenderID: "1:U2"}, {TS: "3", SenderID: "1:U9"}})
+	names, err := d.InboxMentionSenderNames(raw, "not json")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"1:U1": "Ann", "1:U2": "bob"}, names)
+	list := mustMentions(t, raw)
+	assert.Equal(t, "Ann, bob", InboxMentionSenders(list[:2], names))
+	assert.Equal(t, "3 people", InboxMentionSenders(list, names), "an unresolved sender is never shown as a raw id")
+	names["1:U9"], names["1:U8"] = "Cy", "Di"
+	assert.Equal(t, "4 people", InboxMentionSenders(append(list, InboxMention{SenderID: "1:U8"}), names))
+	delete(names, "1:U9")
+	delete(names, "1:U8")
+	assert.Equal(t, []string{"Ann (1:U1): ", "bob (1:U2): ", "1:U9: "}, InboxMentionLines(raw, 0, names, true))
+}
+
 // A malformed list is reseeded from the row instead of failing the fold.
 func TestAppendInboxMentions_MalformedListReseeds(t *testing.T) {
 	d := openTestDB(t)
