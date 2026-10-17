@@ -62,6 +62,12 @@ struct AgentSettingsSheet: View {
             if let line = state.effectiveLine(key) {
                 Text(line).font(.caption).foregroundStyle(.secondary)
             }
+            if choice == WorkbenchMethodologyKey.fromFile {
+                Text(key.choiceHelp(choice))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(key.choiceHelp(shown))
                 .font(.caption)
                 .foregroundStyle(.secondary)

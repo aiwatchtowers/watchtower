@@ -30,7 +30,7 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
         }
     }
 
-    /// The picker's choices, From folder file first.
+    /// The picker's choices, From folder file (Default for a check) first.
     package var choices: [String] {
         switch self {
         case .preset: [Self.fromFile, "watchtower-flow", "none"]
@@ -39,10 +39,13 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
         }
     }
 
+    /// A check's `file` choice reads Default: the folder file never sets a
+    /// check (board #558).
     package func choiceLabel(_ choice: String) -> String {
-        switch choice {
-        case Self.fromFile: "From folder file"
-        case "watchtower-flow": "Watchtower flow"
+        switch (self, choice) {
+        case (.preset, Self.fromFile): "From folder file"
+        case (_, Self.fromFile): "Default"
+        case (_, "watchtower-flow"): "Watchtower flow"
         default: choice.prefix(1).uppercased() + String(choice.dropFirst())
         }
     }
@@ -106,8 +109,9 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
         package let bodyChars: Int
         package let truncated: Bool
         /// The check settings the file asks for that were ignored
-        /// ("ask_guard: off"): only a personal setting turns a check down
-        /// (board #558). nil from a CLI that predates the key.
+        /// ("ask_guard: off") — only for a check with no personal value:
+        /// only a personal setting turns a check down (board #558). nil from
+        /// a CLI that predates the key.
         package let ignored: [String]?
 
         enum CodingKeys: String, CodingKey {
@@ -172,7 +176,7 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
         if file.truncated { notes.append("workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB.") }
         if let ignored = file.ignored, !ignored.isEmpty {
             notes.append("workflow.md asks for \(ignored.joined(separator: ", ")); that is ignored. "
-                + "Only your settings above can turn a check down.")
+                + "Only your settings above can turn a check down: pick the value here to keep it.")
         }
         return notes.isEmpty ? nil : notes.joined(separator: " ")
     }

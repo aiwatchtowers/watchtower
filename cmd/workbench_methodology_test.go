@@ -85,6 +85,47 @@ func TestWorkbenchMethodology_SetsDropsAndClears(t *testing.T) {
 	assert.Equal(t, db.WorkbenchMethodology{}, m)
 }
 
+// Board #558's one-time carry-over: the first methodology run (or brief)
+// after the upgrade copies a workbench file's weaker check into the owner's
+// personal setting; once it is stamped, a file added or edited later is
+// never copied and changes nothing.
+func TestWorkbenchMethodology_CarriesFileChecksOverOnce(t *testing.T) {
+	database, pid, folder := methodologyWorkbench(t)
+	writeFolderWorkflow(t, folder, "---\nask_guard: off\n---\n")
+
+	out, _, err := runMethodology(t, strconv.FormatInt(pid, 10), "--json")
+
+	require.NoError(t, err)
+	res := decodeMethodology(t, out)
+	assert.Equal(t, "off", res.Personal.AskGuard, "carried over")
+	assert.Equal(t, "off", res.Effective.AskGuard)
+	assert.Empty(t, res.File.Ignored, "the owner's value now stands; nothing to note")
+
+	later, err := database.CreateWorkbench("later", t.TempDir())
+	require.NoError(t, err)
+	laterFolder, err := database.GetWorkbench(later)
+	require.NoError(t, err)
+	writeFolderWorkflow(t, laterFolder.FolderPath, "---\nask_guard: off\nfinish_check: off\n---\n")
+	writeFolderWorkflow(t, folder, "---\nask_guard: off\nfinish_check: off\n---\n")
+
+	out, _, err = runMethodology(t, strconv.FormatInt(later, 10), "--json")
+
+	require.NoError(t, err)
+	res = decodeMethodology(t, out)
+	assert.Equal(t, methodologyValuesJSON{}, res.Personal, "a file added after the upgrade is never copied")
+	assert.Equal(t, "strict", res.Effective.AskGuard)
+	assert.Equal(t, []string{"ask_guard: off", "finish_check: off"}, res.File.Ignored)
+	m, err := database.GetWorkbenchMethodology(pid)
+	require.NoError(t, err)
+	assert.Equal(t, db.WorkbenchMethodology{AskGuard: "off"}, m, "a later edit is never copied")
+}
+
+func writeFolderWorkflow(t *testing.T, folder, content string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, ".watchtower"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, workbenchmethod.FileRel), []byte(content), 0o644))
+}
+
 func TestWorkbenchMethodology_RefusesBadValuesWithoutWriting(t *testing.T) {
 	database, pid, _ := methodologyWorkbench(t)
 	id := strconv.FormatInt(pid, 10)

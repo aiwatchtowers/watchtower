@@ -54,14 +54,14 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
         XCTAssertEqual(try decode(asks).file.ignored, ["ask_guard: off", "finish_check: off"])
         XCTAssertEqual(try decode(asks).fileNote,
                        "workflow.md asks for ask_guard: off, finish_check: off; that is ignored. "
-                           + "Only your settings above can turn a check down.")
+                           + "Only your settings above can turn a check down: pick the value here to keep it.")
         let none = Self.envelope.replacingOccurrences(of: #""truncated":false"#, with: #""truncated":false,"ignored":[]"#)
         XCTAssertNil(try decode(none).fileNote)
         let cutToo = asks.replacingOccurrences(of: #""truncated":false"#, with: #""truncated":true"#)
         XCTAssertEqual(try decode(cutToo).fileNote,
                        "workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB. "
                            + "workflow.md asks for ask_guard: off, finish_check: off; that is ignored. "
-                           + "Only your settings above can turn a check down.")
+                           + "Only your settings above can turn a check down: pick the value here to keep it.")
         XCTAssertTrue(WorkbenchMethodologyKey.askGuard.choiceHelp("file").contains("cannot turn this check down"))
         XCTAssertTrue(WorkbenchMethodologyKey.preset.choiceHelp("file").contains("workflow.md, else the built-in default"))
     }
@@ -104,7 +104,9 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
         XCTAssertEqual(WorkbenchMethodologyKey.preset.choices, ["file", "watchtower-flow", "none"])
         XCTAssertEqual(WorkbenchMethodologyKey.finishCheck.choices, ["file", "on", "off"])
         XCTAssertEqual(WorkbenchMethodologyKey.preset.choiceLabel("watchtower-flow"), "Watchtower flow")
-        XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choiceLabel("file"), "From folder file")
+        XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choiceLabel("file"), "Default", "board #558: the file never sets a check")
+        XCTAssertEqual(WorkbenchMethodologyKey.finishCheck.choiceLabel("file"), "Default")
+        XCTAssertEqual(WorkbenchMethodologyKey.preset.choiceLabel("file"), "From folder file")
         XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choiceLabel("soft"), "Soft")
         XCTAssertTrue(WorkbenchMethodologyKey.askGuard.choiceHelp("soft").contains("Watchtower app running"),
                       "spec §7.1: soft's Desktop-down limit is in the help")

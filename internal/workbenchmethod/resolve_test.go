@@ -39,8 +39,8 @@ func TestCombine_Precedence(t *testing.T) {
 	assert.Equal(t, "folder file", e.Sources.Preset.Label())
 }
 
-// Spec §5: a refused file never weakens a check — its keys are ignored, the
-// personal settings still apply.
+// Spec §5: a refused file contributes nothing — its keys are ignored, the
+// personal settings still apply (since board #558 no file weakens a check).
 func TestCombine_RefusedFileFallsToDefaults(t *testing.T) {
 	broken := File{Present: true, AskGuard: AskGuardOff, FinishCheck: FinishOff, Err: errors.New("unknown key")}
 	e := Combine(db.WorkbenchMethodology{}, broken)
@@ -92,9 +92,51 @@ func TestCombine_FileNeverWeakensTheChecks(t *testing.T) {
 	assert.Equal(t, AskGuardOff, mine.AskGuard, "the owner's own setting still weakens")
 	assert.False(t, mine.FinishOn())
 
-	assert.Nil(t, Combine(db.WorkbenchMethodology{}, File{Present: true, AskGuard: AskGuardStrict, FinishCheck: FinishOn}).FileIgnored())
-	assert.Nil(t, Combine(db.WorkbenchMethodology{},
+	assert.Equal(t, []string{}, Combine(db.WorkbenchMethodology{},
+		File{Present: true, AskGuard: AskGuardStrict, FinishCheck: FinishOn}).FileIgnored(), "never nil")
+	assert.Empty(t, Combine(db.WorkbenchMethodology{},
 		File{Present: true, AskGuard: AskGuardOff, Err: errors.New("unknown key")}).FileIgnored(), "a refused file asks for nothing")
+	// With a personal value the file would not have applied anyway: not listed.
+	assert.Equal(t, []string{"finish_check: off"}, Combine(db.WorkbenchMethodology{AskGuard: AskGuardSoft},
+		File{Present: true, AskGuard: AskGuardOff, FinishCheck: FinishOff}).FileIgnored())
+}
+
+// Board #558's one-time carry-over: a weaker check in a workbench folder's
+// file becomes the owner's personal value where none is set; a set value, a
+// strict file, a refused file and another workbench are left alone, and a
+// second run changes nothing.
+func TestCarryOverFileChecks(t *testing.T) {
+	d := openDB(t)
+	off, mine, strict, broken := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	ids := map[string]int64{}
+	for name, folder := range map[string]string{"off": off, "mine": mine, "strict": strict, "broken": broken} {
+		id, err := d.CreateWorkbench(name, folder)
+		require.NoError(t, err)
+		ids[name] = id
+	}
+	writeWorkflow(t, off, "---\npreset: none\nask_guard: off\nfinish_check: off\n---\n")
+	writeWorkflow(t, mine, "---\nask_guard: off\nfinish_check: off\n---\n")
+	writeWorkflow(t, strict, "---\nask_guard: strict\n---\n")
+	writeWorkflow(t, broken, "---\nask_guard: off\nmode: x\n---\n")
+	require.NoError(t, d.SetWorkbenchMethodology(ids["mine"], db.WorkbenchMethodology{AskGuard: AskGuardSoft}))
+
+	changed, err := CarryOverFileChecks(d)
+
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []int64{ids["off"], ids["mine"]}, changed)
+	got := func(name string) db.WorkbenchMethodology {
+		m, err := d.GetWorkbenchMethodology(ids[name])
+		require.NoError(t, err)
+		return m
+	}
+	assert.Equal(t, db.WorkbenchMethodology{AskGuard: AskGuardOff, FinishCheck: FinishOff}, got("off"), "the preset is not carried")
+	assert.Equal(t, db.WorkbenchMethodology{AskGuard: AskGuardSoft, FinishCheck: FinishOff}, got("mine"), "a set value wins")
+	assert.Equal(t, db.WorkbenchMethodology{}, got("strict"))
+	assert.Equal(t, db.WorkbenchMethodology{}, got("broken"))
+
+	again, err := CarryOverFileChecks(d)
+	require.NoError(t, err)
+	assert.Empty(t, again)
 }
 
 // PROJ-13 (spec §7): a database that cannot be read — a schema a migration

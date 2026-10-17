@@ -195,8 +195,9 @@ func TestProj13_FolderFileNeverWeakensTheGuard(t *testing.T) {
 }
 
 // TestProj13_UnreadableModeIsStrict: when the modes cannot be read the
-// guard runs strict with the finish check on, whatever the folder file says
-// (spec §7: a database failure resolves to strict + on).
+// guard runs strict with the finish check on (spec §7: a database failure
+// resolves to strict + on; the folder file's off has not counted since
+// board #558 either).
 func TestProj13_UnreadableModeIsStrict(t *testing.T) {
 	database, pid, _ := stopGuardFixture(t)
 	writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\nfinish_check: off\n---\n")

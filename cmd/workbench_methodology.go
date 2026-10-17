@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -20,9 +23,9 @@ var workbenchMethodologyCmd = &cobra.Command{
 		"comes from: your personal setting, the folder's .watchtower/workflow.md, or the built-in default\n" +
 		"(watchtower-flow, strict, on). The folder file sets only the preset: its ask_guard and\n" +
 		"finish_check are ignored, so only your personal setting turns a check down.\n" +
-		"--preset watchtower-flow|none, --ask-guard strict|soft|off and\n" +
-		"--finish-check on|off set your personal value; the value file drops it, so the folder file (else\n" +
-		"the default) applies; --clear drops all three. A preset change updates the folder's skills.\n" +
+		"--preset watchtower-flow|none, --ask-guard strict|soft|off and --finish-check on|off set\n" +
+		"your personal value; the value file drops it, so the folder file (the preset only) or the\n" +
+		"default applies; --clear drops all three. A preset change updates the folder's skills.\n" +
 		"--create-file writes a commented .watchtower/workflow.md template when the folder has none (it\n" +
 		"never overwrites). --json prints the effective values, their sources and the file's state and\n" +
 		"exits 0 once the workbench is found; ok/error and the *_ok/*_error fields say what failed.",
@@ -41,6 +44,31 @@ var (
 // methodologyFileValue is the flag value that drops one personal setting.
 const methodologyFileValue = "file"
 
+// workflowChecksCarriedStamp is the workspace file that marks board #558's
+// one-time carry-over done (workbenchmethod.CarryOverFileChecks).
+const workflowChecksCarriedStamp = "workflow-checks-carried"
+
+// carryOverWorkflowChecksOnce runs the carry-over once per workspace: a
+// workflow.md check setting weaker than the default, with no personal value
+// beside it, becomes the owner's personal setting, so setups made before
+// the folder file stopped counting keep working; the stamp then keeps a file
+// added or edited later from ever being copied. A failure is one stderr
+// line and leaves no stamp, so the next run retries (a repeat changes
+// nothing already carried).
+func carryOverWorkflowChecksOnce(workspaceDir string, database *db.DB, stderr io.Writer) {
+	stamp := filepath.Join(workspaceDir, workflowChecksCarriedStamp)
+	if _, err := os.Stat(stamp); err == nil {
+		return
+	}
+	if _, err := workbenchmethod.CarryOverFileChecks(database); err != nil {
+		fmt.Fprintf(stderr, "watchtower: carrying workflow.md checks over to your settings: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(stamp, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		fmt.Fprintf(stderr, "watchtower: marking the workflow.md carry-over done: %v\n", err)
+	}
+}
+
 // methodologyFlags maps each setting flag to its frontmatter key and value.
 var methodologyFlags = []struct {
 	flag, key string
@@ -54,8 +82,8 @@ var methodologyFlags = []struct {
 func init() {
 	c := workbenchMethodologyCmd
 	c.Flags().StringVar(&workbenchMethodologyFlagPreset, "preset", "", "watchtower-flow, none, or file (use the folder file)")
-	c.Flags().StringVar(&workbenchMethodologyFlagAskGuard, "ask-guard", "", "strict, soft, off, or file (use the folder file)")
-	c.Flags().StringVar(&workbenchMethodologyFlagFinishCheck, "finish-check", "", "on, off, or file (use the folder file)")
+	c.Flags().StringVar(&workbenchMethodologyFlagAskGuard, "ask-guard", "", "strict, soft, off, or file (drop your setting: the default, strict)")
+	c.Flags().StringVar(&workbenchMethodologyFlagFinishCheck, "finish-check", "", "on, off, or file (drop your setting: the default, on)")
 	c.Flags().BoolVar(&workbenchMethodologyFlagClear, "clear", false, "drop every personal setting")
 	c.Flags().BoolVar(&workbenchMethodologyFlagCreateFile, "create-file", false,
 		"write a commented "+workbenchmethod.FileRel+" template when the folder has none")
@@ -116,11 +144,12 @@ func runWorkbenchMethodology(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, database, err := openJiraCmdDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	carryOverWorkflowChecksOnce(cfg.WorkspaceDir(), database, cmd.ErrOrStderr())
 	p, err := database.GetWorkbench(id)
 	if err != nil {
 		return fmt.Errorf("workbench %d: %w", id, err)
@@ -243,9 +272,6 @@ func fillMethodology(res *workbenchMethodologyJSON, personal db.WorkbenchMethodo
 		FinishCheck: string(e.Sources.FinishCheck)}
 	res.File = methodologyFileJSON{Path: workbenchmethod.FileRel, Present: e.File.Present, BodyChars: e.File.BodyChars,
 		Truncated: e.File.Truncated, Ignored: e.FileIgnored()}
-	if res.File.Ignored == nil {
-		res.File.Ignored = []string{}
-	}
 	if e.File.Err != nil {
 		res.File.Error = e.File.Err.Error()
 	}

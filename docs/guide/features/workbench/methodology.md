@@ -22,7 +22,7 @@ Each setting comes from the first of three places that has it:
 2. **The folder file** `.watchtower/workflow.md`, committed with the code, so a team shares it. It sets only **Methodology**.
 3. **The built-in default**.
 
-Only your own setting can turn the ask guard or the finish check down. Anyone who can change the repository can change the file, including the agent in its own worktree, so the file's `ask_guard` and `finish_check` keys are ignored.
+Only your own setting can turn the ask guard or the finish check down. Anyone who can change the repository can change the file, including the agent in its own worktree, so the file's `ask_guard` and `finish_check` keys are ignored. A workbench whose file already turned a check down when you updated Watchtower keeps it: that value became your own setting, once.
 
 The file is a short frontmatter, then free text. The text is the team's rules for agents. The brief shows it as the team's rules, not as your words. Every session's brief shows them, up to about 1,200 characters; longer text becomes a pointer to the file. The file is read up to 64 KiB, and a symlink or special file is ignored.
 
@@ -31,7 +31,7 @@ The agent never changes these settings. If anything about them cannot be read, t
 ## Using it
 
 1. Open the page header's **…** menu and choose **Agent Settings…**.
-2. Pick a value for **Methodology**, **Ask guard** and **Finish check**. **From folder file** means "do not override", and shows the current value and where it comes from.
+2. Pick a value for **Methodology**, **Ask guard** and **Finish check**. **From folder file** (for **Methodology**) and **Default** (for the checks) mean "do not override", and show the current value and where it comes from.
 3. **Create workflow.md** writes a template with every key commented out. Edit it, and commit it. The button reads **Open workflow.md** once the file exists.
 4. Press **Done**.
 
@@ -41,7 +41,7 @@ A methodology change reinstalls the folder's skills. A session worktree takes th
 
 - **"workflow.md was ignored: …".** The file is malformed or unsafe to read. The built-in defaults apply until you fix it.
 - **"workflow.md is longer than 64 KiB".** Only the first 64 KiB is read.
-- **"workflow.md asks for ask_guard: off; that is ignored".** The file tries to turn a check down, which only your setting can do. To keep the check off, pick **Off** under **Ask guard** or **Finish check** yourself.
+- **"workflow.md asks for ask_guard: off; that is ignored".** The file tries to turn a check down, which only your setting can do. To keep the check off, pick **Off** under **Ask guard** or **Finish check** yourself. The note goes away once you pick a value.
 - **"Your edited watchtower-flow skill was kept; delete it yourself to drop the methodology."** With **Methodology** at `none`, a flow skill you edited stays. Delete it to remove it.
 - **"The setting was saved, but the folder's skills were not updated".** Use **Re-run Setup** in the **…** menu.
 - **Soft raises nothing.** Under `soft`, a question becomes an ask only in Watchtower's own terminals and while Watchtower is running.

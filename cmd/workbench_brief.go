@@ -114,7 +114,7 @@ func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: workbench %d brief: terminal session not recorded: %v\n", id, err)
 		}
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), loadWorkbenchBriefFlag(workbenchBriefFlagWorkbench))
+	fmt.Fprintln(cmd.OutOrStdout(), loadWorkbenchBriefFlag(workbenchBriefFlagWorkbench, cmd.ErrOrStderr()))
 	return nil
 }
 
@@ -134,7 +134,7 @@ func runCodexBrief(stdin io.Reader, stdout, stderr io.Writer) {
 		fmt.Fprintf(stderr, "watchtower: workbench %d brief: terminal session not recorded: %v\n", row.WorkbenchID.Int64, err)
 	}
 	_ = database.Close()
-	fmt.Fprintln(stdout, loadWorkbenchBrief(row.WorkbenchID.Int64))
+	fmt.Fprintln(stdout, loadWorkbenchBrief(row.WorkbenchID.Int64, stderr))
 }
 
 // parseWorkbenchBriefFlag parses the raw id flag value: 0 for empty
@@ -156,23 +156,28 @@ func parseWorkbenchBriefFlag(raw string) (int64, error) {
 // reads as "no --workbench id given" via loadWorkbenchBrief's own id<=0
 // branch; an invalid value gets its own one-line reason so it isn't
 // misreported as missing.
-func loadWorkbenchBriefFlag(raw string) string {
+func loadWorkbenchBriefFlag(raw string, stderr io.Writer) string {
 	id, err := parseWorkbenchBriefFlag(raw)
 	if err != nil {
 		return briefUnavailable(0, "is unavailable: "+err.Error())
 	}
-	return loadWorkbenchBrief(id)
+	return loadWorkbenchBrief(id, stderr)
 }
 
-func loadWorkbenchBrief(id int64) string {
+// loadWorkbenchBrief is workbench id's brief. It first runs the one-time
+// carry-over of the folder files' check settings (board #558), so a
+// session's checks match what they were before the upgrade; its failure
+// goes to stderr (the hook log) and the brief is printed as always.
+func loadWorkbenchBrief(id int64, stderr io.Writer) string {
 	if id <= 0 {
 		return briefUnavailable(id, "is unavailable: no --workbench id given")
 	}
-	_, database, err := openJiraCmdDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return briefUnavailable(id, "is unavailable: "+err.Error())
 	}
 	defer database.Close()
+	carryOverWorkflowChecksOnce(cfg.WorkspaceDir(), database, stderr)
 	p, err := database.GetWorkbench(id)
 	if errors.Is(err, db.ErrWorkbenchNotFound) {
 		return briefUnavailable(id, "no longer exists")

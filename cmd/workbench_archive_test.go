@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -40,7 +41,7 @@ func TestProj15_DriftStillSeesArchivedUnmergedWork(t *testing.T) {
 	assert.Equal(t, workbenchcheck.KindDoneUnmerged, rep.Findings[0].Kind)
 	assert.Equal(t, int(tid), rep.Findings[0].TargetID)
 
-	brief := loadWorkbenchBrief(pid)
+	brief := loadWorkbenchBrief(pid, io.Discard)
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [done]`)
 	assert.Contains(t, brief, "0 done, 1 archived.")
