@@ -162,6 +162,10 @@ final class TerminalCenter {
     @ObservationIgnored private var rows: [Int64: TerminalSession] = [:]
     /// Builds each session's process. By default a `HostedTerminalSession`
     /// while `sessionHost` is set, else `makeLocalProcess`.
+    /// Sessions an automation run let go of (a refused launch's row): no
+    /// later launch carries the run marker, whatever copy of the row the
+    /// caller holds.
+    @ObservationIgnored private var droppedRunMarkers: Set<Int64> = []
     @ObservationIgnored var makeProcess: () -> any TerminalSessionProcess
     /// The local fallback process (`SwiftTermSession`). A seam for tests.
     @ObservationIgnored var makeLocalProcess: () -> any TerminalSessionProcess
@@ -201,6 +205,9 @@ final class TerminalCenter {
     /// Watchtower caused it by closing the terminal (`close`/`closeAll`,
     /// which drop the process before signalling it). One subscriber.
     @ObservationIgnored var onSessionExit: ((_ id: Int64, _ code: Int32?, _ closedByApp: Bool) -> Void)?
+    /// Every process exit too, by session row id, for a subscriber that
+    /// outlives the workbench view model (`AutomationSessionCenter`).
+    @ObservationIgnored var onRowExit: ((_ id: Int64) -> Void)?
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
     /// inside its folder (`TerminalPathLinks`): workbench id, session id,
     /// location.
@@ -930,7 +937,8 @@ final class TerminalCenter {
     private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?, setup: String?) {
         let process = processes[session.id] ?? makeProcess()
         wire(process, session: session, startedAt: now())
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: session.id, codex: codex, setup: setup))
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: session.id, codex: codex, setup: setup,
+                            automationRunID: droppedRunMarkers.contains(session.id) ? nil : session.automationRunID))
     }
 
     /// Registers `process` as the row's current run, `.running` from
@@ -945,6 +953,7 @@ final class TerminalCenter {
             states[id] = .exited(code)
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
+            onRowExit?(id)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
         // A click into one terminal of a split makes it the active session.
@@ -1126,7 +1135,7 @@ final class TerminalCenter {
     }
 
     /// Lets go of every session for a quit that keeps them (an update, a
-    /// logout, the owner's Keep Sessions and Quit; PROJ-19): a hosted
+    /// logout, the owner's Keep Sessions and Quit; PROJ-20): a hosted
     /// session's connection closes and the host keeps its process running —
     /// it is never signalled — for the next launch to reattach; a local
     /// fallback session is closed as `closeAll` closes it.
@@ -1146,6 +1155,16 @@ final class TerminalCenter {
     /// The live sessions the session host runs — the ones a quit can keep.
     var liveHostedCount: Int {
         liveIDs.filter { processes[$0]?.isHosted == true }.count
+    }
+
+    /// The rows' run marker is gone from the database
+    /// (`AutomationQueries.disownUnattachedSessions`): their next launch
+    /// runs without it.
+    func dropAutomationRun(sessionIDs: [Int64]) {
+        for id in sessionIDs {
+            droppedRunMarkers.insert(id)
+            rows[id]?.automationRunID = nil
+        }
     }
 
     private func forget(_ sessionID: Int64) {

@@ -18,14 +18,19 @@ extension TestDatabase {
         permissionsJSON: String = "[]",
         outputsJSON: String = "[]",
         nextRunAt: String? = nil,
-        removedAt: String? = nil
+        removedAt: String? = nil,
+        workbenchID: Int64? = nil
     ) throws -> Int64 {
+        // A workbench recipe lives in its folder's .watchtower/automations.
+        let path = workbenchID.map { "/tmp/acme/.watchtower/automations/\($0)-\(slug).md" }
+            ?? "/tmp/acme/automations/\(slug).md"
         try db.execute(sql: """
-            INSERT INTO automations (slug, scope, path, name, trigger_kind, trigger_spec, approval_hash,
+            INSERT INTO automations (slug, scope, project_id, path, name, trigger_kind, trigger_spec, approval_hash,
                 confirmed_hash, parse_error, enabled, permissions_json, outputs_json, next_run_at, removed_at)
-            VALUES (?, 'personal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [slug, "/tmp/acme/automations/\(slug).md", name, triggerKind, triggerSpec, approvalHash,
-                             confirmedHash, parseError, enabled, permissionsJSON, outputsJSON, nextRunAt, removedAt])
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [slug, workbenchID == nil ? "personal" : "workbench", workbenchID, path, name, triggerKind,
+                             triggerSpec, approvalHash, confirmedHash, parseError, enabled, permissionsJSON, outputsJSON,
+                             nextRunAt, removedAt])
         return db.lastInsertedRowID
     }
 
@@ -62,12 +67,13 @@ extension TestDatabase {
         name: String = "",
         argsJSON: String = "",
         status: String = "ok",
-        permission: String = ""
+        permission: String = "",
+        sessionID: Int64? = nil
     ) throws -> Int64 {
         try db.execute(sql: """
-            INSERT INTO automation_run_steps (run_id, seq, kind, name, args_json, status, permission)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [runID, seq, kind, name, argsJSON, status, permission])
+            INSERT INTO automation_run_steps (run_id, seq, kind, name, args_json, status, permission, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [runID, seq, kind, name, argsJSON, status, permission, sessionID])
         return db.lastInsertedRowID
     }
 

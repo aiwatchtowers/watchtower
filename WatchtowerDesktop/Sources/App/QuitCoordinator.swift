@@ -43,7 +43,7 @@ enum QuitCoordinator {
             // its grace — bounded, and each keeps its partial text (CHAT-01).
             await closeChatSessions()
             if choice == .quitKeepingSessions {
-                // PROJ-19: hosted sessions keep running in the session host
+                // PROJ-20: hosted sessions keep running in the session host
                 // (no signal); local fallback ones stop as below.
                 await detachTerminals()
             } else {

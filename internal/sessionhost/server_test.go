@@ -187,7 +187,7 @@ func errMsg(t *testing.T, p []byte) string {
 	return m.Message
 }
 
-func TestSessionHost19_SessionSurvivesClientDisconnect(t *testing.T) {
+func TestSessionHost20_SessionSurvivesClientDisconnect(t *testing.T) {
 	path := startServer(t, Options{})
 	c1 := dial(t, path)
 	info := c1.launch(1, `while :; do echo tick; sleep 0.1; done`)

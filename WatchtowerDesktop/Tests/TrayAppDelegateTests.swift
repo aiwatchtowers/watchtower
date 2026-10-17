@@ -119,8 +119,8 @@ final class TrayAppDelegateTerminateTests: XCTestCase {
     /// An update's quit never asks about sessions: with hosted sessions
     /// live it detaches them (they keep running in the session host for
     /// the relaunched app to reattach) and never closes them.
-    /// BEHAVIOR PROJ-19 — see docs/inventory/workbench.md
-    func testProj19_UpdateQuitDetachesHostedSessions() async {
+    /// BEHAVIOR PROJ-20 — see docs/inventory/workbench.md
+    func testProj20_UpdateQuitDetachesHostedSessions() async {
         let plan = TrayAppDelegate.quitPlan(
             forUpdate: true, quitReason: nil, recording: false, askDrafts: 0, liveSessions: 3
         )

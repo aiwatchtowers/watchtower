@@ -225,7 +225,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     /// deliberate: Quit tears the window down anyway, and `close()` drops the
     /// scene synchronously. An update's relaunch passes `forUpdate`: that
     /// quit never asks about sessions and leaves the hosted ones running
-    /// (PROJ-19). `stoppingSessions` (removing all data) never offers to
+    /// (PROJ-20). `stoppingSessions` (removing all data) never offers to
     /// keep them: kept sessions of a wiped workspace could never be
     /// reattached.
     static func requestQuit(forUpdate: Bool = false, stoppingSessions: Bool = false) {
@@ -269,8 +269,15 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             keepsSessions: plan.keepsSessions,
             confirmQuit: { plan.prompt.map { plan.choice(button: Self.runQuitAlert($0)) } ?? .cancel },
             closeChatSessions: { await app.chatSessionPool?.closeAll() },
-            closeTerminals: { await app.terminalCenter.closeAll() },
-            detachTerminals: { await app.terminalCenter.detachAll() },
+            closeTerminals: {
+                // Not reported stopped: the next launch reconciles them.
+                app.automationSessionCenter?.stop()
+                await app.terminalCenter.closeAll()
+            },
+            detachTerminals: {
+                app.automationSessionCenter?.stop()
+                await app.terminalCenter.detachAll()
+            },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
@@ -423,7 +430,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// An update's quit and a logout, restart or shutdown never ask about
-    /// sessions and leave the hosted ones running (PROJ-19, spec §4.4); a
+    /// sessions and leave the hosted ones running (PROJ-20, spec §4.4); a
     /// recording or unsent answers still ask. Any other quit with a live
     /// hosted session asks Keep or Stop. `quitReason` is the quitting Apple
     /// event's `kAEQuitReason` (`currentQuitReason`), nil when there is none.

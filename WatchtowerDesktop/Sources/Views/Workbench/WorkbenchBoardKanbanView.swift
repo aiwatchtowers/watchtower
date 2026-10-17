@@ -5,8 +5,9 @@ import WatchtowerCore
 /// lane per top-level group under a totals row ("Lanes: By group", spec
 /// 2026-10-06 Part 2) or the flat columns ("Lanes: None"). Clicking a card
 /// selects it (the detail pane is shared with the list mode); dragging a card
-/// to another column sets its status through the same writer the status menu
-/// uses. The menu stays the keyboard/accessibility path.
+/// to another column sets its status (and, on a defined board column, its
+/// column — board #267) through the same writer the status menu uses. The
+/// menu stays the keyboard/accessibility path.
 struct WorkbenchBoardKanbanView: View {
     let board: WorkbenchBoardKanban
     /// For the cards' context menu (copy the number, Move to…) and the
@@ -19,8 +20,8 @@ struct WorkbenchBoardKanbanView: View {
     /// The lane header's VoiceOver Open Group: enter that group, the panel
     /// left as it is — no first click opened it.
     let onOpenGroup: (Int) -> Void
-    /// Returns whether the status was written.
-    let onMove: (_ targetID: Int, _ status: String) -> Bool
+    /// Returns whether the card moved.
+    let onMove: (_ targetID: Int, _ column: WorkbenchBoardKanban.Column) -> Bool
 
     var body: some View {
         switch vm.kanbanLayout {
@@ -38,9 +39,9 @@ struct WorkbenchBoardKanbanView: View {
                         vm: vm,
                         selectedTargetID: selectedTargetID,
                         onSelect: onSelect
-                    ) { id, status in
+                    ) { id, column in
                         // Only this board's own cards move; see showsCard.
-                        board.showsCard(id) && onMove(id, status)
+                        board.showsCard(id) && onMove(id, column)
                     }
                 }
             }
@@ -75,14 +76,14 @@ struct WorkbenchBoardKanbanView: View {
                             onSelect: onSelect,
                             onEnter: onEnter,
                             onOpenGroup: onOpenGroup
-                        ) { id, status in
+                        ) { id, column in
                             // A card moves only within its own lane; one of
                             // another lane is refused with a reason.
                             guard lane.showsCard(id) else {
                                 if board.lanes.contains(where: { $0.showsCard(id) }) { vm.refuseCrossLaneDrop() }
                                 return false
                             }
-                            return onMove(id, status)
+                            return onMove(id, column)
                         }
                     }
                 } header: {
@@ -98,19 +99,42 @@ struct WorkbenchBoardKanbanView: View {
     private var totals: some View {
         HStack(spacing: WorkbenchBoardKanbanLayout.spacing) {
             ForEach(board.columns) { column in
-                HStack {
-                    Text(column.title).font(.subheadline.weight(.semibold))
-                    Text("\(board.totals[column.status] ?? 0)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .padding(.horizontal, 10)
-                .frame(width: WorkbenchBoardKanbanLayout.columnWidth)
+                WorkbenchBoardKanbanColumnHeader(column: column, count: board.totals[column.key] ?? 0)
+                    .padding(.horizontal, 10)
+                    .frame(width: WorkbenchBoardKanbanLayout.columnWidth)
             }
         }
         .padding(.vertical, 6)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+/// A column's header: its title and count; a defined column named apart
+/// from its status carries the status's label under it, and its
+/// description as the tooltip (board #267).
+private struct WorkbenchBoardKanbanColumnHeader: View {
+    let column: WorkbenchBoardKanban.Column
+    let count: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack {
+                Text(column.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            if let category = column.categoryLabel {
+                Text(category)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .help(column.description)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -145,7 +169,7 @@ private struct WorkbenchBoardKanbanLaneView: View {
     let onSelect: (Int) -> Void
     let onEnter: (Int) -> Void
     let onOpenGroup: (Int) -> Void
-    let onMove: (_ targetID: Int, _ status: String) -> Bool
+    let onMove: (_ targetID: Int, _ column: WorkbenchBoardKanban.Column) -> Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -298,7 +322,7 @@ private struct WorkbenchBoardKanbanLaneCellView: View {
     let vm: WorkbenchBoardViewModel
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
-    let onMove: (_ targetID: Int, _ status: String) -> Bool
+    let onMove: (_ targetID: Int, _ column: WorkbenchBoardKanban.Column) -> Bool
 
     @State private var isTargeted = false
 
@@ -339,21 +363,15 @@ private struct WorkbenchBoardKanbanColumnView: View {
     let vm: WorkbenchBoardViewModel
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
-    let onMove: (_ targetID: Int, _ status: String) -> Bool
+    let onMove: (_ targetID: Int, _ column: WorkbenchBoardKanban.Column) -> Bool
 
     @State private var isTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(column.title).font(.subheadline.weight(.semibold))
-                Text("\(column.cards.count + column.hiddenCount)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            WorkbenchBoardKanbanColumnHeader(column: column, count: column.cards.count + column.hiddenCount)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     WorkbenchBoardKanbanCards(
@@ -413,17 +431,18 @@ private struct WorkbenchBoardKanbanCards: View {
     }
 }
 
-/// A column takes drops only when it stands for one status (not Other).
+/// A column takes drops only when it stands for one status (not Other); a
+/// drop writes the column's status and its defined column, if any.
 private struct DropTarget: ViewModifier {
     let column: WorkbenchBoardKanban.Column
     @Binding var isTargeted: Bool
-    let onMove: (_ targetID: Int, _ status: String) -> Bool
+    let onMove: (_ targetID: Int, _ column: WorkbenchBoardKanban.Column) -> Bool
 
     func body(content: Content) -> some View {
         if column.acceptsDrops {
             content.dropDestination(for: String.self) { items, _ in
                 // Every id is attempted; the drop succeeds if any moved.
-                let moved = items.compactMap(Int.init).filter { onMove($0, column.status) }
+                let moved = items.compactMap(Int.init).filter { onMove($0, column) }
                 return !moved.isEmpty
             } isTargeted: { isTargeted = $0 }
         } else {

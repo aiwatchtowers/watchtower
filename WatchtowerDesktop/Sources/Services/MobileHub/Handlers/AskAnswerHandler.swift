@@ -73,8 +73,9 @@ final class AskAnswerHandler {
         }
         guard ask.isOpen else { return try rerun(action, ask: ask, value: value) }
         let outcome = await answer(ask, value)
-        if case let .delivered(delivery) = outcome { remember(delivery, of: action) }
-        return Self.outcome(outcome)
+        let automation = ask.automationRunID != nil
+        if case let .delivered(delivery) = outcome { remember(Self.wire(delivery, automation: automation), of: action) }
+        return Self.outcome(outcome, automation: automation)
     }
 
     /// An ask no longer open: `applied` again when it holds this very
@@ -91,9 +92,9 @@ final class AskAnswerHandler {
     /// Kept right after the store, before the echo. A failure only costs a
     /// re-run its `delivery` key; the answer itself is stored, so the
     /// echo stays `applied`.
-    private func remember(_ delivery: OwnerAsksViewModel.Delivery, of action: ActionRequestPayload) {
+    private func remember(_ delivery: String, of action: ActionRequestPayload) {
         do {
-            try sidecar.recordAskAnswerDelivery(Self.wire(delivery), for: action.recordName, at: Date())
+            try sidecar.recordAskAnswerDelivery(delivery, for: action.recordName, at: Date())
         } catch {
             Self.logger.warning(
                 "ask answer \(action.recordName, privacy: .public): delivery not kept: \(error.localizedDescription, privacy: .public)"
@@ -101,9 +102,10 @@ final class AskAnswerHandler {
         }
     }
 
-    static func outcome(_ outcome: OwnerAsksViewModel.AnswerResult) -> ActionOutcome {
+    /// `automation`: the ask is an automation run's (`automationRunID`).
+    static func outcome(_ outcome: OwnerAsksViewModel.AnswerResult, automation: Bool = false) -> ActionOutcome {
         switch outcome {
-        case let .delivered(delivery): .applied(["delivery": .string(wire(delivery))])
+        case let .delivered(delivery): .applied(["delivery": .string(wire(delivery, automation: automation))])
         case .notOpen: .failed(.askNotOpen)
         case let .invalid(message): .failed(.invalidAnswer, message: message)
         // Another answer to the ask is being written on the Mac right now.
@@ -112,15 +114,18 @@ final class AskAnswerHandler {
         }
     }
 
-    /// `result.delivery` values (spec §5.2).
-    static func wire(_ delivery: OwnerAsksViewModel.Delivery) -> String {
+    /// `result.delivery` values (spec §5.2). An automation's ask is never
+    /// typed into a session: its answer goes to the run, `automation` (the
+    /// Mac's `automationAnswerNote`), not `no_session` and the brief. A phone
+    /// that predates the value shows its plain "saved" line.
+    static func wire(_ delivery: OwnerAsksViewModel.Delivery, automation: Bool = false) -> String {
         switch delivery {
         case .submitted: "submitted"
         case .typed: "typed"
         case .held: "held"
         case .queued: "queued"
         case .copied: "copied"
-        case .noSession: "no_session"
+        case .noSession: automation ? "automation" : "no_session"
         }
     }
 }

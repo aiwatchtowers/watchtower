@@ -539,8 +539,14 @@ CREATE INDEX idx_voice_samples_person_status ON voice_samples(person_id, status)
 index	idx_voice_samples_transcript
 CREATE INDEX idx_voice_samples_transcript ON voice_samples(transcript_id)
 
+index	idx_workbench_board_columns_project
+CREATE INDEX idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position)
+
 index	review_comments_round
 CREATE INDEX review_comments_round ON review_comments(round_id, id)
+
+index	review_notes_session
+CREATE INDEX review_notes_session ON review_notes(project_id, session_id, kind, ord)
 
 index	review_rounds_one_open
 CREATE UNIQUE INDEX review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL
@@ -607,7 +613,7 @@ lines_added INTEGER NOT NULL DEFAULT 0,
 lines_removed INTEGER NOT NULL DEFAULT 0,
 src_path TEXT NOT NULL,
 src_offset INTEGER NOT NULL
-)
+, spawned_agent_id TEXT NOT NULL DEFAULT '', background INTEGER NOT NULL DEFAULT 0)
 
 table	agent_log_files
 CREATE TABLE agent_log_files (
@@ -2300,7 +2306,7 @@ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
 CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
 CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
-CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')))
+CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL)
 
 table	prompt_history
 CREATE TABLE prompt_history (
@@ -2401,6 +2407,61 @@ agent_reply TEXT NOT NULL DEFAULT '',
 agent_reply_at TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
+table	review_lessons
+CREATE TABLE review_lessons (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+lens TEXT NOT NULL,
+text TEXT NOT NULL,
+source_comment_ids TEXT NOT NULL DEFAULT '[]',
+status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','accepted','dismissed')),
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+decided_at TEXT
+)
+
+table	review_notes
+CREATE TABLE review_notes (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+tree_sha TEXT NOT NULL,
+kind TEXT NOT NULL CHECK (kind IN ('note','chapter')),
+ord INTEGER NOT NULL,
+path TEXT NOT NULL DEFAULT '',
+start_line INTEGER NOT NULL DEFAULT 0,
+end_line INTEGER NOT NULL DEFAULT 0,
+quote TEXT NOT NULL DEFAULT '',
+text TEXT NOT NULL,
+paths_json TEXT NOT NULL DEFAULT '[]',
+core INTEGER NOT NULL DEFAULT 0 CHECK (core IN (0,1)),
+why TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
+table	review_overviews
+CREATE TABLE review_overviews (
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+tree_sha TEXT NOT NULL,
+base_sha TEXT NOT NULL,
+intent_hash TEXT NOT NULL,
+json TEXT NOT NULL,
+model TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+PRIMARY KEY (project_id, tree_sha, base_sha, intent_hash)
+)
+
+table	review_reverts
+CREATE TABLE review_reverts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+round_id INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+hunk_id TEXT NOT NULL,
+path TEXT NOT NULL,
+header TEXT NOT NULL,
+patch TEXT NOT NULL,
+at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+UNIQUE (round_id, hunk_id)
 )
 
 table	review_rounds
@@ -2567,8 +2628,16 @@ next_step_attempts INTEGER NOT NULL DEFAULT 0,
 next_step_attempted_at TEXT NOT NULL DEFAULT '',
 project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
 status_actor TEXT DEFAULT NULL
-CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branch TEXT NOT NULL DEFAULT '', pr TEXT NOT NULL DEFAULT '',
+CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branch TEXT NOT NULL DEFAULT '', pr TEXT NOT NULL DEFAULT '', board_column_id INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL,
 CHECK(status != 'in_review' OR project_id IS NOT NULL)
+)
+
+table	terminal_session_agent_sessions
+CREATE TABLE terminal_session_agent_sessions (
+terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+agent_session_id TEXT NOT NULL,
+first_seen_at TEXT NOT NULL,
+PRIMARY KEY (terminal_session_id, agent_session_id)
 )
 
 table	terminal_session_targets
@@ -2903,6 +2972,17 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 PRIMARY KEY (entity_type, entity_id)
 )
 
+table	workbench_board_columns
+CREATE TABLE workbench_board_columns (
+id INTEGER PRIMARY KEY,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+status TEXT NOT NULL CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed')),
+title TEXT NOT NULL,
+description TEXT NOT NULL DEFAULT '',
+position INTEGER NOT NULL,
+created_at TEXT NOT NULL
+)
+
 table	workbench_pr_states
 CREATE TABLE workbench_pr_states (
 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -3022,6 +3102,40 @@ DELETE FROM messages_fts WHERE channel_id = OLD.channel_id AND ts = OLD.ts;
 INSERT INTO messages_fts(text, channel_id, ts, user_id)
 SELECT NEW.text, NEW.channel_id, NEW.ts, NEW.user_id
 WHERE NEW.text != '' AND NEW.is_deleted = 0;
+END
+
+trigger	targets_board_column_check_ai
+CREATE TRIGGER targets_board_column_check_ai BEFORE INSERT ON targets
+WHEN NEW.board_column_id IS NOT NULL
+AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+WHERE c.id = NEW.board_column_id
+AND c.project_id IS NEW.project_id
+AND c.status = NEW.status)
+BEGIN
+SELECT RAISE(ABORT, 'board column does not match the target');
+END
+
+trigger	targets_board_column_check_bu
+CREATE TRIGGER targets_board_column_check_bu BEFORE UPDATE OF board_column_id ON targets
+WHEN NEW.board_column_id IS NOT OLD.board_column_id
+AND NEW.board_column_id IS NOT NULL
+AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+WHERE c.id = NEW.board_column_id
+AND c.project_id IS NEW.project_id
+AND c.status = NEW.status)
+BEGIN
+SELECT RAISE(ABORT, 'board column does not match the target');
+END
+
+trigger	targets_board_column_clear_au
+CREATE TRIGGER targets_board_column_clear_au AFTER UPDATE OF status, project_id ON targets
+WHEN NEW.board_column_id IS NOT NULL
+AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+WHERE c.id = NEW.board_column_id
+AND c.project_id IS NEW.project_id
+AND c.status = NEW.status)
+BEGIN
+UPDATE targets SET board_column_id = NULL WHERE id = NEW.id;
 END
 
 trigger	targets_project_status_rollup_ad
@@ -3198,6 +3312,22 @@ COALESCE(NEW.status_actor, 'owner'));
 UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
 END
 
+trigger	terminal_session_agent_sessions_ai
+CREATE TRIGGER terminal_session_agent_sessions_ai AFTER INSERT ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
+BEGIN
+INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END
+
+trigger	terminal_session_agent_sessions_au
+CREATE TRIGGER terminal_session_agent_sessions_au AFTER UPDATE OF claude_session_id ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
+BEGIN
+INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END
+
 view	agent_log_session_totals
 CREATE VIEW agent_log_session_totals AS
 SELECT session_uuid,
@@ -3208,7 +3338,7 @@ SUM(cache_write_5m_tokens) AS cache_write_5m_tokens,
 SUM(cache_write_1h_tokens) AS cache_write_1h_tokens,
 SUM(cost_usd) AS cost_usd,
 SUM(cost_estimated) AS cost_estimated_calls,
-SUM(CASE WHEN kind = 'owner_turn' THEN 1 ELSE 0 END) AS owner_turns,
+SUM(CASE WHEN kind = 'owner_turn' AND trigger NOT IN ('notification','hook') THEN 1 ELSE 0 END) AS owner_turns,
 SUM(CASE WHEN kind = 'tool' THEN 1 ELSE 0 END) AS tool_calls,
 SUM(CASE WHEN kind = 'tool' AND outcome = 'error' THEN 1 ELSE 0 END) AS tool_errors,
 SUM(CASE WHEN kind = 'tool' AND outcome = 'denied' THEN 1 ELSE 0 END) AS tool_denials,
@@ -3398,6 +3528,8 @@ GROUP BY up.ancestor
 28	lines_removed	INTEGER	notnull=1	dflt=0	pk=0
 29	src_path	TEXT	notnull=1	dflt=NULL	pk=0
 30	src_offset	INTEGER	notnull=1	dflt=NULL	pk=0
+31	spawned_agent_id	TEXT	notnull=1	dflt=''	pk=0
+32	background	INTEGER	notnull=1	dflt=0	pk=0
 
 ## agent_log_files
 0	path	TEXT	notnull=0	dflt=NULL	pk=1
@@ -4887,6 +5019,7 @@ GROUP BY up.ancestor
 11	methodology_preset	TEXT	notnull=0	dflt=NULL	pk=0
 12	ask_guard_mode	TEXT	notnull=0	dflt=NULL	pk=0
 13	finish_check	TEXT	notnull=0	dflt=NULL	pk=0
+14	board_hidden_statuses	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## prompt_history
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -4967,6 +5100,51 @@ GROUP BY up.ancestor
 15	agent_reply_at	TEXT	notnull=0	dflt=NULL	pk=0
 16	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 17	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_lessons
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	lens	TEXT	notnull=1	dflt=NULL	pk=0
+3	text	TEXT	notnull=1	dflt=NULL	pk=0
+4	source_comment_ids	TEXT	notnull=1	dflt='[]'	pk=0
+5	status	TEXT	notnull=1	dflt='proposed'	pk=0
+6	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+7	decided_at	TEXT	notnull=0	dflt=NULL	pk=0
+
+## review_notes
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	session_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	tree_sha	TEXT	notnull=1	dflt=NULL	pk=0
+4	kind	TEXT	notnull=1	dflt=NULL	pk=0
+5	ord	INTEGER	notnull=1	dflt=NULL	pk=0
+6	path	TEXT	notnull=1	dflt=''	pk=0
+7	start_line	INTEGER	notnull=1	dflt=0	pk=0
+8	end_line	INTEGER	notnull=1	dflt=0	pk=0
+9	quote	TEXT	notnull=1	dflt=''	pk=0
+10	text	TEXT	notnull=1	dflt=NULL	pk=0
+11	paths_json	TEXT	notnull=1	dflt='[]'	pk=0
+12	core	INTEGER	notnull=1	dflt=0	pk=0
+13	why	TEXT	notnull=1	dflt=''	pk=0
+14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_overviews
+0	project_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	tree_sha	TEXT	notnull=1	dflt=NULL	pk=2
+2	base_sha	TEXT	notnull=1	dflt=NULL	pk=3
+3	intent_hash	TEXT	notnull=1	dflt=NULL	pk=4
+4	json	TEXT	notnull=1	dflt=NULL	pk=0
+5	model	TEXT	notnull=1	dflt=''	pk=0
+6	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_reverts
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	round_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	hunk_id	TEXT	notnull=1	dflt=NULL	pk=0
+3	path	TEXT	notnull=1	dflt=NULL	pk=0
+4	header	TEXT	notnull=1	dflt=NULL	pk=0
+5	patch	TEXT	notnull=1	dflt=NULL	pk=0
+6	at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## review_rounds
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -5108,6 +5286,12 @@ GROUP BY up.ancestor
 30	status_actor	TEXT	notnull=0	dflt=NULL	pk=0
 31	branch	TEXT	notnull=1	dflt=''	pk=0
 32	pr	TEXT	notnull=1	dflt=''	pk=0
+33	board_column_id	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## terminal_session_agent_sessions
+0	terminal_session_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	agent_session_id	TEXT	notnull=1	dflt=NULL	pk=2
+2	first_seen_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## terminal_session_targets
 0	session_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -5408,6 +5592,15 @@ GROUP BY up.ancestor
 2	entity_name	TEXT	notnull=1	dflt=''	pk=0
 3	priority	TEXT	notnull=1	dflt='normal'	pk=0
 4	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## workbench_board_columns
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	status	TEXT	notnull=1	dflt=NULL	pk=0
+3	title	TEXT	notnull=1	dflt=NULL	pk=0
+4	description	TEXT	notnull=1	dflt=''	pk=0
+5	position	INTEGER	notnull=1	dflt=NULL	pk=0
+6	created_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## workbench_pr_states
 0	project_id	INTEGER	notnull=1	dflt=NULL	pk=1

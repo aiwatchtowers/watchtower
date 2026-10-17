@@ -49,6 +49,13 @@ struct CLIRunnerTests {
         #expect(out.contains("hello"))
     }
 
+    @Test("ProcessCLIRunner writes stdin to the child and closes it")
+    func processRunnerStdin() async throws {
+        let runner = ProcessCLIRunner(binaryPath: "/bin/cat")
+        let data = try await runner.run(args: [], stdin: Data(#"{"columns":[],"hidden":[]}"#.utf8))
+        #expect(data == Data(#"{"columns":[],"hidden":[]}"#.utf8))
+    }
+
     @Test("ProcessCLIRunner surfaces non-zero exit")
     func processRunnerNonZero() async {
         let runner = ProcessCLIRunner(binaryPath: "/bin/sh")
@@ -169,5 +176,45 @@ struct CLIRunnerTests {
         let r = FakeRunner(payload: Data("ok".utf8))
         let data = try await r.run(args: ["x"])
         #expect(String(data: data, encoding: .utf8) == "ok")
+    }
+}
+
+@Suite("ProcessCLIRunner timeout")
+struct ProcessCLIRunnerTimeoutTests {
+    /// A stub that records its pid and then sleeps (exec keeps the pid).
+    private func stub(in dir: URL, body: String) throws -> URL {
+        let url = dir.appendingPathComponent("stub.sh")
+        try "#!/bin/sh\n\(body)\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    @Test("a child past its timeout is terminated and the call throws")
+    func timesOutAndReapsTheChild() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cli-timeout-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pidFile = dir.appendingPathComponent("pid").path
+        let runner = ProcessCLIRunner(binaryPath: try stub(in: dir, body: "echo $$ > \"$1\"\nexec /bin/sleep 5").path)
+        var pid: pid_t = 0
+        // The child is gone on every path: the runner waits for it before it throws.
+        defer { if pid > 0 { kill(pid, SIGKILL) } }
+        do {
+            _ = try await runner.run(args: [pidFile], timeout: 1.5)
+            Issue.record("expected a timeout")
+        } catch let CLIRunnerError.nonZeroExit(code, stderr) {
+            #expect(code == -1)
+            #expect(stderr.hasPrefix("timed out after"))
+        }
+        pid = pid_t(try String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        #expect(pid > 0)
+        #expect(kill(pid, 0) == -1 && errno == ESRCH)
+    }
+
+    @Test("a run that finishes inside its timeout returns its output")
+    func finishesInsideTheTimeout() async throws {
+        let runner = ProcessCLIRunner(binaryPath: "/bin/echo")
+        let data = try await runner.run(args: ["done"], timeout: 30)
+        #expect(String(bytes: data, encoding: .utf8) == "done\n")
     }
 }

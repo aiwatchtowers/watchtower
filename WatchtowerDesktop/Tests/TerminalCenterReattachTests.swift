@@ -97,7 +97,7 @@ final class TerminalCenterReattachTests: XCTestCase {
         transports.reduce(0) { $0 + $1.sent(.launch).count }
     }
 
-    func testProj19_ReattachAdoptsRunningSessionWithoutRelaunch() async throws {
+    func testProj20_ReattachAdoptsRunningSessionWithoutRelaunch() async throws {
         let row = try await sessionRow()
         let info = SessionHostSessionInfo(row: row.id, run: "run-a", pid: 5150, startedAtMs: 1_760_000_000_250,
                                           exited: false, code: nil)

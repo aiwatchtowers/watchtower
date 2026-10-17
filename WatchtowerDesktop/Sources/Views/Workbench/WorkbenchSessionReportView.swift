@@ -51,6 +51,7 @@ struct WorkbenchSessionReportView: View {
                     state: vm.sessionState(session),
                     staleError: staleError,
                     cleanupSection: SessionReportCleanupSection(vm: vm, sessionID: sessionID),
+                    analyticsLine: analyticsLine(session),
                     pullRequestURL: { vm.pullRequestURL($0, projectID: project.id) },
                     actions: .init(
                         openAsk: { id in Task { await vm.showAsk(id, projectID: project.id) } },
@@ -63,6 +64,41 @@ struct WorkbenchSessionReportView: View {
                 .frame(maxWidth: .infinity)
             }
         }
+    }
+
+    /// The session's line from the Analytics overview already loaded for
+    /// this workbench; none when the overview has no row for it.
+    private func analyticsLine(_ session: TerminalSession) -> SessionReportAnalyticsLine? {
+        let overview = vm.agentAnalytics?.overviews[project.id]?.value
+        guard let row = SessionReportAnalyticsLine.row(in: overview, claudeSessionID: session.claudeSessionID) else {
+            return nil
+        }
+        return SessionReportAnalyticsLine(row: row) { vm.showSessionAnalytics(row.uuid, projectID: project.id) }
+    }
+}
+
+/// "Agent time 27m · $12.50 · Analytics" (#298): the session's agent time
+/// and cost, and a link to its analytics.
+struct SessionReportAnalyticsLine: View {
+    let row: AgentSessionRow
+    let open: () -> Void
+
+    /// The overview's row for the terminal session's current `claude`
+    /// conversation; an older-format row has no time to show.
+    static func row(in overview: AgentReportOverview?, claudeSessionID: String?) -> AgentSessionRow? {
+        guard let overview, let claudeSessionID, !claudeSessionID.isEmpty else { return nil }
+        return overview.sessions.first { $0.uuid == claudeSessionID && !$0.oldFormat }
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("Agent time \(AgentAnalyticsFormat.duration(row.activeMS)) · \(AgentAnalyticsFormat.cost(row.costUSD)) ·")
+                .foregroundStyle(.secondary)
+            Button("Analytics", action: open)
+                .buttonStyle(.link)
+                .help("Show this session's analytics")
+        }
+        .font(.caption)
     }
 }
 
@@ -85,6 +121,8 @@ struct SessionReportContent: View {
     let staleError: String?
     /// The Cleanup line (board #535); nil = none.
     var cleanupSection: SessionReportCleanupSection?
+    /// The Analytics line (#298); nil = none.
+    var analyticsLine: SessionReportAnalyticsLine?
     let pullRequestURL: (SessionReport.PullRequest) -> URL?
     let actions: SessionReportActions
 
@@ -128,6 +166,7 @@ struct SessionReportContent: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
+            analyticsLine
             Text(SessionReportPresentation.heroLine(report.progress))
                 .font(.title2.weight(.semibold))
             ProgressView(value: SessionReportPresentation.progressFraction(report.progress))

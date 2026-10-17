@@ -53,7 +53,7 @@ package enum CodeRootPolicy {
 
     private static func sessionID(of pane: WorkspacePane?) -> Int64? {
         switch pane {
-        case let .session(id)?, let .sessionReport(id)?: id
+        case let .session(id)?, let .sessionReport(id)?, let .sessionChat(id)?: id
         default: nil
         }
     }

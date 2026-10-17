@@ -463,6 +463,23 @@ final class AskFormTests: XCTestCase {
         XCTAssertEqual(AppliedAnswer(delivery: nil).text, "Answer saved on the Mac")
     }
 
+    /// An automation's ask (the Mac's `automationAnswerNote`); a delivery
+    /// this build does not know shows the plain saved line.
+    func testAnAutomationEchoSaysTheAutomationGoesOn() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])
+        let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
+        model.setNote("All good")
+        await model.send(ask)
+
+        try await echo(fixture, .applied, result: ["delivery": .string("automation")])
+        try await poll { fixture.answerer.applied[140] != nil }
+
+        let form = try formOf(model, try replica([ask], store: fixture.store))
+        XCTAssertEqual(form.status, .applied("Answer saved — the automation goes on with it"))
+        XCTAssertNil(AskDelivery(rawValue: "from_a_newer_mac"))
+    }
+
     func testAnInvalidAnswerEchoShowsTheMacsMessageAndKeepsTheDraft() async throws {
         let fixture = try await makeFixture()
         let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])

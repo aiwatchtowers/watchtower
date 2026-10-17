@@ -10,9 +10,12 @@ struct ReviewChangesPaneView: View {
     let model: ReviewChangesModel
     /// The session's state kind, for the turn-over refresh; nil = not known.
     var agentStateKind: SessionSwitcherPresentation.State.Kind?
+    /// Find Repeats' model (the workbench's lessons); nil = not available.
+    var lessons: ReviewLessonsModel?
 
     @State private var inline = false
     @State private var compose: ComposeRequest?
+    @State private var findingRepeats = false
     @State private var pageError: String?
     @State private var onScreen = false
     @State private var pace = ReviewPaceWiring()
@@ -49,6 +52,9 @@ struct ReviewChangesPaneView: View {
             .sheet(item: $compose) { request in
                 ReviewNewCommentSheet(request: request, lenses: model.lenses)
             }
+            .sheet(isPresented: $findingRepeats) {
+                if let lessons { ReviewLessonsSheet(model: lessons, lenses: model.lenses) }
+            }
     }
 
     /// The kinds a turn ends in: the agent's edits are done for now.
@@ -69,7 +75,11 @@ struct ReviewChangesPaneView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .ready:
             VStack(spacing: 0) {
-                ReviewChangesHeader(model: model, inline: $inline) { Task { await refreshOrNextRound() } }
+                ReviewChangesHeader(
+                    model: model, inline: $inline,
+                    refresh: { Task { await refreshOrNextRound() } },
+                    findRepeats: lessons == nil ? nil : { findingRepeats = true }
+                )
                 if model.mode == .deep { ReviewPhaseStrip(model: model) }
                 if let pageError {
                     ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
@@ -137,6 +147,8 @@ struct ReviewChangesPaneView: View {
             } else {
                 MonacoDiffView(payload: payload(path: path, sides: sides)) { start, end, side in
                     compose = lineComposeRequest(path: path, side: side, start: start, end: end)
+                } onUndo: { id in
+                    Task { await model.undo(hunkID: id) }
                 } onError: { pageError = $0 }
             }
         } else {
@@ -165,8 +177,13 @@ struct ReviewChangesPaneView: View {
             path: path, original: sides.old.text, modified: sides.new.text, inline: inline,
             comments: shown.map {
                 .init(id: $0.id, startLine: $0.startLine, endLine: $0.endLine, body: $0.body,
-                      status: $0.status.rawValue, reply: $0.agentReply)
-            }
+                      status: $0.status.rawValue, reply: model.agentReply(for: $0))
+            },
+            notes: ReviewPresentation.noteZones(model.notes, path: path, placements: model.notePlacements),
+            hunks: ReviewPresentation.hunks(
+                of: model.files.first { $0.path == path }, roundOpen: model.round?.status == "open",
+                canUndo: model.canUndo, busy: model.sending || model.undoing
+            )
         )
     }
 

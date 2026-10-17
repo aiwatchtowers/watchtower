@@ -29,6 +29,8 @@ func TestTierForSource(t *testing.T) {
 		prompts.MeetingChapters,
 		// An automation's llm() with tier: strong.
 		"automation.llm.strong",
+		// The diff reviewer's overview: strong by absence from the light switch.
+		"workbench.review_overview", "workbench.review_lessons",
 	}
 	for _, src := range strong {
 		if got := TierForSource(src); got != TierStrong {

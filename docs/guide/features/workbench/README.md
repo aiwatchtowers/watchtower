@@ -28,6 +28,12 @@ Nothing here changes your own terminal workflow. A session started in your own t
 3. Start work on a target with **Work on It** on its card. The agent takes it from there.
 4. Check back on the board and answer asks as they come.
 
+### Run a workbench automation from the header
+
+Each of the workbench's automations that runs **When I press a button** gets a button at the start of the header's right-hand controls, before **Terminal ▾**: up to four, the rest under **More**. A click starts the run; one set to ask first shows "Run <label>?" with **Run** and **Cancel**. While a run is going, the button spins and a click shows the run in Automations.
+
+A dimmed button says why: **Needs your confirmation** opens the confirmation sheet, **Disabled** or **Parse error** opens its card. If the run could not start, "Could not run <label>" says why. With the Automations feature off there are no buttons. See [Recipes and templates](../automations-recipes.md#workbench-recipes).
+
 A folder inside Documents, Desktop, Downloads or a cloud-synced folder shows a warning first, because macOS may ask to allow access. The warning comes before anything is created.
 
 The agent writes board text in the language you use with it. Write to it in another language and the board follows; what is already on the board is not translated.

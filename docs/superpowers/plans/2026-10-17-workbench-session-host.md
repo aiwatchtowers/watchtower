@@ -85,7 +85,7 @@ Behaviour the tests pin:
 - Idle exit as in Global Constraints.
 
 - [ ] **Step 1: Write the failing tests** (in-process `Server` on a temp-dir socket; children are `/bin/sh -c …`; `t.Cleanup` kills each child's process group and waits):
-  - `TestSessionHost19_SessionSurvivesClientDisconnect`: launch `sh -c 'while :; do echo tick; sleep 0.1; done'`, close the connection, wait 300 ms, `List` shows it running, `kill(pid, 0) == nil`; `Attach` replays at least one `tick`.
+  - `TestSessionHost20_SessionSurvivesClientDisconnect`: launch `sh -c 'while :; do echo tick; sleep 0.1; done'`, close the connection, wait 300 ms, `List` shows it running, `kill(pid, 0) == nil`; `Attach` replays at least one `tick`.
   - `TestServer_LaunchUsesOnlyGivenEnv`: `Env: ["FOO=bar"]`, `sh -c 'echo "$FOO-$HOME-"'` → output `bar--`.
   - `TestServer_ExitWhileDetachedIsKeptUntilForget`: launch `sh -c 'sleep 0.2; exit 7'`, disconnect, after 500 ms `List` has `exited: true, code: 7`; `Forget` → gone.
   - `TestServer_ExitWhileAttachedDropsRecord`: attached through `exit 3` → `Exit{code:3}`, `List` empty.
@@ -164,7 +164,7 @@ Behaviour the tests pin:
 - Produces: `TerminalCenter.adopt(_ session: TerminalSession, info: SessionHostSessionInfo)` — registers a `HostedTerminalSession`, wires it like `run`, sets `states[id] = .running` and `startedAt[id] = Date(ms: info.startedAtMs)`, then `attach(info)`; never builds a `TerminalLaunch`, never touches `resumeStarts`. `WorkbenchesViewModel.reattachHostedSessions() async`.
 
 - [ ] **Step 1: Write the failing tests** (fake client returning a fixed `list`):
-  - `testProj19_ReattachAdoptsRunningSessionWithoutRelaunch`: a listed running session of an existing row → `states == .running`, `startedAt` from the host, the factory's `start` never called, an `Attach` frame sent.
+  - `testProj20_ReattachAdoptsRunningSessionWithoutRelaunch`: a listed running session of an existing row → `states == .running`, `startedAt` from the host, the factory's `start` never called, an `Attach` frame sent.
   - `testReattachStopsSessionWhoseRowIsGone`: listed row id with no row → the signaller gets `SIGHUP` for its pid (then `SIGKILL` if alive after the grace), then `forget`.
   - `testReattachReportsExitOnceAndForgets`: listed `exited: true, code: 0` → `onSessionExit(id, 0, false)` once, `forget` sent; a second `reattachHostedSessions` with an empty list reports nothing.
   - `testReattachIgnoresListFailure`: `list` throws → nothing adopted, no crash, rows read as stopped.
@@ -189,7 +189,7 @@ Behaviour the tests pin:
 - `TerminalCenter.detachAll()` — hosted processes `detachFromHost()`; local fallback processes close as today. `TerminalCenter.liveHostedCount: Int`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `testProj19_UpdateQuitDetachesHostedSessions`: update quit with live sessions → no prompt, `detachTerminals` runs, `closeTerminals` does not.
+  - `testProj20_UpdateQuitDetachesHostedSessions`: update quit with live sessions → no prompt, `detachTerminals` runs, `closeTerminals` does not.
   - `testKeepSessionsChoiceDetaches`, `testStopSessionsChoiceCloses`, `testCancelChoiceCancels`, `testNoLiveSessionsQuitsWithoutSessionPrompt`.
   - `testQuitPromptCombinesRecordingAndSessions` (both texts, three buttons).
   - `testSystemLogoutNeverPrompts` (inject the quit reason).
@@ -205,9 +205,9 @@ Behaviour the tests pin:
 **Depends on:** Tasks 1–6
 
 **Files:**
-- Modify: `docs/features/workbench.md` (the terminal paragraph: host, reattach, quit prompt, fallback, known limits — no reboot survival, phone/notices quiet while the app is closed), `docs/inventory/workbench.md` (new **PROJ-19** — a hosted session survives an update and is adopted without a relaunch; guard tests `TestSessionHost19_SessionSurvivesClientDisconnect`, `testProj19_ReattachAdoptsRunningSessionWithoutRelaunch`, `testProj19_UpdateQuitDetachesHostedSessions`; a dated changelog entry), `docs/guide/features/workbench/sessions.md` (what happens on update and on Quit, per `docs/guide/WRITING.md`), `CLAUDE.md` (append the session host to the Workbench feature line)
+- Modify: `docs/features/workbench.md` (the terminal paragraph: host, reattach, quit prompt, fallback, known limits — no reboot survival, phone/notices quiet while the app is closed), `docs/inventory/workbench.md` (new **PROJ-20** — a hosted session survives an update and is adopted without a relaunch; guard tests `TestSessionHost20_SessionSurvivesClientDisconnect`, `testProj20_ReattachAdoptsRunningSessionWithoutRelaunch`, `testProj20_UpdateQuitDetachesHostedSessions`; a dated changelog entry), `docs/guide/features/workbench/sessions.md` (what happens on update and on Quit, per `docs/guide/WRITING.md`), `CLAUDE.md` (append the session host to the Workbench feature line)
 
 - [ ] **Step 1: Write the docs.**
 - [ ] **Step 2: Gate:** `make test`, `make test-swift`, `make lint-all` — all pass (`bash scripts/dev-health.sh` first).
 - [ ] **Step 3: Manual check by the owner (ask):** start two sessions with a running subagent and a `sleep 600` in background, install an update (or quit with Keep Sessions), reopen — both sessions are on screen, the agent kept working, the background job is alive, typing and an ask answer work.
-- [ ] **Step 4: Commit** `docs: session host — workbench guide, PROJ-19 (#496)`
+- [ ] **Step 4: Commit** `docs: session host — workbench guide, PROJ-20 (#496)`

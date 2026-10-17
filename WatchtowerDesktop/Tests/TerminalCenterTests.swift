@@ -235,7 +235,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertNil(hosted, "the ended run lets its session go")
     }
 
-    /// A quit that keeps sessions (PROJ-19): the hosted session is let go
+    /// A quit that keeps sessions (PROJ-20): the hosted session is let go
     /// without any signal — its connection closes, nothing is forgotten in
     /// the host — while the local fallback session is hung up as on any quit.
     func testDetachAllNeverSignals() async throws {

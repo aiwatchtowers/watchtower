@@ -610,4 +610,29 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertNil(try TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
         }
     }
+    func testCreateStoresAutomationRunID() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let automation = try TestDatabase.insertAutomation(db, workbenchID: project)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation, status: "waiting",
+                                                           waitingReason: "app")
+            var new = claude(project)
+            new.automationRunID = run
+            let row = try TerminalSessionQueries.create(db, new)
+            XCTAssertEqual(row.automationRunID, run)
+            XCTAssertEqual(try Int64.fetchOne(db, sql: "SELECT automation_run_id FROM terminal_sessions WHERE id = ?",
+                                              arguments: [row.id]), run)
+        }
+    }
+
+    func testCreateWithoutRunLeavesNull() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let row = try TerminalSessionQueries.create(db, claude(try TestDatabase.insertWorkbench(db)))
+            XCTAssertNil(row.automationRunID)
+            XCTAssertEqual(try Bool.fetchOne(db, sql: "SELECT automation_run_id IS NULL FROM terminal_sessions WHERE id = ?",
+                                             arguments: [row.id]), true)
+        }
+    }
 }

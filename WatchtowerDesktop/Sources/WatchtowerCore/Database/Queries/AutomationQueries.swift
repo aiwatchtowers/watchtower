@@ -177,4 +177,174 @@ package enum AutomationQueries {
         }
         return out
     }
+    /// "⚙ <name> · run #<id>" for each ask an automation run filed
+    /// (`ask()`, spec §13.3); an agent's ask, or a missing one, is absent.
+    package static func askLabels(_ db: Database, askIDs: [Int64]) throws -> [Int64: String] {
+        guard !askIDs.isEmpty else { return [:] }
+        let marks = Array(repeating: "?", count: askIDs.count).joined(separator: ",")
+        var out: [Int64: String] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT q.id, q.automation_run_id AS run_id, COALESCE(NULLIF(a.name, ''), a.slug) AS name
+            FROM owner_asks q JOIN automation_runs r ON r.id = q.automation_run_id
+            JOIN automations a ON a.id = r.automation_id
+            WHERE q.id IN (\(marks))
+            """, arguments: StatementArguments(askIDs)) {
+            let id: Int64 = row["id"]
+            let runID: Int64 = row["run_id"]
+            let name: String = row["name"]
+            out[id] = "⚙ \(name) · run #\(runID)"
+        }
+        return out
+    }
+
+    // MARK: - Workbench sessions (P5, spec §13.1)
+
+    /// A session step's `args_json` as Go's SDK writes it, agent and title
+    /// resolved.
+    private struct SessionStepArgs: Decodable {
+        let prompt: String
+        let agent: String
+        let title: String
+    }
+
+    /// The `session()` steps of workbench runs waiting for the app — step
+    /// waiting with no session attached, run waiting with reason `app` — in
+    /// step order (Go's `PendingAutomationSessionSteps`). A step whose args
+    /// cannot be read is left out and named in `unreadable` (the caller logs
+    /// it once): Go validated them, so such a row is broken, and its run
+    /// waits until its pause timeout.
+    package static func fetchPendingSessionRequests(_ db: Database) throws
+        -> (requests: [PendingSessionRequest], unreadable: [Int64]) {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT st.id, st.run_id, a.id AS automation_id, a.project_id, st.args_json,
+                COALESCE(NULLIF(a.name, ''), a.slug) AS name
+            FROM automation_run_steps st
+            JOIN automation_runs r ON r.id = st.run_id
+            JOIN automations a ON a.id = r.automation_id
+            WHERE st.kind = 'session' AND st.status = 'waiting' AND st.session_id IS NULL AND st.finished_at IS NULL
+              AND r.status = 'waiting' AND r.waiting_reason = 'app'
+              AND a.scope = 'workbench' AND a.project_id IS NOT NULL
+            ORDER BY st.id
+            """)
+        var requests: [PendingSessionRequest] = []
+        var unreadable: [Int64] = []
+        for row in rows {
+            let stepID: Int64 = row["id"]
+            let runID: Int64 = row["run_id"]
+            let name: String = row["name"]
+            let json: String = row["args_json"]
+            guard let args = try? JSONDecoder().decode(SessionStepArgs.self, from: Data(json.utf8)),
+                  !args.prompt.isEmpty, let agent = AgentKind(rawValue: args.agent) else {
+                unreadable.append(stepID)
+                continue
+            }
+            requests.append(PendingSessionRequest(
+                stepID: stepID, runID: runID, automationID: row["automation_id"], projectID: row["project_id"],
+                automationName: name, prompt: args.prompt,
+                title: args.title.isEmpty ? "⚙ \(name) · run #\(runID)" : args.title, agent: agent
+            ))
+        }
+        return (requests, unreadable)
+    }
+
+    /// `terminal_sessions s` rows of run `?` that no step names.
+    private static let unattachedSessionsWhere = """
+        s.automation_run_id = ?
+          AND NOT EXISTS (SELECT 1 FROM automation_run_steps st WHERE st.session_id = s.id)
+        """
+
+    /// A session of run `runID` that no step names: the app created it but
+    /// did not attach it (a crash between the two), so it is adopted rather
+    /// than a second one launched. The oldest such row.
+    package static func unattachedSession(_ db: Database, runID: Int64) throws -> TerminalSession? {
+        try TerminalSession.fetchOne(db, sql: """
+            SELECT * FROM terminal_sessions s WHERE \(unattachedSessionsWhere)
+            ORDER BY s.id LIMIT 1
+            """, arguments: [runID])
+    }
+
+    /// Takes the run marker off run `runID`'s sessions that no step names —
+    /// the row a refused launch left — so no later poll adopts one (Go
+    /// attaches only a session of the step's run). The rows stay; returns
+    /// their ids.
+    @discardableResult
+    package static func disownUnattachedSessions(_ db: Database, runID: Int64) throws -> [Int64] {
+        let ids = try Int64.fetchAll(db, sql: """
+            SELECT s.id FROM terminal_sessions s WHERE \(unattachedSessionsWhere)
+            ORDER BY s.id
+            """, arguments: [runID])
+        guard !ids.isEmpty else { return [] }
+        try db.execute(sql: """
+            UPDATE terminal_sessions SET automation_run_id = NULL WHERE id IN (\(ids.map { _ in "?" }.joined(separator: ",")))
+            """, arguments: StatementArguments(ids))
+        return ids
+    }
+
+    /// The `session()` steps still waiting on a session attached to them,
+    /// their run still waiting: the sessions whose end the app reports. A
+    /// session that finished or failed, or whose row is gone, is left out —
+    /// the run's wait reads those ends itself (spec §13.1).
+    package static func waitingSessionSteps(_ db: Database) throws -> [(stepID: Int64, sessionID: Int64)] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT st.id, st.session_id FROM automation_run_steps st JOIN automation_runs r ON r.id = st.run_id
+            JOIN terminal_sessions s ON s.id = st.session_id
+            WHERE st.kind = 'session' AND st.status = 'waiting'
+              AND st.finished_at IS NULL AND r.status = 'waiting'
+              AND s.finished_at IS NULL AND s.agent_failed_at IS NULL
+            ORDER BY st.id
+            """)
+        return rows.map { (stepID: $0["id"], sessionID: $0["session_id"]) }
+    }
+
+    // MARK: - Workbench header buttons (P5, spec §12.4)
+
+    private struct ButtonSpec: Decodable {
+        struct Button: Decodable {
+            let label: String?
+            let confirm: Bool
+
+            enum CodingKeys: String, CodingKey { case label, confirm }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                label = try c.decodeIfPresent(String.self, forKey: .label)
+                confirm = try c.decodeIfPresent(Bool.self, forKey: .confirm) ?? false
+            }
+        }
+
+        let button: Button?
+    }
+
+    /// Every not-removed `trigger.button` recipe of workbench `projectID`, in
+    /// slug order. A spec without a label shows the recipe's name.
+    package static func headerButtons(_ db: Database, projectID: Int64) throws -> [AutomationHeaderButton] {
+        let automations = try Automation.fetchAll(db, sql: """
+            SELECT * FROM automations
+            WHERE scope = 'workbench' AND project_id = ? AND trigger_kind = 'button' AND removed_at IS NULL
+            ORDER BY slug, id
+            """, arguments: [projectID])
+        guard !automations.isEmpty else { return [] }
+        let active = try newestRunPerAutomation(db, active: true)
+        return automations.map { headerButton($0, activeRunID: active[$0.id]?.id) }
+    }
+
+    /// The same buttons as `headerButtons(_:projectID:)` for every workbench
+    /// at once, built from the list's items (their active run included), so
+    /// a list read costs no query per workbench.
+    package static func headerButtonsByProject(_ items: [AutomationListItem]) -> [Int64: [AutomationHeaderButton]] {
+        let buttons = items.filter { $0.automation.scope == .workbench && $0.automation.triggerKind == "button" }
+            .sorted { ($0.automation.slug, $0.automation.id) < ($1.automation.slug, $1.automation.id) }
+        return Dictionary(grouping: buttons.compactMap { item in
+            item.automation.projectID.map { ($0, headerButton(item.automation, activeRunID: item.activeRun?.id)) }
+        }, by: \.0).mapValues { $0.map(\.1) }
+    }
+
+    private static func headerButton(_ a: Automation, activeRunID: Int64?) -> AutomationHeaderButton {
+        let spec = try? JSONDecoder().decode(ButtonSpec.self, from: Data(a.triggerSpecJSON.utf8))
+        let label = spec?.button?.label.flatMap { $0.isEmpty ? nil : $0 } ?? (a.name.isEmpty ? a.slug : a.name)
+        return AutomationHeaderButton(
+            automationID: a.id, slug: a.slug, label: label, confirm: spec?.button?.confirm ?? false,
+            state: AutomationHeaderButton.state(of: a), activeRunID: activeRunID
+        )
+    }
 }

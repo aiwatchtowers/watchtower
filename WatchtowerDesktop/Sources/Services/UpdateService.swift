@@ -565,7 +565,7 @@ final class UpdateService {
         /// Start the detached waiter that reopens the app after `pid` exits.
         var spawn: (_ pid: pid_t, _ appPath: String) throws -> Void
         /// Quit through the app's normal quit path, as an update's quit: it
-        /// leaves the hosted workbench sessions running (PROJ-19).
+        /// leaves the hosted workbench sessions running (PROJ-20).
         var requestQuit: () -> Void
         /// Wait up to `quitGrace` for the quit to take effect.
         var sleep: (Duration) async -> Void
