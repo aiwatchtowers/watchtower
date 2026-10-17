@@ -147,6 +147,23 @@ final class ChatSessionPool {
         }
     }
 
+    /// The claude.ai connector switches changed (#737): a session reads them
+    /// when it starts, so each launched idle session closes now and a busy
+    /// one after its turn (CHAT-03 — a running turn is never cut); the next
+    /// turn starts a new process with the new switches. A pending session has
+    /// not started yet and reads them when it launches. Unlike
+    /// `retireSessions(projectID:deleted:)` the prompt did not change, so the
+    /// stored session id stays and the next session resumes it.
+    func retireIdleSessions() {
+        for (id, client) in clients where !client.isPending {
+            if client.isBusy {
+                client.retireAfterTurn(keepingSessionID: true)
+            } else {
+                close(conversationID: id)
+            }
+        }
+    }
+
     /// App quit: every session gets `close`, then one SIGTERM after the
     /// grace, then SIGKILL if it still lives; retirements already in flight
     /// are awaited too. Returns once every process is gone.

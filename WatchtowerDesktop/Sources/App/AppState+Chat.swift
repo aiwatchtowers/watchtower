@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 extension AppState {
     /// The main chat's two view models: the history list follows the chat's
@@ -16,5 +17,18 @@ extension AppState {
     func wireActionStripRefresh(_ cvm: ChatViewModel) {
         cvm.onTurnFinished = { [weak self] _ in self?.actionStripViewModel?.refresh() }
         cvm.onActionAwaited = { [weak self] _ in self?.actionStripViewModel?.refresh() }
+    }
+
+    /// The claude.ai list is beside the database (Go: the db path's
+    /// directory); a written switch retires the main chat's idle sessions so
+    /// the next turn starts with it. Embedded chats get none of these tools.
+    func makeClaudeAIConnectors() -> ClaudeAIConnectorsModel {
+        let model = ClaudeAIConnectorsModel { [weak self] in
+            let dir = self?.databaseManager.map { ($0.dbPool.path as NSString).deletingLastPathComponent }
+                ?? Constants.activeWorkspaceDir()
+            return dir.map { ($0 as NSString).appendingPathComponent(ClaudeAIConnectorsFile.fileName) }
+        }
+        model.onSwitched = { [weak self] in self?.chatSessionPool?.retireIdleSessions() }
+        return model
     }
 }

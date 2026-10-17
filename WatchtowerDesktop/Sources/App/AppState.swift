@@ -226,6 +226,8 @@ final class AppState {
     /// App-wide warm chat sessions (spec §1.4) — owns every running main-chat
     /// turn, so turns survive navigation. Created once the DB is open.
     private(set) var chatSessionPool: ChatSessionPool?
+    /// Settings → Profile → claude.ai tools (#737); `AppState+Chat.swift`.
+    @ObservationIgnored private(set) lazy var claudeAIConnectors = makeClaudeAIConnectors()
 
     /// Calendar ViewModel — persists across tab switches.
     private(set) var calendarViewModel: CalendarViewModel?

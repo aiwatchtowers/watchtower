@@ -159,6 +159,55 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
+    /// The claude.ai switches changed (#737): idle sessions close now, a busy
+    /// one finishes its turn first (CHAT-03) — its session id still recorded,
+    /// the prompt did not change — and is then replaced.
+    func testChatPoolRetireIdleKeepsBusySessions() async throws {
+        let idle = pool.session(for: 1, config: config(1))
+        let busy = pool.session(for: 2, config: config(2))
+        busy.startTurn(turn("t2", row: try assistantRow()))
+
+        pool.retireIdleSessions()
+        XCTAssertNil(pool.client(for: 1))
+        XCTAssertFalse(idle.isAlive)
+        let closed = await waitForCondition { self.fakes[0].terminated }
+        XCTAssertTrue(closed, "the idle process is closed now")
+        XCTAssertTrue(busy.isBusy, "a running turn is never cut")
+        XCTAssertTrue(busy.isAlive)
+        XCTAssertFalse(fakes[1].terminated)
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: "sess-2"))
+        let ended = await waitForCondition { !busy.isBusy }
+        XCTAssertTrue(ended)
+        XCTAssertEqual(busy.driver.sessionID, "sess-2", "the next session resumes it")
+        XCTAssertFalse(busy.isAlive, "replaced on the next request")
+        XCTAssertFalse(pool.session(for: 2, config: config(2)) === busy)
+        XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
+    }
+
+    /// A queued session has not started: it reads the new switches when it
+    /// launches, so it is left alone and keeps its held turn.
+    func testChatPoolRetireIdleLeavesPendingSessions() async throws {
+        for id: Int64 in 1...3 {
+            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+        }
+        let fourth = pool.session(for: 4, config: config(4))
+        fourth.startTurn(turn("t4", row: try assistantRow()))
+        XCTAssertTrue(fourth.isPending)
+
+        pool.retireIdleSessions()
+        XCTAssertTrue(fourth.isPending)
+        XCTAssertTrue(fourth.isAlive)
+        XCTAssertEqual(fakes.count, 3, "no busy session was cut to make room")
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
+        let launched = await waitForCondition { self.fakes.count == 4 && !fourth.isPending }
+        XCTAssertTrue(launched)
+        XCTAssertEqual(fakes[3].turns.map(\.turnID), ["t4"])
+        XCTAssertTrue(fourth.isAlive, "the launched session is not retired")
+        XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
+    }
+
     /// A queued session's argv already carries the old `--resume`: it never
     /// launches. Its held turn never reached a provider, so it is re-sent on
     /// a fresh session with the new prompt (owner decision 2026-10-01), not

@@ -41,6 +41,16 @@ Describe the routine ("every weekday at 9, summarise the mail that needs a reply
 
 A new recipe stays off until you turn it on in the Automations tab. See [Automations](automations.md).
 
+### claude.ai connectors
+
+On the Claude provider, the main chat can also use the connectors of your claude.ai account. Reading through one is a step in the reply; anything that writes through one waits for your Approve like every other external tool.
+
+1. Open **Settings → Profile → claude.ai tools**. The list fills in after your first main-chat reply on the Claude provider.
+2. Turn **Connectors** off to stop them all, or switch one connector off.
+3. For a connector shown **Not connected**, click **Connect on claude.ai** and connect it there.
+
+A switch applies to the next reply: idle chats restart, and a reply already running keeps the tools it started with.
+
 ## When it's empty or wrong
 
 - **The send fails with "sign in again to grant send".** Your Slack workspace was connected before send existed. Click **Reconnect Slack** on the card, approve Slack's page in the browser, then **Retry**.

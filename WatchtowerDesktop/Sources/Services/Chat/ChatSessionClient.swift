@@ -235,10 +235,12 @@ final class ChatSessionClient {
     /// The prompt this session was spawned with is stale (its chat project
     /// changed) but a turn is running: let it finish, record no session id,
     /// then stop counting as alive so the pool replaces it (CHAT-03 — a
-    /// running turn is never cut).
-    func retireAfterTurn() {
+    /// running turn is never cut). `keepingSessionID`: the prompt is fine,
+    /// only the process must be replaced (the claude.ai switches changed),
+    /// so the turn's session id is still recorded and the next one resumes it.
+    func retireAfterTurn(keepingSessionID: Bool = false) {
         retiresAfterTurn = true
-        driver.stopRecordingSession()
+        if !keepingSessionID { driver.stopRecordingSession() }
     }
 
     /// Hands back the turn this not-yet-launched session holds, so it can be
