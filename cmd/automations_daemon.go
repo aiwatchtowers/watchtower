@@ -12,14 +12,19 @@ import (
 
 // wireAutomations attaches the automations scheduler and executor to the
 // daemon when automations.enabled is on (spec 2026-10-14 §7, §20 D12); the
-// daemon runs them beside the sync loop and wakes them on SIGUSR2. Off, it
-// builds nothing (FEAT-01) and logs that.
+// daemon runs them beside the sync loop and wakes them on SIGUSR2. With them
+// comes the event bus (§8) the sync phases publish into; a run its per-cycle
+// flush queues wakes the executor. Off, it builds nothing (FEAT-01) and logs
+// that.
 func wireAutomations(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) {
 	if !cfg.Automations.Enabled {
 		logger.Println("automations: disabled (automations.enabled=false), scheduler and executor not started")
+		d.SetAutomationEvents(nil)
 		return
 	}
-	d.SetAutomations(newDaemonAutomations(cfg, database, gen, logger))
+	sched, exec := newDaemonAutomations(cfg, database, gen, logger)
+	d.SetAutomations(sched, exec)
+	d.SetAutomationEvents(automations.NewBus(database, automations.RealClock{}, exec.Wake, logger))
 }
 
 // newDaemonAutomations builds the daemon's scheduler and executor: the
