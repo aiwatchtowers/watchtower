@@ -48,7 +48,7 @@ Below the Session instructions field, only while there are open global suggestio
 
 A link **Preview what the agent gets…** opens a read-only sheet with the exact text the agent receives (screen 3).
 
-Saving is automatic (as the rest of Settings), with a "Saved" note.
+Each field saves through the CLI with its own **Save** button, enabled while the text differs from the stored one (*my call*: the System pane's `ConfigSaveBar` saves `config.yaml`, which these texts are not in).
 
 ### Workbench ⋯ → Agent Settings… (mockup screen 2)
 
@@ -61,7 +61,7 @@ Suggestions for this workbench appear in the same yellow style under the matchin
 
 ### Home
 
-When a new suggestion appears (first seen since the owner last saw Home), Home's Today zone shows one card: "You keep telling agents: “<direction>” — add to your instructions?" with **Add**, **Dismiss** and **More…** (opens Settings at the field). One card at a time, the newest; the card leaves once acted on or once the suggestion is acted on elsewhere. It follows the existing Today card conventions (`HomeTodayBuilder`, failed read ≠ all clear).
+When an open suggestion first seen in the last 7 days exists, Home's Today zone shows one card: "You keep telling agents: “<direction>” — add to your instructions?" with **Add**, **Dismiss** and **More…** (opens Settings at the field). One card at a time, the newest; the card leaves once acted on (here or in Settings) or once it is 7 days old — older open suggestions stay in Settings only (*my call*: no nagging). It follows the existing Today card conventions (`HomeTodayBuilder`, failed read ≠ all clear).
 
 ## What the agent receives (mockup screen 3)
 
@@ -90,7 +90,7 @@ When `update_target` changes a target's status to `in_progress` (from any other 
 "procedure": "Owner's target procedure — follow it for #612:\n<global>\nFor this workbench:\n<workbench>"
 ```
 
-- Present on **every** `update_target` call whose `status` argument is `in_progress`, including when the target already was `in_progress` (a resumed Work on It) — no comparison with the stored status, so no race between writers. `create_targets` creating a target directly in `in_progress` returns it too. A call that sets any other status, or no status, carries no `procedure`. *(My call: the owner asked for "every time it takes a target"; a re-take is a take.)*
+- Present on **every** `update_target` call whose `status` argument is `in_progress`, including when the target already was `in_progress` (a resumed Work on It) — no comparison with the stored status, so no race between writers. A `column` move that lands the target in an `in_progress` column counts the same (a column move sets the status). `create_targets` has no status argument, so it never returns a procedure. A call that sets any other status, or no status, carries no `procedure`. *(My call: the owner asked for "every time it takes a target"; a re-take is a take.)*
 - Status changes made outside the agent's tools (Desktop drag, phone) deliver nothing by themselves; Work on It and a phone start already tell the agent to work the target, and the board rules make it set `in_progress` itself, which delivers the procedure.
 - Absent when both texts are empty.
 - Read at call time, so an edit applies from the next target, even in a running session.
@@ -124,14 +124,14 @@ A daemon phase, `phaseInstructionSuggestions`, at most once a day (stamp-gated l
 
 **Add** appends the line (on a new line) to the right text and marks the suggestion `added`; if the text would exceed its limit, Add is refused with a message asking the owner to make room. **Dismiss** marks it `dismissed`, permanently.
 
-The phase is gated by the workbench feature (FEAT registry) and skipped when no workbench sessions exist. Failure of the model call writes nothing and is retried next day; it never clears existing suggestions.
+There is no workbench entry in the feature registry; the phase runs when at least one workbench terminal session was active in the window and is skipped otherwise. Failure of the model call writes nothing and is retried next day; it never clears existing suggestions.
 
 ## Constraints
 
 - Go 1.26 backend, SwiftUI Desktop, existing brief/MCP/hook paths; nothing new installed into the agent's folder.
 - Brief is built by `cmd/workbench_brief.go` (`renderSessionBrief`) and the Codex path (`runCodexBrief`); both get the slot.
 - `update_target` lives in `internal/tools/workbench_targets.go`; the `procedure` field is additive to its result (existing keys unchanged).
-- Behaviour inventory (`docs/inventory/workbench.md`): PROJ-04 (brief) and PROJ-12 (workbench tools) are amended, not weakened; check `docs/inventory/` and add a new PROJ entry for the instructions contract.
+- Behaviour inventory: a new **PROJ-22** in `docs/inventory/workbench.md` holds this contract (brief slot, `procedure` field, suggestions never edit text); DEV-06 in `docs/inventory/dev-surface.md` is amended for the additive `procedure` key. The existing brief guard tests (`TestProj12_AnsweredAskSurvivesAFullBoard` and the budget tests) must keep passing unchanged.
 - User guide page updated in the same PR (`docs/guide/`, per `WRITING.md`).
 - Public repo hygiene: tests and fixtures use neutral sample texts.
 
@@ -140,7 +140,7 @@ The phase is gated by the workbench feature (FEAT registry) and skipped when no 
 - Every write (Settings, Agent Settings, Add/Dismiss on Settings or Home) goes through the `watchtower instructions …` CLI; the agent surface gets no tool to read or change these texts — it receives them only through the brief and `update_target`.
 - **Preview** renders through Go (`watchtower instructions preview [--workbench N] --json` returning the brief slot and the procedure text, sharing the render code with the brief and `update_target`), so there is no Swift copy of the format.
 - The Codex brief path (`runCodexBrief`) gets the same slot; `update_target` is the same MCP tool for both agents, so `procedure` needs nothing agent-specific.
-- The phase follows the history-backfill / agent-analytics gating: workbench feature on, `planusage.NearLimit` skips the run, the model call runs outside any write transaction; nothing is published to the phone slice.
+- The phase follows the history-backfill gating: `planusage.NearLimit` skips the run, the model call runs outside any write transaction; nothing is published to the phone slice.
 
 ## Left to the builder
 
