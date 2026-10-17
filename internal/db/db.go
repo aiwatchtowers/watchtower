@@ -2,7 +2,9 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -22,6 +25,77 @@ import (
 // DB wraps a *sql.DB connection to the watchtower SQLite database.
 type DB struct {
 	*sql.DB
+	// connector opens every pool connection of a handle from Open or
+	// OpenExisting*; nil on the test-only in-memory clones.
+	connector *pragmaConnector
+}
+
+// pragmaConnector opens each pool connection from dsn — the driver runs the
+// DSN's _pragma params on it — and then re-runs the pragmas SetBusyTimeout
+// and SetReadOnly set on the handle. database/sql drops a connection after a
+// context-cancelled statement (modernc reports it bad while interrupted) and
+// opens a fresh one; a pragma run once with Exec would be lost there for the
+// rest of the process.
+type pragmaConnector struct {
+	dsn string
+
+	mu            sync.Mutex
+	busyTimeoutMS int64 // 0: the DSN's busy_timeout
+	queryOnly     bool
+}
+
+func (c *pragmaConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := metricsDriver.Open(c.dsn)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	var pragmas []string
+	if c.busyTimeoutMS > 0 {
+		pragmas = append(pragmas, fmt.Sprintf("PRAGMA busy_timeout=%d", c.busyTimeoutMS))
+	}
+	if c.queryOnly {
+		pragmas = append(pragmas, "PRAGMA query_only=ON")
+	}
+	c.mu.Unlock()
+	if len(pragmas) == 0 {
+		return conn, nil
+	}
+	ex, ok := conn.(driver.ExecerContext)
+	if !ok {
+		_ = conn.Close()
+		return nil, errors.New("sqlite connection cannot execute pragmas")
+	}
+	for _, p := range pragmas {
+		if _, err := ex.ExecContext(ctx, p, nil); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("executing %q: %w", p, err)
+		}
+	}
+	return conn, nil
+}
+
+func (c *pragmaConnector) Driver() driver.Driver { return metricsDriver }
+
+// metricsDriver is the registered lock-metrics driver every handle opens
+// through (sql.Open never connects; it only resolves the name).
+var metricsDriver = func() driver.Driver {
+	probe, err := sql.Open(lockmetrics.DriverName, "")
+	if err != nil {
+		panic("db: lock-metrics driver not registered: " + err.Error())
+	}
+	defer probe.Close()
+	return probe.Driver()
+}()
+
+// openPool opens dsn as a one-connection pool through pragmaConnector.
+// One connection: an in-memory database is private to its connection, and
+// SQLite serializes writes anyway.
+func openPool(dsn string) *DB {
+	c := &pragmaConnector{dsn: dsn}
+	sqlDB := sql.OpenDB(c)
+	sqlDB.SetMaxOpenConns(1)
+	return &DB{DB: sqlDB, connector: c}
 }
 
 // IsForeignKeyViolation reports whether err (or an error it wraps) is SQLite's
@@ -52,6 +126,12 @@ var seedNewFileHook func(dbPath string) error
 // busy_timeout never covers that upgrade. The driver cuts the query off a
 // plain path before opening the file (see sqliteDSN).
 const immediateTxDSN = "?_txlock=immediate"
+
+// openDSN is Open's DSN params: the tx lock mode plus the per-connection
+// pragmas, which the driver runs on every new pool connection (journal_mode
+// WAL is stored in the file, so setPragmas runs it once).
+var openDSN = fmt.Sprintf("%s&_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)",
+	immediateTxDSN, busyTimeoutMS)
 
 // busyTimeoutMS is how long a connection waits for another process's write
 // lock before failing with SQLITE_BUSY — Open's default (SetBusyTimeout
@@ -103,22 +183,10 @@ func Open(dbPath string) (*DB, error) {
 		}
 	}
 
-	sqlDB, err := sql.Open(lockmetrics.DriverName, sqliteDSN(dbPath, immediateTxDSN))
-	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
-	}
-
-	// Limit to 1 connection: for :memory: databases each connection gets
-	// its own independent database, and for file databases per-connection
-	// pragmas (busy_timeout, foreign_keys, synchronous) would not apply
-	// to new pooled connections. SQLite serializes writes anyway, so a
-	// single connection avoids both issues with no performance loss.
-	sqlDB.SetMaxOpenConns(1)
-
-	db := &DB{DB: sqlDB}
+	db := openPool(sqliteDSN(dbPath, openDSN))
 
 	if err := db.setPragmas(); err != nil {
-		sqlDB.Close()
+		db.Close()
 		return nil, fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
 	}
 
@@ -132,7 +200,7 @@ func Open(dbPath string) (*DB, error) {
 	}
 
 	if err := db.migrate(); err != nil {
-		sqlDB.Close()
+		db.Close()
 		return nil, fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
 	}
 
@@ -172,18 +240,14 @@ func existingDSN(dbPath string, busy time.Duration, params ...string) string {
 
 // openExistingDSN opens dsn on one connection and checks the file is there.
 func openExistingDSN(dbPath, dsn string) (*DB, error) {
-	sqlDB, err := sql.Open(lockmetrics.DriverName, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
-	}
-	sqlDB.SetMaxOpenConns(1)
-	if err := sqlDB.Ping(); err != nil {
-		sqlDB.Close()
+	d := openPool(dsn)
+	if err := d.Ping(); err != nil {
+		d.Close()
 		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
 	}
 	// Only an open that worked points the lock-metrics sink at its file.
 	lockmetrics.Configure(dbPath)
-	return &DB{DB: sqlDB}, nil
+	return d, nil
 }
 
 // OpenExistingRW opens the database at dbPath for a hook on a hard time
@@ -255,6 +319,11 @@ func tightenDBFilePerms(dbPath string) {
 	}
 }
 
+// setPragmas switches the file to WAL (stored in the file) and sets the
+// per-connection pragmas on the current connection. On Open's handles the
+// latter repeat openDSN, which is what carries them to a later pool
+// connection; the test-only in-memory clone needs them here because
+// deserializing its snapshot resets synchronous.
 func (db *DB) setPragmas() error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
@@ -283,9 +352,15 @@ func (db *DB) migrate() error {
 // a write waits for another process's write lock before failing with
 // SQLITE_BUSY. The owner-click write paths (approving an action, recording a
 // chat proposal) raise it so a background daemon transaction cannot fail them.
+// It holds for every later pool connection of the handle too.
 func (db *DB) SetBusyTimeout(d time.Duration) error {
 	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", d.Milliseconds())); err != nil {
 		return fmt.Errorf("setting busy_timeout: %w", err)
+	}
+	if c := db.connector; c != nil {
+		c.mu.Lock()
+		c.busyTimeoutMS = d.Milliseconds()
+		c.mu.Unlock()
 	}
 	return nil
 }
@@ -295,9 +370,16 @@ func (db *DB) SetBusyTimeout(d time.Duration) error {
 // read-only consumers (the MCP server) after Open has run migrations.
 // Because Begin is immediate (see Open), Begin() itself fails on such a
 // handle; a transaction there must be opened with sql.TxOptions{ReadOnly: true}.
+// It holds for every later pool connection of the handle too, so the fence
+// survives a connection the pool replaced after a cancelled query.
 func (db *DB) SetReadOnly() error {
 	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
 		return fmt.Errorf("setting query_only: %w", err)
+	}
+	if c := db.connector; c != nil {
+		c.mu.Lock()
+		c.queryOnly = true
+		c.mu.Unlock()
 	}
 	return nil
 }
