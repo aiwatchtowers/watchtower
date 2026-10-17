@@ -15,6 +15,7 @@ type ownerSeed struct {
 	jira        []JiraAccount // Owner* fields recorded via SetJiraAccountOwner
 	jiraUserMap []JiraUserMap
 	linear      []LinearAccount // Owner* fields recorded via SetLinearAccountOwner; Enabled false disables, Status "removed" removes
+	mailboxes   []EmailAccount  // IMAP/Outlook accounts, created in order
 }
 
 // seedOwner creates every row of s through the production writers, so the
@@ -54,6 +55,10 @@ func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 			require.NoError(t, d.SetLinearAccountRemoved(id))
 		}
 		require.NoError(t, d.SetLinearAccountOwner(id, l.OwnerUserID, l.OwnerEmail, l.OwnerDisplayName))
+	}
+	for _, m := range s.mailboxes {
+		_, err := d.CreateEmailAccount(m)
+		require.NoError(t, err)
 	}
 	for _, m := range s.jiraUserMap {
 		require.NoError(t, d.UpsertJiraUserMap(m))
@@ -127,6 +132,60 @@ func TestOwner01_ResolveOwnerLadder(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
 			assert.Equal(t, tc.want.ID != "", got.Known())
+		})
+	}
+}
+
+// TestOwner01_EmailRung pins the fifth rung (ask #307): an IMAP/Outlook-only
+// install resolves its owner from the first mailbox's address, and the rung
+// sits below every other one, so no install that already had an owner sees
+// its id change when a mailbox is connected.
+func TestOwner01_EmailRung(t *testing.T) {
+	imap := func(addr string) EmailAccount {
+		return EmailAccount{Provider: "imap", EmailAddress: addr, Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"}
+	}
+	cases := []struct {
+		name string
+		seed ownerSeed
+		want Owner
+	}{
+		{"imap only, mixed-case address", ownerSeed{mailboxes: []EmailAccount{imap("Me@Example.com")}},
+			Owner{ID: "email:me@example.com", Source: OwnerSourceEmail, Email: "Me@Example.com", DisplayName: "Me"}},
+		{"outlook only", ownerSeed{mailboxes: []EmailAccount{{Provider: "outlook", EmailAddress: "me@example.com", Security: "ssl"}}},
+			Owner{ID: "email:me@example.com", Source: OwnerSourceEmail, Email: "me@example.com", DisplayName: "me"}},
+		{"mailbox without an address is skipped", ownerSeed{mailboxes: []EmailAccount{imap(""), imap("b@example.com")}},
+			Owner{ID: "email:b@example.com", Source: OwnerSourceEmail, Email: "b@example.com", DisplayName: "b"}},
+		{"two mailboxes: the first is the rung", ownerSeed{mailboxes: []EmailAccount{imap("a@example.com"), imap("b@example.com")}},
+			Owner{ID: "email:a@example.com", Source: OwnerSourceEmail, Email: "a@example.com", DisplayName: "a"}},
+		{"slack + mailbox: slack keeps the id and its email", ownerSeed{
+			slack:     []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
+			slackUser: &User{ID: "1:U123", Name: "owner-a", DisplayName: "Owner A", Email: "owner-a@example.com"},
+			mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", Email: "owner-a@example.com", DisplayName: "Owner A"}},
+		{"slack user without email: the mailbox fills Email", ownerSeed{
+			slack:     []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
+			slackUser: &User{ID: "1:U123", Name: "owner-a", DisplayName: "Owner A"},
+			mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", Email: "me@example.com", DisplayName: "Owner A"}},
+		{"google + mailbox: google wins", ownerSeed{google: []GoogleAccount{{Email: "g@x.com"}}, mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "google:g@x.com", Source: OwnerSourceGoogle, Email: "g@x.com", DisplayName: "g"}},
+		{"jira + mailbox: jira wins ID and email", ownerSeed{
+			jira:      []JiraAccount{{CloudID: "c1", Enabled: true, OwnerAccountID: "acc-9", OwnerEmail: "j@x.com", OwnerDisplayName: "J Doe"}},
+			mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "jira:acc-9", Source: OwnerSourceJira, Email: "j@x.com", JiraAccountID: "acc-9", DisplayName: "J Doe"}},
+		{"linear + mailbox: linear wins, the mailbox fills Email", ownerSeed{
+			linear:    []LinearAccount{{Enabled: true, OwnerUserID: "user-1", OwnerDisplayName: "Owner"}},
+			mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "linear:user-1", Source: OwnerSourceLinear, Email: "me@example.com", DisplayName: "Owner", LinearUserIDs: []string{"user-1"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			seedOwner(t, d, tc.seed)
+			got, err := d.ResolveOwner()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+			assert.True(t, got.Known())
 		})
 	}
 }

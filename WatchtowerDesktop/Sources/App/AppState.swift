@@ -1656,7 +1656,7 @@ final class AppState {
 
     func initEmailAccounts(dbPool: DatabasePool) {
         let vm = EmailAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshConnectedSources() }
+        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         emailAccountsViewModel = vm
     }
@@ -2020,7 +2020,7 @@ final class AppState {
     /// await it.
     @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
 
-    /// A Slack/Google/Jira account-list reload: re-resolves the owner
+    /// A Slack/Google/Jira/email account-list reload: re-resolves the owner
     /// (OWNER-02) and the connected sources the sidebar gates on.
     private func accountsChanged() async {
         await refreshOwner()

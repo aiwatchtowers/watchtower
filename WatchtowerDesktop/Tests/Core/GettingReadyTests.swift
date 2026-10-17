@@ -207,12 +207,17 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertTrue(result.sawUnready)
     }
 
-    func testOwnerUnknownCardHasNoLine() throws {
+    /// With no owner the daemon never runs Briefing, so its card promises no
+    /// time; it names what to connect instead (it used to show no line).
+    func testOwnerUnknownCardNamesWhatToConnect() throws {
         let result = step(readinessMap([.briefing: .scheduled(.at(hour: 8, tomorrow: false))]), ownerKnown: false)
         let card = try XCTUnwrap(cards(result.zone).first { $0.feature == .briefing })
-        XCTAssertNil(card.readiness)
+        XCTAssertEqual(card.readiness, .needsSource(.ownerIdentity))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.ownerIdentity)),
+                       "Connect Slack, Google, Jira, Linear or an email account to get this")
         XCTAssertEqual(card.tone, .waiting)
         XCTAssertFalse(card.isTerminal)
+        XCTAssertTrue(sourceRows(result.zone).isEmpty, "a card, not a Connect row: the zone stays open")
     }
 
     func testToneMapping() {

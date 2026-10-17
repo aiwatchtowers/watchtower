@@ -28,7 +28,7 @@ final class EmailAccountsViewModel {
     // MARK: - Refresh
 
     /// Called after every successful reload. Injected by AppState, which
-    /// re-reads the connected sources the sidebar gates on.
+    /// re-resolves the owner and re-reads the connected sources the sidebar gates on.
     var onAccountsChanged: (() async -> Void)?
 
     /// Cross-process writes (the CLI subprocess, or the daemon's IMAP/Outlook

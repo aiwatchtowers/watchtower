@@ -55,6 +55,7 @@ final class OwnerQueriesTests: XCTestCase {
         var jira: [JiraSeed] = []
         var jiraUserMap: [UserMapSeed] = []
         var linear: [LinearSeed] = []    // linear_accounts, in id order
+        var mailboxes: [(provider: String, address: String)] = []  // email_accounts, in id order
     }
 
     private static func seed(_ db: Database, _ s: OwnerSeed) throws {
@@ -85,6 +86,9 @@ final class OwnerQueriesTests: XCTestCase {
                 INSERT INTO linear_accounts (enabled, status, owner_user_id, owner_email, owner_display_name)
                 VALUES (?, ?, ?, ?, ?)
                 """, arguments: [l.enabled, l.status, l.ownerUserID, l.ownerEmail, l.ownerDisplayName])
+        }
+        for m in s.mailboxes {
+            try TestDatabase.insertEmailAccount(db, provider: m.provider, emailAddress: m.address)
         }
         for m in s.jiraUserMap {
             try db.execute(
@@ -210,6 +214,53 @@ final class OwnerQueriesTests: XCTestCase {
         }
     }
 
+    /// The email rung (ask #307): a literal copy of Go's `TestOwner01_EmailRung`.
+    func testOwner01EmailRung() throws {
+        let jira = JiraSeed(cloudID: "c1", enabled: true, ownerAccountID: "acc-9", ownerEmail: "j@x.com", ownerDisplayName: "J Doe")
+        let cases: [(name: String, seed: OwnerSeed, want: Owner)] = [
+            ("imap only, mixed-case address",
+             OwnerSeed(mailboxes: [("imap", "Me@Example.com")]),
+             Self.owner(id: "email:me@example.com", source: .email, email: "Me@Example.com", displayName: "Me")),
+            ("outlook only",
+             OwnerSeed(mailboxes: [("outlook", "me@example.com")]),
+             Self.owner(id: "email:me@example.com", source: .email, email: "me@example.com", displayName: "me")),
+            ("mailbox without an address is skipped",
+             OwnerSeed(mailboxes: [("imap", ""), ("imap", "b@example.com")]),
+             Self.owner(id: "email:b@example.com", source: .email, email: "b@example.com", displayName: "b")),
+            ("two mailboxes: the first is the rung",
+             OwnerSeed(mailboxes: [("imap", "a@example.com"), ("imap", "b@example.com")]),
+             Self.owner(id: "email:a@example.com", source: .email, email: "a@example.com", displayName: "a")),
+            ("slack + mailbox: slack keeps the id and its email",
+             OwnerSeed(slack: [SlackSeed(teamID: "T1", currentUserID: "1:U123")],
+                       slackUser: UserSeed(id: "1:U123", name: "owner-a", displayName: "Owner A", email: "owner-a@example.com"),
+                       mailboxes: [("imap", "me@example.com")]),
+             Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", email: "owner-a@example.com", displayName: "Owner A")),
+            ("slack user without email: the mailbox fills Email",
+             OwnerSeed(slack: [SlackSeed(teamID: "T1", currentUserID: "1:U123")],
+                       slackUser: UserSeed(id: "1:U123", name: "owner-a", displayName: "Owner A"),
+                       mailboxes: [("imap", "me@example.com")]),
+             Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", email: "me@example.com", displayName: "Owner A")),
+            ("google + mailbox: google wins",
+             OwnerSeed(google: ["g@x.com"], mailboxes: [("imap", "me@example.com")]),
+             Self.owner(id: "google:g@x.com", source: .google, email: "g@x.com", displayName: "g")),
+            ("jira + mailbox: jira wins ID and email",
+             OwnerSeed(jira: [jira], mailboxes: [("imap", "me@example.com")]),
+             Self.owner(id: "jira:acc-9", source: .jira, email: "j@x.com", jiraAccountID: "acc-9", displayName: "J Doe")),
+            ("linear + mailbox: linear wins, the mailbox fills Email",
+             OwnerSeed(linear: [LinearSeed(ownerUserID: "user-1", ownerDisplayName: "Owner")], mailboxes: [("imap", "me@example.com")]),
+             Self.owner(id: "linear:user-1", source: .linear, email: "me@example.com", displayName: "Owner", linearUserIDs: ["user-1"]))
+        ]
+        XCTAssertEqual(cases.count, 9, "the Go email-rung table has nine cases; copy every one")
+
+        for c in cases {
+            let db = try TestDatabase.create()
+            try db.write { try Self.seed($0, c.seed) }
+            let got = try db.read { try OwnerQueries.resolve($0) }
+            XCTAssertEqual(got, c.want, c.name)
+            XCTAssertTrue(got.isKnown, c.name)
+        }
+    }
+
     func testOwner01SlackInstallIDUnchanged() throws {
         // An existing Slack install that ALSO has Google + Jira connected keeps
         // its Slack id as the owner id — the one guarantee for every live install.
@@ -287,7 +338,7 @@ final class OwnerQueriesTests: XCTestCase {
             try ProfileQueries.upsertOwnerProfile($0, owner: .unknown, profile: UserProfile(slackUserID: "", role: "EM"))
         }) { error in
             XCTAssertEqual(error as? OwnerError, .noOwner)
-            XCTAssertEqual(error.localizedDescription, "no owner identity: connect Slack, Google, Jira or Linear first")
+            XCTAssertEqual(error.localizedDescription, "no owner identity: connect Slack, Google, Jira, Linear or an email account first")
         }
         let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM user_profile") }
         XCTAssertEqual(count, 0)

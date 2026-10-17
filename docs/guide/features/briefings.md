@@ -40,7 +40,7 @@ Rules you teach through [Catch Up](catch-up.md) feedback are applied to the brie
 
 The empty tab says "No briefings yet" and "Generated once a day at or after 08:00" (your hour), then a status line.
 
-- **Connect Slack, Google, Jira or Linear so Watchtower knows who you are.** There is no owner yet. Click **Open Connections** and connect one. A freshly connected Jira site can show this for a moment while your identity is read.
+- **Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are.** There is no owner yet. Click **Open Connections** and connect one. A freshly connected Jira site can show this for a moment while your identity is read.
 - **Off — Turn on.** Click **Turn on**.
 - **Connect a source to get this.** Connect any one source.
 - **Preparing now.** The briefing is being written; wait a minute.

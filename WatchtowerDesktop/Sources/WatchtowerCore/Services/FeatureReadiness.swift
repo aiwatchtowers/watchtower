@@ -25,9 +25,9 @@ package enum FeatureReadiness {
     package static let ownerGated: Set<ReadinessFeature> = [.briefing, .dayPlan, .inbox]
 
     /// With the owner unknown, an owner-gated feature promises no run: a
-    /// scheduled or waiting state reads nil, so no line (Briefings and Day
-    /// Plan say why in their no-owner box; Inbox just shows none). The other
-    /// states are facts and stay.
+    /// scheduled or waiting state reads nil, so no line (Briefings, Day Plan
+    /// and Inbox say why in their no-owner box; Home's card names
+    /// `.ownerIdentity` instead). The other states are facts and stay.
     package static func honoringOwner(_ readiness: Readiness?, of feature: ReadinessFeature, ownerKnown: Bool) -> Readiness? {
         guard !ownerKnown, ownerGated.contains(feature) else { return readiness }
         switch readiness {

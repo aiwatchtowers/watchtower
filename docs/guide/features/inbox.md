@@ -73,6 +73,7 @@ The empty tab says "Nothing waiting for you". It shows a reaction cheat sheet: o
 | Within ~15 min, After this sync | The next pass is due on the next cycle |
 | Didn't work yet — retries automatically | The last pass failed; the reason follows the dash |
 
+- **"Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".** There is no owner, so Attention detection never runs. Click **Open Connections** and connect one; a calendar alone is not enough.
 - **No reminder yet.** A reminder shows only once it is due.
 
 Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).

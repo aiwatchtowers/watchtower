@@ -69,11 +69,15 @@ package enum GettingReadyPolicy {
         var cards: [GettingReadyCard] = []
         var sourceRows: [GettingReadySourceRow] = []
         for feature in ReadinessFeature.allCases {
-            let state = FeatureReadiness.honoringOwner(readiness[feature], of: feature, ownerKnown: ownerKnown)
+            let honored = FeatureReadiness.honoringOwner(readiness[feature], of: feature, ownerKnown: ownerKnown)
+            // The owner gate dropped the promise: the card names what to
+            // connect instead of showing no line (it stays a card, not a
+            // Connect row, so the zone stays open until the owner is known).
+            let state = honored == nil && readiness[feature] != nil ? .needsSource(.ownerIdentity) : honored
             switch state {
             case .off:
                 continue
-            case .needsSource(let source):
+            case .needsSource(let source) where source != .ownerIdentity:
                 if let index = sourceRows.firstIndex(where: { $0.source == source }) {
                     sourceRows[index] = GettingReadySourceRow(
                         source: source, features: sourceRows[index].features + [feature])

@@ -9,7 +9,7 @@ import (
 
 // ErrNoOwner is returned by owner-scoped writers when no connected account
 // yields an owner identity (ResolveOwner returned an unknown Owner).
-var ErrNoOwner = errors.New("no owner identity: connect Slack, Google, Jira or Linear first")
+var ErrNoOwner = errors.New("no owner identity: connect Slack, Google, Jira, Linear or an email account first")
 
 // OwnerSource names the ResolveOwner rung that produced Owner.ID.
 type OwnerSource string
@@ -20,13 +20,14 @@ const (
 	OwnerSourceGoogle OwnerSource = "google"
 	OwnerSourceJira   OwnerSource = "jira"
 	OwnerSourceLinear OwnerSource = "linear"
+	OwnerSourceEmail  OwnerSource = "email"
 )
 
 // Owner is the one person this install belongs to. ID is the stable key
 // owner-scoped rows (user_profile, day plans, …) are stored under; its shape
 // depends on the rung that produced it: the namespaced Slack user id
-// ("1:U123"), "google:<lower-cased email>", "jira:<atlassian account id>", or
-// "linear:<linear user id>".
+// ("1:U123"), "google:<lower-cased email>", "jira:<atlassian account id>",
+// "linear:<linear user id>", or "email:<lower-cased mailbox address>".
 // The other fields are enriched from every connected source.
 type Owner struct {
 	ID            string
@@ -59,44 +60,71 @@ type ownerLinear struct {
 	DisplayName string
 }
 
+// ownerRungs is every rung's row, read once per ResolveOwner.
+type ownerRungs struct {
+	slackID     string
+	googleEmail string
+	jira        ownerJira
+	linear      ownerLinear
+	mailbox     string
+}
+
 // ResolveOwner returns the one owner identity of this install: Slack account
-// #1 → Google account #1 → Jira account #1 → Linear account #1 (spec 2026-09-25). The Swift twin
-// is WatchtowerCore/Database/Queries/OwnerQueries.swift — change both
-// together. Every field is enriched from every source, independent of which
-// rung produced ID. No connected identity → the zero Owner and a nil error.
+// #1 → Google account #1 → Jira account #1 → Linear account #1 → email
+// (IMAP/Outlook) account #1 (spec 2026-09-25). The Swift twin is
+// WatchtowerCore/Database/Queries/OwnerQueries.swift — change both together.
+// Every field is enriched from every source, independent of which rung
+// produced ID. No connected identity → the zero Owner and a nil error.
 func (db *DB) ResolveOwner() (Owner, error) {
-	slackID, err := db.ownerSlackID()
+	r, err := db.readOwnerRungs()
 	if err != nil {
 		return Owner{}, err
 	}
-	google, err := db.ownerGoogleEmail()
-	if err != nil {
-		return Owner{}, err
-	}
-	jira, err := db.ownerJiraAccount()
-	if err != nil {
-		return Owner{}, err
-	}
-
-	linear, err := db.ownerLinearAccount()
-	if err != nil {
-		return Owner{}, err
-	}
-
-	o := Owner{SlackUserID: slackID}
-	switch {
-	case slackID != "":
-		o.ID, o.Source = slackID, OwnerSourceSlack
-	case google != "":
-		o.ID, o.Source = "google:"+strings.ToLower(google), OwnerSourceGoogle
-	case jira.AccountID != "":
-		o.ID, o.Source = "jira:"+jira.AccountID, OwnerSourceJira
-	case linear.UserID != "":
-		o.ID, o.Source = "linear:"+linear.UserID, OwnerSourceLinear
-	default:
+	o := Owner{SlackUserID: r.slackID}
+	o.ID, o.Source = r.winner()
+	if o.ID == "" {
 		return Owner{}, nil
 	}
-	return db.enrichOwner(o, google, jira, linear)
+	return db.enrichOwner(o, r)
+}
+
+// readOwnerRungs reads each rung's row.
+func (db *DB) readOwnerRungs() (ownerRungs, error) {
+	var r ownerRungs
+	var err error
+	if r.slackID, err = db.ownerSlackID(); err != nil {
+		return r, err
+	}
+	if r.googleEmail, err = db.ownerGoogleEmail(); err != nil {
+		return r, err
+	}
+	if r.jira, err = db.ownerJiraAccount(); err != nil {
+		return r, err
+	}
+	if r.linear, err = db.ownerLinearAccount(); err != nil {
+		return r, err
+	}
+	r.mailbox, err = db.ownerMailbox()
+	return r, err
+}
+
+// winner is the first rung that matched: its owner id and source, or "" and
+// OwnerSourceNone when none did.
+func (r ownerRungs) winner() (string, OwnerSource) {
+	switch {
+	case r.slackID != "":
+		return r.slackID, OwnerSourceSlack
+	case r.googleEmail != "":
+		return "google:" + strings.ToLower(r.googleEmail), OwnerSourceGoogle
+	case r.jira.AccountID != "":
+		return "jira:" + r.jira.AccountID, OwnerSourceJira
+	case r.linear.UserID != "":
+		return "linear:" + r.linear.UserID, OwnerSourceLinear
+	case r.mailbox != "":
+		return "email:" + strings.ToLower(r.mailbox), OwnerSourceEmail
+	default:
+		return "", OwnerSourceNone
+	}
 }
 
 // RequireOwner is ResolveOwner for callers that cannot act without an owner
@@ -172,6 +200,21 @@ func (db *DB) ownerLinearAccount() (ownerLinear, error) {
 	return l, nil
 }
 
+// ownerMailbox is the email rung: the first connected IMAP/Outlook mailbox's
+// address, as stored (the caller lower-cases it for the ID only). It comes
+// after every other rung so no existing install's owner id changes.
+func (db *DB) ownerMailbox() (string, error) {
+	var addr string
+	err := db.QueryRow(`SELECT email_address FROM email_accounts WHERE email_address != '' ORDER BY id LIMIT 1`).Scan(&addr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolving owner mailbox: %w", err)
+	}
+	return addr, nil
+}
+
 // ownerLinearUserIDs lists the owner's Linear user id on every enabled,
 // non-removed account (one per workspace), by account id. nil when none.
 func (db *DB) ownerLinearUserIDs() ([]string, error) {
@@ -197,7 +240,7 @@ func (db *DB) ownerLinearUserIDs() ([]string, error) {
 
 // enrichOwner fills Email, JiraAccountID, DisplayName and LinearUserIDs from
 // every source, whichever rung produced o.ID.
-func (db *DB) enrichOwner(o Owner, googleEmail string, jira ownerJira, linear ownerLinear) (Owner, error) {
+func (db *DB) enrichOwner(o Owner, r ownerRungs) (Owner, error) {
 	var slackUser *User
 	if o.SlackUserID != "" {
 		u, err := db.GetUserByID(o.SlackUserID)
@@ -206,13 +249,13 @@ func (db *DB) enrichOwner(o Owner, googleEmail string, jira ownerJira, linear ow
 		}
 		slackUser = u
 	}
-	o.Email = ownerEmail(slackUser, googleEmail, jira, linear)
-	jiraID, err := db.ownerJiraID(o.SlackUserID, jira)
+	o.Email = ownerEmail(slackUser, r)
+	jiraID, err := db.ownerJiraID(o.SlackUserID, r.jira)
 	if err != nil {
 		return Owner{}, err
 	}
 	o.JiraAccountID = jiraID
-	o.DisplayName = ownerDisplayName(slackUser, jira, linear, o.Email)
+	o.DisplayName = ownerDisplayName(slackUser, r.jira, r.linear, o.Email)
 	linearIDs, err := db.ownerLinearUserIDs()
 	if err != nil {
 		return Owner{}, err
@@ -222,18 +265,17 @@ func (db *DB) enrichOwner(o Owner, googleEmail string, jira ownerJira, linear ow
 }
 
 // ownerEmail: the Slack user's email, else the Google email, else the Jira
-// owner email, else the Linear owner email.
-func ownerEmail(slackUser *User, googleEmail string, jira ownerJira, linear ownerLinear) string {
+// owner email, else the Linear owner email, else the mailbox address.
+func ownerEmail(slackUser *User, r ownerRungs) string {
 	if slackUser != nil && slackUser.Email != "" {
 		return slackUser.Email
 	}
-	if googleEmail != "" {
-		return googleEmail
+	for _, e := range []string{r.googleEmail, r.jira.Email, r.linear.Email} {
+		if e != "" {
+			return e
+		}
 	}
-	if jira.Email != "" {
-		return jira.Email
-	}
-	return linear.Email
+	return r.mailbox
 }
 
 // ownerDisplayName: the Slack user's display name (else real name), else the
