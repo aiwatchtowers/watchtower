@@ -523,7 +523,6 @@ func (b *claudeBackend) watchConnectors(p *claudeProc) {
 		return
 	}
 	deadline := time.Now().Add(b.connSettle)
-	var lastErr error
 	stored := false
 	for {
 		servers, err := b.queryMCPStatus(p)
@@ -531,19 +530,23 @@ func (b *claudeBackend) watchConnectors(p *claudeProc) {
 			return
 		}
 		if err != nil {
-			lastErr = err
 			fmt.Fprintf(b.warn(), "chat: reading the claude.ai connectors: %v\n", err)
 		}
-		final := (err == nil && connectorsSettled(servers)) || !time.Now().Before(deadline)
-		if err == nil && (hasAccountConnector(servers) || (final && !stored)) {
+		if err == nil && hasAccountConnector(servers) {
 			b.storeConnectors(servers)
 			stored = true
 		}
-		if final {
-			// A gate refresh may have filled the catalog meanwhile.
+		if (err == nil && connectorsSettled(servers)) || !time.Now().Before(deadline) {
+			// Out of time with no account connector seen: keep what a gate
+			// refresh may have stored meanwhile, else record the last
+			// answer, or that none could be read.
 			if !stored && !hasAccountConnector(b.catalog.get().Servers) {
-				b.publishConnectors(UnavailableConnectors(time.Now(),
-					"The claude.ai connector list could not be read ("+lastErr.Error()+")."))
+				if err == nil {
+					b.storeConnectors(servers)
+				} else {
+					b.publishConnectors(UnavailableConnectors(time.Now(),
+						"The claude.ai connector list could not be read ("+err.Error()+")."))
+				}
 			}
 			return
 		}

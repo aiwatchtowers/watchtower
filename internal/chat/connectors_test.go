@@ -153,6 +153,22 @@ func TestConnectors_LocalServersAloneAreNotSettled(t *testing.T) {
 		"local servers never reach the sidecar")
 }
 
+// A gate refresh that found the connectors while the watch saw only local
+// servers is kept when the watch runs out of time.
+func TestConnectors_WatchDeadlineKeepsWhatARefreshStored(t *testing.T) {
+	fx, path := sidecarFixture(t)
+	fx.setStatus(t, `[`+localServerJSON("connected")+`]`)
+	b := fastWatch(NewClaudeBackend(fx.opts), 20*time.Millisecond, 300*time.Millisecond).(*claudeBackend)
+	h := startSession(t, b, nil)
+	h.next(EventSessionReady)
+	waitUntil(t, "the first mcp_status", func() bool { return mcpStatusRequests(t, fx) >= 1 })
+	b.storeConnectors([]MCPServerStatus{server("claude.ai Gmail", ConnectorConnected)}) // as a refresh would
+	time.Sleep(time.Second)                                                             // far past the window
+	require.NoError(t, h.finish())
+	assert.Equal(t, map[string]string{"claude.ai Gmail": ConnectorConnected}, sidecarStatuses(t, path))
+	assert.True(t, b.catalog.Connector("claude_ai_Gmail"))
+}
+
 // No readable answer within the window: the sidecar says so instead of
 // keeping a previous session's list.
 func TestConnectors_UnreadableStatusIsReported(t *testing.T) {
