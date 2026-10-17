@@ -51,6 +51,8 @@ AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOC
 - Until Slack, mail and Jira are all connected, a quiet **+ Connect …** line at the bottom names what is missing and opens Settings → Connections. Its **×** hides it for good. A connected calendar counts as mail here.
 - Badges show what waits: unread briefings, proposals and due reminders in Inbox, ideas to review, one for a recap waiting for **I'm caught up**.
 
+Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." It is always there, and **⌘/** opens the [assistant over this tab](ai-chat.md).
+
 ## When it's empty or wrong
 
 - **No Getting ready zone.** It is shown only while something is still preparing or waiting for a source. It is also gone after three days, or after you hid it.

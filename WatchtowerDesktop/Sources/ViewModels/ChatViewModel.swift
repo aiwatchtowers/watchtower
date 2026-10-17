@@ -592,12 +592,14 @@ final class ChatViewModel {
 
     /// Sends the composer text + the pending quote batch + any pending
     /// attachments as one owner turn; clears them only when the turn really
-    /// started (a failed send keeps them for retry).
-    func sendDraft() {
+    /// started (a failed send keeps them for retry). `screen` is the help
+    /// popup's per-turn screen block: sent with the turn, never stored.
+    func sendDraft(screen: ScreenContext? = nil) {
         let attachments = composerAttachments.pending
         let batchID = conversationID
         let text = ChatQuoteReply.compose(quotes: pendingQuotes, typed: draft) ?? draft
-        if send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill) {
+        if send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill,
+                screen: screen) {
             draft = ""
             _ = composerAttachments.takeForSend()
             if let batchID { quoteBatches[batchID] = nil }
@@ -651,7 +653,8 @@ final class ChatViewModel {
         mentions: [MentionCandidate] = [],
         skill: String? = nil,
         keepsComposer: Bool = false,
-        alsoWrite: ((Database) throws -> Void)? = nil
+        alsoWrite: ((Database) throws -> Void)? = nil,
+        screen: ScreenContext? = nil
     ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let live = MentionTokenizer.liveMentions(text: text, mentions: mentions)
@@ -666,7 +669,7 @@ final class ChatViewModel {
         let outcomes = actionFeed.outcomesBlock(after: thread.last { $0.message.isUser }?.message.createdDate)
         let started = startTurn(TurnPlan(conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
                                          reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
-                                         forceReplay: false, titleText: trimmed, alsoWrite: alsoWrite))
+                                         screen: screen, forceReplay: false, titleText: trimmed, alsoWrite: alsoWrite))
         if started, fromLanding {
             // The landing's first turn: its draft is a real chat now.
             landingDraft = nil
@@ -735,7 +738,7 @@ final class ChatViewModel {
         let owner = thread[index - 1]
         startTurn(TurnPlan(conversationID: id, historyTipID: owner.message.parentID, userText: owner.message.text,
                            reuseUserMessageID: owner.message.id, attachments: owner.attachments, outcomes: nil,
-                           forceReplay: true))
+                           screen: nil, forceReplay: true))
     }
 
     /// A new owner sibling under the original's parent, then a fresh reply.
@@ -751,7 +754,8 @@ final class ChatViewModel {
         editingMessageID = nil
         let turnText = ChatTurnComposer.recompose(stored: item.message.text, newBody: trimmed)
         startTurn(TurnPlan(conversationID: id, historyTipID: item.message.parentID, userText: turnText,
-                           reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil, forceReplay: true))
+                           reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil, screen: nil,
+                           forceReplay: true))
     }
 
     /// ↑ in an empty composer (spec §3.5).
@@ -810,6 +814,9 @@ final class ChatViewModel {
         let attachments: [ChatAttachment]
         /// The actions-outcome block, prefixed at send time only (never stored).
         let outcomes: String?
+        /// The current-screen block, prefixed at send time only (never stored);
+        /// regenerate/edit/replay leave it nil.
+        let screen: ScreenContext?
         /// Regenerate/edit branch away from what the provider session saw.
         let forceReplay: Bool
         /// The prefix-title source: the owner's own words, without the
@@ -855,7 +862,7 @@ final class ChatViewModel {
             || ChatContinuity.replayNeeded(historyTipID: persisted.historyTipID, continuousLeafID: client.continuousLeafID)
         let command = ChatTurnCommand(
             turnID: turnID,
-            text: ChatTurnText.compose(userText: plan.userText, outcomes: plan.outcomes),
+            text: ChatTurnText.compose(userText: plan.userText, outcomes: plan.outcomes, screen: plan.screen),
             attachments: plan.attachments.map { ChatCommandAttachment(path: $0.path, mime: $0.mime, name: $0.name) },
             replay: replay)
         client.startTurn(ChatTurnRequest(command: command, assistantMessageID: persisted.assistant.id))

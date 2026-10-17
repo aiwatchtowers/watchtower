@@ -36,6 +36,7 @@ package enum KeyboardShortcutCatalog {
     package static let areas: [Area] = [
         Area("Global", [
             Entry("⌘B", "Collapse or expand the menu"),
+            Entry("⌘/", "Ask Watchtower: the chat over any tab"),
             Entry("⌃⌘R", "Run Automation… (with Automations turned on)"),
             Entry("⌃⌥D", "New Voice Idea, from anywhere in macOS"),
             Entry("⌘,", "Settings"),

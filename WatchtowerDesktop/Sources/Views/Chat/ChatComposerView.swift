@@ -6,6 +6,7 @@ import WatchtowerCore
 /// `maxHeight` (~40% of the window). The first keystroke prewarms the session.
 struct ChatComposerView: View {
     @Bindable var chatVM: ChatViewModel
+    @Environment(AppState.self) private var appState
     let modelSuggestions: [String]
     let maxHeight: CGFloat
     /// The thread's composer is the chat's bottom-most content; on the
@@ -59,7 +60,8 @@ struct ChatComposerView: View {
                     chatVM.composer.update(text: text, cursor: cursor)
                 },
                 onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) },
-                hasPendingContent: !chatVM.pendingQuotes.isEmpty
+                hasPendingContent: !chatVM.pendingQuotes.isEmpty,
+                focusRequest: appState.chatComposerFocusTick
             )) {
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
             }

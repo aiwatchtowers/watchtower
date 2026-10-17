@@ -26,6 +26,12 @@ package enum ReadinessQueries {
         }
     }
 
+    /// The bundled user guide is indexed as `source = 'guide'`; it is not the
+    /// owner's data, so it never makes the knowledge index read as filled.
+    private static func contentFilter(_ feature: ReadinessFeature) -> String {
+        feature == .knowledgeIndex ? " WHERE source != 'guide'" : ""
+    }
+
     /// Tables `contentPresent` and `latestRuns` read, for the
     /// ReadinessCenter's ValueObservation region.
     package static let observedTables: [String] = ReadinessFeature.allCases.map(contentTable) + ["pipeline_runs"]
@@ -37,7 +43,7 @@ package enum ReadinessQueries {
         let features = ReadinessFeature.allCases.filter { existing.contains(contentTable($0)) }
         guard !features.isEmpty else { return [] }
         let columns = features
-            .map { "EXISTS(SELECT 1 FROM \(contentTable($0))) AS \($0.rawValue)" }
+            .map { "EXISTS(SELECT 1 FROM \(contentTable($0))\(contentFilter($0))) AS \($0.rawValue)" }
             .joined(separator: ", ")
         guard let row = try Row.fetchOne(db, sql: "SELECT \(columns)") else { return [] }
         return Set(features.filter { row[$0.rawValue] as Bool })

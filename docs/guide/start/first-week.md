@@ -38,6 +38,8 @@ A briefing covers today; for a longer gap, ask for a recap.
 
 Details: [Catch Up](../features/catch-up.md).
 
+Stuck at any point? Press **⌘/** on any tab to ask the assistant, or use **Help** → **Watchtower User Guide**.
+
 ## Day 3: make one target and one reaction
 
 Now start your own list.

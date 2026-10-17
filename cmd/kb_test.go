@@ -107,7 +107,7 @@ func TestKB_SearchJSONShape(t *testing.T) {
 	_, err := kb.Run(context.Background(), database, kb.Options{})
 	require.NoError(t, err)
 
-	out, err := runKB(t, "search", "stage", "--json")
+	out, err := runKB(t, "search", "stage", "--json", "--source", "jira")
 	require.NoError(t, err)
 
 	var res kb.Result
@@ -128,9 +128,9 @@ func TestKB_ReindexHappyPath(t *testing.T) {
 	database := writeKBConfig(t)
 	seedKBJiraIssue(t, database)
 
-	out, err := runKB(t, "reindex")
+	out, err := runKB(t, "reindex", "--source", "jira")
 	require.NoError(t, err)
-	assert.Contains(t, out, "Rebuilding all sources")
+	assert.Contains(t, out, "Rebuilding jira")
 	assert.Contains(t, out, "Done:")
 	assert.Contains(t, out, "1 written")
 
@@ -192,7 +192,7 @@ func TestKB_ReindexRefusesWhileDaemonRuns(t *testing.T) {
 	require.NoError(t, database.QueryRow(`SELECT count(*) FROM kb_documents`).Scan(&n))
 	assert.Equal(t, 0, n, "a refused reindex touches nothing")
 
-	out, err := runKBWithDaemon(t, 4242, "reindex", "--force")
+	out, err := runKBWithDaemon(t, 4242, "reindex", "--source", "jira", "--force")
 	require.NoError(t, err)
 	assert.Contains(t, out, "1 written")
 }
