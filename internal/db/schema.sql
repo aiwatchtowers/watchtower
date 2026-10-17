@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS messages (
     subtype      TEXT NOT NULL DEFAULT '',
     permalink    TEXT NOT NULL DEFAULT '',
     ts_unix      REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
-    raw_json     TEXT NOT NULL DEFAULT '{}',
+    raw_json     TEXT NOT NULL DEFAULT '{}', -- kept empty ('{}'): the Slack payload is not stored (Slack API terms: minimum necessary retention)
     PRIMARY KEY (channel_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);

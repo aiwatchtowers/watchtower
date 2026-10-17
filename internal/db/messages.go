@@ -35,8 +35,8 @@ type MessageOpts struct {
 // UpsertMessage inserts or updates a message.
 func (db *DB) UpsertMessage(msg Message) error {
 	_, err := db.Exec(`
-		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, raw_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, ts) DO UPDATE SET
 			user_id = excluded.user_id,
 			text = excluded.text,
@@ -45,11 +45,10 @@ func (db *DB) UpsertMessage(msg Message) error {
 			is_edited = excluded.is_edited,
 			is_deleted = excluded.is_deleted,
 			subtype = excluded.subtype,
-			permalink = excluded.permalink,
-			raw_json = excluded.raw_json`,
+			permalink = excluded.permalink`,
 		msg.ChannelID, msg.TS, msg.UserID, msg.Text, msg.ThreadTS,
 		msg.ReplyCount, msg.IsEdited, msg.IsDeleted, msg.Subtype,
-		msg.Permalink, msg.RawJSON,
+		msg.Permalink,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting message %s/%s: %w", msg.ChannelID, msg.TS, err)
@@ -64,8 +63,8 @@ func (db *DB) UpsertMessageBatch(tx *sql.Tx, msgs []Message) (int, error) {
 		return 0, fmt.Errorf("UpsertMessageBatch: nil transaction")
 	}
 	stmt, err := tx.Prepare(`
-		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, raw_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, ts) DO UPDATE SET
 			user_id = excluded.user_id,
 			text = excluded.text,
@@ -74,8 +73,7 @@ func (db *DB) UpsertMessageBatch(tx *sql.Tx, msgs []Message) (int, error) {
 			is_edited = MAX(messages.is_edited, excluded.is_edited),
 			is_deleted = excluded.is_deleted,
 			subtype = COALESCE(NULLIF(excluded.subtype, ''), messages.subtype),
-			permalink = COALESCE(NULLIF(excluded.permalink, ''), messages.permalink),
-			raw_json = excluded.raw_json`)
+			permalink = COALESCE(NULLIF(excluded.permalink, ''), messages.permalink)`)
 	if err != nil {
 		return 0, fmt.Errorf("preparing statement: %w", err)
 	}
@@ -86,7 +84,7 @@ func (db *DB) UpsertMessageBatch(tx *sql.Tx, msgs []Message) (int, error) {
 		_, err := stmt.Exec(
 			msg.ChannelID, msg.TS, msg.UserID, msg.Text, msg.ThreadTS,
 			msg.ReplyCount, msg.IsEdited, msg.IsDeleted, msg.Subtype,
-			msg.Permalink, msg.RawJSON,
+			msg.Permalink,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("upserting message %s/%s: %w", msg.ChannelID, msg.TS, err)
@@ -154,20 +152,20 @@ func (db *DB) GetMessages(opts MessageOpts) ([]Message, error) {
 	return scanMessages(rows)
 }
 
-const msgSelectCols = `channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json`
+const msgSelectCols = `channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix`
 
 func msgColumns(prefixed bool) string {
 	if !prefixed {
 		return msgSelectCols
 	}
-	return `m.channel_id, m.ts, m.user_id, m.text, m.thread_ts, m.reply_count, m.is_edited, m.is_deleted, m.subtype, m.permalink, m.ts_unix, m.raw_json`
+	return `m.channel_id, m.ts, m.user_id, m.text, m.thread_ts, m.reply_count, m.is_edited, m.is_deleted, m.subtype, m.permalink, m.ts_unix`
 }
 
 // GetMessagesByTimeRange returns messages in a channel within a Unix timestamp range.
 // Results are limited to DefaultTimeRangeLimit rows (newest first) to bound memory usage.
 func (db *DB) GetMessagesByTimeRange(channelID string, from, to float64) ([]Message, error) {
 	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
 		WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?
 		ORDER BY ts_unix DESC
@@ -199,7 +197,7 @@ func (db *DB) GetMessagesByTimeRange(channelID string, from, to float64) ([]Mess
 // for the one case that must overshoot it — see trimPartialBoundarySecond.
 func (db *DB) GetOldestMessagesByTimeRange(channelID string, from, to float64, limit int) ([]Message, error) {
 	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
 		WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?
 		ORDER BY ts_unix ASC
@@ -331,7 +329,7 @@ func (db *DB) GetMessagesByChannel(channelID string, limit int) ([]Message, erro
 		limit = DefaultMessageLimit
 	}
 	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
 		WHERE channel_id = ?
 		ORDER BY ts_unix DESC
@@ -349,7 +347,7 @@ func (db *DB) GetMessagesByChannel(channelID string, limit int) ([]Message, erro
 // GetThreadReplies returns messages in a thread (including the parent), limited to 200 replies.
 func (db *DB) GetThreadReplies(channelID, threadTS string) ([]Message, error) {
 	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
 		WHERE channel_id = ? AND (ts = ? OR thread_ts = ?)
 		ORDER BY ts_unix ASC
@@ -375,7 +373,7 @@ func (db *DB) GetAllThreadParents(limit int) ([]Message, error) {
 	}
 	rows, err := db.Query(`
 		SELECT m.channel_id, m.ts, m.user_id, m.text, m.thread_ts, m.reply_count,
-			m.is_edited, m.is_deleted, m.subtype, m.permalink, m.ts_unix, m.raw_json
+			m.is_edited, m.is_deleted, m.subtype, m.permalink, m.ts_unix
 		FROM messages m
 		LEFT JOIN (
 			SELECT channel_id, thread_ts, COUNT(*) as cnt
@@ -400,7 +398,7 @@ func (db *DB) GetAllThreadParents(limit int) ([]Message, error) {
 func (db *DB) GetMessageNear(channelID string, tsUnix float64) (*Message, error) {
 	const tolerance = 60.0
 	row := db.QueryRow(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
 		WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?
 		ORDER BY ABS(ts_unix - ?) ASC
@@ -412,7 +410,7 @@ func (db *DB) GetMessageNear(channelID string, tsUnix float64) (*Message, error)
 	err := row.Scan(
 		&msg.ChannelID, &msg.TS, &msg.UserID, &msg.Text, &msg.ThreadTS,
 		&msg.ReplyCount, &msg.IsEdited, &msg.IsDeleted, &msg.Subtype,
-		&msg.Permalink, &msg.TSUnix, &msg.RawJSON,
+		&msg.Permalink, &msg.TSUnix,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -437,7 +435,7 @@ func (db *DB) GetMessagesByTS(channelID string, timestamps []string) ([]Message,
 		args = append(args, ts)
 	}
 	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
 		WHERE channel_id = ? AND ts IN (`+strings.Join(placeholders, ",")+`)
 		ORDER BY ts_unix ASC`,
@@ -502,7 +500,7 @@ func (db *DB) FilterExistingMessageTS(channelID string, tss []string) (map[strin
 // greater than afterTS. Results are ordered oldest-first, capped at 200.
 func (db *DB) GetThreadRepliesAfterTS(channelID, threadTS, afterTS string) ([]Message, error) {
 	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
 		WHERE channel_id = ? AND thread_ts = ? AND ts > ?
 		ORDER BY ts_unix ASC
@@ -526,7 +524,7 @@ func (db *DB) GetChannelMessagesAfterTS(channelID, afterTS string, limit int) ([
 		limit = 100
 	}
 	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
 		WHERE channel_id = ? AND ts > ? AND (thread_ts IS NULL OR thread_ts = '' OR thread_ts = ts)
 		  AND text != '' AND is_deleted = 0
@@ -549,7 +547,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		err := rows.Scan(
 			&msg.ChannelID, &msg.TS, &msg.UserID, &msg.Text, &msg.ThreadTS,
 			&msg.ReplyCount, &msg.IsEdited, &msg.IsDeleted, &msg.Subtype,
-			&msg.Permalink, &msg.TSUnix, &msg.RawJSON,
+			&msg.Permalink, &msg.TSUnix,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scanning message row: %w", err)

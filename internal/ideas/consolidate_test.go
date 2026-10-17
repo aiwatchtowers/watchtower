@@ -32,7 +32,7 @@ func seedWorkspace(t *testing.T, d *db.DB) {
 func seedMessage(t *testing.T, d *db.DB, channelID, ts string, deleted bool) {
 	t.Helper()
 	require.NoError(t, d.UpsertMessage(db.Message{
-		ChannelID: channelID, TS: ts, UserID: "U1", Text: "message text", IsDeleted: deleted, RawJSON: "{}",
+		ChannelID: channelID, TS: ts, UserID: "U1", Text: "message text", IsDeleted: deleted,
 	}))
 }
 

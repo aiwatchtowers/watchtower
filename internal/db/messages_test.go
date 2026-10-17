@@ -42,7 +42,6 @@ func TestUpsertMessage(t *testing.T) {
 		UserID:     "U001",
 		Text:       "Hello world",
 		ReplyCount: 0,
-		RawJSON:    `{"ts":"1700000000.000001"}`,
 	}
 	err = db.UpsertMessage(msg)
 	require.NoError(t, err)
@@ -60,7 +59,7 @@ func TestUpsertMessageUpdate(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	msg := Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "original", RawJSON: "{}"}
+	msg := Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "original"}
 	require.NoError(t, db.UpsertMessage(msg))
 
 	msg.Text = "edited"
@@ -79,7 +78,7 @@ func TestUpsertMessageWithThread(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	parent := Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "parent", ReplyCount: 2, RawJSON: "{}"}
+	parent := Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "parent", ReplyCount: 2}
 	require.NoError(t, db.UpsertMessage(parent))
 
 	reply := Message{
@@ -88,7 +87,6 @@ func TestUpsertMessageWithThread(t *testing.T) {
 		UserID:    "U002",
 		Text:      "reply",
 		ThreadTS:  sql.NullString{String: "1700000000.000001", Valid: true},
-		RawJSON:   "{}",
 	}
 	require.NoError(t, db.UpsertMessage(reply))
 
@@ -103,9 +101,9 @@ func TestGetMessages(t *testing.T) {
 	defer db.Close()
 
 	// Insert messages across channels and users
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "msg1", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000002.000001", UserID: "U002", Text: "msg2", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000003.000001", UserID: "U001", Text: "msg3", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "msg1"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000002.000001", UserID: "U002", Text: "msg2"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000003.000001", UserID: "U001", Text: "msg3"}))
 
 	// No filter - all messages, newest first
 	msgs, err := db.GetMessages(MessageOpts{Limit: 10})
@@ -138,7 +136,7 @@ func TestGetMessagesDefaultLimit(t *testing.T) {
 	// Insert more than 100 messages
 	for i := 0; i < 110; i++ {
 		ts := fmt.Sprintf("17000%05d.000001", i)
-		require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: ts, UserID: "U001", Text: "msg", RawJSON: "{}"}))
+		require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: ts, UserID: "U001", Text: "msg"}))
 	}
 
 	msgs, err := db.GetMessages(MessageOpts{ChannelID: "C001"})
@@ -151,9 +149,9 @@ func TestGetMessagesByTimeRange(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "early", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000500.000001", UserID: "U001", Text: "middle", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700001000.000001", UserID: "U001", Text: "late", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "early"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000500.000001", UserID: "U001", Text: "middle"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700001000.000001", UserID: "U001", Text: "late"}))
 
 	// Get middle range
 	msgs, err := db.GetMessagesByTimeRange("C001", 1700000100, 1700000600)
@@ -180,10 +178,10 @@ func TestGetOldestMessagesByTimeRange(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "early", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000500.000001", UserID: "U001", Text: "middle", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700001000.000001", UserID: "U001", Text: "late", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000002.000001", UserID: "U001", Text: "other channel", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "early"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000500.000001", UserID: "U001", Text: "middle"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700001000.000001", UserID: "U001", Text: "late"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000002.000001", UserID: "U001", Text: "other channel"}))
 
 	msgs, err := db.GetOldestMessagesByTimeRange("C001", 1700000000, 1700002000, 10)
 	require.NoError(t, err)
@@ -225,9 +223,9 @@ func TestGetMessagesByChannel(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "old", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000002.000001", UserID: "U001", Text: "new", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000003.000001", UserID: "U001", Text: "other", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "old"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000002.000001", UserID: "U001", Text: "new"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000003.000001", UserID: "U001", Text: "other"}))
 
 	msgs, err := db.GetMessagesByChannel("C001", 10)
 	require.NoError(t, err)
@@ -250,12 +248,12 @@ func TestGetThreadReplies(t *testing.T) {
 
 	threadTS := "1700000000.000001"
 	// Parent message
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: threadTS, UserID: "U001", Text: "parent", ReplyCount: 2, RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: threadTS, UserID: "U001", Text: "parent", ReplyCount: 2}))
 	// Replies
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U002", Text: "reply1", ThreadTS: sql.NullString{String: threadTS, Valid: true}, RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000002.000001", UserID: "U003", Text: "reply2", ThreadTS: sql.NullString{String: threadTS, Valid: true}, RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U002", Text: "reply1", ThreadTS: sql.NullString{String: threadTS, Valid: true}}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000002.000001", UserID: "U003", Text: "reply2", ThreadTS: sql.NullString{String: threadTS, Valid: true}}))
 	// Unrelated message
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000003.000001", UserID: "U001", Text: "unrelated", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000003.000001", UserID: "U001", Text: "unrelated"}))
 
 	msgs, err := db.GetThreadReplies("C001", threadTS)
 	require.NoError(t, err)
@@ -282,15 +280,15 @@ func TestGetAllThreadParents(t *testing.T) {
 	defer db.Close()
 
 	// Channel 1: needs sync
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "ch1 thread", ReplyCount: 2, RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U002", Text: "reply", ThreadTS: sql.NullString{String: "1700000000.000001", Valid: true}, RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "ch1 thread", ReplyCount: 2}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U002", Text: "reply", ThreadTS: sql.NullString{String: "1700000000.000001", Valid: true}}))
 
 	// Channel 2: needs sync
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000010.000001", UserID: "U001", Text: "ch2 thread", ReplyCount: 5, RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000010.000001", UserID: "U001", Text: "ch2 thread", ReplyCount: 5}))
 
 	// Channel 3: fully synced — should not appear
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C003", TS: "1700000020.000001", UserID: "U001", Text: "synced", ReplyCount: 1, RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C003", TS: "1700000021.000001", UserID: "U002", Text: "reply", ThreadTS: sql.NullString{String: "1700000020.000001", Valid: true}, RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C003", TS: "1700000020.000001", UserID: "U001", Text: "synced", ReplyCount: 1}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C003", TS: "1700000021.000001", UserID: "U002", Text: "reply", ThreadTS: sql.NullString{String: "1700000020.000001", Valid: true}}))
 
 	parents, err := db.GetAllThreadParents(1000)
 	require.NoError(t, err)
@@ -321,7 +319,6 @@ func TestUpsertMessageUnicode(t *testing.T) {
 		TS:        "1700000000.000001",
 		UserID:    "U001",
 		Text:      "Hello 世界! 🚀 café naïve Ñoño デプロイメント",
-		RawJSON:   "{}",
 	}
 	require.NoError(t, db.UpsertMessage(msg))
 
@@ -341,7 +338,6 @@ func TestUpsertMessageEmptyText(t *testing.T) {
 		TS:        "1700000000.000001",
 		UserID:    "U001",
 		Text:      "",
-		RawJSON:   "{}",
 	}
 	require.NoError(t, db.UpsertMessage(msg))
 
@@ -357,8 +353,8 @@ func TestGetMessageNearEdgeCases(t *testing.T) {
 	defer db.Close()
 
 	// Insert two messages close together
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "first", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000030.000001", UserID: "U001", Text: "second", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "first"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000030.000001", UserID: "U001", Text: "second"}))
 
 	// Closest to first message
 	msg, err := db.GetMessageNear("C001", 1700000010)

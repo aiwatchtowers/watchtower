@@ -563,7 +563,7 @@ func TestSyncMessagesWithSubtype(t *testing.T) {
 	assert.Equal(t, "channel_join", msgs[0].Subtype)
 }
 
-func TestSyncMessagesRawJSONStored(t *testing.T) {
+func TestSyncMessagesRawJSONNotStored(t *testing.T) {
 	channelMsgs := map[string][]map[string]any{
 		"C001": {
 			{"ts": "1700000001.000000", "user": "U001", "text": "Test", "type": "message"},
@@ -578,11 +578,10 @@ func TestSyncMessagesRawJSONStored(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 
-	// Verify raw JSON was stored and is valid
-	assert.NotEmpty(t, msgs[0].RawJSON)
-	var raw map[string]any
-	err = json.Unmarshal([]byte(msgs[0].RawJSON), &raw)
-	assert.NoError(t, err, "raw_json should be valid JSON")
+	// The Slack payload is not retained: raw_json stays the column default.
+	var raw string
+	require.NoError(t, ts.db.QueryRow(`SELECT raw_json FROM messages WHERE channel_id = ? AND ts = ?`, msgs[0].ChannelID, msgs[0].TS).Scan(&raw))
+	assert.Equal(t, "{}", raw)
 }
 
 func TestSyncMessagesEmptyChannel(t *testing.T) {
