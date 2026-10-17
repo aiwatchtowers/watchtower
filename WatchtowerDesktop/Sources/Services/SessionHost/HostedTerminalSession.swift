@@ -262,13 +262,15 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// it is gone. A bound run may still be going (the host dropped a slow
     /// reader), so the host is asked once:
     /// a running run is reattached, an exited one reports its code, and an
-    /// unknown one — or a second drop of the same binding — is gone.
+    /// unknown one — or a second drop of the same binding — is gone, with
+    /// `reason` shown in the pane.
     private func runLost(_ transport: any SessionHostTransport, reason: String) {
         guard self.transport === transport, !exited else { return }
         Self.logger.error("hosted session lost: \(reason, privacy: .public)")
         let wasBound = bound
         closeTransport()
         guard wasBound, reattachesLeft > 0, let key else {
+            terminal.feed(text: "\r\n[Watchtower] \(reason)\r\n")
             finishRun(code: nil, forget: false)
             return
         }
@@ -277,6 +279,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
             let sessions = try? await client.list()
             guard let self, !exited, self.transport == nil, self.key == key else { return }
             guard let info = sessions?.first(where: { $0.row == key.row && $0.run == key.run }) else {
+                terminal.feed(text: "\r\n[Watchtower] \(reason)\r\n")
                 finishRun(code: nil, forget: false)
                 return
             }

@@ -362,6 +362,9 @@ final class HostedTerminalSessionTests: XCTestCase {
         session.start(TerminalLaunch(executable: "/bin/zsh", args: ["-l"], currentDirectory: "/tmp", rowID: 1))
         await session.connecting?.value
         XCTAssertEqual(exits, [nil])
+        let terminal = try terminalView(session).getTerminal()
+        let text = (0..<terminal.rows).compactMap { terminal.getLine(row: $0)?.translateToString(trimRight: true) }.joined()
+        XCTAssertTrue(text.contains("[Watchtower] could not reach the session host"), text)
     }
 
     func testReattachedSessionReportsBracketedPaste() async throws {
