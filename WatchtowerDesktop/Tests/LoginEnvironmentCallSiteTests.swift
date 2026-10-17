@@ -1,19 +1,17 @@
 import XCTest
 
-/// Board #592: chat start, session cleanup and the settings screens never
-/// wait on the login-shell probe (`Constants.resolvedEnvironment()`, up to
-/// 5 s) synchronously — on the main thread or on a pool thread. They take
-/// `resolvedEnvironmentAsync()` (async sites) or
-/// `resolvedEnvironmentIfReady()` (the chat's main-actor spawn).
+/// Board #592: no Desktop code waits on the login-shell probe
+/// (`Constants.resolvedEnvironment()`, up to 5 s) synchronously — not on the
+/// main thread, not on a Swift-concurrency pool thread. Callers take
+/// `resolvedEnvironmentAsync()` (async code) or `resolvedEnvironmentIfReady()`
+/// (sync main-actor code that needs no login PATH).
 final class LoginEnvironmentCallSiteTests: XCTestCase {
-    private static let files = [
-        "Services/Chat/ChatSessionClient.swift",
-        "Services/SessionCleanupCenter.swift",
-        "Views/Settings/JiraFeaturesSettingsView.swift",
-        "Views/Settings/SlackConnectionDetail.swift",
-        "Views/Settings/JiraBoardsSettingsView.swift",
-        "Views/Settings/JiraUserMappingSettingsView.swift",
-        "Views/Settings/SystemSettings.swift"
+    /// Files allowed the blocking call, with why.
+    private static let allowed: Set<String> = [
+        // The definition and the launch-time prewarm.
+        "WatchtowerCore/Utilities/Constants.swift",
+        // Runs on its own off-pool thread (`offPool`), never main or the pool.
+        "Database/DatabaseManager.swift"
     ]
 
     func testNoBlockingLoginEnvironmentCall() throws {
@@ -21,12 +19,23 @@ final class LoginEnvironmentCallSiteTests: XCTestCase {
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerDesktop
             .appendingPathComponent("Sources")
-        for file in Self.files {
-            let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
-            XCTAssertFalse(text.contains("Constants.resolvedEnvironment()"),
-                           "\(file) waits on the login-shell probe; use resolvedEnvironmentAsync()/IfReady()")
-            XCTAssertTrue(text.contains("resolvedEnvironmentAsync()") || text.contains("resolvedEnvironmentIfReady()"),
-                          "\(file): the scan found no environment call — wrong path?")
+        // The bare name, called or passed as a function reference.
+        let blocking = try NSRegularExpression(pattern: #"\bresolvedEnvironment\b"#)
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
+        var scanned = 0
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            scanned += 1
+            let relative = String(url.standardizedFileURL.path.dropFirst(sources.standardizedFileURL.path.count + 1))
+            guard !Self.allowed.contains(relative) else { continue }
+            let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() {
+                guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") else { continue }
+                let range = NSRange(line.startIndex..., in: line)
+                XCTAssertNil(blocking.firstMatch(in: line, range: range),
+                             "\(relative):\(index + 1) waits on the login-shell probe; "
+                                 + "use resolvedEnvironmentAsync() or resolvedEnvironmentIfReady()")
+            }
         }
+        XCTAssertGreaterThan(scanned, 100, "the scan found too few sources: wrong path?")
     }
 }

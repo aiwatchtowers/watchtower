@@ -479,7 +479,7 @@ final class CatchUpViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         return await ProcessPipes.run(process).trimmed
     }

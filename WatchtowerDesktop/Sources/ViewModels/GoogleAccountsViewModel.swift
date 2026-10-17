@@ -127,7 +127,6 @@ final class GoogleAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if hasCustomClient {
             process.standardInput = Pipe()
@@ -135,6 +134,10 @@ final class GoogleAccountsViewModel {
         authProcess = process
 
         addTask = Task.detached {
+            // The login environment is awaited here, off the main actor; a
+            // Cancel (or a newer attempt) while it resolves drops this launch.
+            process.environment = await Constants.resolvedEnvironmentAsync()
+            guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process, stdin: hasCustomClient ? clientSecret + "\n" : nil)
             await MainActor.run {
                 self.authProcess = nil
@@ -192,11 +195,14 @@ final class GoogleAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
         Task.detached {
+            // The login environment is awaited here, off the main actor; a
+            // Cancel (or a newer attempt) while it resolves drops this launch.
+            process.environment = await Constants.resolvedEnvironmentAsync()
+            guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process)
             await MainActor.run {
                 self.authProcess = nil
@@ -288,7 +294,7 @@ final class GoogleAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if stdin != nil {
             process.standardInput = Pipe()

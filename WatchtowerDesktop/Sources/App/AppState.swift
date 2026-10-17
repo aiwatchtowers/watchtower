@@ -500,8 +500,8 @@ final class AppState {
     func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
         if let chatSessionPool { return chatSessionPool }
         let pool = ChatSessionPool(dbPool: db.dbPool)
-        // CHAT-03: an idle session dies within TTL + one 30 s poll.
-        pool.startPolicy()
+        pool.holdAdmissionUntil { _ = await Constants.resolvedEnvironmentAsync() }
+        pool.startPolicy() // CHAT-03: an idle session dies within TTL + one 30 s poll.
         chatSessionPool = pool
         return pool
     }

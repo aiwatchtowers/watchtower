@@ -310,6 +310,9 @@ final class ExternalConnectionsViewModel {
     /// `authProcess` so `cancelSignIn()` can terminate it while this awaits.
     /// Structural copy of `SlackAccountsViewModel.runAuthFlow`.
     private func runAuthFlow(args: [String], failurePrefix: String) async {
+        // Awaited before any state changes: no suspension is left between
+        // the guards and the launch, so a Cancel cannot fall in between.
+        let environment = await Constants.resolvedEnvironmentAsync()
         guard !isBusy else {
             error = "Another operation is already in progress."
             return
@@ -325,7 +328,7 @@ final class ExternalConnectionsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = environment
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
@@ -385,7 +388,7 @@ final class ExternalConnectionsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if stdin != nil {
             process.standardInput = Pipe()

@@ -37,6 +37,9 @@ final class ChatSessionPool {
     /// Processes told to close that have not exited yet; each still holds a slot.
     @ObservationIgnored private var retirements: [Int: (conversationID: Int64, task: Task<Void, Never>)] = [:]
     @ObservationIgnored private var nextRetirementKey = 0
+    /// False while `holdAdmissionUntil`'s wait runs: queued sessions stay
+    /// pending (a turn held) instead of spawning.
+    @ObservationIgnored private var admissionOpen = true
 
     init(
         dbPool: DatabasePool,
@@ -172,8 +175,24 @@ final class ChatSessionPool {
 
     // MARK: - Private
 
+    /// Holds admission until `wait` returns, then admits the queue. The
+    /// chat child is built on the main actor from the login shell's
+    /// environment (PATH, CODEX_HOME) once resolved, never waiting for it
+    /// there: a chat opened while the launch-time resolve still runs waits
+    /// for it here, off the main actor, rather than spawning without the
+    /// owner's CODEX_HOME (board #592).
+    func holdAdmissionUntil(_ wait: @escaping @Sendable () async -> Void) {
+        admissionOpen = false
+        Task { [weak self] in
+            await wait()
+            self?.admissionOpen = true
+            self?.admit()
+        }
+    }
+
     /// Launches queued sessions, oldest first, while the policy grants slots.
     private func admit() {
+        guard admissionOpen else { return }
         while let id = queue.first {
             guard let client = clients[id], client.isPending else {
                 queue.removeFirst()

@@ -246,9 +246,7 @@ package enum Constants {
     /// shell's PATH and CODEX_HOME, not the app's own fallback.
     package nonisolated static func resolvedEnvironmentAsync() async -> [String: String] {
         if let env = resolvedEnvironmentBox.get() { return env }
-        return await withCheckedContinuation { continuation in
-            Thread.detachNewThread { continuation.resume(returning: resolvedEnvironment()) }
-        }
+        return await onOwnThread { resolvedEnvironment() }
     }
 
     nonisolated private static let resolvedEnvironmentBox = ResolvedEnvironmentBox()
@@ -437,10 +435,17 @@ package final class LoginEnvironmentResolver: @unchecked Sendable {
 
     package func resolve() async -> [String: String]? {
         if let env = lock.withLock({ env }) { return env }
-        let probed = await withCheckedContinuation { continuation in
-            Thread.detachNewThread { continuation.resume(returning: self.probe()) }
-        }
+        let probed = await onOwnThread(probe)
         if let probed { lock.withLock { if env == nil { env = probed } } }
         return probed
+    }
+}
+
+/// `body` run on a thread of its own and awaited: a blocking wait (the
+/// login-shell probe) never holds a Swift-concurrency pool thread or the
+/// main thread.
+private func onOwnThread<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+    await withCheckedContinuation { continuation in
+        Thread.detachNewThread { continuation.resume(returning: body()) }
     }
 }

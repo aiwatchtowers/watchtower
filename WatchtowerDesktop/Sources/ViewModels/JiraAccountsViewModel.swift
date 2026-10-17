@@ -209,6 +209,9 @@ final class JiraAccountsViewModel {
     /// Browser-consent flow (`add`/`login`) — holds the detached Process in
     /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
     private func runAuthFlow(args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy) async {
+        // Awaited before any state changes: no suspension is left between
+        // the guards and the launch, so a Cancel cannot fall in between.
+        let environment = await Constants.resolvedEnvironmentAsync()
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
@@ -224,7 +227,7 @@ final class JiraAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = environment
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
@@ -288,7 +291,7 @@ final class JiraAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         return await runProcess(process)
     }
