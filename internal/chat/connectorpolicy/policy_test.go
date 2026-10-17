@@ -293,6 +293,8 @@ var decideCases = []decideCase{
 		`{"object":"file",`+ownC+`,"id":"foreign-tab","payload":{}}`), want: Ask},
 	{name: "docs birth member names a newborn enum", call: docs("batch",
 		`{"container":{"kind":"project","create":{"name":"Plan"}},"batch":[{"verb":"update","ref":{"object":"node","id":"$lid:n"},"payload":{"x":{"object":"enum","id":"$lid:e"}}}]}`), want: Allow},
+	{name: "docs answering with a node type", call: docs("update",
+		`{`+ownC+`,"ref":{"object":"node","id":"n1"},"answering":{"object":"node","id":"foreign-root"},"payload":{"ops":[]}}`), want: Ask},
 	{name: "docs container not an object", call: docs("update", `{"container":"own-doc","ref":{"object":"node","id":"n1"},"payload":{"ops":[]}}`), want: Ask},
 	{name: "docs read", call: docs("read", `{"ref":{"object":"project","id":"p1"}}`), want: Allow},
 	{name: "docs query", call: docs("query", `{}`), want: Allow},

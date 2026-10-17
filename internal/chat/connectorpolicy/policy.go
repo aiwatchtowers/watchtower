@@ -658,8 +658,8 @@ func (p Policy) batchMembersStayInOwnDoc(in fields) bool {
 // nestedRefsOK walks every value of the call except the top-level container
 // (checked by the caller) and holds each nested object to refRule: any
 // object carrying an "object" key is a ref, any carrying "kind":"project"
-// must name an own doc, and a "parent" or "answering" must be such a ref
-// object (a bare comment or thread id asks). The type a create or a batch
+// must name an own doc, a "parent" must be such a ref object (a bare comment
+// id asks) and any "answering" asks. The type a create or a batch
 // member names with its own "object" key is no ref, but an id beside it
 // asks. So a comment's parent, a thread answer or a doc named deep in a
 // payload is never one the gate did not check.
@@ -694,8 +694,9 @@ func (p Policy) nestedRefsOK(in fields) bool {
 	return p.childrenOK(top, false)
 }
 
-// typeOnlyOK refuses an object that names a type with its own "object" key
-// and also carries an id (any case) other than one the same batch makes.
+// typeOnlyOK refuses the call's top level or a batch member — where "object"
+// names a type, not a ref — when it carries an id (any case) other than one
+// the same batch makes.
 func typeOnlyOK(obj map[string]any) bool {
 	for k, v := range obj {
 		if strings.EqualFold(k, "id") {
@@ -736,12 +737,15 @@ func (p Policy) valueOK(v any, inBatch bool) bool {
 	return true
 }
 
-// childrenOK applies valueOK to every value of obj (not to obj itself);
-// a "parent" or "answering" there must be an object with an exact "object"
-// key (a ref valueOK then checks), anything else asks.
+// childrenOK applies valueOK to every value of obj (not to obj itself); a
+// "parent" there must be an object with an exact "object" key (a ref valueOK
+// then checks) and an "answering" always asks — no own thread is provable.
 func (p Policy) childrenOK(obj map[string]any, inBatch bool) bool {
 	for k, val := range obj {
-		if strings.EqualFold(k, "parent") || strings.EqualFold(k, "answering") {
+		if strings.EqualFold(k, "answering") {
+			return false // a thread answer names a comment by its global id
+		}
+		if strings.EqualFold(k, "parent") {
 			ref, isObject := val.(map[string]any)
 			if _, hasObject := ref["object"]; !isObject || !hasObject {
 				return false
