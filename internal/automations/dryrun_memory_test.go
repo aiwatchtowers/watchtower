@@ -127,3 +127,31 @@ func TestDryRunInMemory_AgentIsNotRun(t *testing.T) {
 		t.Errorf("summary = %s; want the draft note", rep.Steps[0].ResultSummary)
 	}
 }
+
+// A draft's dry run never reaches a Quick Connection (ask #326): its script is
+// chat-written, and even a read tool's arguments carry data to the server.
+func TestDryRunInMemory_MCPIsNotCalled(t *testing.T) {
+	m := &automationstest.FakeMCP{}
+	b := automations.Backends{Generator: usageGen(10, 5), Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart), MCP: m}
+	text := strings.Replace(exRecipeText(`var r = mcp("github", "search_issues", {q: "secret"}); return r.status`, ""),
+		"  - llm:light\n", "  - llm:light\n  - mcp:github/*\n", 1)
+	r, err := automations.ParseRecipe("draft", []byte(text), automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := automations.DryRunInMemory(context.Background(), b, r, automations.DryRunOptions{})
+	if err != nil {
+		t.Fatalf("DryRunInMemory: %v", err)
+	}
+
+	if rep.Status != db.RunSucceeded || stepStatusesOf(rep.Steps) != "mcp:dry_run" {
+		t.Fatalf("status %s (%s), steps %s; want one mcp:dry_run step", rep.Status, rep.Error, stepStatusesOf(rep.Steps))
+	}
+	if n := len(m.Calls()); n != 0 {
+		t.Errorf("the Quick Connection was called %d times; want 0", n)
+	}
+	if !strings.Contains(rep.Steps[0].ResultSummary, "not called in a draft") {
+		t.Errorf("summary = %s; want the draft note", rep.Steps[0].ResultSummary)
+	}
+}

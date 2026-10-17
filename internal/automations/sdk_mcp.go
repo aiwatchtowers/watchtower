@@ -13,9 +13,12 @@ import (
 
 // MCPModule defines mcp(server, tool, args?) (spec §5): the manifest check
 // (AllowMCP) first, then the Quick Connection call, which applies QC-02's
-// verdict itself. A dry run calls for real: only tools QC-02 allows (read-only
-// or owner-named non-writes) are ever called. The result is the tool's JSON,
-// held to the SDK result size boundary.
+// verdict itself. A dry run of a saved recipe calls for real: only tools QC-02
+// allows (read-only or owner-named non-writes) are ever called. A draft's
+// in-memory dry run (draft_automation, run id 0) calls nothing: its script is
+// chat-written and unconfirmed, and even a read tool's arguments carry data to
+// the server (ask #326). The result is the tool's JSON, held to the SDK
+// result size boundary.
 func MCPModule(b Backends) Module {
 	return sdkModule{name: "mcp", fns: map[string]SDKFunc{"mcp": func(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 		req, reqErr := parseMCPCall(env, rt, call)
@@ -36,6 +39,9 @@ func MCPModule(b Backends) Module {
 				return nil, err
 			}
 			step.SetPermission(entry)
+			if env.DryRun && env.Run != nil && env.Run.ID == 0 {
+				return dryRunResult(step, map[string]any{"note": mcpDraftNote}), nil
+			}
 			if b.MCP == nil {
 				return nil, notAvailable("no Quick Connection caller is configured")
 			}
@@ -50,6 +56,8 @@ func MCPModule(b Backends) Module {
 		})
 	}}}
 }
+
+const mcpDraftNote = "mcp() is not called in a draft; dry-run the saved recipe from its card to see it"
 
 // mcpCall is one mcp(server, tool, args) call's arguments.
 type mcpCall struct {
