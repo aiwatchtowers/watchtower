@@ -15,7 +15,7 @@ The step has a 5-minute budget per cycle. A chunk that does not finish is resume
 | Source | What is loaded for the older days |
 |---|---|
 | **Slack** | Messages, then channel digests and daily rollups for those days |
-| **Gmail, IMAP** | Messages; Gmail also gets its mail digests, which feed Ideas |
+| **Gmail, IMAP** | Messages and their mail digests, which feed Ideas |
 | **Jira** | Nothing to fetch, because the first Jira sync is a full scan; the month is mined for Ideas |
 | **Calendar** | Not needed: 30 days of events are re-synced every cycle |
 | **Confluence, meetings** | Not needed |

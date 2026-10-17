@@ -209,3 +209,97 @@ func (db *DB) SetEmailAccountAuthState(accountID int64, status, errMsg string) e
 	}
 	return nil
 }
+
+// imapTSUnixExpr decodes imap_messages.internal_date (RFC3339 UTC, written by
+// internal/imap) to whole unix seconds — the gmailTSUnixExpr twin.
+const imapTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
+
+// ListImapMessagesForExtract returns accountID's imap_messages with a decoded
+// internal_date strictly above sinceTS (and at or below beforeTS when it is
+// non-zero), oldest first, capped at limit with the same boundary-second
+// drain as ListGmailThreadsForExtract — the input of the ideas email
+// pre-digest for an IMAP/Outlook mailbox. IMAP stores no thread id, so every
+// message is its own thread: MessageID and ThreadID are both
+// "<uidvalidity>-<uid>", unique within the mailbox. A message with no date is
+// never returned (no floor can be placed on it).
+func (db *DB) ListImapMessagesForExtract(accountID int64, sinceTS, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
+	return listExtractDrainingBoundary(func(op string, tsArg, before float64, lim int) ([]GmailExtractMessage, error) {
+		return db.queryImapExtractMessages(accountID, op, tsArg, before, lim)
+	}, sinceTS, beforeTS, limit)
+}
+
+// queryImapExtractMessages is queryGmailExtractMessages over imap_messages.
+// op is ">" or "=" (never user input); the ORDER BY ends in the primary key so
+// a same-second group is ordered deterministically.
+func (db *DB) queryImapExtractMessages(accountID int64, op string, tsArg, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
+	query := `
+		SELECT uidvalidity || '-' || uid, subject, from_email, from_name, body_text, ` + imapTSUnixExpr + `
+		FROM imap_messages
+		WHERE account_id = ? AND internal_date != '' AND ` + imapTSUnixExpr + ` ` + op + ` ?`
+	args := []any{accountID, tsArg}
+	if beforeTS != 0 {
+		query += ` AND ` + imapTSUnixExpr + ` <= ?`
+		args = append(args, beforeTS)
+	}
+	query += `
+		ORDER BY ` + imapTSUnixExpr + `, uidvalidity, uid
+		LIMIT ?`
+	args = append(args, limit)
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing imap messages for extract: %w", err)
+	}
+	defer rows.Close()
+
+	var out []GmailExtractMessage
+	for rows.Next() {
+		var m GmailExtractMessage
+		if err := rows.Scan(&m.MessageID, &m.Subject, &m.FromEmail, &m.FromName, &m.BodyText, &m.TSUnix); err != nil {
+			return nil, fmt.Errorf("scanning imap extract message: %w", err)
+		}
+		m.ThreadID = m.MessageID
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ImapNewestMessageTS returns the decoded internal_date (unix seconds) of
+// accountID's newest stored message, 0 when it has none — the IMAP stand-in
+// for the Gmail sync watermark GetGmailAccountWatermark returns (the IMAP
+// watermark is a UID, not a time).
+func (db *DB) ImapNewestMessageTS(accountID int64) (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT COALESCE(MAX(`+imapTSUnixExpr+`), 0) FROM imap_messages
+		WHERE account_id = ? AND internal_date != ''`, accountID).Scan(&ts)
+	if err != nil {
+		return 0, fmt.Errorf("getting newest imap message time for account %d: %w", accountID, err)
+	}
+	return ts, nil
+}
+
+// IdeasImapFloor returns the ideas registry's per-mailbox email pre-digest
+// floor (unix seconds, email_accounts.ideas_email_floor) — the IdeasEmailFloor
+// twin for IMAP/Outlook mailboxes. A missing mailbox reads as 0.
+func (db *DB) IdeasImapFloor(accountID int64) (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT ideas_email_floor FROM email_accounts WHERE id = ?`, accountID).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting ideas imap floor for account %d: %w", accountID, err)
+	}
+	return ts, nil
+}
+
+// SetIdeasImapFloor sets the mailbox's ideas floor (see IdeasImapFloor).
+func (db *DB) SetIdeasImapFloor(accountID int64, ts float64) error {
+	res, err := db.Exec(`UPDATE email_accounts SET ideas_email_floor = ? WHERE id = ?`, ts, accountID)
+	if err != nil {
+		return fmt.Errorf("setting ideas imap floor for account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas imap floor: no email_accounts row %d", accountID)
+	}
+	return nil
+}

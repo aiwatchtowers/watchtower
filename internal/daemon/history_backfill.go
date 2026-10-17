@@ -145,7 +145,7 @@ func (d *Daemon) historyBackfillSources() []historybackfill.Source {
 		out = append(out, jiraSource{id: s.AccountID(), d: d})
 	}
 	for _, s := range d.imapSyncers {
-		out = append(out, imapSource{s: s})
+		out = append(out, imapSource{s: s, id: s.AccountID(), d: d})
 	}
 	return out
 }
@@ -422,17 +422,25 @@ func (d *Daemon) backfillStreams(key backfillResumeKey, from time.Time, drain fu
 	return false, err
 }
 
-// imapSource backfills one IMAP mailbox: fetch only (no AI step).
+// imapSource backfills one IMAP/Outlook mailbox like gmailSource: range
+// fetch, then that mailbox's ideas stream digests over the chunk (#615).
 type imapSource struct {
-	s mailSyncer
+	s  mailSyncer
+	id int64
+	d  *Daemon
 }
 
 func (m imapSource) Kind() string     { return "imap" }
-func (m imapSource) AccountID() int64 { return m.s.AccountID() }
+func (m imapSource) AccountID() int64 { return m.id }
 
 func (m imapSource) Fetch(ctx context.Context, from, to time.Time) error {
 	_, err := m.s.FetchRange(ctx, from, to)
 	return backfillErr(err)
 }
 
-func (imapSource) Process(context.Context, time.Time, time.Time) (bool, error) { return true, nil }
+func (m imapSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
+	return m.d.backfillStreams(backfillResumeKey{"imap", m.id, from.Unix()}, from,
+		func(start time.Time) (time.Time, bool, error) {
+			return m.d.ideasPipe.BackfillImap(ctx, m.id, start, to)
+		})
+}

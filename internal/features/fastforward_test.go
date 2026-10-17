@@ -158,6 +158,32 @@ func TestFastForward_StreamDigests(t *testing.T) {
 	assert.Zero(t, transcriptFloor, "stream-digests must not touch the workspace ideas floors")
 }
 
+// #615: "stream-digests" fast-forwards an IMAP/Outlook mailbox's floor to its
+// newest stored message (the mailbox self-init mirror) and leaves a mailbox
+// with no mail untouched.
+func TestFastForward_StreamDigestsImapMailbox(t *testing.T) {
+	database := testDB(t)
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	newMailbox := func() int64 {
+		id, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
+			Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
+		require.NoError(t, err)
+		return id
+	}
+	withMail, empty := newMailbox(), newMailbox()
+	at := now.Add(-time.Hour).Format(time.RFC3339)
+	require.NoError(t, database.UpsertImapMessage(db.ImapMessage{AccountID: withMail, UID: 1, UIDValidity: 1, InternalDate: at}, at))
+
+	require.NoError(t, FastForward("stream-digests", database, now, Deps{}))
+
+	floor, err := database.IdeasImapFloor(withMail)
+	require.NoError(t, err)
+	assert.Equal(t, float64(now.Add(-time.Hour).Unix()), floor)
+	emptyFloor, err := database.IdeasImapFloor(empty)
+	require.NoError(t, err)
+	assert.Zero(t, emptyFloor, "a mailbox with no mail yet must be left untouched")
+}
+
 // TestFastForward_SlackDigests pins that "slack-digests" stamps the workspace
 // fast-forward floor to now — the persisted watermark Slack digests otherwise
 // lack — and touches nothing else.

@@ -75,7 +75,7 @@ struct StreamDigestDetailView: View {
     }
 
     private var sourceLabel: String {
-        digest.source == "jira" ? "Jira" : "Gmail"
+        digest.sourceLabel
     }
 
     private var sourceColor: Color {

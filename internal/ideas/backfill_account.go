@@ -26,13 +26,30 @@ func (p *Pipeline) BackfillEmail(ctx context.Context, accountID int64, from, to 
 	if p.generator == nil {
 		return to, true, nil
 	}
-	acct, err := p.db.GetGoogleAccount(accountID)
-	if err != nil {
+	if _, err := p.db.GetGoogleAccount(accountID); err != nil {
 		return from, false, fmt.Errorf("backfill email: account %d: %w", accountID, err)
 	}
-	saved, err := p.db.IdeasEmailFloor(accountID)
+	return p.backfillMailbox(ctx, gmailBox(accountID), from, to)
+}
+
+// BackfillImap is BackfillEmail for one IMAP/Outlook mailbox (an
+// email_accounts row): the same in-memory drain over its imap_messages and
+// the same never-lowered raise of its email_accounts.ideas_email_floor.
+func (p *Pipeline) BackfillImap(ctx context.Context, accountID int64, from, to time.Time) (reached time.Time, complete bool, err error) {
+	if p.generator == nil {
+		return to, true, nil
+	}
+	if _, err := p.db.GetEmailAccount(accountID); err != nil {
+		return from, false, fmt.Errorf("backfill email: imap account %d: %w", accountID, err)
+	}
+	return p.backfillMailbox(ctx, imapBox(accountID), from, to)
+}
+
+// backfillMailbox is the shared body of BackfillEmail and BackfillImap.
+func (p *Pipeline) backfillMailbox(ctx context.Context, mb mailbox, from, to time.Time) (reached time.Time, complete bool, err error) {
+	saved, err := p.mailFloor(mb)
 	if err != nil {
-		return from, false, fmt.Errorf("backfill email: reading floor for account %d: %w", accountID, err)
+		return from, false, fmt.Errorf("backfill email: reading floor for %s: %w", mb.what(), err)
 	}
 	// Never start above a floor that is already below the window: that would
 	// skip the mail between it and from.
@@ -44,28 +61,28 @@ func (p *Pipeline) BackfillEmail(ctx context.Context, accountID int64, from, to 
 		func() (string, error) { return fmt.Sprint(floor), nil },
 		func() error {
 			var perr error
-			floor, perr = p.emailDigestPass(ctx, acct, floor, to)
+			floor, perr = p.emailDigestPass(ctx, mb, floor, to)
 			return perr
 		},
-		fmt.Sprintf("email account %d", accountID))
-	p.raiseEmailFloor(accountID, floor)
+		mb.what())
+	p.raiseEmailFloor(mb, floor)
 	return time.Unix(int64(floor), 0).UTC(), complete, err // floors are whole seconds (maxTS of a rendered window)
 }
 
-// raiseEmailFloor moves the account's stored floor up to reached when the
+// raiseEmailFloor moves the mailbox's stored floor up to reached when the
 // drain got past it (also when it was never initialized), so the forward run
 // does not mine the drained window again; it never lowers it.
-func (p *Pipeline) raiseEmailFloor(accountID int64, reached float64) {
-	live, err := p.db.IdeasEmailFloor(accountID)
+func (p *Pipeline) raiseEmailFloor(mb mailbox, reached float64) {
+	live, err := p.mailFloor(mb)
 	if err != nil {
-		p.logf("ideas: backfill: reading email floor for account %d: %v", accountID, err)
+		p.logf("ideas: backfill: reading email floor for %s: %v", mb.what(), err)
 		return
 	}
 	if reached <= live {
 		return
 	}
-	if err := p.db.SetIdeasEmailFloor(accountID, reached); err != nil {
-		p.logf("ideas: backfill: raising email floor for account %d: %v", accountID, err)
+	if err := p.setMailFloor(mb, reached); err != nil {
+		p.logf("ideas: backfill: raising email floor for %s: %v", mb.what(), err)
 	}
 }
 
