@@ -130,8 +130,9 @@ func scanInstructionSuggestion(sc interface{ Scan(...any) error }) (InstructionS
 	return s, err
 }
 
-// UpsertInstructionSuggestion inserts s as open, or refreshes the text, counts
-// and last_seen_at of the open row with the same fingerprint. An added or
+// UpsertInstructionSuggestion inserts s as open, or refreshes the text, field,
+// scope (workbench_id), counts and last_seen_at of the open row with the same
+// fingerprint. An added or
 // dismissed row is left untouched.
 func (db *DB) UpsertInstructionSuggestion(s InstructionSuggestion, now time.Time) error {
 	if !s.Field.valid() {
@@ -142,6 +143,7 @@ func (db *DB) UpsertInstructionSuggestion(s InstructionSuggestion, now time.Time
 		(text, field, workbench_id, session_count, workbench_count, first_seen_at, last_seen_at, status, fingerprint)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
 		ON CONFLICT(fingerprint) DO UPDATE SET text = excluded.text,
+			field = excluded.field, workbench_id = excluded.workbench_id,
 			session_count = excluded.session_count, workbench_count = excluded.workbench_count,
 			last_seen_at = excluded.last_seen_at
 		WHERE instruction_suggestions.status = 'open'`,

@@ -96,6 +96,46 @@ func TestInstructionSuggestion_UpsertRefreshesOpenOnly(t *testing.T) {
 	assert.Empty(t, open)
 }
 
+func TestInstructionSuggestion_UpsertRefreshesScopeAndField(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	t1 := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	scoped := sugg("fp1")
+	scoped.WorkbenchID = sql.NullInt64{Int64: wb, Valid: true}
+	require.NoError(t, d.UpsertInstructionSuggestion(scoped, t1))
+	dismissed := sugg("fp2")
+	dismissed.WorkbenchID = sql.NullInt64{Int64: wb, Valid: true}
+	require.NoError(t, d.UpsertInstructionSuggestion(dismissed, t1))
+	open, err := d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	var dismissedID int64
+	for _, o := range open {
+		if o.Fingerprint == "fp2" {
+			dismissedID = o.ID
+		}
+	}
+	require.NoError(t, d.DecideInstructionSuggestion(dismissedID, "dismissed", t1))
+
+	for _, fp := range []string{"fp1", "fp2"} {
+		global := sugg(fp)
+		global.Field, global.WorkbenchCount = InstructionProcedure, 3
+		require.NoError(t, d.UpsertInstructionSuggestion(global, t1.Add(time.Hour)))
+	}
+
+	open, err = d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.False(t, open[0].WorkbenchID.Valid, "re-mined as global clears the workbench")
+	assert.Equal(t, InstructionProcedure, open[0].Field)
+	assert.Equal(t, 3, open[0].WorkbenchCount)
+
+	got, err := d.GetInstructionSuggestion(dismissedID)
+	require.NoError(t, err)
+	assert.Equal(t, sql.NullInt64{Int64: wb, Valid: true}, got.WorkbenchID, "a dismissed row is untouched")
+	assert.Equal(t, InstructionSession, got.Field)
+	assert.Equal(t, 1, got.WorkbenchCount)
+}
+
 func TestInstructionSuggestion_ListNewestFirst(t *testing.T) {
 	d := openTestDB(t)
 	t1 := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
