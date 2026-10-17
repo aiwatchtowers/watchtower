@@ -88,6 +88,8 @@ final class FakeDaemon: DaemonControl {
     var diesAfterStart = false
     /// A restart reports the daemon down while it runs (its stop half).
     var stopsDuringRestart = false
+    /// A stop leaves the old daemon running (still exiting, or it ignored it).
+    var stopKeepsRunning = false
     /// After a start, this many `daemonIsRunning()` reads still say no (a
     /// slow pid file).
     var runningAfterChecks = 0
@@ -114,7 +116,8 @@ final class FakeDaemon: DaemonControl {
 
     func startDetached() async -> Bool {
         starts += 1
-        running = startSucceeds && !diesAfterStart
+        // A failed start leaves whatever ran before as it was.
+        if startSucceeds { running = !diesAfterStart }
         if startSucceeds { pendingChecks = runningAfterChecks }
         return startSucceeds
     }
@@ -131,7 +134,7 @@ final class FakeDaemon: DaemonControl {
 
     func stopDaemonNow() async {
         stops += 1
-        running = false
+        if !stopKeepsRunning { running = false }
     }
 
     func waitUntilStopped() async throws {

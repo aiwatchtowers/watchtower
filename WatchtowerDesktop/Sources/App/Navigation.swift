@@ -162,7 +162,7 @@ struct MainNavigationView: View {
         ) {
             Button("Reconnect") {
                 appState.selectedDestination = .calendar
-                reconnectAndRestartDaemon()
+                reconnectGoogleCalendar()
             }
             Button("Later", role: .cancel) {}
         } message: {
@@ -229,15 +229,10 @@ struct MainNavigationView: View {
     /// `connect()` falls back to the CLI's generic "account #1" alias, which
     /// in a multi-account workspace may be a completely different, healthy
     /// account, leaving the actually-broken one (and the alert) stuck forever.
-    private func reconnectAndRestartDaemon() {
+    private func reconnectGoogleCalendar() {
+        // A successful connect restarts the daemon itself
+        // (`GoogleAuthService`, on the start queue).
         googleAuth.connect(accountID: appState.calendarViewModel?.authState?.accountID)
-        Task {
-            while googleAuth.isAuthenticating {
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-            // A successful connect restarts the daemon itself
-            // (`GoogleAuthService`, on the start queue).
-        }
     }
 
     @ViewBuilder

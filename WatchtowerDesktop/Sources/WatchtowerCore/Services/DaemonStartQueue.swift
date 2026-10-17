@@ -61,13 +61,9 @@ package final class DaemonStartQueue {
 }
 
 extension DaemonManager {
-    /// `restart()` on the shared queue, for code with no `AppState` at hand
-    /// (account view models, Google sign-in). `AppState` uses the same queue.
-    package static func restartQueued() async throws {
-        try await DaemonStartQueue.shared.restart { try await restart() }
-    }
-
-    /// `restartQueued` with the failure logged and kept on the banner.
+    /// `restart()` on the shared queue for code with no `AppState` at hand
+    /// (account view models, Google sign-in), the failure logged and kept on
+    /// the banner. `AppState` uses the same queue.
     package static func restartLoggingQueued() async {
         await DaemonStartQueue.shared.restartLogging { try await restart() }
     }

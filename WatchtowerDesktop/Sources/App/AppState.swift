@@ -1507,8 +1507,15 @@ final class AppState {
                 await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            self.daemonStartFailure = await daemon.startDetached()
-                ? nil : Self.daemonStartFailureText(manager.errorMessage)
+            if await daemon.startDetached() {
+                self.daemonStartFailure = nil
+            } else if daemon.daemonIsRunning() {
+                // The old daemon is still there (still exiting, or it did not
+                // stop): the new one never came up. Retry restarts it.
+                self.daemonStartFailure = Self.daemonOldStillRunningText(manager.errorMessage)
+            } else {
+                self.daemonStartFailure = Self.daemonStartFailureText(manager.errorMessage)
+            }
         }
         ensureDaemonTask = Task { _ = await item.value }
     }

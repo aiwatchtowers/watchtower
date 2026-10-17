@@ -35,11 +35,14 @@ extension AppState {
         }
     }
 
-    /// The banner's Start and Retry. A daemon already running is not a
-    /// failure. After a detach that exited 0 it waits (up to
-    /// `daemonStartWaitBound`) for the daemon to show up; only a daemon still
-    /// absent then reads "started but stopped again". The banner says
-    /// "Starting…" meanwhile, and a second Start is ignored.
+    /// The banner's Start and Retry. With a daemon running, a failure on the
+    /// banner means a restart did not take (the old daemon kept running, so
+    /// a new account or feature is not wired in): Retry restarts it for real
+    /// and clears only on success. A running daemon with nothing on the
+    /// banner needs nothing. Otherwise it starts one and, after a detach that
+    /// exited 0, waits (up to `daemonStartWaitBound`) for it to show up; only
+    /// a daemon still absent then reads "started but stopped again". The
+    /// banner says "Starting…" meanwhile, and a second Start is ignored.
     func startDaemonFromBanner() {
         guard !isStartingDaemon else { return }
         isStartingDaemon = true
@@ -48,8 +51,16 @@ extension AppState {
         let interval = daemonStartPollInterval
         enqueueDaemonStart { [weak self] in
             defer { self?.isStartingDaemon = false }
-            guard !daemon.daemonIsRunning() else {
-                self?.daemonStartFailure = nil
+            if daemon.daemonIsRunning() {
+                guard self?.daemonStartFailure != nil else { return }
+                do {
+                    // Inside this item: never `restartOnChain`, which would
+                    // enqueue behind it.
+                    try await daemon.restartWaiting()
+                    self?.daemonStartFailure = nil
+                } catch {
+                    self?.daemonStartFailure = Self.daemonRestartFailureText(error)
+                }
                 return
             }
             guard await daemon.startDetached() else {
@@ -102,6 +113,38 @@ extension AppState {
             return done
         }.value
     }
+
+    static func daemonRestartFailureText(_ error: any Error) -> String {
+        "The background sync did not restart: \(error.localizedDescription)"
+    }
+
+    /// Settings → Data's full reset: stop the daemon, wait until it is really
+    /// gone, and only then `remove` everything — one start-queue item, so no
+    /// start lands in between. False: it did not stop and nothing was removed.
+    func stopDaemonAndRemoveEverything(_ remove: @escaping @MainActor () -> Void) async -> Bool {
+        let daemon = daemonControl
+        return await enqueueDaemonStart { () -> Bool in
+            if daemon.daemonIsRunning() {
+                await daemon.stopDaemonNow()
+            }
+            do {
+                try await daemon.waitUntilStopped()
+            } catch {
+                return false
+            }
+            remove()
+            return true
+        }.value
+    }
+
+    /// The launch start failed while a daemon is still running (the old one,
+    /// still exiting or not stopped): Retry restarts it.
+    static func daemonOldStillRunningText(_ detail: String?) -> String {
+        let reason = detail.map { " (\($0))" } ?? ""
+        return "The background sync did not restart: the previous one is still running\(reason)."
+    }
+
+    static let resetDaemonDidNotStopText = "The background sync did not stop, so nothing was deleted. Try again."
 
     static func daemonStartFailureText(_ detail: String?) -> String {
         let reason = detail.map { ": \($0)." } ?? "."

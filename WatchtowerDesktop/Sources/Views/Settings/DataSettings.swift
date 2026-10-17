@@ -221,24 +221,12 @@ struct DataSettings: View {
         resetError = nil
         let configDir = configDir
         let dataDir = dataDir
-        // One item on the app's start queue: stop the daemon, and delete
-        // only once it is really gone — no start lands in between.
-        let stopped = await appState.enqueueDaemonStart { () -> Bool in
-            let daemon = DaemonManager()
-            daemon.resolvePathIfNeeded()
-            if DaemonManager.checkDaemonRunning() {
-                await daemon.stopDaemon()
-            }
-            do {
-                try await DaemonManager.waitForDaemonExit()
-            } catch {
-                return false
-            }
+        // Delete only once the daemon is really gone (one start-queue item).
+        let stopped = await appState.stopDaemonAndRemoveEverything {
             Self.removeEverything(configDir: configDir, dataDir: dataDir)
-            return true
-        }.value
+        }
         guard stopped else {
-            resetError = "The background sync did not stop, so nothing was deleted. Try again."
+            resetError = AppState.resetDaemonDidNotStopText
             isResetting = false
             return
         }

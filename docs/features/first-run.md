@@ -109,8 +109,10 @@ match wins:
   <reason>."), a detach that exited 0 but no daemon within
   `daemonStartWaitBound` (60 s, polled every second — a first start after an
   update runs migrations first; `daemonDiedAfterStartText`), a background
-  restart that failed (`DaemonStartQueue.restartLogging`), the launch start
-  failing, or a `watchtower` call stopped at its bound. **Retry**, **Open
+  restart that failed (`DaemonStartQueue.restartLogging`, the Calendar tab's
+  restart), the launch start failing (with a daemon still running after it —
+  the old one, still exiting or not stopped — it reads as a restart failure,
+  `daemonOldStillRunningText`), or a `watchtower` call stopped at its bound. **Retry**, **Open
   Logs** (the Logs window), **Dismiss**. Only a successful start or restart
   clears it (`DaemonStartQueue.restart`, the banner's Start, a bring-up, the
   Calendar restart, Reset LLM data), or a daemon newly up
@@ -127,8 +129,12 @@ start and a new stop bring "isn't running" back. That is also how an owner who
 stopped sync on purpose (`watchtower sync stop`) keeps it away; there is no
 separate "stopped on purpose" state.
 
-Start and Retry run `AppState.startDaemonFromBanner`: a daemon already running
-is not a failure; otherwise `startDetached`, then the wait above.
+Start and Retry run `AppState.startDaemonFromBanner`. With a daemon running
+and a failure on the banner, the failure is a restart that did not take (the
+old daemon kept running, so a new account or feature is not wired in): Retry
+runs a real restart (`restartWaiting`) and clears only on success. A running
+daemon with nothing on the banner needs nothing. With no daemon,
+`startDetached`, then the wait above.
 
 **One start queue.** Every daemon start, stop-then-start and restart the app
 makes runs on `DaemonStartQueue`, one item at a time. The entry point is
@@ -145,8 +151,9 @@ the launch `ensureDaemonRunning`, onboarding's and Run setup again's
 action strip, Reset LLM data (stop, wait for the exit, wipe and restart as one
 item), Settings → Slack disconnect (stop, disconnect, start as one item; the
 config and the Workspaces list are re-read whatever the outcome) and the full
-reset (stop, wait for the exit, and only then delete — a daemon that did not
-stop deletes nothing and says so).
+reset (`AppState.stopDaemonAndRemoveEverything`: stop through `daemonControl`,
+wait for the exit, and only then delete — a daemon that did not stop deletes
+nothing and Settings shows `resetDaemonDidNotStopText`).
 
 Items have no timeout of their own, so they never overlap. Every `watchtower`
 call inside one is bounded where it runs (`DaemonManager.cliCallTimeout`,

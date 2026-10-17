@@ -78,15 +78,71 @@ final class DaemonBannerTests: XCTestCase {
 
     // MARK: - Start
 
+    /// A running daemon with nothing on the banner: Start does nothing.
+    /// With a failure on the banner (a restart that did not take, the old
+    /// daemon still running) Retry restarts for real and clears only on
+    /// success.
     func testStartWhenAlreadyRunningIsNoFailure() async {
         let daemon = FakeDaemon()
         daemon.running = true
         let appState = makeAppState(daemon)
-        appState.daemonStartFailure = "old"
         appState.startDaemonFromBanner()
         await appState.daemonStartChain?.value
         XCTAssertEqual(daemon.starts, 0)
+        XCTAssertEqual(daemon.restarts, 0)
         XCTAssertNil(appState.daemonStartFailure)
+
+        appState.daemonStartFailure = "The background sync did not restart: boom"
+        appState.startDaemonFromBanner()
+        await appState.daemonStartChain?.value
+        XCTAssertEqual(daemon.starts, 0)
+        XCTAssertEqual(daemon.restarts, 1, "Retry of a restart failure restarts")
+        XCTAssertNil(appState.daemonStartFailure)
+    }
+
+    func testRetryOfARestartFailureKeepsItWhenTheRestartFails() async {
+        let daemon = FakeDaemon()
+        daemon.running = true
+        let failure = DaemonRestartError.stopTimedOut(pid: 4242)
+        daemon.restartError = failure
+        let appState = makeAppState(daemon)
+        appState.daemonStartFailure = "The background sync did not restart: boom"
+        appState.startDaemonFromBanner()
+        await appState.daemonStartChain?.value
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(appState.daemonStartFailure, AppState.daemonRestartFailureText(failure))
+    }
+
+    // MARK: - Full reset
+
+    func testFullResetDeletesNothingWhenTheDaemonDoesNotStop() async {
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.stopTimesOut = true
+        let appState = makeAppState(daemon)
+        var removed = false
+        let stopped = await appState.stopDaemonAndRemoveEverything { removed = true }
+        XCTAssertFalse(stopped)
+        XCTAssertFalse(removed, "nothing is deleted while the daemon may still write")
+        XCTAssertEqual(daemon.stops, 1)
+        XCTAssertEqual(AppState.resetDaemonDidNotStopText,
+                       "The background sync did not stop, so nothing was deleted. Try again.")
+    }
+
+    func testFullResetDeletesOnceTheDaemonStopped() async {
+        let daemon = FakeDaemon()
+        daemon.running = true
+        let appState = makeAppState(daemon)
+        var removed = false
+        var removedWhileRunning = true
+        let stopped = await appState.stopDaemonAndRemoveEverything {
+            removed = true
+            removedWhileRunning = daemon.running
+        }
+        XCTAssertTrue(stopped)
+        XCTAssertTrue(removed)
+        XCTAssertFalse(removedWhileRunning, "deleted, after the stop")
+        XCTAssertEqual(daemon.waits, 1)
     }
 
     func testStartThatStaysUpClearsTheBanner() async {
@@ -182,6 +238,24 @@ final class DaemonBannerTests: XCTestCase {
         appState.ensureDaemonRunning()
         await appState.ensureDaemonTask?.value
         XCTAssertEqual(appState.daemonStartFailure, AppState.daemonStartFailureText(nil))
+    }
+
+    /// The launch start fails because the old daemon is still there: that is
+    /// a restart that did not take, and Retry restarts it.
+    func testLaunchStartNextToTheOldDaemonIsARestartFailure() async {
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.stopKeepsRunning = true
+        daemon.startSucceeds = false
+        let appState = makeAppState(daemon)
+        appState.ensureDaemonRunning()
+        await appState.ensureDaemonTask?.value
+        XCTAssertEqual(appState.daemonStartFailure, AppState.daemonOldStillRunningText(nil))
+
+        appState.startDaemonFromBanner()
+        await appState.daemonStartChain?.value
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertNil(appState.daemonStartFailure)
     }
 
     /// Slack disconnect is one item: a banner Start enqueued meanwhile runs
