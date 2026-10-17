@@ -334,6 +334,9 @@ private struct AutomationFormContent: View {
                 ForEach(AutomationFormModel.eventTypes, id: \.self) { Text($0).tag($0) }
             }
             .frame(width: 320)
+            if type == "slack.reaction_added" {
+                ReactionCommandsOffNote(text: "Reaction events need Reaction commands on")
+            }
             ForEach(filter.keys.sorted(), id: \.self) { key in
                 HStack {
                     Text(key).font(.callout.monospaced())

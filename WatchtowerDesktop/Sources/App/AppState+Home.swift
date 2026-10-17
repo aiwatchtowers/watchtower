@@ -39,6 +39,12 @@ extension AppState {
         return Self.homeAlwaysAllowed.union(followed)
     }
 
+    /// Open the Automations tab on one of its sections (the Settings pointer).
+    func navigateToAutomations(section: AutomationsSection) {
+        UserDefaults.standard.set(section.rawValue, forKey: AutomationsSection.storageKey)
+        selectedDestination = .automations
+    }
+
     /// A Home click: a tab, or an item through the tab's own navigate helper.
     /// A tab hidden right now is left to `applyFeatureFallback` (Navigation),
     /// so a stale link lands on Home.
