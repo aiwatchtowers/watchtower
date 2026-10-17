@@ -49,6 +49,24 @@ package struct ChatToolEnd: Equatable, Sendable {
     }
 }
 
+/// `tool_wait` (spec 2026-10-16-chat-claude-ai-tools-design §3.1): the
+/// permission gate holds step `id` until the owner answers the
+/// `agent_actions` row `actionID` (`claude_ai_connector_call`). Live only —
+/// the row is the durable state; the step's `tool_end` ends the wait.
+package struct ChatToolWait: Equatable, Sendable {
+    package let turnID: String
+    package let id: String
+    package let actionID: Int64
+    package let message: String
+
+    package init(turnID: String, id: String, actionID: Int64, message: String) {
+        self.turnID = turnID
+        self.id = id
+        self.actionID = actionID
+        self.message = message
+    }
+}
+
 package struct ChatUsage: Equatable, Sendable {
     package let turnID: String
     package let tokensIn: Int
@@ -86,6 +104,7 @@ package enum ChatEvent: Equatable, Sendable {
     case textDelta(turnID: String, text: String)
     case toolStart(ChatToolStart)
     case toolEnd(ChatToolEnd)
+    case toolWait(ChatToolWait)
     case usage(ChatUsage)
     case turnDone(turnID: String, status: ChatTurnStatus, sessionID: String?)
     case error(ChatSessionError)
@@ -114,6 +133,13 @@ package enum ChatEvent: Equatable, Sendable {
             return .toolEnd(ChatToolEnd(turnID: fields.string("turn_id"), id: fields.string("id"),
                                         ok: fields.bool("ok"), summary: fields.string("summary"),
                                         sources: fields.sources()))
+        case "tool_wait":
+            // All four fields are always sent; one missing means a broken
+            // line, never a waiting step without the row the owner answers.
+            guard let turnID = fields.optional("turn_id"), let id = fields.optional("id"),
+                  let message = fields.optional("message"), let actionID = fields.positiveInt64("action_id")
+            else { return nil }
+            return .toolWait(ChatToolWait(turnID: turnID, id: id, actionID: actionID, message: message))
         case "usage":
             return .usage(ChatUsage(turnID: fields.string("turn_id"), tokensIn: fields.int("tokens_in"),
                                     tokensOut: fields.int("tokens_out"), model: fields.string("model")))
@@ -143,6 +169,15 @@ private struct Fields {
     }
 
     func int(_ key: String) -> Int { (json[key] as? NSNumber)?.intValue ?? 0 }
+
+    /// A JSON integer > 0 that fits Int64; nil for a bool, a fraction, a
+    /// string or anything out of range.
+    func positiveInt64(_ key: String) -> Int64? {
+        guard let number = json[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.compare(NSNumber(value: number.int64Value)) == .orderedSame,
+              number.int64Value > 0 else { return nil }
+        return number.int64Value
+    }
 
     func bool(_ key: String) -> Bool { json[key] as? Bool ?? false }
 

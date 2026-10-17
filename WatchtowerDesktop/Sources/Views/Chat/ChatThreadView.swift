@@ -131,8 +131,11 @@ struct ChatThreadView: View {
         }
     }
 
+    /// A card a live step waits on (`tool_wait`, same action id) is outlined,
+    /// so the step's "see the approval card below" points at one card.
     private func agentActionCard(_ action: AgentAction) -> some View {
-        AgentActionCardView(
+        let awaited = chatVM.liveTurn?.waitingActionIDs.contains(action.id) ?? false
+        return AgentActionCardView(
             action: action,
             inFlight: chatVM.actionFeed.inFlight.contains(action.id),
             onApprove: { Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON) } },
@@ -143,6 +146,11 @@ struct ChatThreadView: View {
             onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
             sessionHoldsCall: appState.chatSessionPool?.holdsSessionCall(action) ?? false
         )
+        .overlay {
+            if awaited {
+                RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange, lineWidth: 1.5)
+            }
+        }
     }
 }
 

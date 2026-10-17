@@ -64,4 +64,53 @@ final class ChatEventTests: XCTestCase {
                        .turnDone(turnID: "t", status: .interrupted, sessionID: nil),
                        "an unknown status keeps the text as partial, never claims completion")
     }
+    /// Go's own golden (`internal/chat/testdata/events_v2_tool_wait.jsonl`,
+    /// spec §3.1), read in place so a Go shape change breaks this suite too.
+    func testChatEventParsesToolWait() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/chat/testdata/events_v2_tool_wait.jsonl")
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(ChatEvent.parse(lines[0]), .toolWait(ChatToolWait(
+            turnID: "u7", id: "toolu_012DAzxzTcKsUABYq7nUo3Hn", actionID: 42, message: "Waiting for your approval")))
+    }
+
+    /// A `tool_wait` missing `turn_id`, `id`, `message` or a positive integer
+    /// `action_id` is ignored (spec §3.1) — never a waiting step without the
+    /// row the owner answers.
+    func testToolWaitMissingAFieldIsIgnored() {
+        let valid = #"{"type":"tool_wait","turn_id":"t","id":"a","message":"Waiting for your approval","action_id":7}"#
+        XCTAssertEqual(ChatEvent.parse(valid),
+                       .toolWait(ChatToolWait(turnID: "t", id: "a", actionID: 7, message: "Waiting for your approval")))
+        let broken = [
+            #"{"type":"tool_wait","id":"a","message":"m","action_id":7}"#,
+            #"{"type":"tool_wait","turn_id":"","id":"a","message":"m","action_id":7}"#,
+            #"{"type":"tool_wait","turn_id":"t","message":"m","action_id":7}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"","message":"m","action_id":7}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","action_id":7}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","message":"","action_id":7}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","message":"m"}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","message":"m","action_id":0}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","message":"m","action_id":-3}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","message":"m","action_id":4.5}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","message":"m","action_id":"7"}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","message":"m","action_id":true}"#,
+            #"{"type":"tool_wait","turn_id":"t","id":"a","message":"m","action_id":1e30}"#,
+            #"{"type":"tool_wait","turn_id":7,"id":"a","message":"m","action_id":7}"#
+        ]
+        for line in broken {
+            XCTAssertNil(ChatEvent.parse(line), line)
+        }
+    }
+
+    /// An event type this build does not know is still dropped (an older
+    /// Desktop ignores `tool_wait` the same way).
+    func testChatEventUnknownTypeStillNil() {
+        XCTAssertNil(ChatEvent.parse(#"{"type":"tool_paused","turn_id":"t","id":"a","action_id":1}"#))
+        XCTAssertNil(ChatEvent.parse(#"{"type":"TOOL_WAIT","turn_id":"t","id":"a","message":"m","action_id":1}"#))
+    }
 }

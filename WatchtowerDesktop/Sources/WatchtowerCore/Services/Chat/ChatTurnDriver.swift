@@ -65,6 +65,9 @@ package final class ChatTurnDriver {
             stepStarted(start)
         case let .toolEnd(end):
             stepFinished(end)
+        case let .toolWait(wait):
+            // Live only: the agent_actions row is the durable state.
+            running(wait.turnID)?.waitStep(wait, at: clock())
         case let .usage(usage):
             running(usage.turnID)?.setUsage(usage)
         case let .turnDone(turnID, status, sid):

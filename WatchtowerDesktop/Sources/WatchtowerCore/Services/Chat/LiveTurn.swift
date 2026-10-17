@@ -52,6 +52,10 @@ package final class LiveTurn {
     /// Throttled copy of `fullText` for rendering.
     package private(set) var text = ""
     package private(set) var steps: [ChatStepDisplay] = []
+    /// The `agent_actions` rows the turn's waiting steps wait on — what the
+    /// thread reads to mark their approval cards, kept apart from `steps`
+    /// so it re-renders only when a wait starts or ends.
+    package private(set) var waitingActionIDs: Set<Int64> = []
     package private(set) var phase: Phase = .running
     package private(set) var endedAt: Date?
     package private(set) var usage: ChatUsage?
@@ -131,6 +135,32 @@ package final class LiveTurn {
         steps[index].summary = end.summary
         steps[index].sources = end.sources
         steps[index].endedAt = date
+        syncWaitingActionIDs()
+    }
+
+    /// `tool_wait`: the step waits for the owner (its message is the step's
+    /// note) until its `tool_end`. A wait for a finished step is late and
+    /// never reopens it; one whose `tool_start` never arrived is still a
+    /// visible step (CHAT-02).
+    package func waitStep(_ wait: ChatToolWait, at date: Date) {
+        guard let index = steps.firstIndex(where: { $0.id == wait.id }) else {
+            steps.append(ChatStepDisplay(id: wait.id, name: "", argsJSON: "{}", state: .waiting(actionID: wait.actionID),
+                                         summary: wait.message, sources: [], startedAt: date, endedAt: nil))
+            syncWaitingActionIDs()
+            return
+        }
+        switch steps[index].state {
+        case .succeeded, .failed: return
+        case .running, .waiting: break
+        }
+        steps[index].state = .waiting(actionID: wait.actionID)
+        steps[index].summary = wait.message
+        syncWaitingActionIDs()
+    }
+
+    private func syncWaitingActionIDs() {
+        let ids = Set(steps.compactMap(\.state.waitingActionID))
+        if ids != waitingActionIDs { waitingActionIDs = ids }
     }
 
     package func setUsage(_ usage: ChatUsage) {
@@ -141,6 +171,13 @@ package final class LiveTurn {
         trailingFlush?.cancel()
         trailingFlush = nil
         text = fullText
+        // A call still waiting when the turn ends never ran: it reads as
+        // stopped, like any unfinished step, not as still waiting.
+        for index in steps.indices where steps[index].state.waitingActionID != nil {
+            steps[index].state = .running
+            steps[index].summary = ""
+        }
+        syncWaitingActionIDs()
         endedAt = date
         self.phase = phase
     }
