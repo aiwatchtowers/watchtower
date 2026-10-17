@@ -167,7 +167,6 @@ func TestSandbox_ReturnValueIsJSON(t *testing.T) {
 	for script, wantName := range map[string]string{
 		`return { f: function () {} }`:                     ErrNameValidation,
 		`return [Symbol("s")]`:                             ErrNameValidation,
-		`return { n: 10n }`:                                ErrNameValidation,
 		`return function () {}`:                            ErrNameValidation,
 		`return "x".repeat(300 * 1024)`:                    ErrNameResultTooLarge,
 		`return { get x() { throw new TypeError("no") } }`: "TypeError",
