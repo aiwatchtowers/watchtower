@@ -1123,6 +1123,29 @@ final class TerminalCenter {
         }
     }
 
+    /// Lets go of every session for a quit that keeps them (an update, a
+    /// logout, the owner's Keep Sessions and Quit; PROJ-19): a hosted
+    /// session's connection closes and the host keeps its process running —
+    /// it is never signalled — for the next launch to reattach; a local
+    /// fallback session is closed as `closeAll` closes it.
+    func detachAll() async {
+        for (id, process) in processes {
+            guard let hosted = process as? HostedTerminalSession else { continue }
+            processes[id] = nil
+            hosted.onOwnerInput = nil
+            hosted.onOwnerFocus = nil
+            hosted.detachFromHost()
+            hosted.detach()
+            forget(id)
+        }
+        await closeAll()
+    }
+
+    /// The live sessions the session host runs — the ones a quit can keep.
+    var liveHostedCount: Int {
+        liveIDs.filter { processes[$0]?.isHosted == true }.count
+    }
+
     private func forget(_ sessionID: Int64) {
         pendingLaunches[sessionID] = nil
         missingAgent[sessionID] = nil

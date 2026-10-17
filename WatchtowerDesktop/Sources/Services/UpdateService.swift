@@ -564,7 +564,8 @@ final class UpdateService {
     struct RelaunchSteps {
         /// Start the detached waiter that reopens the app after `pid` exits.
         var spawn: (_ pid: pid_t, _ appPath: String) throws -> Void
-        /// Quit through the app's normal quit path.
+        /// Quit through the app's normal quit path, as an update's quit: it
+        /// leaves the hosted workbench sessions running (PROJ-19).
         var requestQuit: () -> Void
         /// Wait up to `quitGrace` for the quit to take effect.
         var sleep: (Duration) async -> Void
@@ -572,7 +573,7 @@ final class UpdateService {
         static var live: Self {
             Self(
                 spawn: { try UpdateService.spawnRelaunchWaiter(pid: $0, appPath: $1) },
-                requestQuit: { UpdateService.performOnRunLoop { TrayAppDelegate.requestQuit() } },
+                requestQuit: { UpdateService.performOnRunLoop { TrayAppDelegate.requestQuit(forUpdate: true) } },
                 sleep: { try? await Task.sleep(for: $0) }
             )
         }
