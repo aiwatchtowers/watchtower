@@ -39,6 +39,8 @@ final class SessionStartStopHandlers {
     struct DeviceGrant: Equatable, Sendable {
         let typingAllowed: Bool
         let startSessionsAllowed: Bool
+        /// May answer Claude Code permission prompts (#517); its own grant.
+        var permissionsAllowed = false
 
         /// A newly linked phone's grants.
         static let specDefaults = Self(typingAllowed: false, startSessionsAllowed: true)

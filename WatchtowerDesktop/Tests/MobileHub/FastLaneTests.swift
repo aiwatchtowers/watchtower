@@ -398,8 +398,9 @@ final class FastLaneTests: XCTestCase {
         XCTAssertEqual(changed, [bench.project], "an unchanged read asks for nothing")
     }
 
-    /// Board #724: a state change nudges the ask kinds once (Go's ask
-    /// writes are not observed); an unchanged read nudges nothing.
+    /// Board #724: a state change nudges the ask kinds (and, #517, the
+    /// permission requests) once (Go's writes are not observed); an
+    /// unchanged read nudges nothing.
     func testAStateChangeNudgesTheAskKinds() async throws {
         let bench = try await workbench()
         let row = try await session(in: bench)
@@ -412,9 +413,9 @@ final class FastLaneTests: XCTestCase {
 
         try hookWrites([row.id], "approval", at: 1)
         await center.poll()
-        XCTAssertEqual(log.nudges, [[.ownerAsk, .askAlert]])
+        XCTAssertEqual(log.nudges, [[.ownerAsk, .askAlert, .permissionRequest]])
         await center.poll()
-        XCTAssertEqual(log.nudges, [[.ownerAsk, .askAlert]], "an unchanged read nudges nothing")
+        XCTAssertEqual(log.nudges, [[.ownerAsk, .askAlert, .permissionRequest]], "an unchanged read nudges nothing")
         XCTAssertTrue(FastLane.stateChangeKinds.isSubset(of: SlicePublisher.urgentKinds), "the publisher keeps these nudges")
     }
 
@@ -495,10 +496,11 @@ final class FastLaneTests: XCTestCase {
 
     // MARK: - Table observation
 
-    /// Only the asks are observed: every other table's writes publish on
-    /// the full tick, which a nudge could not bring forward.
+    /// Only the asks and the permission requests (#517) are observed:
+    /// every other table's writes publish on the full tick, which a nudge
+    /// could not bring forward.
     func testTheDesktopsOwnAskWritesNudgeTheAskKinds() async throws {
-        XCTAssertEqual(FastLane.observedTables.map(\.table), ["owner_asks"])
+        XCTAssertEqual(FastLane.observedTables.map(\.table), ["owner_asks", "permission_requests"])
         XCTAssertTrue(
             FastLane.observedTables.allSatisfy { $0.kinds.isSubset(of: SlicePublisher.urgentKinds) },
             "an observation nudges only kinds the fast lane keeps"
@@ -515,6 +517,16 @@ final class FastLaneTests: XCTestCase {
             log.nudges.contains { $0.isSuperset(of: [.ownerAsk, .askAlert]) },
             "a new or closed ask nudges its alert with it"
         )
+        let row = try await session(in: bench)
+        try await pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO permission_requests (terminal_session_id, workbench_id, status, created_at)
+                VALUES (?, ?, 'pending', '2026-10-17T10:00:00.000Z')
+                """, arguments: [row.id, bench.project])
+        }
+        await awaitHubCondition("a permission request write nudges") {
+            log.nudges.contains { $0 == [.permissionRequest] }
+        }
 
         lane.stop()
         XCTAssertEqual(lane.observedTables, 0)

@@ -61,7 +61,7 @@ struct DeviceGrantSlice: SliceSource {
             (device.decidedAt.map { max($0, device.linkedAt) } ?? device.linkedAt, Keybox(grant: DeviceGrant(
                 deviceID: device.deviceID, hubID: hubID, name: device.name, scope: device.scope, linked: true,
                 linkedAt: device.linkedAt, typingAllowed: device.typingAllowed,
-                startSessionsAllowed: device.startSessionsAllowed, permissionsAllowed: false,
+                startSessionsAllowed: device.startSessionsAllowed, permissionsAllowed: device.permissionsAllowed,
                 decidedAt: device.decidedAt
             ), keys: keyed.contains(device.deviceID.uppercased()) ? keys : nil))
         }

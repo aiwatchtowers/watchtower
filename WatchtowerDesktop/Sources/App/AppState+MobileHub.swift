@@ -66,6 +66,7 @@ extension AppState {
             sessions,
             OwnerAskSlice(),
             AskAlertSlice(sidecar: storage.sidecar),
+            PermissionRequestSlice { liveness.current },
             CalendarEventSlice(),
             MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
             RecordingJobSlice(sidecar: storage.sidecar),
