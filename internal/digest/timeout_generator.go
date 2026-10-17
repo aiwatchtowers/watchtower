@@ -8,6 +8,7 @@ import (
 	"net"
 	"os/exec"
 	"regexp"
+	"syscall"
 	"time"
 )
 
@@ -91,13 +92,28 @@ func aiTransportFailure(err error) bool {
 	var execErr *exec.Error
 	var pathErr *fs.PathError
 	var exitErr *exec.ExitError
-	var netErr net.Error
 	return errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, exec.ErrNotFound) ||
 		errors.As(err, &execErr) || errors.As(err, &pathErr) ||
 		(errors.As(err, &exitErr) && !exitErr.Exited()) || // killed by a signal
-		errors.As(err, &netErr) ||
+		NetworkFailure(err) ||
 		providerOutage.MatchString(err.Error())
+}
+
+// NetworkFailure reports a connection-level failure: a timeout, a dial/
+// read/write error, a DNS failure, or a reset, refused or unreachable
+// connection. A *url.Error alone is not enough: a bad certificate, a
+// malformed URL or a refused redirect will not clear by waiting.
+func NetworkFailure(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	return errors.As(err, &opErr) || errors.As(err, &dnsErr) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 // providerOutage matches the provider-side outages the claude and codex CLIs

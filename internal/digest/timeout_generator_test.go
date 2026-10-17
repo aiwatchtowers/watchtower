@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os/exec"
 	"testing"
 	"time"
@@ -75,7 +76,9 @@ func TestWithCallTimeout_TransportFailureIsAnAICallError(t *testing.T) {
 		"empty":     errors.New("claude returned empty result (turns=1, tokens=1+0)"),
 		"format":    errors.New("unexpected claude CLI output format: 12 bytes"),
 		"exit 1":    WithCause(errors.New("claude CLI failed (exit 1): API Error: 400 prompt is too long"), exited),
-		"auth":      errors.New("claude returned error (subtype=success): Invalid API key"),
+		"bad cert": fmt.Errorf("ollama request failed: %w", &url.Error{Op: "Post", URL: "https://ollama.example.com",
+			Err: errors.New("x509: certificate signed by unknown authority")}),
+		"auth": errors.New("claude returned error (subtype=success): Invalid API key"),
 	}
 	for name, err := range reply {
 		assert.NotErrorIs(t, gen(err), ErrAICall, name)

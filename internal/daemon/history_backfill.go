@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 
 	"watchtower/internal/db"
@@ -312,25 +310,9 @@ func transientErr(err error) bool {
 		errors.Is(err, digest.ErrAICall) ||
 		errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
-		networkErr(err) ||
+		digest.NetworkFailure(err) ||
 		db.IsBusy(err) ||
 		(errors.As(err, &gmailErr) && gmailErr.Transient())
-}
-
-// networkErr reports a connection-level failure: a timeout, a dial/read/
-// write error, a DNS failure or a reset connection. A *url.Error alone is
-// not enough: a bad certificate, a malformed URL or a refused redirect is
-// a configuration problem that will not clear by waiting.
-func networkErr(err error) bool {
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-	var opErr *net.OpError
-	var dnsErr *net.DNSError
-	return errors.As(err, &opErr) || errors.As(err, &dnsErr) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
