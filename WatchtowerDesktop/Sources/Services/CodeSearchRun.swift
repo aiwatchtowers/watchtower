@@ -28,7 +28,9 @@ final class CodeSearchRun {
         folder: URL,
         options: CodeSearchOptions,
         executable: String? = Constants.findCLIPath(),
-        environment: [String: String] = Constants.resolvedEnvironment(),
+        // Launched on the main actor, so never the blocking login-shell probe; the
+        // code CLI needs no login PATH (git comes from internal/gitbin).
+        environment: [String: String] = Constants.resolvedEnvironmentIfReady(),
         onMatch: @escaping @MainActor (CodeSearchMatch) -> Void,
         onDone: @escaping @MainActor (Outcome) -> Void
     ) -> CodeSearchRun {

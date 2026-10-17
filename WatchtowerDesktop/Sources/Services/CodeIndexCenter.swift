@@ -55,7 +55,9 @@ final class CodeIndexCenter {
 
     init(
         resolveExecutable: @escaping () -> String? = Constants.findCLIPath,
-        environment: @escaping () -> [String: String] = Constants.resolvedEnvironment,
+        // Launched on the main actor, so never the blocking login-shell probe; the
+        // code CLI needs no login PATH (git comes from internal/gitbin).
+        environment: @escaping () -> [String: String] = Constants.resolvedEnvironmentIfReady,
         debounce: Duration = .milliseconds(300),
         debounceMaxWait: Duration = .seconds(1),
         idleTTL: TimeInterval = 300,

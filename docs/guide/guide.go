@@ -15,8 +15,35 @@ import (
 	"unicode"
 )
 
+// Version is the running binary's version (cmd sets it from cmd.Version);
+// it picks the guide links' git ref.
+var Version = "dev"
+
 // BaseURL is where a guide page lives on GitHub; append "<path>#<anchor>".
-const BaseURL = "https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/"
+// A clean X.Y.Z release version (a leading "v" allowed) links its release
+// tag; anything else — "dev", "v0.19.0-12-gabc-dirty" — links main, since
+// such a tag may not exist or may predate the page.
+func BaseURL(version string) string {
+	ref := "main"
+	if v := strings.TrimPrefix(version, "v"); isReleaseVersion(v) {
+		ref = "v" + v
+	}
+	return "https://github.com/aiwatchtowers/watchtower/blob/" + ref + "/docs/guide/"
+}
+
+// isReleaseVersion reports whether v is exactly X.Y.Z (digits only).
+func isReleaseVersion(v string) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || strings.Trim(p, "0123456789") != "" {
+			return false
+		}
+	}
+	return true
+}
 
 //go:embed *.md */*.md */*/*.md
 var files embed.FS

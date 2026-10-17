@@ -2,6 +2,7 @@ package workbenchgit
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +40,8 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 	out, err := c.Output()
 	if err != nil {
 		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			stderr = string(ee.Stderr)
 		}
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, stderr)

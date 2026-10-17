@@ -134,26 +134,33 @@ func TestSearchKnowledge_ProjectSessionPrefersProjectSources(t *testing.T) {
 	assert.Empty(t, res.Hits)
 }
 
-func TestSearchKnowledge_ProjectScopeErrors(t *testing.T) {
+func TestSearchKnowledge_WorkbenchScopeErrors(t *testing.T) {
 	d := openDB(t)
 	p := seedScopedKnowledge(t, d)
 	reg := knowledgeRegistry(t, d)
 	var ve *ValidationError
 
-	_, err := searchIn(t, reg, 0, `{"queries":["стейдж"],"project_scope":"only"}`)
-	require.ErrorAs(t, err, &ve)
-	assert.Contains(t, ve.Msg, "only in a workbench session")
+	// Only workbench_scope is offered; the pre-rename project_scope is gone.
+	tool, ok := reg.Get("search_knowledge")
+	require.True(t, ok)
+	require.NotNil(t, tool.InputSchema)
+	assert.Contains(t, tool.InputSchema.Properties, "workbench_scope")
+	assert.NotContains(t, tool.InputSchema.Properties, "project_scope")
 
-	_, err = searchIn(t, reg, p, `{"queries":["стейдж"],"project_scope":"all"}`)
+	_, err := searchIn(t, reg, 0, `{"queries":["стейдж"],"workbench_scope":"only"}`)
 	require.ErrorAs(t, err, &ve)
-	assert.Contains(t, ve.Msg, "project_scope")
+	assert.Equal(t, "workbench_scope works only in a workbench session (watchtower mcp --workbench N) or a chat project's chat", ve.Msg)
+
+	_, err = searchIn(t, reg, p, `{"queries":["стейдж"],"workbench_scope":"all"}`)
+	require.ErrorAs(t, err, &ve)
+	assert.Contains(t, ve.Msg, "workbench_scope")
 
 	bare := seedWorkbench(t, d, "bare")
-	_, err = searchIn(t, reg, bare, `{"queries":["стейдж"],"project_scope":"only"}`)
+	_, err = searchIn(t, reg, bare, `{"queries":["стейдж"],"workbench_scope":"only"}`)
 	require.ErrorAs(t, err, &ve)
 	assert.Contains(t, ve.Msg, "add_workbench_source")
 
-	_, err = searchIn(t, reg, p, `{"queries":["стейдж"],"project_scope":"only","sources":["gmail"]}`)
+	_, err = searchIn(t, reg, p, `{"queries":["стейдж"],"workbench_scope":"only","sources":["gmail"]}`)
 	require.ErrorAs(t, err, &ve)
 	assert.Contains(t, ve.Msg, "only covers slack, jira and confluence")
 
@@ -213,34 +220,4 @@ func TestSearchKnowledge_ProjectDocSourceOutsideAProjectSessionIsRefused(t *test
 	var ve *ValidationError
 	require.ErrorAs(t, err, &ve)
 	assert.Contains(t, ve.Msg, "only from that workbench's own session")
-}
-
-// Spec 2026-10-02 A7: project_scope is a deprecated alias of workbench_scope
-// (the pre-rename skill still sends it); both at once are refused.
-func TestSearchKnowledge_ProjectScopeIsAnAliasOfWorkbenchScope(t *testing.T) {
-	d := openDB(t)
-	p := seedScopedKnowledge(t, d)
-	reg := knowledgeRegistry(t, d)
-
-	for _, mode := range []string{"boost", "only", "off"} {
-		viaNew, err := searchIn(t, reg, p, `{"queries":["стейдж"],"workbench_scope":"`+mode+`"}`)
-		require.NoError(t, err, mode)
-		viaOld, err := searchIn(t, reg, p, `{"queries":["стейдж"],"project_scope":"`+mode+`"}`)
-		require.NoError(t, err, mode)
-		assert.Equal(t, viaNew, viaOld, mode)
-	}
-
-	var ve *ValidationError
-	_, err := searchIn(t, reg, p, `{"queries":["стейдж"],"workbench_scope":"only","project_scope":"only"}`)
-	require.ErrorAs(t, err, &ve)
-	assert.Equal(t, "project_scope is the old name of workbench_scope; pass one", ve.Msg)
-
-	_, err = searchIn(t, reg, 0, `{"queries":["стейдж"],"workbench_scope":"only"}`)
-	require.ErrorAs(t, err, &ve)
-	assert.Equal(t, "workbench_scope works only in a workbench session (watchtower mcp --workbench N) or a chat project's chat", ve.Msg)
-
-	props := NewSearchKnowledge().InputSchema.Properties
-	require.Contains(t, props, "workbench_scope")
-	require.Contains(t, props, "project_scope", "the alias must stay in the schema: the MCP SDK refuses unknown arguments")
-	assert.Equal(t, "deprecated alias of workbench_scope", props["project_scope"].Description)
 }

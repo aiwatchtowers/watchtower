@@ -75,10 +75,22 @@ package final class AIModelCatalog {
         try JSONDecoder().decode(Output.self, from: data)
     }
 
+    @ObservationIgnored private var loading: Task<Void, Never>?
+
     /// Fetch the registry from the CLI. Safe to call repeatedly; concurrent
-    /// calls collapse into one run.
+    /// calls collapse into one run, and each returns once it has finished.
     package func load() async {
-        guard !isLoading else { return }
+        if let loading {
+            await loading.value
+            return
+        }
+        let task = Task { await fetch() }
+        loading = task
+        await task.value
+        loading = nil
+    }
+
+    private func fetch() async {
         isLoading = true
         defer { isLoading = false }
 
@@ -103,15 +115,14 @@ package final class AIModelCatalog {
         }
     }
 
-    /// `watchtower ai models --json`, set up off the main actor: an
-    /// unresolved `resolvedEnvironment()` runs the login shell (AppState
-    /// prewarms it at launch on a thread of its own).
+    /// `watchtower ai models --json`, set up off the main actor; the login
+    /// environment is awaited, never waited on (`resolvedEnvironmentAsync`).
     nonisolated private static func fetchModels(cliPath: String) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = ["ai", "models", "--json"]
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         return await ProcessPipes.run(process)
     }
 }

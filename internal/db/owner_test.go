@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +16,7 @@ type ownerSeed struct {
 	jira        []JiraAccount // Owner* fields recorded via SetJiraAccountOwner
 	jiraUserMap []JiraUserMap
 	linear      []LinearAccount // Owner* fields recorded via SetLinearAccountOwner; Enabled false disables, Status "removed" removes
+	mailboxes   []EmailAccount  // IMAP/Outlook accounts, created in order
 }
 
 // seedOwner creates every row of s through the production writers, so the
@@ -54,6 +56,10 @@ func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 			require.NoError(t, d.SetLinearAccountRemoved(id))
 		}
 		require.NoError(t, d.SetLinearAccountOwner(id, l.OwnerUserID, l.OwnerEmail, l.OwnerDisplayName))
+	}
+	for _, m := range s.mailboxes {
+		_, err := d.CreateEmailAccount(m)
+		require.NoError(t, err)
 	}
 	for _, m := range s.jiraUserMap {
 		require.NoError(t, d.UpsertJiraUserMap(m))
@@ -129,6 +135,186 @@ func TestOwner01_ResolveOwnerLadder(t *testing.T) {
 			assert.Equal(t, tc.want.ID != "", got.Known())
 		})
 	}
+}
+
+// TestOwner01_EmailRung pins the fifth rung (ask #307): an IMAP/Outlook-only
+// install resolves its owner from the first mailbox's address, and the rung
+// sits below every other one, so no install that already had an owner sees
+// its id change when a mailbox is connected.
+func TestOwner01_EmailRung(t *testing.T) {
+	imap := func(addr string) EmailAccount {
+		return EmailAccount{Provider: "imap", EmailAddress: addr, Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"}
+	}
+	cases := []struct {
+		name string
+		seed ownerSeed
+		want Owner
+	}{
+		{"imap only, mixed-case address", ownerSeed{mailboxes: []EmailAccount{imap("Me@Example.com")}},
+			Owner{ID: "email:me@example.com", Source: OwnerSourceEmail, Email: "Me@Example.com", DisplayName: "Me"}},
+		{"outlook only", ownerSeed{mailboxes: []EmailAccount{{Provider: "outlook", EmailAddress: "me@example.com", Security: "ssl"}}},
+			Owner{ID: "email:me@example.com", Source: OwnerSourceEmail, Email: "me@example.com", DisplayName: "me"}},
+		{"mailbox without an address is skipped", ownerSeed{mailboxes: []EmailAccount{imap(""), imap("b@example.com")}},
+			Owner{ID: "email:b@example.com", Source: OwnerSourceEmail, Email: "b@example.com", DisplayName: "b"}},
+		{"two mailboxes: the first is the rung", ownerSeed{mailboxes: []EmailAccount{imap("a@example.com"), imap("b@example.com")}},
+			Owner{ID: "email:a@example.com", Source: OwnerSourceEmail, Email: "a@example.com", DisplayName: "a"}},
+		{"slack + mailbox: slack keeps the id and its email", ownerSeed{
+			slack:     []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
+			slackUser: &User{ID: "1:U123", Name: "owner-a", DisplayName: "Owner A", Email: "owner-a@example.com"},
+			mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", Email: "owner-a@example.com", DisplayName: "Owner A"}},
+		{"slack user without email: the mailbox fills Email", ownerSeed{
+			slack:     []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U123"}},
+			slackUser: &User{ID: "1:U123", Name: "owner-a", DisplayName: "Owner A"},
+			mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "1:U123", Source: OwnerSourceSlack, SlackUserID: "1:U123", Email: "me@example.com", DisplayName: "Owner A"}},
+		{"google + mailbox: google wins", ownerSeed{google: []GoogleAccount{{Email: "g@x.com"}}, mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "google:g@x.com", Source: OwnerSourceGoogle, Email: "g@x.com", DisplayName: "g"}},
+		{"jira + mailbox: jira wins ID and email", ownerSeed{
+			jira:      []JiraAccount{{CloudID: "c1", Enabled: true, OwnerAccountID: "acc-9", OwnerEmail: "j@x.com", OwnerDisplayName: "J Doe"}},
+			mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "jira:acc-9", Source: OwnerSourceJira, Email: "j@x.com", JiraAccountID: "acc-9", DisplayName: "J Doe"}},
+		{"linear + mailbox: linear wins, the mailbox fills Email", ownerSeed{
+			linear:    []LinearAccount{{Enabled: true, OwnerUserID: "user-1", OwnerDisplayName: "Owner"}},
+			mailboxes: []EmailAccount{imap("me@example.com")}},
+			Owner{ID: "linear:user-1", Source: OwnerSourceLinear, Email: "me@example.com", DisplayName: "Owner", LinearUserIDs: []string{"user-1"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			seedOwner(t, d, tc.seed)
+			got, err := d.ResolveOwner()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+			assert.True(t, got.Known())
+		})
+	}
+}
+
+// TestOwner01_EmailRungIgnoresBareLogins: a mailbox whose "address" is a bare
+// IMAP login identifies no one, so it is neither the rung nor the Email
+// fallback.
+func TestOwner01_EmailRungIgnoresBareLogins(t *testing.T) {
+	d := openTestDB(t)
+	for _, login := range []string{"jdoe", `DOMAIN\jdoe`, "@example.com"} {
+		_, err := d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: login, Security: "ssl"})
+		require.NoError(t, err)
+	}
+	got, err := d.ResolveOwner()
+	require.NoError(t, err)
+	assert.Equal(t, Owner{}, got)
+
+	seedOwner(t, d, ownerSeed{linear: []LinearAccount{{Enabled: true, OwnerUserID: "user-1"}}})
+	got, err = d.ResolveOwner()
+	require.NoError(t, err)
+	assert.Equal(t, Owner{ID: "linear:user-1", Source: OwnerSourceLinear, LinearUserIDs: []string{"user-1"}}, got,
+		"a bare login never fills Email")
+}
+
+// TestOwner01_EmailRungOrdersByID: the rung is the lowest id, not the first
+// row inserted or the first address alphabetically.
+func TestOwner01_EmailRungOrdersByID(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO email_accounts (id, provider, email_address) VALUES (2, 'imap', 'a@example.com')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'b@example.com')`)
+	require.NoError(t, err)
+	got, err := d.ResolveOwner()
+	require.NoError(t, err)
+	assert.Equal(t, "email:b@example.com", got.ID)
+}
+
+// TestOwner01_CalDAVOnlyHasNoOwner: a calendar account's username is not an
+// identity, so a CalDAV-only install still has no owner.
+func TestOwner01_CalDAVOnlyHasNoOwner(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.CreateCalendarAccount(CalendarAccount{Provider: "caldav", Username: "me@example.com", URL: "https://dav.example.com"})
+	require.NoError(t, err)
+	got, err := d.ResolveOwner()
+	require.NoError(t, err)
+	assert.False(t, got.Known())
+	_, err = d.RequireOwner()
+	require.ErrorIs(t, err, ErrNoOwner)
+}
+
+// TestOwner01_RungSwitchAdoptsBriefingAndDayPlan: a briefing and a day plan
+// written under the email rung are found under the new id once the owner
+// moves to Jira, so neither is generated a second time.
+func TestOwner01_RungSwitchAdoptsBriefingAndDayPlan(t *testing.T) {
+	d := openTestDB(t)
+	const day = "2026-10-17"
+	_, err := d.UpsertBriefing(Briefing{UserID: "email:x@example.com", Date: day, Role: "EM"})
+	require.NoError(t, err)
+	_, err = d.CreateDayPlan(&DayPlan{UserID: "email:x@example.com", PlanDate: day, Status: "active", GeneratedAt: time.Date(2026, 10, 17, 8, 0, 0, 0, time.UTC)})
+	require.NoError(t, err)
+
+	require.NoError(t, d.AdoptOwnerRows("jira:acc-9"))
+
+	b, err := d.GetBriefing("jira:acc-9", day)
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "EM", b.Role)
+	p, err := d.GetDayPlan("jira:acc-9", day)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT (SELECT COUNT(*) FROM briefings) + (SELECT COUNT(*) FROM day_plans)`).Scan(&n))
+	assert.Equal(t, 2, n, "moved, not copied")
+}
+
+// TestOwner01_AdoptKeepsTheOwnersOwnRow: a date the current owner already has
+// keeps the owner's row; the older one is left alone, never merged over it.
+func TestOwner01_AdoptKeepsTheOwnersOwnRow(t *testing.T) {
+	d := openTestDB(t)
+	const day = "2026-10-17"
+	_, err := d.UpsertBriefing(Briefing{UserID: "email:x@example.com", Date: day, Role: "Old"})
+	require.NoError(t, err)
+	_, err = d.UpsertBriefing(Briefing{UserID: "jira:acc-9", Date: day, Role: "Mine"})
+	require.NoError(t, err)
+	require.NoError(t, d.AdoptOwnerRows("jira:acc-9"))
+	b, err := d.GetBriefing("jira:acc-9", day)
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "Mine", b.Role)
+	require.NoError(t, d.AdoptOwnerRows(""), "no owner adopts nothing")
+}
+
+// TestOwner01_LeftoverRowIsNotMovable: a leftover row on a date the owner
+// already has can never move, so it must not make every later
+// AdoptOwnerRows call (each daemon cycle) open a write transaction.
+func TestOwner01_LeftoverRowIsNotMovable(t *testing.T) {
+	d := openTestDB(t)
+	const day = "2026-10-17"
+	for _, id := range []string{"email:x@example.com", "jira:acc-9"} {
+		_, err := d.UpsertBriefing(Briefing{UserID: id, Date: day})
+		require.NoError(t, err)
+	}
+	movable, err := d.ownerRowsToAdopt("jira:acc-9")
+	require.NoError(t, err)
+	assert.False(t, movable, "a leftover on a date the owner has is not movable")
+	_, err = d.CreateDayPlan(&DayPlan{UserID: "email:x@example.com", PlanDate: day, Status: "active", GeneratedAt: time.Now()})
+	require.NoError(t, err)
+	movable, err = d.ownerRowsToAdopt("jira:acc-9")
+	require.NoError(t, err)
+	assert.True(t, movable, "a day plan the owner lacks still moves")
+	require.NoError(t, d.AdoptOwnerRows("jira:acc-9"))
+	movable, err = d.ownerRowsToAdopt("jira:acc-9")
+	require.NoError(t, err)
+	assert.False(t, movable, "after one adoption nothing is left to move")
+}
+
+// TestOwner01_ProfileWriteAdoptsBriefings: the profile re-key also moves the
+// briefings written under the earlier id (Swift twin:
+// testOwner01ProfileWriteAdoptsBriefingsAndDayPlans).
+func TestOwner01_ProfileWriteAdoptsBriefings(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.UpsertBriefing(Briefing{UserID: "email:x@example.com", Date: "2026-10-16", Role: "Old"})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertOwnerProfile(Owner{ID: "jira:acc-9", Source: OwnerSourceJira}, UserProfile{Role: "EM"}))
+	b, err := d.GetBriefing("jira:acc-9", "2026-10-16")
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "Old", b.Role)
 }
 
 func TestOwner01_SlackInstallIDUnchanged(t *testing.T) {

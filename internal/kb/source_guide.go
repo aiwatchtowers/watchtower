@@ -12,19 +12,24 @@ const GuideSource = "guide"
 
 // guideSource renders one document per guide page. The pages are embedded in
 // the binary, so the whole source changes together: its cursor is the guide
-// content hash. Keys are document ids ("guide:<path>", path relative to
+// content hash plus the link base (a new release version relinks every page
+// to its tag; see guideCursor). Keys are document ids ("guide:<path>", path relative to
 // docs/guide/), like every other source.
 type guideSource struct{}
 
 func (guideSource) Name() string { return GuideSource }
 
 func (guideSource) Changed(_ context.Context, _ Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
-	h := guide.Hash()
+	h := guideCursor()
 	if cursor == h {
 		return nil, h, true, nil
 	}
 	return guideKeys(), h, true, nil
 }
+
+// guideCursor is the guide content hash and the link base: either moving
+// re-renders every page.
+func guideCursor() string { return guide.Hash() + "@" + guide.BaseURL(guide.Version) }
 
 func (guideSource) Keys(context.Context, Queryer) ([]string, error) { return guideKeys(), nil }
 
@@ -50,7 +55,7 @@ func (guideSource) Build(_ context.Context, _ Queryer, key string) (*Doc, error)
 			ID:     key,
 			Source: GuideSource,
 			Title:  p.Title,
-			Link:   guide.BaseURL + p.Path,
+			Link:   guide.BaseURL(guide.Version) + p.Path,
 			Anchor: map[string]string{"path": p.Path},
 		}
 		for _, s := range p.Sections {

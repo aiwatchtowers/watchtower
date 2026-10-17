@@ -60,7 +60,7 @@ var commandNameRe = regexp.MustCompile(`<command-name>/?([^<\s]+)</command-name>
 
 func (p *claudeParser) slashSkill(rec claudeRecord, off int64, text string) {
 	m := commandNameRe.FindStringSubmatch(text)
-	if m == nil || !p.skills[m[1]] {
+	if m == nil || !p.knowsSkill(m[1]) {
 		return
 	}
 	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("skill", rec, off) + ":0", Kind: "skill", Name: m[1], Trigger: "slash"})
@@ -291,7 +291,7 @@ func stripWrappers(s string) string {
 		if len(fields) == 0 {
 			return ""
 		}
-		drop := 0
+		var drop int
 		switch fields[0] {
 		case "env", "time":
 			drop = 1

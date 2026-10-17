@@ -119,7 +119,7 @@ package final class SlackAuthService {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
 
         let (exitCode, stdout, stderr) = await ProcessPipes.run(process).trimmed

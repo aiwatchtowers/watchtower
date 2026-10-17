@@ -3,7 +3,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// The workbench header's install state as small icons with tooltips
-/// (installed, needs Repair, older setup, Codex not set up, Claude Code CLI
+/// (installed, needs Repair, Codex not set up, Claude Code CLI
 /// not found), out of `WorkbenchPageView`.
 struct WorkbenchInstallStatusIcons: View {
     let vm: WorkbenchesViewModel
@@ -23,14 +23,6 @@ struct WorkbenchInstallStatusIcons: View {
                     .font(.caption)
                     .help("The folder install is incomplete — Repair install is in the … menu.\n\(status.repairHelp)")
                     .accessibilityLabel("Install incomplete")
-            } else if let notice = status.legacyNotice {
-                // A nudge only: nothing migrates until the owner runs it (O6).
-                // Distinct from the orange "incomplete" circle: a different fix.
-                Image(systemName: "arrow.up.circle")
-                    .foregroundStyle(.blue)
-                    .font(.caption)
-                    .help("\(notice)\n\(status.repairHelp)")
-                    .accessibilityLabel("Older setup")
             } else if status.claudeFound || status.mcp {
                 Image(systemName: "checkmark.seal")
                     .foregroundStyle(.secondary)

@@ -9,16 +9,17 @@ import (
 	"syscall"
 )
 
-// Template is what "Create workflow.md" writes (spec §8): every key
-// commented out, so it changes nothing until the owner edits it, and a
-// two-line body hint.
+// Template is what "Create workflow.md" writes (spec §8): the preset key
+// commented out, so it changes nothing until the owner edits it, a note that
+// the checks are personal settings only (board #558), and a two-line body
+// hint.
 const Template = `---
 # Watchtower methodology for agents working this folder (.watchtower/workflow.md).
-# Uncomment a key to set it for everyone; each person's setting in the
+# Uncomment the key to set it for everyone; each person's setting in the
 # Watchtower app wins over this file.
 # preset: watchtower-flow    # watchtower-flow | none
-# ask_guard: strict          # strict | soft | off
-# finish_check: on           # on | off
+# The ask guard and the finish check are set only in each person's Agent
+# Settings in the Watchtower app; this file cannot turn them down.
 ---
 
 Write your team's rules for agents working this folder here, in plain text.

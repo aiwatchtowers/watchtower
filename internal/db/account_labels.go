@@ -227,7 +227,7 @@ func (db *DB) inLabelTx(fn func(tx *sql.Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback() // no-op after Commit
 	if err := fn(tx); err != nil {
 		return err
 	}

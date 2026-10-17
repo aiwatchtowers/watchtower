@@ -36,32 +36,30 @@ Group commits by type. Skip merge commits. Write in English. Be concise — one 
 
 Show the release notes to the user and ask for confirmation.
 
-## Step 3: Update Version in Code
+## Step 3: Check the user guide is current
+
+Find PRs merged since the previous tag that changed user-facing code but not the guide:
+
+```bash
+prev=$(git tag -l 'v*' --sort=-v:refname | head -1)
+for n in $(gh pr list --state merged --base main --limit 200 \
+    --search "merged:>=$(git log -1 --format=%cI $prev)" --json number --jq '.[].number'); do
+  files=$(gh pr view $n --json files --jq '.files[].path')
+  echo "$files" | grep -qE '^(WatchtowerDesktop/Sources/Views/|cmd/|.*[Ss]ettings)' || continue
+  echo "$files" | grep -q '^docs/guide/' && continue
+  gh pr view $n --json number,title --jq '"#\(.number) \(.title)"'
+done
+```
+
+Show the list to the user with a one-line "does the guide need an update?" for each PR (what changed on screen, which page would cover it). For the ones the user marks, propose guide edits following `docs/guide/WRITING.md` and apply them in a separate commit before the version bump. This step never blocks the release: if the user says skip, or the list is empty, continue.
+
+Then run `go test ./docs/guide/ ./internal/kb/ ./internal/chat/` (guide links, catalogue, page size, the guide knowledge source, the prompt golden). If the guide's catalogue changed (a page added, renamed or re-titled), regenerate the chat prompt golden with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update` and commit it with the guide edits. Any other failure halts the release.
+
+## Step 4: Update Version in Code
 
 Update the `Version` variable in `cmd/version.go` to the new version.
 
-## Step 3b: Docs check
-
-The user guide (`docs/guide/`) is what the in-app assistant answers from, so a
-user-visible change must reach it before the release.
-
-1. List the PRs merged since the last tag that touched `WatchtowerDesktop/`,
-   `cmd/` or `internal/` but not `docs/guide/`:
-
-   ```bash
-   git log --first-parent --merges --format='%s' <last-tag>..HEAD
-   gh pr view <N> --json files --jq '.files[].path'
-   ```
-
-2. For each one that changes something a user sees, update its guide page per
-   `docs/guide/WRITING.md`, or name in the release notes why none was needed.
-3. Run `go test ./docs/guide/ ./internal/kb/ ./internal/chat/` (links,
-   catalogue, page size, guide search, prompt golden). If the guide's catalogue
-   changed (a page added, renamed or re-titled), regenerate the chat prompt
-   golden with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update`
-   and commit it. Any other failure halts the release.
-
-## Step 4: Pre-release gate
+## Step 5: Pre-release gate
 
 Run the pre-release checks. This runs sentrux quality (rules + structural
 regression), periphery dead-code check (vs baseline), Go tests, and Swift tests.
@@ -75,7 +73,7 @@ If `periphery-check` fails (dead-code count above baseline), either clean up
 the new dead code or — only after a deliberate review — refresh the baseline
 with `make periphery-baseline` and explain in the release notes why.
 
-## Step 5: Build
+## Step 6: Build
 
 Run the build via Makefile (this ensures `.env` is loaded and OAuth credentials are injected via ldflags):
 ```bash
@@ -84,7 +82,7 @@ make app VERSION=<version>
 
 Wait for it to complete. If it fails, show the error and stop.
 
-## Step 6: Commit & Tag
+## Step 7: Commit & Tag
 
 1. Stage and commit the version bump: `git add cmd/version.go && git commit -m "release: v<version>"`
 2. Verify build artifacts exist:
@@ -92,7 +90,7 @@ Wait for it to complete. If it fails, show the error and stop.
    - `build/Watchtower-<version>-arm64.zip` (auto-update)
    - `build/checksums.txt` (SHA-256 verification)
 
-## Step 7: Push & Create Release
+## Step 8: Push & Create Release
 
 1. Push the commit and let gh create the tag: `git push origin`
 2. Create the GitHub release with all artifacts attached:
@@ -106,7 +104,7 @@ gh release create "v<version>" \
 ```
 3. Show the release URL to the user.
 
-## Step 8: Publish the iPhone app to TestFlight
+## Step 9: Publish the iPhone app to TestFlight
 
 Every release also ships the iPhone app (`WatchtowerMobile`) to TestFlight
 under the same version as the Mac app:
@@ -136,7 +134,7 @@ and stays as is. Never pass `SKIP_CLOUDKIT_CHECK=1` without the user's go-ahead.
 On success, tell the user the uploaded version and build number; the build
 appears in TestFlight after Apple finishes processing it.
 
-## Step 9: Reply on the GitHub issues this release ships
+## Step 10: Reply on the GitHub issues this release ships
 
 Issue fixes reference their issue with `Refs #N` (not `Closes`), so the
 issue stays open until the fix reaches a release. Close the loop here:
@@ -175,7 +173,7 @@ If no PR in the range names an issue, say so and skip this step.
 - **ZIP** = required for in-app auto-update (`UpdateService` looks for `.zip` asset)
 - **checksums.txt** = SHA-256 verification for install script
 - All three artifacts MUST be attached to every release
-- The iPhone app goes to TestFlight with the same version (Step 8); a failure
+- The iPhone app goes to TestFlight with the same version (Step 9); a failure
   there does not undo the Mac release — report it and leave the rest as is
-- Issues shipped in the release get a reply and are closed (Step 9); post
+- Issues shipped in the release get a reply and are closed (Step 10); post
   only after the user confirms the drafts

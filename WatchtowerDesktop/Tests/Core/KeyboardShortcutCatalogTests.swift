@@ -31,6 +31,12 @@ final class KeyboardShortcutCatalogTests: XCTestCase {
         }
     }
 
+    /// Help > Ask Watchtower (⌘/) is listed under Global.
+    func testAskWatchtowerChordIsListedGlobally() throws {
+        let global = try XCTUnwrap(KeyboardShortcutCatalog.areas.first { $0.title == "Global" })
+        XCTAssertTrue(global.entries.contains { $0.keys == "⌘/" })
+    }
+
     /// The Workbench menu's chords (issue #288) are all listed.
     func testTheWorkbenchMenuChordsAreListed() throws {
         let workbench = try XCTUnwrap(KeyboardShortcutCatalog.areas.first { $0.title == "Workbench" })

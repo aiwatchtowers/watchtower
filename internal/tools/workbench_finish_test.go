@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -279,24 +278,4 @@ func TestSessionLinks_AFailedLinkKeepsTheWriteAndWarns(t *testing.T) {
 	assert.NotEmpty(t, at)
 	assert.Equal(t, "Done.", summary)
 	assert.Zero(t, countSessionLinks(t, fx.d))
-}
-
-// The legacy (`mcp --project N`) binding links exactly as the new one does.
-func TestSessionLinks_LegacyBindingLinksTheSame(t *testing.T) {
-	fx := newWorkbenchFixture(t)
-	session := seedTerminalSession(t, fx.d, fx.a)
-	reg := askRegistry(t, fx.d, strconv.FormatInt(session, 10))
-	legacy := directBinding(fx.a)
-	legacy.LegacyNames = true
-	for _, c := range []struct{ name, args string }{
-		{"update_target", fmt.Sprintf(`{"target_id":%d,"progress":0.5,"reason":"r"}`, fx.aTarget)},
-		{"finish_session", fmt.Sprintf(`{"summary":"Done.","target_id":%d,"reason":"r"}`, fx.aTarget)},
-	} {
-		rc, err := reg.Propose(context.Background(), c.name, json.RawMessage(c.args), legacy)
-		require.NoError(t, err, c.name)
-		require.Equal(t, "applied", rc.Status, c.name)
-	}
-	assert.Equal(t, []int64{fx.aTarget}, linkedTargets(t, fx.d, session))
-	at, _ := finishState(t, fx.d, session)
-	assert.NotEmpty(t, at)
 }

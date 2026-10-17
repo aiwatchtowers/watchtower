@@ -13,6 +13,7 @@
   "state_hooks": true,
   "ask_guard": true,
   "ask_tool_block": true,
+  "permission_wait": true,
   "cleanup_permission": true,
   "codex": {
     "found": true,

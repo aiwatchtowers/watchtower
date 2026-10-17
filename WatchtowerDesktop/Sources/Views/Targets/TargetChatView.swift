@@ -148,8 +148,6 @@ struct TargetChatPane: View {
                 footer: { footer }
             )
         }
-        // The composer is the pane's bottom-most content.
-        .clearsRecordingIndicator()
         .background(Color(.controlBackgroundColor).opacity(0.4))
     }
 

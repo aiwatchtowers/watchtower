@@ -14,11 +14,11 @@ import (
 )
 
 // runTargetAdd runs `workbench target add args...` and resets the add
-// command's flags, which runWorkbenchAs's reset does not reach (it is a
+// command's flags, which runWorkbench's reset does not reach (it is a
 // grandchild of workbench).
 func runTargetAdd(t *testing.T, args ...string) (stdout string, err error) {
 	t.Helper()
-	out, _, err := runWorkbenchAs(t, "workbench", append([]string{"target", "add"}, args...)...)
+	out, _, err := runWorkbench(t, append([]string{"target", "add"}, args...)...)
 	resetSetFlags(workbenchTargetCmd.Commands()...)
 	return out, err
 }

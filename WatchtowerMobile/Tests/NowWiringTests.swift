@@ -21,7 +21,7 @@ final class NowWiringTests: XCTestCase {
     func testWaitingRunsAcrossWorkbenchesNewestFirst() throws {
         let model = NowModel(snapshot: try demoSnapshot(now: now), now: now)
         XCTAssertNil(model.emptyText)
-        XCTAssertEqual(model.waiting.map(\.id), [111, 109, 110])
+        XCTAssertEqual(model.waiting.map(\.id), [.ask(111), .ask(109), .ask(110)])
         XCTAssertEqual(model.waiting.first?.subline, "Acme · Archive closed targets · #415 · 5m")
     }
 
@@ -34,7 +34,7 @@ final class NowWiringTests: XCTestCase {
         }
         let model = NowModel(snapshot: snapshot, now: now)
         XCTAssertEqual(model.waiting.count, 20)
-        XCTAssertEqual(model.waiting.first?.id, 1)
+        XCTAssertEqual(model.waiting.first?.id, .ask(1))
         XCTAssertEqual(model.waitingMore, 5)
     }
 

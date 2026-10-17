@@ -108,6 +108,68 @@ final class SlackLinkViewModelTests: XCTestCase {
                        "https://slack.com/archives/C0456/p1740577800000100")
     }
 
+    /// An accumulated channel item (#586) decodes every message once, and each
+    /// gets its own link: its permalink, else an archives link on the item's
+    /// channel; rows show the sender, the title counts the earlier ones too.
+    func testAccumulatedChannelItemListsEveryMentionWithItsLink() {
+        let row: Row = [
+            "id": 1,
+            "channel_id": "2:C0456",
+            "message_ts": "1740577900.000100",
+            "sender_user_id": "2:U043",
+            "trigger_type": "mention",
+            "mentions_earlier": 3,
+            "mentions": """
+            [{"ts":"1740577800.000100","sender":"2:U042","trigger":"mention","text":"first","permalink":"https://example.com/p1"},
+             {"ts":"1740577900.000100","sender":"2:U043","trigger":"mention","text":"second"}]
+            """
+        ]
+        let item = InboxItem(row: row)
+        let mentions = item.mentionList
+        XCTAssertEqual(mentions.map(\.text), ["first", "second"])
+        XCTAssertTrue(item.isAccumulated)
+        XCTAssertEqual(item.mentionCountTitle, "5 mentions")
+        XCTAssertEqual(CatchUpViewModel.slackMessageURL(for: mentions[0], channelID: item.channelID)?.absoluteString,
+                       "https://example.com/p1")
+        XCTAssertEqual(CatchUpViewModel.slackMessageURL(for: mentions[1], channelID: item.channelID)?.absoluteString,
+                       "https://slack.com/archives/C0456/p1740577900000100")
+        XCTAssertEqual(InboxItemInline.mentionLine(mentions[0], senderNames: ["2:U042": "Ann"]), "Ann: first")
+        XCTAssertEqual(InboxItemInline.mentionLine(mentions[1], senderNames: [:]), "second")
+    }
+
+    /// "mentions" only when every listed entry is a mention; a mix is "messages".
+    func testMentionCountTitleWording() {
+        let mixed = InboxItem(row: [
+            "id": 1,
+            "mentions": """
+            [{"ts":"1","sender":"U1","trigger":"mention","text":"a"},{"ts":"2","sender":"U2","trigger":"reaction","text":"b"}]
+            """
+        ])
+        XCTAssertEqual(mixed.mentionCountTitle, "2 messages")
+    }
+
+    /// The caption of an accumulated item names everyone who wrote — "Ann, Bob"
+    /// when all resolve and there are at most three, else "N people" — like Go
+    /// `db.InboxMentionSenders`.
+    func testAccumulatedItemCaptionNamesEverySender() {
+        let item = InboxItem(row: [
+            "id": 1,
+            "mentions": """
+            [{"ts":"1","sender":"U1","text":"a"},{"ts":"2","sender":"U2","text":"b"},{"ts":"3","sender":"U1","text":"c"}]
+            """
+        ])
+        XCTAssertEqual(item.mentionSendersLabel(names: ["U1": "Ann", "U2": "Bob"]), "Ann, Bob")
+        XCTAssertEqual(item.mentionSendersLabel(names: ["U1": "Ann"]), "2 people")
+        XCTAssertEqual(CatchUpViewModel.originCaption(sender: "Ann, Bob", channel: "eng"), "from Ann, Bob in #eng")
+    }
+
+    /// An absent column is no list; a malformed value is no list too (logged).
+    func testMentionsAbsentOrMalformed() {
+        XCTAssertTrue(InboxItem(row: ["id": 2, "mentions": "not json"]).mentionList.isEmpty)
+        XCTAssertTrue(InboxItem(row: ["id": 3]).mentionList.isEmpty)
+        XCTAssertFalse(InboxItem(row: ["id": 3]).isAccumulated)
+    }
+
     func testWhoToPingUserLinkResolvesSecondAccountTeam() {
         let links = SlackLinkResolver(teamIDByAccount: [1: "T001", 2: "T999"], fallbackTeamID: "T001")
         XCTAssertEqual(WhoToPingView.slackUserURL("2:U042", links: links)?.absoluteString,

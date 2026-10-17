@@ -156,7 +156,7 @@ func (f *cleanupFixture) sessionArg() string { return strconv.FormatInt(f.sessio
 
 func runCleanupCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	out, errOut, err := runWorkbenchAs(t, "workbench", append([]string{"cleanup"}, args...)...)
+	out, errOut, err := runWorkbench(t, append([]string{"cleanup"}, args...)...)
 	return out + errOut, err
 }
 

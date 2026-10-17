@@ -74,7 +74,7 @@ func TestAgent_BudgetCarvedFromRun(t *testing.T) {
 
 	// A smaller request is kept, and its minutes set the deadline.
 	a = &automationstest.FakeAgent{}
-	r = mustReturn(t, `agent("x", {budget: {tokens: 1000, minutes: 2}}); return "ok"`,
+	mustReturn(t, `agent("x", {budget: {tokens: 1000, minutes: 2}}); return "ok"`,
 		agentCase(t, a, nil, "agent:run", "llm:light"), "ok")
 	reqs = a.Requests()
 	require.Len(t, reqs, 1)

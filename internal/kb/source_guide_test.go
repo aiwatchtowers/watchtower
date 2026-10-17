@@ -15,7 +15,7 @@ func TestGuideSourceChangedOnlyWhenHashMoves(t *testing.T) {
 	ctx := context.Background()
 	keys, next, done, err := guideSource{}.Changed(ctx, nil, "", testNow())
 	require.NoError(t, err)
-	assert.Equal(t, guide.Hash(), next)
+	assert.Equal(t, guideCursor(), next)
 	assert.True(t, done)
 	assert.Len(t, keys, len(guide.Pages()))
 	assert.Contains(t, keys, "guide:features/inbox.md")
@@ -23,8 +23,14 @@ func TestGuideSourceChangedOnlyWhenHashMoves(t *testing.T) {
 	keys, next, done, err = guideSource{}.Changed(ctx, nil, next, testNow())
 	require.NoError(t, err)
 	assert.Empty(t, keys)
-	assert.Equal(t, guide.Hash(), next)
+	assert.Equal(t, guideCursor(), next)
 	assert.True(t, done)
+}
+
+// A release build relinks every page: the cursor carries the link base.
+func TestGuideSourceCursorCarriesLinkBase(t *testing.T) {
+	assert.Contains(t, guideCursor(), guide.Hash())
+	assert.Contains(t, guideCursor(), guide.BaseURL(guide.Version))
 }
 
 func TestGuideSourceBuild(t *testing.T) {
@@ -34,7 +40,7 @@ func TestGuideSourceBuild(t *testing.T) {
 	require.NotNil(t, doc)
 	assert.Equal(t, "guide:features/inbox.md", doc.ID)
 	assert.Equal(t, GuideSource, doc.Source)
-	assert.Equal(t, guide.BaseURL+"features/inbox.md", doc.Link)
+	assert.Equal(t, guide.BaseURL(guide.Version)+"features/inbox.md", doc.Link)
 	assert.True(t, doc.Time.IsZero())
 	assert.Equal(t, map[string]string{"path": "features/inbox.md"}, doc.Anchor)
 	var anchors []string

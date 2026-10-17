@@ -34,6 +34,11 @@ final class DryRunPresentationTests: XCTestCase {
                        "Read list_jira_issues")
     }
 
+    func testDraftMCPStopLine() {
+        XCTAssertEqual(line(AutomationRunStep(kind: "mcp", name: "github/list_prs", status: "dry_run")),
+                       "Stopped before calling github/list_prs: Quick Connections are not called in a draft")
+    }
+
     func testFallbackShowsKindStatusAndError() {
         XCTAssertEqual(line(AutomationRunStep(kind: "tool", name: "get_email", status: "error", error: "timeout")),
                        "tool get_email · error: timeout")

@@ -19,8 +19,6 @@ final class AppState {
     var selectedDestination: SidebarDestination = .home
     /// The ⌘/ chat popup over the current tab (in-app help).
     var isHelpChatShown = false
-    /// Bumped by ⌘/ on the AI Chat tab: its composer takes the caret.
-    var chatComposerFocusTick = 0
 
     /// Which feature ids are currently disabled — drives sidebar visibility,
     /// navigation fallback, and the Dashboard banner. Populated by the
@@ -72,12 +70,11 @@ final class AppState {
         store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard)
     )
 
-    /// The install's owner identity (`OwnerQueries.resolve`, OWNER-01). While
-    /// it is unknown, Day Plan and Briefings show `NoOwnerEmptyState` instead
-    /// of Generate (OWNER-02). Resolved on DB open, after every Slack/Google/
-    /// Jira account reload, and whenever either screen appears — the daemon
-    /// fills a Jira owner cross-process, which no GRDB observation sees.
+    /// The owner (`OwnerQueries.resolve`, OWNER-01); unknown → `NoOwnerEmptyState` (OWNER-02). Re-read on
+    /// DB open, account reloads and Day Plan/Briefings/Inbox appear (the daemon fills Jira's cross-process).
     private(set) var owner: Owner = .unknown
+    /// With the owner unknown, the source still to report it (`OwnerQueries.pendingIdentitySource`).
+    private(set) var ownerPendingSource: String?
 
     /// The Settings window's selected tab, so an in-app link can open
     /// Settings on a given tab (the no-owner empty state → Connections).
@@ -323,6 +320,14 @@ final class AppState {
     private(set) var automationSessionCenter: AutomationSessionCenter?
     /// The "Run Automation…" palette (⌃⌘R) is up.
     var isRunAutomationPaletteShown = false
+    /// The ⌘/ "Ask Watchtower" panel is up.
+    var isAskPanelShown = false
+    /// The panel's guide index and help conversation; the CLI is resolved on the first ⌘/.
+    @ObservationIgnored private(set) lazy var askCenter = makeAskCenter()
+    /// The main window's link gate (`AllowedURLSchemes` + screen links); one instance across re-renders.
+    @ObservationIgnored private(set) lazy var mainWindowOpenURL = AllowedURLSchemes.openURLAction { [weak self] url in
+        self?.openNavLink(url)
+    }
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
@@ -496,8 +501,8 @@ final class AppState {
     func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
         if let chatSessionPool { return chatSessionPool }
         let pool = ChatSessionPool(dbPool: db.dbPool)
-        // CHAT-03: an idle session dies within TTL + one 30 s poll.
-        pool.startPolicy()
+        pool.holdAdmissionUntil { _ = await Constants.resolvedEnvironmentAsync() }
+        pool.startPolicy() // CHAT-03: an idle session dies within TTL + one 30 s poll.
         chatSessionPool = pool
         return pool
     }
@@ -723,8 +728,8 @@ final class AppState {
                     self?.ownerPresenceCenter?.clearForQuit()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
-                    // Sessions waiting in the Undo batch are deleted now (PROJ-17).
-                    self?.workbenchesViewModel?.commitPendingDeletesForQuit()
+                    // Sessions waiting in the Undo batch were deleted in the
+                    // quit's async phase (PROJ-17, `QuitCoordinator`).
                     self?.mobileHub?.stop()
                     self?.automationsViewModel?.stop()
                     self?.automationSessionCenter?.stop()
@@ -1578,6 +1583,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
+        startSessionHost() // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
@@ -1651,7 +1657,7 @@ final class AppState {
 
     func initEmailAccounts(dbPool: DatabasePool) {
         let vm = EmailAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshConnectedSources() }
+        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         emailAccountsViewModel = vm
     }
@@ -1822,9 +1828,7 @@ final class AppState {
             await center.closeAll { ids.contains($0) }
         }
         let notices = WorkbenchNotificationCenter(dbPool: dbPool, notifier: notifier)
-        vm.onWorkbenchCreated = { [weak notices] project, _ in
-            notices?.seedBaseline(project: project)
-        }
+        vm.onWorkbenchCreated = { [weak notices] project, _ in notices?.seedBaseline(project: project) }
         vm.onOwnerWrite = { [weak notices] projectID, subject in
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)
         }
@@ -1856,6 +1860,7 @@ final class AppState {
         reports.start()
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
+        vm.startHostReattach()
         initMobileHub(dbPool: dbPool)
         // Once: a setup re-run keeps the center and its launches in flight.
         if automationSessionCenter == nil {
@@ -2016,7 +2021,7 @@ final class AppState {
     /// await it.
     @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
 
-    /// A Slack/Google/Jira account-list reload: re-resolves the owner
+    /// A Slack/Google/Jira/email account-list reload: re-resolves the owner
     /// (OWNER-02) and the connected sources the sidebar gates on.
     private func accountsChanged() async {
         await refreshOwner()
@@ -2055,13 +2060,12 @@ final class AppState {
         }
     }
 
-    /// Re-resolves `owner` off the main thread. A failed read keeps the last
-    /// known value (logged): flipping a known owner to unknown on a transient
-    /// error would hide Generate for no reason.
+    /// Re-resolves `owner` off the main thread. A failed read keeps the last value (logged):
+    /// a transient error must not flip a known owner to unknown and hide Generate.
     func refreshOwner() async {
         guard let pool = databaseManager?.dbPool else { return }
         do {
-            owner = try await pool.read { db in try OwnerQueries.resolve(db) }
+            (owner, ownerPendingSource) = try await pool.read { db in try OwnerQueries.resolveWithPending(db) }
         } catch {
             print("[AppState] owner resolve failed, keeping the last value: \(error.localizedDescription)")
         }

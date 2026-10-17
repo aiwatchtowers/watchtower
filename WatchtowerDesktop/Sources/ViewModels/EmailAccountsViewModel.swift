@@ -28,7 +28,7 @@ final class EmailAccountsViewModel {
     // MARK: - Refresh
 
     /// Called after every successful reload. Injected by AppState, which
-    /// re-reads the connected sources the sidebar gates on.
+    /// re-resolves the owner and re-reads the connected sources the sidebar gates on.
     var onAccountsChanged: (() async -> Void)?
 
     /// Cross-process writes (the CLI subprocess, or the daemon's IMAP/Outlook
@@ -125,11 +125,14 @@ final class EmailAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
         Task.detached {
+            // The login environment is awaited here, off the main actor; a
+            // Cancel (or a newer attempt) while it resolves drops this launch.
+            process.environment = await Constants.resolvedEnvironmentAsync()
+            guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process)
             await MainActor.run {
                 self.authProcess = nil
@@ -226,7 +229,7 @@ final class EmailAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if stdin != nil {
             process.standardInput = Pipe()

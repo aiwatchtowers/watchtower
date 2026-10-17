@@ -123,7 +123,7 @@ final class WorkbenchTargetSliceTests: XCTestCase {
         XCTAssertEqual(payload["last_status_actor"] as? String, "owner")
         XCTAssertEqual(
             payload["work_on_prompt"] as? String,
-            TerminalLaunch.workOnTargetPrompt(targetID: child, vocabulary: .current)
+            TerminalLaunch.workOnTargetPrompt(targetID: child)
         )
         let group = try XCTUnwrap(payloads[parent])
         XCTAssertEqual(group["children_count"] as? Int, 1)

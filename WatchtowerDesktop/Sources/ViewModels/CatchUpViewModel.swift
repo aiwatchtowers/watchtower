@@ -456,10 +456,36 @@ final class CatchUpViewModel {
             return ""
         }
 
+        // An accumulated channel item (#586) names everyone who wrote, not
+        // only the newest sender.
+        let sender = item.isAccumulated
+            ? item.mentionSendersLabel(names: inboxMentionSenders(item))
+            : names.sender
+        return Self.originCaption(sender: sender, channel: names.channel)
+    }
+
+    /// "from Ann in #eng"; either half dropped when empty.
+    nonisolated static func originCaption(sender: String, channel: String) -> String {
         var parts: [String] = []
-        if !names.sender.isEmpty { parts.append("from \(names.sender)") }
-        if !names.channel.isEmpty { parts.append("in #\(names.channel)") }
+        if !sender.isEmpty { parts.append("from \(sender)") }
+        if !channel.isEmpty { parts.append("in #\(channel)") }
         return parts.joined(separator: " ")
+    }
+
+    /// Display names of the senders an accumulated channel item lists (#586),
+    /// keyed by namespaced user id; an unresolved sender is simply absent.
+    func inboxMentionSenders(_ item: InboxItem) -> [String: String] {
+        guard item.isAccumulated else { return [:] }
+        let names = resolve("inbox mention senders for item \(item.id)") { db -> [String: String]? in
+            var names: [String: String] = [:]
+            for id in Set(item.mentionList.map(\.sender)) {
+                if let name = try UserQueries.fetchByID(db, id: id)?.bestName, !name.isEmpty {
+                    names[id] = name
+                }
+            }
+            return names
+        }
+        return names ?? [:]
     }
 
     /// Message deep link for an inbox source: the item's stored permalink when
@@ -471,6 +497,12 @@ final class CatchUpViewModel {
         return SlackDeepLink.archives(channelID: item.channelID, messageTS: item.messageTS)
     }
 
+    /// The same rule for one message of an accumulated channel item (#586).
+    nonisolated static func slackMessageURL(for mention: InboxItem.Mention, channelID: String) -> URL? {
+        if let permalink = mention.permalink, !permalink.isEmpty { return URL(string: permalink) }
+        return SlackDeepLink.archives(channelID: channelID, messageTS: mention.ts)
+    }
+
     // MARK: - CLI (drains stdout+stderr concurrently, off the concurrency pool)
 
     nonisolated private static func runCLI(
@@ -479,7 +511,7 @@ final class CatchUpViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         return await ProcessPipes.run(process).trimmed
     }

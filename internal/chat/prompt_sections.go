@@ -31,15 +31,24 @@ No tools are connected in this session. Answer from the conversation only, and s
 // appGuideSection is the prompt's app map: the user guide's catalogue plus the
 // instruction to search the guide (docs/guide, indexed as the "guide" source).
 // A session without tools cannot search, so it gets the catalogue to link
-// only (noToolsBlock's rule: no promise the session cannot keep).
-func appGuideSection(toolsAvailable bool) string {
-	lead := "For any question about how Watchtower works, link the guide section that covers it; a page lives at " + guide.BaseURL + "<path>. The guide's pages:\n"
-	if toolsAvailable {
+// only (noToolsBlock's rule: no promise the session cannot keep). The main
+// surface (AI Chat and its ⌘/ popup) also gets the screen-link rule: the
+// Desktop renders watchtower-nav://<screen> as an in-app link there.
+func appGuideSection(o PromptOptions) string {
+	lead := "For any question about how Watchtower works, link the guide section that covers it; a page lives at " + guide.BaseURL(guide.Version) + "<path>. The guide's pages:\n"
+	if o.ToolsAvailable {
 		lead = "For any question about how Watchtower works, search the user guide first: search_knowledge with sources [\"guide\"]. " +
 			"Answer from what you find and link the section you used as the hit's link + \"#\" + its chunk_anchor; if the guide has nothing on it, say so instead of guessing. The guide's pages:\n"
 	}
-	return "=== WATCHTOWER APP ===\n" + lead + guide.Map() + "\n==="
+	out := "=== WATCHTOWER APP ===\n" + lead + guide.Map()
+	if o.Surface == "main" {
+		out += "\n\n" + appGuideNavRule
+	}
+	return out + "\n==="
 }
+
+// appGuideNavRule lists WatchtowerDesktop's SidebarDestination raw values.
+const appGuideNavRule = "To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text."
 
 const responseStyle = `=== RESPONSE STYLE ===
 - Give the answer first and keep it short. Do not narrate your search steps — the app already shows them.
@@ -83,7 +92,7 @@ func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) 
 	case owner.Known():
 		fmt.Fprintf(&b, "Owner: %s\n", id)
 	default:
-		b.WriteString("Owner: unknown — no Slack, Google, Jira or Linear identity is connected yet.\n")
+		b.WriteString("Owner: unknown — no Slack, Google, Jira, Linear or email identity is connected yet.\n")
 	}
 	b.WriteString("\n" + prompts.ChatDirective(cfg.Digest.Language))
 	return b.String(), nil

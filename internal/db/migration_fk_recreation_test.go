@@ -12,7 +12,7 @@ import (
 // the CREATE-new/INSERT-SELECT/DROP/RENAME dance needed to expand a CHECK
 // constraint, while inbox_feedback holds `inbox_item_id INTEGER NOT NULL
 // REFERENCES inbox_items(id) ON DELETE CASCADE`. With PRAGMA foreign_keys=ON
-// (set unconditionally in db.go's setPragmas), DROP TABLE inbox_items
+// (set unconditionally by db.go's openDSN), DROP TABLE inbox_items
 // deletes every row of inbox_items, firing the ON DELETE CASCADE and wiping
 // every row of inbox_feedback along with it.
 //

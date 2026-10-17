@@ -381,6 +381,9 @@ CREATE INDEX idx_people_cards_user ON people_cards(user_id)
 index	idx_period_summaries_period
 CREATE INDEX idx_period_summaries_period ON period_summaries(period_from, period_to)
 
+index	idx_permission_requests_session
+CREATE INDEX idx_permission_requests_session ON permission_requests(terminal_session_id, status)
+
 index	idx_pipeline_runs_pipeline
 CREATE INDEX idx_pipeline_runs_pipeline ON pipeline_runs(pipeline)
 
@@ -899,13 +902,13 @@ CHECK (status != 'sent' OR sent_at IS NOT NULL)
 )
 
 table	chat_artifacts
-CREATE TABLE chat_artifacts (
+CREATE TABLE "chat_artifacts" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
 message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
 artifact_key TEXT NOT NULL,
 version INTEGER NOT NULL,
-kind TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code')),
+kind TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code','html')),
 title TEXT NOT NULL DEFAULT '',
 content TEXT NOT NULL,
 meta_json TEXT NOT NULL DEFAULT '{}',
@@ -1341,7 +1344,7 @@ chunk_failures INTEGER NOT NULL DEFAULT 0,
 last_error TEXT NOT NULL DEFAULT '',
 started_at TEXT NOT NULL,
 updated_at TEXT NOT NULL,
-done_at TEXT,
+done_at TEXT, held_since TEXT,
 UNIQUE (source_kind, account_id)
 )
 
@@ -1439,7 +1442,7 @@ thread_digest TEXT NOT NULL DEFAULT '',
 draft_reply TEXT NOT NULL DEFAULT '',
 card_status TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
 card_generated_at TEXT,
-composed_at TEXT,
+composed_at TEXT, mentions TEXT NOT NULL DEFAULT '[]', mentions_earlier INTEGER NOT NULL DEFAULT 0, mentioned_at TEXT NOT NULL DEFAULT '',
 UNIQUE(channel_id, message_ts)
 )
 
@@ -2193,6 +2196,20 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 UNIQUE(period_from, period_to)
 )
 
+table	permission_requests
+CREATE TABLE permission_requests (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+workbench_id INTEGER NOT NULL,
+tool_name TEXT NOT NULL DEFAULT '',
+summary TEXT NOT NULL DEFAULT '',
+summary_clipped INTEGER NOT NULL DEFAULT 0,
+status TEXT NOT NULL CHECK (status IN ('pending','allowed','denied','answered_on_mac','expired')),
+created_at TEXT NOT NULL,
+decided_at TEXT,
+decided_by TEXT
+)
+
 table	pipeline_runs
 CREATE TABLE pipeline_runs (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2306,7 +2323,7 @@ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
 CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
 CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
-CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL)
+CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL, methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), ask_guard_carried_at TEXT NULL, finish_check_carried_at TEXT NULL)
 
 table	prompt_history
 CREATE TABLE prompt_history (
@@ -4161,6 +4178,7 @@ GROUP BY up.ancestor
 10	started_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 12	done_at	TEXT	notnull=0	dflt=NULL	pk=0
+13	held_since	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## idea_mentions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -4240,6 +4258,9 @@ GROUP BY up.ancestor
 26	card_status	TEXT	notnull=1	dflt='none'	pk=0
 27	card_generated_at	TEXT	notnull=0	dflt=NULL	pk=0
 28	composed_at	TEXT	notnull=0	dflt=NULL	pk=0
+29	mentions	TEXT	notnull=1	dflt='[]'	pk=0
+30	mentions_earlier	INTEGER	notnull=1	dflt=0	pk=0
+31	mentioned_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## inbox_learned_rules
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -4918,6 +4939,18 @@ GROUP BY up.ancestor
 8	cost_usd	REAL	notnull=1	dflt=0	pk=0
 9	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
+## permission_requests
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	terminal_session_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	tool_name	TEXT	notnull=1	dflt=''	pk=0
+4	summary	TEXT	notnull=1	dflt=''	pk=0
+5	summary_clipped	INTEGER	notnull=1	dflt=0	pk=0
+6	status	TEXT	notnull=1	dflt=NULL	pk=0
+7	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+8	decided_at	TEXT	notnull=0	dflt=NULL	pk=0
+9	decided_by	TEXT	notnull=0	dflt=NULL	pk=0
+
 ## pipeline_runs
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	pipeline	TEXT	notnull=1	dflt=NULL	pk=0
@@ -5020,6 +5053,9 @@ GROUP BY up.ancestor
 12	ask_guard_mode	TEXT	notnull=0	dflt=NULL	pk=0
 13	finish_check	TEXT	notnull=0	dflt=NULL	pk=0
 14	board_hidden_statuses	TEXT	notnull=0	dflt=NULL	pk=0
+15	methodology_carry_pending	INTEGER	notnull=1	dflt=0	pk=0
+16	ask_guard_carried_at	TEXT	notnull=0	dflt=NULL	pk=0
+17	finish_check_carried_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## prompt_history
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

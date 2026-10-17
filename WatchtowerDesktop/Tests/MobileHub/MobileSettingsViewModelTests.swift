@@ -249,6 +249,45 @@ final class MobileSettingsViewModelTests: XCTestCase {
         )
     }
 
+    /// #517: answering permission prompts has its own Allow… (asks first)
+    /// and Revoke, separate from typing.
+    func testPermissionsAllowAsksFirstAndIsSeparateFromTyping() async throws {
+        await fixture.tearDown()
+        fixture = try MobileSettingsFixture(phones: [("phone-a", .private, "_owner-acme")])
+        let model = fixture.makeModel()
+        let phone = try XCTUnwrap(model.devices.first)
+
+        model.requestPermissionsAllow(phone)
+        XCTAssertEqual(model.pendingPermissionsAllow?.deviceID, "phone-a")
+        XCTAssertNil(model.pendingAllow, "not the typing confirmation")
+        XCTAssertFalse(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a")).permissionsAllowed, "Allow… asks first")
+
+        model.confirmPermissionsAllow()
+        XCTAssertNil(model.pendingPermissionsAllow)
+        let allowed = try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a"))
+        XCTAssertTrue(allowed.permissionsAllowed)
+        XCTAssertFalse(allowed.typingAllowed)
+
+        model.revokePermissions(try XCTUnwrap(model.devices.first))
+        XCTAssertFalse(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a")).permissionsAllowed)
+    }
+
+    /// #517: the row's permission state and the confirmation's verbatim copy.
+    func testAPermissionsRequestShowsOnTheRowAndTheConfirmationNamesThePhone() {
+        var phone = HubSyncState.LinkedDevice(
+            deviceID: "phone-a", name: "iPhone", scope: .private, userRecordName: "_owner-acme", linkedAt: Date()
+        )
+        XCTAssertEqual(MobileSettingsViewModel.permissionsLabel(phone), "Permission prompts off")
+        phone.permissionsRequested = true
+        XCTAssertEqual(MobileSettingsViewModel.permissionsLabel(phone), "Asks to answer permission prompts")
+        phone.permissionsAllowed = true
+        XCTAssertEqual(MobileSettingsViewModel.permissionsLabel(phone), "Permission prompts allowed")
+        XCTAssertEqual(
+            MobileSettingsViewModel.permissionsQuestion(name: "iPhone"),
+            "Allow \"iPhone\" to approve commands in Claude Code sessions?"
+        )
+    }
+
     /// Board #67: Remove asks first (a shared phone's removal is at once and
     /// cannot be undone); Cancel keeps the phone, the confirmation removes it.
     func testRemoveAsksFirstAndCancelKeepsThePhone() async throws {

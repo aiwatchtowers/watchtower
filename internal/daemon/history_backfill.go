@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/gmail"
 	"watchtower/internal/historybackfill"
 	"watchtower/internal/ideas"
 	"watchtower/internal/planusage"
@@ -68,6 +70,7 @@ func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 		Budget:      historyBackfillBudget,
 		Now:         time.Now,
 		Logger:      d.logger,
+		Cursor:      &d.backfillCursor,
 	}
 	d.trackedPipelineRun("history-backfill", func() pipelineRunStats {
 		// The digest and ideas pipelines are shared with the forward phases,
@@ -270,16 +273,46 @@ func (s slackSource) AccountID() int64 { return s.id }
 
 func (s slackSource) Fetch(ctx context.Context, from, to time.Time) error {
 	_, err := s.o.BackfillSearch(ctx, from, to)
-	return slackFetchErr(err)
+	return backfillErr(err)
 }
 
-// slackFetchErr maps an incomplete search (a rate limit or partial pages) to
-// the runner's hold: transient, so no strike (R23).
-func slackFetchErr(err error) error {
-	if errors.Is(err, sync.ErrBackfillIncomplete) {
-		return fmt.Errorf("%w: %w", historybackfill.ErrHold, err)
+// backfillErr maps a source's transient failure to the runner's hold, so the
+// chunk is retried on a later cycle without a strike (R23, #580). Strikes
+// are left for errors about the chunk's data, such as an AI reply that
+// cannot be used. Any other error passes through unchanged.
+func backfillErr(err error) error {
+	if err == nil || errors.Is(err, historybackfill.ErrHold) || !transientErr(err) {
+		return err
 	}
-	return err
+	return fmt.Errorf("%w: %w", historybackfill.ErrHold, err)
+}
+
+// transientErr reports a failure that says nothing about the chunk's data:
+// an incomplete Slack search (rate limit, partial pages), digest-lock
+// contention, a transport-level AI failure (digest.ErrAICall), a timeout,
+// the network (dial, DNS, reset, a cut body), a busy database, and a Gmail
+// or token-endpoint 429/5xx or quota 403. A chunk failure made of several
+// errors (digest.ChunkErrors) is transient only when every one of them is:
+// one data error makes it a strike (F8).
+func transientErr(err error) bool {
+	var chunk *digest.ChunkErrors
+	if errors.As(err, &chunk) && len(chunk.Errs) > 0 {
+		for _, e := range chunk.Errs {
+			if !transientErr(e) {
+				return false
+			}
+		}
+		return true
+	}
+	var gmailErr *gmail.StatusError
+	return errors.Is(err, sync.ErrBackfillIncomplete) ||
+		errors.Is(err, digest.ErrDigestLocked) ||
+		errors.Is(err, digest.ErrAICall) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		digest.NetworkFailure(err) ||
+		db.IsBusy(err) ||
+		(errors.As(err, &gmailErr) && gmailErr.Transient())
 }
 
 func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
@@ -290,23 +323,14 @@ func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, err
 	fromTS, toTS := float64(from.Unix()), float64(to.Unix())
 	res, _, err := d.digestPipe.RunBackfillWindow(ctx, s.id, fromTS, toTS)
 	if err != nil || !res.Complete {
-		return false, err
+		return false, backfillErr(err)
 	}
+	// The rollups' digest-lock contention is a hold, like the window's (which
+	// reports it as incomplete); any other lock error is a failure (F8).
 	if err := d.digestPipe.RunBackfillRollups(ctx, fromTS, toTS); err != nil {
-		return false, slackRollupErr(err)
+		return false, backfillErr(err)
 	}
 	return true, nil
-}
-
-// slackRollupErr maps the rollups' digest-lock contention to the runner's
-// hold, like the window's (which reports it as incomplete): another digest
-// run holds the lock, so the chunk is retried without a strike. Any other
-// error is a failure.
-func slackRollupErr(err error) error {
-	if errors.Is(err, digest.ErrDigestLocked) {
-		return fmt.Errorf("%w: %w", historybackfill.ErrHold, err)
-	}
-	return err
 }
 
 // gmailSource backfills one Google account's mail: range fetch, then that
@@ -324,7 +348,7 @@ func (g gmailSource) AccountID() int64 { return g.id }
 
 func (g gmailSource) Fetch(ctx context.Context, from, to time.Time) error {
 	_, err := g.s.FetchRange(ctx, from, to)
-	return err
+	return backfillErr(err)
 }
 
 func (g gmailSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
@@ -384,6 +408,7 @@ func (d *Daemon) backfillStreams(key backfillResumeKey, from time.Time, drain fu
 		start = r
 	}
 	reached, complete, err := drain(start)
+	err = backfillErr(err)
 	if complete {
 		delete(d.backfillResume, key)
 		return true, err
@@ -407,7 +432,7 @@ func (m imapSource) AccountID() int64 { return m.s.AccountID() }
 
 func (m imapSource) Fetch(ctx context.Context, from, to time.Time) error {
 	_, err := m.s.FetchRange(ctx, from, to)
-	return err
+	return backfillErr(err)
 }
 
 func (imapSource) Process(context.Context, time.Time, time.Time) (bool, error) { return true, nil }

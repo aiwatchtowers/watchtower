@@ -56,7 +56,7 @@ final class AttachmentValidatorTests: XCTestCase {
                        .failure(.notUTF8(fileName: "bin.txt")))
         XCTAssertEqual(AttachmentValidator.validate(url: dir.appendingPathComponent("gone.png")),
                        .failure(.unreadable(fileName: "gone.png")))
-        XCTAssertEqual(AttachmentValidator.validate(url: dir), .failure(.unreadable(fileName: dir.lastPathComponent)))
+        XCTAssertEqual(AttachmentValidator.validate(url: dir), .failure(.folder(fileName: dir.lastPathComponent)))
     }
 
     func testValidateDataForPaste() {
@@ -67,6 +67,7 @@ final class AttachmentValidatorTests: XCTestCase {
     func testRejectionMessagesNameTheFile() {
         XCTAssertTrue(AttachmentRejection.tooLarge(fileName: "big.png", limit: AttachmentValidator.imageLimit).message.contains("big.png"))
         XCTAssertTrue(AttachmentRejection.unsupportedType(fileName: "a.zip").message.contains("a.zip"))
+        XCTAssertEqual(AttachmentRejection.folder(fileName: "Shots").message, "Shots is a folder; attach the files inside it instead")
     }
 
     /// Mirrors Go internal/chat MaxImageBytes/MaxPDFBytes/MaxTextBytes

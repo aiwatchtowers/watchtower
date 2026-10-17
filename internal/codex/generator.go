@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -237,20 +238,19 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 
 // classifyError wraps CLI errors with user-friendly messages.
 func classifyError(err error, stderr, codexBin string) error {
-	if execErr, ok := err.(*exec.Error); ok {
-		if execErr.Err == exec.ErrNotFound {
-			return fmt.Errorf("codex CLI not found at %q — install Codex CLI first", codexBin)
-		}
+	if errors.Is(err, exec.ErrNotFound) {
+		return digest.WithCause(fmt.Errorf("codex CLI not found at %q — install Codex CLI first", codexBin), err)
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
 		stderrMsg := strings.TrimSpace(stderr)
 		if stderrMsg == "" {
 			stderrMsg = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		if stderrMsg != "" {
-			return fmt.Errorf("codex CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg)
+			return digest.WithCause(fmt.Errorf("codex CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg), exitErr)
 		}
-		return fmt.Errorf("codex CLI failed with exit code %d", exitErr.ExitCode())
+		return digest.WithCause(fmt.Errorf("codex CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 	}
 	return fmt.Errorf("codex CLI error: %w", err)
 }

@@ -55,6 +55,11 @@ struct HomeContent: View {
                     TodayZoneView(
                         cards: snapshot.today, nothingNeedsYou: snapshot.nothingNeedsYou,
                         readFailed: snapshot.showsReadError, onLink: onLink)
+                    if snapshot.showsAskHint {
+                        Text("Press ⌘/ to ask anything about Watchtower.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     ProgressView()
                         .frame(maxWidth: .infinity)

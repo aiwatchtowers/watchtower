@@ -106,7 +106,8 @@ struct CatchUpSourceCard: View {
                 InboxItemInline(
                     item: $0,
                     origin: vm.inboxOrigin($0),
-                    url: CatchUpViewModel.slackMessageURL(for: $0)
+                    url: CatchUpViewModel.slackMessageURL(for: $0),
+                    senderNames: vm.inboxMentionSenders($0)
                 )
             }
         case "targets":

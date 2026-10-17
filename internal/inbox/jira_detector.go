@@ -502,7 +502,7 @@ func jiraInboxExists(d *db.DB, channelID, messageTS, triggerType string) bool {
 	var n int
 	d.QueryRow(`SELECT COUNT(*) FROM inbox_items
 		WHERE channel_id = ? AND message_ts = ? AND trigger_type = ?`,
-		channelID, messageTS, triggerType).Scan(&n) //nolint:errcheck
+		channelID, messageTS, triggerType).Scan(&n) //nolint:errcheck // a failed count reads as zero: no row yet
 	return n > 0
 }
 
@@ -515,6 +515,6 @@ func jiraPendingExists(d *db.DB, channelID, triggerType string) bool {
 	var n int
 	d.QueryRow(`SELECT COUNT(*) FROM inbox_items
 		WHERE channel_id = ? AND trigger_type = ? AND status = 'pending' AND archived_at IS NULL`,
-		channelID, triggerType).Scan(&n) //nolint:errcheck
+		channelID, triggerType).Scan(&n) //nolint:errcheck // a failed count reads as zero: no row yet
 	return n > 0
 }

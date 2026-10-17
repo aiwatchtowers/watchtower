@@ -100,8 +100,8 @@ struct WorkbenchCommands: Commands {
 
 /// Help menu additions, after the stock Help search and app help.
 struct HelpCommands: Commands {
-    @Environment(\.openWindow) private var openWindow
     let appState: AppState
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(after: .help) {

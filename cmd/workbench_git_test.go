@@ -49,10 +49,10 @@ func gitBranchRepo(t *testing.T) string {
 }
 
 // runWorkbenchGit runs `workbench git <args>` and resets the nested
-// subcommands' flags, which runWorkbenchAs does not reach.
+// subcommands' flags, which runWorkbench does not reach.
 func runWorkbenchGit(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	stdout, _, err := runWorkbenchAs(t, "workbench", append([]string{"git"}, args...)...)
+	stdout, _, err := runWorkbench(t, append([]string{"git"}, args...)...)
 	resetSetFlags(workbenchGitCmd.Commands()...)
 	return stdout, err
 }

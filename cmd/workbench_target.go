@@ -41,7 +41,7 @@ var (
 
 func init() {
 	f := workbenchTargetAddCmd.Flags()
-	addWorkbenchIDFlag(workbenchTargetAddCmd, &workbenchTargetFlagWorkbench, "workbench id (required)")
+	f.Int64Var(&workbenchTargetFlagWorkbench, workbenchFlag, 0, "workbench id (required)")
 	f.StringVar(&workbenchTargetFlagTitle, "title", "", fmt.Sprintf("the target title (required, at most %d characters)", workbenchTargetTitleMax))
 	f.StringVar(&workbenchTargetFlagIntent, "intent", "", "why the target matters")
 	f.StringVar(&workbenchTargetFlagPriority, "priority", "", "high | medium | low (default medium)")
@@ -52,12 +52,8 @@ func init() {
 }
 
 func runWorkbenchTargetAdd(cmd *cobra.Command, _ []string) error {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return err
-	}
 	if workbenchTargetFlagWorkbench <= 0 {
-		return fmt.Errorf("%s: a positive workbench id is required",
-			workbenchFlagName(cmd.Flags().Changed(legacyWorkbenchFlag)))
+		return fmt.Errorf("--%s: a positive workbench id is required", workbenchFlag)
 	}
 	title := strings.TrimSpace(workbenchTargetFlagTitle)
 	switch n := len([]rune(title)); {

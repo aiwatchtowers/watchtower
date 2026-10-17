@@ -214,6 +214,23 @@ extension GoogleAccountsViewModelTests {
         await vm.addTask?.value
     }
 
+    /// Board #592: a Cancel while the login environment resolves (the flow
+    /// already shown as running) drops the launch: no CLI run, no restart.
+    func testCancelDuringTheEnvironmentAwaitDropsTheLaunch() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+        let gate = AsyncGate()
+        vm.loginEnvironment = { await gate.wait(); return [:] }
+        XCTAssertTrue(vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: ""))
+        XCTAssertTrue(vm.isConnecting, "spinner and Cancel before the environment resolves")
+        vm.cancelConnect()
+        gate.release()
+        await vm.addTask?.value
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertNil(vm.error)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0, "the dropped launch never ran the CLI")
+    }
+
     func testAddRestartsTheDaemonByDefault() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
         await add(vm)

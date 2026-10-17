@@ -146,7 +146,7 @@ final class SessionStartHandlerTests: XCTestCase {
     }
 
     private var basePrompt: (Int64) -> String {
-        { TerminalLaunch.workOnTargetPrompt(targetID: $0, vocabulary: .current) }
+        { TerminalLaunch.workOnTargetPrompt(targetID: $0) }
     }
 
     // MARK: - The brief

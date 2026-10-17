@@ -9,10 +9,15 @@ import WatchtowerCore
 /// staleness probes (`SessionAgentStateCenter.displayOver`, #411) — all
 /// main-actor state. The fast lane copies it here, so the slice can resolve
 /// states inside the publisher's off-main DB read the way the Mac does.
+/// `settled` is false until the launch's reattach of the session host's
+/// runs is done (`TerminalCenter.hostRunsSettled`): before it, a session
+/// that survived the restart is missing from `liveIDs`, so nothing may be
+/// written over a session for not being live.
 struct SessionLiveness: Equatable, Sendable {
     var liveIDs: Set<Int64> = []
     var startedAt: [Int64: Date] = [:]
     var displayOver: [Int64: ShownOverCount] = [:]
+    var settled = false
 
     /// The sessions of `rows` shown over: only where the row still holds
     /// the count the center judged (the same run and report stamp), so a
