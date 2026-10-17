@@ -81,6 +81,15 @@ func (r runner) run(ctx context.Context, d *db.DB, opts Options) (Stats, error) 
 			st.Incomplete = true
 			break
 		}
+		dirtyDone, err := drainDirty(ctx, d, src, overBudget, &st)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s dirty: %w", src.Name(), err))
+			continue
+		}
+		if !dirtyDone {
+			st.Incomplete = true
+			break
+		}
 		if err := reconcileIfDue(ctx, d, src, now, &st); err != nil {
 			errs = append(errs, fmt.Errorf("%s reconcile: %w", src.Name(), err))
 		}
@@ -108,6 +117,9 @@ func (r runner) reindex(ctx context.Context, d *db.DB, names []string, now time.
 			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM kb_documents WHERE source = ?`, n); err != nil {
 				return fmt.Errorf("kb: deleting %s documents: %w", n, err)
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM kb_dirty WHERE source = ?`, n); err != nil {
+				return fmt.Errorf("kb: deleting %s dirty marks: %w", n, err)
 			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM kb_sources WHERE source = ?`, n); err != nil {
 				return fmt.Errorf("kb: deleting %s state: %w", n, err)
