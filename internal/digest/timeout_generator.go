@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net"
 	"os/exec"
+	"regexp"
 	"time"
 )
 
@@ -77,12 +78,12 @@ func (g *timeoutGenerator) Generate(ctx context.Context, systemPrompt, userMessa
 }
 
 // ErrAICall marks a transport-level failure of an AI call: the call timed
-// out, its process could not start or was killed, or the network to the
-// provider failed. The history backfill retries those instead of counting a
-// strike against the chunk (docs/features/history-backfill.md). A reply that
-// came back — an error envelope (any subtype, error_max_turns included), an
-// empty result, output the parser cannot read, a non-zero exit with a message
-// — is about the request, not the transport, and does not match.
+// out, its process could not start or was killed, the network to the
+// provider failed, or the provider reported an outage (providerOutage). The
+// history backfill retries those instead of counting a strike against the
+// chunk (docs/features/history-backfill.md). Any other reply — an error
+// envelope such as error_max_turns, an empty result, output the parser
+// cannot read — is about the request and does not match.
 var ErrAICall = errors.New("ai call failed")
 
 // aiTransportFailure reports the failures ErrAICall stands for.
@@ -95,8 +96,17 @@ func aiTransportFailure(err error) bool {
 		errors.Is(err, exec.ErrNotFound) ||
 		errors.As(err, &execErr) || errors.As(err, &pathErr) ||
 		(errors.As(err, &exitErr) && !exitErr.Exited()) || // killed by a signal
-		errors.As(err, &netErr)
+		errors.As(err, &netErr) ||
+		providerOutage.MatchString(err.Error())
 }
+
+// providerOutage matches the provider-side outages the claude and codex CLIs
+// report inside an error envelope or their stderr: a connection error, an
+// overloaded API, a 5xx or 429 status, a rate limit or a request timeout. The
+// request itself was fine, so they are transport failures. The list is
+// explicit and narrow: error_max_turns, an empty result or unreadable output
+// stay reply errors.
+var providerOutage = regexp.MustCompile(`(?i)api error: (connection error|5\d\d\b|429\b)|overloaded_error|\boverloaded\b|rate_limit_error|request timed out|status code (5\d\d|429)\b`)
 
 // WithCause returns an error with err's message that also matches cause in
 // errors.Is and errors.As, so a generator can keep its readable message and

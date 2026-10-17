@@ -55,11 +55,27 @@ func TestWithCallTimeout_TransportFailureIsAnAICallError(t *testing.T) {
 	for name, err := range transport {
 		assert.ErrorIs(t, gen(err), ErrAICall, name)
 	}
+	// A provider outage reported in the envelope or on stderr is transport
+	// too: the request was fine, the provider was not.
+	outage := map[string]error{
+		"connection error": WithCause(errors.New("claude CLI failed (exit 1, subtype=success, stop_reason=): API Error: Connection error."), exited),
+		"overloaded":       errors.New(`claude returned error (subtype=success): API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`),
+		"500":              errors.New("claude returned error (subtype=success): API Error: 500 Internal server error"),
+		"503":              WithCause(errors.New("claude CLI failed (exit 1): API Error: 503 Service Unavailable"), exited),
+		"429":              errors.New(`claude returned error (subtype=success): API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}`),
+		"rate limit":       errors.New("codex error: rate_limit_error: slow down"),
+		"timed out":        errors.New("claude returned error (subtype=success): Request timed out."),
+		"codex 502":        WithCause(errors.New("codex CLI failed (exit 1): unexpected status code 502 Bad Gateway"), exited),
+	}
+	for name, err := range outage {
+		assert.ErrorIs(t, gen(err), ErrAICall, name)
+	}
 	reply := map[string]error{
-		"envelope": errors.New("claude returned error (subtype=error_max_turns): too many turns"),
-		"empty":    errors.New("claude returned empty result (turns=1, tokens=1+0)"),
-		"format":   errors.New("unexpected claude CLI output format: 12 bytes"),
-		"exit 1":   WithCause(errors.New("claude CLI failed (exit 1): API Error"), exited),
+		"max turns": errors.New("claude returned error (subtype=error_max_turns): too many turns"),
+		"empty":     errors.New("claude returned empty result (turns=1, tokens=1+0)"),
+		"format":    errors.New("unexpected claude CLI output format: 12 bytes"),
+		"exit 1":    WithCause(errors.New("claude CLI failed (exit 1): API Error: 400 prompt is too long"), exited),
+		"auth":      errors.New("claude returned error (subtype=success): Invalid API key"),
 	}
 	for name, err := range reply {
 		assert.NotErrorIs(t, gen(err), ErrAICall, name)
