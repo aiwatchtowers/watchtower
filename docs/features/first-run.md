@@ -46,8 +46,9 @@ until the next morning's hour.
   (`parsePollInterval`, garbage → 15), `at(hour:tomorrow:)`, `inAboutADay` (the
   people 24 h throttle from `last_people.txt`), `inHours(n)` (ideas/streams 6 h
   from `last_ideas.txt`/`last_streams.txt`, rounded up), `afterHistoryLoads`
-  (memory only, "Waiting for history to load": a `running` history-backfill row
-  started < 24 h ago, dual path with Go's memory gate, see
+  (memory only, "Waiting for history to load": before memory's first `done`
+  run, a `running` history-backfill row started < 24 h ago and the backfill not
+  switched off; beats an older memory error; dual path with Go's memory gate, see
   `history-backfill.md` § Memory gate, #578). No countdowns. Phrases
   and the one-line state wording live in `FeatureReadiness.phrase`/`line`
   (`FeatureReadiness.swift:94-115`): "Off — Turn on", "Connect Slack to get

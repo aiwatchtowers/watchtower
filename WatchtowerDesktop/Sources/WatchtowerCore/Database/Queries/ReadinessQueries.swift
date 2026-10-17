@@ -75,12 +75,29 @@ package enum ReadinessQueries {
 
     /// `started_at` of every running `history_backfill` row (a held row
     /// included), for memory's backfill wait; a database without the table
-    /// reads as none. A `started_at` that doesn't parse is skipped (it can't
-    /// be placed in the wait window).
+    /// reads as none. A `started_at` that doesn't parse can't be placed in the
+    /// wait window: it is logged and skipped (Go's `planTime` always writes
+    /// RFC 3339, so this means a foreign write).
     package static func runningBackfillStarts(_ db: Database) throws -> [Date] {
         guard try existingTables(db, among: ["history_backfill"]).contains("history_backfill") else { return [] }
         return try String.fetchAll(db, sql: "SELECT started_at FROM history_backfill WHERE status = 'running'")
-            .compactMap { SyncProgress.parseTimestamp($0) }
+            .compactMap { value in
+                guard let date = SyncProgress.parseTimestamp(value) else {
+                    NSLog("ReadinessQueries: history_backfill started_at %@ does not parse; skipped", value)
+                    return nil
+                }
+                return date
+            }
+    }
+
+    /// Whether a `memory` pipeline run ever finished `done` (Go's
+    /// `GetLatestPipelineRunStartedAt("memory") != ""`): after it, memory
+    /// never waits for a backfill again (#578).
+    package static func memoryHasRun(_ db: Database) throws -> Bool {
+        guard try existingTables(db, among: ["pipeline_runs"]).contains("pipeline_runs") else { return false }
+        return try Bool.fetchOne(
+            db, sql: "SELECT EXISTS(SELECT 1 FROM pipeline_runs WHERE pipeline = 'memory' AND status = 'done')"
+        ) ?? false
     }
 
     private static func existingTables(_ db: Database, among names: [String]) throws -> Set<String> {

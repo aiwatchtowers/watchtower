@@ -1674,6 +1674,34 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 // "Waiting for history to load" for exactly this window.
 const memoryBackfillWaitMax = 24 * time.Hour
 
+// memoryWaitsForBackfill reports whether phaseMemory holds this cycle for the
+// history backfill (#578, docs/features/history-backfill.md § Memory gate).
+// Extraction is oldest-first behind a watermark, so the gate only keeps
+// memory's FIRST run off a half-loaded month: once a memory run has
+// succeeded, its watermark is past anything a backfill lands, and waiting
+// would only stall memory. Before that it waits for a running row (a held one
+// included), at most memoryBackfillWaitMax after the row started; a paused
+// row (a revoked account) never holds it, and neither does the kill switch
+// (sync.backfill_days <= 0: the phase does not run, so the rows never end).
+// Dual path with the Desktop's FeatureReadiness.memoryWaitsForHistory.
+func (d *Daemon) memoryWaitsForBackfill() (bool, error) {
+	if d.config.Sync.BackfillDays <= 0 {
+		return false, nil
+	}
+	lastDone, err := d.db.GetLatestPipelineRunStartedAt("memory")
+	if err != nil {
+		return false, err
+	}
+	if lastDone != "" {
+		return false, nil
+	}
+	now := time.Now()
+	if d.memoryNow != nil {
+		now = d.memoryNow()
+	}
+	return d.db.HasRunningHistoryBackfillSince(now.Add(-memoryBackfillWaitMax))
+}
+
 // phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
 // seeding, episode extraction). Runs after inbox, before next-step. The
 // pipeline records its own pipeline_runs row (source="daemon", see
@@ -1686,16 +1714,8 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 		d.logger.Printf("memory: disabled, skipping")
 		return
 	}
-	// Extraction is oldest-first behind a watermark: let the history
-	// backfill land its older rows first — only a running row, and only for
-	// memoryBackfillWaitMax after it started (#578,
-	// docs/features/history-backfill.md).
 	if d.db != nil {
-		now := time.Now()
-		if d.memoryNow != nil {
-			now = d.memoryNow()
-		}
-		active, err := d.db.HasRunningHistoryBackfillSince(now.Add(-memoryBackfillWaitMax))
+		active, err := d.memoryWaitsForBackfill()
 		if err != nil {
 			// Unknown backfill state: skip rather than fail open — running
 			// extraction past an unfinished backfill moves its watermark

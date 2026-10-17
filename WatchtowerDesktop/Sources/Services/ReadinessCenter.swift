@@ -17,6 +17,9 @@ protocol ReadinessEnvironment: AnyObject {
     var dayPlanHour: Int { get }
     /// `sync.poll_interval` as written in config.yaml ("15m").
     var pollInterval: String? { get }
+    /// `sync.backfill_days` as written in config.yaml; nil = unset (Go's
+    /// default, 30, so the backfill is on).
+    var backfillDays: Int? { get }
     /// A stamp file in the active workspace directory; missing or garbage → nil.
     func stamp(_ fileName: String) -> Date?
 }
@@ -48,6 +51,7 @@ final class ReadinessCenter {
         /// `history_backfill` is outside the observed region (only the daemon
         /// writes it), so the tick's re-read picks its changes up.
         var runningBackfillStarts: [Date]
+        var memoryHasRun: Bool
     }
 
     @ObservationIgnored private let environment: any ReadinessEnvironment
@@ -106,7 +110,8 @@ final class ReadinessCenter {
     nonisolated private static func readSnapshot(_ db: Database) throws -> DBSnapshot {
         DBSnapshot(contentPresent: try ReadinessQueries.contentPresent(db),
                    latestRuns: try ReadinessQueries.latestRuns(db),
-                   runningBackfillStarts: try ReadinessQueries.runningBackfillStarts(db))
+                   runningBackfillStarts: try ReadinessQueries.runningBackfillStarts(db),
+                   memoryHasRun: try ReadinessQueries.memoryHasRun(db))
     }
 
     /// The tick's one-shot read: picks up the daemon's writes, and a table a
@@ -176,7 +181,9 @@ final class ReadinessCenter {
             briefingHour: environment.briefingHour,
             dayPlanHour: environment.dayPlanHour,
             pollIntervalMinutes: FeatureReadiness.parsePollInterval(environment.pollInterval),
-            runningBackfillStarts: snapshot.runningBackfillStarts
+            runningBackfillStarts: snapshot.runningBackfillStarts,
+            memoryHasRun: snapshot.memoryHasRun,
+            backfillOff: environment.backfillDays.map { $0 <= 0 } ?? false
         )
     }
 }
@@ -216,6 +223,7 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
     var briefingHour: Int { currentConfig().briefingHour }
     var dayPlanHour: Int { currentConfig().dayPlanHour }
     var pollInterval: String? { currentConfig().syncInterval }
+    var backfillDays: Int? { currentConfig().backfillDays }
 
     /// Stamp files are a dual-path contract with Go's `saveLastPeople`,
     /// `saveLastBriefing`, `saveLastIdeas`, `saveLastStreams`

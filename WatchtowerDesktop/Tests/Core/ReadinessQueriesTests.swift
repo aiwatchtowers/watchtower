@@ -146,6 +146,29 @@ final class ReadinessQueriesTests: XCTestCase {
         XCTAssertEqual(starts, [try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-15T12:00:00Z"))])
     }
 
+    func testRunningBackfillStartsSkipsUndecodableStart() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO history_backfill (source_kind, account_id, floor_ts, upper_ts, reached_ts,
+                    status, started_at, updated_at)
+                VALUES ('slack', 1, 0, 100, 100, 'running', 'not a time', 'not a time')
+                """)
+        }
+        XCTAssertEqual(try queue.read(ReadinessQueries.runningBackfillStarts), [])
+    }
+
+    func testMemoryHasRunNeedsADoneMemoryRun() throws {
+        let queue = try TestDatabase.create()
+        let iso = ISO8601DateFormatter().string(from: Date())
+        XCTAssertFalse(try queue.read(ReadinessQueries.memoryHasRun))
+        try insertRun(queue, pipeline: "memory", status: "error", startedAt: iso, error: "boom")
+        try insertRun(queue, pipeline: "digests", status: "done", startedAt: iso)
+        XCTAssertFalse(try queue.read(ReadinessQueries.memoryHasRun))
+        try insertRun(queue, pipeline: "memory", status: "done", startedAt: iso)
+        XCTAssertTrue(try queue.read(ReadinessQueries.memoryHasRun))
+    }
+
     func testRunningBackfillStartsWithoutTableIsEmpty() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in try db.execute(sql: "DROP TABLE history_backfill") }

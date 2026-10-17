@@ -28,7 +28,7 @@ Targets, Workbench and Automations have no status line: they stay empty until yo
 1. Read the status line.
    - **Off — Turn on:** press **Turn on**.
    - **Connect Slack to get this** (or a calendar, Jira, a source): connect it in **Settings → Connections**.
-   - **Waiting for history to load** (Memory): a new source is loading its first month; Memory waits for it at most a day.
+   - **Waiting for history to load** (Memory): a source is loading its first month; before its first run, Memory waits for it at most a day.
    - **Starts after the first sync**, **Preparing now**, a time ("Within ~15 min", "Today at 08:00"): wait. A first sync takes 3 to 5 minutes.
 2. **Didn't work yet — retries automatically:** the reason follows the dot (·). If it names the Claude or Codex tool, go to [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md). The next sync cycle retries on its own.
 3. No status line, or it says a time that passed: check that Watchtower is running. See [Sync is stuck or slow](sync-stuck-or-slow.md).

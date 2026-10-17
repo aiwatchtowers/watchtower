@@ -200,6 +200,31 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.memory, input), .scheduled(.nextCycle(minutes: 15)))
     }
 
+    /// F6: the literal dual-path value (Go's `memoryBackfillWaitMax`).
+    func testMemoryBackfillWaitMaxIs24h() {
+        XCTAssertEqual(FeatureReadiness.memoryBackfillWaitMax, 24 * 60 * 60)
+    }
+
+    /// #578: the wait is only before memory's first successful run and never
+    /// under the kill switch; while waiting, an old failed run doesn't show.
+    func testMemoryWaitOnlyBeforeFirstRunAndBeatsAnOldError() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.runningBackfillStarts = [now.addingTimeInterval(-3600)]
+        input.latestRuns = ["memory": RunSnapshot(status: "error", startedAt: now.addingTimeInterval(-7200),
+                                                  errorMessage: "vault unavailable")]
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.afterHistoryLoads))
+
+        input.backfillOff = true
+        XCTAssertTrue(isError(evaluate(.memory, input)), "kill switch: no wait, the error shows")
+
+        input.backfillOff = false
+        input.memoryHasRun = true
+        input.latestRuns = [:]
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.nextCycle(minutes: 15)),
+                       "an established install never waits for a new source")
+    }
+
     func testCalendarHasNoPreparingOrError() {
         let now = today(10)
         var input = inputs(now: now)

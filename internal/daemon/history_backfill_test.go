@@ -161,6 +161,46 @@ func TestPhaseMemory_NoWaitForPausedOrOverdueBackfill(t *testing.T) {
 	assert.Equal(t, 2, opens, "memory stops waiting after memoryBackfillWaitMax")
 }
 
+// #578: the cap is a literal dual-path value (FeatureReadiness.memoryBackfillWaitMax).
+func TestMemoryBackfillWaitMax_Is24h(t *testing.T) {
+	assert.Equal(t, 24*time.Hour, memoryBackfillWaitMax)
+}
+
+// #578: once a memory run has succeeded its watermark is past anything a
+// backfill lands, so a source connected later never holds memory; neither
+// does a running row under the kill switch.
+func TestPhaseMemory_NoWaitAfterFirstRunOrWithKillSwitch(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Memory = enabledMemoryConfig()
+	opens := 0
+	d.SetMemoryPipelineOpener(func() (*memory.Pipeline, error) {
+		opens++
+		return nil, fmt.Errorf("vault unavailable in test")
+	})
+	_, err := database.StartHistoryBackfill("slack", 1, 0, 100, time.Now())
+	require.NoError(t, err)
+
+	d.config.Sync.BackfillDays = 0
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 1, opens, "the kill switch never holds memory")
+
+	d.config.Sync.BackfillDays = 30
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 1, opens, "a fresh install waits for the running row")
+
+	failed, err := database.CreatePipelineRun("memory", "daemon", "auto")
+	require.NoError(t, err)
+	require.NoError(t, database.CompletePipelineRun(failed, 0, 0, 0, 0, 0, nil, nil, "boom"))
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 1, opens, "a failed memory run is not a first run")
+
+	done, err := database.CreatePipelineRun("memory", "daemon", "auto")
+	require.NoError(t, err)
+	require.NoError(t, database.CompletePipelineRun(done, 0, 0, 0, 0, 0, nil, nil, ""))
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 2, opens, "an established install never waits for a new source")
+}
+
 // F3: a failing backfill query must not fail open — memory skips the cycle
 // and the error is logged.
 func TestPhaseMemory_SkipsWhenBackfillQueryFails(t *testing.T) {

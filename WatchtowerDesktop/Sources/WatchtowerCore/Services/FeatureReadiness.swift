@@ -51,7 +51,11 @@ package enum FeatureReadiness {
                inputs.now.timeIntervalSince(run.startedAt) < preparingMaxAge {
                 return .preparing(detail: syncDetail)
             }
-            if run.status == "error" { return .error(message: run.errorMessage) }
+            // While memory waits for the history backfill, an older failed
+            // run is not what holds it (#578): the wait line wins.
+            if run.status == "error", !(feature == .memory && memoryWaitsForHistory(inputs)) {
+                return .error(message: run.errorMessage)
+            }
         }
         if feature.readsSyncedData, inputs.connected.slack, inputs.lastSyncTime == nil {
             return .waitingForSync(detail: syncDetail)
@@ -90,12 +94,14 @@ package enum FeatureReadiness {
         }
     }
 
-    /// Dual path with Go's memory gate (`phaseMemory`, `memoryBackfillWaitMax`
-    /// in internal/daemon/daemon.go): memory waits while a backfill row is
-    /// running and started less than `memoryBackfillWaitMax` ago; paused, done
-    /// and off rows never hold it.
+    /// Dual path with Go's `memoryWaitsForBackfill` (internal/daemon/daemon.go):
+    /// only before memory's first successful run, never under the kill switch
+    /// (`sync.backfill_days <= 0`), and only while a backfill row is running
+    /// and started less than `memoryBackfillWaitMax` ago; paused, done and off
+    /// rows never hold it.
     private static func memoryWaitsForHistory(_ inputs: ReadinessInputs) -> Bool {
-        inputs.runningBackfillStarts.contains { inputs.now.timeIntervalSince($0) < memoryBackfillWaitMax }
+        guard !inputs.backfillOff, !inputs.memoryHasRun else { return false }
+        return inputs.runningBackfillStarts.contains { inputs.now.timeIntervalSince($0) < memoryBackfillWaitMax }
     }
 
     /// A once-a-day pipeline's gate, as Go's `shouldRunBriefing`: already ran
