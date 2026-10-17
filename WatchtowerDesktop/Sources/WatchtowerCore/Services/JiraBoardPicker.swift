@@ -16,7 +16,7 @@ package enum JiraBoardPicker {
     /// The sites the step fetches and lists: the enabled sites a connect
     /// added (not in `before`, the ids read before it). Every enabled site
     /// when there is no such site: the before-read failed (`before` nil), or
-    /// the added row is disabled, or the add matched an existing row.
+    /// the added row is disabled.
     package static func sites(_ accounts: [JiraAccount], before: Set<Int>?) -> [JiraAccount] {
         let enabled = accounts.filter(\.enabled)
         guard let before else { return enabled }
