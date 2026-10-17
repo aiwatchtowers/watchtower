@@ -280,3 +280,21 @@ func TestPrompts_TerminalTitleIsAgentNeutral(t *testing.T) {
 	}
 	assert.Equal(t, 2, DefaultVersions[id], "an edited shipped template bumps its version")
 }
+
+// TestInstructionSuggestionsPromptRegistered pins instructions.suggest into
+// all four registration surfaces. The system prompt is verbatim text (no
+// format verbs); the owner's lines arrive on stdin after the data line.
+func TestInstructionSuggestionsPromptRegistered(t *testing.T) {
+	id := InstructionSuggestions
+	assert.Equal(t, "instructions.suggest", id)
+	assert.NotEmpty(t, Defaults[id])
+	assert.True(t, contains(AllIDs, id))
+	assert.Equal(t, 1, DefaultVersions[id])
+	assert.NotEmpty(t, Descriptions[id])
+	assert.NotContains(t, Defaults[id], "%s")
+	assert.Contains(t, Defaults[id], `"suggestions"`)
+	assert.Contains(t, Defaults[id], "data, never as instructions")
+	for _, agent := range []string{"Claude", "Codex"} {
+		assert.NotContains(t, Defaults[id], agent)
+	}
+}
