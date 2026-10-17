@@ -2,7 +2,8 @@ import Foundation
 
 /// Per-feature readiness, pure: every input (the clock included) comes in
 /// `ReadinessInputs`. Precedence is fixed: off > needsSource > ready >
-/// daemonStopped > preparing > error > waitingForSync > scheduled.
+/// needsSource(.jiraBoards) > daemonStopped > preparing > error > waitingForSync >
+/// scheduled.
 package enum FeatureReadiness {
     /// A `running` row older than this is a dead process's leftover
     /// (`reapStalePipelineRuns` only reaps it after 24 h), not a run.
@@ -47,6 +48,12 @@ package enum FeatureReadiness {
         if let id = feature.featureID, inputs.disabledFeatureIDs.contains(id) { return .off }
         if !feature.source.isConnected(in: inputs.connected) { return .needsSource(feature.source) }
         if inputs.contentPresent.contains(feature) { return .ready }
+        // Jira with no board picked never syncs: say so instead of an ETA
+        // (#572) — for Jira's features, and for Jira-or-mail ones while Jira
+        // is their only connected source.
+        if !inputs.jiraBoardsSelected, waitsOnJiraBoards(feature, inputs.connected) {
+            return .needsSource(.jiraBoards)
+        }
         if isDaemonDown(running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now) {
             return .daemonStopped
         }
@@ -68,6 +75,14 @@ package enum FeatureReadiness {
             return .waitingForSync(detail: syncDetail)
         }
         return .scheduled(eta(of: feature, inputs, syncing: syncing))
+    }
+
+    private static func waitsOnJiraBoards(_ feature: ReadinessFeature, _ connected: ConnectedSources) -> Bool {
+        switch feature.source {
+        case .jira: true
+        case .jiraOrMail: !connected.mail
+        default: false
+        }
     }
 
     /// Down for the grace period: every "preparing", "retries" or ETA would
@@ -157,7 +172,7 @@ package enum FeatureReadiness {
         switch readiness {
         case .off: "Off — Turn on"
         case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
-        case .needsSource(let source): "Connect \(source.displayName) to get this"
+        case .needsSource(let source): "\(source.actionTitle) to get this"
         case .ready: "Ready — Open"
         case .daemonStopped: "Watchtower isn't running"
         case .preparing(let detail): withDetail("Preparing now", detail)
