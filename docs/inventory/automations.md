@@ -18,17 +18,19 @@ of these entries; decisions §20, §20.1).
 `internal/db/migrations/00117_automation_tool_grants.sql`,
 `cmd/automations*.go` (incl. `cmd/automations_auto.go`), `cmd/automations_registry.go`,
 `internal/briefing/automations.go` (the FROM YOUR AUTOMATIONS block),
-`internal/daemon/automation_wake.go`, `internal/tools/emails.go`,
+`internal/daemon/automation_wake.go`, `internal/automations/bus.go`,
+`internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`,
+`internal/db/automation_event_sources.go` (P4 event bus and sources),
+`internal/tools/emails.go`,
 `internal/tools/automation_reads.go`, `internal/automations/authoring/` (`draft_automation`,
 `save_automation`, P3), the Desktop's automation views and Core services
 (`WatchtowerDesktop/Sources/Views/Automations/`,
 `WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/`, P3)
 **Last full audit:** 2026-10-16 (Automations P3)
 
-Phases: P1 (core) and P2 (writes) are in code. P3 (authoring + Desktop), P4
-(events), P5 (workbench) and P6 (mcp, agent, templates) each flip their
-**Planned** part in the same commit as its code; exactly one plan flips each
-part. Guard tests are named `TestAutoNN_…` (Go) and `testAutoNN_…` (Swift);
+Phases: P1 (core), P2 (writes), P3 (authoring + Desktop), P4 (events), P5
+(workbench) and P6 (mcp, agent, templates) are all in code; each flipped its
+**Planned** part in the same commit as its code, exactly one plan per part. Guard tests are named `TestAutoNN_…` (Go) and `testAutoNN_…` (Swift);
 the other guards listed are pinned by name too.
 
 ## AUTO-01 — The manifest is the only source of permissions
@@ -350,9 +352,9 @@ model quota.
 
 ## AUTO-09 — Triggers only queue
 
-**Status:** Enforced (P1: scheduler and CLI `run`) · Planned (P4: the event
-bus). The Desktop buttons (P3's Run now, P5's header buttons) add guards
-without a status change.
+**Status:** Enforced (P1: scheduler and CLI `run`; P4: the event bus). The
+Desktop buttons (P3's Run now, P5's header buttons) add guards without a
+status change.
 
 **Observable:** The scheduler, the event bus, CLI `run` and the Desktop
 buttons only insert `queued` rows (`db.EnqueueAutomationRun`, the only way to
@@ -361,7 +363,9 @@ coalesced onto it); only the daemon's executor runs them. The one exception
 is `automations dry-run`, which executes its own `trigger='dry_run'` row in
 the CLI process and writes nothing outside its journal; the daemon never
 picks up a dry-run row. The automation wake is `SIGUSR2`; it never starts a
-sync cycle.
+sync cycle. The event bus's `Flush` only inserts `queued` rows (one per
+automation per cycle) and merges into a still-queued event run; event runs
+carry ids, labels, enums and counts only.
 
 **Why locked:** One executor in one process is what makes concurrency
 (AUTO-05), budgets (AUTO-08) and restarts (AUTO-08) hold; a trigger that ran
@@ -373,7 +377,8 @@ a script inline would escape all three.
 - `internal/db/automation_runs_test.go` — `TestRun_CoalescesSecondTrigger`, `TestNextQueued_SkipsDryRun`
 - `internal/daemon/automation_wake_test.go` — `TestDaemon_AutomationWakeSignalDoesNotStartSync`
 - `WatchtowerDesktop/Tests/Core/WorkbenchHeaderAutomationButtonsTests.swift` — `testAuto09_HeaderButtonOnlyQueues` (a workbench header button's click is exactly `automations run <id> --json`; Swift writes no run)
-- P4 adds the bus guard (plan `2026-10-14-automations-p4.md`) and flips that half.
+- `internal/automations/bus_test.go` — `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (P4)
+- `internal/automations/events_test.go` — `TestBus_EventsCarryNoContent` (P4)
 
 **Locked since:** 2026-10-14
 
@@ -511,6 +516,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-17 (Automations P4, board #753; spec §8): **the event half of AUTO-09 flips from Planned to Enforced** — the one P4 status flip. Observable gains the event bus: `Flush` (once per sync cycle, cycle id = `syncStart` in RFC 3339 UTC, called right after `phaseExternalSync`) only inserts `queued` rows, one per automation per cycle, and merges into a still-queued event run; event runs carry ids, labels, enums and counts only. Guards added: `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (`internal/automations/bus_test.go`), `TestBus_EventsCarryNoContent` (`internal/automations/events_test.go`). Module list gains `internal/automations/bus.go`, `internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`, `internal/db/automation_event_sources.go`. No new AUTO number; no AGENT/STRIP/REACT entry touched (reaction commands are not an event source). No guard relaxed.
 - 2026-10-16 (Automations P5 part 2, board #753; spec §12.4, §13.1, §13.3, §13.4, §14.6): P5 part 2 — workbench saves (PROJ-03 amended, ask #272, `docs/inventory/workbench.md`), the Desktop session launch center (`AutomationSessionCenter`), header buttons, automation asks in the Desktop, rescans on page open and on recipe-folder changes. **AUTO-09's Desktop guard for the header buttons is in place** (`testAuto09_HeaderButtonOnlyQueues`, Task 11, listed under AUTO-09); no status flip — the event half stays Planned for P4. Change in words is on for workbench recipes (R-P3-5 lifted for the editor chat too); an automation's closed asks get their own "⚙ Automations" line instead of "Outside the app". No guard relaxed.
 - 2026-10-16 — agent() child env adds proxy, CA and TMPDIR variables (owner, ask #185). AUTO-07's guard `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` is extended, not relaxed: it still proves no API key, token or `CLAUDECODE` reaches the child. `shell()`'s env is unchanged.
 - 2026-10-16 (Automations P3 final review, fix wave 1): AUTO-06 records that the `save_automation` card shows every hashed field and the whole text of a new recipe (J1). Strengthening only; no guard touched.

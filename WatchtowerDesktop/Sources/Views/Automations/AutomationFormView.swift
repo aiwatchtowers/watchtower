@@ -211,7 +211,7 @@ private struct AutomationFormContent: View {
             case .schedule: "On a schedule"
             case .button: "When I press a button"
             case .manual: "Only when I run it"
-            case .event: "On new mail / message (soon)"
+            case .event: "On an event"
             }
         }
     }
@@ -231,7 +231,7 @@ private struct AutomationFormContent: View {
         case .schedule: form.fields.trigger = .schedule(schedule.cron)
         case .button: form.fields.trigger = .button(label: "Run", confirm: false)
         case .manual: form.fields.trigger = .manual
-        case .event: break
+        case .event: form.fields.trigger = AutomationFormModel.defaultEventTrigger
         }
     }
 
@@ -245,7 +245,6 @@ private struct AutomationFormContent: View {
                     } else {
                         Button(choice.title) { choose(choice) }
                             .buttonStyle(.bordered)
-                            .disabled(choice == .event)
                     }
                 }
             }
@@ -330,7 +329,7 @@ private struct AutomationFormContent: View {
         VStack(alignment: .leading, spacing: 6) {
             Picker("Event", selection: Binding(
                 get: { type },
-                set: { form.fields.trigger = .event(type: $0, where: filter) }
+                set: { form.fields.trigger = AutomationFormModel.eventTrigger(type: $0, keeping: filter) }
             )) {
                 ForEach(AutomationFormModel.eventTypes, id: \.self) { Text($0).tag($0) }
             }
@@ -358,7 +357,8 @@ private struct AutomationFormContent: View {
                     .accessibilityLabel("Remove filter \(key)")
                 }
             }
-            Text("Event triggers start working in a later version.")
+            Text("Runs after a sync brings something new, at most once per sync cycle. "
+                + "Narrow it with a where filter in the recipe text.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

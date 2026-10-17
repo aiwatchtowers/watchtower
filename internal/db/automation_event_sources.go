@@ -1,0 +1,342 @@
+package db
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// SlackChannelNewestTS returns, per channel holding stored messages, the ts
+// of its newest one (deleted included) keyed by the namespaced channel id —
+// the watermark an automation event source snapshots before phaseSlackSync
+// and diffs after. Read from the messages table itself: the default search
+// sync never writes sync_state. One scan of the (channel_id, ts) primary-key
+// index. Read-only.
+func (db *DB) SlackChannelNewestTS() (map[string]string, error) {
+	rows, err := db.Query(`SELECT channel_id, MAX(ts) FROM messages GROUP BY channel_id`)
+	if err != nil {
+		return nil, fmt.Errorf("querying newest slack messages: %w", err)
+	}
+	defer rows.Close()
+	newest := make(map[string]string)
+	for rows.Next() {
+		var id, ts string
+		if err := rows.Scan(&id, &ts); err != nil {
+			return nil, fmt.Errorf("scanning newest slack message: %w", err)
+		}
+		newest[id] = ts
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading newest slack messages: %w", err)
+	}
+	return newest, nil
+}
+
+// CountSlackMessagesAfter counts channelID's non-deleted messages with a ts
+// after afterTS, leaving out excludeUserID's (the owner's own; "" excludes
+// nobody). Read-only.
+func (db *DB) CountSlackMessagesAfter(channelID, afterTS, excludeUserID string) (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM messages
+        WHERE channel_id = ? AND ts > ? AND is_deleted = 0 AND (? = '' OR user_id != ?)`,
+		channelID, afterTS, excludeUserID, excludeUserID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting new messages in %s: %w", channelID, err)
+	}
+	return n, nil
+}
+
+// SlackEventLabels returns a Slack account's event label (its label, else
+// its team domain) and the owner's namespaced user id on that account — a
+// per-account read through GetSlackAccount, as OWNER-01 allows, since each
+// account namespaces the owner differently. A missing account is an error.
+// Read-only.
+func (db *DB) SlackEventLabels(accountID int64) (account string, ownerUserID string, err error) {
+	a, err := db.GetSlackAccount(accountID)
+	if err != nil {
+		return "", "", fmt.Errorf("reading slack event labels: %w", err)
+	}
+	if a.Label != "" {
+		return a.Label, a.CurrentUserID, nil
+	}
+	return a.TeamDomain, a.CurrentUserID, nil
+}
+
+// mailLabelQueries are, per mail event provider, the account's label with
+// the address as its fallback.
+var mailLabelQueries = map[string]string{
+	"gmail": `SELECT COALESCE(NULLIF(label, ''), email) FROM google_accounts WHERE id = ?`,
+	"imap":  `SELECT COALESCE(NULLIF(label, ''), email_address) FROM email_accounts WHERE id = ?`,
+}
+
+// MailEventLabel returns a mail account's event label: its label, else its
+// address. provider is "gmail" (google_accounts) or "imap" (email_accounts);
+// a missing account or another provider is an error. Read-only.
+func (db *DB) MailEventLabel(provider string, accountID int64) (string, error) {
+	query, ok := mailLabelQueries[provider]
+	if !ok {
+		return "", fmt.Errorf("mail event label: unknown provider %q", provider)
+	}
+	var label string
+	if err := db.QueryRow(query, accountID).Scan(&label); err != nil {
+		return "", fmt.Errorf("reading %s account %d label: %w", provider, accountID, err)
+	}
+	return label, nil
+}
+
+// MailWatermarkSet reports whether a mail account has synced before — a
+// non-zero Gmail internalDate or IMAP UID watermark. Read before the syncer
+// runs, it tells a later sync from the account's first one, which publishes
+// nothing. A missing account reads as unset. Read-only.
+func (db *DB) MailWatermarkSet(provider string, accountID int64) (bool, error) {
+	switch provider {
+	case "gmail":
+		ts, err := db.GetGmailAccountWatermark(accountID)
+		return ts > 0, err
+	case "imap":
+		uid, _, err := db.GetImapWatermark(accountID)
+		return uid > 0, err
+	default:
+		return false, fmt.Errorf("mail watermark: unknown provider %q", provider)
+	}
+}
+
+// mailNewsFloorQueries are, per mail event provider, the account's news
+// floor: the later of its created_at (when it was connected) and its newest
+// stored message date. Both are RFC 3339 UTC text, so they compare as text.
+var mailNewsFloorQueries = map[string]string{
+	"gmail": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(internal_date) FROM gmail_messages
+            WHERE account_id = a.id), '')) FROM google_accounts a WHERE a.id = ?`,
+	"imap": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(internal_date) FROM imap_messages
+            WHERE account_id = a.id), '')) FROM email_accounts a WHERE a.id = ?`,
+}
+
+// mailCountQueries count, per mail event provider, an account's stored
+// messages dated after a floor (the (account_id, internal_date) index).
+var mailCountQueries = map[string]string{
+	"gmail": `SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND internal_date > ?`,
+	"imap":  `SELECT COUNT(*) FROM imap_messages WHERE account_id = ? AND internal_date > ?`,
+}
+
+// MailNewsFloor returns the date a mail account's message must be after to
+// be news: the later of the account's connect time (created_at) and its
+// newest stored message date. Read before the syncer runs. A missing
+// account or another provider is an error. Read-only.
+func (db *DB) MailNewsFloor(provider string, accountID int64) (string, error) {
+	query, ok := mailNewsFloorQueries[provider]
+	if !ok {
+		return "", fmt.Errorf("mail news floor: unknown provider %q", provider)
+	}
+	var floor string
+	if err := db.QueryRow(query, accountID).Scan(&floor); err != nil {
+		return "", fmt.Errorf("reading %s account %d news floor: %w", provider, accountID, err)
+	}
+	return floor, nil
+}
+
+// CountMailAfter counts a mail account's stored messages dated after floor.
+// Read-only.
+func (db *DB) CountMailAfter(provider string, accountID int64, floor string) (int, error) {
+	query, ok := mailCountQueries[provider]
+	if !ok {
+		return 0, fmt.Errorf("counting mail: unknown provider %q", provider)
+	}
+	var n int
+	if err := db.QueryRow(query, accountID, floor).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting %s account %d mail: %w", provider, accountID, err)
+	}
+	return n, nil
+}
+
+// JiraIssueRef names one Jira issue: its account and key.
+type JiraIssueRef struct {
+	AccountID int64
+	Key       string
+}
+
+// JiraIssueMark is the part of one issue an automation event source diffs
+// around phaseJiraSync: ids, enums, a timestamp and a comment count, never
+// the summary or description.
+type JiraIssueMark struct {
+	Project   string
+	Status    string
+	Assignee  string // assignee_account_id
+	Priority  string
+	UpdatedAt string
+	Comments  int
+}
+
+// JiraIssueMarks returns every non-deleted issue's mark. Read-only.
+func (db *DB) JiraIssueMarks() (map[JiraIssueRef]JiraIssueMark, error) {
+	rows, err := db.Query(`SELECT i.account_id, i.key, i.project_key, i.status, i.assignee_account_id,
+            i.priority, i.updated_at, COALESCE(c.n, 0)
+        FROM jira_issues i
+        LEFT JOIN (SELECT account_id, issue_key, COUNT(*) AS n FROM jira_comments
+                   GROUP BY account_id, issue_key) c
+          ON c.account_id = i.account_id AND c.issue_key = i.key
+        WHERE i.is_deleted = 0`)
+	if err != nil {
+		return nil, fmt.Errorf("querying jira issue marks: %w", err)
+	}
+	defer rows.Close()
+	marks := make(map[JiraIssueRef]JiraIssueMark)
+	for rows.Next() {
+		var r JiraIssueRef
+		var m JiraIssueMark
+		if err := rows.Scan(&r.AccountID, &r.Key, &m.Project, &m.Status, &m.Assignee,
+			&m.Priority, &m.UpdatedAt, &m.Comments); err != nil {
+			return nil, fmt.Errorf("scanning jira issue mark: %w", err)
+		}
+		marks[r] = m
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading jira issue marks: %w", err)
+	}
+	return marks, nil
+}
+
+// JiraEventLabel returns a Jira account's event label: its label, else its
+// site name. A missing account is an error. Read-only.
+func (db *DB) JiraEventLabel(accountID int64) (string, error) {
+	var label string
+	err := db.QueryRow(`SELECT COALESCE(NULLIF(label, ''), site_name) FROM jira_accounts WHERE id = ?`,
+		accountID).Scan(&label)
+	if err != nil {
+		return "", fmt.Errorf("reading jira account %d label: %w", accountID, err)
+	}
+	return label, nil
+}
+
+// CalendarEventMark is the part of one calendar event an automation event
+// source diffs around the calendar sync phases: never its title,
+// description, location or attendees.
+type CalendarEventMark struct {
+	CalendarID string
+	Status     string // event_status
+	UpdatedAt  string
+	Start      string
+	End        string
+}
+
+// CalendarEventMarks returns every stored calendar event's mark keyed by its
+// id. Read-only.
+func (db *DB) CalendarEventMarks() (map[string]CalendarEventMark, error) {
+	rows, err := db.Query(`SELECT id, calendar_id, event_status, updated_at, start_time, end_time FROM calendar_events`)
+	if err != nil {
+		return nil, fmt.Errorf("querying calendar event marks: %w", err)
+	}
+	defer rows.Close()
+	marks := make(map[string]CalendarEventMark)
+	for rows.Next() {
+		var id string
+		var m CalendarEventMark
+		if err := rows.Scan(&id, &m.CalendarID, &m.Status, &m.UpdatedAt, &m.Start, &m.End); err != nil {
+			return nil, fmt.Errorf("scanning calendar event mark: %w", err)
+		}
+		marks[id] = m
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading calendar event marks: %w", err)
+	}
+	return marks, nil
+}
+
+// CalendarEventLabel returns the event label of the account a calendar
+// belongs to: for a "caldav:<id>"/"ics:<id>" calendar its calendar_accounts
+// label, else its username (CalDAV), else "<provider>:<id>" — never the URL,
+// which an ICS feed's secret may sit in; for any other calendar the owning
+// Google account's label (else its email). false when
+// the calendar names no account — missing, detached by a logout, or its
+// account gone. Read-only.
+func (db *DB) CalendarEventLabel(calendarID string) (string, bool, error) {
+	query, arg := `SELECT COALESCE(NULLIF(g.label, ''), g.email) FROM calendar_calendars c
+        JOIN google_accounts g ON g.id = c.account_id WHERE c.id = ?`, any(calendarID)
+	if id, ok := calendarAccountID(calendarID); ok {
+		query, arg = `SELECT COALESCE(NULLIF(label, ''), NULLIF(username, ''), provider || ':' || id)
+            FROM calendar_accounts WHERE id = ?`, id
+	}
+	var label string
+	err := db.QueryRow(query, arg).Scan(&label)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading calendar %s account label: %w", calendarID, err)
+	}
+	return label, true, nil
+}
+
+// calendarAccountID parses a CalendarAccountCalendarID back to its account id.
+func calendarAccountID(calendarID string) (int64, bool) {
+	provider, rest, ok := strings.Cut(calendarID, ":")
+	if !ok || (provider != "caldav" && provider != "ics") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(rest, 10, 64)
+	return id, err == nil
+}
+
+// ConfluencePageRef names one stored Confluence page: its ext source and
+// page id.
+type ConfluencePageRef struct {
+	SourceID int64
+	PageID   string // ext_id
+}
+
+// ConfluencePageVersions returns every stored Confluence page's version —
+// pages only, never blog posts or attachments, and never a title or body.
+// Read-only.
+func (db *DB) ConfluencePageVersions() (map[ConfluencePageRef]int64, error) {
+	rows, err := db.Query(`SELECT d.source_id, d.ext_id, d.version FROM ext_documents d
+        JOIN ext_sources s ON s.id = d.source_id
+        WHERE s.provider = 'confluence' AND d.kind = 'page'`)
+	if err != nil {
+		return nil, fmt.Errorf("querying confluence page versions: %w", err)
+	}
+	defer rows.Close()
+	versions := make(map[ConfluencePageRef]int64)
+	for rows.Next() {
+		var r ConfluencePageRef
+		var v int64
+		if err := rows.Scan(&r.SourceID, &r.PageID, &v); err != nil {
+			return nil, fmt.Errorf("scanning confluence page version: %w", err)
+		}
+		versions[r] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading confluence page versions: %w", err)
+	}
+	return versions, nil
+}
+
+// ConfluenceSourceMark is one Confluence space source as an automation event
+// source snapshots it before phaseExternalSync.
+type ConfluenceSourceMark struct {
+	Space        string // container_key
+	BackfillDone bool
+}
+
+// ConfluenceSourceMarks returns every Confluence source's mark keyed by its
+// ext source id. Read-only.
+func (db *DB) ConfluenceSourceMarks() (map[int64]ConfluenceSourceMark, error) {
+	rows, err := db.Query(`SELECT id, container_key, backfill_done FROM ext_sources WHERE provider = 'confluence'`)
+	if err != nil {
+		return nil, fmt.Errorf("querying confluence source marks: %w", err)
+	}
+	defer rows.Close()
+	marks := make(map[int64]ConfluenceSourceMark)
+	for rows.Next() {
+		var id int64
+		var m ConfluenceSourceMark
+		if err := rows.Scan(&id, &m.Space, &m.BackfillDone); err != nil {
+			return nil, fmt.Errorf("scanning confluence source mark: %w", err)
+		}
+		marks[id] = m
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading confluence source marks: %w", err)
+	}
+	return marks, nil
+}

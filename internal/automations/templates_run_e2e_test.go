@@ -31,6 +31,11 @@ func TestTemplates_RunE2E(t *testing.T) {
 	// newer are left, and the cursor never passes mail not summed up.
 	t.Run("new-mail-summary run cap", testRunNewMailRunCap)
 
+	// One mailbox keeps one cursor whether a run names it by label or by
+	// address, and a cursor an older script kept under the address is moved.
+	t.Run("new-mail-summary label then address", testRunNewMailNamedTwoWays)
+	t.Run("new-mail-summary cursor under the address", testRunNewMailLegacyCursor)
+
 	t.Run("jira-state-report", testRunJiraStateReport)
 
 	t.Run("team-performance-report", testRunTeamPerformanceReport)
@@ -64,8 +69,9 @@ func testRunNewMailSummary(t *testing.T) {
 		t.Fatalf("state after a run without newer mail = %q; want unchanged %q", got, state)
 	}
 	reads := f.toolSteps(t, second, "list_emails")
-	if len(reads) != 1 || !strings.Contains(reads[0].ArgsJSON, `"since":"`+newest+`"`) {
-		t.Fatalf("second list_emails steps = %+v; want one with since = the cursor %s", reads, newest)
+	if len(reads) != 2 || !strings.Contains(reads[0].ArgsJSON, `"limit":1`) ||
+		!strings.Contains(reads[1].ArgsJSON, `"since":"`+newest+`"`) {
+		t.Fatalf("second list_emails steps = %+v; want the name probe, then one with since = the cursor %s", reads, newest)
 	}
 }
 
@@ -116,8 +122,8 @@ func testRunNewMailBurst(t *testing.T) {
 	f.wantRun(t, id, db.RunSucceeded, "")
 
 	reads := f.toolSteps(t, id, "list_emails")
-	if len(reads) < 3 || !strings.Contains(reads[0].ArgsJSON, `"limit":200`) || !strings.Contains(reads[1].ArgsJSON, `"before":"`) {
-		t.Fatalf("list_emails steps = %d (first %s); want pages of 200 walked older with before", len(reads), reads[0].ArgsJSON)
+	if len(reads) < 4 || !strings.Contains(reads[1].ArgsJSON, `"limit":200`) || !strings.Contains(reads[2].ArgsJSON, `"before":"`) {
+		t.Fatalf("list_emails steps = %d (first page %s); want the name probe, then pages of 200 walked older with before", len(reads), reads[1].ArgsJSON)
 	}
 	if got := summedSubjects(t, gen); len(got) != 453 || gen.CallCount() != 3 {
 		t.Fatalf("summed up %d messages in %d llm() calls; want all 453 in 3", len(got), gen.CallCount())
@@ -231,6 +237,78 @@ func testRunNewMailRunCap(t *testing.T) {
 	}
 	if got, newest := f.mailCursor(t, a), f.newestMail(t); got != newest {
 		t.Fatalf("work cursor = %q; want the newest message's date %q", got, newest)
+	}
+}
+
+// installMailByAddress installs new-mail-summary with scheduledAccounts
+// naming the seeded "work" mailbox by its address.
+func (f *exFixture) installMailByAddress(t *testing.T) db.Automation {
+	t.Helper()
+	files, err := automations.RenderTemplate("new-mail-summary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Replace(string(files["new-mail-summary"]),
+		"const scheduledAccounts = [];", `const scheduledAccounts = ["owner@example.com"];`, 1)
+	if !strings.Contains(text, "owner@example.com") {
+		t.Fatal("scheduledAccounts not found in the template")
+	}
+	return f.seedText(t, "new-mail-summary", text, false)
+}
+
+func testRunNewMailNamedTwoWays(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
+	f := newTplFixture(t, gen)
+	a := f.installMailByAddress(t)
+
+	first := f.mailEvent(t, a, "c1") // the event names the mailbox "work"
+	f.step(t, 1)
+	f.wantRun(t, first, db.RunSucceeded, "")
+	state := f.stateDump(t)
+
+	second := f.enqueue(t, a, db.TriggerManual) // scheduledAccounts names it by address
+	f.step(t, 1)
+	f.wantRun(t, second, db.RunSucceeded, "")
+	if n := len(f.outputs(t)); n != 1 || gen.CallCount() != 1 {
+		t.Fatalf("outputs = %d, llm() calls = %d after the run by address; want still 1 and 1", n, gen.CallCount())
+	}
+	if got := f.stateDump(t); got != state {
+		t.Fatalf("state after the run by address = %q; want unchanged %q", got, state)
+	}
+	if got, newest := f.mailCursor(t, a), f.newestMail(t); got != newest {
+		t.Fatalf("work cursor = %q; want %q", got, newest)
+	}
+}
+
+// An older script kept the cursor under the name scheduledAccounts gave the
+// mailbox (here its address); the next run by that name reads it once and
+// moves it under the label.
+func testRunNewMailLegacyCursor(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
+	f := newTplFixture(t, gen)
+	a := f.installMailByAddress(t)
+	var newest, newestID string
+	if err := f.d.QueryRow(`SELECT internal_date, id FROM gmail_messages WHERE account_id = 1
+		ORDER BY internal_date DESC LIMIT 1`).Scan(&newest, &newestID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)`, a.ID,
+		`{"cursors":{"owner@example.com":{"date":"`+newest+`","ids":["`+newestID+`"]}}}`); err != nil {
+		t.Fatal(err)
+	}
+	// Mail later than the old cursor, so the run commits its state.
+	if _, err := f.d.Exec(`INSERT INTO gmail_messages (account_id, id, from_email, subject, internal_date)
+		VALUES (1, 'm-new', 'd@example.com', 'After the old cursor', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+1 minutes'))`); err != nil {
+		t.Fatal(err)
+	}
+	id := f.enqueue(t, a, db.TriggerManual)
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunSucceeded, "")
+	if got := summedSubjects(t, gen); len(got) != 1 || got[0] != "After the old cursor" {
+		t.Fatalf("summed subjects = %v; want only the mail after the old cursor", got)
+	}
+	if got := f.stateDump(t); strings.Contains(got, "owner@example.com") || f.mailCursor(t, a) != f.newestMail(t) {
+		t.Fatalf("state = %q; want the cursor moved under work at the newest mail", got)
 	}
 }
 

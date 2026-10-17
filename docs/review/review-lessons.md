@@ -1760,3 +1760,14 @@ Entry format:
 - weak-dimension: 6 (UI reachability of a spec'd "opens the same way" path was untested).
 - rule-gap (candidate): *a recursive UI affordance (sheet inside sheet) needs a test or a manual check that the nested callback is wired.*
 - outcome: TBD
+
+## 2026-10-17 — feature/automations-p4 (P4 event triggers: `automations.Bus`, Slack/mail/Jira/calendar/Confluence event sources, `observePhase` + `flushAutomationEvents` in `runSync`, where-key validation, Desktop event trigger choice; panel: prosecutor (7) + codex (1), 3 specialists DOWN (not installed); judge verified against 2ec29ff8f by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held blocker, prosecutor F1, controller-verified): `slack.new_messages` diffs `sync_state.last_synced_ts`, but the daemon calls `o.Run(ctx, SyncOptions{})`, which goes to `runSearchSync`, and only `runFullSync`'s `message_sync.go` ever calls `UpdateSyncState`. So the event never fires on the default path, and a fallback full sync then counts all search-synced history as new. Every test hand-writes `sync_state` in a fake phase. **An event source that diffs a watermark must name the writer of that watermark on the path the daemon actually takes, and its e2e test must use that writer or assert that the hand-seeded state is reachable.** [6/7]
+- contested (held major, prosecutor F2): "initial backfill is not news" is keyed on watermark>0 before Sync. But Gmail/IMAP cap the first sync at 100 of a 7-day window, so later cycles drain the old backlog with the watermark already set. An IMAP UIDVALIDITY reset also re-syncs 7 days. The feature note states the contract that this breaks. The new-mail-summary template's own cursor limits the damage to that template. [6]
+- contested (held major, codex only): the #740 startup calendar pre-sync in `Run` runs before the first cycle's Before snapshot, so calendar changes made while the daemon was down are absorbed silently. Mail and Jira downtime changes do publish. [6/8]
+- false-positive: none dismissed outright. F3 (cycle id has 1-s resolution) was cut to minor because it is spec-pinned (§8) and needs a sub-second cycle. F4 (the where-key compat break) was minor because event triggers never fired before P4.
+- miss: codex alone traced the pre-existing startup phase outside `runSync`. The prosecutor alone traced the Slack watermark writer. No per-task review checked either, because each source was reviewed against its own fake phase.
+- weak-dimension: 7. Every event-source test seeds the diffed state by hand, not through the real syncer path.
+- rule-gap (candidate, dim 6): *an observer wrapped around a sync phase lists every call site of that phase, including startup pre-syncs outside the cycle, and every writer of the state it diffs on the default sync path.*
+- outcome: TBD
