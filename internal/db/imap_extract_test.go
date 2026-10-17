@@ -68,11 +68,11 @@ func TestListImapMessagesForExtract_WindowAndBoundaryDrain(t *testing.T) {
 	assert.Equal(t, float64(base.Add(30*time.Second).Unix()), newest)
 }
 
-// #615 (F2/F5): migration 00134 keeps every non-IMAP row through Down and
+// #615 (F2/F5): migration 00135 keeps every non-IMAP row through Down and
 // Up, drops only the IMAP rows on Down, and carries both recreated tables'
 // AUTOINCREMENT high-water marks, so a new id never reuses one at or below
 // the consolidator's id floor.
-func TestMigration00134_DownUpKeepsRowsAndSequences(t *testing.T) {
+func TestMigration00135_DownUpKeepsRowsAndSequences(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "imap-streams-cycle.db"))
 	require.NoError(t, err)
 	defer d.Close()
@@ -99,7 +99,7 @@ func TestMigration00134_DownUpKeepsRowsAndSequences(t *testing.T) {
 	_, err = d.Exec(`DELETE FROM idea_mentions WHERE id = ?`, goneMention)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 133))
+	require.NoError(t, goose.DownTo(d.DB, "migrations", 134))
 	assert.False(t, columnNames(t, d.DB, "email_accounts")["ideas_email_floor"], "Down dropped the floor column")
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM stream_digests WHERE id = ?`, gmailDigest))
 	assert.Zero(t, countRows(t, d, `SELECT COUNT(*) FROM stream_digests WHERE source = 'imap'`))
@@ -116,7 +116,7 @@ func TestMigration00134_DownUpKeepsRowsAndSequences(t *testing.T) {
 }
 
 // #615: the mailbox ideas floor round-trips, a missing mailbox reads as 0,
-// and stream_digests accepts source 'imap' after migration 00134.
+// and stream_digests accepts source 'imap' after migration 00135.
 func TestIdeasImapFloorAndImapStreamDigest(t *testing.T) {
 	d := openTestDB(t)
 	acct := seedImapExtractMailbox(t, d)
