@@ -1357,6 +1357,17 @@ final class ChatViewModelTests: XCTestCase {
         vm.forget(conversationID: first)
         XCTAssertNil(vm.quoteBatches[first])
     }
+
+    /// #737: every turn's end is forwarded after the VM's own refresh, so the
+    /// Inbox strip re-reads a connector call the session ran in that turn.
+    func testTurnFinishedIsForwardedAfterTheFeedRefresh() async throws {
+        let vm = try makeViewModel()
+        var finished: [Int64] = []
+        vm.onTurnFinished = { finished.append($0) }
+        vm.send(text: "hi")
+        try await complete(vm, turn: "turn-1", text: "ok")
+        XCTAssertEqual(finished, [try XCTUnwrap(vm.conversationID)])
+    }
 }
 
 // MARK: - The Chat tab's landing

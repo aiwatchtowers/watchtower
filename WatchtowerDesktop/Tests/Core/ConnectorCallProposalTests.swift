@@ -10,7 +10,8 @@ import WatchtowerTestSupport
 /// row never offers Retry nor waits on the owner once it failed.
 @MainActor
 final class ConnectorCallProposalTests: XCTestCase {
-    nonisolated private static let args = #"{"server":"claude.ai Connector A","tool":"send_message","input":{"to":"a@example.com","n":2},"reason":"asked"}"#
+    nonisolated private static let args =
+        #"{"server":"claude.ai Connector A","tool":"send_message","input":{"to":"a@example.com","n":2},"reason":"asked"}"#
 
     private func action(
         args: String = args,
@@ -33,14 +34,41 @@ final class ConnectorCallProposalTests: XCTestCase {
         XCTAssertEqual(p.toolName, "send_message")
         XCTAssertEqual(p.inputJSON, """
             {
-              "n" : 2,
-              "to" : "a@example.com"
+              "to": "a@example.com",
+              "n": 2
             }
             """)
         XCTAssertNil(ConnectorCallProposal(action: action(tool: "send_slack_message")), "another tool")
         XCTAssertNil(ConnectorCallProposal(action: action(args: #"{"server":"s","tool":"t","input":[1]}"#)),
                      "an input that is not an object is unreadable")
         XCTAssertNil(ConnectorCallProposal(action: action(args: "not json")))
+        XCTAssertNil(ConnectorCallProposal(action: action(args: #"{"tool":"t","input":{}}"#)), "no server")
+        XCTAssertNil(ConnectorCallProposal(action: action(args: #"{"server":"s","tool":"","input":{}}"#)), "empty tool")
+    }
+
+    /// The card shows the input exactly as stored: numbers and escapes are
+    /// never re-encoded, key order is kept, nested values are indented.
+    func testConnectorInputIsShownAsStored() throws {
+        let args = #"{"input":{"z":0.30000000000000001,"big":12345678901234567890,"#
+            + #""s":"a,b:{\"q\"}\u00e9","list":[1,{"k":[]}],"e":{}},"server":"s","tool":"t"}"#
+        let p = try XCTUnwrap(ConnectorCallProposal(action: action(args: args)))
+        XCTAssertEqual(p.inputJSON, #"""
+            {
+              "z": 0.30000000000000001,
+              "big": 12345678901234567890,
+              "s": "a,b:{\"q\"}\u00e9",
+              "list": [
+                1,
+                {
+                  "k": []
+                }
+              ],
+              "e": {}
+            }
+            """#)
+        XCTAssertEqual(p.approval(editedInput: p.inputJSON), .plain)
+        let patch = try XCTUnwrap(p.patch(editedInput: p.inputJSON))
+        XCTAssertTrue(patch.contains("12345678901234567890"), "an edit keeps untouched numbers as stored")
     }
 
     func testConnectorProposalPatchNeedsAnObject() throws {
@@ -58,30 +86,35 @@ final class ConnectorCallProposalTests: XCTestCase {
 
     func testConnectorStatusLabels() {
         typealias Card = ConnectorCallProposal
-        XCTAssertEqual(Card.statusLabel(for: action(status: "pending")), "Awaiting your approval")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "approved")), "Approved — the chat is running it")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "executing")), "Running…")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "applied")), "Done")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "rejected", error: Card.notApprovedInTime)),
+        XCTAssertEqual(Card.statusLabel(for: action(status: "pending"), sessionHolds: true), "Awaiting your approval")
+        XCTAssertEqual(Card.statusLabel(for: action(status: "approved"), sessionHolds: true), "Approved — the chat is running it")
+        XCTAssertEqual(Card.statusLabel(for: action(status: "executing"), sessionHolds: true), "Running…")
+        XCTAssertEqual(Card.statusLabel(for: action(status: "applied"), sessionHolds: true), "Done")
+        XCTAssertEqual(Card.statusLabel(for: action(status: "rejected", error: Card.notApprovedInTime), sessionHolds: true),
                        "Cancelled — not approved in time")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "rejected", error: Card.stopped)), "Cancelled — chat stopped")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "rejected")), "Rejected")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "failed", error: "connector said no")),
-                       "Failed — connector said no")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "failed")), "Failed")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "failed", error: Card.sessionEndedBeforeApproval)),
+        XCTAssertEqual(Card.statusLabel(for: action(status: "rejected", error: Card.stopped), sessionHolds: true), "Cancelled — chat stopped")
+        XCTAssertEqual(Card.statusLabel(for: action(status: "rejected"), sessionHolds: true), "Rejected")
+        XCTAssertEqual(Card.statusLabel(for: action(status: "failed", error: "connector said no"), sessionHolds: true),
+                       "Failed")
+        XCTAssertFalse(Card.labelCarriesError(action(status: "failed", error: "connector said no")),
+                       "a connector's own error is shown on its own line")
+        for known in [Card.sessionEndedBeforeApproval, Card.sessionEndedWhileRunning, Card.notApprovedInTime, Card.stopped] {
+            XCTAssertTrue(Card.labelCarriesError(action(status: "failed", error: known)), known)
+        }
+        XCTAssertEqual(Card.statusLabel(for: action(status: "failed"), sessionHolds: true), "Failed")
+        XCTAssertEqual(Card.statusLabel(for: action(status: "failed", error: Card.sessionEndedBeforeApproval), sessionHolds: true),
                        "Chat session ended — not sent")
-        XCTAssertEqual(Card.statusLabel(for: action(status: "failed", error: Card.sessionEndedWhileRunning)),
+        XCTAssertEqual(Card.statusLabel(for: action(status: "failed", error: Card.sessionEndedWhileRunning), sessionHolds: true),
                        "Chat session ended — outcome unknown")
     }
 
-    /// The controller's H2 default: an approval the dead session can never
-    /// claim must not read as a call about to run, nor offer Approve.
+    /// An approval the dead session can never claim must not read as a call
+    /// about to run, nor offer Approve.
     func testSessionEndedIsNeverShownAsRunning() {
         typealias Card = ConnectorCallProposal
         XCTAssertEqual(Card.statusLabel(for: action(status: "approved"), sessionHolds: false), "Chat session ended — not sent")
         XCTAssertEqual(Card.statusLabel(for: action(status: "pending"), sessionHolds: false),
-                       "Chat session ended — can no longer run")
+                       "Chat session ended — reject to dismiss")
         XCTAssertEqual(Card.statusLabel(for: action(status: "executing"), sessionHolds: false),
                        "Chat session ended — outcome unknown")
         XCTAssertEqual(Card.statusLabel(for: action(status: "applied"), sessionHolds: false), "Done")
@@ -95,7 +128,7 @@ final class ConnectorCallProposalTests: XCTestCase {
         XCTAssertTrue(Card.sessionHolds(action(turnID: "t1"), runningTurnID: "t1"))
         XCTAssertFalse(Card.sessionHolds(action(turnID: "t1"), runningTurnID: "t2"), "a later turn of the session")
         XCTAssertFalse(Card.sessionHolds(action(turnID: "t1"), runningTurnID: nil), "no live session running a turn")
-        XCTAssertTrue(Card.sessionHolds(action(turnID: ""), runningTurnID: "t2"))
+        XCTAssertFalse(Card.sessionHolds(action(turnID: ""), runningTurnID: "t2"), "no turn id ties it to a turn")
         XCTAssertFalse(Card.sessionHolds(action(turnID: ""), runningTurnID: nil))
     }
 
@@ -104,9 +137,10 @@ final class ConnectorCallProposalTests: XCTestCase {
             XCTAssertFalse(action(status: status).canRetry, status)
             XCTAssertTrue(action(status: status, tool: "create_jira_issue").canRetry, status)
         }
-        XCTAssertTrue(action(status: "failed").isTerminal, "nothing can retry a failed session call")
-        XCTAssertFalse(action(status: "failed", tool: "create_jira_issue").isTerminal)
-        XCTAssertFalse(action(status: "approved").isTerminal)
+        // Still not terminal: a failed call whose turn left no message keeps
+        // its card in the chat (`AgentActionFeed.unattached`).
+        XCTAssertFalse(action(status: "failed").isTerminal)
+        XCTAssertEqual(AgentActionFeed.unattached(rows: [action(status: "failed")], messageTurnIDs: []).count, 1)
         XCTAssertTrue(action().isSessionApplied)
     }
 
@@ -129,6 +163,28 @@ final class ConnectorCallProposalTests: XCTestCase {
             ["actions", "approve", String(id), "--args-sha256", digest, "--json"],
             ["actions", "approve", String(id), "--args-sha256", digest, "--patch", #"{"input":{"to":"b"}}"#, "--json"]
         ])
+    }
+
+    /// "Approve all" leaves a connector call to its own card, which offers
+    /// Approve only while the call is readable and its session holds it.
+    func testApproveAllSkipsSessionCalls() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let call = try await pool.write { db in
+            _ = try TestDatabase.insertAgentAction(db, turnID: "t1")
+            _ = try TestDatabase.insertAgentAction(db, turnID: "t1")
+            return try TestDatabase.insertAgentAction(db, tool: ConnectorCallProposal.tool, external: true,
+                                                      argsJSON: Self.args, turnID: "t1")
+        }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"error":""}"#.utf8))
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
+        feed.start(conversationID: 1)
+        feed.refresh()
+        XCTAssertEqual(feed.bulkApprovable(forTurn: "t1").count, 2)
+        await feed.approveAllPending(forTurn: "t1")
+        XCTAssertEqual(runner.invocations.count, 2)
+        XCTAssertFalse(runner.invocations.contains { $0.contains(String(call)) })
+        feed.stop()
     }
 
     /// A failed connector call has no Retry, so it never counts as waiting on

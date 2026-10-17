@@ -232,7 +232,9 @@ struct AgentActionCardView: View {
                 SaveAutomationCardDetails(model: save, actionID: action.id,
                                           differsFromDraft: action.isPending && save.differsFromDraft(latestDraftText))
             } else if let connector {
-                ConnectorCallDetails(proposal: connector, draft: connectorDraftBinding)
+                ConnectorCallDetails(proposal: connector, draft: connectorDraftBinding,
+                                     approval: connectorApproval(connector))
+                    .disabled(inFlight)
             } else if let slack = SlackSendProposal(action: action) {
                 SlackRecipientLine(proposal: slack)
                 // The text is in the editor while the row can still be edited.
@@ -256,8 +258,8 @@ struct AgentActionCardView: View {
             }
             outcome
             links
-            // A session-applied call's status line already carries its error.
-            if !action.error.isEmpty, !action.isSessionApplied {
+            // A session-applied call's status line words its known errors.
+            if !action.error.isEmpty, !ConnectorCallProposal.labelCarriesError(action) {
                 Text(action.error).font(.caption).foregroundStyle(.red)
             }
             if let shownGestureError {
@@ -399,27 +401,46 @@ struct AgentActionCardView: View {
         return "Open →"
     }
 
-    /// The editor's binding while the owner edits a pending call's input.
+    /// The editor's binding while the owner edits the input of a call that
+    /// can still be approved; once Approve is gone the input is read-only.
     private var connectorDraftBinding: Binding<String>? {
-        guard action.isPending, connectorDraft != nil else { return nil }
+        guard ConnectorCallProposal.canApprove(action, sessionHolds: sessionHoldsCall), connectorDraft != nil else {
+            return nil
+        }
         return Binding(get: { connectorDraft ?? "" }, set: { connectorDraft = $0 })
     }
 
+    private func connectorApproval(_ connector: ConnectorCallProposal) -> ConnectorCallProposal.Approval? {
+        connector.approval(editedInput: connectorDraft ?? connector.inputJSON)
+    }
+
     /// Approve for a connector call: plain while the input is untouched,
-    /// with the edited input otherwise (`onApproveEdited`).
+    /// with the edited input otherwise (`onApproveEdited`). A call the card
+    /// cannot read gets Reject only, and says why.
     @ViewBuilder
-    private func connectorButtons(_ connector: ConnectorCallProposal) -> some View {
-        let approval = connector.approval(editedInput: connectorDraft ?? connector.inputJSON)
-        if ConnectorCallProposal.canApprove(action, sessionHolds: sessionHoldsCall) {
+    private func connectorButtons(_ connector: ConnectorCallProposal?) -> some View {
+        if let connector, ConnectorCallProposal.canApprove(action, sessionHolds: sessionHoldsCall) {
+            let approval = connectorApproval(connector)
             Button(gestureError?.isApprove == true ? "Retry" : "Approve") {
-                if case .edited(let patch)? = approval { onApproveEdited?(patch) } else { onApprove() }
+                switch approval {
+                case .plain?: onApprove()
+                case .edited(let patch)?: onApproveEdited?(patch)
+                case nil: break // disabled below
+                }
             }
             .buttonStyle(.borderedProminent)
             .disabled(approval == nil)
-            if onApproveEdited != nil, connectorDraft == nil {
-                Button("Edit Input") { connectorDraft = connector.inputJSON }
-                    .accessibilityIdentifier("agentAction.connectorEdit")
+            if onApproveEdited != nil {
+                if connectorDraft == nil {
+                    Button("Edit Input") { connectorDraft = connector.inputJSON }
+                        .accessibilityIdentifier("agentAction.connectorEdit")
+                } else {
+                    Button("Revert") { connectorDraft = nil }
+                        .accessibilityIdentifier("agentAction.connectorRevert")
+                }
             }
+        } else if connector == nil {
+            Text(ConnectorCallProposal.unreadableNote).font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -433,11 +454,8 @@ struct AgentActionCardView: View {
                 if !action.isSessionApplied || sessionHoldsCall { ProgressView().controlSize(.small) }
             } else {
                 if action.isPending {
-                    if let connector {
+                    if action.isSessionApplied {
                         connectorButtons(connector)
-                    } else if action.isSessionApplied {
-                        // An unreadable connector call: nothing to approve, Reject only.
-                        EmptyView()
                     } else if let slack = editableSlack {
                         let text = slackDraft ?? slack.text
                         Button(gestureError?.isApprove == true ? "Retry" : "Approve & send") {

@@ -485,15 +485,9 @@ final class AppState {
         let hvm = ChatHistoryViewModel(dbManager: db)
         hvm.load()
         Self.wireChat(cvm, history: hvm)
+        wireActionStripRefresh(cvm)
         chatViewModel = cvm
         chatHistoryViewModel = hvm
-    }
-
-    /// The main chat's two view models: the history list follows the chat's
-    /// writes, and the landing's first turn becomes the history selection.
-    static func wireChat(_ cvm: ChatViewModel, history hvm: ChatHistoryViewModel) {
-        cvm.onConversationsChanged = { [weak hvm] in hvm?.load() }
-        cvm.onLandingTurnStarted = { [weak hvm] id in hvm?.selectedConversationID = id }
     }
 
     @discardableResult

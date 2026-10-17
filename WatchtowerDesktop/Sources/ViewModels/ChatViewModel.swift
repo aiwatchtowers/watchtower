@@ -87,6 +87,10 @@ final class ChatViewModel {
     /// takes over and the view makes it the history selection. Fired only
     /// by `send`, never by other ways of leaving the landing.
     @ObservationIgnored var onLandingTurnStarted: ((Int64) -> Void)?
+    /// Any conversation's turn ended, after this VM's own refresh. The Inbox
+    /// strip re-reads then: a connector call it shows was claimed and run
+    /// inside that turn, and its live "session holds it" just turned false.
+    @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
 
     let actionFeed: AgentActionFeed
     let pool: ChatSessionPool
@@ -971,6 +975,7 @@ final class ChatViewModel {
         }
         reloadConversations()
         requestTitleIfNeeded(conversationID: id)
+        onTurnFinished?(id)
     }
 
     /// Fire-and-forget `watchtower chat title` after the first completed

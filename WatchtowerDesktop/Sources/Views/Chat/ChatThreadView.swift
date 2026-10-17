@@ -110,7 +110,7 @@ struct ChatThreadView: View {
     private func actionCards(forTurn turn: String) -> some View {
         if !turn.isEmpty {
             let cards = chatVM.actionFeed.cards(forTurn: turn)
-            if cards.filter(\.isPending).count >= 2 {
+            if chatVM.actionFeed.bulkApprovable(forTurn: turn).count >= 2 {
                 Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
                     .font(.caption)
             }

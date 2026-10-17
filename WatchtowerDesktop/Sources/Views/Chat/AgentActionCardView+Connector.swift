@@ -9,13 +9,15 @@ struct ConnectorCallDetails: View {
     let proposal: ConnectorCallProposal
     /// The editor's text while the owner edits the input; nil shows it read-only.
     let draft: Binding<String>?
+    /// What Approve would run for the editor's text (nil: not an object).
+    let approval: ConnectorCallProposal.Approval?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Connector: \(proposal.server)").font(.callout)
             Text("Tool: \(proposal.toolName)").font(.callout)
             if let draft {
-                ConnectorInputEditor(proposal: proposal, text: draft)
+                ConnectorInputEditor(text: draft, approval: approval)
             } else {
                 ScrollView {
                     Text(proposal.inputJSON)
@@ -33,8 +35,8 @@ struct ConnectorCallDetails: View {
 /// Monospaced editor for the call's input; Approve stays disabled while the
 /// text is not a JSON object (`ConnectorCallProposal.approval`).
 private struct ConnectorInputEditor: View {
-    let proposal: ConnectorCallProposal
     @Binding var text: String
+    let approval: ConnectorCallProposal.Approval?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -46,9 +48,9 @@ private struct ConnectorInputEditor: View {
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
                 .accessibilityIdentifier("agentAction.connectorEditor")
-            if proposal.approval(editedInput: text) == nil {
+            if approval == nil {
                 Text("The input must be a JSON object.").font(.caption).foregroundStyle(.red)
-            } else if text != proposal.inputJSON {
+            } else if approval != .plain {
                 Text("Edited — Approve sends your version.").font(.caption).foregroundStyle(.secondary)
             }
         }
