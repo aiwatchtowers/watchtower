@@ -21,6 +21,36 @@ final class DaemonManagerStartTests: XCTestCase {
         return path
     }
 
+    /// `notRunningSince` (readiness' daemon-down grace): nil before any
+    /// status, set by the first "not running", kept across repeated polls,
+    /// cleared when the daemon runs.
+    @MainActor
+    func testNotRunningSinceTracksDownStretch() {
+        let manager = DaemonManager()
+        XCTAssertNil(manager.notRunningSince)
+        manager.isRunning = false
+        let since = manager.notRunningSince
+        XCTAssertNotNil(since)
+        manager.isRunning = false
+        XCTAssertEqual(manager.notRunningSince, since, "a repeated poll keeps the first moment")
+        manager.isRunning = true
+        XCTAssertNil(manager.notRunningSince)
+    }
+
+    /// Only a flip is reported: a poll that merely sees the same daemon
+    /// again must not clear a restart failure on the banner.
+    @MainActor
+    func testOnlyFlipsAreReported() {
+        let manager = DaemonManager()
+        var reports: [Bool] = []
+        manager.onRunningChanged = { reports.append($0) }
+        manager.isRunning = true
+        manager.isRunning = true
+        manager.isRunning = false
+        manager.isRunning = false
+        XCTAssertEqual(reports, [true, false])
+    }
+
     @MainActor
     func testFailedStartSurfacesCLIStderr() async throws {
         let script = try makeScript("echo 'workspace \"acme\" not found in config' >&2\nexit 1")

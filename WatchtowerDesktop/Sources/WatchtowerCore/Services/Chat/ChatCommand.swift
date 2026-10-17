@@ -101,13 +101,16 @@ package enum ChatContinuity {
     }
 }
 
-/// The text a turn sends (spec §4.3): the actions-outcome block is prefixed
-/// at send time only. The REFERENCED block is already part of the stored
+/// The text a turn sends (spec §4.3): the actions-outcome block and, from the
+/// help popup, the current-screen block are prefixed at send time only (the
+/// screen block goes first). The REFERENCED block is already part of the stored
 /// user text (Task 25's composer — preflight ruling A31), so it is not added
 /// here.
 package enum ChatTurnText {
-    package static func compose(userText: String, outcomes: String?) -> String {
-        guard let outcomes, !outcomes.isEmpty else { return userText }
-        return outcomes + "\n\n" + userText
+    package static func compose(userText: String, outcomes: String?, screen: ScreenContext? = nil) -> String {
+        var text = userText
+        if let outcomes, !outcomes.isEmpty { text = outcomes + "\n\n" + text }
+        if let screen { text = screen.block + "\n\n" + text }
+        return text
     }
 }

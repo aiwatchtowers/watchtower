@@ -2,11 +2,15 @@ import Foundation
 
 /// Per-feature readiness, pure: every input (the clock included) comes in
 /// `ReadinessInputs`. Precedence is fixed: off > needsSource > ready >
-/// needsSource(.jiraBoards) > preparing > error > waitingForSync > scheduled.
+/// needsSource(.jiraBoards) > daemonStopped > preparing > error > waitingForSync >
+/// scheduled.
 package enum FeatureReadiness {
     /// A `running` row older than this is a dead process's leftover
     /// (`reapStalePipelineRuns` only reaps it after 24 h), not a run.
     package static let preparingMaxAge: TimeInterval = 2 * 60 * 60
+    /// How long the daemon must be seen down before features say so: a
+    /// restart (stop, then start) stays well under it, so it never flickers.
+    package static let daemonDownGrace: TimeInterval = 30
 
     /// `config.DefaultPollInterval` in Go, in minutes.
     static let defaultPollMinutes = 15
@@ -28,13 +32,14 @@ package enum FeatureReadiness {
     package static let ownerGated: Set<ReadinessFeature> = [.briefing, .dayPlan, .inbox]
 
     /// With the owner unknown, an owner-gated feature promises no run: a
-    /// scheduled or waiting state reads nil, so no line (Briefings, Day Plan
+    /// scheduled, waiting or daemon-stopped state reads nil (the owner gap is
+    /// the fix to name, even with the daemon down), so no line (Briefings, Day Plan
     /// and Inbox say why in their no-owner box; Home's card names
     /// `.ownerIdentity` instead). The other states are facts and stay.
     package static func honoringOwner(_ readiness: Readiness?, of feature: ReadinessFeature, ownerKnown: Bool) -> Readiness? {
         guard !ownerKnown, ownerGated.contains(feature) else { return readiness }
         switch readiness {
-        case .scheduled, .waitingForSync: return nil
+        case .scheduled, .waitingForSync, .daemonStopped: return nil
         default: return readiness
         }
     }
@@ -48,6 +53,9 @@ package enum FeatureReadiness {
         // is their only connected source.
         if !inputs.jiraBoardsSelected, waitsOnJiraBoards(feature, inputs.connected) {
             return .needsSource(.jiraBoards)
+        }
+        if isDaemonDown(running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now) {
+            return .daemonStopped
         }
 
         let syncing = inputs.syncProgress?.isSyncing(now: inputs.now) == true
@@ -75,6 +83,14 @@ package enum FeatureReadiness {
         case .jiraOrMail: !connected.mail
         default: false
         }
+    }
+
+    /// Down for the grace period: every "preparing", "retries" or ETA would
+    /// be a promise nothing keeps until the daemon is started. Also the
+    /// app-wide banner's rule (`ReadinessCenter.daemonDown`).
+    package static func isDaemonDown(running: Bool, since: Date?, now: Date) -> Bool {
+        guard !running, let since else { return false }
+        return now.timeIntervalSince(since) >= daemonDownGrace
     }
 
     private static func eta(of feature: ReadinessFeature, _ inputs: ReadinessInputs, syncing: Bool) -> Eta {
@@ -158,6 +174,7 @@ package enum FeatureReadiness {
         case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
         case .needsSource(let source): "\(source.actionTitle) to get this"
         case .ready: "Ready — Open"
+        case .daemonStopped: "Watchtower isn't running"
         case .preparing(let detail): withDetail("Preparing now", detail)
         case .error(let message): withDetail("Didn't work yet — retries automatically", shortError(message))
         case .waitingForSync(let detail): withDetail("Starts after the first sync", detail)

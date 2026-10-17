@@ -140,6 +140,10 @@ package enum Readiness: Equatable, Sendable {
     case off
     case needsSource(ReadinessSource)
     case ready
+    /// The daemon has been down for `FeatureReadiness.daemonDownGrace`:
+    /// nothing scheduled will happen until it is started (from the app-wide
+    /// banner; the state itself carries no button).
+    case daemonStopped
     case preparing(detail: String?)
     case error(message: String)
     case waitingForSync(detail: String?)
@@ -182,6 +186,9 @@ package struct ReadinessInputs: Equatable {
     package var disabledFeatureIDs: Set<String>
     package var connected: ConnectedSources
     package var daemonRunning: Bool
+    /// Since when the daemon has been seen down (`DaemonManager.notRunningSince`);
+    /// nil while it runs or before the first status read.
+    package var daemonNotRunningSince: Date?
     package var syncProgress: SyncProgress?
     /// When the last Slack sync finished (`last_sync.json`, written only by
     /// the daemon's Slack sync phase); nil = the first Slack sync hasn't
@@ -213,6 +220,7 @@ package struct ReadinessInputs: Equatable {
         disabledFeatureIDs: Set<String> = [],
         connected: ConnectedSources = .none,
         daemonRunning: Bool = false,
+        daemonNotRunningSince: Date? = nil,
         syncProgress: SyncProgress? = nil,
         lastSyncTime: Date? = nil,
         latestRuns: [String: RunSnapshot] = [:],
@@ -230,6 +238,7 @@ package struct ReadinessInputs: Equatable {
         self.disabledFeatureIDs = disabledFeatureIDs
         self.connected = connected
         self.daemonRunning = daemonRunning
+        self.daemonNotRunningSince = daemonNotRunningSince
         self.syncProgress = syncProgress
         self.lastSyncTime = lastSyncTime
         self.latestRuns = latestRuns

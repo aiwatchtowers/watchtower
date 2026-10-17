@@ -97,6 +97,70 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertFalse(isPreparing(evaluate(.digests, input)))
     }
 
+    // MARK: - Daemon down (#577)
+
+    /// Down past the grace: every promise (an ETA, a waiting first sync, a
+    /// stale running row, a "retries automatically" error) reads as stopped.
+    func testDaemonDownPastGraceSaysStopped() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-FeatureReadiness.daemonDownGrace)
+        input.latestRuns = [
+            "digests": RunSnapshot(status: "running", startedAt: now.addingTimeInterval(-600)),
+            "tracks": RunSnapshot(status: "error", startedAt: now.addingTimeInterval(-600), errorMessage: "x")
+        ]
+        XCTAssertEqual(evaluate(.digests, input), .daemonStopped)
+        XCTAssertEqual(evaluate(.tracks, input), .daemonStopped)
+        XCTAssertEqual(evaluate(.peopleCards, input), .daemonStopped)
+        input.lastSyncTime = nil
+        XCTAssertEqual(evaluate(.ideas, input), .daemonStopped)
+        XCTAssertEqual(FeatureReadiness.line(.daemonStopped), "Watchtower isn't running")
+    }
+
+    /// The owner gap is the fix to name even with the daemon down: an
+    /// owner-gated feature drops `daemonStopped` like any promise.
+    func testOwnerGapBeatsDaemonStopped() {
+        XCTAssertNil(FeatureReadiness.honoringOwner(.daemonStopped, of: .briefing, ownerKnown: false))
+        XCTAssertEqual(FeatureReadiness.honoringOwner(.daemonStopped, of: .briefing, ownerKnown: true), .daemonStopped)
+        XCTAssertEqual(FeatureReadiness.honoringOwner(.daemonStopped, of: .digests, ownerKnown: false), .daemonStopped)
+        XCTAssertTrue(FeatureReadiness.isDaemonDown(running: false, since: Date(timeIntervalSince1970: 0), now: Date()))
+        XCTAssertFalse(FeatureReadiness.isDaemonDown(running: false, since: nil, now: Date()))
+    }
+
+    func testDaemonBannerFailureWinsOverStopped() {
+        XCTAssertEqual(DaemonBanner.current(failure: "boom", daemonDown: true), .failed("boom"))
+        XCTAssertEqual(DaemonBanner.current(failure: nil, daemonDown: true), .stopped)
+        XCTAssertNil(DaemonBanner.current(failure: nil, daemonDown: false))
+    }
+
+    /// A restart (down a few seconds) or no status read yet keeps the schedule.
+    func testDaemonDownWithinGraceKeepsSchedule() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.daemonRunning = false
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
+        input.daemonNotRunningSince = now.addingTimeInterval(-FeatureReadiness.daemonDownGrace + 1)
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
+        // A stale "since" with the daemon back up is ignored.
+        input.daemonRunning = true
+        input.daemonNotRunningSince = now.addingTimeInterval(-3600)
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    /// Off, a missing source and content keep their own state.
+    func testOffNeedsSourceAndReadyBeatDaemonDown() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-3600)
+        input.disabledFeatureIDs = ["tracks"]
+        input.contentPresent = [.digests]
+        XCTAssertEqual(evaluate(.tracks, input), .off)
+        XCTAssertEqual(evaluate(.digests, input), .ready)
+        XCTAssertEqual(evaluate(.calendar, input), .needsSource(.calendar))
+    }
+
     func testErrorOnlyWithoutContent() {
         let now = today(10)
         var input = inputs(now: now)
