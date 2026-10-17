@@ -57,7 +57,8 @@ func TestFirstSyncAndBackfillMeetOnTheSameDayEastOfUTC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchSince: %v", err)
 	}
-	chunk, err := cl.SearchRange(since.UTC().AddDate(0, 0, -2), since.UTC())
+	// Non-UTC bounds on purpose: SearchRange must send their UTC dates too.
+	chunk, err := cl.SearchRange(since.AddDate(0, 0, -2), since)
 	if err != nil {
 		t.Fatalf("SearchRange: %v", err)
 	}
