@@ -100,7 +100,7 @@ func runReactionCommandsPoll(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	dispatched, err := pipe.Run(ctx)
+	dispatched, err := pipe.Run(ctx, nil)
 	if err != nil {
 		return err
 	}

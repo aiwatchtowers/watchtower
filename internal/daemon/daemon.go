@@ -1657,7 +1657,7 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 	}
 
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
-		dispatched, err := d.reactionCmdPipe.Run(ctx)
+		dispatched, err := d.reactionCmdPipe.Run(ctx, nil)
 		if err != nil {
 			d.logger.Printf("reaction-commands error: %v", err)
 		} else if dispatched > 0 {

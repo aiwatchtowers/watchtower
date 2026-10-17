@@ -158,7 +158,7 @@ func TestReactionCmd_SeedRecordsHistoryWithoutDispatching(t *testing.T) {
 	// The daemon's first poll over the very same history: nothing left to do.
 	gen := &mockGenerator{out: `{"essence":"an idea worth keeping","reason":"owner flagged it"}`}
 	p := newTestPipeline(t, database, gen, items)
-	dispatched, err := p.Run(context.Background())
+	dispatched, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Zero(t, dispatched)
 	assert.Equal(t, 0, gen.calls, "the first poll after a seed makes no AI call")
@@ -182,7 +182,7 @@ func TestReactionCmd_NewReactionAfterSeedDispatchesExactlyOne(t *testing.T) {
 	gen := &mockGenerator{out: `{"text":"Handle the new deploy","reason":"owner flagged it"}`}
 	p := newTestPipeline(t, database, gen, fresh)
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "only the post-seed reaction dispatches")
 	assert.Equal(t, 1, gen.calls, "exactly one compose call")
@@ -234,7 +234,7 @@ func TestReactionCmd_SeedNoAccountsIsNoOp(t *testing.T) {
 }
 
 // TestReactionCmd_SeedCoversEverythingThePollCanDispatch is the equivalence pin
-// between the seed's eligibility predicate (ownerReactionKeys) and the poll's
+// between the seed's eligibility predicate (ownerMessageReactions) and the poll's
 // (extractOwnerReactions) — two hand-written copies of the same prelude in one
 // package, the StreamingTranscriber/WindowedTranscriber precedent. The
 // invariant is one-directional on purpose: the seed may cover MORE than the
@@ -251,7 +251,7 @@ func TestReactionCmd_SeedCoversEverythingThePollCanDispatch(t *testing.T) {
 	}
 
 	seeded := map[string]bool{}
-	for _, r := range ownerReactionKeys(items, "UOWNER", 1) {
+	for _, r := range ownerMessageReactions(items, "UOWNER", 1) {
 		seeded[ledgerKey(r.ChannelID, r.MessageTS, r.Emoji)] = true
 	}
 	dispatchable := extractOwnerReactions(items, "UOWNER", dict, 1)
@@ -292,7 +292,7 @@ func TestReactionCmd_FirstPollOfUnseededAccountSeedsInsteadOfDispatching(t *test
 	gen := &mockGenerator{out: `{"essence":"an idea worth keeping","reason":"owner flagged it"}`}
 	p := newTestPipeline(t, database, gen, items)
 
-	dispatched, err := p.Run(context.Background())
+	dispatched, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Zero(t, dispatched)
 	assert.Equal(t, 0, gen.calls, "the seeding poll makes no AI call")
@@ -316,13 +316,13 @@ func TestReactionCmd_PollAfterFirstPollSeedDispatchesOnlyNewReactions(t *testing
 	database := seedTestDB(t, 1)
 	items := seedFixture()
 	gen := &mockGenerator{out: `{"text":"Handle the new deploy","reason":"owner flagged it"}`}
-	_, err := newTestPipeline(t, database, gen, items).Run(context.Background())
+	_, err := newTestPipeline(t, database, gen, items).Run(context.Background(), nil)
 	require.NoError(t, err)
 
 	fresh := append(append([]slack.ReactedItem{}, items...),
 		msgItem("C1", "555.5", "UAUTHOR", "handle the new deploy", "",
 			slack.ItemReaction{Name: "white_check_mark", Users: []string{"UOWNER"}}))
-	n, err := newTestPipeline(t, database, gen, fresh).Run(context.Background())
+	n, err := newTestPipeline(t, database, gen, fresh).Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "only the post-seed reaction dispatches")
 	assert.Equal(t, 1, gen.calls)
@@ -338,13 +338,13 @@ func TestReactionCmd_PollAfterFirstPollSeedDispatchesOnlyNewReactions(t *testing
 func TestReactionCmd_NeverReactedOwnerKeepsTheirFirstReaction(t *testing.T) {
 	database := seedTestDB(t, 1)
 	gen := &mockGenerator{out: `{"text":"Handle the deploy","reason":"owner flagged it"}`}
-	_, err := newTestPipeline(t, database, gen, nil).Run(context.Background())
+	_, err := newTestPipeline(t, database, gen, nil).Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, countRows(t, database, "reaction_commands"), "nothing to seed")
 
 	first := []slack.ReactedItem{msgItem("C1", "111.1", "UAUTHOR", "please handle the deploy", "",
 		slack.ItemReaction{Name: "white_check_mark", Users: []string{"UOWNER"}})}
-	n, err := newTestPipeline(t, database, gen, first).Run(context.Background())
+	n, err := newTestPipeline(t, database, gen, first).Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "the owner's first-ever reaction is a command, not history")
 	assert.Equal(t, 1, gen.calls)
@@ -392,7 +392,7 @@ func TestReactionCmd_PartWaySeedFailureLeavesAccountUnstampedAndReseeds(t *testi
 		BEGIN SELECT RAISE(ABORT, 'injected ledger write failure'); END`)
 	require.NoError(t, err)
 
-	_, err = newTestPipeline(t, database, gen, items).Run(context.Background())
+	_, err = newTestPipeline(t, database, gen, items).Run(context.Background(), nil)
 	require.Error(t, err, "the failed seed is reported")
 	assert.Equal(t, 2, countRows(t, database, "reaction_commands"), "the writes before the failure landed")
 	seeded, err := database.ReactionCommandsSeeded(1)
@@ -402,7 +402,7 @@ func TestReactionCmd_PartWaySeedFailureLeavesAccountUnstampedAndReseeds(t *testi
 	_, err = database.Exec(`DROP TRIGGER fail_third`)
 	require.NoError(t, err)
 
-	dispatched, err := newTestPipeline(t, database, gen, items).Run(context.Background())
+	dispatched, err := newTestPipeline(t, database, gen, items).Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Zero(t, dispatched, "the next poll finishes the seed, it does not dispatch the remainder")
 	assert.Equal(t, 0, gen.calls)
@@ -427,7 +427,7 @@ func TestReactionCmd_SeedingOneAccountLeavesTheOthersBudgetIntact(t *testing.T) 
 		2: dictionaryReactions("C2", maxDispatchPerRun),
 	})
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, maxDispatchPerRun, n, "seeding account 1 costs account 2 nothing")
 	assert.Equal(t, maxDispatchPerRun, gen.calls)
