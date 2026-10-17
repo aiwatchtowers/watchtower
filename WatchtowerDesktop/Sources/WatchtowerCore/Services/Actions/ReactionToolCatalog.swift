@@ -127,6 +127,14 @@ package enum ReactionToolCatalog {
             summary: "Sends a message as you to a channel, a thread or a person",
             destination: "Slack",
             alwaysAsks: true
+        ),
+        // Main chat only (spec 2026-10-16 D5) — External, AlwaysAsk, applied
+        // by the chat session itself once approved.
+        ConnectorCallProposal.tool: ReactionToolInfo(
+            title: "Use a claude.ai connector",
+            summary: "Runs a write through one of your claude.ai connectors once you approve it",
+            destination: "claude.ai",
+            alwaysAsks: true
         )
     ]
 

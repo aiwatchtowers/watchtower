@@ -3,8 +3,8 @@ import AppKit
 import WatchtowerCore
 
 /// The centered thread column (spec §3.1, max ~760 pt) on the shared
-/// `ChatFeedView`. Reads `liveTurn` identity only; its text is read by
-/// `LiveAssistantRow` alone.
+/// `ChatFeedView`. Reads `liveTurn` identity and `waitingActionIDs` only;
+/// its text is read by `LiveAssistantRow` alone.
 struct ChatThreadView: View {
     @Bindable var chatVM: ChatViewModel
     @Environment(AppState.self) private var appState
@@ -110,7 +110,7 @@ struct ChatThreadView: View {
     private func actionCards(forTurn turn: String) -> some View {
         if !turn.isEmpty {
             let cards = chatVM.actionFeed.cards(forTurn: turn)
-            if cards.filter(\.isPending).count >= 2 {
+            if chatVM.actionFeed.bulkApprovable(forTurn: turn).count >= 2 {
                 Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
                     .font(.caption)
             }
@@ -131,8 +131,11 @@ struct ChatThreadView: View {
         }
     }
 
+    /// A card a live step waits on (`tool_wait`, same action id) is outlined,
+    /// so the step's "see the approval card below" points at one card.
     private func agentActionCard(_ action: AgentAction) -> some View {
-        AgentActionCardView(
+        let awaited = chatVM.liveTurn?.waitingActionIDs.contains(action.id) ?? false
+        return AgentActionCardView(
             action: action,
             inFlight: chatVM.actionFeed.inFlight.contains(action.id),
             onApprove: { Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON) } },
@@ -140,8 +143,14 @@ struct ChatThreadView: View {
             onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
             gestureError: chatVM.actionFeed.rowErrors[action.id],
             onApproveEdited: { patch in Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
-            onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) }
+            onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
+            sessionHoldsCall: appState.chatSessionPool?.holdsSessionCall(action) ?? false
         )
+        .overlay {
+            if awaited {
+                RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange, lineWidth: 1.5)
+            }
+        }
     }
 }
 

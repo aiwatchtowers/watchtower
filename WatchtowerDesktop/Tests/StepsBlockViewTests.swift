@@ -20,6 +20,21 @@ final class StepsBlockViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "Opened P-1"))
     }
 
+    /// CHAT-02: a waiting call says so without expanding the row, pointing at
+    /// its approval card; a denied one shows the gate's reason in red. Once
+    /// the turn is over a leftover waiting state claims nothing.
+    func testWaitingAndDeniedStepsShowTheirNoteInline() throws {
+        var waiting = step("a", "x", .waiting(actionID: 4), end: nil)
+        waiting.summary = "Waiting for your approval"
+        var denied = step("b", "y", .failed)
+        denied.summary = "not approved within 15 minutes"
+        let live = StepsBlockView(steps: [waiting, denied], isRunning: true)
+        XCTAssertNoThrow(try live.inspect().find(text: "Waiting for your approval — see the approval card below."))
+        XCTAssertNoThrow(try live.inspect().find(text: "not approved within 15 minutes"))
+        let ended = StepsBlockView(steps: [waiting], isRunning: false)
+        XCTAssertThrowsError(try ended.inspect().find(text: "Waiting for your approval — see the approval card below."))
+    }
+
     func testEmptyStepsRenderNothing() throws {
         let view = StepsBlockView(steps: [], isRunning: false)
         XCTAssertThrowsError(try view.inspect().find(ViewType.DisclosureGroup.self))

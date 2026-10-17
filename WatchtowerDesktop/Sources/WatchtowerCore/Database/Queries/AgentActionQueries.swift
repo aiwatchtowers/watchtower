@@ -8,6 +8,11 @@ package enum AgentActionQueries {
     /// terminal) that waits for the owner's Approve here.
     private static let notWorkbenchRow = "(context_type IS NOT 'project' OR external = 1)"
 
+    /// A failed session-applied call (`claude_ai_connector_call`, Go
+    /// `Tool.AppliedBySession`) waits on nobody: Apply refuses it, so there is
+    /// no Retry. It is terminal for the badge and the strip.
+    private static let failedSessionCall = "(status = 'failed' AND tool = '\(ConnectorCallProposal.tool)')"
+
     /// Every proposal of one conversation, oldest first — the feed's
     /// observation query.
     package static func fetchByConversation(_ db: Database, conversationID: Int64) throws -> [AgentAction] {
@@ -42,13 +47,14 @@ package enum AgentActionQueries {
     }
 
     /// How many proposals wait on the owner right now: pending ones and failed
-    /// ones (retriable). Drives the Inbox sidebar badge; `approved`/`executing`
-    /// rows are in flight, not decisions, so they are not counted. Project
-    /// rows are excluded like in `fetchStrip` (STRIP-01).
+    /// ones (retriable — a failed session-applied call is not). Drives the
+    /// Inbox sidebar badge; `approved`/`executing` rows are in flight, not
+    /// decisions, so they are not counted. Project rows are excluded like in
+    /// `fetchStrip` (STRIP-01).
     package static func awaitingOwnerCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM agent_actions
-            WHERE status IN ('pending','failed') AND \(notWorkbenchRow)
+            WHERE status IN ('pending','failed') AND \(notWorkbenchRow) AND NOT \(failedSessionCall)
             """) ?? 0
     }
 
@@ -56,7 +62,7 @@ package enum AgentActionQueries {
     package static func awaitingOwner(_ db: Database, limit: Int) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions
-            WHERE status IN ('pending','failed') AND \(notWorkbenchRow)
+            WHERE status IN ('pending','failed') AND \(notWorkbenchRow) AND NOT \(failedSessionCall)
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             """, arguments: [limit])
@@ -70,6 +76,9 @@ package enum AgentActionQueries {
     /// vanishing the instant it auto-applies (spec §4.1). Non-terminal rows
     /// sort first, then the terminal tail, newest-first within each group.
     ///
+    /// A failed session-applied call (no Retry) belongs to the terminal tail,
+    /// by the time it failed (`applied_at`).
+    ///
     /// Project rows (`context_type = 'project'`) are the audit trail of the
     /// project agent's direct MCP writes, never an owner gesture, so they
     /// stay off the strip (STRIP-01) — except an External one, which is a
@@ -77,10 +86,11 @@ package enum AgentActionQueries {
     package static func fetchStrip(_ db: Database, terminalSince: String) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions
-            WHERE (status IN ('pending','approved','failed','executing')
-                   OR (status IN ('applied','rejected') AND decided_at >= ?))
+            WHERE ((status IN ('pending','approved','failed','executing') AND NOT \(failedSessionCall))
+                   OR (status IN ('applied','rejected') AND decided_at >= ?)
+                   OR (\(failedSessionCall) AND applied_at >= ?))
               AND \(notWorkbenchRow)
-            ORDER BY (status IN ('applied','rejected')) ASC, created_at DESC, id DESC
-            """, arguments: [terminalSince])
+            ORDER BY (status IN ('applied','rejected') OR \(failedSessionCall)) ASC, created_at DESC, id DESC
+            """, arguments: [terminalSince, terminalSince])
     }
 }

@@ -202,4 +202,98 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(try row().status, "complete")
     }
+
+    private func steps() throws -> [ChatTurnStep] {
+        let msg = messageID
+        return try pool.read { d in try ChatStepQueries.fetch(d, messageIDs: [msg])[msg] ?? [] }
+    }
+
+    private func wait(_ id: String, action: Int64, turn: String = "t") -> ChatEvent {
+        .toolWait(ChatToolWait(turnID: turn, id: id, actionID: action, message: "Waiting for your approval"))
+    }
+
+    /// CHAT-02: a call the gate holds for the owner's approval is a visible
+    /// waiting step until its `tool_end`; a denied/timed-out one is a red
+    /// step carrying the gate's reason, an approved one a normal step.
+    /// Waiting is live only — `chat_turn_steps` sees the usual start/end.
+    /// BEHAVIOR CHAT-02 — see docs/inventory/chat.md
+    func testChat02WaitingStepIsVisibleUntilItEnds() throws {
+        let driver = makeDriver()
+        let turn = driver.begin(messageID: messageID, turnID: "t")
+        driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "mcp__claude_ai_Gmail__send", argsJSON: "{}")))
+        driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "b", name: "mcp__claude_ai_Docs__create", argsJSON: "{}")))
+        driver.apply(wait("a", action: 41))
+        driver.apply(wait("b", action: 42))
+        XCTAssertEqual(turn.steps.map(\.state), [.waiting(actionID: 41), .waiting(actionID: 42)])
+        XCTAssertEqual(turn.steps.map(\.summary), ["Waiting for your approval", "Waiting for your approval"])
+        XCTAssertEqual(turn.waitingActionIDs, [41, 42])
+        XCTAssertEqual(try steps().map(\.state), [.running, .running], "waiting is never persisted")
+
+        clock.advance(5)
+        driver.apply(.textDelta(turnID: "t", text: "still thinking"))
+        XCTAssertEqual(turn.steps.first?.state, .waiting(actionID: 41), "a waiting step stays until its tool_end")
+
+        driver.apply(.toolEnd(ChatToolEnd(turnID: "t", id: "a", ok: false, summary: "not approved within 15 minutes",
+                                          sources: [])))
+        XCTAssertEqual(turn.steps[0].state, .failed)
+        XCTAssertEqual(turn.steps[0].summary, "not approved within 15 minutes")
+        XCTAssertEqual(turn.waitingActionIDs, [42], "the other call keeps waiting on its own")
+        XCTAssertEqual(try steps().first?.state, .failed)
+        XCTAssertEqual(try steps().first?.summary, "not approved within 15 minutes")
+
+        driver.apply(.toolEnd(ChatToolEnd(turnID: "t", id: "b", ok: true, summary: "created", sources: [])))
+        XCTAssertEqual(turn.steps[1].state, .succeeded)
+        XCTAssertEqual(turn.waitingActionIDs, [])
+        XCTAssertEqual(try steps().map(\.state), [.failed, .succeeded])
+    }
+
+    /// A new wait (not a repeat, not a late one) asks the action feeds to
+    /// re-read: the session subprocess wrote the row the step points at.
+    func testOnlyANewWaitAnnouncesItsAction() {
+        let driver = makeDriver()
+        var announced: [Int64] = []
+        driver.onActionAwaited = { announced.append($0) }
+        driver.begin(messageID: messageID, turnID: "t")
+        driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "x", argsJSON: "{}")))
+        driver.apply(wait("a", action: 9))
+        driver.apply(wait("a", action: 9))
+        driver.apply(wait("b", action: 9, turn: "stale"))
+        driver.apply(.toolEnd(ChatToolEnd(turnID: "t", id: "a", ok: true, summary: "", sources: [])))
+        driver.apply(wait("a", action: 9))
+        XCTAssertEqual(announced, [9])
+    }
+
+    /// Degenerate waits: another turn's, a wait for a finished step (late,
+    /// never reopens it), a repeated wait, and one whose start never arrived
+    /// (still a visible step). A turn that ends while a call waits leaves no
+    /// step claiming it still waits.
+    func testToolWaitDegenerateCases() throws {
+        let driver = makeDriver()
+        let turn = driver.begin(messageID: messageID, turnID: "t")
+        driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "x", argsJSON: "{}")))
+        driver.apply(wait("a", action: 1, turn: "stale"))
+        XCTAssertEqual(turn.steps.first?.state, .running)
+
+        driver.apply(.toolEnd(ChatToolEnd(turnID: "t", id: "a", ok: true, summary: "done", sources: [])))
+        driver.apply(wait("a", action: 1))
+        XCTAssertEqual(turn.steps.first?.state, .succeeded, "a late wait never reopens a finished step")
+        XCTAssertEqual(turn.steps.first?.summary, "done")
+
+        driver.apply(wait("orphan", action: 2))
+        driver.apply(wait("orphan", action: 2))
+        XCTAssertEqual(turn.steps.count, 2, "a wait without its start is one visible step")
+        XCTAssertEqual(turn.steps.last?.state, .waiting(actionID: 2))
+        XCTAssertEqual(try steps().map(\.toolID), ["a", "orphan"], "its start is persisted, never its waiting state")
+        XCTAssertEqual(try steps().last?.state, .running)
+
+        driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "orphan", name: "late_name", argsJSON: #"{"k":1}"#)))
+        XCTAssertEqual(turn.steps.last?.name, "late_name", "a start after its wait names the step")
+        XCTAssertEqual(turn.steps.last?.state, .waiting(actionID: 2))
+        XCTAssertEqual(try steps().last?.name, "late_name")
+
+        driver.apply(.turnDone(turnID: "t", status: .interrupted, sessionID: nil))
+        XCTAssertEqual(turn.steps.last?.state, .running, "an ended turn's unfinished call reads as stopped")
+        XCTAssertEqual(turn.waitingActionIDs, [])
+        XCTAssertEqual(try steps().map(\.toolID), ["a", "orphan"], "the held call is still a step after the turn")
+    }
 }

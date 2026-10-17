@@ -89,10 +89,19 @@ package struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable, Equa
 
 /// A step's lifecycle. `running` on a finished message means the turn died
 /// mid-tool; views render it as stopped, never as a live spinner.
+/// `waiting` is live only (`tool_wait`): the permission gate holds the call
+/// for the owner's answer on `agent_actions` row `actionID`; a persisted row
+/// never reads as waiting.
 package enum StepState: Equatable, Sendable {
     case running
+    case waiting(actionID: Int64)
     case succeeded
     case failed
+
+    package var waitingActionID: Int64? {
+        if case let .waiting(actionID) = self { return actionID }
+        return nil
+    }
 }
 
 /// One cited source (spec §3.4) — the `tool_end.sources[]` wire item (Go
