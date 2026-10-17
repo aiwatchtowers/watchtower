@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -328,6 +329,72 @@ func runOfEventCycleTx(tx *sql.Tx, automationID int64, cycle string) (int64, boo
 		}
 	}
 	return 0, false, nil
+}
+
+// MergeQueuedAutomationRunEvents merges one cycle's matched events into an
+// event run that is still queued (P4's bus, when EnqueueAutomationRun
+// coalesced a new cycle onto a queued run of an earlier one), in one
+// transaction: the cycle is appended to event_json's cycles, events up to
+// maxEvents in all (the older ones kept, newer ones beyond the cap dropped),
+// total is added to count, and truncated is set once anything was dropped.
+// event_cycle is never written, so the run keeps its first cycle there and
+// EnqueueAutomationRun finds the merged one in cycles. A cycle the run already
+// carries returns (true, nil) with nothing written; a run no longer queued, or
+// not an event run, returns (false, nil); a missing run wraps
+// ErrAutomationRunNotFound.
+func (db *DB) MergeQueuedAutomationRunEvents(runID int64, cycleID string, events []json.RawMessage, total int, maxEvents int) (merged bool, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("merging events into automation run %d: %w", runID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status, trigger, eventJSON string
+	err = tx.QueryRow(`SELECT status, trigger, event_json FROM automation_runs WHERE id = ?`, runID).
+		Scan(&status, &trigger, &eventJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("automation run %d: %w", runID, ErrAutomationRunNotFound)
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading automation run %d: %w", runID, err)
+	}
+	if status != RunQueued || trigger != TriggerEvent {
+		return false, nil
+	}
+	p, err := decodeEventPayload(eventJSON)
+	if err != nil {
+		return false, fmt.Errorf("automation run %d: %w", runID, err)
+	}
+	if slices.Contains(p.Cycles, cycleID) {
+		return true, nil
+	}
+	p.Cycles = append(p.Cycles, cycleID)
+	p.Events = append(p.Events, events[:min(len(events), max(maxEvents-len(p.Events), 0))]...)
+	p.Count += total
+	p.Truncated = p.Truncated || len(p.Events) < p.Count
+	encoded, err := json.Marshal(p)
+	if err != nil {
+		return false, fmt.Errorf("encoding the events of automation run %d: %w", runID, err)
+	}
+	if _, err := tx.Exec(`UPDATE automation_runs SET event_json = ? WHERE id = ?`, string(encoded), runID); err != nil {
+		return false, fmt.Errorf("merging events into automation run %d: %w", runID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("merging events into automation run %d: %w", runID, err)
+	}
+	return true, nil
+}
+
+// decodeEventPayload decodes an event run's event_json; ” is the empty payload.
+func decodeEventPayload(eventJSON string) (AutomationEventPayload, error) {
+	var p AutomationEventPayload
+	if eventJSON == "" {
+		return p, nil
+	}
+	if err := json.Unmarshal([]byte(eventJSON), &p); err != nil {
+		return p, fmt.Errorf("decoding event_json: %w", err)
+	}
+	return p, nil
 }
 
 // NextQueuedAutomationRuns returns up to limit queued runs, oldest queued_at
