@@ -38,7 +38,7 @@
 ### Task 1: Probe the hook timeout cap
 
 **Files:**
-- Create: `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §9 note (modify)
+- Modify: `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` (§9, one line)
 
 **Interfaces:** Produces the timeout value used by Task 4.
 
@@ -59,7 +59,7 @@ Use the `add-migration` skill.
 - Produces:
   - `type PermissionRequest struct { ID, TerminalSessionID, WorkbenchID int64; ToolName, Summary, Status string; CreatedAt time.Time; DecidedAt sql.NullString; DecidedBy sql.NullString }`
   - Status constants `PermissionPending = "pending"`, `PermissionAllowed = "allowed"`, `PermissionDenied = "denied"`, `PermissionAnsweredOnMac = "answered_on_mac"`, `PermissionExpired = "expired"`.
-  - `func (db *DB) OpenPermissionRequest(sessionRowID, workbenchID int64, sessionID string, toolName, summary string, at time.Time, order AgentOrder) (int64, error)`: one transaction. It calls `SetTerminalAgentState(sessionRowID, workbenchID, sessionID, "approval", at, "", nil, false, order)`, marks older `pending` rows of the session `answered_on_mac`, and inserts `pending` with `created_at = AgentStateStamp(at)`.
+  - `func (db *DB) OpenPermissionRequest(sessionRowID, workbenchID int64, sessionID string, toolName, summary string, at time.Time, order AgentOrder) (int64, error)`: first `SetTerminalAgentState(sessionRowID, workbenchID, sessionID, "approval", at, "", nil, false, order)` (its own guarded UPDATE, no transaction), then one short transaction that marks older `pending` rows of the session `answered_on_mac`, and inserts `pending` with `created_at = AgentStateStamp(at)`.
   - `func (db *DB) GetPermissionRequest(id int64) (*PermissionRequest, error)` (read-only; `ErrPermissionRequestNotFound`).
   - `func (db *DB) ClosePermissionRequest(id int64, status string, at time.Time) (bool, error)`: `UPDATE … WHERE id = ? AND status = 'pending'`.
 
