@@ -102,6 +102,22 @@ type GateOptions struct {
 	Now             func() time.Time // default time.Now
 }
 
+// Row reasons the Desktop's connector-call card matches exactly
+// (ConnectorCallProposal): the two CancelCall reasons and the two texts a
+// call of a gone session lands with (the registry's ExpireSessionCalls
+// texts). Pinned by TestGate_RowReasonTextsMatchTheCard.
+const (
+	reasonStopped        = "stopped"
+	reasonSessionEnded   = "session ended before approval"
+	reasonOutcomeUnknown = "session ended while the call ran; outcome unknown"
+)
+
+// reasonNotApproved is the timeout's CancelCall reason: "not approved
+// within 15 minutes" for GateApprovalTimeout.
+func reasonNotApproved(timeout time.Duration) string {
+	return "not approved within " + approvalWindow(timeout)
+}
+
 // Deny messages the model receives verbatim.
 const (
 	denyRejected = "The owner rejected this call. Do not retry it; say it was not sent."
@@ -432,7 +448,7 @@ func (g *gate) settledByStopOrExit(p *claudeProc, req permissionRequest, w *gate
 		return true
 	}
 	if childGone(p) {
-		g.expire(id, "session ended before approval")
+		g.expire(id, reasonSessionEnded)
 		return true
 	}
 	return false
@@ -498,7 +514,7 @@ func (g *gate) claim(p *claudeProc, req permissionRequest, w *gateWait, id int64
 func (g *gate) timeOut(p *claudeProc, req permissionRequest, w *gateWait, id int64) {
 	ctx := context.Background()
 	window := approvalWindow(g.opts.ApprovalTimeout)
-	cancelled, err := g.opts.Sink.CancelCall(ctx, id, "not approved within "+window)
+	cancelled, err := g.opts.Sink.CancelCall(ctx, id, reasonNotApproved(g.opts.ApprovalTimeout))
 	if err == nil && cancelled {
 		g.answer(p, permissionDenyLine(req.RequestID, denyTimedOut(window)))
 		return
@@ -517,14 +533,14 @@ func (g *gate) timeOut(p *claudeProc, req permissionRequest, w *gateWait, id int
 	if err != nil {
 		fmt.Fprintf(g.warn, "chat gate: cancelling action #%d: %v\n", id, err)
 	}
-	g.expire(id, "not approved within "+window)
+	g.expire(id, reasonNotApproved(g.opts.ApprovalTimeout))
 	g.answer(p, permissionDenyLine(req.RequestID, denyTimedOut(window)))
 }
 
 // stopped settles a call Stop, Close or the CLI's withdrawal ended: a pending
 // row is rejected, an approved one the session will not run is expired.
 func (g *gate) stopped(p *claudeProc, req permissionRequest, why stopReason, id int64) {
-	cancelled, err := g.opts.Sink.CancelCall(context.Background(), id, "stopped")
+	cancelled, err := g.opts.Sink.CancelCall(context.Background(), id, reasonStopped)
 	if err != nil {
 		fmt.Fprintf(g.warn, "chat gate: cancelling action #%d: %v\n", id, err)
 	}
@@ -593,7 +609,7 @@ func (g *gate) procGone(p *claudeProc) {
 	}
 	g.mu.Unlock()
 	for _, toolUseID := range open {
-		g.finish(toolUseID, "", "session ended while the call ran; outcome unknown")
+		g.finish(toolUseID, "", reasonOutcomeUnknown)
 	}
 }
 
@@ -675,7 +691,7 @@ func (g *gate) shutdown() {
 	}
 	g.mu.Unlock()
 	for _, toolUseID := range open {
-		g.finish(toolUseID, "", "session ended while the call ran; outcome unknown")
+		g.finish(toolUseID, "", reasonOutcomeUnknown)
 	}
 	if g.opts.Publish != nil {
 		if err := g.opts.Publish.Remove(); err != nil {

@@ -1001,3 +1001,30 @@ func TestGate_ChildDyingAfterTheClaimLeavesNoRowExecuting(t *testing.T) {
 	assert.Equal(t, "session ended while the call ran; outcome unknown", row.callErr)
 	require.NoError(t, h.finish())
 }
+
+// The card (WatchtowerCore ConnectorCallProposal) matches these texts
+// exactly; the registry's ExpireSessionCalls writes the last two too.
+func TestGate_RowReasonTextsMatchTheCard(t *testing.T) {
+	assert.Equal(t, "not approved within 15 minutes", reasonNotApproved(GateApprovalTimeout))
+	assert.Equal(t, "stopped", reasonStopped)
+	assert.Equal(t, "session ended before approval", reasonSessionEnded)
+	assert.Equal(t, "session ended while the call ran; outcome unknown", reasonOutcomeUnknown)
+}
+
+// The Desktop refreshes its action feed once, when the wait starts: the row
+// must be committed before tool_wait goes out, and carry the protocol turn
+// id the Desktop sent.
+func TestGate_RowIsCommittedBeforeToolWait(t *testing.T) {
+	fx := gateFake(t, gmailSend("r1", "tu1"))
+	fx.sink.beforePropose = func() { time.Sleep(100 * time.Millisecond) } // a slow write
+	h := startSession(t, NewClaudeBackend(fx.opts), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "turn-from-desktop", Text: "send"})
+	wait := h.next(EventToolWait)
+	row := fx.sink.row(wait.ActionID)
+	assert.Equal(t, "pending", row.status, "the row exists when tool_wait arrives")
+	assert.Equal(t, "turn-from-desktop", row.call.TurnID)
+	require.True(t, fx.sink.reject(wait.ActionID))
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+}
