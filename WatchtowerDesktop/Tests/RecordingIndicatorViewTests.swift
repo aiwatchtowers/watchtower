@@ -314,12 +314,12 @@ final class RecordingIndicatorViewTests: XCTestCase {
     /// bottom corner and mirrored in a top one: the download pills always
     /// sit on the edge side, the recording next to them, and the chevrons
     /// point toward the interior to open and back to the edge to close.
-    func testSectionOrderAndChevronsFollowTheCorner() {
-        let interiorToEdge: [RecordingIndicatorCorner.Section] = [.interrupted, .jobs, .recording, .downloads]
+    func testStackPartOrderAndChevronsFollowTheCorner() {
+        let interiorToEdge: [RecordingIndicatorCorner.StackPart] = [.interrupted, .jobs, .recording, .downloads]
         for corner in RecordingIndicatorCorner.allCases {
-            let edgeSide = corner.isTop ? corner.sections.first : corner.sections.last
+            let edgeSide = corner.isTop ? corner.stackParts.first : corner.stackParts.last
             XCTAssertEqual(edgeSide, .downloads, "\(corner)")
-            XCTAssertEqual(corner.sections, corner.isTop ? interiorToEdge.reversed() : interiorToEdge, "\(corner)")
+            XCTAssertEqual(corner.stackParts, corner.isTop ? interiorToEdge.reversed() : interiorToEdge, "\(corner)")
             XCTAssertEqual(corner.expandChevron, corner.isTop ? "chevron.down" : "chevron.up", "\(corner)")
             XCTAssertEqual(corner.collapseChevron, corner.isTop ? "chevron.up" : "chevron.down", "\(corner)")
         }

@@ -80,10 +80,10 @@ enum RecordingIndicatorCorner: String, CaseIterable {
     /// edge in a bottom corner, mirrored in a top one. The download pills
     /// stay between the recorder pills and the edge (what `reservedHeight`
     /// counts), and the live panel opens toward the interior.
-    enum Section: CaseIterable { case interrupted, jobs, recording, downloads }
+    enum StackPart: CaseIterable { case interrupted, jobs, recording, downloads }
 
-    var sections: [Section] {
-        let interiorToEdge: [Section] = [.interrupted, .jobs, .recording, .downloads]
+    var stackParts: [StackPart] {
+        let interiorToEdge: [StackPart] = [.interrupted, .jobs, .recording, .downloads]
         return isTop ? interiorToEdge.reversed() : interiorToEdge
     }
 

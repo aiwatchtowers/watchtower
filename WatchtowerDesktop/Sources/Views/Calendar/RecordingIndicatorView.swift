@@ -98,10 +98,10 @@ struct RecordingIndicatorView: View {
     var body: some View {
         let center = appState.meetingRecorderCenter
         let provisioner = appState.transcriptionModelProvisioner
-        // Top to bottom in the corner's order (`RecordingIndicatorCorner.sections`).
+        // Top to bottom in the corner's order (`RecordingIndicatorCorner.stackParts`).
         VStack(alignment: corner.horizontalAlignment, spacing: RecordingIndicatorInset.stackSpacing) {
-            ForEach(corner.sections, id: \.self) { section in
-                switch section {
+            ForEach(corner.stackParts, id: \.self) { part in
+                switch part {
                 case .interrupted: interruptedContent(center)
                 case .jobs: jobQueue(center)
                 case .recording: recordingContent(center)
