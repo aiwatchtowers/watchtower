@@ -28,6 +28,13 @@ func TestLoadSplitsAtH2AndH3(t *testing.T) {
 	if headings["Why use it"] != 2 || headings["What Prepare reads"] != 3 {
 		t.Fatalf("expected ## and ### sections, got %v", headings)
 	}
+}
+
+func TestSectionsHoldNoHeadingsOrCatalog(t *testing.T) {
+	sections, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, s := range sections {
 		for _, line := range strings.Split(s.Text, "\n") {
 			if strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "### ") {
