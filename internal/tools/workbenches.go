@@ -81,16 +81,17 @@ func workbenchScope(ctx context.Context, d *db.DB, _ json.RawMessage, b Binding)
 	return err
 }
 
-// requireText trims s and checks it is non-empty and at most limit runes.
-func requireText(field, s string, limit int) (string, error) {
+// requireText checks s, trimmed, is non-empty and at most limit runes. The
+// tool's Execute stores that trimmed value.
+func requireText(field, s string, limit int) error {
 	s = strings.TrimSpace(s)
 	switch {
 	case s == "":
-		return "", &ValidationError{Msg: field + " is required"}
+		return &ValidationError{Msg: field + " is required"}
 	case len([]rune(s)) > limit:
-		return "", &ValidationError{Msg: fmt.Sprintf("%s must be at most %d characters", field, limit)}
+		return &ValidationError{Msg: fmt.Sprintf("%s must be at most %d characters", field, limit)}
 	}
-	return s, nil
+	return nil
 }
 
 type emptyArgs struct{}
@@ -234,8 +235,7 @@ func NewUpdateWorkbench() *Tool {
 			if err := decodeStrict(raw, &a); err != nil {
 				return err
 			}
-			_, err := requireText("description", a.Description, 4000)
-			return err
+			return requireText("description", a.Description, 4000)
 		},
 		Scope: workbenchScope,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -243,7 +243,7 @@ func NewUpdateWorkbench() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_workbench args: %w", err)
 			}
-			if err := d.UpdateWorkbenchDescription(call.Binding.WorkbenchID, a.Description); err != nil {
+			if err := d.UpdateWorkbenchDescription(call.Binding.WorkbenchID, strings.TrimSpace(a.Description)); err != nil {
 				return nil, fmt.Errorf("updating workbench: %w", err)
 			}
 			// "project_id" stays: this result is persisted in
@@ -289,8 +289,7 @@ func NewAddWorkbenchSource() *Tool {
 			if err := validateEnum("kind", a.Kind, "slack_channel", "jira_project", "confluence_space", "person", "link"); err != nil {
 				return err
 			}
-			_, err := requireText("ref", a.Ref, 500)
-			return err
+			return requireText("ref", a.Ref, 500)
 		},
 		Scope: workbenchScope,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {

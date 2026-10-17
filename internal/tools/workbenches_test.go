@@ -123,6 +123,18 @@ func TestProjectInfo_BoardAlwaysFollowsTheSessionLanguage(t *testing.T) {
 	assert.NotContains(t, got, "Russian")
 }
 
+// TestUpdateProject_StoresTheTrimmedDescription: the value stored is the
+// trimmed text the validation checked, not the raw argument.
+func TestUpdateProject_StoresTheTrimmedDescription(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	mustApply(t, reg, fx.a, "update_workbench", `{"description":"  A test project.\n","reason":"setup"}`)
+
+	p, err := fx.d.GetWorkbench(fx.a)
+	require.NoError(t, err)
+	assert.Equal(t, "A test project.", p.Description)
+}
+
 func TestUpdateProject_RefusesBadInputWithoutWriting(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := workbenchRegistry(t, fx.d)
