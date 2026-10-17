@@ -138,6 +138,27 @@ func TestLoad_KnowledgeConnectorsDefaults(t *testing.T) {
 	assert.True(t, off.Knowledge.Enabled, "the connectors switch leaves knowledge.enabled alone")
 }
 
+// TestConfig_ClaudeAIDefaultsAndCSV pins the main chat's claude.ai switches
+// (#737, ask #236): unset = connectors on, none disabled; a YAML list and a
+// comma-separated string (an env value) both read as the disabled list.
+func TestConfig_ClaudeAIDefaultsAndCSV(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, ""))
+	require.NoError(t, err)
+	assert.True(t, cfg.AI.ClaudeAI.Connectors)
+	assert.Empty(t, cfg.AI.ClaudeAI.DisabledConnectors)
+
+	set, err := Load(writeTestConfig(t, "ai:\n  claude_ai:\n    connectors: false\n"+
+		"    disabled_connectors:\n      - Connector A\n      - Connector B\n"))
+	require.NoError(t, err)
+	assert.False(t, set.AI.ClaudeAI.Connectors)
+	assert.Equal(t, []string{"Connector A", "Connector B"}, set.AI.ClaudeAI.DisabledConnectors)
+
+	csv, err := Load(writeTestConfig(t, "ai:\n  claude_ai:\n    disabled_connectors: \"Connector A,Connector B\"\n"))
+	require.NoError(t, err)
+	assert.True(t, csv.AI.ClaudeAI.Connectors)
+	assert.Equal(t, []string{"Connector A", "Connector B"}, csv.AI.ClaudeAI.DisabledConnectors)
+}
+
 // TestLoad_ReactionCommandsDefaults pins the owner's 2026-09-26 call through
 // the real load path: a config with no reaction_commands block enables the
 // feature and polls every cycle (interval 0 = no throttle).

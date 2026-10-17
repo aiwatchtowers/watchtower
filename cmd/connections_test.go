@@ -355,6 +355,14 @@ func TestConnections_AddRejectsReservedName(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved")
 
+	// The claude.ai connectors' namespace, in any case and after the CLI's
+	// "_" folding (#737): such a name would share a connector's tool token.
+	for _, name := range []string{"claude_ai", "claude_ai_Gmail", "Claude_AI_Gmail", "claude__ai_Gmail", "_claude_ai_x"} {
+		_, err = runConnections(t, "", "add", "--name", name, "--kind", "stdio", "--command", "npx")
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "reserved", name)
+	}
+
 	database, err := db.Open(cfg.DBPath())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })

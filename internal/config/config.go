@@ -47,6 +47,21 @@ type AIConfig struct {
 	ContextBudget      int    `mapstructure:"context_budget"`
 	Workers            int    `mapstructure:"workers"`  // max parallel LLM calls across all pipelines
 	Provider           string `mapstructure:"provider"` // "claude" (default) | "codex" | "ollama"
+	// ClaudeAI holds the main chat's claude.ai connector switches (#737).
+	ClaudeAI ClaudeAIConfig `mapstructure:"claude_ai"`
+}
+
+// ClaudeAIConfig is Settings → AI → claude.ai connectors. Everything is on
+// by default (ask #236); the owner narrows it. A change takes effect when
+// the next chat session starts.
+type ClaudeAIConfig struct {
+	// Connectors loads the account's claude.ai connectors into the main
+	// chat (default true); false keeps publishing to claude.ai only.
+	Connectors bool `mapstructure:"connectors"`
+	// DisabledConnectors are the connectors switched off one by one, by
+	// display name without the "claude.ai " prefix ("Gmail"), as the
+	// sidecar file lists them.
+	DisabledConnectors []string `mapstructure:"disabled_connectors"`
 }
 
 // ConfiguredProviderID returns the provider the config file (not a
@@ -453,6 +468,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("ai.ollama_url", DefaultOllamaURL)
 	v.SetDefault("ai.context_budget", DefaultAIContextBudget)
 	v.SetDefault("ai.workers", DefaultAIWorkers)
+	v.SetDefault("ai.claude_ai.connectors", DefaultClaudeAIConnectors)
 	v.SetDefault("sync.workers", DefaultSyncWorkers)
 	v.SetDefault("sync.initial_history_days", DefaultInitialHistDays)
 	v.SetDefault("sync.backfill_days", DefaultBackfillDays)

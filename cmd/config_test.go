@@ -107,6 +107,46 @@ func TestConfigSet_DefaultAgentIsValidated(t *testing.T) {
 	assert.Contains(t, string(data), "default_agent: codex")
 }
 
+// The claude.ai connector switches the Desktop's Settings writes (#737):
+// known keys, a comma-separated list stored as a list that loads back, ""
+// for none, and a non-boolean connectors value refused unwritten.
+func TestConfig_ClaudeAIDefaultsAndCSV(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+	stderr := new(bytes.Buffer)
+	configSetCmd.SetOut(new(bytes.Buffer))
+	configSetCmd.SetErr(stderr)
+	defer configSetCmd.SetErr(nil)
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.AI.ClaudeAI.Connectors, "unset: connectors on")
+	assert.Empty(t, cfg.AI.ClaudeAI.DisabledConnectors, "unset: none disabled")
+
+	require.NoError(t, configSetCmd.RunE(configSetCmd,
+		[]string{"ai.claude_ai.disabled_connectors", "Connector A, Connector B,,true"}))
+	require.NoError(t, configSetCmd.RunE(configSetCmd, []string{"ai.claude_ai.connectors", "false"}))
+	assert.NotContains(t, stderr.String(), "not a recognized config key")
+	cfg, err = config.Load(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Connector A", "Connector B", "true"}, cfg.AI.ClaudeAI.DisabledConnectors)
+	assert.False(t, cfg.AI.ClaudeAI.Connectors)
+
+	err = configSetCmd.RunE(configSetCmd, []string{"ai.claude_ai.connectors", "off"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be true or false")
+
+	require.NoError(t, configSetCmd.RunE(configSetCmd, []string{"ai.claude_ai.disabled_connectors", ""}))
+	require.NoError(t, configSetCmd.RunE(configSetCmd, []string{"ai.claude_ai.connectors", "true"}))
+	cfg, err = config.Load(configPath)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.AI.ClaudeAI.DisabledConnectors)
+	assert.True(t, cfg.AI.ClaudeAI.Connectors)
+}
+
 func TestConfigSet_MemorySourcesGmail_NoUnknownWarning(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
