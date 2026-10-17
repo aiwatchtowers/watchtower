@@ -250,3 +250,25 @@ func (db *DB) AddInstructionSuggestion(id int64, newBody string, now time.Time) 
 		return decideInstructionSuggestionTx(tx, id, "added", now)
 	})
 }
+
+// ListInstructionSuggestionTexts returns the texts of the suggestions in
+// status, oldest first.
+func (db *DB) ListInstructionSuggestionTexts(status string) ([]string, error) {
+	rows, err := db.Query(`SELECT text FROM instruction_suggestions WHERE status = ? ORDER BY id`, status)
+	if err != nil {
+		return nil, fmt.Errorf("listing %s suggestion texts: %w", status, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, fmt.Errorf("scanning %s suggestion text: %w", status, err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing %s suggestion texts: %w", status, err)
+	}
+	return out, nil
+}

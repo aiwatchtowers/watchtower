@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentkind"
-	"watchtower/internal/agentlog"
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/sessionfeed"
@@ -188,34 +187,9 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 // sessionFeedConversations lists the tab's conversations in ledger order
 // whose transcripts exist.
 func sessionFeedConversations(ctx context.Context, database *db.DB, sess *db.TerminalSession) ([]sessionfeed.Conversation, error) {
-	ledger, err := database.ListTerminalAgentSessions(sess.ID)
-	if err != nil {
-		return nil, err
-	}
-	if agentkind.Kind(sess.Kind) == agentkind.Codex {
-		home := terminalCodexHome()
-		var convs []sessionfeed.Conversation
-		for _, l := range ledger {
-			if p, ok := sessionfeed.LocateCodex(home, l.AgentSessionID, sess.TranscriptPath.String); ok {
-				convs = append(convs, sessionfeed.Conversation{AgentSessionID: l.AgentSessionID, Path: p, Codex: true})
-			}
-		}
-		return convs, nil
-	}
-	roots := append([]string{sess.FolderPath}, agentlog.WorktreeRoots(ctx, sess.FolderPath)...)
-	projects := filepath.Join(agentsClaudeDir(), "projects")
-	ids := make([]string, 0, len(ledger))
-	for _, l := range ledger {
-		ids = append(ids, l.AgentSessionID)
-	}
-	located := sessionfeed.LocateAll(projects, roots, ids)
-	var convs []sessionfeed.Conversation
-	for _, l := range ledger {
-		if p, ok := located[l.AgentSessionID]; ok {
-			convs = append(convs, sessionfeed.Conversation{AgentSessionID: l.AgentSessionID, Path: p})
-		}
-	}
-	return convs, nil
+	return sessionfeed.SessionConversations(ctx, database, sess.ID, agentkind.Kind(sess.Kind) == agentkind.Codex,
+		sess.FolderPath, sess.TranscriptPath.String,
+		sessionfeed.Dirs{ClaudeProjects: filepath.Join(agentsClaudeDir(), "projects"), CodexHome: terminalCodexHome()})
 }
 
 // sessionFeedAskLookup resolves asks of the session's own workbench only.
