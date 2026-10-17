@@ -20,14 +20,10 @@ import (
 // generator (the dictateGeneratorFactory pattern).
 //
 // The title call's user message is the owner's first exchange, so CHAT-04
-// forbids it on argv at any size: the CLI generators are switched to their
-// stdin-only mode (the HTTP ollama generator has no argv to protect).
+// forbids it on argv at any size: the CLI generators always pass it on
+// stdin (the HTTP ollama generator has no argv to protect).
 var chatTitleGeneratorFactory = func(cfg *config.Config) digest.Generator {
-	gen := cliGenerator(cfg)
-	if s, ok := gen.(interface{ SetStdinOnly(bool) }); ok {
-		s.SetStdinOnly(true)
-	}
-	return gen
+	return cliGenerator(cfg)
 }
 
 const (

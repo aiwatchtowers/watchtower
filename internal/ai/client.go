@@ -21,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/claude"
-	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
 )
 
@@ -153,7 +152,7 @@ type Client struct {
 	// QuerySync) removes it once the subprocess has been reaped.
 	mcpConfigTempPath string
 	// systemPromptTempPath is set by buildArgs when the system prompt is
-	// larger than digest.StdinThreshold: it then travels as a 0600
+	// non-empty: it then travels as a 0600
 	// --system-prompt-file instead of argv, and Query/QuerySync remove the
 	// file once the subprocess has been reaped (the mcpConfigTempPath
 	// lifecycle).
@@ -319,35 +318,17 @@ func NewClient(model, dbPath, claudePath string) *Client {
 	}
 }
 
-// promptFlagAndStdin builds the "-p" flag (and its inline value, when safe)
-// for buildArgs, plus the same message again as stdin content when it must
-// travel that way instead of via argv: either it exceeds
-// digest.StdinThreshold (ARG_MAX safety — the digest.generateArgs precedent,
-// hour-long meeting transcripts run to hundreds of KB) or it begins with
-// '-', which a bare positional right after "-p" would then be parsed as a
-// new flag rather than consumed as -p's value — claude's --print takes an
-// OPTIONAL value, so a following dash-led token is never taken as it. A bare
-// "-p" with no following value makes claude read the prompt from stdin.
-func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
-	if len(userMessage) > digest.StdinThreshold || strings.HasPrefix(userMessage, "-") {
-		return []string{"-p"}, userMessage
-	}
-	return []string{"-p", userMessage}, ""
-}
-
-// buildArgs constructs the common CLI arguments, plus stdin content when
-// userMessage must travel that way instead of inline (see
-// promptFlagAndStdin). When sessionID is non-empty, --resume is used instead
-// of --system-prompt (the system prompt is already baked into the existing
-// session).
+// buildArgs constructs the common CLI arguments, plus the stdin content: the
+// user message always travels on stdin (a bare "-p" makes claude read the
+// prompt from there), never on argv, where every local process could read
+// it through `ps` and a large one would hit ARG_MAX. When sessionID is
+// non-empty, --resume is used instead of the system prompt (the system
+// prompt is already baked into the existing session).
 func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
 	c.systemPromptTempPath = "" // set again below only if this call writes one
-	promptArgs, stdin := promptFlagAndStdin(userMessage)
-	// slices.Concat always allocates a fresh backing array, so the append
-	// calls below can never alias (and corrupt) promptFlagAndStdin's slice —
-	// unlike a plain append(promptArgs, tail...), which happens to be safe
-	// today only because promptFlagAndStdin returns full-capacity literals.
-	args := slices.Concat(promptArgs, []string{
+	stdin := userMessage
+	args := slices.Concat([]string{
+		"-p",
 		"--output-format", outputFormat,
 		"--model", c.model,
 		// Allowlist: the watchtower MCP server — read-only in dev mode; in
@@ -476,16 +457,16 @@ func (c *Client) workDir() string {
 	return os.TempDir()
 }
 
-// systemPromptArgs passes the system prompt inline when it is small and as a
-// 0600 --system-prompt-file when it exceeds digest.StdinThreshold: pipelines
-// that put their whole data payload in the system prompt (briefing, target
-// extract) would otherwise hit ARG_MAX ("argument list too long") and leave
-// that payload readable in `ps` for the process lifetime. A failed file write
-// fails the call rather than falling back to argv (the digest.ClaudeGenerator
-// policy).
+// systemPromptArgs passes a non-empty system prompt as a 0600
+// --system-prompt-file, never inline: it carries the owner's data (a
+// pipeline's whole payload, a chat's context), which on argv would be
+// readable in `ps` for the process lifetime and could hit ARG_MAX. An empty
+// prompt stays an empty --system-prompt (it still replaces claude's default
+// one and carries nothing). A failed file write fails the call rather than
+// falling back to argv (the digest.ClaudeGenerator policy).
 func (c *Client) systemPromptArgs(systemPrompt string) ([]string, error) {
-	if len(systemPrompt) <= digest.StdinThreshold {
-		return []string{"--system-prompt", systemPrompt}, nil
+	if systemPrompt == "" {
+		return []string{"--system-prompt", ""}, nil
 	}
 	path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
 	if err != nil {

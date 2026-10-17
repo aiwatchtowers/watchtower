@@ -17,9 +17,9 @@ func TestBuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
 	args, stdin, err := c.buildArgs("sys", "hello", "stream-json", "")
 	require.NoError(t, err)
-	assert.Empty(t, stdin)
+	assert.Equal(t, "hello", stdin)
 	assert.Equal(t, []string{
-		"-p", "hello",
+		"-p",
 		"--output-format", "stream-json",
 		"--model", "claude-sonnet-4-6",
 		"--allowedTools", "mcp__watchtower",
@@ -36,7 +36,7 @@ func TestBuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 		"--setting-sources", "project,local",
 		"--strict-mcp-config",
 		"--verbose",
-		"--system-prompt", "sys",
+		"--system-prompt-file", c.systemPromptTempPath,
 	}, args)
 }
 

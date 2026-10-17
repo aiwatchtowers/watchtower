@@ -18,7 +18,7 @@ import (
 func TestClient_BuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
 	args, stdin := c.buildArgs("sys", "hello", "/tmp/wd")
-	assert.Empty(t, stdin)
+	assert.Equal(t, codexStdinContent("sys", "hello"), stdin)
 	assert.Equal(t, []string{
 		"exec",
 		"--model", "gpt-5.4",
@@ -36,8 +36,7 @@ func TestClient_BuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 		"-c", "features.apps=false",
 		"-c", "features.plugins=false",
 		"--cd", "/tmp/wd",
-		"-c", "developer_instructions=sys",
-		"hello",
+		"-",
 	}, args)
 }
 
@@ -86,7 +85,7 @@ func TestClient_BuildArgs_ReadFolder(t *testing.T) {
 	// working root, so the temp .codex/config.toml route is not available).
 	assert.Contains(t, cfg, "mcp_servers.watchtower.command="+strconv.Quote(watchtowerBinary()))
 	assert.Contains(t, cfg, `mcp_servers.watchtower.args=["mcp", "--db-path", "/data/wt.db"]`)
-	assert.Equal(t, "hello", args[len(args)-1])
+	assert.Equal(t, "-", args[len(args)-1], "the turn travels on stdin")
 }
 
 // No database path → no watchtower server, as on an ordinary run.

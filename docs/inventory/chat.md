@@ -127,9 +127,13 @@ re-sends `--system-prompt-file` either — it reuses the prompt already
 recorded in its resumed history rather than passing it (or anything else)
 again on argv. The one-shot `watchtower chat title` call is covered too:
 its user message (the owner's first exchange) always travels on the
-claude/codex child's stdin, whatever its size (the generators' stdin-only
-mode), and so is `watchtower terminal title`, whose user message is the
-owner's typed messages from an embedded Claude Code session's transcript.
+claude/codex child's stdin, whatever its size, and so is `watchtower
+terminal title`, whose user message is the owner's typed messages from an
+embedded Claude Code session's transcript. Since board #566 this holds for
+every claude/codex child Watchtower starts (the generators and the one-shot
+clients alike): the user message always goes on stdin, a claude system
+prompt in a 0600 `--system-prompt-file`, and a codex turn as one stdin
+payload — no size threshold, no argv form.
 Extends QC-03's "secrets never on argv" to all chat content.
 
 **Guard:** `TestChat04_ClaudeArgvCarriesNoContent`,
@@ -182,6 +186,7 @@ the assistant only inside the owner's own chat message, sent by the chat
 
 ## Changelog
 
+- 2026-10-17 (board #566, owner decision in ask #305): prompts never ride a claude/codex child's argv, whatever their size or caller. `digest.ClaudeGenerator` and `ai.Client` pass the user message on stdin (bare `-p`) and a non-empty system prompt as a 0600 `--system-prompt-file` (an empty one stays `--system-prompt ""`); `codex.CodexGenerator` and `codex.Client` always send the delimited `codexStdinContent` turn on stdin (`codex exec -`), never `-c developer_instructions=...` or a positional prompt. `digest.StdinThreshold` and the opt-in `SetStdinOnly` modes are gone — stdin-only is now the only mode. **CHAT-04** strengthened, not changed: `TestChat04_CodexSessionArgvCarriesNoContent` no longer calls `SetStdinOnly`, and its "a plain client keeps developer_instructions on argv" half now asserts the opposite (a read-folder client keeps the same stdin layout).
 - 2026-10-17 (board #535): artifact kind `html` (migration `00129`). An html artifact renders in `SandboxedHTMLView` (no network of any scheme, no bridge, no windows or media capture, WebRTC removed, links open nothing), and its new controls are view-only: **Reload**, **Open in Window** and **Present**. Nothing hands artifact content to a browser or any other networked app; `kindActions` has no `html` case (`testHTMLArtifactHasOnlyCopyExportAndView`), so its actions stay Copy and Export…, and `testChat05ArtifactActionsOnlyOpenOrCopy` covers it unchanged. **CHAT-05** strengthened, not changed: `ArtifactChat05ScanTests` also scans `SandboxedHTMLView.swift` and `HTMLPreviewPolicy.swift` and forbids `LocalPreviewServer`, `HTMLBrowserOpener`, `NWConnection` and `NWListener` on every artifact-side file. The loopback server behind the workbench code viewer's Open in Browser (`LocalPreviewServer.swift`, workbench files only) gets its own scan, `testChat05LoopbackServerNeverConnectsOut` (no `URLSession`, `NWConnection(`, `Process(`, `CLIRunner`).
 - 2026-10-17 (board #536): the chat quote batch is now fed by selecting a passage in the feed (**Ask about this**, `ChatSelectionQuoteTracker`) instead of the removed **Quote in reply** sheet. The batch, its send rule (`ChatQuoteReply.compose`, one owner turn) and CHAT-05's "nothing sent per quote" are unchanged; `ChatQuoteReplyScanTests` is renamed `ChatSelectionQuoteScanTests`, now scans `ChatSelectionQuote.swift` (no send entry point) and adds `ChatFeedView.swift` to the files that host no text view. No CHAT-01..05 guard changed.
 - 2026-10-01 (board items #178–#181): the artifact panel reads and comments on one rendering of the latest version (`ArtifactCommentsView` over `DocumentTextView`; a `table` artifact now anchors on its cells rather than raw CSV), and comment fields share `Views/Comments/CommentTextEditor.swift`; `DocumentAttributedString` moved to its own file. **CHAT-05** strengthened, not changed: `ArtifactChat05ScanTests` also scans `DocumentAttributedString.swift` and `CommentTextEditor.swift`. Adding a comment still sends nothing.

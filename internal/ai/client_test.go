@@ -14,8 +14,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"watchtower/internal/digest"
 )
 
 // writeMockClaude creates a shell script that mimics the claude CLI for testing.
@@ -37,12 +35,15 @@ func TestNewClient_DefaultClaudeCmd(t *testing.T) {
 func TestBuildArgs(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
 	args, stdin, _ := c.buildArgs("system prompt", "user message", "text", "")
-	assert.Empty(t, stdin)
+	// Board #566: the prompts carry the owner's data and never sit on argv
+	// (`ps`): the message travels on stdin, the system prompt in a 0600 file.
+	assert.Equal(t, "user message", stdin)
 
 	assert.Contains(t, args, "-p")
-	assert.Contains(t, args, "user message")
-	assert.Contains(t, args, "--system-prompt")
-	assert.Contains(t, args, "system prompt")
+	assert.NotContains(t, args, "user message")
+	assert.NotContains(t, args, "--system-prompt")
+	assert.NotContains(t, args, "system prompt")
+	assertFlagValue(t, args, "--system-prompt-file", c.systemPromptTempPath)
 	assert.Contains(t, args, "--output-format")
 	assert.Contains(t, args, "text")
 	assert.Contains(t, args, "--model")
@@ -160,11 +161,10 @@ func TestBuildArgs_WithSessionID(t *testing.T) {
 	assert.NotContains(t, args, "--system-prompt")
 }
 
-// TestBuildArgs_LeadingDashPromptGoesToStdin pins the leading-dash guard on
-// promptFlagAndStdin: a chat message beginning with '-' must never sit
-// inline after "-p" (claude's --print takes an OPTIONAL value, so a
-// following dash-led token would be parsed as a new flag instead of being
-// consumed as -p's value) even though it is far below StdinThreshold.
+// TestBuildArgs_LeadingDashPromptGoesToStdin: a chat message beginning with
+// '-' never sits inline after "-p" either (claude's --print takes an
+// OPTIONAL value, so a following dash-led token would be parsed as a new
+// flag instead of being consumed as -p's value).
 func TestBuildArgs_LeadingDashPromptGoesToStdin(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
 	msg := "-v looks wrong"
@@ -192,18 +192,25 @@ func TestBuildArgs_LeadingDashPromptGoesToStdin(t *testing.T) {
 	}
 }
 
-// TestBuildArgs_StdinThresholdBoundary pins the exact-threshold boundary so
-// the inline and stdin routes never both fire: a message of exactly
-// StdinThreshold bytes stays inline, one byte over routes to stdin.
+// TestBuildArgs_StdinThresholdBoundary: there is no size threshold any more
+// (board #566) — a small message, the 32 KiB one that used to be the largest
+// inline, and a larger one all travel on stdin, never on argv.
 func TestBuildArgs_StdinThresholdBoundary(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
 
-	exact := strings.Repeat("x", digest.StdinThreshold)
-	args, stdin, _ := c.buildArgs("sys", exact, "text", "")
-	if stdin != "" {
-		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
+	small := "hello"
+	args, stdin, _ := c.buildArgs("sys", small, "text", "")
+	if stdin != small {
+		t.Errorf("stdin = %q, want the small message", stdin)
 	}
-	assertFlagValue(t, args, "-p", exact)
+	assert.NotContains(t, args, small)
+
+	exact := strings.Repeat("x", 32*1024)
+	args1, stdin1, _ := c.buildArgs("sys", exact, "text", "")
+	if stdin1 != exact {
+		t.Errorf("stdin = %d bytes, want the whole 32 KiB message", len(stdin1))
+	}
+	assert.NotContains(t, args1, exact)
 
 	over := exact + "x"
 	args2, stdin2, _ := c.buildArgs("sys", over, "text", "")
@@ -964,13 +971,13 @@ func TestSessionDisallowedTools_UnhidesOnlyWebSearch(t *testing.T) {
 	assert.ElementsMatch(t, append(session, WebSearchTool), oneShot)
 }
 
-// TestBuildArgs_LargeSystemPromptGoesToFile: a system prompt above
-// digest.StdinThreshold (the briefing / target-extract payloads) travels as a
-// 0600 --system-prompt-file, never on argv (ARG_MAX, `ps`); a small one stays
-// inline.
+// TestBuildArgs_LargeSystemPromptGoesToFile: a system prompt — large (the
+// briefing / target-extract payloads) or small (board #566) — travels as a
+// 0600 --system-prompt-file, never on argv (ARG_MAX, `ps`); only an empty
+// one stays an empty inline --system-prompt.
 func TestBuildArgs_LargeSystemPromptGoesToFile(t *testing.T) {
 	c := NewClient("m", "", "")
-	big := strings.Repeat("s", digest.StdinThreshold+1)
+	big := strings.Repeat("s", 64*1024)
 	args, _, err := c.buildArgs(big, "hi", "json", "")
 	require.NoError(t, err)
 	promptPath := c.systemPromptTempPath
@@ -986,10 +993,21 @@ func TestBuildArgs_LargeSystemPromptGoesToFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, big, string(data))
 
-	exact := strings.Repeat("s", digest.StdinThreshold)
-	args, _, _ = c.buildArgs(exact, "hi", "json", "")
-	assertFlagValue(t, args, "--system-prompt", exact)
-	assert.Empty(t, c.systemPromptTempPath, "a small prompt must not leave a stale temp path behind")
+	small := "small prompt"
+	args, _, err = c.buildArgs(small, "hi", "json", "")
+	require.NoError(t, err)
+	smallPath := c.systemPromptTempPath
+	t.Cleanup(func() { os.Remove(smallPath) })
+	assert.NotEqual(t, promptPath, smallPath)
+	assert.NotContains(t, args, small)
+	assertFlagValue(t, args, "--system-prompt-file", smallPath)
+	data, err = os.ReadFile(smallPath)
+	require.NoError(t, err)
+	assert.Equal(t, small, string(data))
+
+	args, _, _ = c.buildArgs("", "hi", "json", "")
+	assertFlagValue(t, args, "--system-prompt", "")
+	assert.Empty(t, c.systemPromptTempPath, "an empty prompt must not leave a stale temp path behind")
 }
 
 // TestQuerySync_LargeSystemPromptReachesCLIAndFileIsRemoved wires the file
@@ -1011,7 +1029,7 @@ fi
 	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
-	sys := strings.Repeat("x", digest.StdinThreshold) + marker
+	sys := strings.Repeat("x", 64*1024) + marker
 	result, _, err := c.QuerySync(context.Background(), sys, "hello", "")
 	require.NoError(t, err)
 	assert.Equal(t, "got:"+marker, result)
@@ -1038,7 +1056,7 @@ fi
 	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
-	sys := strings.Repeat("x", digest.StdinThreshold) + marker
+	sys := strings.Repeat("x", 64*1024) + marker
 	textCh, errCh, sidCh := c.Query(context.Background(), sys, "hello", "")
 	var got strings.Builder
 	for chunk := range textCh {
@@ -1066,7 +1084,7 @@ printf '{"type":"result","result":"ok"}'`)
 	c.claudeCmd = mockPath
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 
-	_, _, err := c.QuerySync(context.Background(), strings.Repeat("x", digest.StdinThreshold+1), "hello", "")
+	_, _, err := c.QuerySync(context.Background(), strings.Repeat("x", 64*1024), "hello", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "writing system prompt file")
 	_, statErr := os.Stat(ran)
@@ -1090,5 +1108,9 @@ func TestBuildArgs_NoToolsMountsNothing(t *testing.T) {
 		assert.NotContains(t, a, "/tmp/test.db")
 		assert.NotContains(t, a, "mcp__watchtower")
 	}
-	assert.Equal(t, args, c.ArgsForTest("system prompt", "user message"))
+	// ArgsForTest is buildArgs' argv; an empty system prompt keeps the
+	// comparison free of the per-call temp file path.
+	noPrompt, _, err := c.buildArgs("", "user message", "stream-json", "")
+	require.NoError(t, err)
+	assert.Equal(t, noPrompt, c.ArgsForTest("", "user message"))
 }

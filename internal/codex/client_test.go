@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"watchtower/internal/digest"
 )
 
 func TestNewClient(t *testing.T) {
@@ -23,8 +21,10 @@ func TestNewClient(t *testing.T) {
 func TestClient_BuildArgs(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
 	args, stdin := c.buildArgs("you are a helper", "what is 2+2", "")
-	if stdin != "" {
-		t.Errorf("stdin = %q, want empty for a short, no-dash message", stdin)
+	// Board #566: the prompts carry the owner's data and never sit on argv
+	// (`ps`): the whole turn travels on stdin.
+	if want := codexStdinContent("you are a helper", "what is 2+2"); stdin != want {
+		t.Errorf("stdin = %q, want %q", stdin, want)
 	}
 
 	// Check required args are present.
@@ -36,21 +36,15 @@ func TestClient_BuildArgs(t *testing.T) {
 	assertContains(t, args, "approval_policy=never")
 	assertContains(t, args, "sandbox_mode=read-only")
 
-	// System prompt passed via developer_instructions.
-	found := false
+	// Neither prompt is on argv; codex reads the turn from stdin ("-").
 	for _, a := range args {
-		if a == "developer_instructions=you are a helper" {
-			found = true
-			break
+		if strings.Contains(a, "you are a helper") || strings.Contains(a, "what is 2+2") ||
+			strings.HasPrefix(a, "developer_instructions=") {
+			t.Errorf("args %v must carry no prompt text, found %q", args, a)
 		}
 	}
-	if !found {
-		t.Error("expected developer_instructions arg with system prompt")
-	}
-
-	// User message should be the last argument.
-	if args[len(args)-1] != "what is 2+2" {
-		t.Errorf("last arg = %q, want user message", args[len(args)-1])
+	if args[len(args)-1] != "-" {
+		t.Errorf("last arg = %q, want \"-\"", args[len(args)-1])
 	}
 
 	// No --cd when workDir is empty.
@@ -67,7 +61,7 @@ func TestClient_BuildArgs_WithWorkDir(t *testing.T) {
 
 func TestClient_BuildArgs_NoSystemPrompt(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
-	args, _ := c.buildArgs("", "hello", "")
+	args, stdin := c.buildArgs("", "hello", "")
 
 	// Should not contain developer_instructions when system prompt is empty.
 	for _, a := range args {
@@ -75,17 +69,19 @@ func TestClient_BuildArgs_NoSystemPrompt(t *testing.T) {
 			t.Error("should not include developer_instructions with empty system prompt")
 		}
 	}
+	if strings.Contains(stdin, codexStdinSystemHeader) {
+		t.Errorf("stdin = %q: no system section without a system prompt", stdin)
+	}
 }
 
-// TestClient_BuildArgs_LeadingDashGoesToStdin pins the leading-dash guard on
-// promptPositionalOrStdin: a chat message beginning with '-' must never sit
-// as the trailing positional (codex would parse it as a flag, not the
-// prompt) even though it is far below digest.StdinThreshold.
+// TestClient_BuildArgs_LeadingDashGoesToStdin: a chat message beginning
+// with '-' never sits as the trailing positional either (codex would parse
+// it as a flag, not the prompt).
 func TestClient_BuildArgs_LeadingDashGoesToStdin(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
 	msg := "-v looks wrong"
 	args, stdin := c.buildArgs("sys", msg, "")
-	if stdin != msg {
+	if !strings.HasSuffix(stdin, codexStdinUserHeader+msg) {
 		t.Fatalf("stdin = %q, want the leading-dash message", stdin)
 	}
 	if len(args) == 0 || args[len(args)-1] != "-" {
@@ -98,25 +94,24 @@ func TestClient_BuildArgs_LeadingDashGoesToStdin(t *testing.T) {
 	}
 }
 
-// TestClient_BuildArgs_StdinThresholdBoundary pins the exact-threshold
-// boundary so the inline and stdin routes never both fire: a message of
-// exactly digest.StdinThreshold bytes stays inline, one byte over routes to
-// stdin.
+// TestClient_BuildArgs_StdinThresholdBoundary: there is no size threshold
+// any more (board #566) — the 32 KiB message that used to be the largest
+// positional travels on stdin like a larger one.
 func TestClient_BuildArgs_StdinThresholdBoundary(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
 
-	exact := strings.Repeat("x", digest.StdinThreshold)
-	args, stdin := c.buildArgs("sys", exact, "")
-	if stdin != "" {
-		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
+	exact := strings.Repeat("x", 32*1024)
+	args, stdin := c.buildArgs("", exact, "")
+	if stdin != codexStdinUserHeader+exact {
+		t.Errorf("stdin = %d bytes, want the whole 32 KiB message", len(stdin))
 	}
-	if len(args) == 0 || args[len(args)-1] != exact {
-		t.Error("args must carry the exactly-threshold message as the last positional arg")
+	if len(args) == 0 || args[len(args)-1] != "-" {
+		t.Error("args must end in \"-\", never carry the message")
 	}
 
 	over := exact + "x"
-	args2, stdin2 := c.buildArgs("sys", over, "")
-	if stdin2 != over {
+	args2, stdin2 := c.buildArgs("", over, "")
+	if stdin2 != codexStdinUserHeader+over {
 		t.Errorf("stdin length = %d, want the full over-threshold message", len(stdin2))
 	}
 	if len(args2) == 0 || args2[len(args2)-1] != "-" {
@@ -187,17 +182,15 @@ esac
 }
 
 // TestChat04_CodexSessionArgvCarriesNoContent pins CHAT-04 (spec §9) for the
-// chat session's codex backend: cmd/ai_session.go calls SetStdinOnly(true)
-// on the codex client it builds for `ai session --provider codex`, and under
-// that mode buildArgs must never emit the system prompt via
+// chat session's codex backend (`ai session --provider codex`,
+// cmd/ai_session.go): buildArgs must never emit the system prompt via
 // -c developer_instructions=... nor place a short user message positionally
 // — both must travel only on stdin, delimited so codex can still tell them
-// apart. A client that never calls SetStdinOnly (every other caller —
-// cliGenerator, digest generators, plain `ai query`) must be unaffected.
+// apart. Since board #566 this holds for every client (cliGenerator, digest
+// generators, plain `ai query`), not only the chat session's.
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
 func TestChat04_CodexSessionArgvCarriesNoContent(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
-	c.SetStdinOnly(true)
 
 	const sysSecret = "SYSTEM-PROMPT-SENTINEL-9f3a"
 	const userSecret = "short owner message"
@@ -226,13 +219,16 @@ func TestChat04_CodexSessionArgvCarriesNoContent(t *testing.T) {
 		t.Errorf("system instructions must come before the user message in stdin, got %q", stdin)
 	}
 
-	// A plain client (no SetStdinOnly, every existing caller) is unaffected.
+	// A read-folder client (`ai query --read-folder`) keeps the same layout.
 	c2 := NewClient("gpt-5.4", "", "codex")
-	args2, stdin2 := c2.buildArgs(sysSecret, userSecret, "")
-	if stdin2 != "" {
-		t.Errorf("stdin = %q, want empty for the default (non-StdinOnly) client", stdin2)
+	c2.SetReadFolder("/tmp/wd")
+	args2, stdin2 := c2.buildArgs(sysSecret, userSecret, "/tmp/wd")
+	if stdin2 != stdin {
+		t.Errorf("stdin = %q, want the same delimited turn %q", stdin2, stdin)
 	}
-	assertContains(t, args2, "developer_instructions="+sysSecret)
+	if argv2 := strings.Join(args2, "\x00"); strings.Contains(argv2, sysSecret) || strings.Contains(argv2, userSecret) {
+		t.Errorf("argv %v must never carry the prompts", args2)
+	}
 }
 
 func assertContains(t *testing.T, args []string, want string) {

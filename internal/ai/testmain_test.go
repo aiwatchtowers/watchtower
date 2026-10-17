@@ -16,5 +16,19 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	// buildArgs writes every non-empty system prompt to a temp file that
+	// only Query/QuerySync remove; tests calling buildArgs directly would
+	// leave them behind, so the run gets its own temp dir, removed after.
+	tmp, err := os.MkdirTemp("", "wt-ai-test-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("TMPDIR", tmp); err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(tmp)
+	os.Exit(code)
 }

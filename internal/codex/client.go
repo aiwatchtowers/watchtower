@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"watchtower/internal/ai"
-	"watchtower/internal/digest"
 )
 
 // Client wraps the Codex CLI for AI queries (ask/chat).
@@ -26,9 +25,6 @@ type Client struct {
 	mcpArgs []string
 	// mcpEnvVars are passed through to the MCP server (SetMCPEnvVars).
 	mcpEnvVars []string
-	// stdinOnly routes the system prompt and user message through stdin only
-	// (see SetStdinOnly) — never through argv.
-	stdinOnly bool
 	// readFolder, when set (SetReadFolder), is the run's working root
 	// (`--cd`, and the process cwd) under the read-only sandbox. Empty =
 	// today's run in a temp dir holding the MCP config.
@@ -108,20 +104,8 @@ func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 // watchtower MCP server (its env_vars; codex otherwise filters them out).
 func (c *Client) SetMCPEnvVars(names []string) { c.mcpEnvVars = names }
 
-// SetStdinOnly makes every subsequent call route the system prompt and user
-// message through stdin ONLY (CHAT-04, spec §9: no content on any process's
-// argv) instead of the default `-c developer_instructions=...` argv flag and
-// the positional-or-stdin heuristic in promptPositionalOrStdin. This is an
-// opt-in: existing callers (cliGenerator, digest generators, `ai query`)
-// never set it and keep today's behavior byte-for-byte. It exists for the
-// chat session's codex backend (`ai session --provider codex`,
-// cmd/ai_session.go's newSessionBackend), where the system prompt and the
-// replayed conversation can both carry arbitrarily sensitive content that
-// must never sit in a process listing (ps, /proc, crash reports).
-func (c *Client) SetStdinOnly(v bool) { c.stdinOnly = v }
-
 // codexStdinHeader/codexStdinUserHeader delimit the two sections of the
-// stdin-only payload (buildStdinOnlyArgs) so codex can still tell the system
+// stdin payload (buildArgs) so codex can still tell the system
 // instructions apart from the owner's turn even though both now arrive as
 // one stdin stream instead of separate channels.
 const (
@@ -156,50 +140,15 @@ func NewClient(model, dbPath, codexPath string) *Client {
 	}
 }
 
-// promptPositionalOrStdin builds the trailing positional prompt argument for
-// `codex exec`, plus the same message again as stdin content when it must
-// travel that way instead: either it exceeds digest.StdinThreshold (ARG_MAX
-// safety — the package-level buildArgs precedent in generator.go, hour-long
-// meeting transcripts run to hundreds of KB) or it begins with '-', which a
-// bare positional would otherwise be parsed as a codex flag rather than the
-// prompt text. codex reads the prompt from stdin when the positional is "-".
-func promptPositionalOrStdin(userMessage string) (positional, stdin string) {
-	if len(userMessage) > digest.StdinThreshold || strings.HasPrefix(userMessage, "-") {
-		return "-", userMessage
-	}
-	return userMessage, ""
-}
-
-// buildArgs constructs the CLI arguments for a codex exec call, plus stdin
-// content when userMessage must travel that way instead of inline (see
-// promptPositionalOrStdin). workDir is an optional working directory to pass
-// via --cd. When c.stdinOnly is set (SetStdinOnly), or the system prompt
-// exceeds digest.StdinThreshold (on argv it would overflow ARG_MAX and sit
-// readable in `ps`; codex has no file form of developer_instructions), it
-// instead never emits developer_instructions on argv and never places
-// userMessage positionally — see buildStdinOnlyArgs.
+// buildArgs constructs the CLI arguments for a codex exec call, plus its
+// stdin content. The argv carries flags and paths only: no
+// -c developer_instructions=..., no positional prompt — codex reads "-" from
+// stdin, and stdin carries the whole turn (system prompt then user message,
+// delimited by codexStdinContent). Both carry the owner's data, which on
+// argv would be readable by every local process through `ps` (and a large
+// one would hit ARG_MAX); codex has no file form of developer_instructions.
+// workDir is an optional working directory to pass via --cd.
 func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
-	if c.stdinOnly || len(systemPrompt) > digest.StdinThreshold {
-		return c.buildStdinOnlyArgs(systemPrompt, userMessage, workDir)
-	}
-	args := c.execArgs()
-	if workDir != "" {
-		args = append(args, "--cd", workDir)
-	}
-	if systemPrompt != "" {
-		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
-	}
-	positional, stdin := promptPositionalOrStdin(userMessage)
-	args = append(args, positional)
-	return args, stdin
-}
-
-// buildStdinOnlyArgs is buildArgs' CHAT-04 mode (see SetStdinOnly): no
-// -c developer_instructions=..., no positional prompt — codex always reads
-// "-" from stdin, and stdin carries the whole turn (system prompt then user
-// message, delimited by codexStdinContent) regardless of length or leading
-// characters.
-func (c *Client) buildStdinOnlyArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
 	args := c.execArgs()
 	if workDir != "" {
 		args = append(args, "--cd", workDir)

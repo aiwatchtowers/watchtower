@@ -63,10 +63,10 @@ func TestBuildArgs_DefaultsUnchanged(t *testing.T) {
 	c := NewClient("m", "", "")
 	args, stdin, err := c.buildArgs("sys", "hi", "json", "")
 	require.NoError(t, err)
-	assert.Empty(t, stdin)
+	assert.Equal(t, "hi", stdin)
 	assert.NotContains(t, args, "--max-turns")
 	assert.Equal(t, []string{
-		"-p", "hi",
+		"-p",
 		"--output-format", "json",
 		"--model", "m",
 		"--allowedTools", "mcp__watchtower",
@@ -74,7 +74,7 @@ func TestBuildArgs_DefaultsUnchanged(t *testing.T) {
 		"--disallowedTools", DisallowedTools,
 		"--setting-sources", c.settingSources(),
 		"--strict-mcp-config",
-		"--system-prompt", "sys",
+		"--system-prompt-file", c.systemPromptTempPath,
 	}, args)
 }
 
