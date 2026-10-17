@@ -30,9 +30,11 @@ Only the main chat, the target chat and the automation editor can act, through p
 
 ### Artifacts
 
-A document, table, email or Slack draft, event or code opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it to a file (the extension follows the kind, for example .md, .csv or a language's extension for code).
+A document, table, email or Slack draft, event, code or HTML page opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it to a file (the extension follows the kind, for example .md, .csv or a language's extension for code).
 
 Select a passage and choose **Comment** to leave a note. Notes stay drafts until you click **Send N comments**, which sends them together; the assistant answers with a new version.
+
+An HTML page, such as a slide deck, shows rendered in the panel once it is fully written. Click the page, then use the arrow keys to page through a deck. **Present** opens it full screen (Esc leaves), **Open in Window** opens a big window, and **Reload** starts it over. **Open in Browser** opens the version on screen in your browser from a private address on your Mac (`http://127.0.0.1:…`). In the app the page runs with no internet access at all, and in the browser it may load nothing from the internet either, so ask for one self-contained file. Links in it open nothing. HTML pages take no passage comments.
 
 Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 

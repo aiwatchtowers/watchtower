@@ -14,6 +14,12 @@ Files carry git marks (modified, added, untracked, deleted, conflicted). When th
 
 Edits save themselves about a second after you stop typing, and at once when you switch tab. Watchtower never saves over a version it has not seen. If the file changed on disk meanwhile, a banner offers **Reload from disk** or to keep your edit. A file deleted under your edits is only written back when you choose to.
 
+### Previewing HTML files
+
+An `.html` or `.htm` file, such as a slide deck an agent wrote, has a **Source** | **Preview** switch above it. **Preview** renders the file as it is on disk, and reloads it each time the file changes (your edit saves itself in about a second, or the agent writes it again). Its CSS, scripts and images load from the file's own folder only. The page has no internet access and its links open nothing. Click it and use the arrow keys to page through a deck.
+
+The buttons next to the switch are **Reload** (while previewing), **Present** (full screen, Esc leaves) and **Open in Browser**. The browser gets the file from a private address on your Mac (`http://127.0.0.1:…`) that serves only that file's folder, without hidden files, until you quit Watchtower. The browser has internet access, so a CDN font or script loads there.
+
 ### Finding things
 
 Watchtower indexes the folder's definitions in memory, rebuilt from the folder each time. It indexes the files git lists, or all but hidden folders outside a repository, and skips binary files and files over 2 MB. A language without a grammar falls back to a text search.
@@ -51,6 +57,7 @@ The **+** in **FILES** and each row's menu create files and folders, rename, cop
 - **"Git status unavailable — the marks may be out of date."** Git failed to answer. The last marks stay.
 - **A banner says the file changed.** Another program wrote it. Choose **Reload from disk**, or keep your version.
 - **Navigate items are grey.** The workbench window is not in front.
+- **The HTML preview misses images or styles.** They live outside the file's folder (for example `../assets`), or come from the internet. Move them next to the file, or use **Open in Browser**.
 
 ## Related
 
