@@ -111,11 +111,13 @@ struct AgentSettingsSheet: View {
                 run { await vm.decideSuggestion(projectID: project.id, field: field, id: row.id, add: add) }
             },
             globalText: state.global.text(field),
-            onEditGlobal: {
-                appState.settingsTab = .system
-                appState.openSettingsWindow?()
-            }
+            onEditGlobal: openGlobalSettings
         )
+    }
+
+    private func openGlobalSettings() {
+        appState.settingsTab = .system
+        appState.openSettingsWindow?()
     }
 
     private func run(_ work: @escaping () async -> Void) {
@@ -130,7 +132,7 @@ struct AgentSettingsSheet: View {
     private func fileRow(_ state: WorkbenchMethodologyState) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Folder rules: .watchtower/workflow.md (team, committed)").font(.subheadline)
-            Button(state.fileButtonTitle, action: { openOrCreateFile(state) })
+            Button(state.fileButtonTitle) { openOrCreateFile(state) }
                 .disabled(busy)
             if let note = state.fileNote {
                 Text(note).font(.caption).foregroundStyle(.orange)
