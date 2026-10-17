@@ -132,6 +132,8 @@ package enum ArtifactActions {
                                            ("Attendees", draft.meta["attendees"]), ("Location", draft.meta["location"])]) + draft.content)
         case "slack":
             return ("\(base).txt", draft.content)
+        case "html":
+            return ("\(base).html", draft.content)
         default:
             return ("\(base).md", draft.content)
         }

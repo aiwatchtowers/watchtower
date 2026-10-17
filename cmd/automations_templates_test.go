@@ -282,8 +282,8 @@ func TestInstallTemplate_RefusesLinkedWorkbenchDir(t *testing.T) {
 	assert.Empty(t, rows)
 }
 
-// new-mail-summary's note (its event trigger fires once P4 ships) is in the
-// gallery and in install-template's text and JSON output.
+// new-mail-summary's note (a run without a sync event reads scheduledAccounts)
+// is in the gallery and in install-template's text and JSON output.
 func TestInstallTemplate_PrintsTemplateNotes(t *testing.T) {
 	newAutoCLI(t)
 	out, err := runAutomations(t, "templates", "--json")
@@ -292,8 +292,8 @@ func TestInstallTemplate_PrintsTemplateNotes(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &entries), out)
 	require.Equal(t, "new-mail-summary", entries[0].Name)
 	require.Len(t, entries[0].Notes, 1)
-	assert.Contains(t, entries[0].Notes[0], "event triggers ship (P4)")
-	assert.Contains(t, entries[0].Description, "event triggers ship (P4)")
+	assert.Contains(t, entries[0].Notes[0], "scheduledAccounts")
+	assert.NotContains(t, entries[0].Description, "P4")
 	assert.NotNil(t, entries[1].Notes, "notes is [] when a template has none")
 
 	raw, err := runAutomations(t, "install-template", "new-mail-summary", "--json")
@@ -301,10 +301,10 @@ func TestInstallTemplate_PrintsTemplateNotes(t *testing.T) {
 	var got installJSON
 	require.NoError(t, json.Unmarshal([]byte(raw), &got), raw)
 	require.Len(t, got.Notes, 1)
-	assert.Contains(t, got.Notes[0], "event triggers ship (P4)")
+	assert.Contains(t, got.Notes[0], "scheduledAccounts")
 
 	newAutoCLI(t)
 	text, err := runAutomations(t, "install-template", "new-mail-summary")
 	require.NoError(t, err, text)
-	assert.Contains(t, text, "Note: Its mail-sync event trigger fires once event triggers ship (P4).")
+	assert.Contains(t, text, "Note: A run by hand or on a schedule has no mail-sync event: list your mailboxes in scheduledAccounts in the script first.")
 }

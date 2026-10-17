@@ -37,6 +37,7 @@ package enum AttachmentRejection: Error, Equatable, Sendable {
     case tooLarge(fileName: String, limit: Int64)
     case notUTF8(fileName: String)
     case unreadable(fileName: String)
+    case folder(fileName: String)
 
     package var message: String {
         switch self {
@@ -48,6 +49,8 @@ package enum AttachmentRejection: Error, Equatable, Sendable {
             return "\(name) is not a UTF-8 text file"
         case .unreadable(let name):
             return "\(name) could not be read"
+        case .folder(let name):
+            return "\(name) is a folder; attach the files inside it instead"
         }
     }
 }
@@ -71,8 +74,9 @@ package enum AttachmentValidator {
 
     package static func validate(url: URL) -> Result<AttachmentKind, AttachmentRejection> {
         let name = url.lastPathComponent
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-              values.isRegularFile == true,
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey])
+        if values?.isDirectory == true { return .failure(.folder(fileName: name)) }
+        guard let values, values.isRegularFile == true,
               let size = values.fileSize,
               let handle = try? FileHandle(forReadingFrom: url) else {
             return .failure(.unreadable(fileName: name))

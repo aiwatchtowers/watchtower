@@ -3,6 +3,11 @@
 // docs/superpowers/specs/2026-10-15-agent-analytics-core-design.md).
 package agentlog
 
+import (
+	"cmp"
+	"slices"
+)
+
 // PriceVersion is stamped on every priced row; bump it with any change to
 // prices so the next scan reprices stored rows (no reparse).
 const PriceVersion = 1
@@ -63,4 +68,17 @@ func Cost(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, b
 		return 0, false
 	}
 	return usd, true
+}
+
+// ModelTiers lists the priced models by output price, highest first (ties by
+// name), so the next entry with a lower price is the next cheaper tier.
+func ModelTiers() []string {
+	out := make([]string, 0, len(prices))
+	for m := range prices {
+		out = append(out, m)
+	}
+	slices.SortFunc(out, func(a, b string) int {
+		return cmp.Or(cmp.Compare(prices[b].output, prices[a].output), cmp.Compare(a, b))
+	})
+	return out
 }

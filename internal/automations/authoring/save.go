@@ -23,10 +23,9 @@ const maxDryRunSummaryBytes = 2 * 1024
 
 // Messages save_automation's refusals carry verbatim.
 const (
-	msgWorkbenchSaveLater = "Workbench automations are saved from the workbench (arrives with a later update)"
-	msgRecipeTextDrifted  = "the recipe text no longer matches the reviewed one"
-	msgRecipeFileChanged  = "the recipe file changed since this was proposed — ask the assistant to draft it again"
-	msgRecipePathChanged  = "the recipe's location changed since this was proposed — ask the assistant to draft it again"
+	msgRecipeTextDrifted = "the recipe text no longer matches the reviewed one"
+	msgRecipeFileChanged = "the recipe file changed since this was proposed — ask the assistant to draft it again"
+	msgRecipePathChanged = "the recipe's location changed since this was proposed — ask the assistant to draft it again"
 )
 
 type saveArgs struct {
@@ -94,8 +93,8 @@ func NewSaveAutomation(d Deps) *tools.Tool {
 			_, _, err := parseSave(d, raw)
 			return err
 		},
-		Normalize: func(_ context.Context, _ *db.DB, raw json.RawMessage) (json.RawMessage, error) {
-			return normalizeSave(d, raw)
+		Normalize: func(ctx context.Context, _ *db.DB, raw json.RawMessage) (json.RawMessage, error) {
+			return normalizeSave(ctx, d, raw)
 		},
 		Execute: func(ctx context.Context, _ *db.DB, call tools.Call) (any, error) {
 			return executeSave(ctx, d, call.Args)
@@ -111,8 +110,9 @@ func saveSchema() *jsonschema.Schema {
 	return s
 }
 
-// parseSave checks the call's args and parses its recipe as a personal one;
-// every refusal is a *tools.ValidationError (no row).
+// parseSave checks the call's args and parses its recipe in its scope — the
+// workbench's with workbench_id, personal without; every refusal is a
+// *tools.ValidationError (no row).
 func parseSave(d Deps, raw json.RawMessage) (saveArgs, *automations.Recipe, error) {
 	var a saveArgs
 	if d.Enabled == nil || !d.Enabled() {
@@ -128,26 +128,67 @@ func parseSave(d Deps, raw json.RawMessage) (saveArgs, *automations.Recipe, erro
 		return a, nil, &tools.ValidationError{Msg: "slug must match ^[a-z0-9][a-z0-9-]{0,63}$"}
 	case strings.TrimSpace(a.Reason) == "":
 		return a, nil, &tools.ValidationError{Msg: "reason is required"}
-	case a.WorkbenchID != 0: // R-P3-5: lifted in P5 with the PROJ-03 amendment
-		return a, nil, &tools.ValidationError{Msg: msgWorkbenchSaveLater}
+	case a.WorkbenchID < 0:
+		return a, nil, &tools.ValidationError{Msg: "workbench_id must be a positive id"}
 	}
-	r, err := automations.ParseRecipe(a.Slug, []byte(a.RecipeText), personalScope)
+	r, err := automations.ParseRecipe(a.Slug, []byte(a.RecipeText), saveScope(a.WorkbenchID))
 	if err != nil {
 		return a, nil, &tools.ValidationError{Msg: err.Error()}
 	}
 	return a, r, nil
 }
 
-var personalScope = automations.Scope{Kind: automations.ScopePersonal}
+// saveScope is the scope of a save: workbench workbenchID's, personal for 0.
+func saveScope(workbenchID int64) automations.Scope {
+	if workbenchID != 0 {
+		return automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: workbenchID}
+	}
+	return automations.Scope{Kind: automations.ScopePersonal}
+}
 
-// recipeTarget is the canonical folder and path of slug's personal recipe —
-// the path the indexer stores in automations.path.
-func recipeTarget(d Deps, slug string) (dir, path string, err error) {
-	dir, err = automations.CanonicalDir(automations.PersonalDir(d.WorkspaceDir))
+// recipeTarget is the canonical folder and path of slug's recipe in scope —
+// the path the indexer stores in automations.path: the personal folder, or
+// the workbench's <folder>/.watchtower/automations (PROJ-03 as amended in
+// ask #272: the only place of the folder a save writes; the folder comes from
+// d.Workbench). A workbench recipe
+// folder with a symlink in its existing path is refused, like `automations
+// save` refuses it; an unknown workbench and a linked folder are
+// *tools.ValidationError.
+func recipeTarget(ctx context.Context, d Deps, scope automations.Scope, slug string) (dir, path string, err error) {
+	raw := automations.PersonalDir(d.WorkspaceDir)
+	if scope.Kind == automations.ScopeWorkbench {
+		if raw, err = workbenchRecipeDir(ctx, d, scope.WorkbenchID); err != nil {
+			return "", "", err
+		}
+	}
+	dir, err = automations.CanonicalDir(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("resolving the personal recipe folder: %w", err)
+		return "", "", fmt.Errorf("resolving the recipe folder %s: %w", raw, err)
 	}
 	return dir, filepath.Join(dir, slug+".md"), nil
+}
+
+// workbenchRecipeDir is workbench id's recipe folder as stored, through
+// d.Workbench, once it is known not to sit behind a symlink.
+func workbenchRecipeDir(ctx context.Context, d Deps, id int64) (string, error) {
+	if d.Workbench == nil {
+		return "", errors.New("save_automation: no workbench resolver is configured")
+	}
+	wb, err := d.Workbench.Workbench(ctx, id)
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
+		return "", &tools.ValidationError{Msg: fmt.Sprintf("no workbench with id %d", id)}
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading workbench %d: %w", id, err)
+	}
+	if wb.Folder == "" {
+		return "", &tools.ValidationError{Msg: fmt.Sprintf("workbench %d has no folder", id)}
+	}
+	dir := automations.WorkbenchDir(wb.Folder)
+	if err := automations.RefuseLinkedRecipeDir(dir); err != nil {
+		return "", &tools.ValidationError{Msg: err.Error()}
+	}
+	return dir, nil
 }
 
 // recipeFileNow is the file at path now: its first MaxRecipeBytes+1 bytes
@@ -166,12 +207,12 @@ func recipeFileNow(path string) (data []byte, hash string, exists bool, err erro
 	return data, hash, true, nil
 }
 
-func normalizeSave(d Deps, raw json.RawMessage) (json.RawMessage, error) {
+func normalizeSave(ctx context.Context, d Deps, raw json.RawMessage) (json.RawMessage, error) {
 	a, r, err := parseSave(d, raw)
 	if err != nil {
 		return nil, err
 	}
-	_, path, err := recipeTarget(d, a.Slug)
+	_, path, err := recipeTarget(ctx, d, r.Scope, a.Slug)
 	if err != nil {
 		return nil, err
 	}
@@ -188,14 +229,14 @@ func normalizeSave(d Deps, raw json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("save_automation: %w", err)
 	}
 	perms := nonNil(m.Normalized())
-	wide, err := widening(d.DB, personalScope, a.Slug, perms)
+	wide, err := widening(d.DB, r.Scope, a.Slug, perms)
 	if err != nil {
 		return nil, err
 	}
 	a.DryRunSummary, _ = tools.ClipUTF8Bytes(a.DryRunSummary, maxDryRunSummaryBytes)
 	previous, _ := tools.ClipUTF8Bytes(string(prev), automations.MaxRecipeBytes)
 	p := savePinned{
-		saveArgs: a, Scope: personalScope.String(), Path: path, Name: r.Name,
+		saveArgs: a, Scope: r.Scope.String(), Path: path, Name: r.Name,
 		TriggerKind: string(r.Trigger.Kind), TriggerSpec: json.RawMessage(spec),
 		Permissions: perms, Outputs: nonNil(m.Outputs()),
 		BudgetTokens: r.Budget.Tokens, BudgetMinutes: r.Budget.Minutes,
@@ -218,14 +259,14 @@ func executeSave(ctx context.Context, d Deps, raw json.RawMessage) (*SaveResult,
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("save_automation: stored args: %w", err)
 	}
-	if p.WorkbenchID != 0 {
-		return nil, &tools.ValidationError{Msg: msgWorkbenchSaveLater}
-	}
-	r, err := automations.ParseRecipe(p.Slug, []byte(p.RecipeText), personalScope)
+	scope := saveScope(p.WorkbenchID)
+	r, err := automations.ParseRecipe(p.Slug, []byte(p.RecipeText), scope)
 	if err != nil || p.ApprovalHash == "" || automations.ApprovalHash(r) != p.ApprovalHash {
 		return nil, errors.New(msgRecipeTextDrifted)
 	}
-	dir, path, err := recipeTarget(d, p.Slug)
+	// The workbench folder's symlink check (recipeTarget) is not atomic with
+	// the write either: the same accepted window as `automations save`.
+	dir, path, err := recipeTarget(ctx, d, scope, p.Slug)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +286,7 @@ func executeSave(ctx context.Context, d Deps, raw json.RawMessage) (*SaveResult,
 	if clock == nil {
 		clock = automations.RealClock{}
 	}
-	a, err := automations.NewIndexer(d.DB, d.WorkspaceDir, clock).WriteRecipe(ctx, personalScope, dir, path, []byte(p.RecipeText))
+	a, err := automations.NewIndexer(d.DB, d.WorkspaceDir, clock).WriteRecipe(ctx, scope, dir, path, []byte(p.RecipeText))
 	if err != nil {
 		return nil, fmt.Errorf("save_automation: %w", err)
 	}

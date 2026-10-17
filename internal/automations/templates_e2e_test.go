@@ -100,7 +100,7 @@ type personalDryRun struct {
 var personalDryRuns = []personalDryRun{
 	{
 		name: "new-mail-summary", event: true,
-		steps:   "state(get):ok,tool(list_emails):ok,llm(light):ok,output(inbox):dry_run,state(set):dry_run",
+		steps:   "state(get):ok,tool(list_emails):ok,tool(list_emails):ok,llm(light):ok,output(inbox):dry_run,state(set):dry_run",
 		toolArg: map[string]string{"list_emails": `"account":"work"`},
 		read:    []string{"Deploy window", "Lunch", "Contract review"},
 	},

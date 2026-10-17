@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 )
 
@@ -71,4 +72,18 @@ func TestRunSyncDaemon_WiresAutomations(t *testing.T) {
 		})
 	}
 	assert.True(t, called, "runSyncDaemon must call wireAutomations")
+}
+
+// With automations.enabled off the daemon gets no event bus (FEAT-01) and
+// its sync cycle publishes nothing; on, the bus is wired beside the runners.
+func TestDaemon_AutomationsDisabledNoBus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database := db.OpenTestDB(t)
+	logger := log.New(io.Discard, "", 0)
+	for _, enabled := range []bool{false, true} {
+		cfg := &config.Config{ActiveWorkspace: "acme", Automations: config.AutomationsConfig{Enabled: enabled}}
+		d := daemon.New(cfg)
+		wireAutomations(d, cfg, database, &automationstest.FakeGenerator{}, logger)
+		assert.Equal(t, enabled, d.HasAutomationEvents(), "automations.enabled=%v", enabled)
+	}
 }

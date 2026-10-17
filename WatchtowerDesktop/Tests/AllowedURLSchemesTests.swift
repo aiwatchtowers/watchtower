@@ -131,4 +131,29 @@ final class AllowedURLSchemesTests: XCTestCase {
         XCTAssertEqual(AllowedURLSchemes.strippingDisallowedLinks(source, renderOnly: [CodeLineLinks.scheme])
             .runs.first { $0.link != nil }?.link, link, "the popover keeps it")
     }
+
+    /// In-app screen links (Ask Watchtower): never handed to the system,
+    /// kept as links in chat markdown, which only the main window's gate opens.
+    func testScreenLinksRenderInChatButAreNeverPermitted() {
+        let link = NavLink.url("calendar")
+        XCTAssertFalse(AllowedURLSchemes.permits(link))
+        let inlines: [MarkdownInline] = [.link(destination: link.absoluteString, children: [.text("Calendar")])]
+        let rendered = MarkdownView.inlineText(inlines, navScreens: ["calendar"])
+        XCTAssertEqual(rendered.runs.first { $0.link != nil }?.link, link)
+    }
+
+    /// A link to a hidden or unknown screen, or one rendered where no screen
+    /// is visible (outside the main window), is plain text, never a dead link.
+    func testScreenLinksToHiddenScreensRenderAsText() {
+        for raw in ["projects", "nope"] {
+            let inlines: [MarkdownInline] = [.link(destination: NavLink.url(raw).absoluteString,
+                                                   children: [.text("Screen")])]
+            let rendered = MarkdownView.inlineText(inlines, navScreens: ["calendar"])
+            XCTAssertNil(rendered.runs.first { $0.link != nil }, raw)
+            XCTAssertEqual(String(rendered.characters), "Screen")
+        }
+        let calendar: [MarkdownInline] = [.link(destination: NavLink.url("calendar").absoluteString,
+                                                children: [.text("Calendar")])]
+        XCTAssertNil(MarkdownView.inlineText(calendar).runs.first { $0.link != nil })
+    }
 }

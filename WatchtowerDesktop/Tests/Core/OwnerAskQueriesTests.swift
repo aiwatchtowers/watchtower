@@ -223,6 +223,26 @@ final class OwnerAskQueriesTests: XCTestCase {
         }
     }
 
+    /// An automation run's closed asks (session-less, as Go files them) are
+    /// not counted or listed as filed outside the app: they have their own.
+    func testClosedAutomationAsksAreNotOutsideTheApp() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let a = try TestDatabase.insertAutomation(d, slug: "review", name: "Review", workbenchID: p)
+            let run = try TestDatabase.insertAutomationRun(d, automationID: a, status: "succeeded")
+            let fromRun = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}",
+                                                          automationRunID: run)
+            try TestDatabase.insertOwnerAsk(d, projectID: p, automationRunID: run)
+            let outside = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}")
+
+            XCTAssertEqual(try OwnerAskQueries.closedCounts(d, projectID: p), [nil: 1])
+            XCTAssertEqual(try OwnerAskQueries.closedAutomationCount(d, projectID: p), 1, "open asks are not counted")
+            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil).asks.map(\.id), [outside])
+            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil, automations: true).asks.map(\.id),
+                           [fromRun])
+        }
+    }
+
     func testReplacementsMapASupersededAskToItsNewRound() throws {
         try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
@@ -231,6 +251,19 @@ final class OwnerAskQueriesTests: XCTestCase {
             try d.execute(sql: "UPDATE owner_asks SET previous_ask_id = ? WHERE id = ?", arguments: [old, new])
             try TestDatabase.insertOwnerAsk(d, projectID: p)
             XCTAssertEqual(try OwnerAskQueries.replacements(d, projectID: p), [old: new])
+        }
+    }
+    func testDecodesAutomationRunID() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let automation = try TestDatabase.insertAutomation(d, workbenchID: p)
+            let run = try TestDatabase.insertAutomationRun(d, automationID: automation, status: "waiting",
+                                                           waitingReason: "ask")
+            try TestDatabase.insertOwnerAsk(d, projectID: p, title: "From the run", automationRunID: run)
+            try TestDatabase.insertOwnerAsk(d, projectID: p, title: "From an agent")
+            let asks = try OwnerAskQueries.openAsks(d, projectID: p).asks
+            XCTAssertEqual(asks.map(\.title), ["From the run", "From an agent"])
+            XCTAssertEqual(asks.map(\.automationRunID), [run, nil])
         }
     }
 }

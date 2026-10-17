@@ -23,7 +23,6 @@ struct MeetingsSettings: View {
     @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
     @AppStorage(SystemAudioRecorder.reattachKey) private var reattachSystemAudio = true
     @AppStorage("transcription.voiceRecognition") private var voiceRecognition = true
-    @AppStorage("transcription.voiceNotifications") private var voiceNotifications = true
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
     @AppStorage(DictationEngineChoice.defaultsKey) private var dictationModelRaw = ""
     @State private var showAdvancedTranscription = false
@@ -169,10 +168,6 @@ struct MeetingsSettings: View {
             Toggle("Voice recognition", isOn: $voiceRecognition)
                 .help("Match speakers against the people you've already named, and learn their voice from "
                     + "confirmed labels, so recurring people are named automatically across recordings.")
-
-            Toggle("Notify about unknown voices", isOn: $voiceNotifications)
-                .disabled(!voiceRecognition)
-                .help("Get a notification when a recording has voices to label.")
         }
     }
 

@@ -26,6 +26,7 @@ type File struct {
 	CollapsedReason string `json:"collapsed_reason,omitempty"` // lockfile|generated|too_large
 	NewBlob         string `json:"new_blob"`                   // the new side's blob id; "" for a deleted file
 	NewMode         string `json:"new_mode"`                   // the new side's mode; "" for a deleted file
+	OldMode         string `json:"old_mode,omitempty"`         // the old side's mode; "" for an added file
 	Hunks           []Hunk `json:"hunks"`
 
 	typeChange bool // name-status T: the patch holds a deletion and a creation section
@@ -108,6 +109,9 @@ func parseRaw(b []byte) []File {
 		f := File{}
 		if mode, blob := meta[1], meta[3]; strings.Trim(blob, "0") != "" {
 			f.NewMode, f.NewBlob = mode, blob
+		}
+		if strings.Trim(meta[2], "0") != "" {
+			f.OldMode = meta[0]
 		}
 		st := meta[4][0]
 		if st == 'R' || st == 'C' {

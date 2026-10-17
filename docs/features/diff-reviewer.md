@@ -1,9 +1,11 @@
-# Diff reviewer — guided review of a session's changes (2026-10-16, Plan 1 of 3)
+# Diff reviewer — guided review of a session's changes (2026-10-16, Plans 1–3 of 3)
 
 Board #328. Spec: `docs/superpowers/specs/2026-10-16-workbench-diff-reviewer-design.md`.
-Plan 1: `docs/superpowers/plans/2026-10-16-diff-reviewer-p1-core.md`. Contracts:
-`docs/inventory/review.md` (REVIEW-01/03/04/05; REVIEW-02 Undo is reserved for Plan 3)
-and the PROJ-12 amendment in `docs/inventory/workbench.md`.
+Plan 1: `docs/superpowers/plans/2026-10-16-diff-reviewer-p1-core.md`.
+Plan 2 (Deep mode): `docs/superpowers/plans/2026-10-16-diff-reviewer-p2-deep.md`.
+Plan 3 (agent tools, AI overview, Undo, Find repeats): `docs/superpowers/plans/2026-10-16-diff-reviewer-p3-agent-ai.md`.
+Contracts: `docs/inventory/review.md` (REVIEW-01..05), the PROJ-12 and PROJ-04 entries in
+`docs/inventory/workbench.md` and DEV-06 in `docs/inventory/dev-surface.md` (eighteen workbench tools).
 
 The owner reviews what an agent session changed in a folder-bound workbench, writes
 comments on lines, sends them as a **round**, and the agent reads them with
@@ -88,6 +90,203 @@ Viewed, comment counts, collapsed files) and a Monaco diff page (`diff.html`) in
 side-by-side or inline mode; selecting lines offers **Comment**. It opens from the
 session row menu **Review Changes**; one model per session.
 
+## What Plan 2 ships (Deep mode)
+
+**Lenses (`internal/reviewdiff/lenses.go`, `lenses.md`).** Built-in review lenses, in
+order: `correctness`, `tests`, `security`, `simplicity`, `house_rules` (no built-in
+questions). A lens id is its name lowercased, every run of non `[a-z0-9]` characters
+replaced by `_` and trimmed; comments store the id in `review_comments.lens`, and
+`intent` is the Wrap-up lens. The workbench folder may extend them with
+`.watchtower/review.md` (the **workbench folder**, `projects.folder_path`, not the
+session worktree; read; written only by an owner-pressed Accept (REVIEW-01)). Grammar: `## <name>` names a lens (a
+built-in is matched case-insensitively and extended; any other name is added after the
+built-ins in file order), `- <question>` is a question, blank lines are ignored, any
+other line (text before the first heading too) is skipped and reported as
+`line N: not a "## lens" heading or a "- question"`. A leading UTF-8 BOM is ignored. An
+item key is the first 16 hex characters of sha256 of the trimmed question; a duplicate
+question in one lens is kept once. A heading without a latin letter or digit (a non-latin
+name) has no id: it is skipped with a note and its bullets are dropped. A heading whose id
+is `intent` is reserved for Wrap-up: skipped with `line N: "intent" is reserved for
+Wrap-up`, bullets dropped. Read rules: the file is read only when `.watchtower`
+is a real directory (lstat) and `review.md` a regular file opened
+`O_NOFOLLOW|O_NONBLOCK` and re-checked with fstat (same inode); over 65,536 bytes it is
+not read. Any refusal gives the built-in lenses plus one note; a missing file is no note.
+`workbench review context` returns `lenses` and `lens_notes` next to the items (the
+Desktop shows the notes; Refresh re-reads the file).
+
+**Checks (migration 00124 `review_checks`).** One row per
+`(round_id, chapter_key, lens, item_key)` with `state` in `checked` (a checklist
+question ticked), `commented` (turned into a comment), and the Wrap-up marks `done`,
+`partial`, `not_done`. Unticking deletes the row; rows cascade with the round. Checks of
+a chapter that no longer exists stay in the table.
+
+**Round state.** `review_rounds` carries `phase` (`meaning`, `chapters`, `wrapup`; `''`
+reads as `meaning`), `chapter_key` and `active_seconds`, returned in the round JSON of
+`review start`/`review diff`. `mode` (`quick|deep`) is now set by the Desktop, and a new
+round inherits the previous sent round's mode (Go, at create). Swift writes `mode`,
+`phase`, `chapter_key` and `active_seconds` only with `WHERE id = ? AND status = 'open'`;
+on a sent round the state is read-only (moving on screen is not saved). Reopening the
+app lands on the same phase and chapter.
+
+**Mechanical chapters (`ReviewChapters.swift`, no model).** The changed files are
+grouped by directory; a test file sits next to its one subject and comes first in the
+chapter; a chapter is capped at 400 changed lines (additions + deletions) and a larger
+directory is split into parts; generated and lock files (collapsed) go last. A chapter
+is done when all its files are Viewed.
+
+**Pace (`ReviewPace.swift`).** Active review time counts only while the window is key and
+the owner interacted within 120 s; one tick gap never counts more than 15 s. It is
+persisted to `active_seconds` about every 30 s (open rounds only). At 3,600 active
+seconds the header shows a break hint.
+
+**Phases and views (`ReviewChangesModel`, `// MARK: - Deep`; `Views/Workbench/Review/`).**
+Quick/Deep switch and a phase strip in the header. *Meaning*: the intent card (linked
+targets with their intent and plan task) and the design comments. *Chapters*: the chapter
+list, the per-chapter checklist (all lenses, ticking, **Comment** on a question turns it
+into a design comment and marks it `commented`), the Monaco diff. *Wrap-up*: comments
+grouped by chapter plus a General group, and the intent checklist — one item per linked
+target (`target:<id>`); Done / Partly / Not done are `done` / `partial` / `not_done`
+checks; Partly and Not done add a comment under the `intent` lens (`ReviewWrapUp`), and
+re-marking an item replaces its earlier intent draft.
+
+**Agent side.** `get_review` prints a comment's lens as a tag after its location, e.g.
+`[tests]` or `[intent]`.
+
+## What Plan 3 ships (agent tools, AI overview, Undo, Find repeats)
+
+**Tables (migration 00128 `review_agent_ai`, renumbered from 00125 when main took 00125 for agent analytics, 00126 for board #267 and 00127 for the session chat feed; 00124 is Plan 2's `review_checks`, 00123
+`workbench_methodology`).** `review_notes` (per workbench and session: `kind` `note` —
+path, lines, quote, text — or `chapter` — title in `text`, `paths_json`, `core`, `why` —,
+`tree_sha` of the snapshot they were checked against, `ord`); `review_overviews` (the
+cached overview JSON, primary key `(project_id, tree_sha, base_sha, intent_hash)`, plus the
+strong model's name); `review_reverts` (one row per undone hunk: `round_id`, `hunk_id`,
+`path`, `header`, the reverse-applied `patch`, unique per `(round_id, hunk_id)`);
+`review_lessons` (`lens`, one-line `text`, `source_comment_ids` JSON, `status`
+`proposed|accepted|dismissed`, `decided_at`). Accessors in `internal/db/review_agent.go`;
+the agent's reply lives in `review_comments.agent_reply`/`agent_reply_at` (Plan 1 columns).
+
+**Undo (`workbench review revert-hunk`, `reviewdiff.Repo.RevertHunk`; REVIEW-01, REVIEW-02).**
+The owner presses Undo on one hunk of the diff page. Refused under an agent marker
+(`refuseUnderAgent`), on a round that is not open ("the round is not open"), while the
+session's `agent_state` is `working` ("the agent is working in this session — undo when it
+stops"), for a hunk already undone ("this hunk was already undone in this round"), for a
+hunk not in the round's diff (`--since` takes it from the since view), and for a renamed,
+binary, symlink, submodule, too-large or truncated file ("undo is not available for a …
+file"). It runs from the repository top (`git rev-parse --show-toplevel`, since the round's
+paths are top-relative and a workbench may be a subfolder) and refuses a path whose parent
+directory under the top is a symlink. Then the work-tree file must still be the round tree's
+blob (`hash-object`; a deleted file still absent) — else "the file changed since this
+round's snapshot — refresh first" —, `git apply --check -R` must pass — else "this hunk no
+longer applies to the file" —, and `git apply -R --whitespace=nowarn` takes the one-hunk
+patch back (never `--index`/`--cached`; no ref moves). `apply` and `hash-object` blank the
+folder's filter drivers (REVIEW-05). The revert is recorded in `review_reverts`. The
+Desktop disables Undo with a reason ("Round already sent", "Undo is off while the agent is
+working" — the session dot is working or Agents working —, "Undo is off while another
+action runs"), refuses before calling the CLI, shows Go's refusal text, then reloads the
+reverts and refreshes the round; undone hunks are listed in an **Undone** group.
+
+**AI overview (`internal/reviewai`, `workbench review overview`).** On round open (and on a
+refresh that changed the tree) the Desktop runs `review overview --round R` (330 s
+timeout; the CLI bounds the whole command — git, the model call, the db — at 5 minutes,
+`reviewAIBudget`, and a cancelled parent or a SIGINT/SIGTERM cancels the model call, which
+kills its claude/codex child). The refresh after an owner **Undo** does not ask for a new
+overview (ask #249): after an owner Undo, the overview is kept until the next Refresh, which
+regenerates it (as does an auto-refresh; one is asked for anyway when none is on screen). The cache is looked up before
+the diff is read, and a failed cache write is logged to stderr while the overview is still
+answered. A linked target that cannot be read fails `review context` and `review overview`
+(`ok:false`, nothing cached) instead of being skipped. Input: the review
+context items (the linked targets' text, intent and plan task, `reviewContextItems`), the
+session's agent notes, the lens ids, and the round's diff from base to tree. Caps live only
+in `internal/reviewai/limits.go`: at most 300 diff lines per file and 6,000 in all; a file
+past either cap, binary or collapsed is listed as `<path> (+a −d) — not shown`, and once the
+overall cap is spent every later file is only listed. The call is strong tier
+(`workbench.review_overview`, prompt `review.overview` v2, tunable in Settings → Prompts).
+The reply is validated, never trusted: malformed JSON, an array root or an empty `summary`
+fails the call; coverage entries with an unknown status (`done|partial|not_found`) or an
+`index` (the item's 1-based number in the INTENT list) out of range or already used, risk
+entries on an unknown path or level (`low|medium|high`), unknown paths in `where`,
+`out_of_scope` and chapters, and unknown lens ids are dropped one by one; a chapter left
+with no path disappears; caps of 50 coverage, 200 risk, 30 chapters, 2,000 runes of
+summary and 500 runes per field. A good result is cached in `review_overviews` under
+`(project_id, tree_sha, base_sha, intent_hash)` — `intent_hash` is sha256 hex of the JSON
+of the context items plus the session's notes (row ids out), so a new note re-runs it — and
+a cached answer comes back with `overview_cached`. Failures are never cached: the envelope
+says "AI overview unavailable: …", the Desktop shows the reason with **Retry**, and the
+review stays usable on mechanical (or agent) chapters. The Meaning phase shows the summary,
+"Does it cover the intent?", "Outside the intent" and a risk line; the file list carries a
+compact overview and per-file risk badges.
+
+**Chapter sources and lenses per chapter (`ReviewChapters.resolve`, `lenses(for:all:)`).**
+First non-empty source wins: the agent's chapters (`annotate_changes`), then the AI's, then
+Plan 2's mechanical split. A chapter keeps only paths in the diff and not taken by an
+earlier chapter (core chapters first, tests first inside); files no chosen chapter names go
+into mechanical chapters appended after. Keys are `agent:<n>` / `ai:<n>` (1-based index in
+the source list); mechanical keys are unchanged. Mechanical and agent chapters show every
+lens; an AI chapter shows the lenses it marks plus `house_rules` and every non-built-in lens
+(the owner's own rules never hide). An overview arriving after the owner already ticked
+checks in the shown chapters does not swap them: a banner offers **Use AI chapters**.
+Reopening a round on AI chapters (a saved `ai:` chapter, or checks on `ai:` keys) applies
+the AI chapters again and lands on the saved chapter.
+
+**Intent items from coverage (`ReviewWrapUp.intentItems(_:coverage:)`).** Wrap-up's intent
+checklist is always one item per context item (linked target): key `target:<id>`, text from
+the context item. With an overview, the coverage entry whose `index` names that item adds
+the AI's status as `aiStatus`. The model's wording never reaches the key, so a mark (and the
+Not done / Partly done draft it leaves) survives a new overview that words the item
+differently; an overview cached before `index` existed decodes it as 0 and adds no status.
+
+**The agent's tools (DEV-06: eighteen workbench tools; skill pack v12).**
+- `annotate_changes` (`internal/tools/workbench_review_annotate.go`): `notes` (≤ 40: path,
+  `start_line`, `end_line`, a 1–800 rune note — why, not what), `chapters` (≤ 20: title ≤ 120
+  runes, 1–200 paths, `core`, `why` ≤ 400 runes) and a `reason`. It needs the calling
+  `terminal_sessions` row of workbench N (`WATCHTOWER_TERMINAL_SESSION_ID`), snapshots the
+  session's folder, checks that every note's file is a text file of the current changes and
+  its lines exist, stores each note with its quote, and replaces the session's earlier notes
+  and chapters. The Desktop places a note on the selected file by its stored lines on the
+  same tree, else by its quote (`ReviewNotePlacement`), shows it as a zone in the diff, and
+  lists all notes in **The agent's walkthrough** (a lost one says "no longer in the file").
+- `reply_review_comment` (`workbench_review_reply.go`): `comment_id`, a 1–2,000 rune
+  `reply`, `resolved` and a `reason`. Only a `sent` (or already resolved) comment of a sent
+  or delivered round of the workbench; the reply (and, with `resolved: true`, the resolution)
+  also goes to its open `carried`/`outdated` copy in the same session, in one transaction.
+  The Desktop shows `Agent: <reply>` under a comment and lists agent-resolved comments under
+  **Resolved by the agent** with **Reopen** (REVIEW-03); `ReviewQueries.reopen` refuses a
+  comment of an unrelated round and throws on a round that is not open.
+- Both are `AccessWrite` workbench-surface tools, applied directly and audited (DirectApply).
+- `get_review` lists the round's reverts ("Undone by the owner (reverted in the work tree — do
+  not redo without asking)") with path, hunk header and patch; the delivery line is unchanged
+  (PROJ-12).
+- Pack v11's "Review rounds": before handing work back, read `.watchtower/review.md` and check
+  the changes against it, then call `annotate_changes` once (chapters for more than ~400
+  changed lines); when a round arrives, answer every comment with `reply_review_comment` and
+  do not redo undone hunks without asking.
+
+**Find repeats (`workbench review lessons propose|accept|dismiss`).** Header **Find Repeats…**
+opens a sheet. Input: the owner's comments of the workbench's newest 20 sent or delivered
+rounds, `sent` or `resolved`, never carried copies (a remark carried across rounds is one
+remark), minus comments a decided lesson already cites; fewer than two calls no model.
+Strong tier (`workbench.review_lessons`, prompt `review.lessons` v1; the same cancel and
+5-minute bound as the overview). Validation: a lesson
+needs at least two distinct source ids from the input, an unknown lens becomes
+`house_rules`, the text is one line of 1–300 runes, at most 20. Each propose replaces the
+workbench's `proposed` lessons (decided ones stay). **Accept** writes `- <rule>` under the
+lens's heading in the workbench folder's `.watchtower/review.md` (`reviewdiff.AppendLessonRule`,
+the file's only writer: real `.watchtower` directory, regular `review.md` read under the
+Plan 2 rules, 64 KB cap, a rule already present writes nothing; created with
+`O_EXCL|O_NOFOLLOW` when `review.md` is absent, otherwise a temp file in `.watchtower`
+renamed over it). Accept decides first: it moves the lesson `proposed` → `accepted`
+(compare-and-set; one already decided stops before the file is touched, so a second Accept
+never writes a second copy), then appends; an append failure sets it back to `proposed` and
+reports the error. Propose, Accept and Dismiss all refuse under an agent marker (REVIEW-01
+covers Accept). A model reply without a `lessons` list is an error (earlier proposals stay);
+an explicit `"lessons": []` is an empty answer. **Dismiss** marks it `dismissed`. The sheet
+disables Accept and Dismiss (and Find Repeats) while a decision runs. The new rule shows up in the
+`house_rules` (or its lens's) checklist on the next context read.
+
+**Quick mode** also shows the agent's notes, the risk badges, per-hunk Undo and the
+Resolved by the agent / Undone groups (controller ruling). Active review time stays scoped
+to the key window (owner ruling, ask #221).
+
 ## Flow
 
 1. Row menu **Review Changes** → `review start` snapshots the tree and opens the round.
@@ -104,8 +303,21 @@ session row menu **Review Changes**; one model per session.
 
 - Generated and vendored files are collapsed by name pattern only; `linguist-generated`
   attributes are not read.
-- Quick mode only (the `mode` column accepts `deep`, nothing sets it).
+- Intent items are the linked targets (the overview only adds its status to each); there is no free-form intent.
 - A repository with a local `filter.lfs.*` is snapshotted with raw content (filters are
   blanked, REVIEW-05), so LFS files show their pointer or raw bytes.
-- No Undo and no lessons yet (Plan 3, REVIEW-02); no PR source (the `source` column
-  accepts `pr`, Plan 2).
+- No PR source (the `source` column accepts `pr`).
+- Active review time counts the owner's input anywhere in the window, not only in the
+  Changes pane (owner ruling, ask #221).
+- Keep is implicit: a hunk not undone is kept; there is no explicit Keep mark.
+- Undo is not LFS-aware: filters are blanked (REVIEW-05), so an LFS file is checked and
+  patched on its raw content, as it was snapshotted. Renamed, binary, symlink, submodule,
+  too-large and truncated files cannot be undone.
+- One notes set per session: each `annotate_changes` call replaces the session's notes and
+  chapters, whatever round they were written for.
+- The walkthrough's line numbers for notes in files other than the selected one are the
+  stored ones; they are not re-placed against the current tree.
+- A workbench bound to a subfolder of a repository snapshots only that subfolder's
+  uncommitted changes.
+- The overview cache key does not include the lens file: editing `.watchtower/review.md`
+  does not re-run the overview until the tree changes.

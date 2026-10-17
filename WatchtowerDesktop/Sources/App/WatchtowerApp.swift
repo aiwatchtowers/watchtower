@@ -374,6 +374,9 @@ struct WatchtowerApp: App {
             .frame(minWidth: 800, minHeight: 600)
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
             .modifier(RunAutomationPaletteHost(appState: appState))
+            // ⌘/ "Ask Watchtower" over every destination; the Workbench tab
+            // lives in this same window, so this one host covers it.
+            .modifier(AskPanelHost(appState: appState))
             .background(OpaqueWindowBackground())
             // `.environment` must wrap the overlay too: the overlay attaches as a
             // sibling outside any environment applied deeper on NavigationRoot, so
@@ -383,7 +386,11 @@ struct WatchtowerApp: App {
             // Same outermost placement, same reason: link surfaces live
             // inside the overlays too (the recording indicator's panel,
             // the meeting banner), so the scheme gate has to wrap them.
-            .environment(\.openURL, AllowedURLSchemes.openURLAction)
+            // It also opens in-app screen links (`watchtower-nav://`) from
+            // the Ask panel and AI Chat.
+            .environment(\.openURL, appState.mainWindowOpenURL)
+            // Screen links render only for the screens visible right now.
+            .environment(\.markdownNavScreens, appState.visibleHelpScreenIDs)
             .environment(\.dictationCenter, appState.dictationCenter)
             .onAppear {
                 // Both lines are duplicates of the delegate's launch bootstrap
@@ -466,6 +473,8 @@ struct WatchtowerApp: App {
                                           modifiers: RunAutomationCommand.modifiers)
                 }
             }
+            // Issue #288: the workbench page's chords, before Navigate.
+            WorkbenchCommands(appState: appState)
             // Only while a workbench window is key (spec §10, ruling R36):
             // `keyWorkbench` is the workbench on screen while its window (or
             // its Open Quickly panel) is key. Inside Monaco these chords reach
@@ -509,14 +518,14 @@ struct WatchtowerApp: App {
                 Button("Forward") { if let shownRoot { navigation.goForward(root: shownRoot) } }
                     .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
                     .disabled(!navigation.canGoForward(root: shownRoot))
-                Divider()
-                // Board #412: the one key that may take the keyboard from
-                // the terminal — the owner's explicit chord, not a bare key.
-                Button("Show Waiting for You") { _ = appState.workbenchesViewModel?.openStackFromKeyboard() }
-                    .keyboardShortcut("a", modifiers: [.control, .command])
-                    .disabled(appState.workbenchesViewModel?.canShowWaitingStack(shownID: shown?.id) != true)
             }
+            HelpCommands(appState: appState)
         }
+
+        Window("Keyboard Shortcuts", id: KeyboardShortcutsView.sceneID) {
+            KeyboardShortcutsView()
+        }
+        .defaultSize(width: 620, height: 720)
 
         Window("Logs", id: "logs") {
             LogsSettings()

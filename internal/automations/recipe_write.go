@@ -2,7 +2,9 @@ package automations
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +25,38 @@ func (ix *Indexer) WriteRecipe(ctx context.Context, scope Scope, dir, path strin
 		return nil, fmt.Errorf("writing %s: %w", path, err)
 	}
 	return ix.IndexedRecipeAt(ctx, scope, dir, path)
+}
+
+// RefuseLinkedRecipeDir refuses a workbench recipe folder (absolute, as
+// stored) with a symlink anywhere in its existing part: the scheduler never
+// scans such a folder (the indexer's workbenchPathPlain), and a write through
+// the link could land outside the workbench. The part that does not exist
+// yet is created plain by MkdirAll.
+func RefuseLinkedRecipeDir(dir string) error {
+	existing := dir
+	for {
+		_, err := os.Lstat(existing)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("checking %s: %w", existing, err)
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			break
+		}
+		existing = parent
+	}
+	plain, err := fsutil.NoSymlinkComponents(existing)
+	if err != nil {
+		return fmt.Errorf("checking %s: %w", dir, err)
+	}
+	if !plain {
+		return fmt.Errorf("%s has a symlink in its path: a workbench recipe folder must be a plain directory "+
+			"(the scheduler never scans one behind a link)", dir)
+	}
+	return nil
 }
 
 // IndexedRecipeAt rescans dir under scope and returns the index row of the

@@ -310,7 +310,7 @@ func resolveSaveTarget(cfg *config.Config, database *db.DB, file, target string)
 		if err != nil {
 			return saveTarget{}, err
 		}
-		if err := refuseLinkedRecipeDir(automations.WorkbenchDir(w.FolderPath)); err != nil {
+		if err := automations.RefuseLinkedRecipeDir(automations.WorkbenchDir(w.FolderPath)); err != nil {
 			return saveTarget{}, fmt.Errorf("cannot save to %s: %w", target, err)
 		}
 	}
