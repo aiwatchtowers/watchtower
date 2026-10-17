@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,9 +14,9 @@ func TestUpsertMessageBatch(t *testing.T) {
 	require.NoError(t, err)
 
 	msgs := []Message{
-		{ChannelID: "C1", TS: "1700000001.000001", UserID: "U1", Text: "msg1", RawJSON: "{}"},
-		{ChannelID: "C1", TS: "1700000002.000001", UserID: "U2", Text: "msg2", RawJSON: "{}"},
-		{ChannelID: "C2", TS: "1700000003.000001", UserID: "U1", Text: "msg3", RawJSON: "{}"},
+		{ChannelID: "C1", TS: "1700000001.000001", UserID: "U1", Text: "msg1"},
+		{ChannelID: "C1", TS: "1700000002.000001", UserID: "U2", Text: "msg2"},
+		{ChannelID: "C2", TS: "1700000003.000001", UserID: "U1", Text: "msg3"},
 	}
 
 	count, err := db.UpsertMessageBatch(tx, msgs)
@@ -39,9 +38,9 @@ func TestUpsertMessageBatch_NilTx(t *testing.T) {
 func TestCountMessagesByTimeRange(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "a", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1600000.000001", UserID: "U1", Text: "b", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C2", TS: "1700000.000001", UserID: "U1", Text: "c", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "a"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1600000.000001", UserID: "U1", Text: "b"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C2", TS: "1700000.000001", UserID: "U1", Text: "c"}))
 
 	count, err := db.CountMessagesByTimeRange(1400000, 1650000)
 	require.NoError(t, err)
@@ -63,10 +62,10 @@ func TestGetChannelActivityCounts(t *testing.T) {
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C2", Name: "random", Type: "public"}))
 
 	// C1: 3 messages, C2: 1 message
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "a", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000002", UserID: "U1", Text: "b", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000003", UserID: "U1", Text: "c", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C2", TS: "1500000.000004", UserID: "U1", Text: "d", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "a"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000002", UserID: "U1", Text: "b"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000003", UserID: "U1", Text: "c"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C2", TS: "1500000.000004", UserID: "U1", Text: "d"}))
 
 	counts, err := db.GetChannelActivityCounts(1400000, 1600000, 10)
 	require.NoError(t, err)
@@ -87,9 +86,9 @@ func TestGetChannelActivityCounts(t *testing.T) {
 func TestGetUserActivityCounts(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "a", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000002", UserID: "U1", Text: "b", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000003", UserID: "U2", Text: "c", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "a"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000002", UserID: "U1", Text: "b"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000003", UserID: "U2", Text: "c"}))
 
 	counts, err := db.GetUserActivityCounts(1400000, 1600000, 10)
 	require.NoError(t, err)
@@ -106,8 +105,8 @@ func TestGetMessagesExcludeDMs(t *testing.T) {
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
 	require.NoError(t, db.UpsertChannel(Channel{ID: "D1", Name: "dm", Type: "dm"}))
 
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "public msg", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "D1", TS: "1500000.000002", UserID: "U1", Text: "dm msg", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "public msg"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "D1", TS: "1500000.000002", UserID: "U1", Text: "dm msg"}))
 
 	msgs, err := db.GetMessages(MessageOpts{ExcludeDMs: true, Limit: 10})
 	require.NoError(t, err)
@@ -118,8 +117,8 @@ func TestGetMessagesExcludeDMs(t *testing.T) {
 func TestGetMessagesTimeFilter(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "early", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "2500000.000001", UserID: "U1", Text: "late", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000001", UserID: "U1", Text: "early"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "2500000.000001", UserID: "U1", Text: "late"}))
 
 	msgs, err := db.GetMessages(MessageOpts{FromUnix: 2000000, Limit: 10})
 	require.NoError(t, err)
@@ -130,58 +129,6 @@ func TestGetMessagesTimeFilter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 	assert.Equal(t, "early", msgs[0].Text)
-}
-
-func TestGetThreadRepliesAfterTS(t *testing.T) {
-	db := openTestDB(t)
-
-	threadTS := "1700000000.000001"
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: threadTS, UserID: "U1", Text: "parent", ReplyCount: 3, RawJSON: "{}",
-	}))
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1700000001.000001", UserID: "U2", Text: "reply1",
-		ThreadTS: sql.NullString{String: threadTS, Valid: true}, RawJSON: "{}",
-	}))
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1700000002.000001", UserID: "U3", Text: "reply2",
-		ThreadTS: sql.NullString{String: threadTS, Valid: true}, RawJSON: "{}",
-	}))
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1700000003.000001", UserID: "U2", Text: "reply3",
-		ThreadTS: sql.NullString{String: threadTS, Valid: true}, RawJSON: "{}",
-	}))
-
-	// Only replies after reply1
-	msgs, err := db.GetThreadRepliesAfterTS("C1", threadTS, "1700000001.000001")
-	require.NoError(t, err)
-	assert.Len(t, msgs, 2)
-	assert.Equal(t, "reply2", msgs[0].Text)
-	assert.Equal(t, "reply3", msgs[1].Text)
-}
-
-func TestGetChannelMessagesAfterTS(t *testing.T) {
-	db := openTestDB(t)
-
-	threadTS := "1700000000.000001"
-	// Standalone messages
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1700000001.000001", UserID: "U1", Text: "msg1", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1700000002.000001", UserID: "U2", Text: "msg2", RawJSON: "{}"}))
-	// Thread reply — should be excluded
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1700000003.000001", UserID: "U3", Text: "reply",
-		ThreadTS: sql.NullString{String: threadTS, Valid: true}, RawJSON: "{}",
-	}))
-	// Deleted message — should be excluded
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1700000004.000001", UserID: "U1", Text: "deleted", IsDeleted: true, RawJSON: "{}"}))
-	// Empty text — should be excluded
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1700000005.000001", UserID: "U1", Text: "", RawJSON: "{}"}))
-
-	msgs, err := db.GetChannelMessagesAfterTS("C1", "1700000000.000001", 10)
-	require.NoError(t, err)
-	assert.Len(t, msgs, 2)
-	assert.Equal(t, "msg1", msgs[0].Text)
-	assert.Equal(t, "msg2", msgs[1].Text)
 }
 
 func TestGetMessageNear_NotFound(t *testing.T) {
@@ -223,10 +170,10 @@ func TestEnsureChannel(t *testing.T) {
 func TestIdeas02_FilterExistingMessageTS_DeletedAndForeignChannelExcluded(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1.1", UserID: "U1", Text: "live", RawJSON: "{}"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "2.2", UserID: "U1", Text: "tombstoned", IsDeleted: true, RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1.1", UserID: "U1", Text: "live"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "2.2", UserID: "U1", Text: "tombstoned", IsDeleted: true}))
 	// The same ts as C1's live message, but in another channel entirely.
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C2", TS: "3.3", UserID: "U1", Text: "elsewhere", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C2", TS: "3.3", UserID: "U1", Text: "elsewhere"}))
 
 	found, err := db.FilterExistingMessageTS("C1", []string{"1.1", "2.2", "3.3"})
 	require.NoError(t, err)
@@ -237,7 +184,7 @@ func TestFilterExistingMessageTS_MultipleTS_ReturnsFoundSubset(t *testing.T) {
 	db := openTestDB(t)
 
 	for _, ts := range []string{"1.1", "2.2", "3.3"} {
-		require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: ts, UserID: "U1", Text: "m", RawJSON: "{}"}))
+		require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: ts, UserID: "U1", Text: "m"}))
 	}
 
 	found, err := db.FilterExistingMessageTS("C1", []string{"1.1", "3.3", "9.9"})

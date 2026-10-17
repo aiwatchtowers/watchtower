@@ -55,7 +55,6 @@ type Message struct {
 	Subtype    string
 	Permalink  string
 	TSUnix     float64
-	RawJSON    string
 }
 
 // Reaction represents a reaction on a Slack message.
