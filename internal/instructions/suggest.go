@@ -167,24 +167,53 @@ func (m *Miner) ownerLines(sessions []db.RecentWorkbenchSession) []OwnerLine {
 	return lines
 }
 
+// App-typed start prompts (Desktop TerminalLaunch.workOnTargetPrompt /
+// workOnGroupPrompt, and the phone's planFirstSuffix after one): the app wrote
+// them, not the owner, so they are never mined.
+var appStartPromptPrefixes = []string{"Work on target #", "Work on group #"}
+
+const appPlanFirstPrefix = "Plan first: put the plan on the board"
+
 // cleanOwnerText skips a pasted block (a fenced code block, or more than 15
-// lines) and returns the rest on one line, truncated to 500 runes.
+// lines), drops app-typed start prompts, and returns the rest on one line,
+// truncated to 500 runes.
 func cleanOwnerText(s string) (string, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.Contains(s, "```") || strings.Count(s, "\n")+1 > maxOwnerLineLines {
 		return "", false
 	}
 	var parts []string
+	startPrompt := false
 	for _, l := range strings.Split(s, "\n") {
-		if l = strings.Join(strings.Fields(l), " "); l != "" {
-			parts = append(parts, l)
+		l = strings.Join(strings.Fields(l), " ")
+		switch {
+		case l == "":
+			continue
+		case hasAnyPrefix(l, appStartPromptPrefixes):
+			startPrompt = true
+			continue
+		case startPrompt && strings.HasPrefix(l, appPlanFirstPrefix):
+			continue
 		}
+		parts = append(parts, l)
+	}
+	if len(parts) == 0 {
+		return "", false
 	}
 	s = strings.Join(parts, " / ")
 	if utf8.RuneCountInString(s) > maxOwnerLineRunes {
 		s = string([]rune(s)[:maxOwnerLineRunes]) + "…"
 	}
 	return s, true
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildUser renders stdin: the current texts, the earlier suggestions and

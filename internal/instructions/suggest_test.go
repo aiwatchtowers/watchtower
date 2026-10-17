@@ -201,6 +201,26 @@ func TestMiner_OwnerLinesTruncatedAndPastesSkipped(t *testing.T) {
 	}
 }
 
+func TestCleanOwnerText_DropsAppStartPrompts(t *testing.T) {
+	for _, in := range []string{
+		"Work on target #12 using the watchtower-workbench skill.",
+		"Work on group #7 using the watchtower-workbench skill.",
+		"Work on target #12 using the watchtower-workbench skill.\n\nPlan first: put the plan on the board, then ask me with ask_owner before you change any code.",
+	} {
+		if got, ok := cleanOwnerText(in); ok {
+			t.Errorf("app start prompt kept: %q", got)
+		}
+	}
+	got, ok := cleanOwnerText("Work on target #12 using the watchtower-workbench skill.\nalways run lint first")
+	if !ok || got != "always run lint first" {
+		t.Errorf("owner text after the start prompt: got %q, %v", got, ok)
+	}
+	got, ok = cleanOwnerText("Plan first: sketch the API")
+	if !ok || got != "Plan first: sketch the API" {
+		t.Errorf("owner-typed Plan first line dropped: got %q, %v", got, ok)
+	}
+}
+
 func TestMiner_DropsUnknownSessionsAndUnderThree(t *testing.T) {
 	f := newMinerFixture(t)
 	wb := f.workbench("acme")
