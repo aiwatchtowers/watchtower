@@ -93,6 +93,22 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(older.needsRepair)
     }
 
+    /// #517: a workbench missing the permission-wait hook is offered Repair;
+    /// an older CLI without the key has nothing to install.
+    func testMissingPermissionWaitNeedsRepair() throws {
+        let base = #""skill":"unchanged","hook":true,"stop_hook":true,"state_hooks":true,"mcp":true"#
+        let missing = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"permission_wait\":false}".utf8))
+        XCTAssertFalse(missing.permissionWait)
+        XCTAssertTrue(missing.needsRepair)
+        let present = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"permission_wait\":true}".utf8))
+        XCTAssertFalse(present.needsRepair)
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data("{\(base)}".utf8))
+        XCTAssertTrue(older.permissionWait)
+        XCTAssertFalse(older.needsRepair)
+    }
+
     /// Board #535: a folder set up before the cleanup permission is offered
     /// Repair (the Claude Code part); an older CLI without the key has
     /// nothing to install.
