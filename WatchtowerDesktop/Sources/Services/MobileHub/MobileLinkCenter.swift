@@ -1099,9 +1099,17 @@ final class MobileLinkCenter {
         try setGrant(.permissions, allowed, deviceID: deviceID)
     }
 
-    /// Whether the phone may start sessions (default on).
+    /// Mirrors the phone's own "Start sessions" toggle (its opt-out, never
+    /// a grant).
     func setStartSessionsAllowed(_ allowed: Bool, deviceID: String) throws {
         try setGrant(.startSessions, allowed, deviceID: deviceID)
+    }
+
+    /// Allow… / Revoke of starting sessions from the phone (#565): off
+    /// until the owner allows it; it counts only with typing allowed
+    /// (`LinkedDevice.mayStartSessions`).
+    func setStartSessionsGranted(_ granted: Bool, deviceID: String) throws {
+        try setGrant(.startSessionsGrant, granted, deviceID: deviceID)
     }
 
     private func setGrant(_ grant: HubSyncState.DeviceGrantKind, _ allowed: Bool, deviceID: String) throws {
@@ -1132,7 +1140,7 @@ final class MobileLinkCenter {
         do {
             guard let device = try sidecar.linkedDevice(deviceID) else { return .denied }
             return .init(
-                typingAllowed: device.typingAllowed, startSessionsAllowed: device.startSessionsAllowed,
+                typingAllowed: device.typingAllowed, startSessionsAllowed: device.mayStartSessions,
                 permissionsAllowed: device.permissionsAllowed
             )
         } catch {

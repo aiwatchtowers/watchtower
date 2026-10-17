@@ -42,8 +42,9 @@ final class SessionStartStopHandlers {
         /// May answer Claude Code permission prompts (#517); its own grant.
         var permissionsAllowed = false
 
-        /// A newly linked phone's grants.
-        static let specDefaults = Self(typingAllowed: false, startSessionsAllowed: true)
+        /// A newly linked phone's grants: nothing until the owner allows it
+        /// on the Mac (#565: starting sessions too).
+        static let specDefaults = Self(typingAllowed: false, startSessionsAllowed: false)
         /// No device, or its grants could not be read.
         static let denied = Self(typingAllowed: false, startSessionsAllowed: false)
     }

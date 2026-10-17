@@ -38,7 +38,8 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public let linkedAt: Date?
     /// Default false: typing into sessions needs the owner's allow.
     public let typingAllowed: Bool
-    /// Default true.
+    /// Whether a `session_start` from the phone goes (#565): the owner allowed starting sessions and typing on the
+    /// Mac, and the phone's own "Start sessions" toggle is on. Default false.
     public let startSessionsAllowed: Bool
     /// Answering permission prompts from the phone needs its own allow, never implied by typing
     /// (`permissionsAllowed`). Absent on the wire reads false, and false is not written, so older peers' bytes

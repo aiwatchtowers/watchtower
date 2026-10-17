@@ -61,7 +61,7 @@ struct DeviceGrantSlice: SliceSource {
             (device.decidedAt.map { max($0, device.linkedAt) } ?? device.linkedAt, Keybox(grant: DeviceGrant(
                 deviceID: device.deviceID, hubID: hubID, name: device.name, scope: device.scope, linked: true,
                 linkedAt: device.linkedAt, typingAllowed: device.typingAllowed,
-                startSessionsAllowed: device.startSessionsAllowed, permissionsAllowed: device.permissionsAllowed,
+                startSessionsAllowed: device.mayStartSessions, permissionsAllowed: device.permissionsAllowed,
                 decidedAt: device.decidedAt
             ), keys: keyed.contains(device.deviceID.uppercased()) ? keys : nil))
         }
@@ -69,7 +69,7 @@ struct DeviceGrantSlice: SliceSource {
         let pending = try sidecar.pendingDevices().reversed().filter { !answered.contains($0.deviceID.uppercased()) }.map { request in
             (request.receivedAt, Keybox(grant: DeviceGrant(
                 deviceID: request.deviceID, hubID: hubID, name: request.name, scope: request.scope, linked: false,
-                typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: false, awaitingConfirmation: true,
+                typingAllowed: false, startSessionsAllowed: false, permissionsAllowed: false, awaitingConfirmation: true,
                 confirmNonce: WireBytes.base64URL(request.confirmNonce),
                 linkCodeTag: WireBytes.fromBase64URL(request.linkNonce).map { KeyDerivation.linkCodeTag(linkNonce: $0) }
             ), keys: nil))
@@ -82,7 +82,7 @@ struct DeviceGrantSlice: SliceSource {
                 deviceID: refusal.deviceID, hubID: hubID, name: refusal.name, scope: refusal.scope, linked: false,
                 // The refusal's time: a second identical refusal still
                 // differs, so the phone reads it as an answer.
-                linkRefused: refusal.reason, typingAllowed: false, startSessionsAllowed: true,
+                linkRefused: refusal.reason, typingAllowed: false, startSessionsAllowed: false,
                 permissionsAllowed: false, decidedAt: refusal.at
             ), keys: nil))
         }
@@ -94,7 +94,7 @@ struct DeviceGrantSlice: SliceSource {
         let revoked = current.map { device in
             (device.removedAt, Keybox(grant: DeviceGrant(
                 deviceID: device.deviceID, hubID: hubID, name: device.name, scope: device.scope, linked: false,
-                typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: false,
+                typingAllowed: false, startSessionsAllowed: false, permissionsAllowed: false,
                 decidedAt: device.removedAt, revoked: true
             ), keys: nil))
         }

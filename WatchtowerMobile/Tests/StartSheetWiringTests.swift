@@ -175,7 +175,7 @@ final class StartSheetWiringTests: XCTestCase {
         try await echo(fixture, .applied, result: ["session_id": .integer(90), "stage": .string("starting")])
         try await poll(timeout: 2, { fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
 
-        var replica = try snapshot(fixture.store)
+        var replica = try snapshot(fixture.store, grant: grant(typing: true, start: true))
         replica.sessions.append(try session(90, target: 400, ["state_kind": "running", "live": true]))
         XCTAssertEqual(try form(400, replica, fixture.starter).progress?.stage, .open(sessionID: 90))
 
@@ -448,14 +448,15 @@ final class StartSheetWiringTests: XCTestCase {
 
     /// The brief is editable and sent only from a phone allowed to type,
     /// and only when edited; without a grant record the spec's defaults
-    /// hold (typing off, starts on).
+    /// hold (typing off, starts off: the Mac allows starts, #565).
     func testTheBriefFollowsTheTypingGrant() throws {
         let store = try TestPhone.replica()
         let defaults = try form(415, try snapshot(store))
         XCTAssertEqual(defaults.grant, StartGrant(nil))
         XCTAssertFalse(defaults.grant.typingAllowed)
         XCTAssertEqual(defaults.briefCaption, "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac.")
-        XCTAssertTrue(defaults.canStart)
+        XCTAssertFalse(defaults.canStart, "no grant record: the Mac has not allowed starts")
+        XCTAssertEqual(defaults.startCaption, SessionStartText.notAllowed)
 
         var draft = StartSessionDraft(target: try target(415))
         draft.brief = "Fix the archive menu first."
@@ -495,7 +496,7 @@ final class StartSheetWiringTests: XCTestCase {
     func testAPhoneNotAllowedToStartCannotStart() throws {
         let model = try form(400, try snapshot(try TestPhone.replica(), grant: grant(typing: false, start: false)))
         XCTAssertFalse(model.canStart)
-        XCTAssertEqual(model.startCaption, "This phone is not allowed to start sessions on the Mac")
+        XCTAssertEqual(model.startCaption, SessionStartText.notAllowed)
     }
 
     /// Bug 5 (design pass spec §3): with no target and a refused grant, the
@@ -503,15 +504,35 @@ final class StartSheetWiringTests: XCTestCase {
     func testTheGrantCaptionWinsOverTheMissingTarget() throws {
         let refused = try form(nil, try snapshot(try TestPhone.replica(), grant: grant(typing: false, start: false)))
         XCTAssertFalse(refused.canStart)
-        XCTAssertEqual(refused.startCaption, "This phone is not allowed to start sessions on the Mac")
-        XCTAssertNil(try form(415, try snapshot(try TestPhone.replica())).startCaption)
+        XCTAssertEqual(refused.startCaption, SessionStartText.notAllowed)
+        XCTAssertNil(try form(415, try snapshot(try TestPhone.replica(), grant: grant(typing: true, start: true))).startCaption)
+    }
+
+    /// #565: the Mac's hint says where the owner allows starts, and the
+    /// phone's own toggle off says so first.
+    func testTheStartCaptionSaysWhereToAllowIt() throws {
+        let replica = try snapshot(try TestPhone.replica(), grant: grant(typing: true, start: false))
+        XCTAssertEqual(
+            try form(415, replica).startCaption,
+            "Your Mac has not allowed this phone to start sessions. "
+                + "On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
+        )
+        let turnedOff = try XCTUnwrap(StartSessionFormModel(
+            workbenchID: DemoSeed.acmeID, targetID: 415, snapshot: replica,
+            grant: replica.grant(for: DemoSeed.device.deviceID), attempt: nil, inFlight: [], now: now,
+            startsTurnedOn: false
+        ))
+        XCTAssertFalse(turnedOff.canStart)
+        XCTAssertEqual(turnedOff.startCaption, "Start sessions from this phone is off in Settings.")
+        let allowed = try snapshot(try TestPhone.replica(), grant: grant(typing: true, start: true))
+        XCTAssertTrue(try form(415, allowed).canStart)
     }
 
     /// From the Workbench header no target is set: Start waits for one, and
     /// picking one fills the brief from its work-on prompt. Archived
     /// targets are not offered.
     func testTheHeadersNewSessionPicksATarget() throws {
-        let model = try form(nil, try snapshot(try TestPhone.replica()))
+        let model = try form(nil, try snapshot(try TestPhone.replica(), grant: grant(typing: true, start: true)))
         XCTAssertNil(model.target)
         XCTAssertFalse(model.canStart)
         XCTAssertEqual(model.startCaption, "Choose a target to start", "Start says why it is off")

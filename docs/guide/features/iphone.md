@@ -48,7 +48,7 @@ Asks come in three kinds: a question, a review (select text, **Comment on the se
 
 Three switches under Settings → **Workbench** on the phone:
 
-- **Start sessions from this phone** lets you start a session from a target. It runs the Mac's default agent.
+- **Start sessions from this phone** lets you start a session from a target. It runs the Mac's default agent. The Mac decides: the phone row on the Mac needs typing allowed first, then **Allow…** on its **Starting sessions off** line. Until then the phone's **Start** stays off and says where to allow it.
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
 - **Answer permission prompts from this phone** lets you answer a Claude Code permission prompt. It is a separate grant: the Mac's phone row shows **Asks to answer permission prompts**, with its own **Allow…**.
 
@@ -90,6 +90,7 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"<Mac> hasn't synced for a day".** The phone has had no heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes on the phone: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
 - **"iCloud is slowing sync down"** on the Mac's Mobile tab means iCloud has held sync back for over a minute. It clears on its own.
+- **"Your Mac has not allowed this phone to start sessions"** under **Start**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant existed needs it once too.
 - **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
 - **"Too late — answer on the Mac"** after Allow once or Deny. The prompt waited too long or its session stopped.
 - **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.

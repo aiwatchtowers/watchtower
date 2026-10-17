@@ -358,9 +358,12 @@ final class SessionInputHandlersTests: XCTestCase {
     }
 
     /// A `session_start` brief edited on the phone is used only from a
-    /// device allowed to type: otherwise the Mac's own work-on prompt goes.
+    /// device allowed to type. Amended 2026-10-17 (#565, ask #305 q3): a
+    /// device not allowed to type cannot start a session at all, even with
+    /// the owner's start grant, so its brief never reaches a session.
     func testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored() async throws {
         _ = try sidecar.setDeviceGrant(.typing, false, deviceID: testPhoneID, at: Date())
+        _ = try sidecar.setDeviceGrant(.startSessionsGrant, true, deviceID: testPhoneID, at: Date())
         let acme = folder.path
         let (project, target) = try await pool.write { db -> (Int64, Int64) in
             let project = try TestDatabase.insertWorkbench(db, folder: acme)
@@ -386,9 +389,10 @@ final class SessionInputHandlersTests: XCTestCase {
 
         let outcome = try await starts.handle(start)
 
-        XCTAssertEqual(outcome.status, .applied)
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .deviceNotAllowed)
         let prompts = processes.flatMap(\.launches).map { $0.environment.last }
-        XCTAssertEqual(prompts, ["WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target))"])
+        XCTAssertEqual(prompts, [], "nothing starts")
         XCTAssertFalse(prompts.contains { $0?.contains("Delete the tests") == true })
     }
 

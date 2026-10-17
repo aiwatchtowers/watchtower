@@ -716,7 +716,7 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(grant.hubID, code.hubID)
         XCTAssertEqual(grant.scope, .private)
         XCTAssertFalse(grant.typingAllowed, "typing needs the owner's Allow")
-        XCTAssertTrue(grant.startSessionsAllowed)
+        XCTAssertFalse(grant.startSessionsAllowed, "starting sessions needs the owner's Allow (#565)")
         XCTAssertEqual(try sidecar.linkCode(code.nonce)?.usedByDevice, phoneA)
         XCTAssertTrue(nudges.contains([.deviceGrant]))
         XCTAssertNil(center.openCode, "the code is used")
@@ -986,23 +986,24 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertNotNil(try sidecar.linkedDevice(phoneB))
     }
 
-    /// The same for the start-sessions choice: only B's own record changes B's grant.
+    /// The same for the start-sessions choice: only B's own record changes B's toggle (its opt-out; the
+    /// owner's grant is the Mac's alone, #565).
     func testAPhoneCannotChangeAnotherPhonesStartSessionsGrant() async throws {
         try await linkPhonesAAndB()
-        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, true)
+        XCTAssertEqual(try sidecar.linkedDevice(phoneB)?.startSessionsAllowed, true)
         let transport = StubHubTransport()
         try await transport.save([try TestRelayPhone.seal(try deviceRecord(phoneB, nonce: nil, startSessions: false))])
 
         try await relayDeviceRecords(over: transport)
 
-        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, true, "A's record for B changes nothing")
+        XCTAssertEqual(try sidecar.linkedDevice(phoneB)?.startSessionsAllowed, true, "A's record for B changes nothing")
 
         try await transport.save([
             try TestRelayPhone.seal(try deviceRecord(phoneB, nonce: nil, startSessions: false), as: TestE2E.strangerIdentity)
         ])
         try await relayDeviceRecords(over: transport)
 
-        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, false, "B's own record is applied")
+        XCTAssertEqual(try sidecar.linkedDevice(phoneB)?.startSessionsAllowed, false, "B's own record is applied")
     }
 
     /// Device ids match ignoring case everywhere: removing a phone by a differently spelled id unlinks it.
@@ -1234,7 +1235,7 @@ final class MobileLinkCenterTests: XCTestCase {
         ])
         _ = try await processor.processOnce()
         await center.closeAfterLink?.value
-        XCTAssertEqual(try grants()[phoneC]?.startSessionsAllowed, false)
+        XCTAssertEqual(try sidecar.linkedDevice(phoneC)?.startSessionsAllowed, false)
         XCTAssertEqual(try sidecar.relayOutcome(uploadName), RecordingUploadStatus.received.rawValue)
         XCTAssertEqual(try sidecar.deviceLastSeq(phoneC), 5_001)
         let echoesBefore = echoCount()
@@ -1254,7 +1255,7 @@ final class MobileLinkCenterTests: XCTestCase {
         _ = try await processor.processOnce()
         await center.closeAfterLink?.value
 
-        XCTAssertEqual(try grants()[phoneC]?.startSessionsAllowed, true, "the device record is applied")
+        XCTAssertEqual(try sidecar.linkedDevice(phoneC)?.startSessionsAllowed, true, "the device record is applied")
         XCTAssertGreaterThan(echoCount(), echoesBefore + 1, "the re-sealed recording is answered received again")
         XCTAssertEqual(try sidecar.relayOutcome(uploadName), RecordingUploadStatus.received.rawValue)
     }
@@ -1703,9 +1704,9 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(try grants()[phoneA]?.linkRefused, .expiredCode)
     }
 
-    /// #3: the phone's start-sessions toggle (a nonce-less rewrite) reaches
-    /// the grant; its typing request is stored (PROJ-16) and is never a
-    /// grant.
+    /// #3: the phone's start-sessions toggle (a nonce-less rewrite) is
+    /// mirrored as its opt-out (#565: never a grant); its typing request is
+    /// stored (PROJ-16) and is never a grant.
     func testALinkedPhonesStartSessionsToggleIsMirroredAndATypingRequestIsStoredNotGranted() async throws {
         let code = try await center.issueCode()
         try await link(try hello(identityA, nonce: code.nonce))
