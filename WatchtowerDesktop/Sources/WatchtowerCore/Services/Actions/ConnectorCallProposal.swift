@@ -118,7 +118,8 @@ package struct ConnectorCallProposal: Equatable, Sendable {
             switch action.error {
             case sessionEndedBeforeApproval: return "Chat session ended — not sent"
             case sessionEndedWhileRunning: return "Chat session ended — outcome unknown"
-            // Stop after the owner approved (`ExpireSessionCall`): never sent.
+            // Stop after the owner approved (`ExpireSessionCall`, or right
+            // after the claim, `FinishSessionCall`): never sent.
             case stopped: return "Chat stopped — not sent"
             default: return "Failed"
             }

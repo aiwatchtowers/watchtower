@@ -501,7 +501,11 @@ func (g *gate) claim(p *claudeProc, req permissionRequest, w *gateWait, id int64
 	g.claimed[req.ToolUseID] = claimedCall{id: id, proc: p}
 	g.mu.Unlock()
 	if stop, why := g.stopRequested(w); stop || childGone(p) {
-		g.finish(req.ToolUseID, "", reasonStopped)
+		reason := reasonSessionEnded
+		if stop {
+			reason = reasonStopped
+		}
+		g.finish(req.ToolUseID, "", reason)
 		if stop && why == stopByOwner {
 			g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
 		}

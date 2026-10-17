@@ -1003,6 +1003,24 @@ func TestGate_StopRightAfterTheClaimSendsNothing(t *testing.T) {
 	assert.NotContains(t, string(rest), `"allow"`, "no allow after the stop")
 }
 
+// A child gone right after the claim is a session end, not a Stop: the card
+// says the chat session ended.
+func TestGate_ChildGoneRightAfterTheClaimIsASessionEnd(t *testing.T) {
+	sink := newFakeSink()
+	g, p, _ := unitGate(t, sink)
+	sink.afterClaim = func(int64) { close(p.exited) }
+	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+	require.True(t, ok)
+	g.dispatch(p, req)
+	sink.waitRows(t, 1)
+	require.True(t, sink.approve(1, ""))
+	waitUntil(t, "the claimed call to settle", func() bool { return sink.row(1).finishes == 1 })
+
+	row := sink.row(1)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, reasonSessionEnded, row.callErr)
+}
+
 func TestGate_DuplicateRequestIDIsDenied(t *testing.T) {
 	sink := newFakeSink()
 	g, p, r := unitGate(t, sink)
