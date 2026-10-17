@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,6 +189,108 @@ func TestOwner01_EmailRung(t *testing.T) {
 			assert.True(t, got.Known())
 		})
 	}
+}
+
+// TestOwner01_EmailRungIgnoresBareLogins: a mailbox whose "address" is a bare
+// IMAP login identifies no one, so it is neither the rung nor the Email
+// fallback.
+func TestOwner01_EmailRungIgnoresBareLogins(t *testing.T) {
+	d := openTestDB(t)
+	for _, login := range []string{"jdoe", `DOMAIN\jdoe`, "@example.com"} {
+		_, err := d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: login, Security: "ssl"})
+		require.NoError(t, err)
+	}
+	got, err := d.ResolveOwner()
+	require.NoError(t, err)
+	assert.Equal(t, Owner{}, got)
+
+	seedOwner(t, d, ownerSeed{linear: []LinearAccount{{Enabled: true, OwnerUserID: "user-1"}}})
+	got, err = d.ResolveOwner()
+	require.NoError(t, err)
+	assert.Equal(t, Owner{ID: "linear:user-1", Source: OwnerSourceLinear, LinearUserIDs: []string{"user-1"}}, got,
+		"a bare login never fills Email")
+}
+
+// TestOwner01_EmailRungOrdersByID: the rung is the lowest id, not the first
+// row inserted or the first address alphabetically.
+func TestOwner01_EmailRungOrdersByID(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO email_accounts (id, provider, email_address) VALUES (2, 'imap', 'a@example.com')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'b@example.com')`)
+	require.NoError(t, err)
+	got, err := d.ResolveOwner()
+	require.NoError(t, err)
+	assert.Equal(t, "email:b@example.com", got.ID)
+}
+
+// TestOwner01_CalDAVOnlyHasNoOwner: a calendar account's username is not an
+// identity, so a CalDAV-only install still has no owner.
+func TestOwner01_CalDAVOnlyHasNoOwner(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.CreateCalendarAccount(CalendarAccount{Provider: "caldav", Username: "me@example.com", URL: "https://dav.example.com"})
+	require.NoError(t, err)
+	got, err := d.ResolveOwner()
+	require.NoError(t, err)
+	assert.False(t, got.Known())
+	_, err = d.RequireOwner()
+	require.ErrorIs(t, err, ErrNoOwner)
+}
+
+// TestOwner01_RungSwitchAdoptsBriefingAndDayPlan: a briefing and a day plan
+// written under the email rung are found under the new id once the owner
+// moves to Jira, so neither is generated a second time.
+func TestOwner01_RungSwitchAdoptsBriefingAndDayPlan(t *testing.T) {
+	d := openTestDB(t)
+	const day = "2026-10-17"
+	_, err := d.UpsertBriefing(Briefing{UserID: "email:x@example.com", Date: day, Role: "EM"})
+	require.NoError(t, err)
+	_, err = d.CreateDayPlan(&DayPlan{UserID: "email:x@example.com", PlanDate: day, Status: "active", GeneratedAt: time.Date(2026, 10, 17, 8, 0, 0, 0, time.UTC)})
+	require.NoError(t, err)
+
+	require.NoError(t, d.AdoptOwnerRows("jira:acc-9"))
+
+	b, err := d.GetBriefing("jira:acc-9", day)
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "EM", b.Role)
+	p, err := d.GetDayPlan("jira:acc-9", day)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT (SELECT COUNT(*) FROM briefings) + (SELECT COUNT(*) FROM day_plans)`).Scan(&n))
+	assert.Equal(t, 2, n, "moved, not copied")
+}
+
+// TestOwner01_AdoptKeepsTheOwnersOwnRow: a date the current owner already has
+// keeps the owner's row; the older one is left alone, never merged over it.
+func TestOwner01_AdoptKeepsTheOwnersOwnRow(t *testing.T) {
+	d := openTestDB(t)
+	const day = "2026-10-17"
+	_, err := d.UpsertBriefing(Briefing{UserID: "email:x@example.com", Date: day, Role: "Old"})
+	require.NoError(t, err)
+	_, err = d.UpsertBriefing(Briefing{UserID: "jira:acc-9", Date: day, Role: "Mine"})
+	require.NoError(t, err)
+	require.NoError(t, d.AdoptOwnerRows("jira:acc-9"))
+	b, err := d.GetBriefing("jira:acc-9", day)
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "Mine", b.Role)
+	require.NoError(t, d.AdoptOwnerRows(""), "no owner adopts nothing")
+}
+
+// TestOwner01_ProfileWriteAdoptsBriefings: the profile re-key also moves the
+// briefings written under the earlier id (Swift twin:
+// testOwner01ProfileWriteAdoptsBriefingsAndDayPlans).
+func TestOwner01_ProfileWriteAdoptsBriefings(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.UpsertBriefing(Briefing{UserID: "email:x@example.com", Date: "2026-10-16", Role: "Old"})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertOwnerProfile(Owner{ID: "jira:acc-9", Source: OwnerSourceJira}, UserProfile{Role: "EM"}))
+	b, err := d.GetBriefing("jira:acc-9", "2026-10-16")
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "Old", b.Role)
 }
 
 func TestOwner01_SlackInstallIDUnchanged(t *testing.T) {

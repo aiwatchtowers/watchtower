@@ -121,6 +121,7 @@ package enum FeatureReadiness {
     package static func line(_ readiness: Readiness) -> String {
         switch readiness {
         case .off: "Off — Turn on"
+        case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
         case .needsSource(let source): "Connect \(source.displayName) to get this"
         case .ready: "Ready — Open"
         case .preparing(let detail): withDetail("Preparing now", detail)

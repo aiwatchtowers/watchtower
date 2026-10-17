@@ -96,6 +96,23 @@ final class HomeViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "Memory"))
     }
 
+    /// No owner (OWNER-02): the owner-gated card says what to connect, or
+    /// which source it waits on, and opens Connections.
+    func testOwnerGapCardShowsLineAndOpensConnections() throws {
+        for gap in [ReadinessSource.ownerIdentity, .ownerIdentityPending("Jira")] {
+            var tapped: HomeLink?
+            let cards = [Self.card(.briefing, "Briefing", .needsSource(gap))]
+            let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []))) { tapped = $0 }
+            XCTAssertNoThrow(try view.inspect().find(text: FeatureReadiness.line(.needsSource(gap))))
+            try view.inspect().find(button: "Open Connections").tap()
+            XCTAssertEqual(tapped, .connect(gap))
+        }
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.ownerIdentityPending("Jira"))), "Waiting for your Jira identity…")
+        // Any other card has no such button.
+        let other = makeContent(viewSnapshot(.shown(cards: [Self.card(.digests, "Digests", .preparing(detail: nil))], sourceRows: [])))
+        XCTAssertThrowsError(try other.inspect().find(button: "Open Connections"))
+    }
+
     func testFirstSyncLineOnTop() throws {
         let cards = [Self.card(.digests, "Digests", .waitingForSync(detail: nil))]
         let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []), firstSync: Self.firstSync))

@@ -153,6 +153,12 @@ struct GettingReadyCardView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if case .needsSource(let source) = readiness, source.isOwnerIdentity {
+                    Spacer(minLength: 0)
+                    // No owner yet (OWNER-02): the fix is in Settings → Connections.
+                    Button("Open Connections") { onLink(.connect(source)) }
+                        .buttonStyle(.link)
+                }
             }
         }
     }

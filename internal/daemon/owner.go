@@ -36,6 +36,12 @@ func (d *Daemon) dayPlanOwner(now time.Time) db.Owner {
 	}
 	if !owner.Known() {
 		d.logNoOwnerOnce(now, "day_plan")
+		return owner
+	}
+	// The phase checks for today's plan under owner.ID: adopt a plan written
+	// under an earlier rung first, so a rung switch never regenerates it.
+	if err := d.db.AdoptOwnerRows(owner.ID); err != nil {
+		d.logger.Printf("dayplan: adopting owner rows: %v", err)
 	}
 	return owner
 }

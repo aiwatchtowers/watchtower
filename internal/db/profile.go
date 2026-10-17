@@ -120,6 +120,9 @@ func (db *DB) UpsertOwnerProfile(o Owner, p UserProfile) error {
 	if err := rekeyOwnerProfile(tx, o.ID); err != nil {
 		return err
 	}
+	if err := rekeyOwnerDailyRows(tx, o.ID); err != nil {
+		return err
+	}
 	p.SlackUserID = o.ID
 	if _, err := tx.Exec(upsertUserProfileSQL, upsertUserProfileArgs(p)...); err != nil {
 		return fmt.Errorf("upserting owner profile: %w", err)
@@ -147,6 +150,58 @@ func rekeyOwnerProfile(tx *sql.Tx, ownerID string) error {
 	}
 	if _, err := tx.Exec(`UPDATE user_profile SET slack_user_id = ? WHERE slack_user_id = ?`, ownerID, key); err != nil {
 		return fmt.Errorf("re-keying owner profile: %w", err)
+	}
+	return nil
+}
+
+// AdoptOwnerRows re-keys the owner-scoped rows written under an earlier owner
+// id (the owner switched rungs, e.g. "email:…" → "jira:…") onto ownerID: the
+// profile (rekeyOwnerProfile) and every briefing and day plan. The app has
+// one owner, so any other user_id in those tables is the same person. A row
+// whose date ownerID already has stays where it is (the owner's own row
+// wins). Called before a briefing or day plan run checks for today's row, so
+// a rung switch never regenerates it. Reads first: a no-op takes no write
+// lock. An empty ownerID (no owner) adopts nothing.
+func (db *DB) AdoptOwnerRows(ownerID string) error {
+	if ownerID == "" {
+		return nil
+	}
+	var stale bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM briefings WHERE user_id != ?1)
+		OR EXISTS(SELECT 1 FROM day_plans WHERE user_id != ?1)
+		OR (EXISTS(SELECT 1 FROM user_profile) AND NOT EXISTS(SELECT 1 FROM user_profile WHERE slack_user_id = ?1))`,
+		ownerID).Scan(&stale); err != nil {
+		return fmt.Errorf("checking owner rows to adopt: %w", err)
+	}
+	if !stale {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning owner row adoption: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := rekeyOwnerProfile(tx, ownerID); err != nil {
+		return err
+	}
+	if err := rekeyOwnerDailyRows(tx, ownerID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing owner row adoption: %w", err)
+	}
+	return nil
+}
+
+// rekeyOwnerDailyRows moves every briefing and day plan keyed under another
+// id onto ownerID, skipping a date ownerID already has (OR IGNORE on the
+// (user_id, date) unique keys).
+func rekeyOwnerDailyRows(tx *sql.Tx, ownerID string) error {
+	if _, err := tx.Exec(`UPDATE OR IGNORE briefings SET user_id = ?1 WHERE user_id != ?1`, ownerID); err != nil {
+		return fmt.Errorf("re-keying owner briefings: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE OR IGNORE day_plans SET user_id = ?1 WHERE user_id != ?1`, ownerID); err != nil {
+		return fmt.Errorf("re-keying owner day plans: %w", err)
 	}
 	return nil
 }

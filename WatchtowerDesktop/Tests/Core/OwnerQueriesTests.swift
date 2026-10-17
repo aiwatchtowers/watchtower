@@ -344,6 +344,75 @@ final class OwnerQueriesTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    // MARK: - Email rung edges (Go: the TestOwner01_EmailRung… / CalDAV / RungSwitch tests)
+
+    func testOwner01EmailRungIgnoresBareLogins() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            for login in ["jdoe", #"DOMAIN\jdoe"#, "@example.com"] {
+                try TestDatabase.insertEmailAccount(db, emailAddress: login)
+            }
+        }
+        XCTAssertEqual(try db.read { try OwnerQueries.resolve($0) }, .unknown)
+        try db.write { try Self.seed($0, OwnerSeed(linear: [LinearSeed(ownerUserID: "user-1")])) }
+        XCTAssertEqual(try db.read { try OwnerQueries.resolve($0) },
+                       Self.owner(id: "linear:user-1", source: .linear, linearUserIDs: ["user-1"]),
+                       "a bare login never fills email")
+    }
+
+    func testOwner01EmailRungOrdersByID() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try db.execute(sql: "INSERT INTO email_accounts (id, provider, email_address) VALUES (2, 'imap', 'a@example.com')")
+            try db.execute(sql: "INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'b@example.com')")
+        }
+        XCTAssertEqual(try db.read { try OwnerQueries.resolve($0) }.id, "email:b@example.com")
+    }
+
+    func testOwner01CalDAVOnlyHasNoOwner() throws {
+        let db = try TestDatabase.create()
+        try db.write { try TestDatabase.insertCalendarAccount($0, username: "me@example.com") }
+        let (owner, pending) = try db.read { try OwnerQueries.resolveWithPending($0) }
+        XCTAssertEqual(owner, .unknown)
+        XCTAssertNil(pending)
+    }
+
+    /// An enabled Jira/Linear account without its owner id yet is what the
+    /// unknown owner waits on; once it has one, nothing is pending.
+    func testOwner01PendingIdentitySource() throws {
+        let db = try TestDatabase.create()
+        try db.write { try Self.seed($0, OwnerSeed(linear: [LinearSeed()])) }
+        XCTAssertEqual(try db.read { try OwnerQueries.resolveWithPending($0) }.1, "Linear")
+        try db.write { try Self.seed($0, OwnerSeed(jira: [JiraSeed(cloudID: "c1", enabled: true, ownerAccountID: "")])) }
+        XCTAssertEqual(try db.read { try OwnerQueries.resolveWithPending($0) }.1, "Jira", "Jira first")
+        try db.write { try $0.execute(sql: "UPDATE jira_accounts SET enabled = 0") }
+        try db.write { try $0.execute(sql: "UPDATE linear_accounts SET status = 'removed'") }
+        XCTAssertNil(try db.read { try OwnerQueries.resolveWithPending($0) }.1)
+    }
+
+    /// The Swift twin of Go's `UpsertOwnerProfile` re-key: a profile write
+    /// after a rung switch also moves the briefings and day plans written
+    /// under the earlier id; a date the owner already has keeps its row.
+    func testOwner01ProfileWriteAdoptsBriefingsAndDayPlans() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertBriefing(db, userID: "email:x@example.com", date: "2026-10-16", role: "Old")
+            try TestDatabase.insertBriefing(db, userID: "email:x@example.com", date: "2026-10-17", role: "Stale")
+            try TestDatabase.insertBriefing(db, userID: "jira:acc-9", date: "2026-10-17", role: "Mine")
+            try TestDatabase.insertDayPlan(db, userID: "email:x@example.com", planDate: "2026-10-17")
+            let jira = Self.owner(id: "jira:acc-9", source: .jira, jiraAccountID: "acc-9")
+            try ProfileQueries.upsertOwnerProfile(db, owner: jira, profile: UserProfile(slackUserID: "", role: "EM"))
+        }
+        let roles = try db.read {
+            try String.fetchAll($0, sql: "SELECT role FROM briefings WHERE user_id = 'jira:acc-9' ORDER BY date")
+        }
+        XCTAssertEqual(roles, ["Old", "Mine"])
+        let plans = try db.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM day_plans WHERE user_id = 'jira:acc-9'")
+        }
+        XCTAssertEqual(plans, 1)
+    }
+
     // MARK: - Migrated sites (Google-only fixtures)
 
     func testOwner01FetchCurrentProfileGoogleOnly() throws {

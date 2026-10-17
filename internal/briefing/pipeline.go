@@ -131,6 +131,10 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		return 0, fmt.Errorf("briefing: %w", err)
 	}
 	currentUserID := owner.ID
+	// A rung switch must not regenerate today's briefing under the new id.
+	if err := p.db.AdoptOwnerRows(currentUserID); err != nil {
+		return 0, fmt.Errorf("briefing: %w", err)
+	}
 
 	// Deduplication check.
 	existing, err := p.db.GetBriefing(currentUserID, date)

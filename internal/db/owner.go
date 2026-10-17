@@ -200,12 +200,14 @@ func (db *DB) ownerLinearAccount() (ownerLinear, error) {
 	return l, nil
 }
 
-// ownerMailbox is the email rung: the first connected IMAP/Outlook mailbox's
-// address, as stored (the caller lower-cases it for the ID only). It comes
-// after every other rung so no existing install's owner id changes.
+// ownerMailbox is the email rung: the address of the first connected
+// IMAP/Outlook mailbox whose address looks like one (an '@' after at least one
+// character — a bare login such as "jdoe" or "DOMAIN\jdoe" identifies no one),
+// as stored (the caller lower-cases it for the ID only). It comes after every
+// other rung so no existing install's owner id changes.
 func (db *DB) ownerMailbox() (string, error) {
 	var addr string
-	err := db.QueryRow(`SELECT email_address FROM email_accounts WHERE email_address != '' ORDER BY id LIMIT 1`).Scan(&addr)
+	err := db.QueryRow(`SELECT email_address FROM email_accounts WHERE instr(email_address, '@') > 1 ORDER BY id LIMIT 1`).Scan(&addr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

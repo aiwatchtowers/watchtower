@@ -66,6 +66,28 @@ package enum OwnerQueries {
         return try enrich(db, id: winner.id, source: winner.source, rungs: rungs)
     }
 
+    /// `resolve`, plus `pendingIdentitySource` when the owner is unknown.
+    package static func resolveWithPending(_ db: Database) throws -> (Owner, String?) {
+        let owner = try resolve(db)
+        return (owner, owner.isKnown ? nil : try pendingIdentitySource(db))
+    }
+
+    /// With the owner unknown: the connected source that will name the owner
+    /// once it reports who connected it — an enabled, non-removed Jira or
+    /// Linear account whose owner id is still empty (Jira fills it at connect
+    /// or lazily at daemon start). "Jira" before "Linear"; nil when neither.
+    /// Only meaningful while `resolve` returns `Owner.unknown`.
+    package static func pendingIdentitySource(_ db: Database) throws -> String? {
+        for (name, table, column) in [("Jira", "jira_accounts", "owner_account_id"),
+                                      ("Linear", "linear_accounts", "owner_user_id")] {
+            let sql = """
+                SELECT EXISTS(SELECT 1 FROM \(table) WHERE enabled = 1 AND status != 'removed' AND \(column) = '')
+                """
+            if try Bool.fetchOne(db, sql: sql) == true { return name }
+        }
+        return nil
+    }
+
     // MARK: - Rungs
 
     /// Account #1's namespaced current_user_id, unless that account was
@@ -112,12 +134,13 @@ package enum OwnerQueries {
         )
     }
 
-    /// The first connected IMAP/Outlook mailbox's address, as stored
-    /// (lower-cased for the id only). Below every other rung, so no existing
-    /// install's owner id changes.
+    /// The address of the first connected IMAP/Outlook mailbox whose address
+    /// looks like one (an '@' after at least one character; a bare login
+    /// identifies no one), as stored (lower-cased for the id only). Below
+    /// every other rung, so no existing install's owner id changes.
     private static func ownerMailbox(_ db: Database) throws -> String {
         try String.fetchOne(db, sql: """
-            SELECT email_address FROM email_accounts WHERE email_address != '' ORDER BY id LIMIT 1
+            SELECT email_address FROM email_accounts WHERE instr(email_address, '@') > 1 ORDER BY id LIMIT 1
             """) ?? ""
     }
 

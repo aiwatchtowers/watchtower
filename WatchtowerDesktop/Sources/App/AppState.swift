@@ -68,12 +68,11 @@ final class AppState {
         store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard)
     )
 
-    /// The install's owner identity (`OwnerQueries.resolve`, OWNER-01). While
-    /// it is unknown, Day Plan and Briefings show `NoOwnerEmptyState` instead
-    /// of Generate (OWNER-02). Resolved on DB open, after every Slack/Google/
-    /// Jira account reload, and whenever either screen appears — the daemon
-    /// fills a Jira owner cross-process, which no GRDB observation sees.
+    /// The owner (`OwnerQueries.resolve`, OWNER-01); unknown → `NoOwnerEmptyState` (OWNER-02). Re-read on
+    /// DB open, account reloads and Day Plan/Briefings/Inbox appear (the daemon fills Jira's cross-process).
     private(set) var owner: Owner = .unknown
+    /// With the owner unknown, the source still to report it (`OwnerQueries.pendingIdentitySource`).
+    private(set) var ownerPendingSource: String?
 
     /// The Settings window's selected tab, so an in-app link can open
     /// Settings on a given tab (the no-owner empty state → Connections).
@@ -2059,13 +2058,12 @@ final class AppState {
         }
     }
 
-    /// Re-resolves `owner` off the main thread. A failed read keeps the last
-    /// known value (logged): flipping a known owner to unknown on a transient
-    /// error would hide Generate for no reason.
+    /// Re-resolves `owner` off the main thread. A failed read keeps the last value (logged):
+    /// a transient error must not flip a known owner to unknown and hide Generate.
     func refreshOwner() async {
         guard let pool = databaseManager?.dbPool else { return }
         do {
-            owner = try await pool.read { db in try OwnerQueries.resolve(db) }
+            (owner, ownerPendingSource) = try await pool.read { db in try OwnerQueries.resolveWithPending(db) }
         } catch {
             print("[AppState] owner resolve failed, keeping the last value: \(error.localizedDescription)")
         }
