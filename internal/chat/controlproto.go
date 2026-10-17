@@ -16,8 +16,9 @@ import (
 // testdata/claude_ai_*.jsonl (testdata/claude_ai_probe.md); the golden tests
 // in controlproto_test.go fail when a CLI upgrade changes them.
 //
-// The request object is read by exact key (a Go struct would also accept
-// "Tool_Name"), the same rule the connector policy applies to the input.
+// Every key is read exactly (a Go struct would also bind "Tool_Name" or
+// "Destructive"): the codec must see what the CLI, which reads exact keys,
+// acts on — the same rule the connector policy applies to the input.
 
 // mcpServerSourceClaudeAI is the mcp_server source of an account connector.
 const mcpServerSourceClaudeAI = "claudeai"
@@ -43,48 +44,53 @@ type permissionRequest struct {
 	// CLI-internal __artifact* keys (a sha256 pin of the source) that a
 	// rebuilt input would drop.
 	Input json.RawMessage
+	// Malformed, when set, says why the request cannot be judged (no
+	// tool_name or tool_use_id, input not an object). The gate denies it
+	// with this reason; policyCall yields a call the policy denies.
+	Malformed string
 
 	// hasMCPServer: the request carried an mcp_server, even a malformed one.
 	hasMCPServer bool
 }
 
-// controlLine is the envelope every control line shares.
-type controlLine struct {
-	Type      string          `json:"type"`
-	RequestID string          `json:"request_id"`
-	Request   json.RawMessage `json:"request"`
-	Response  json.RawMessage `json:"response"`
-}
-
 // parseControlRequest decodes a can_use_tool control request; false for any
 // other line (another control subtype, a control_response, a
 // control_cancel_request, stream output) and for a request without a
-// request_id, which cannot be answered.
+// request_id, which cannot be answered. A can_use_tool that has a request_id
+// but lacks what the gate needs is returned with Malformed set, so it is
+// still answered (denied).
 func parseControlRequest(line []byte) (permissionRequest, bool) {
-	var l controlLine
-	if json.Unmarshal(line, &l) != nil || l.Type != "control_request" || l.RequestID == "" {
+	env, ok := decodeObject(line)
+	if !ok || env.str("type") != "control_request" || env.str("request_id") == "" {
 		return permissionRequest{}, false
 	}
-	var req map[string]json.RawMessage
-	if json.Unmarshal(l.Request, &req) != nil || exactString(req, "subtype") != "can_use_tool" {
+	req, ok := decodeObject(env["request"])
+	if !ok || req.str("subtype") != "can_use_tool" {
 		return permissionRequest{}, false
 	}
 	r := permissionRequest{
-		RequestID:      l.RequestID,
-		ToolName:       exactString(req, "tool_name"),
-		ToolUseID:      exactString(req, "tool_use_id"),
-		DisplayName:    exactString(req, "display_name"),
-		Description:    exactString(req, "description"),
-		DecisionReason: exactString(req, "decision_reason"),
+		RequestID:      env.str("request_id"),
+		ToolName:       req.str("tool_name"),
+		ToolUseID:      req.str("tool_use_id"),
+		DisplayName:    req.str("display_name"),
+		Description:    req.str("description"),
+		DecisionReason: req.str("decision_reason"),
 		Input:          req["input"],
 	}
-	if raw, ok := req["mcp_server"]; ok && !isJSONNull(raw) {
+	if raw, ok := req["mcp_server"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		r.hasMCPServer = true
-		var srv map[string]json.RawMessage
-		if json.Unmarshal(raw, &srv) == nil {
-			r.MCPServer = exactString(srv, "name")
-			r.MCPServerSource = exactString(srv, "source")
+		if srv, ok := decodeObject(raw); ok {
+			r.MCPServer = srv.str("name")
+			r.MCPServerSource = srv.str("source")
 		}
+	}
+	switch {
+	case r.ToolName == "":
+		r.Malformed = "the permission request names no tool"
+	case r.ToolUseID == "":
+		r.Malformed = "the permission request has no tool_use_id"
+	case !isJSONObject(r.Input):
+		r.Malformed = "the permission request's input is not a JSON object"
 	}
 	return r, true
 }
@@ -94,10 +100,14 @@ func parseControlRequest(line []byte) (permissionRequest, bool) {
 // mcp_server — a local server, a malformed or nameless one — gets a name
 // that never carries the "claude.ai " prefix, so the policy denies it
 // (spec D1: a stray server fails closed) and never treats it as a built-in.
+// A Malformed request becomes a call with no tool, which the policy denies.
 func (r permissionRequest) policyCall() connectorpolicy.Call {
+	if r.Malformed != "" {
+		return connectorpolicy.Call{}
+	}
 	c := connectorpolicy.Call{Tool: r.ToolName, Input: r.Input}
 	switch {
-	case !r.hasMCPServer:
+	case !r.hasMCPServer: // a built-in
 	case r.MCPServerSource == mcpServerSourceClaudeAI && r.MCPServer != "":
 		c.Server = r.MCPServer
 	default:
@@ -106,34 +116,35 @@ func (r permissionRequest) policyCall() connectorpolicy.Call {
 	return c
 }
 
-// permissionAllowLine answers a can_use_tool with allow. updatedInput nil
-// runs the call as sent; otherwise it REPLACES the input and must be a JSON
-// object — echo permissionRequest.Input to keep the call unchanged.
-func permissionAllowLine(requestID string, updatedInput json.RawMessage) ([]byte, error) {
-	if updatedInput != nil {
-		trimmed := bytes.TrimSpace(updatedInput)
-		if !json.Valid(trimmed) || len(trimmed) == 0 || trimmed[0] != '{' {
-			return nil, errors.New("updatedInput is not a JSON object")
-		}
-		updatedInput = trimmed
+// permissionAllowLine answers a can_use_tool with allow. input REPLACES the
+// call's input and must be a JSON object: pass permissionRequest.Input to run
+// the call as the policy checked it, or the owner-approved input. There is
+// deliberately no "run as sent" form (an allow without updatedInput), so a
+// lost input is an error, never a call run with bytes nobody checked.
+func permissionAllowLine(requestID string, input json.RawMessage) ([]byte, error) {
+	trimmed := bytes.TrimSpace(input)
+	if !isJSONObject(trimmed) {
+		return nil, errors.New("updatedInput is not a JSON object")
 	}
-	return controlResponseLine(requestID, permissionAnswer{Behavior: "allow", UpdatedInput: updatedInput})
+	return controlResponseLine(requestID, struct {
+		Behavior     string          `json:"behavior"`
+		UpdatedInput json.RawMessage `json:"updatedInput"`
+	}{"allow", trimmed})
 }
 
 // permissionDenyLine answers a can_use_tool with deny. The model receives
-// message verbatim as the call's error tool_result.
+// message verbatim as the call's error tool_result; the key is always sent.
 func permissionDenyLine(requestID, message string) []byte {
-	b, err := controlResponseLine(requestID, permissionAnswer{Behavior: "deny", Message: message})
+	b, err := controlResponseLine(requestID, struct {
+		Behavior string `json:"behavior"`
+		Message  string `json:"message"`
+	}{"deny", message})
 	if err != nil {
-		panic(fmt.Sprintf("encoding a deny line: %v", err)) // only strings: cannot fail
+		// Only strings: encoding/json cannot fail on them (invalid UTF-8 is
+		// replaced, not refused).
+		panic(fmt.Sprintf("encoding a deny line: %v", err))
 	}
 	return b
-}
-
-type permissionAnswer struct {
-	Behavior     string          `json:"behavior"`
-	UpdatedInput json.RawMessage `json:"updatedInput,omitempty"`
-	Message      string          `json:"message,omitempty"`
 }
 
 // controlResponseLine encodes a successful control_response to the CLI,
@@ -170,9 +181,9 @@ func mcpStatusRequestLine(requestID string) []byte {
 	return append(b, '\n')
 }
 
-// MCPServerStatus is one server of an mcp_status answer. Tools is nil unless
-// the server is connected. Right after spawn the list is empty: the account's
-// connectors are fetched asynchronously and settle within a few seconds.
+// MCPServerStatus is one server of an mcp_status answer. Right after spawn
+// the list is empty: the account's connectors are fetched asynchronously and
+// settle within a few seconds.
 type MCPServerStatus struct {
 	Name   string // "claude.ai Claude Docs"
 	Status string // connected, needs-auth, pending (other values may appear)
@@ -180,10 +191,13 @@ type MCPServerStatus struct {
 	// connector.
 	Source     string
 	ConfigType string
-	Tools      []MCPToolInfo
+	// Tools is kept only for a connected server (nil otherwise), so a
+	// catalog never classifies a tool of a server that cannot run it.
+	Tools []MCPToolInfo
 }
 
-// MCPToolInfo is one tool and its own MCP annotations; nil = not declared.
+// MCPToolInfo is one tool and its own MCP annotations; nil = not declared
+// (absent, or not a bool).
 type MCPToolInfo struct {
 	Name        string
 	ReadOnly    *bool
@@ -191,69 +205,78 @@ type MCPToolInfo struct {
 }
 
 // parseMCPStatusResponse decodes the CLI's answer to mcpStatusRequestLine.
-// ok is false when line is not the control_response for requestID; err is
-// set when it is, but the CLI answered with an error or an unexpected shape.
-// A settled-but-empty answer is a non-nil empty slice.
+// ok is false when line is not the control_response for requestID; once it
+// is, any error answer or unexpected shape is (nil, true, err). A
+// settled-but-empty answer is a non-nil empty slice.
 func parseMCPStatusResponse(line []byte, requestID string) ([]MCPServerStatus, bool, error) {
-	head, ok := controlResponseFor(line, requestID)
+	body, ok := controlResponseFor(line, requestID)
 	if !ok {
 		return nil, false, nil
 	}
-	if head.Subtype != "success" {
-		return nil, true, fmt.Errorf("mcp_status failed: %s %s", head.Subtype, head.Error)
+	if subtype := body.str("subtype"); subtype != "success" {
+		return nil, true, fmt.Errorf("mcp_status failed: %s %s", subtype, bytes.TrimSpace(body["error"]))
 	}
-	var resp struct {
-		MCPServers *[]struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-			Source string `json:"source"`
-			Config struct {
-				Type string `json:"type"`
-			} `json:"config"`
-			Tools []struct {
-				Name        string `json:"name"`
-				Annotations struct {
-					ReadOnly    *bool `json:"readOnly"`
-					Destructive *bool `json:"destructive"`
-				} `json:"annotations"`
-			} `json:"tools"`
-		} `json:"mcpServers"`
+	resp, ok := decodeObject(body["response"])
+	if !ok {
+		return nil, true, errors.New("mcp_status answer has no response object")
 	}
-	if err := json.Unmarshal(head.Response, &resp); err != nil {
-		return nil, true, fmt.Errorf("decoding the mcp_status answer: %w", err)
+	var list []json.RawMessage
+	if raw := resp["mcpServers"]; raw == nil || json.Unmarshal(raw, &list) != nil || list == nil {
+		return nil, true, errors.New("mcp_status answer has no mcpServers list")
 	}
-	if resp.MCPServers == nil {
-		return nil, true, errors.New("mcp_status answer has no mcpServers")
-	}
-	servers := make([]MCPServerStatus, 0, len(*resp.MCPServers))
-	for _, s := range *resp.MCPServers {
-		st := MCPServerStatus{Name: s.Name, Status: s.Status, Source: s.Source, ConfigType: s.Config.Type}
-		for _, tl := range s.Tools {
-			st.Tools = append(st.Tools, MCPToolInfo{
-				Name: tl.Name, ReadOnly: tl.Annotations.ReadOnly, Destructive: tl.Annotations.Destructive,
-			})
+	servers := make([]MCPServerStatus, 0, len(list))
+	for i, raw := range list {
+		s, ok := decodeObject(raw)
+		if !ok {
+			return nil, true, fmt.Errorf("mcp_status server %d is not an object", i)
+		}
+		config, _ := decodeObject(s["config"])
+		st := MCPServerStatus{Name: s.str("name"), Status: s.str("status"),
+			Source: s.str("source"), ConfigType: config.str("type")}
+		if st.Status == "connected" {
+			tools, err := decodeTools(s["tools"])
+			if err != nil {
+				return nil, true, fmt.Errorf("mcp_status server %q: %w", st.Name, err)
+			}
+			st.Tools = tools
 		}
 		servers = append(servers, st)
 	}
 	return servers, true, nil
 }
 
-// controlResponseBody is the response object of a control_response.
-type controlResponseBody struct {
-	Subtype   string          `json:"subtype"`
-	RequestID string          `json:"request_id"`
-	Error     string          `json:"error"`
-	Response  json.RawMessage `json:"response"`
+// decodeTools decodes a server's tools list (absent = none).
+func decodeTools(raw json.RawMessage) ([]MCPToolInfo, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var list []json.RawMessage
+	if json.Unmarshal(raw, &list) != nil {
+		return nil, errors.New("tools is not a list")
+	}
+	var out []MCPToolInfo
+	for i, rawTool := range list {
+		tool, ok := decodeObject(rawTool)
+		if !ok {
+			return nil, fmt.Errorf("tool %d is not an object", i)
+		}
+		ann, _ := decodeObject(tool["annotations"])
+		out = append(out, MCPToolInfo{Name: tool.str("name"),
+			ReadOnly: ann.boolPtr("readOnly"), Destructive: ann.boolPtr("destructive")})
+	}
+	return out, nil
 }
 
-// controlResponseFor returns the body of line when it is the CLI's
+// controlResponseFor returns the response body of line when it is the CLI's
 // control_response to requestID.
-func controlResponseFor(line []byte, requestID string) (controlResponseBody, bool) {
-	var l controlLine
-	var body controlResponseBody
-	if requestID == "" || json.Unmarshal(line, &l) != nil || l.Type != "control_response" ||
-		json.Unmarshal(l.Response, &body) != nil || body.RequestID != requestID {
-		return controlResponseBody{}, false
+func controlResponseFor(line []byte, requestID string) (jsonObject, bool) {
+	env, ok := decodeObject(line)
+	if !ok || requestID == "" || env.str("type") != "control_response" {
+		return nil, false
+	}
+	body, ok := decodeObject(env["response"])
+	if !ok || body.str("request_id") != requestID {
+		return nil, false
 	}
 	return body, true
 }
@@ -262,11 +285,11 @@ func controlResponseFor(line []byte, requestID string) (controlResponseBody, boo
 // can_use_tool with that request id (an interrupt arrived while it waited).
 // The tool never runs; a late answer for the id is ignored by the CLI.
 func parseControlCancel(line []byte) (requestID string, ok bool) {
-	var l controlLine
-	if json.Unmarshal(line, &l) != nil || l.Type != "control_cancel_request" || l.RequestID == "" {
+	env, ok := decodeObject(line)
+	if !ok || env.str("type") != "control_cancel_request" || env.str("request_id") == "" {
 		return "", false
 	}
-	return l.RequestID, true
+	return env.str("request_id"), true
 }
 
 // permissionDenied is a system/permission_denied line: the CLI refused a
@@ -281,27 +304,30 @@ type permissionDenied struct {
 
 // parsePermissionDenied decodes a system/permission_denied line.
 func parsePermissionDenied(line []byte) (permissionDenied, bool) {
-	var l struct {
-		Type               string `json:"type"`
-		Subtype            string `json:"subtype"`
-		ToolName           string `json:"tool_name"`
-		ToolUseID          string `json:"tool_use_id"`
-		DecisionReasonType string `json:"decision_reason_type"`
-		DecisionReason     string `json:"decision_reason"`
-		Message            string `json:"message"`
-	}
-	if json.Unmarshal(line, &l) != nil || l.Type != "system" || l.Subtype != "permission_denied" {
+	l, ok := decodeObject(line)
+	if !ok || l.str("type") != "system" || l.str("subtype") != "permission_denied" {
 		return permissionDenied{}, false
 	}
 	return permissionDenied{
-		ToolName: l.ToolName, ToolUseID: l.ToolUseID,
-		ReasonType: l.DecisionReasonType, Reason: l.DecisionReason, Message: l.Message,
+		ToolName: l.str("tool_name"), ToolUseID: l.str("tool_use_id"),
+		ReasonType: l.str("decision_reason_type"), Reason: l.str("decision_reason"), Message: l.str("message"),
 	}, true
 }
 
-// exactString reads a string field by its exact key; "" when absent or not a
-// string.
-func exactString(m map[string]json.RawMessage, key string) string {
+// jsonObject is a JSON object read by exact key.
+type jsonObject map[string]json.RawMessage
+
+// decodeObject decodes raw as a JSON object; false for anything else.
+func decodeObject(raw []byte) (jsonObject, bool) {
+	var m jsonObject
+	if json.Unmarshal(raw, &m) != nil || m == nil {
+		return nil, false
+	}
+	return m, true
+}
+
+// str reads a string field; "" when absent or not a string.
+func (m jsonObject) str(key string) string {
 	var s string
 	if json.Unmarshal(m[key], &s) != nil {
 		return ""
@@ -309,6 +335,17 @@ func exactString(m map[string]json.RawMessage, key string) string {
 	return s
 }
 
-func isJSONNull(raw json.RawMessage) bool {
-	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+// boolPtr reads a bool field; nil when absent, null or not a bool.
+func (m jsonObject) boolPtr(key string) *bool {
+	var b bool
+	raw := bytes.TrimSpace(m[key])
+	if bytes.Equal(raw, []byte("null")) || json.Unmarshal(raw, &b) != nil {
+		return nil
+	}
+	return &b
+}
+
+func isJSONObject(raw json.RawMessage) bool {
+	_, ok := decodeObject(raw)
+	return ok
 }

@@ -135,16 +135,20 @@ tests (`TestControlProto_*`) fail when a CLI upgrade changes a shape.
 
 | Direction | Line | Codec |
 |---|---|---|
-| CLI → host | `{"type":"control_request","request_id":R,"request":{"subtype":"can_use_tool","tool_name","display_name","input","tool_use_id",…}}`; a connector call adds `"mcp_server":{"name":"claude.ai <Name>","source":"claudeai"}` (an object). Built-ins add `description`, `decision_reason`, `decision_reason_type`. There is no `title`. | `parseControlRequest` → `permissionRequest{RequestID, ToolName, ToolUseID, DisplayName, Description, DecisionReason, MCPServer, MCPServerSource, Input}`. The request object is read by exact key; `Input` is `request.input` byte for byte. |
-| host → CLI | `{"type":"control_response","response":{"subtype":"success","request_id":R,"response":{"behavior":"allow"[,"updatedInput":{…}]}}}` | `permissionAllowLine(R, updatedInput)`: nil = run as sent; otherwise it **replaces** the input and must be a JSON object (else an error, nothing is written). To keep a call unchanged the gate echoes `permissionRequest.Input` — an `Artifact` publish input carries CLI-internal `__artifact*` keys (a sha256 pin of the source) that a rebuilt input would lose. No HTML escaping. |
-| host → CLI | same envelope, `{"behavior":"deny","message":M}` | `permissionDenyLine(R, M)`; the model gets `M` verbatim as an error `tool_result`. |
+| CLI → host | `{"type":"control_request","request_id":R,"request":{"subtype":"can_use_tool","tool_name","display_name","input","tool_use_id",…}}`; a connector call adds `"mcp_server":{"name":"claude.ai <Name>","source":"claudeai"}` (an object). Built-ins add `description`, `decision_reason`, `decision_reason_type`. There is no `title`. | `parseControlRequest` → `permissionRequest{RequestID, ToolName, ToolUseID, DisplayName, Description, DecisionReason, MCPServer, MCPServerSource, Input, Malformed}`. `Input` is `request.input` byte for byte. A request with a `request_id` but no `tool_name`/`tool_use_id` or a non-object `input` is still returned, with `Malformed` set: the gate denies it with that reason (never leaves the CLI waiting). |
+| host → CLI | `{"type":"control_response","response":{"subtype":"success","request_id":R,"response":{"behavior":"allow","updatedInput":{…}}}}` | `permissionAllowLine(R, input)`: `input` **replaces** the call's input and must be a JSON object (nil or anything else → error, nothing is written). There is deliberately no bare allow ("run as sent", which the CLI also accepts): a policy Allow echoes `permissionRequest.Input` — the bytes the policy checked; an `Artifact` publish input carries CLI-internal `__artifact*` keys (a sha256 pin of the source) that a rebuilt input would lose —, an approved call sends the approved input, and a lost input can never run the model's own bytes. No HTML escaping. |
+| host → CLI | same envelope, `{"behavior":"deny","message":M}` | `permissionDenyLine(R, M)`; `message` is always sent; the model gets `M` verbatim as an error `tool_result`. |
 | host → CLI | `{"type":"control_request","request_id":S,"request":{"subtype":"mcp_status"}}` | `mcpStatusRequestLine(S)` |
-| CLI → host | `{"type":"control_response","response":{"subtype":"success","request_id":S,"response":{"mcpServers":[{"name","status","source","config":{"type"},"tools":[{"name","annotations":{"readOnly"?,"destructive"?}}]}]}}}` | `parseMCPStatusResponse(line, S)` → `[]MCPServerStatus{Name, Status, Source, ConfigType, Tools []MCPToolInfo{Name, ReadOnly, Destructive *bool}}`; a missing hint is `nil`; `Tools` only for `connected`; statuses `connected`/`needs-auth`/`pending`; an empty list right after spawn is a non-nil empty slice (not settled yet); `subtype:"error"`, a missing `mcpServers` or an undecodable answer to `S` → error. |
+| CLI → host | `{"type":"control_response","response":{"subtype":"success","request_id":S,"response":{"mcpServers":[{"name","status","source","config":{"type"},"tools":[{"name","annotations":{"readOnly"?,"destructive"?}}]}]}}}` | `parseMCPStatusResponse(line, S)` → `[]MCPServerStatus{Name, Status, Source, ConfigType, Tools []MCPToolInfo{Name, ReadOnly, Destructive *bool}}`; a missing, `null` or non-bool hint is `nil`; `Tools` is kept only for a `connected` server (dropped otherwise, so a catalog never classifies a tool of a server that cannot run it); statuses `connected`/`needs-auth`/`pending`; an empty list right after spawn is a non-nil empty slice (not settled yet); `subtype:"error"`, a missing `mcpServers` or an undecodable answer to `S` → error. |
 | CLI → host | `{"type":"control_cancel_request","request_id":R}` (an interrupt withdrew a waiting `can_use_tool`; the tool never runs) | `parseControlCancel` → R |
 | CLI → host | `{"type":"system","subtype":"permission_denied","tool_name","tool_use_id","decision_reason_type","decision_reason","message"}` (the CLI refused a call itself, no `can_use_tool`; an error `tool_result` with `message` follows) | `parsePermissionDenied` |
 
-The translator (`ClaudeTranslator.Feed`) ignores every control line; Task 8's reader
-routes them.
+Every key is read exactly (the CLI reads exact keys; a Go struct would also bind
+`Tool_Name` or `Destructive`), envelope and `mcp_status` answer included. The
+translator (`ClaudeTranslator.Feed`) ignores every control line, `system/permission_denied`
+included (its `message` is a string); Task 8's reader routes them. Not handled yet: a
+`control_request` of another subtype from the CLI (none was recorded) — Task 8 decides
+whether to answer it with an error response.
 
 **Codec → connector policy.** `permissionRequest.policyCall()` builds
 `connectorpolicy.Call{Tool: tool_name, Server, Input}`. `Server` is
@@ -159,7 +163,9 @@ denies (D1: a stray server fails closed) and never treats as a built-in
 `events_v2_published_source.jsonl`; the Swift parser tests read those files.
 
 - `tool_wait` — `{"type":"tool_wait","turn_id":T,"id":<tool_use id>,"message":"Waiting for your approval","action_id":N}`.
-  All four fields always present; `id` is the `id` of the step's earlier
+  All four fields always present — the gate emits it only with a non-empty
+  `turn_id`/`id` and a positive `action_id`, and the Desktop ignores a `tool_wait`
+  missing any of them; `id` is the `id` of the step's earlier
   `tool_start`; `action_id` (int64, > 0) is the `agent_actions` row the owner
   approves (`claude_ai_connector_call`). Order: `tool_start` → `tool_wait` →
   `tool_end` for the same `id` (ok=false with the gate's reason when rejected,

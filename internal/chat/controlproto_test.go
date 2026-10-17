@@ -77,6 +77,31 @@ func TestControlProto_RequestIsReadByExactKey(t *testing.T) {
 
 	_, ok = parseControlRequest([]byte(`{"type":"control_request","request_id":"r1","request":{"Subtype":"can_use_tool","tool_name":"Write"}}`))
 	assert.False(t, ok, "a subtype under another spelling is not a can_use_tool")
+
+	req, ok = parseControlRequest([]byte(`{"type":"control_request","request_id":"a","REQUEST_ID":"b","request":{"subtype":"can_use_tool","tool_name":"Write","input":{},"tool_use_id":"t1"}}`))
+	require.True(t, ok)
+	assert.Equal(t, "a", req.RequestID, "the envelope is read by exact key too")
+}
+
+func TestControlProto_MalformedCanUseToolIsStillAnsweredAndDenied(t *testing.T) {
+	policy := connectorpolicy.Policy{Disabled: map[string]bool{}, PathCheck: func(string) error { return nil }}
+	for name, request := range map[string]string{
+		"no tool name":   `"tool_name":"","input":{},"tool_use_id":"t1"`,
+		"no tool_use_id": `"tool_name":"Write","input":{"file_path":"/x"}`,
+		"no input":       `"tool_name":"Write","tool_use_id":"t1"`,
+		"null input":     `"tool_name":"Write","input":null,"tool_use_id":"t1"`,
+		"list input":     `"tool_name":"Write","input":[],"tool_use_id":"t1"`,
+	} {
+		req, ok := parseControlRequest([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool",` + request + `}}`))
+		require.True(t, ok, "%s: still answered", name)
+		assert.Equal(t, "r1", req.RequestID, name)
+		assert.NotEmpty(t, req.Malformed, name)
+		assert.Equal(t, connectorpolicy.Deny, policy.Decide(req.policyCall()).Verdict, name)
+	}
+	for i, line := range readFixture(t, "claude_ai_can_use_tool.jsonl") {
+		req, _ := parseControlRequest([]byte(line))
+		assert.Empty(t, req.Malformed, "recorded line %d", i+1)
+	}
 }
 
 func TestControlProto_IgnoresOtherControlLines(t *testing.T) {
@@ -118,16 +143,27 @@ func TestControlProto_AllowDenyLinesRoundTrip(t *testing.T) {
 		require.Equal(t, req.RequestID, rec.Response.RequestID, "answer %d pairs with request %d", i+1, i+1)
 
 		var got []byte
-		if rec.Response.Response.Behavior == "deny" {
+		want := recorded
+		switch {
+		case rec.Response.Response.Behavior == "deny":
 			got = permissionDenyLine(req.RequestID, rec.Response.Response.Message)
-		} else {
+		case rec.Response.Response.UpdatedInput == nil:
+			// The probe's bare allow ran the call as sent; the codec has no
+			// bare allow, it echoes the request's input (probe Q4: same run).
+			var err error
+			got, err = permissionAllowLine(req.RequestID, req.Input)
+			require.NoError(t, err)
+			want = strings.Replace(recorded, `{"behavior":"allow"}`,
+				`{"behavior":"allow","updatedInput":`+string(req.Input)+`}`, 1)
+			require.NotEqual(t, recorded, want)
+		default:
 			var err error
 			got, err = permissionAllowLine(req.RequestID, rec.Response.Response.UpdatedInput)
 			require.NoError(t, err)
 		}
 		require.True(t, strings.HasSuffix(string(got), "\n"), "newline-terminated")
 		assert.Equal(t, 1, strings.Count(string(got), "\n"), "one line")
-		assert.JSONEq(t, recorded, string(got), "answer %d has the shape the CLI accepted", i+1)
+		assert.JSONEq(t, want, string(got), "answer %d has the shape the CLI accepted", i+1)
 	}
 }
 
@@ -153,17 +189,21 @@ func TestControlProto_AllowEchoesTheRequestInputByteForByte(t *testing.T) {
 	assert.Contains(t, string(line), `"updatedInput":`+string(in))
 }
 
-func TestControlProto_AllowWithoutUpdatedInputRunsAsSent(t *testing.T) {
-	line, err := permissionAllowLine("r1", nil)
-	require.NoError(t, err)
-	assert.Equal(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{"behavior":"allow"}}}`+"\n", string(line))
-}
-
 func TestControlProto_AllowRefusesAnInputThatIsNotAnObject(t *testing.T) {
-	for _, in := range []string{``, ` `, `null`, `[]`, `"x"`, `{"a":`, `1`} {
-		_, err := permissionAllowLine("r1", json.RawMessage(in))
+	// nil included: there is no "run as sent" allow, so a lost approved
+	// input can never run the model's own bytes.
+	for _, in := range []json.RawMessage{nil, {}, json.RawMessage(` `), json.RawMessage(`null`),
+		json.RawMessage(`[]`), json.RawMessage(`"x"`), json.RawMessage(`{"a":`), json.RawMessage(`1`)} {
+		_, err := permissionAllowLine("r1", in)
 		assert.Error(t, err, "%q", in)
 	}
+}
+
+func TestControlProto_DenyAlwaysSendsTheMessageKey(t *testing.T) {
+	assert.Equal(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{"behavior":"deny","message":""}}}`+"\n",
+		string(permissionDenyLine("r1", "")))
+	// Invalid UTF-8 and NUL encode (replaced / escaped) rather than fail.
+	assert.True(t, json.Valid(permissionDenyLine("r1", "bad \xff utf8 \x00 nul")))
 }
 
 func TestControlProto_DenyCarriesTheMessageVerbatim(t *testing.T) {
@@ -196,11 +236,12 @@ func mcpStatusPairs(t *testing.T) map[string]string {
 	require.Zero(t, len(lines)%2, "request/answer pairs")
 	out := map[string]string{}
 	for i := 0; i < len(lines); i += 2 {
-		var req controlLine
-		require.NoError(t, json.Unmarshal([]byte(lines[i]), &req))
-		assert.JSONEq(t, lines[i], strings.TrimSuffix(string(mcpStatusRequestLine(req.RequestID)), "\n"),
+		req, ok := decodeObject([]byte(lines[i]))
+		require.True(t, ok)
+		id := req.str("request_id")
+		assert.JSONEq(t, lines[i], strings.TrimSuffix(string(mcpStatusRequestLine(id)), "\n"),
 			"our request matches the recorded one")
-		out[req.RequestID] = lines[i+1]
+		out[id] = lines[i+1]
 	}
 	return out
 }
@@ -275,9 +316,42 @@ func TestControlProto_MCPStatusOtherLines(t *testing.T) {
 	assert.True(t, ok)
 	assert.Error(t, err, "an answer without mcpServers is not an empty list")
 
-	_, ok, err = parseMCPStatusResponse([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"s1","response":{"mcpServers":"x"}}}`), "s1")
-	assert.True(t, ok, "our answer, even when it does not decode")
-	assert.Error(t, err)
+	for _, body := range []string{
+		`"subtype":"success","request_id":"s1","response":{"mcpServers":"x"}`,
+		`"subtype":"success","request_id":"s1","response":{"mcpServers":null}`,
+		`"subtype":"success","request_id":"s1","response":{"mcpServers":[1]}`,
+		`"subtype":"success","request_id":"s1","response":{"mcpServers":[{"name":"claude.ai A","status":"connected","tools":{}}]}`,
+		`"subtype":"success","request_id":"s1","response":{"mcpServers":[{"name":"claude.ai A","status":"connected","tools":["x"]}]}`,
+		`"subtype":"success","request_id":"s1"`,
+		`"subtype":"error","request_id":"s1","error":{"message":"structured"}`,
+	} {
+		_, ok, err := parseMCPStatusResponse([]byte(`{"type":"control_response","response":{`+body+`}}`), "s1")
+		assert.True(t, ok, "our answer, even when it does not decode: %s", body)
+		assert.Error(t, err, body)
+	}
+}
+
+func TestControlProto_MCPStatusReadsAnnotationsByExactKey(t *testing.T) {
+	line := `{"type":"control_response","response":{"subtype":"success","request_id":"s1","response":{"mcpServers":[` +
+		`{"name":"claude.ai A","status":"connected","source":"claudeai","config":{"type":"claudeai-proxy"},"tools":[` +
+		`{"name":"wipe","annotations":{"readOnly":true,"destructive":true,"Destructive":false}},` +
+		`{"name":"odd","annotations":{"readOnly":"yes","destructive":null}},` +
+		`{"name":"bare"}]},` +
+		`{"name":"claude.ai B","status":"needs-auth","tools":[{"name":"read","annotations":{"readOnly":true}}]}]}}}`
+	servers, ok, err := parseMCPStatusResponse([]byte(line), "s1")
+	require.True(t, ok)
+	require.NoError(t, err)
+	require.Len(t, servers, 2)
+	yes := true
+	assert.Equal(t, []MCPToolInfo{
+		{Name: "wipe", ReadOnly: &yes, Destructive: &yes},
+		{Name: "odd"},
+		{Name: "bare"},
+	}, servers[0].Tools, "a case variant never overrides the CLI's key; a non-bool or null hint is undeclared")
+	assert.Nil(t, servers[1].Tools, "tools of a server that is not connected are dropped")
+
+	_, ok, _ = parseMCPStatusResponse([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"other","REQUEST_ID":"s1","response":{"mcpServers":[]}}}`), "s1")
+	assert.False(t, ok, "the request id is read by exact key")
 }
 
 func TestControlProto_CancelRequest(t *testing.T) {
@@ -369,6 +443,13 @@ func TestControlProto_TranslatorIgnoresControlLines(t *testing.T) {
 	var lines []string
 	lines = append(lines, readFixture(t, "claude_ai_can_use_tool.jsonl")...)
 	lines = append(lines, readFixture(t, "claude_ai_mcp_status.jsonl")...)
+	lines = append(lines, readFixture(t, "claude_ai_control_responses.jsonl")...)
+	for _, line := range readFixture(t, "claude_ai_control_other.jsonl") {
+		if !strings.HasPrefix(line, `{"type":"user"`) && !strings.HasPrefix(line, `{"type":"result"`) {
+			lines = append(lines, line) // cancel, interrupt answer, permission_denied
+		}
+	}
+	require.Equal(t, 13+12+12+3, len(lines), "every recorded control line")
 	for _, line := range lines {
 		events, err := tr.Feed([]byte(line))
 		require.NoError(t, err)

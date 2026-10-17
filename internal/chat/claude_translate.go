@@ -11,14 +11,17 @@ import (
 
 // claudeLine is the union of the stream-json line shapes the translator reads.
 type claudeLine struct {
-	Type            string          `json:"type"`
-	Subtype         string          `json:"subtype"`
-	SessionID       string          `json:"session_id"`
-	IsError         bool            `json:"is_error"`
-	Result          string          `json:"result"`
-	Usage           *claudeUsage    `json:"usage"`
-	Event           *claudeStreamEv `json:"event"`
-	Message         *claudeMessage  `json:"message"`
+	Type      string          `json:"type"`
+	Subtype   string          `json:"subtype"`
+	SessionID string          `json:"session_id"`
+	IsError   bool            `json:"is_error"`
+	Result    string          `json:"result"`
+	Usage     *claudeUsage    `json:"usage"`
+	Event     *claudeStreamEv `json:"event"`
+	// Message is a user line's message object; other lines may carry a
+	// string "message" (system/permission_denied), so it is decoded only
+	// for "user".
+	Message         json.RawMessage `json:"message"`
 	ParentToolUseID *string         `json:"parent_tool_use_id"`
 	Errors          []string        `json:"errors"`
 }
@@ -157,7 +160,13 @@ func (t *ClaudeTranslator) feed(line []byte) ([]Event, string, error) {
 		}
 		return t.streamEvent(l.Event), l.SessionID, nil
 	case "user":
-		return t.toolResults(l.Message), l.SessionID, nil
+		var m *claudeMessage
+		if l.Message != nil {
+			if err := json.Unmarshal(l.Message, &m); err != nil {
+				return nil, l.SessionID, fmt.Errorf("decoding claude user message: %w", err)
+			}
+		}
+		return t.toolResults(m), l.SessionID, nil
 	case "result":
 		return t.result(l), l.SessionID, nil
 	}

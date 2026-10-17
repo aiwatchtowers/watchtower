@@ -127,9 +127,9 @@ All lanes branch off and merge into `feature/737-chat-claude-ai-tools`; only tha
 - Create: `internal/chat/testdata/events_v2_tool_wait.jsonl` (pinned lines the Swift parser test reads)
 
 **Interfaces — Produces:**
-- `type permissionRequest struct { RequestID, ToolName, ToolUseID, DisplayName, Description, DecisionReason, MCPServer, MCPServerSource string; Input json.RawMessage }` (as built — Task 2 probe: `mcp_server` is an object `{name, source}`, there is no `title`; `Input` is the request's input byte for byte; `policyCall()` → `connectorpolicy.Call`, see spec §3.1)
+- `type permissionRequest struct { RequestID, ToolName, ToolUseID, DisplayName, Description, DecisionReason, MCPServer, MCPServerSource, Malformed string; Input json.RawMessage }` (as built — Task 2 probe: `mcp_server` is an object `{name, source}`, there is no `title`; `Input` is the request's input byte for byte; `policyCall()` → `connectorpolicy.Call`, see spec §3.1)
 - `func parseControlRequest(line []byte) (permissionRequest, bool)` — true only for `control_request` with subtype `can_use_tool`.
-- `func permissionAllowLine(requestID string, updatedInput json.RawMessage) ([]byte, error)` (as built: error when updatedInput is not a JSON object; nil = run as sent), `func permissionDenyLine(requestID, message string) []byte` (newline-terminated).
+- `func permissionAllowLine(requestID string, input json.RawMessage) ([]byte, error)` (as built: error unless input is a JSON object — no bare allow; a policy Allow echoes `permissionRequest.Input`, an approved call sends the approved input), `func permissionDenyLine(requestID, message string) []byte` (newline-terminated).
 - As built, also: `parseControlCancel(line) (requestID string, ok bool)`, `parsePermissionDenied(line) (permissionDenied, bool)`, `toolWaitEvent(turnID, toolUseID, actionID)`, `ToolWaitMessage`, `publishedSource(url, title)`; `MCPServerStatus` also carries `Source`, `ConfigType`.
 - `func mcpStatusRequestLine(requestID string) []byte`; `func parseMCPStatusResponse(line []byte, requestID string) ([]MCPServerStatus, bool, error)`.
 - `type MCPServerStatus struct { Name, Status string; Tools []MCPToolInfo }`, `type MCPToolInfo struct { Name string; ReadOnly, Destructive *bool }` (nil = no annotation).
