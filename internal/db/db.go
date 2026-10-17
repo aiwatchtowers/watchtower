@@ -7,13 +7,10 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -411,24 +408,17 @@ func (db *DB) setupSchema(dbPath string) error {
 	return nil
 }
 
-// embeddedMigrationVersions is the version of every migration file in this
-// binary, read once.
+// embeddedMigrationVersions is the version of every migration in this
+// binary — the embedded SQL files and the registered Go migrations, as
+// goose collects them — read once.
 var embeddedMigrationVersions = sync.OnceValues(func() ([]int64, error) {
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
 	if err != nil {
-		return nil, fmt.Errorf("reading embedded migrations: %w", err)
+		return nil, fmt.Errorf("collecting embedded migrations: %w", err)
 	}
-	var out []int64
-	for _, e := range entries {
-		if path.Ext(e.Name()) != ".sql" {
-			continue
-		}
-		prefix, _, _ := strings.Cut(e.Name(), "_")
-		v, err := strconv.ParseInt(prefix, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("migration %s has no version prefix: %w", e.Name(), err)
-		}
-		out = append(out, v)
+	out := make([]int64, len(migrations))
+	for i, m := range migrations {
+		out[i] = m.Version
 	}
 	return out, nil
 })

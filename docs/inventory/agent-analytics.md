@@ -9,7 +9,7 @@
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/agentlog/` + `internal/agentreport/` + `internal/db/agent_report.go` + `internal/db/migrations/00125_agent_analytics_history.sql` + `internal/db/agent_log.go` + `internal/db/migrations/00116_agent_analytics.sql` + `cmd/agents.go` + `internal/daemon/daemon.go` (`phaseAgentAnalytics`) + `internal/daemon/agent_analytics.go`
+**Module:** `internal/agentlog/` + `internal/agentreport/` + `internal/db/agent_report.go` + `internal/db/migration_00125.go` + `internal/db/agent_log.go` + `internal/db/migrations/00116_agent_analytics.sql` + `cmd/agents.go` + `internal/daemon/daemon.go` (`phaseAgentAnalytics`) + `internal/daemon/agent_analytics.go`
 **Last full audit:** 2026-10-16
 
 ## AGENTLOG-01 — No transcript text
