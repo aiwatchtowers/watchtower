@@ -452,12 +452,12 @@ type mcpConfigurable interface{ SetMCPArgs(extra []string) }
 // codex: `ai query --no-tools`).
 type noToolsConfigurable interface{ SetNoTools() }
 
-// externalMCPConfigurable is implemented by ai.Client (claude) — it merges
-// owner-added external MCP servers ("Quick Connections", internal/externalmcp)
-// into the chat's mcp-config and tool allowlist alongside the built-in
-// watchtower server. codex.Client does not implement this yet, so the
-// type-assert in newQueryClient simply skips it there — a provider that
-// doesn't support external servers degrades gracefully rather than breaking.
+// externalMCPConfigurable is implemented by ai.Client (claude: the chat's
+// mcp-config and tool allowlist) and codex.Client (the run's own CODEX_HOME
+// config, enabled_tools per server) — it mounts owner-added external MCP
+// servers ("Quick Connections", internal/externalmcp) alongside the built-in
+// watchtower server. The ollama client has no MCP subprocess, so the
+// type-assert in newQueryClient simply skips it there.
 type externalMCPConfigurable interface {
 	SetExternalMCPServers(servers []ai.ExternalMCPServer)
 }

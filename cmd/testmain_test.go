@@ -102,6 +102,16 @@ func TestMain(m *testing.M) {
 	// workspace's database under the temp home, which later tests expecting
 	// "no workspace" then auto-pick (order-dependent failures).
 	flagConfig = filepath.Join(home, ".config", "watchtower", "config.yaml")
+	// The codex chat disables the servers of every codex config layer; the
+	// machine's own /etc/codex must not leak into a test's argv, and no
+	// test reads the developer's CODEX_HOME.
+	codex.SetSystemConfigDir(filepath.Join(home, "no-system-codex"))
+	if err := os.Unsetenv("CODEX_HOME"); err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
+		os.Exit(1)
+	}
+	// No test runs the owner's login shell (connections import).
+	loginShellEnv = func() map[string]string { return nil }
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

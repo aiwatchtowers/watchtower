@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/externalmcp"
 )
 
 const fakeSessionClaude = `#!/bin/sh
@@ -172,6 +173,57 @@ func TestNewSessionBackend_EveryProviderHasABackend(t *testing.T) {
 		})
 		require.NoError(t, err, p)
 		require.NotNil(t, b, p)
+	}
+}
+
+// The codex chat session (board #594) mounts the enabled Quick Connections
+// next to the watchtower server, limited to their allowed tools (QC-02),
+// and re-reads them on every launch (QC-04) — a connection enabled after
+// the session started is there on the next turn.
+func TestCodexSessionClient_MountsConnectionsPerLaunch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}}
+	dbPath := cfg.DBPath()
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	c := codexSessionClient(sessionWiring{cfg: cfg, database: database, dbPath: dbPath, model: "m",
+		mcpArgs: []string{"--chat", "--surface", "main"}})
+	override := func() string {
+		for _, a := range c.ArgsForTest("sys", "msg") {
+			if strings.HasPrefix(a, "mcp_servers=") {
+				return a
+			}
+		}
+		return ""
+	}
+	assert.NotContains(t, override(), `"trello"`)
+
+	id, err := database.InsertExternalConnection(db.ExternalConnection{Name: "trello", Kind: "stdio", Command: "npx", Enabled: true})
+	require.NoError(t, err)
+	require.NoError(t, database.SetExternalConnectionTools(id,
+		[]db.ExternalTool{{Name: "list_boards"}, {Name: "create_card"}}, time.Now().UTC().Format(time.RFC3339)))
+	got := override()
+	assert.Contains(t, got, `"trello"={command="npx"`)
+	assert.Contains(t, got, `enabled_tools=["list_boards"]`)
+	assert.Contains(t, got, `"--surface","main"`)
+
+	// A connection codex cannot mount (its variable would reconfigure
+	// codex) is left out before its tools are touched — it was never
+	// listed, and a listing would have failed in cmd tests — and its row
+	// says why, turn after turn, never flipping to ok in between.
+	bad, err := database.InsertExternalConnection(db.ExternalConnection{Name: "clash", Kind: "stdio", Command: "srv", Enabled: true})
+	require.NoError(t, err)
+	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), bad).Save(
+		&externalmcp.Secret{Env: map[string]string{"HTTPS_PROXY": "http://proxy.example.com:3128"}}))
+	for range 2 {
+		assert.NotContains(t, override(), `"clash"`)
+		row, err := database.GetExternalConnection(bad)
+		require.NoError(t, err)
+		assert.Equal(t, "error", row.Status)
+		assert.Contains(t, row.Error, "not available in the codex chat: its variable HTTPS_PROXY")
+		assert.False(t, row.ToolsListed, "its tools were never listed")
 	}
 }
 

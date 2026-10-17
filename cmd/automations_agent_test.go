@@ -228,7 +228,7 @@ func TestAgent_DryRunRemovesWriteTools(t *testing.T) {
 }
 
 // claudeStub is a fake claude (or codex) CLI: it records its environment,
-// its argv and a codex --cd folder's config.toml, writes its pid, sleeps
+// its argv and a codex child's CODEX_HOME config.toml, writes its pid, sleeps
 // ignoring SIGINT when its dir holds a "sleep" file, exits 1 with no output
 // when it holds a "fail" file, and prints reply. It touches the server's
 // ready file (as a started `watchtower mcp` would) unless it holds a
@@ -247,13 +247,12 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 	script := "#!/bin/sh\n" +
 		"env > '" + dir + "/env'\n" +
 		"for a in \"$@\"; do printf '%s\\0' \"$a\"; done > '" + dir + "/argv'\n" +
-		"prev=; for a in \"$@\"; do [ \"$prev\" = --cd ] && cp \"$a/.codex/config.toml\" '" + dir + "/codex.toml'; prev=$a; done\n" +
 		"if [ -n \"$CODEX_HOME\" ]; then echo \"$CODEX_HOME\" > '" + dir + "/codex-home'; cp \"$CODEX_HOME/config.toml\" '" + dir + "/codex-home.toml'; " +
 		"readlink \"$CODEX_HOME/auth.json\" > '" + dir + "/codex-auth-link'; fi\n" +
 		// Act as the bound server starting: touch the ready file the
 		// watchtower server's args name (in --mcp-config or the codex TOML),
 		// unless the dir holds a "noserver" file.
-		"{ for a in \"$@\"; do printf '%s\\n' \"$a\"; done; cat '" + dir + "/codex.toml' 2>/dev/null; } > '" + dir + "/allargs'\n" +
+		"{ for a in \"$@\"; do printf '%s\\n' \"$a\"; done; cat '" + dir + "/codex-home.toml' 2>/dev/null; } > '" + dir + "/allargs'\n" +
 		"rf=$(sed -n 's/.*\"--automation-ready-file\", *\"\\([^\"]*\\)\".*/\\1/p' '" + dir + "/allargs' | head -n 1)\n" +
 		"if [ -n \"$rf\" ] && [ ! -f '" + dir + "/noserver' ]; then : > \"$rf\"; fi\n" +
 		"echo $$ > '" + dir + "/pid'\n" +
@@ -349,6 +348,8 @@ func TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-fake")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-fake")
 	t.Setenv("OPENAI_API_KEY", "sk-openai-fake")
+	// An exported CODEX_HOME is the owner's, never the claude child's.
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "acme-codex-home"))
 	// The allowed network plumbing (owner ask #185); no_proxy is left unset.
 	allowed := map[string]string{
 		"HTTPS_PROXY": "http://proxy.example.com:3128", "HTTP_PROXY": "http://proxy.example.com:3128",
@@ -535,13 +536,6 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	runID := strconv.FormatInt(run.ID, 10)
 	assert.Contains(t, stub.env(t), automations.RunEnvMarker+"="+runID)
 	assert.NotContains(t, strings.Join(stub.env(t), "\n"), "WT_FAKE_SECRET")
-	toml, err := os.ReadFile(filepath.Join(stub.dir, "codex.toml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(toml), `"--surface", "automation", "--automation-run", "`+runID+`", "--automation-tools", "create_target,list_targets"`)
-	// codex starts MCP servers with a filtered environment: the run marker
-	// the server checks is passed through by name.
-	assert.Contains(t, string(toml), `env_vars = ["`+automations.RunEnvMarker+`"]`)
-
 	// CODEX_HOME is a scrubbed per-run home: web search off, only the
 	// watchtower server, the owner's sign-in linked; gone after the run.
 	codexHome, err := os.ReadFile(filepath.Join(stub.dir, "codex-home"))
@@ -554,7 +548,9 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	assert.Contains(t, string(homeTOML), `web_search = "disabled"`)
 	assert.Contains(t, string(homeTOML), "[mcp_servers.watchtower]")
 	assert.Equal(t, 1, strings.Count(string(homeTOML), "[mcp_servers."), "no server of the owner's: %s", homeTOML)
-	assert.Contains(t, string(homeTOML), `"--automation-run", "`+runID+`"`)
+	assert.Contains(t, string(homeTOML), `"--surface", "automation", "--automation-run", "`+runID+`", "--automation-tools", "create_target,list_targets"`)
+	// codex starts MCP servers with a filtered environment: the run marker
+	// the server checks is passed through by name.
 	assert.Contains(t, string(homeTOML), `env_vars = ["`+automations.RunEnvMarker+`"]`)
 	link, err := os.ReadFile(filepath.Join(stub.dir, "codex-auth-link"))
 	require.NoError(t, err)

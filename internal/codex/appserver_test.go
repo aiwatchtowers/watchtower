@@ -30,7 +30,18 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeModeEnv); mode != "" {
 		os.Exit(runFakeAppServer(mode))
 	}
-	os.Exit(m.Run())
+	// Hermetic codex config layers: never the developer's own ~/.codex or
+	// /etc/codex (ownerServerNames); a test that needs owner servers sets
+	// CODEX_HOME itself.
+	home, err := os.MkdirTemp("", "codex-test-home-*")
+	if err != nil {
+		os.Exit(2)
+	}
+	_ = os.Setenv("CODEX_HOME", home)
+	systemConfigDir = home + "/no-system-config"
+	code := m.Run()
+	_ = os.RemoveAll(home)
+	os.Exit(code)
 }
 
 func runFakeAppServer(mode string) int {
