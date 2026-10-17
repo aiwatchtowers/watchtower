@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,7 +20,7 @@ import (
 )
 
 // TestClaudeAILive_Probe drives the real `claude` CLI in the main chat's
-// claude.ai mode (#737, plan Task 2) and asserts the control-protocol
+// claude.ai mode (#737) and asserts the control-protocol
 // behaviour the permission gate builds on; testdata/claude_ai_probe.md lists
 // the answers. It is the one test here that runs the real CLI, so it is
 // skipped unless WATCHTOWER_LIVE_CLAUDE=1: it needs a claude.ai login (no API
@@ -27,10 +28,12 @@ import (
 // it also writes the raw transcript (<dir>/claude_ai_raw.jsonl) that
 // testdata/record_fixtures.sh scrubs into the claude_ai_* fixtures.
 //
-// Safety: every publish, pin, delete and out-of-dir write is denied, so
-// nothing is sent to the account; the only paths are in the probe's own temp
-// dir; --setting-sources project,local as in production (TCC guard); the
-// whole process group is reaped in t.Cleanup.
+// Safety: each turn answers only the tool it is about and denies (and fails
+// on) any other request, so a drifting model cannot publish, pin, delete or
+// create anything in the account; publish, pin, delete and the Docs calls
+// other than guide are always denied; an allowed file tool must stay in the
+// probe's own temp dir; --setting-sources project,local as in production (TCC
+// guard); the whole process group is reaped in t.Cleanup.
 func TestClaudeAILive_Probe(t *testing.T) {
 	if os.Getenv("WATCHTOWER_LIVE_CLAUDE") != "1" {
 		t.Skip("live claude.ai probe: set WATCHTOWER_LIVE_CLAUDE=1 (needs a logged-in claude CLI)")
@@ -49,12 +52,11 @@ func TestClaudeAILive_Probe(t *testing.T) {
 	probeMainSession(t, p, docs)
 
 	if !docs {
-		t.Log("Q6 not probed: the account has no connected claude.ai Claude Docs")
+		t.Log("Q6 not probed: the account has no claude.ai Claude Docs connector")
 	} else {
-		p := startLiveProbe(t, rec, "disallow", []string{"--disallowedTools", "mcp__" + probeDocsToken}, nil)
-		p.settledMCPStatus("status_disallow", 15*time.Second) // init lists servers only once fetched
-		turn := p.turn("Reply with exactly: ok", probeAllowAll)
-		init := turn.find("system", "init")
+		dp := startLiveProbe(t, rec, "disallow", []string{"--disallowedTools", "mcp__" + probeDocsToken}, nil)
+		dp.settledMCPStatus("status_disallow", 15*time.Second) // init lists servers only once fetched
+		init := dp.turn("Reply with exactly: ok", probeDeny).find("system", "init")
 		for _, tool := range probeStrings(init["tools"]) {
 			if strings.HasPrefix(tool, "mcp__"+probeDocsToken+"__") {
 				t.Errorf("Q6: --disallowedTools mcp__%s left %s in the init tools", probeDocsToken, tool)
@@ -65,13 +67,17 @@ func TestClaudeAILive_Probe(t *testing.T) {
 		}
 	}
 
+	// Connectors off: the list must stay empty for the whole settle budget
+	// the "on" sessions get (they list servers within ~2 s).
 	off := startLiveProbe(t, rec, "connectors_off", nil, []string{"ENABLE_CLAUDEAI_MCP_SERVERS=0"})
-	time.Sleep(4 * time.Second) // the account fetch settles within ~2 s when on
-	if got := off.mcpStatus("status_off"); len(got) != 0 {
-		t.Errorf("ENABLE_CLAUDEAI_MCP_SERVERS=0: mcp_status lists %d servers, want none", len(got))
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(time.Second) {
+		if got := off.mcpStatus("status_off"); len(got) != 0 {
+			t.Fatalf("ENABLE_CLAUDEAI_MCP_SERVERS=0: mcp_status lists %d servers, want none", len(got))
+		}
 	}
-	if init := off.turn("Reply with exactly: ok", probeAllowAll).find("system", "init"); len(probeList(init["mcp_servers"])) != 0 {
-		t.Errorf("ENABLE_CLAUDEAI_MCP_SERVERS=0: init lists servers %v", init["mcp_servers"])
+	init := off.turn("Reply with exactly: ok", probeDeny).find("system", "init")
+	if init == nil || len(probeList(init["mcp_servers"])) != 0 {
+		t.Errorf("ENABLE_CLAUDEAI_MCP_SERVERS=0: init = %v, want one with no mcp_servers", init)
 	}
 }
 
@@ -87,9 +93,15 @@ func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
 	cwd, out := p.cwd, p.outside
 
 	// Q3/Q9: Read inside the cwd runs without a permission request.
-	turn := p.turn("Use the Read tool to read "+cwd+"/inside.txt and reply with its content only.", probeAllowAll)
-	if src := turn.find("system", "init")["apiKeySource"]; src != "none" {
+	turn := p.turn("Use the Read tool to read "+cwd+"/inside.txt and reply with its content only.", probeDeny)
+	init := turn.find("system", "init")
+	if src := init["apiKeySource"]; src != "none" {
 		t.Errorf("Q9: init apiKeySource = %v, want \"none\" under a claude.ai login", src)
+	}
+	for _, tool := range probeStrings(init["tools"]) {
+		if strings.HasSuffix(tool, "__authenticate") {
+			t.Errorf("Q6: init exposes %s; needs-auth connectors had no tools", tool)
+		}
 	}
 	if r := turn.request("Read"); r != nil {
 		t.Errorf("Q3: Read inside the cwd asked permission: %v", r)
@@ -99,7 +111,7 @@ func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
 	}
 
 	// Q1/Q3: Read outside the cwd asks, with the workingDir reason.
-	turn = p.turn("Use the Read tool to read "+out+"/outside.txt and reply with its content only.", probeAllowAll)
+	turn = p.turn("Use the Read tool to read "+out+"/outside.txt and reply with its content only.", probeAllow, "Read")
 	if r := probeRequire(t, turn, "Read", "Q3: Read outside the cwd"); r != nil {
 		probeAssertCanUseTool(t, turn.requestLine("Read"), "Read")
 		if r["decision_reason_type"] != "workingDir" {
@@ -109,7 +121,7 @@ func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
 
 	// Q3/Q8: a symlink inside the cwd that leaves it asks (blocked_path), and a
 	// deny with a message reaches the model verbatim as an error tool_result.
-	turn = p.turn("Use the Read tool to read "+cwd+"/link.txt and reply with its content only.", probeDenyAll)
+	turn = p.turn("Use the Read tool to read "+cwd+"/link.txt and reply with its content only.", probeDeny, "Read")
 	if r := probeRequire(t, turn, "Read", "Q3: Read through a symlink"); r != nil {
 		if r["blocked_path"] == nil {
 			t.Errorf("Q3: symlink request has no blocked_path: %v", r)
@@ -118,9 +130,9 @@ func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
 	}
 
 	// Q3: Edit asks inside the cwd and outside it.
-	turn = p.turn("Use the Edit tool on "+cwd+"/inside.txt: replace 'inside file' with 'inside edited'. Then reply done.", probeAllowAll)
+	turn = p.turn("Use the Edit tool on "+cwd+"/inside.txt: replace 'inside file' with 'inside edited'. Then reply done.", probeAllow, "Edit")
 	probeRequire(t, turn, "Edit", "Q3: Edit inside the cwd")
-	turn = p.turn("Use the Edit tool on "+out+"/outside.txt: replace 'outside file' with 'outside edited'. Then reply done.", probeAllowAll)
+	turn = p.turn("Use the Edit tool on "+out+"/outside.txt: replace 'outside file' with 'outside edited'. Then reply done.", probeAllow, "Edit", "Read")
 	probeRequire(t, turn, "Edit", "Q3: Edit outside the cwd")
 
 	// Q4: Write inside the cwd asks; an allow's updatedInput replaces the input.
@@ -128,64 +140,81 @@ func probeMainSession(t *testing.T, p *liveProbe, docs bool) {
 		func(r map[string]any) probeReply {
 			in, ok := r["input"].(map[string]any)
 			if !ok {
+				t.Errorf("Q4: Write request without an input object: %v", r)
 				return probeReply{}
 			}
 			in["content"] = "edited by gate\n"
 			return probeReply{allow: true, input: in}
-		})
+		}, "Write")
 	probeRequire(t, turn, "Write", "Q4: Write inside the cwd")
 	if b, _ := os.ReadFile(filepath.Join(cwd, "a.txt")); string(b) != "edited by gate\n" {
 		t.Errorf("Q4: allow with updatedInput wrote %q, want the gate's content", b)
 	}
 	// An allow without updatedInput runs the call as the model sent it.
 	turn = p.turn("Use the Write tool to create "+cwd+"/b.txt containing bare. Then reply done.",
-		func(map[string]any) probeReply { return probeReply{allow: true, bare: true} })
+		func(map[string]any) probeReply { return probeReply{allow: true, bare: true} }, "Write")
 	probeRequire(t, turn, "Write", "Q4: Write inside the cwd (bare allow)")
 	if _, err := os.Stat(filepath.Join(cwd, "b.txt")); err != nil {
 		t.Errorf("Q4: a bare allow did not run the Write: %v", err)
 	}
-	turn = p.turn("Use the Write tool to create "+out+"/w.txt containing x. Then reply done.", probeDenyAll)
-	probeRequire(t, turn, "Write", "Q4: Write outside the cwd")
+	turn = p.turn("Use the Write tool to create "+out+"/w.txt containing x. Then reply done.", probeDeny, "Write")
+	if r := probeRequire(t, turn, "Write", "Q4: Write outside the cwd"); r != nil {
+		probeAssertDenied(t, turn, r)
+	}
+	if _, err := os.Stat(filepath.Join(out, "w.txt")); !os.IsNotExist(err) {
+		t.Errorf("Q4: the denied Write outside the cwd ran (stat: %v)", err)
+	}
 
 	// Q5: Artifact list runs without a request; publish, read of a foreign
 	// URL and pin ask; delete of an unknown URL is refused by the CLI itself.
-	turn = p.turn("Call the Artifact tool with action list and limit 1. Reply with only the number it returned.", probeAllowAll)
+	turn = p.turn("Call the Artifact tool with action list and limit 1. Reply with only the number it returned.", probeDeny)
 	if r := turn.request("Artifact"); r != nil {
 		t.Errorf("Q5: Artifact list asked permission: %v", r)
 	}
-	turn = p.turn("Call the Artifact tool to publish the file "+cwd+"/page.html (action publish, icon code). If it is refused, reply with the refusal text.", probeDenyAll)
+	if !turn.toolRan("Artifact") {
+		t.Error("Q5: Artifact list did not run")
+	}
+	turn = p.turn("Call the Artifact tool to publish the file "+cwd+"/page.html (action publish, icon code). If it is refused, reply with the refusal text.", probeDeny, "Artifact")
 	if r := probeRequire(t, turn, "Artifact", "Q5: Artifact publish"); r != nil {
 		in, _ := r["input"].(map[string]any)
 		if in["action"] != "publish" || in["__artifactPublishSourcePin"] == nil {
 			t.Errorf("Q5: publish input lacks action or the CLI's __artifact* fields: %v", in)
 		}
 	}
-	turn = p.turn("I own the artifact at "+probeFakeURL+" and confirm its deletion: call the Artifact tool with action delete and that url now. Reply with the result or the refusal text.", probeDenyAll)
-	if r := turn.request("Artifact"); r != nil {
-		t.Errorf("Q5: delete of an unknown URL reached can_use_tool: %v", r)
+	turn = p.turn("I own the artifact at "+probeFakeURL+" and confirm its deletion: call the Artifact tool with action delete and that url now. Reply with the result or the refusal text.", probeDeny, "Artifact") // it may try a read first
+	for _, d := range turn.lines {
+		if r, _ := d["request"].(map[string]any); probeIsCanUseTool(d) {
+			if in, _ := r["input"].(map[string]any); in["action"] == "delete" {
+				t.Errorf("Q5: delete of an unknown URL reached can_use_tool: %v", r)
+			}
+		}
 	}
 	if turn.find("system", "permission_denied") == nil {
 		t.Error("Q5: delete of an unknown URL: no system/permission_denied event")
 	}
-	turn = p.turn("Call the Artifact tool with action read and url "+probeFakeURL+". Reply with the result or the refusal text.", probeDenyAll)
+	turn = p.turn("Call the Artifact tool with action read and url "+probeFakeURL+". Reply with the result or the refusal text.", probeDeny, "Artifact")
 	probeRequire(t, turn, "Artifact", "Q5: Artifact read of a foreign URL")
-	turn = p.turn("Call the Artifact tool with action pin and url "+probeFakeURL+". Reply with the result or the refusal text.", probeDenyAll)
+	turn = p.turn("Call the Artifact tool with action pin and url "+probeFakeURL+". Reply with the result or the refusal text.", probeDeny, "Artifact")
 	probeRequire(t, turn, "Artifact", "Q5: Artifact pin")
 
 	if docs {
 		// Q1/Q7: a connector call carries mcp_server; the share vocabulary.
-		turn = p.turn(`Call mcp__claude_ai_Claude_Docs__guide with items ["topic.sharing"]. Reply with one sentence.`, probeAllowAll)
-		if r := probeRequire(t, turn, "mcp__"+probeDocsToken+"__guide", "Q1: Docs guide"); r != nil {
-			probeAssertCanUseTool(t, turn.requestLine("mcp__"+probeDocsToken+"__guide"), "mcp__"+probeDocsToken+"__guide")
+		guide := "mcp__" + probeDocsToken + "__guide"
+		turn = p.turn(`Call mcp__claude_ai_Claude_Docs__guide with items ["topic.sharing"]. Reply with one sentence.`, probeAllow, guide)
+		if r := probeRequire(t, turn, guide, "Q1: Docs guide"); r != nil {
+			probeAssertCanUseTool(t, turn.requestLine(guide), guide)
 			srv, _ := r["mcp_server"].(map[string]any)
 			if srv["name"] != probeDocsName {
-				t.Errorf("Q1: mcp_server = %v, want {name: %q}", r["mcp_server"], probeDocsName)
+				t.Errorf("Q1: mcp_server = %v, want an object {name: %q}", r["mcp_server"], probeDocsName)
 			}
-			if res := turn.toolResultText(r["tool_use_id"]); !strings.Contains(res, "no docs tool shares a doc") {
+			if r["server_policy_ask_only"] != true {
+				t.Errorf("Q1: connector request without server_policy_ask_only: %v", r)
+			}
+			if res := probeContentText(turn.toolResult(r["tool_use_id"])["content"]); !strings.Contains(res, "no docs tool shares a doc") {
 				t.Errorf("Q7: topic.sharing no longer says no tool shares a doc: %.300q", res)
 			}
 		}
-		turn = p.turn("Call mcp__claude_ai_Claude_Docs__delete for the doc with id 'doc_probe_nonexistent'. If it is refused, reply with the refusal text.", probeDenyAll)
+		turn = p.turn("Call mcp__claude_ai_Claude_Docs__delete for the doc with id 'doc_probe_nonexistent'. If it is refused, reply with the refusal text.", probeDeny, "mcp__"+probeDocsToken+"__delete")
 		probeRequire(t, turn, "mcp__"+probeDocsToken+"__delete", "Q7: Docs delete")
 	}
 
@@ -213,6 +242,9 @@ func probeAssertMCPStatus(t *testing.T, servers []any) bool {
 		t.Fatal("Q2: mcp_status listed no claude.ai servers within 15 s — is the CLI logged in to claude.ai?")
 	}
 	docs := false
+	if d := probeServer(servers, probeDocsName); d != nil && d["status"] != "connected" {
+		t.Errorf("Q2: Claude Docs is listed but %v, not connected", d["status"])
+	}
 	for _, s := range servers {
 		m, _ := s.(map[string]any)
 		name, _ := m["name"].(string)
@@ -235,25 +267,33 @@ func probeAssertMCPStatus(t *testing.T, servers []any) bool {
 			for _, tool := range probeList(m["tools"]) {
 				tm, _ := tool.(map[string]any)
 				ann, _ := tm["annotations"].(map[string]any)
-				name, _ := tm["name"].(string)
-				if hint, ok := want[name]; ok && (hint == "" && len(ann) != 0 || hint != "" && ann[hint] != true) {
-					t.Errorf("Q7: Claude Docs %s annotations = %v, want %q", name, ann, hint)
+				tool, _ := tm["name"].(string)
+				hint, ok := want[tool]
+				if ok && (hint == "" && len(ann) != 0 || hint != "" && ann[hint] != true) {
+					t.Errorf("Q7: Claude Docs %s annotations = %v, want %q", tool, ann, hint)
 				}
+				delete(want, tool)
+			}
+			for tool := range want {
+				t.Errorf("Q7: Claude Docs no longer lists the %s tool", tool)
 			}
 		}
 	}
 	return docs
 }
 
-// probeAssertCanUseTool checks the request envelope Task 3 decodes (Q1).
+// probeAssertCanUseTool checks the request envelope the gate decodes (Q1).
 func probeAssertCanUseTool(t *testing.T, d map[string]any, tool string) {
 	t.Helper()
 	r, _ := d["request"].(map[string]any)
 	if s, _ := d["request_id"].(string); s == "" {
 		t.Errorf("Q1: %s request without request_id: %v", tool, d)
 	}
-	if r["tool_name"] != tool || r["tool_use_id"] == nil || r["input"] == nil {
-		t.Errorf("Q1: %s request lacks tool_name/tool_use_id/input: %v", tool, r)
+	if r["tool_name"] != tool || r["tool_use_id"] == nil || r["input"] == nil || r["display_name"] == nil {
+		t.Errorf("Q1: %s request lacks tool_name/tool_use_id/input/display_name: %v", tool, r)
+	}
+	if _, ok := r["title"]; ok {
+		t.Errorf("Q1: %s request now carries a title field: %v", tool, r)
 	}
 }
 
@@ -272,6 +312,9 @@ func probeAssertDenied(t *testing.T, turn *probeTurn, r map[string]any) {
 	if !found {
 		t.Error("Q8: the denied call is missing from result.permission_denials")
 	}
+	if meta := turn.toolResultMeta(r["tool_use_id"]); meta["non_execution_kind"] != "permission-rule" {
+		t.Errorf("Q8: tool_result_meta = %v, want non_execution_kind permission-rule", meta)
+	}
 }
 
 func probeRequire(t *testing.T, turn *probeTurn, tool, what string) map[string]any {
@@ -289,8 +332,8 @@ type probeReply struct {
 	input map[string]any // allow: updatedInput; nil = the request's input
 }
 
-func probeAllowAll(map[string]any) probeReply { return probeReply{allow: true} }
-func probeDenyAll(map[string]any) probeReply  { return probeReply{} }
+func probeAllow(map[string]any) probeReply { return probeReply{allow: true} }
+func probeDeny(map[string]any) probeReply  { return probeReply{} }
 
 func probeReplyLine(requestID string, req map[string]any, rep probeReply) map[string]any {
 	resp := map[string]any{"behavior": "deny", "message": probeDenyMsg}
@@ -384,8 +427,15 @@ func (pt *probeTurn) toolResult(id any) map[string]any {
 	return nil
 }
 
-func (pt *probeTurn) toolResultText(id any) string {
-	return probeContentText(pt.toolResult(id)["content"])
+func (pt *probeTurn) toolResultMeta(id any) map[string]any {
+	for _, d := range pt.lines {
+		for _, m := range probeList(d["tool_result_meta"]) {
+			if mm, _ := m.(map[string]any); mm["id"] == id {
+				return mm
+			}
+		}
+	}
+	return nil
 }
 
 func probeContentText(v any) string {
@@ -429,6 +479,7 @@ type probeRecorder struct {
 	mu    sync.Mutex
 	w     io.Writer
 	roots []string
+	err   error // the first write error, reported at cleanup
 }
 
 func newProbeRecorder(t *testing.T) *probeRecorder {
@@ -440,8 +491,16 @@ func newProbeRecorder(t *testing.T) *probeRecorder {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { f.Close() })
-	return &probeRecorder{w: f}
+	r := &probeRecorder{w: f}
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil && r.err == nil {
+			r.err = err
+		}
+		if r.err != nil {
+			t.Errorf("raw transcript is incomplete: %v", r.err)
+		}
+	})
+	return r
 }
 
 func (r *probeRecorder) addRoot(resolved, link string) {
@@ -458,7 +517,13 @@ func (r *probeRecorder) write(scenario, dir string, line []byte) {
 	for _, root := range r.roots {
 		line = bytes.ReplaceAll(line, []byte(root), []byte("/tmp/probe"))
 	}
-	fmt.Fprintf(r.w, `{"scenario":%q,"dir":%q,"line":%s}`+"\n", scenario, dir, bytes.TrimSpace(line))
+	line = bytes.TrimSpace(line)
+	if !json.Valid(line) { // keep the transcript valid JSONL; the scrub fails on it
+		line, _ = json.Marshal(map[string]string{"non_json": string(line)})
+	}
+	if _, err := fmt.Fprintf(r.w, `{"scenario":%q,"dir":%q,"line":%s}`+"\n", scenario, dir, line); err != nil && r.err == nil {
+		r.err = err
+	}
 }
 
 // liveProbe is one claude child in claude.ai mode.
@@ -466,6 +531,7 @@ type liveProbe struct {
 	t        *testing.T
 	scenario string
 	rec      *probeRecorder
+	base     string // the temp root every allowed file tool must stay in
 	cwd      string
 	outside  string
 	stdin    io.WriteCloser
@@ -488,7 +554,7 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 		t.Fatal(err)
 	}
 	rec.addRoot(base, link)
-	p := &liveProbe{t: t, scenario: scenario, rec: rec,
+	p := &liveProbe{t: t, scenario: scenario, rec: rec, base: base,
 		cwd: filepath.Join(base, "cwd"), outside: filepath.Join(base, "outside"),
 		lines: make(chan map[string]any, 1024)}
 	for _, d := range []string{p.cwd, p.outside} {
@@ -510,7 +576,7 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 		t.Fatal(err)
 	}
 
-	// The claude.ai-mode argv of the main chat session (plan, Global Constraints).
+	// The claude.ai-mode argv of the main chat session (#737 plan, Global Constraints).
 	args := append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
 		"--verbose", "--setting-sources", "project,local", "--permission-prompt-tool", "stdio",
 		"--model", "haiku", "--tools", "ToolSearch,WebSearch,Artifact,Write,Edit,Read"}, extraArgs...)
@@ -519,6 +585,7 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH(),
 		"CLAUDE_CODE_ARTIFACT=1", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN=0"), extraEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 5 * time.Second // a grandchild holding stdout cannot stall Wait
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
@@ -533,6 +600,7 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 	}
 	pgid := cmd.Process.Pid
 	waited := make(chan struct{})
+	stop := make(chan struct{}) // closed at cleanup: the reader stops handing lines over
 	go func() {
 		br := bufio.NewReaderSize(stdout, 1<<20)
 		for {
@@ -540,8 +608,12 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 			if len(bytes.TrimSpace(line)) > 0 {
 				rec.write(scenario, "in", line)
 				var d map[string]any
-				if json.Unmarshal(line, &d) == nil {
-					p.lines <- d
+				if json.Unmarshal(line, &d) != nil {
+					d = map[string]any{"type": "probe_non_json"}
+				}
+				select {
+				case p.lines <- d:
+				case <-stop:
 				}
 			}
 			if err != nil {
@@ -553,6 +625,7 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 		close(waited)
 	}()
 	t.Cleanup(func() {
+		close(stop)
 		p.stdin.Close()
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		select {
@@ -560,7 +633,11 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 		case <-time.After(5 * time.Second):
 		}
 		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		<-waited
+		select {
+		case <-waited:
+		case <-time.After(10 * time.Second):
+			t.Errorf("%s: claude (pgid %d) not reaped", scenario, pgid)
+		}
 		if t.Failed() && stderr.Len() > 0 {
 			t.Logf("%s stderr: %.2000s", scenario, stderr.String())
 		}
@@ -587,6 +664,9 @@ func (p *liveProbe) next(timeout time.Duration) map[string]any {
 		if !ok {
 			p.t.Fatalf("%s: claude exited", p.scenario)
 		}
+		if d["type"] == "probe_non_json" {
+			p.t.Errorf("%s: claude wrote a non-JSON stdout line (see the raw transcript)", p.scenario)
+		}
 		return d
 	case <-time.After(timeout):
 		p.t.Fatalf("%s: no output within %s", p.scenario, timeout)
@@ -604,9 +684,11 @@ func (p *liveProbe) waitFor(match func(map[string]any) bool, timeout time.Durati
 	}
 }
 
-// turn sends one user message and answers every can_use_tool with decide
-// until the turn's result.
-func (p *liveProbe) turn(text string, decide func(map[string]any) probeReply) *probeTurn {
+// turn sends one user message and, until the turn's result, answers each
+// can_use_tool for one of tools with decide. A request for any other tool is
+// denied and fails the test (a drifting model never gets an unplanned allow),
+// and so is an allow whose file_path leaves the probe's temp root.
+func (p *liveProbe) turn(text string, decide func(map[string]any) probeReply, tools ...string) *probeTurn {
 	p.t.Helper()
 	p.send(probeUserLine(text))
 	pt := &probeTurn{}
@@ -617,12 +699,26 @@ func (p *liveProbe) turn(text string, decide func(map[string]any) probeReply) *p
 		if probeIsCanUseTool(d) {
 			req, _ := d["request"].(map[string]any)
 			id, _ := d["request_id"].(string)
-			p.send(probeReplyLine(id, req, decide(req)))
+			rep := probeReply{}
+			if name, _ := req["tool_name"].(string); !slices.Contains(tools, name) {
+				p.t.Errorf("%s: unexpected can_use_tool for %s (denied): %v", p.scenario, name, req)
+			} else if rep = decide(req); rep.allow && !p.inBase(req) {
+				p.t.Errorf("%s: %s asked for a path outside the probe dir (denied): %v", p.scenario, name, req)
+				rep = probeReply{}
+			}
+			p.send(probeReplyLine(id, req, rep))
 		}
 		if d["type"] == "result" {
 			return pt
 		}
 	}
+}
+
+// inBase reports whether a request's file_path (if any) is in the temp root.
+func (p *liveProbe) inBase(req map[string]any) bool {
+	in, _ := req["input"].(map[string]any)
+	path, ok := in["file_path"].(string)
+	return !ok || strings.HasPrefix(path, p.base+"/")
 }
 
 // mcpStatus sends one mcp_status control request and returns mcpServers.
@@ -641,7 +737,8 @@ func (p *liveProbe) mcpStatus(id string) []any {
 
 // settledMCPStatus polls mcp_status every second until it lists servers and
 // none is "pending" (the claude.ai fetch and the connects are async: an empty
-// list first, then pending entries) or the budget runs out.
+// list first, then pending entries). A list still pending at the end of the
+// budget fails the test rather than reading as "no Claude Docs".
 func (p *liveProbe) settledMCPStatus(id string, budget time.Duration) []any {
 	p.t.Helper()
 	deadline := time.Now().Add(budget)
@@ -653,8 +750,11 @@ func (p *liveProbe) settledMCPStatus(id string, budget time.Duration) []any {
 				settled = false
 			}
 		}
-		if settled || time.Now().After(deadline) {
+		if settled || len(servers) == 0 && time.Now().After(deadline) {
 			return servers
+		}
+		if time.Now().After(deadline) {
+			p.t.Fatalf("%s: connectors still pending after %s: %v", p.scenario, budget, servers)
 		}
 		time.Sleep(time.Second)
 	}

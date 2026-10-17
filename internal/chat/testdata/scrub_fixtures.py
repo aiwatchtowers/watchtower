@@ -92,15 +92,24 @@ class ClaudeAIScrubber:
                 self.names[n] = "claude.ai Connector " + chr(ord("A") + len(self.names))
 
     def server(self, s):
-        out = dict(s)
-        out["name"] = self.names.get(s.get("name"), s.get("name"))
-        if "config" in out:
-            out["config"] = {"type": out["config"].get("type")}
+        """Claude Docs keeps its tools and serverInfo (public, first-party);
+        any other connector keeps only an allowlist — its tools, serverInfo
+        and descriptions could name a company or a workspace."""
+        if s.get("name") == DOCS:
+            out = dict(s)
+        else:
+            out = {k: s[k] for k in ("name", "status", "scope", "source") if k in s}
+            out["name"] = self.names.get(s.get("name"), s.get("name"))
+        if "config" in s:
+            out["config"] = {"type": s["config"].get("type")}
         return out
 
     def text(self, raw):
-        for real, fake in self.names.items():
-            raw = raw.replace(server_token(real), server_token(fake)).replace(real, fake)
+        # Longest first and whole names only, so "X (2)" is never rewritten
+        # through its prefix "X"; a token only inside mcp__<token>__.
+        for real, fake in sorted(self.names.items(), key=lambda kv: -len(kv[0])):
+            raw = re.sub(r"(?<=mcp__)%s(?=__)" % re.escape(server_token(real)), lambda _: server_token(fake), raw)
+            raw = re.sub(r"%s(?![A-Za-z0-9])" % re.escape(real), lambda _: fake, raw)
 
         def fixture_id(m):
             self.ids.setdefault(m.group(0), "mcpsrv_fixture_%d" % (len(self.ids) + 1))
@@ -131,6 +140,10 @@ def is_mcp_status(x):
 
 def claude_ai(raw_path, out_dir):
     rows = [json.loads(l) for l in open(raw_path) if l.strip()]
+    if not rows:
+        sys.exit("scrub: %s has no rows: did the probe skip?" % raw_path)
+    if any("non_json" in r["line"] for r in rows):
+        sys.exit("scrub: the raw transcript has a non-JSON CLI line; check the probe log")
     sc = ClaudeAIScrubber()
     for r in rows:
         x = r["line"]
@@ -184,12 +197,31 @@ def claude_ai(raw_path, out_dir):
              "can_use_tool": "claude_ai_can_use_tool.jsonl",
              "control_responses": "claude_ai_control_responses.jsonl",
              "control_other": "claude_ai_control_other.jsonl"}
-    leaks = re.compile(r"/Users/|/private/var/|/var/folders/|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|mcpsrv_0")
+    if not any(x["request"].get("mcp_server") for x in files["can_use_tool"]):
+        sys.exit("scrub: no connector can_use_tool recorded (Claude Docs not probed); not writing fixtures")
+    # Every class of value that must not reach the public repo; hits are
+    # reported by class, never echoed.
+    checks = {
+        "path": re.compile(r"/Users/|/private/var/|/var/folders/"),
+        "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+        "connector id": re.compile(r"mcpsrv_(?!fixture_)"),
+        "host": re.compile(r"https?://(?!claude\.ai/)[^\s\"]+"),
+    }
+    real = set()
+    for n in sc.names:
+        real |= {n, n[len("claude.ai "):] if n.startswith("claude.ai ") else n, server_token(n)}
+    texts = {}
     for key, fname in names.items():
+        if not files[key]:
+            sys.exit("scrub: nothing recorded for %s; not writing fixtures" % fname)
         text = "".join(json.dumps(sc.line(x), separators=(",", ":"), ensure_ascii=False) + "\n" for x in files[key])
-        bad = [n for n in sc.names if n in text] + leaks.findall(text)
-        if bad:
-            sys.exit("scrub: %s still carries %d account-specific value(s)" % (fname, len(bad)))
+        hits = [cls for cls, rx in checks.items() if rx.search(text)]
+        if any(n.lower() in text.lower() for n in real):
+            hits.append("connector name")
+        if hits:
+            sys.exit("scrub: %s still carries account-specific values (%s); nothing written" % (fname, ", ".join(hits)))
+        texts[fname] = text
+    for fname, text in texts.items():  # all checked first: no half-updated set
         with open("%s/%s" % (out_dir, fname), "w") as f:
             f.write(text)
 

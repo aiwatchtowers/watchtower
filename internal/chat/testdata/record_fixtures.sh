@@ -70,9 +70,10 @@ user "hi" | claude "${flags[@]}" --model haiku --resume 00000000-0000-4000-8000-
 
 # Scrub the recording environment out of every fixture (the claude_ai_* ones
 # have their own scrub, below).
-python3 "$out/scrub_fixtures.py" "$out"/claude_{text,thinking,tool,interrupt,resume_missing}.jsonl
-sed -i '' "s#$HOME#/HOME#g" "$out"/claude_{text,thinking,tool,interrupt,resume_missing}.jsonl "$out"/claude_*.stderr
-echo "recorded:"; wc -l "$out"/claude_{text,thinking,tool,interrupt,resume_missing}.jsonl
+plain=("$out"/claude_{text,thinking,tool,interrupt,resume_missing}.jsonl)
+python3 "$out/scrub_fixtures.py" "${plain[@]}"
+sed -i '' "s#$HOME#/HOME#g" "${plain[@]}" "$out"/claude_*.stderr
+echo "recorded:"; wc -l "${plain[@]}"
 
 # 6. The claude.ai probe (#737).
 claude_ai
