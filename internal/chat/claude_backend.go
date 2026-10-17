@@ -35,6 +35,11 @@ type ClaudeOptions struct {
 	Tools           string
 	AllowedTools    string // --allowedTools
 	DisallowedTools string // --disallowedTools
+	// ClaudeAI is the main chat's claude.ai mode (publishing and the
+	// account's connectors); off = argv and environment as without it. The
+	// caller pairs it with ai.ClaudeAISessionBuiltinTools and
+	// ai.ClaudeAISessionDisallowedTools.
+	ClaudeAI ClaudeAIMode
 	// WorkDir is the child's working directory; "" = NeutralWorkDir(). It
 	// must hold no CLAUDE.md: claude loads project instructions from its cwd
 	// (and its parents) into the session. It must also be stable across
@@ -206,10 +211,20 @@ func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 		"--include-partial-messages", "--verbose",
 		// Skip user-level settings: their plugins/hooks probe ~/Desktop and
 		// ~/Documents at startup and trigger TCC prompts (see internal/ai).
-		"--setting-sources", "project,local",
+		// claude.ai mode keeps this: the connectors come from the account,
+		// not from user settings.
+		"--setting-sources", "project,local"}
+	if o.ClaudeAI.On {
+		// The owner's claude.ai connectors load (no --strict-mcp-config),
+		// and every call not pre-allowed by --allowedTools reaches the
+		// session's permission gate as a can_use_tool control request
+		// instead of being denied silently.
+		args = append(args, "--permission-prompt-tool", "stdio")
+	} else {
 		// Only the servers in --mcp-config (watchtower + Quick Connections):
 		// never the owner's claude.ai connectors or other auto-loaded servers.
-		"--strict-mcp-config"}
+		args = append(args, "--strict-mcp-config")
+	}
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
@@ -459,7 +474,7 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
 	cmd.Dir = dir
-	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH()), b.opts.Env...)
+	cmd.Env = claudeEnv(b.opts)
 	// Own process group, so Close can reap the MCP servers claude spawns.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()

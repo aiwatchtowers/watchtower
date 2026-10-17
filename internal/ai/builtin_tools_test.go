@@ -27,19 +27,26 @@ import (
 //   - WebSearch (warm `ai session` only, the main chat): public web search,
 //     the SessionDisallowedTools rule — WebFetch stays hidden everywhere;
 //   - Read, Grep, Glob, LS (a workbench code question, `ai query
-//     --read-folder` only): the owner decision of 2026-10-03 (ruling R55).
+//     --read-folder` only): the owner decision of 2026-10-03 (ruling R55);
+//   - Artifact, Write (warm `ai session` in claude.ai mode only): publishing
+//     to the owner's claude.ai account, the source file written inside the
+//     conversation's publish dir — spec 2026-10-16 D8, approved ask #325.
+//     Read and Edit stay hidden (the gate cannot confine a read-only
+//     built-in the CLI runs without asking).
 var approvedChatBuiltins = map[string][]string{
-	"one-shot ai query":           {"ToolSearch"},
-	"warm ai session":             {"ToolSearch", "WebSearch"},
-	"code question (read folder)": {"ToolSearch", "Read", "Grep", "Glob", "LS"},
+	"one-shot ai query":                {"ToolSearch"},
+	"warm ai session":                  {"ToolSearch", "WebSearch"},
+	"warm ai session (claude.ai mode)": {"ToolSearch", "WebSearch", "Artifact", "Write"},
+	"code question (read folder)":      {"ToolSearch", "Read", "Grep", "Glob", "LS"},
 }
 
 // chatBuiltinRuns is each chat run's built-in allowlist (--tools) and deny
 // list (--disallowedTools), as buildArgs and cmd/ai_session.go pass them.
 var chatBuiltinRuns = map[string]struct{ tools, deny string }{
-	"one-shot ai query":           {ChatBuiltinTools, DisallowedTools},
-	"warm ai session":             {SessionBuiltinTools, SessionDisallowedTools},
-	"code question (read folder)": {ReadFolderBuiltinTools, ReadOnlyFolderDisallowedTools},
+	"one-shot ai query":                {ChatBuiltinTools, DisallowedTools},
+	"warm ai session":                  {SessionBuiltinTools, SessionDisallowedTools},
+	"warm ai session (claude.ai mode)": {ClaudeAISessionBuiltinTools, ClaudeAISessionDisallowedTools},
+	"code question (read folder)":      {ReadFolderBuiltinTools, ReadOnlyFolderDisallowedTools},
 }
 
 const builtinsSnapshot = "testdata/claude_builtins.txt"
@@ -91,6 +98,40 @@ func TestChatBuiltins_OnlyApprovedNamesExposed(t *testing.T) {
 		"web search is the warm main-chat session's alone")
 	assert.NotContains(t, strings.Split(SessionBuiltinTools, ","), "WebFetch",
 		"WebFetch (arbitrary URL fetch, the exfiltration channel) is never allowed")
+	assert.NotContains(t, strings.Split(ClaudeAISessionBuiltinTools, ","), "WebFetch",
+		"WebFetch is never allowed, claude.ai mode included")
+}
+
+// TestChatClaudeAI_OneShotKeepsStrictMCPConfig: claude.ai mode belongs to the
+// warm main-chat session alone (decision Q2) — every one-shot chat run (an
+// embedded chat, a read-folder code question) still loads only Watchtower's
+// MCP servers, never answers permission requests, and keeps Artifact and
+// Write hidden.
+func TestChatClaudeAI_OneShotKeepsStrictMCPConfig(t *testing.T) {
+	for _, readFolder := range []bool{false, true} {
+		cl := NewClient("sonnet", "/tmp/w.db", "")
+		cl.SetMCPArgs([]string{"--chat", "--surface", "target"})
+		if readFolder {
+			cl.SetReadFolder(t.TempDir())
+		}
+		args, _, err := cl.buildArgs("sys", "hi", "stream-json", "")
+		require.NoError(t, err)
+		assert.Contains(t, args, "--strict-mcp-config", "readFolder=%v", readFolder)
+		assert.NotContains(t, args, "--permission-prompt-tool", "readFolder=%v", readFolder)
+		i := slices.Index(args, "--disallowedTools")
+		require.GreaterOrEqual(t, i, 0)
+		hidden := strings.Split(args[i+1], ",")
+		for _, n := range []string{"Artifact", "Write", "ArtifactComments", "ArtifactData"} {
+			assert.Contains(t, hidden, n, "readFolder=%v", readFolder)
+		}
+	}
+	for _, n := range []string{"Artifact", "Write", "Edit", "Read"} {
+		assert.Contains(t, strings.Split(DisallowedTools, ","), n, "one-shot deny list")
+		assert.Contains(t, strings.Split(SessionDisallowedTools, ","), n, "session deny list outside claude.ai mode")
+	}
+	for _, n := range []string{"Edit", "Read", "ArtifactCheck", "ArtifactComments", "ArtifactData", "WebFetch"} {
+		assert.Contains(t, strings.Split(ClaudeAISessionDisallowedTools, ","), n, "claude.ai mode deny list")
+	}
 }
 
 // TestChatBuiltins_DenyListCoversSnapshot: the deny list, defence in depth
@@ -179,7 +220,13 @@ func TestChatBuiltins_LiveCLI(t *testing.T) {
 		args := slices.Clone(base)
 		setFlag(t, args, "--tools", r.tools)
 		setFlag(t, args, "--disallowedTools", r.deny)
-		exposed := builtinNames(liveInitTools(t, bin, args))
+		var env []string
+		if r.tools == ClaudeAISessionBuiltinTools {
+			// The CLI registers Artifact in print mode only with this set
+			// (the warm session sets it in claude.ai mode).
+			env = []string{"CLAUDE_CODE_ARTIFACT=1"}
+		}
+		exposed := builtinNames(liveInitTools(t, bin, args, env...))
 		// Two-way: an unapproved built-in exposed fails, and so does an
 		// approved one missing (a CLI dropping or renaming ToolSearch).
 		assert.ElementsMatch(t, approvedChatBuiltins[run], exposed, "%s: built-ins the CLI exposes", run)
@@ -225,18 +272,20 @@ func builtinNames(tools []string) []string {
 	return out
 }
 
-// liveInitTools launches the CLI in an empty directory, returns the tool list
-// of its stream-json init event and kills the process group right after. The
-// group is killed and reaped on every path, timeout included. The launch
-// leaves no CLI state behind: --no-session-persistence writes no transcript,
-// and the per-cwd project directory the CLI still creates under
-// ~/.claude/projects is removed at cleanup.
-func liveInitTools(t *testing.T, bin string, args []string) []string {
+// liveInitTools launches the CLI in an empty directory, with env added to its
+// environment, returns the tool list of its stream-json init event and kills
+// the process group right after. The group is killed and reaped on every
+// path, timeout included. The launch leaves no CLI state behind:
+// --no-session-persistence writes no transcript, and the per-cwd project
+// directory the CLI still creates under ~/.claude/projects is removed at
+// cleanup.
+func liveInitTools(t *testing.T, bin string, args []string, env ...string) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, append(slices.Clone(args), "--no-session-persistence")...)
 	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), env...)
 	removeCLIProjectDir(t, cmd.Dir)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
