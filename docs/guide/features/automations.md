@@ -34,6 +34,12 @@ You can let one automation apply one kind of write without asking, with that too
 
 The Save sheet then lists each tool with a "Keep auto for ..." box, unchecked. Tools marked **Always asks** never go automatic.
 
+### Other people's text is data
+
+When a recipe passes mail, messages or tickets to `llm()` as `input`, Watchtower marks that text as written by other people, and the model is told never to follow instructions inside it. Pass such text as `input`, not inside the prompt itself, so it gets this marking.
+
+The marking lowers the risk but does not remove it. Suppose such a recipe also has auto on, or paused, for a tool that writes outside Watchtower, such as sending a Slack message or commenting on a Jira issue. The confirmation sheet then shows a warning: text the model writes from other people's messages could go out without asking you.
+
 ## Using it
 
 ### Make one

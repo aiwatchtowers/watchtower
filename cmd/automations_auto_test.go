@@ -270,6 +270,58 @@ func TestAutomationsCLI_ShowAutoTools(t *testing.T) {
 	assert.Empty(t, automationAutoTools(tools.New(c.d), broken), "a parse-error row admits nothing")
 }
 
+// llmSendRecipe is defaultGrantRecipe plus llm:light and slack:write@*
+// (jira:read@* already brings data in).
+func llmSendRecipe(g grantRecipe) string {
+	return strings.Replace(g.text(), "  - ideas:write\n", "  - ideas:write\n  - llm:light\n  - slack:write@*\n", 1)
+}
+
+// llmAutoWritesOf reads show --json's llm_auto_writes.
+func llmAutoWritesOf(t *testing.T, id int64) []any {
+	t.Helper()
+	got, ok := runAutomationsJSON(t, "show", idArg(id))["llm_auto_writes"].([]any)
+	require.True(t, ok, "llm_auto_writes is an array, never null")
+	return got
+}
+
+// show --json's llm_auto_writes names the External tools with an auto grant
+// (paused ones too) when the recipe feeds its sources to llm() (#559): the
+// confirmation sheet warns about them.
+func TestAutomationsCLI_ShowLLMAutoWrites(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "llmsend", llmSendRecipe(defaultGrantRecipe()))
+	for _, tool := range []string{"send_slack_message", "create_idea"} {
+		out, err := runAutomations(t, "auto", idArg(a.ID), tool, "on", "--hash", a.ApprovalHash)
+		require.NoError(t, err, out)
+	}
+	assert.Equal(t, []any{"send_slack_message"}, llmAutoWritesOf(t, a.ID), "the local create_idea is not External")
+
+	edited := defaultGrantRecipe()
+	edited.script = "return 2"
+	writeRecipe(t, c.personal, "llmsend", llmSendRecipe(edited))
+	out, err := runAutomations(t, "rescan")
+	require.NoError(t, err, out)
+	assert.Equal(t, map[string]bool{"send_slack_message": false, "create_idea": false},
+		grantsOf(t, runAutomationsJSON(t, "show", idArg(a.ID))), "the edit paused both grants")
+	assert.Equal(t, []any{"send_slack_message"}, llmAutoWritesOf(t, a.ID), "a paused grant still warns")
+}
+
+// Without an llm: entry, or without an External grant, nothing is listed.
+func TestAutomationsCLI_ShowLLMAutoWritesNeedsLLMAndExternalGrant(t *testing.T) {
+	c := newAutoCLI(t)
+	noLLM := c.confirmedRecipe(t, "nollm",
+		strings.Replace(defaultGrantRecipe().text(), "  - ideas:write\n", "  - ideas:write\n  - slack:write@*\n", 1))
+	out, err := runAutomations(t, "auto", idArg(noLLM.ID), "send_slack_message", "on", "--hash", noLLM.ApprovalHash)
+	require.NoError(t, err, out)
+	assert.Empty(t, llmAutoWritesOf(t, noLLM.ID), "no llm: entry")
+
+	noGrant := c.confirmedRecipe(t, "nogrant", llmSendRecipe(defaultGrantRecipe()))
+	assert.Empty(t, llmAutoWritesOf(t, noGrant.ID), "no grant")
+
+	broken := c.indexRecipe(t, "broken", "broken")
+	assert.Empty(t, automationLLMAutoWrites(tools.New(c.d), broken, nil), "a parse-error row lists nothing")
+}
+
 // An AlwaysAsk write the manifest admits is listed with always_asks, so the
 // form shows it as "Always asks" instead of a toggle the CLI refuses (D14).
 // No AlwaysAsk tool is on the automation surface today, so a stub stands in.

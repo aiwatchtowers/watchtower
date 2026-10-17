@@ -323,6 +323,10 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
     package let changedBy: String
     package let changedAt: Date?
     package let autoTools: [AutomationAutoTool]
+    /// External tools with an auto grant (active or paused) of a recipe that
+    /// feeds its sources to `llm()` (`llm_auto_writes`, #559): the
+    /// confirmation sheet warns about them. `[]` from an older CLI.
+    package let llmAutoWrites: [String]
 
     enum CodingKeys: String, CodingKey {
         case id, slug, scope, path, name, description, script, permissions, outputs, concurrency, enabled
@@ -333,6 +337,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         case needsConfirmation = "needs_confirmation", parseError = "parse_error", contentHash = "content_hash"
         case approvalHash = "approval_hash", confirmedHash = "confirmed_hash", changesKnown = "changes_known"
         case changedBy = "changed_by", changedAt = "changed_at", autoTools = "auto_tools"
+        case llmAutoWrites = "llm_auto_writes"
     }
 
     package init(from decoder: Decoder) throws {
@@ -367,6 +372,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
         changedBy = try c.decodeIfPresent(String.self, forKey: .changedBy) ?? ""
         autoTools = try c.decodeIfPresent([AutomationAutoTool].self, forKey: .autoTools) ?? []
+        llmAutoWrites = try c.decodeIfPresent([String].self, forKey: .llmAutoWrites) ?? []
         if let text = try c.decodeIfPresent(String.self, forKey: .changedAt) {
             guard let date = AutomationDates.parse(text) else {
                 throw DecodingError.dataCorruptedError(forKey: .changedAt, in: c,

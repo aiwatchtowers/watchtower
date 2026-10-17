@@ -268,6 +268,10 @@ type automationJSON struct {
 	// AutoTools are the write tools the manifest admits, for the edit form's
 	// Auto toggles (P3); never null, empty for a recipe that does not parse.
 	AutoTools []automationAutoToolJSON `json:"auto_tools"`
+	// LLMAutoWrites are the External tools with an auto grant, active or
+	// paused, when the recipe feeds its sources to llm() — the confirmation
+	// sheet's warning (#559); never null.
+	LLMAutoWrites []string `json:"llm_auto_writes"`
 	// The confirmation sheet's Changed block (P3, spec §12.2, D26): see
 	// automationChanges and automationAuthor.
 	Changes      []automationChangeJSON `json:"changes"`
@@ -309,6 +313,27 @@ func automationAutoTools(reg *tools.Registry, a *db.Automation) []automationAuto
 	return out
 }
 
+// automationLLMAutoWrites lists, sorted, the External tools of reg holding an
+// auto grant of a (active or paused: a paused one comes back with the exact
+// granted text or one click) when a's manifest feeds the owner's sources to
+// llm() (Manifest.FeedsSourcesToLLM): model text written over other people's
+// mail, messages or tickets may then reach that tool without a card. [] when
+// a does not parse or nothing matches.
+func automationLLMAutoWrites(reg *tools.Registry, a *db.Automation, grants []db.AutomationToolGrant) []string {
+	out := []string{}
+	m, err := automationManifest(a)
+	if err != nil || !m.FeedsSourcesToLLM() {
+		return out
+	}
+	for _, g := range grants {
+		if t, ok := reg.Get(g.Tool); ok && t.External && !slices.Contains(out, g.Tool) {
+			out = append(out, g.Tool)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // changedByAssistant is changed_by when an applied save_automation wrote the
 // recipe's current approval hash.
 const changedByAssistant = "assistant"
@@ -332,7 +357,7 @@ func newAutomationJSON(database *db.DB, a *db.Automation, grants []db.Automation
 		Enabled: a.Enabled, Runnable: a.Runnable(), NeedsConfirmation: automationNeedsConfirmation(a),
 		ParseError: a.ParseError, ContentHash: a.ContentHash, ApprovalHash: a.ApprovalHash,
 		ConfirmedHash: a.ConfirmedHash, Widening: []string{}, Grants: newAutomationGrantsJSON(grants),
-		AutoTools: []automationAutoToolJSON{}, Changes: []automationChangeJSON{},
+		AutoTools: []automationAutoToolJSON{}, Changes: []automationChangeJSON{}, LLMAutoWrites: []string{},
 	}
 	if j.ChangedBy, j.ChangedAt, err = automationAuthor(database, a); err != nil {
 		return automationJSON{}, err
@@ -446,7 +471,9 @@ func runAutomationsShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	j.AutoTools = automationAutoTools(buildAutomationRegistry(cfg, database), a)
+	reg := buildAutomationRegistry(cfg, database)
+	j.AutoTools = automationAutoTools(reg, a)
+	j.LLMAutoWrites = automationLLMAutoWrites(reg, a, grants)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, j)

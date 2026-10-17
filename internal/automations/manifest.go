@@ -308,6 +308,22 @@ func (m *Manifest) Normalized() []string {
 	return out
 }
 
+// FeedsSourcesToLLM reports whether the recipe may pass data from the
+// owner's sources to llm() or agent(): it has an llm: entry and an entry
+// that brings data in (a read capability, a tool:, mcp: or shell: entry).
+// The confirmation sheet's warning about auto grants on External writes
+// uses it (#559).
+func (m *Manifest) FeedsSourcesToLLM() bool {
+	hasLLM := slices.ContainsFunc(m.entries, func(p Permission) bool { return p.Capability == "llm" })
+	return hasLLM && slices.ContainsFunc(m.entries, func(p Permission) bool {
+		switch p.Capability {
+		case kindTool, kindMCP, kindShell:
+			return true
+		}
+		return p.Verb == "read"
+	})
+}
+
 // Outputs returns the declared output kinds, sorted and deduplicated.
 func (m *Manifest) Outputs() []string { return slices.Clone(m.outputs) }
 

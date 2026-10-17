@@ -130,6 +130,7 @@ final class AutomationsCLITests: XCTestCase {
         XCTAssertEqual(detail.changedAt, AutomationDates.parse("2026-10-15T08:30:00Z"))
         XCTAssertEqual(detail.projectID, 3)
         XCTAssertEqual(detail.autoTools, [], "an older CLI without auto_tools decodes as []")
+        XCTAssertEqual(detail.llmAutoWrites, [], "an older CLI without llm_auto_writes decodes as []")
     }
 
     func testDecodesShowAutoTools() async throws {
@@ -139,6 +140,13 @@ final class AutomationsCLITests: XCTestCase {
         let detail = try await cli(show).0.show(2)
         XCTAssertEqual(detail.autoTools, [AutomationAutoTool(tool: "create_idea", alwaysAsks: false),
                                           AutomationAutoTool(tool: "bulk_dismiss", alwaysAsks: true)])
+    }
+
+    func testDecodesShowLLMAutoWrites() async throws {
+        let show = #"{"id":2,"slug":"s","scope":"personal","path":"/p","name":"N","enabled":true,"runnable":true,"#
+            + #""needs_confirmation":true,"llm_auto_writes":["send_slack_message"]}"#
+        let detail = try await cli(show).0.show(2)
+        XCTAssertEqual(detail.llmAutoWrites, ["send_slack_message"])
     }
 
     func testIgnoresUnknownKeys() async throws {
