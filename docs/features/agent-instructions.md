@@ -51,10 +51,10 @@ A failure with `--json` prints `{"ok":false,"error":…}` and exits non-zero.
 
 `phaseInstructionSuggestions` runs once per calendar day (stamp `<workspace>/last_instruction_suggestions.txt`, written after every run, a failed one included, so a failure is retried next day and clears nothing). `planusage.NearLimit` skips the run; the model call runs outside any write transaction. The generator is stdin-only (owner text is never on argv).
 
-1. **Input:** the owner entries (`KindOwner` only: no ask answers, briefs or Watchtower lines) of every workbench terminal session of the last 14 days, both agents, read through `sessionfeed` (`NewFeedReader`). Long entries are truncated and pasted blocks skipped.
+1. **Input:** the owner entries (`KindOwner` only: no ask answers, briefs or Watchtower lines) of every workbench terminal session of the last 14 days, both agents, read through `sessionfeed` (`NewFeedReader`). Long entries are truncated, pasted blocks skipped, and the app-typed start prompts (`Work on target #…` / `Work on group #…`, with the phone's `Plan first:` line after one) dropped.
 2. **Model:** prompt id `instructions.suggest`, light tier (`TierLight`), runs on the claude and codex providers. It gets the owner lines grouped by session, the four current texts and the open and dismissed suggestions, and returns standing directions, each with `field` and session ids.
 3. **Validation in Go:** session ids must exist in the input; distinct sessions are recomputed and must be at least 3 (`minSuggestSessions`); the scope is the one workbench when all sessions belong to it, else global; lines over 200 runes are dropped.
-4. **Upsert** by `Fingerprint` (normalised text): new -> `open`; open -> text, field, scope, counts and `last_seen_at` refreshed; `added` and `dismissed` untouched.
+4. **Upsert** by `Fingerprint` (normalised text): new -> `open`; open -> text, field, scope, counts and `last_seen_at` refreshed; `added` and `dismissed` untouched, so that suggestion (that fingerprint) never comes back. A reworded repeat has a new fingerprint and is held back only by the prompt, which sees the dismissed suggestions.
 5. **Caps:** at most 5 open per field and scope are shown; the rest stay in the table.
 
 ## Codex reader — `internal/sessionfeed/codex.go`

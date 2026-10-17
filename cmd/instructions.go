@@ -255,7 +255,7 @@ func runInstructionsPreview(_ *cobra.Command, d *db.DB) (any, error) {
 		return nil, err
 	}
 	return instructionsPreviewJSON{OK: true, BriefSlot: instructions.BriefSlot(texts),
-		Procedure: strings.ReplaceAll(instructions.Procedure(texts, 0), "#0", "#N")}, nil
+		Procedure: instructions.ProcedureFor(texts, "N")}, nil
 }
 
 func runInstructionsSuggestion(d *db.DB, arg string, add bool) (any, error) {
@@ -301,8 +301,9 @@ func addInstructionSuggestion(d *db.DB, s db.InstructionSuggestion, now time.Tim
 		existing = cur.Procedure
 	}
 	body, err := instructions.AppendLine(strings.TrimSpace(existing), strings.TrimSpace(s.Text))
-	if err != nil {
-		return fmt.Errorf("%s: %w", instructionsFieldLabel(s.Field), err)
+	if err != nil { // AppendLine fails only over the limit
+		return fmt.Errorf("%s: adding this line would go over the %d-character limit — shorten the text first",
+			instructionsFieldLabel(s.Field), instructions.MaxRunes)
 	}
 	return d.AddInstructionSuggestion(s.ID, body, now)
 }

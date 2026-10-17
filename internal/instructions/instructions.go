@@ -4,6 +4,7 @@ package instructions
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -80,11 +81,17 @@ func BriefSlot(t Texts) string {
 // Procedure renders the target procedure for target targetID; "" when both
 // procedure texts are empty.
 func Procedure(t Texts, targetID int64) string {
+	return ProcedureFor(t, strconv.FormatInt(targetID, 10))
+}
+
+// ProcedureFor renders the target procedure with idLabel after the "#" of its
+// header (a target id, or "N" in the preview); "" when both texts are empty.
+func ProcedureFor(t Texts, idLabel string) string {
 	g, w := strings.TrimSpace(t.Global.Procedure), strings.TrimSpace(t.Workbench.Procedure)
 	if g == "" && w == "" {
 		return ""
 	}
-	parts := []string{fmt.Sprintf("%s%d:", procedureHead, targetID)}
+	parts := []string{procedureHead + idLabel + ":"}
 	if g != "" {
 		parts = append(parts, g)
 	}

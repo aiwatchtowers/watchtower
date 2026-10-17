@@ -135,7 +135,7 @@ func TestInstructionsSuggestionAdd_OverLimitKeepsOpen(t *testing.T) {
 	require.Error(t, err)
 	m := decodeInstructions(t, out)
 	assert.Equal(t, false, m["ok"])
-	assert.Contains(t, m["error"], "session instructions")
+	assert.Equal(t, "session instructions: adding this line would go over the 1000-character limit — shorten the text first", m["error"])
 	got, _ := d.GetInstructionSuggestion(s.ID)
 	assert.Equal(t, "open", got.Status)
 	g, _ := d.GetOwnerInstructions()
@@ -164,7 +164,7 @@ func TestInstructionsSuggestion_CapsFivePerScope(t *testing.T) {
 func TestInstructionsPreview_MatchesBriefSlot(t *testing.T) {
 	d, pid, _ := methodologyWorkbench(t)
 	require.NoError(t, d.SetOwnerInstruction(db.InstructionSession, "Be brief."))
-	require.NoError(t, d.SetWorkbenchInstruction(pid, db.InstructionProcedure, "Add a test."))
+	require.NoError(t, d.SetWorkbenchInstruction(pid, db.InstructionProcedure, "Add a test. Never touch issue #0."))
 	id := strconv.FormatInt(pid, 10)
 
 	out, err := runInstructions(t, "", "preview", "--json", "--workbench", id)
@@ -173,6 +173,7 @@ func TestInstructionsPreview_MatchesBriefSlot(t *testing.T) {
 	texts, err := instructions.Load(d, pid)
 	require.NoError(t, err)
 	assert.Equal(t, instructions.BriefSlot(texts), m["brief_slot"])
-	assert.Equal(t, strings.ReplaceAll(instructions.Procedure(texts, 0), "#0", "#N"), m["procedure"])
-	assert.Contains(t, m["procedure"], "#N")
+	assert.Equal(t, instructions.ProcedureFor(texts, "N"), m["procedure"])
+	assert.Contains(t, m["procedure"], "follow it for #N:")
+	assert.Contains(t, m["procedure"], "Never touch issue #0.", "owner text is not rewritten")
 }

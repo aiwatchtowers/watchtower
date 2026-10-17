@@ -19,7 +19,7 @@ The texts are stored in Watchtower, never in your folder, and are not part of th
 
 ### Suggestions
 
-Once a day Watchtower reads what you typed in your recent sessions, from both agents. When you gave the same standing direction in at least three sessions of the last 14 days and your texts don't hold it yet, it offers it as a suggestion. Nothing changes until you press **Add**, and a dismissed suggestion never comes back.
+Once a day Watchtower reads what you typed in your recent sessions, from both agents. When you gave the same standing direction in at least three sessions of the last 14 days and your texts don't hold it yet, it offers it as a suggestion. Nothing changes until you press **Add**, and once you dismiss a suggestion, that suggestion never comes back.
 
 ## Using it
 
@@ -32,7 +32,7 @@ Once a day Watchtower reads what you typed in your recent sessions, from both ag
 ## When it's empty or wrong
 
 - **A new session ignores a change.** The session began before you saved. Start a new one.
-- **Add says to make room.** The field would pass 1,000 characters. Shorten the text, then press **Add** again.
+- **Add says "adding this line would go over the 1000-character limit — shorten the text first".** The field plus the new line would pass 1,000 characters. Shorten the field's text, press **Save**, then press **Add** again.
 - **No suggestions.** The direction has to appear in three sessions within 14 days, and the daemon must be running. The check is skipped when your Claude plan limit is close.
 - **A suggestion for one workbench.** When all its sessions were in one workbench, **Add** writes that workbench's text.
 
