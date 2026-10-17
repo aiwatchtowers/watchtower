@@ -126,3 +126,107 @@ func TestAutomationEventSources_MailReads(t *testing.T) {
 		t.Error("unknown provider: want an error")
 	}
 }
+
+func TestAutomationEventSources_JiraReads(t *testing.T) {
+	d := openTestDB(t)
+	acct, err := d.CreateJiraAccount(JiraAccount{CloudID: "c1", SiteURL: "https://acme.example.com", SiteName: "acme", Label: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := func(key, status string, deleted bool) JiraIssue {
+		return JiraIssue{AccountID: acct, Key: key, ProjectKey: "PAY", Summary: "s", Status: status,
+			StatusCategory: "new", AssigneeAccountID: "A1", Priority: "High",
+			CreatedAt: "2026-10-01T00:00:00Z", UpdatedAt: "2026-10-02T00:00:00Z", SyncedAt: "2026-10-02T00:00:00Z", IsDeleted: deleted}
+	}
+	for _, i := range []JiraIssue{issue("PAY-1", "Open", false), issue("PAY-2", "Done", true)} {
+		if err := d.UpsertJiraIssue(i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.UpsertJiraComments([]JiraComment{
+		{AccountID: acct, IssueKey: "PAY-1", ID: "10"}, {AccountID: acct, IssueKey: "PAY-1", ID: "11"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	marks, err := d.JiraIssueMarks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := JiraIssueMark{Project: "PAY", Status: "Open", Assignee: "A1", Priority: "High", UpdatedAt: "2026-10-02T00:00:00Z", Comments: 2}
+	if len(marks) != 1 || marks[JiraIssueRef{AccountID: acct, Key: "PAY-1"}] != want {
+		t.Errorf("marks = %+v, want only PAY-1 = %+v (deleted issues left out)", marks, want)
+	}
+
+	if label, err := d.JiraEventLabel(acct); err != nil || label != "work" {
+		t.Errorf("label = %q, %v", label, err)
+	}
+	if _, err := d.Exec(`UPDATE jira_accounts SET label = '' WHERE id = ?`, acct); err != nil {
+		t.Fatal(err)
+	}
+	if label, err := d.JiraEventLabel(acct); err != nil || label != "acme" {
+		t.Errorf("fallback label = %q, %v", label, err)
+	}
+	if _, err := d.JiraEventLabel(99); err == nil {
+		t.Error("missing account: want an error")
+	}
+}
+
+func TestAutomationEventSources_CalendarReads(t *testing.T) {
+	d := openTestDB(t)
+	g, err := d.CreateGoogleAccount(GoogleAccount{Email: "owner@example.com", Label: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dav, err := d.CreateCalendarAccount(CalendarAccount{Provider: "caldav", URL: "https://dav.example.com", Username: "owner", Label: "home"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	davCal := CalendarAccountCalendarID("caldav", dav)
+	for acct, id := range map[int64]string{g: "primary@example.com", 0: davCal} {
+		if err := d.UpsertCalendar(acct, CalendarCalendar{ID: id, Name: "n", IsSelected: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.UpsertCalendar(0, CalendarCalendar{ID: "detached@example.com", Name: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	ev := CalendarEvent{ID: "e1", CalendarID: "primary@example.com", StartTime: "2026-10-20T09:00:00Z",
+		EndTime: "2026-10-20T10:00:00Z", EventStatus: "confirmed", UpdatedAt: "2026-10-01T00:00:00Z"}
+	if err := d.UpsertCalendarEvent(ev); err != nil {
+		t.Fatal(err)
+	}
+
+	marks, err := d.CalendarEventMarks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := CalendarEventMark{CalendarID: "primary@example.com", Status: "confirmed", UpdatedAt: "2026-10-01T00:00:00Z",
+		Start: "2026-10-20T09:00:00Z", End: "2026-10-20T10:00:00Z"}
+	if len(marks) != 1 || marks["e1"] != want {
+		t.Errorf("marks = %+v, want e1 = %+v", marks, want)
+	}
+
+	cases := []struct {
+		calendar, want string
+		ok             bool
+	}{
+		{"primary@example.com", "work", true},
+		{davCal, "home", true},
+		{"detached@example.com", "", false},
+		{"missing@example.com", "", false},
+		{"ics:99", "", false},
+	}
+	for _, c := range cases {
+		got, ok, err := d.CalendarEventLabel(c.calendar)
+		if err != nil || ok != c.ok || got != c.want {
+			t.Errorf("%s: label = %q, %v, %v; want %q, %v", c.calendar, got, ok, err, c.want, c.ok)
+		}
+	}
+	if _, err := d.Exec(`UPDATE google_accounts SET label = '' WHERE id = ?`, g); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := d.CalendarEventLabel("primary@example.com"); err != nil || !ok || got != "owner@example.com" {
+		t.Errorf("google fallback label = %q, %v, %v", got, ok, err)
+	}
+}

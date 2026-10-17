@@ -69,8 +69,8 @@ var contentFreeNames = []string{
 	"field", "event_id", "change", "space", "page_id", "count",
 }
 
-// contentMarker is planted in every source fixture's text, subject, summary
-// and title; no serialised event may contain it.
+// contentMarker is planted in every source fixture's text, subject, summary,
+// title, description and location; no serialised event may contain it.
 const contentMarker = "CONTENT-MARKER-acme"
 
 // noContentCases lists each source's emitted events, built from fixtures
@@ -84,6 +84,8 @@ var noContentCases = []struct {
 	}},
 	{"slack", slackContentEvents},
 	{"mail", mailContentEvents},
+	{"jira", jiraContentEvents},
+	{"calendar", calendarContentEvents},
 }
 
 func TestBus_EventsCarryNoContent(t *testing.T) {
