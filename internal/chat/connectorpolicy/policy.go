@@ -204,7 +204,7 @@ func publishSources(in fields) ([]string, error) {
 	}
 	resolve := func(p string) string {
 		if root != "" && !filepath.IsAbs(p) {
-			return filepath.Join(root, p)
+			return joinRaw(root, p)
 		}
 		return p
 	}
@@ -308,12 +308,6 @@ func (p Policy) decideArtifactRead(in fields) Decision {
 	if hasPath {
 		paths = append(paths, path)
 	}
-	for _, rel := range paths {
-		if filepath.IsAbs(rel) || hasDotDot(rel) {
-			return deny("Artifact read path %q must stay inside %s", rel, p.PublishDir)
-		}
-	}
-
 	outDir, hasOutDir, err := in.str("out_dir")
 	if err != nil {
 		return deny("Artifact read: %v", err)
@@ -323,6 +317,11 @@ func (p Policy) decideArtifactRead(in fields) Decision {
 	}
 	if p.checkPath(dirProbe(outDir)) != nil {
 		return deny("Artifact may only save inside %s", p.PublishDir)
+	}
+	for _, rel := range paths {
+		if filepath.IsAbs(rel) || p.checkPath(joinRaw(outDir, rel)) != nil {
+			return deny("Artifact read path %q must stay inside %s", rel, p.PublishDir)
+		}
 	}
 	if hasOutDir {
 		return Decision{Verdict: Allow, Reason: "read into the publish dir"}
@@ -340,7 +339,13 @@ func dirProbe(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	return filepath.Join(dir, "probe")
+	return joinRaw(dir, "probe")
+}
+
+// joinRaw joins without filepath.Join's clean, so a ".." in either part still
+// reaches checkPath's refusal.
+func joinRaw(dir, rel string) string {
+	return strings.TrimSuffix(dir, "/") + "/" + rel
 }
 
 // checkPath refuses a ".." component before PathCheck sees the path: a
@@ -545,8 +550,7 @@ func walkDocsValue(v any) (string, bool) {
 }
 
 func docsObjectRisk(obj map[string]any) (string, bool) {
-	var mention, refMention bool
-	userKeys := 0
+	mention := false
 	for k, val := range obj {
 		s, isString := val.(string)
 		switch key := strings.ToLower(k); {
@@ -560,15 +564,43 @@ func docsObjectRisk(obj map[string]any) (string, bool) {
 			return "Claude Docs call sends a payload the gate cannot inspect", true
 		case key == "type" && strings.EqualFold(s, "mention"):
 			mention = true
-		case key == "user":
-			userKeys++
-		case key == "ref":
-			refMention = isString
 		}
 	}
-	ownerMention := userKeys == 1 && obj["user"] == "me"
-	if mention && !ownerMention && (userKeys > 0 || !refMention) {
+	if mention && !harmlessMention(obj) {
 		return "Claude Docs call mentions someone, which can email them", true
 	}
 	return "", false
+}
+
+// harmlessMention passes only a mention of the owner ("user": "me", the one
+// user key anywhere in it) or of a tab or doc (a "ref" and no user key).
+func harmlessMention(obj map[string]any) bool {
+	switch countUserKeys(obj) {
+	case 0:
+		_, isRef := obj["ref"].(string)
+		return isRef
+	case 1:
+		return obj["user"] == "me"
+	default:
+		return false
+	}
+}
+
+// countUserKeys counts keys spelled like "user" in any case, at any depth.
+func countUserKeys(v any) int {
+	n := 0
+	switch t := v.(type) {
+	case map[string]any:
+		for k, child := range t {
+			if strings.EqualFold(k, "user") {
+				n++
+			}
+			n += countUserKeys(child)
+		}
+	case []any:
+		for _, child := range t {
+			n += countUserKeys(child)
+		}
+	}
+	return n
 }

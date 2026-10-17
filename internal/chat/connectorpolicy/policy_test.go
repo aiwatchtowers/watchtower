@@ -33,8 +33,12 @@ func lexicalCheck(p string) error {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(testWorkDir, p)
 	}
-	if !strings.HasPrefix(filepath.Clean(p), testPublishDir+"/") {
+	p = filepath.Clean(p)
+	if !strings.HasPrefix(p, testPublishDir+"/") {
 		return errors.New("outside")
+	}
+	if strings.HasPrefix(p, testPublishDir+"/linked/") {
+		return errors.New("symlink") // stands in for a link planted inside the dir
 	}
 	return nil
 }
@@ -117,6 +121,10 @@ var decideCases = []decideCase{
 		`{"file_path":"/work/publish/7/a.html","root":"/work/publish/7","files":{"s.css":"s.css"}}`), want: Allow},
 	{name: "artifact root escape", call: builtin("Artifact",
 		`{"file_path":"/work/publish/7/a.html","root":"/work/publish/7","files":{"s.css":"../../../x.css"}}`), want: Deny},
+	{name: "artifact root climbs", call: builtin("Artifact",
+		`{"file_path":"/work/publish/7/a.html","root":"/work/publish/7/link/..","files":{"s.css":"s.css"}}`), want: Deny},
+	{name: "artifact root source climbs", call: builtin("Artifact",
+		`{"file_path":"/work/publish/7/a.html","root":"/work/publish/7","files":{"s.css":"link/../s.css"}}`), want: Deny},
 	{name: "artifact root outside", call: builtin("Artifact",
 		`{"file_path":"/work/publish/7/a.html","root":"/work","files":{"s.css":"publish/7/s.css"}}`), want: Deny},
 	{name: "artifact aliased file_path", call: builtin("Artifact", `{"file_path":"/tmp/a.html","FILE_PATH":"/work/publish/7/a.html"}`), want: Deny},
@@ -143,6 +151,10 @@ var decideCases = []decideCase{
 	{name: "artifact read out_dir parent", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","out_dir":"/work/publish"}`), want: Deny},
 	{name: "artifact read aliased out_dir", call: builtin("Artifact",
 		`{"action":"read","out_dir":"/Users/someone/Downloads","Out_Dir":"/work/publish/7"}`), want: Deny},
+	{name: "artifact read out_dir climbs", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","out_dir":"/work/publish/7/link/.."}`), want: Deny},
+	{name: "artifact read path through a link", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","path":"linked/a.js"}`), want: Deny},
+	{name: "artifact read nested path", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","paths":["a.js","js/b.js"]}`), want: Allow,
+		updated: `{"action":"read","out_dir":"/work/publish/7","paths":["a.js","js/b.js"],"url":"` + foreignURL + `"}`},
 	{name: "artifact read path climbs", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","path":"../../x"}`), want: Deny},
 	{name: "artifact read paths absolute", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","paths":["a.js","/etc/x"]}`), want: Deny},
 	{name: "artifact read out_dir outside", call: builtin("Artifact", `{"action":"read","url":"`+foreignURL+`","out_dir":"/Users/someone/Downloads"}`), want: Deny},
@@ -187,6 +199,10 @@ var decideCases = []decideCase{
 		`{"payload":{"value":{"blocks":{"m":{"type":"mention","user":"me","User":"someone@example.com"}}}}}`), want: Ask},
 	{name: "docs mention of a tab", call: docs("update",
 		`{"payload":{"ops":[{"op":"insert","with":{"blocks":{"t":{"type":"mention","ref":"file/f2"}}}}]}}`), want: Allow},
+	{name: "docs mention nested user with a ref", call: docs("create",
+		`{"payload":{"value":{"blocks":{"m":{"type":"mention","attrs":{"user":"u-other"},"Ref":"x"}}}}}`), want: Ask},
+	{name: "docs mention aliased ref", call: docs("create",
+		`{"payload":{"value":{"blocks":{"m":{"type":"mention","Ref":"file/f2"}}}}}`), want: Ask},
 	{name: "docs string payload", call: docs("update", `{"ref":{"object":"node","id":"n1"},"payload":"{\"op\":\"remove\"}"}`), want: Ask},
 	{name: "docs null input", call: docs("update", `null`), want: Ask},
 	{name: "docs update patch remove", call: docs("update",
