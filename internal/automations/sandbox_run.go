@@ -269,6 +269,11 @@ func (s *Sandbox) Run() (any, error) {
 	s.mu.Unlock()
 	runEvents.Add(1)
 	defer runEvents.Add(1)
+	// The memory baseline is read here, before the script can run: read in
+	// the watchdog goroutine, it raced the script's first allocations (a
+	// busy machine schedules the script first) and could take them in.
+	heap := heapWatch{events: runEvents.Load()}
+	_, heap.base = heapReadings()
 	done, watched, heapWatched := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watched)
@@ -276,7 +281,7 @@ func (s *Sandbox) Run() (any, error) {
 	}()
 	go func() {
 		defer close(heapWatched)
-		s.watchHeap(done)
+		s.watchHeap(done, heap)
 	}()
 	defer func() {
 		close(done)
@@ -417,15 +422,21 @@ func heapReadings() (live, objects uint64) {
 	return sample[0].Value.Uint64(), sample[1].Value.Uint64()
 }
 
+// heapWatch is a run's starting point for watchHeap: the baseline (the
+// heap's objects, garbage included, erring towards the run: the live
+// reading may predate what a sibling just allocated) and the run-events
+// count, both read before the script starts.
+type heapWatch struct {
+	base   uint64
+	events int64
+}
+
 // watchHeap stops the run (uncatchably, like an interrupt: the memory must
 // be released) on the first sample whose live heap passed the baseline plus
 // RunHeapBudget (see RunHeapBudget for when the baseline moves).
-func (s *Sandbox) watchHeap(done <-chan struct{}) {
+func (s *Sandbox) watchHeap(done <-chan struct{}, start heapWatch) {
 	m := s.env.Meter
-	// The baseline is the heap's objects (garbage included, erring towards
-	// the run): the live reading may predate what a sibling just allocated.
-	_, base := heapReadings()
-	events, paused := runEvents.Load(), false
+	base, events, paused := start.base, start.events, false
 	ceiling := base + RunHeapBudget // the baseline never rises above this
 	var nextGC uint64               // objects reading that may force the next confirming GC
 	tick := time.NewTicker(heapPollInterval)

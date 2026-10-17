@@ -478,6 +478,11 @@ func TestSandbox_DeletedExecIsATypeError(t *testing.T) {
 func TestSandbox_MemoryStopThenStuckIsAbandoned(t *testing.T) {
 	waitNoAbandonedRuns(t)
 	lowHeapBudget(t, 32<<20)
+	// One P: Go runs the newest goroutine (the script) before the watchdog,
+	// so a baseline read in the watchdog goroutine would take in the
+	// script's allocation and never stop the run (the CI failure). Run reads
+	// it before the script starts.
+	t.Cleanup(func(prev int) func() { return func() { runtime.GOMAXPROCS(prev) } }(runtime.GOMAXPROCS(1)))
 	var keep [][]byte
 	stuck := funcModule{name: "stuck", fns: map[string]SDKFunc{
 		"stuck": func(env *Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
