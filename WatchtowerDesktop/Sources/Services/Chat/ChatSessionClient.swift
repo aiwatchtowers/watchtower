@@ -72,6 +72,8 @@ final class ChatSessionClient {
     var continuousLeafID: Int64?
 
     @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
+    /// A running turn's step started waiting on an approval card (`tool_wait`).
+    @ObservationIgnored var onActionAwaited: (() -> Void)?
     /// The process ended (or could not be spawned) — the pool re-admits.
     @ObservationIgnored var onEnded: (() -> Void)?
     @ObservationIgnored private var process: (any ChatSessionProcess)?
@@ -103,6 +105,7 @@ final class ChatSessionClient {
         self.driver = ChatTurnDriver(conversationID: config.conversationID, projectID: config.projectID,
                                      store: store, clock: clock)
         driver.onTurnFinished = { [weak self] turn in self?.turnFinished(turn) }
+        driver.onActionAwaited = { [weak self] _ in self?.onActionAwaited?() }
         if launchImmediately { launch() }
     }
 

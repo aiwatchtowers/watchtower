@@ -289,6 +289,50 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(done)
     }
 
+    /// CHAT-02 / #737: a turn blocked on a connector call surfaces its
+    /// approval card at once — the session subprocess wrote the row, which
+    /// the feed's observation never sees — and the waiting step lives on the
+    /// pool: a view model released mid-wait and rebuilt reads it again.
+    func testWaitingStepSurvivesNavigation() async throws {
+        var vm: ChatViewModel? = try makeViewModel()
+        let convID = try XCTUnwrap(vm?.newConversation())
+        XCTAssertEqual(vm?.send(text: "send it"), true)
+        let fake = try lastFake()
+        // Let the feed's first observation fetch run, so only a refresh can find the row.
+        try await Task.sleep(for: .milliseconds(300))
+        // Synchronous, from another connection: the main actor must not yield
+        // before the row exists, and the observation must not see it.
+        let actionID = try insertConnectorCallSync(DatabasePool(path: dbPath), conversationID: convID, turnID: "turn-1")
+        fake.emit(.toolStart(ChatToolStart(turnID: "turn-1", id: "a", name: "mcp__claude_ai_Gmail__send", argsJSON: "{}")))
+        fake.emit(.toolWait(ChatToolWait(turnID: "turn-1", id: "a", actionID: actionID,
+                                         message: "Waiting for your approval")))
+        let surfaced = await waitForCondition { vm?.actionFeed.cards(forTurn: "turn-1").count == 1 }
+        XCTAssertTrue(surfaced, "the card shows while the turn waits, not at its end")
+        XCTAssertEqual(vm?.isStreaming, true)
+
+        weak var released = vm
+        vm = nil
+        XCTAssertNil(released)
+        let back = try makeViewModel()
+        back.select(conversationID: convID)
+        XCTAssertEqual(back.liveTurn?.steps.first?.state, .waiting(actionID: actionID))
+        XCTAssertEqual(back.liveTurn?.waitingActionIDs, [actionID])
+
+        fake.emit(.toolEnd(ChatToolEnd(turnID: "turn-1", id: "a", ok: false, summary: "stopped", sources: [])))
+        let ended = await waitForCondition { back.liveTurn?.steps.first?.state == .failed }
+        XCTAssertTrue(ended)
+        XCTAssertEqual(back.liveTurn?.waitingActionIDs, [])
+    }
+
+    /// GRDB's synchronous `write` — an async test would otherwise pick the
+    /// async overload and yield before the row exists.
+    private func insertConnectorCallSync(_ pool: DatabasePool, conversationID: Int64, turnID: String) throws -> Int64 {
+        try pool.write { d in
+            try TestDatabase.insertAgentAction(d, tool: "claude_ai_connector_call", conversationID: conversationID,
+                                               turnID: turnID)
+        }
+    }
+
     // MARK: - Pool queue (controller ruling 4)
 
     /// With three turns in flight the fourth conversation's turn is held by

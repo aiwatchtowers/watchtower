@@ -3,8 +3,8 @@ import AppKit
 import WatchtowerCore
 
 /// The centered thread column (spec §3.1, max ~760 pt) on the shared
-/// `ChatFeedView`. Reads `liveTurn` identity only; its text is read by
-/// `LiveAssistantRow` alone.
+/// `ChatFeedView`. Reads `liveTurn` identity and `waitingActionIDs` only;
+/// its text is read by `LiveAssistantRow` alone.
 struct ChatThreadView: View {
     @Bindable var chatVM: ChatViewModel
     @Environment(AppState.self) private var appState

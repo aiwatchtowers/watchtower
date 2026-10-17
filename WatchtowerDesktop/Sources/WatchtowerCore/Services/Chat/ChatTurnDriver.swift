@@ -23,6 +23,11 @@ package final class ChatTurnDriver {
     /// recorded only while the conversation is still in that project.
     @ObservationIgnored package let projectID: Int64?
     @ObservationIgnored package var onTurnFinished: ((LiveTurn) -> Void)?
+    /// A step started waiting on this `agent_actions` row. The session
+    /// subprocess wrote the row, which no app observation sees, so the
+    /// action feeds re-read now — the card the step points at must exist
+    /// while the turn is blocked on it, not at the turn's end.
+    @ObservationIgnored package var onActionAwaited: ((Int64) -> Void)?
     @ObservationIgnored private let store: ChatTurnStore
     @ObservationIgnored private let clock: () -> Date
     @ObservationIgnored private var lastFlush = Date.distantPast
@@ -66,8 +71,7 @@ package final class ChatTurnDriver {
         case let .toolEnd(end):
             stepFinished(end)
         case let .toolWait(wait):
-            // Live only: the agent_actions row is the durable state.
-            running(wait.turnID)?.waitStep(wait, at: clock())
+            stepWaiting(wait)
         case let .usage(usage):
             running(usage.turnID)?.setUsage(usage)
         case let .turnDone(turnID, status, sid):
@@ -138,6 +142,21 @@ package final class ChatTurnDriver {
         turn.finishStep(end, at: now)
         persist(turn) { try store.stepFinished(messageID: turn.messageID, end: end, at: now) }
         flush(turn, status: "partial", errorCode: nil)
+    }
+
+    /// Waiting is live only; a wait whose `tool_start` never arrived first
+    /// persists a nameless start, so the call stays a visible step even if
+    /// the turn ends before its `tool_end` (CHAT-02).
+    private func stepWaiting(_ wait: ChatToolWait) {
+        guard let turn = running(wait.turnID) else { return }
+        if !turn.steps.contains(where: { $0.id == wait.id }) {
+            stepStarted(ChatToolStart(turnID: wait.turnID, id: wait.id, name: "", argsJSON: "{}"))
+        }
+        let awaited = turn.waitingActionIDs
+        turn.waitStep(wait)
+        if !awaited.contains(wait.actionID), turn.waitingActionIDs.contains(wait.actionID) {
+            onActionAwaited?(wait.actionID)
+        }
     }
 
     /// A turn-scoped error for the running turn ends it; a session-level

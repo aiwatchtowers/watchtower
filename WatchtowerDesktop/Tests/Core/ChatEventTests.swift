@@ -64,6 +64,7 @@ final class ChatEventTests: XCTestCase {
                        .turnDone(turnID: "t", status: .interrupted, sessionID: nil),
                        "an unknown status keeps the text as partial, never claims completion")
     }
+
     /// Go's own golden (`internal/chat/testdata/events_v2_tool_wait.jsonl`,
     /// spec §3.1), read in place so a Go shape change breaks this suite too.
     func testChatEventParsesToolWait() throws {

@@ -115,10 +115,19 @@ package final class LiveTurn {
     }
 
     /// Returns the step's position (its persisted `seq`); a repeated
-    /// `tool_start` for the same id reuses its step.
+    /// `tool_start` for the same id reuses its step, naming it if a
+    /// `tool_wait` that came first left it nameless.
     @discardableResult
     package func startStep(_ start: ChatToolStart, at date: Date) -> Int {
-        if let index = steps.firstIndex(where: { $0.id == start.id }) { return index }
+        if let index = steps.firstIndex(where: { $0.id == start.id }) {
+            let step = steps[index]
+            if step.name.isEmpty {
+                steps[index] = ChatStepDisplay(id: step.id, name: start.name, argsJSON: start.argsJSON, state: step.state,
+                                               summary: step.summary, sources: step.sources, startedAt: step.startedAt,
+                                               endedAt: step.endedAt)
+            }
+            return index
+        }
         steps.append(ChatStepDisplay(id: start.id, name: start.name, argsJSON: start.argsJSON, state: .running,
                                      summary: "", sources: [], startedAt: date, endedAt: nil))
         return steps.count - 1
@@ -140,15 +149,10 @@ package final class LiveTurn {
 
     /// `tool_wait`: the step waits for the owner (its message is the step's
     /// note) until its `tool_end`. A wait for a finished step is late and
-    /// never reopens it; one whose `tool_start` never arrived is still a
-    /// visible step (CHAT-02).
-    package func waitStep(_ wait: ChatToolWait, at date: Date) {
-        guard let index = steps.firstIndex(where: { $0.id == wait.id }) else {
-            steps.append(ChatStepDisplay(id: wait.id, name: "", argsJSON: "{}", state: .waiting(actionID: wait.actionID),
-                                         summary: wait.message, sources: [], startedAt: date, endedAt: nil))
-            syncWaitingActionIDs()
-            return
-        }
+    /// never reopens it; the caller starts the step first if its
+    /// `tool_start` never arrived.
+    package func waitStep(_ wait: ChatToolWait) {
+        guard let index = steps.firstIndex(where: { $0.id == wait.id }) else { return }
         switch steps[index].state {
         case .succeeded, .failed: return
         case .running, .waiting: break

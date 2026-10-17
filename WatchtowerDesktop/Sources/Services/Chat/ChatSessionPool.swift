@@ -25,6 +25,8 @@ final class ChatSessionPool {
     @ObservationIgnored private(set) var lastConfig: ChatSessionConfig?
     /// One subscriber: the main `ChatViewModel` (reload, feed refresh, titles).
     @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
+    /// Same subscriber: a turn of that conversation waits on an approval card.
+    @ObservationIgnored var onActionAwaited: ((Int64) -> Void)?
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let processFactory: ProcessFactory
@@ -91,6 +93,7 @@ final class ChatSessionPool {
             self?.onTurnFinished?(id)
             self?.admit()
         }
+        client.onActionAwaited = { [weak self] in self?.onActionAwaited?(conversationID) }
         client.onEnded = { [weak self] in self?.admit() }
         clients[conversationID] = client
         queue.removeAll { $0 == conversationID }

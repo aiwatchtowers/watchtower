@@ -51,7 +51,8 @@ private struct StepRow: View {
         DisclosureGroup(isExpanded: $open) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(step.argsJSON).font(.caption.monospaced()).textSelection(.enabled)
-                if !step.summary.isEmpty && note == nil {
+                // A failed step keeps its full reason here; the label's note is a preview.
+                if !step.summary.isEmpty && step.state.waitingActionID == nil {
                     Text(step.summary).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             }
@@ -70,7 +71,6 @@ private struct StepRow: View {
                         .font(.caption)
                         .foregroundStyle(note.color)
                         .lineLimit(3)
-                        .textSelection(.enabled)
                 }
             }
         }

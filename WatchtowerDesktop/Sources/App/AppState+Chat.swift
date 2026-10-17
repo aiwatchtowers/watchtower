@@ -11,7 +11,10 @@ extension AppState {
     /// The Inbox strip re-reads when a chat turn ends: a connector call it
     /// shows ran inside that turn, and the card's live "the session holds it"
     /// turned false with it — a stale `approved` row would read "not sent".
+    /// It also re-reads when a turn starts waiting on a connector call, so
+    /// the call can be approved from the strip while the chat waits.
     func wireActionStripRefresh(_ cvm: ChatViewModel) {
         cvm.onTurnFinished = { [weak self] _ in self?.actionStripViewModel?.refresh() }
+        cvm.onActionAwaited = { [weak self] _ in self?.actionStripViewModel?.refresh() }
     }
 }
