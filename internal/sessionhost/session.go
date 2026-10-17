@@ -98,7 +98,11 @@ func (s *session) wait() *int {
 	case <-s.readDone:
 	case <-time.After(drainGrace):
 	}
-	_ = s.ptmx.Close() // best effort; the reader ends on its own
+	// Best effort: when a background process still holds the terminal, the
+	// reader is blocked in Read and the close of a non-pollable fd defers
+	// until that Read returns, so Output can still follow Exit. The client
+	// ignores Output after Exit.
+	_ = s.ptmx.Close()
 	ps := s.cmd.ProcessState
 	if ps == nil {
 		return nil

@@ -157,10 +157,11 @@ func (c *client) launch(row int64, script string, env ...string) SessionInfo {
 	if err := json.Unmarshal(c.expect(Launched), &info); err != nil {
 		c.t.Fatal(err)
 	}
-	if info.Pid <= 0 {
+	if info.Pid > 0 {
+		c.t.Cleanup(func() { reap(c.t, info.Pid) })
+	} else {
 		c.t.Fatalf("launched pid = %d", info.Pid)
 	}
-	c.t.Cleanup(func() { reap(c.t, info.Pid) })
 	return info
 }
 
@@ -316,7 +317,7 @@ func TestServer_AttachReplaysModes(t *testing.T) {
 func TestServer_AttachExitedSession(t *testing.T) {
 	path := startServer(t, Options{})
 	c1 := dial(t, path)
-	c1.launch(1, `exit 4`)
+	c1.launch(1, `echo last words; exit 4`)
 	_ = c1.nc.Close()
 	c2 := dial(t, path)
 	deadline := time.Now().Add(ioTimeout)
@@ -333,6 +334,10 @@ func TestServer_AttachExitedSession(t *testing.T) {
 	}
 	if !info.Exited || info.Code == nil || *info.Code != 4 {
 		t.Fatalf("attached = %+v, want exited with code 4", info)
+	}
+	ft, p := c2.read()
+	if ft != Output || !strings.Contains(string(p), "last words") {
+		t.Fatalf("after Attached got %#x %q, want the replay", ft, p)
 	}
 	if p := c2.expect(Exit); string(p) != `{"code":4}` {
 		t.Fatalf("exit payload = %s", p)
@@ -443,5 +448,31 @@ func TestListen_LiveHostReturnsErrHostRunning(t *testing.T) {
 	t.Cleanup(func() { _ = raw.Close() })
 	if _, err := Listen(path2); !errors.Is(err, ErrHostRunning) {
 		t.Fatalf("Listen on a live socket = %v, want ErrHostRunning", err)
+	}
+}
+
+func TestServer_HostedChildKeepsDefaultSighup(t *testing.T) {
+	// The host process catches SIGHUP the way the CLI does; a hosted child
+	// must still die of SIGHUP rather than inherit an ignored disposition.
+	t.Cleanup(DiscardHangup())
+	path := startServer(t, Options{})
+	c := dial(t, path)
+	c.launch(1, `kill -HUP $$; echo survived`)
+	out := ""
+	for {
+		ft, p := c.read()
+		if ft == Exit {
+			if string(p) != `{"code":null}` {
+				t.Fatalf("exit = %s, want killed by a signal", p)
+			}
+			break
+		}
+		if ft != Output {
+			t.Fatalf("got frame %#x", ft)
+		}
+		out += string(p)
+	}
+	if strings.Contains(out, "survived") {
+		t.Fatalf("child survived SIGHUP: %q", out)
 	}
 }

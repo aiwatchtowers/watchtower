@@ -52,7 +52,7 @@ func runSessionHost(cmd *cobra.Command, _ []string) error {
 	if _, err := unix.Setsid(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "session-host: setsid: %v\n", err)
 	}
-	signal.Ignore(syscall.SIGHUP)
+	defer sessionhost.DiscardHangup()()
 
 	l, err := sessionhost.Listen(flagSessionHostSocket)
 	if errors.Is(err, sessionhost.ErrHostRunning) {

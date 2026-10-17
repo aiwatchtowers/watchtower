@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/signal"
 	"slices"
 	"sync"
 	"syscall"
@@ -16,6 +17,17 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// DiscardHangup catches SIGHUP and drops it, so the host survives the hangup
+// of the terminal or session it was started from. It must not ignore SIGHUP
+// instead: an ignored signal stays ignored across exec, so every hosted child
+// would survive the SIGHUP that stops it and the PTY hangup. A caught signal
+// is reset to its default action in an exec'd child. stop undoes it.
+func DiscardHangup() (stop func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	return func() { signal.Stop(ch) }
+}
 
 // ErrHostRunning is returned by Listen when a live host already owns the
 // socket path.
@@ -344,7 +356,9 @@ func (s *Server) watch(sess *session) {
 	sess.mu.Lock()
 	sess.exited = true
 	sess.code = code
-	if sess.conn != nil {
+	// A connection that closed but has not unbound yet counts as unbound,
+	// so the exit is kept for the next attach instead of being lost.
+	if sess.conn != nil && !sess.conn.isClosed() {
 		sess.conn.send(Exit, encode(ExitMsg{Code: code}))
 		delete(s.sessions, sess.key)
 	}
@@ -373,16 +387,17 @@ func (s *Server) attach(c *conn, bound *session, p []byte) *session {
 
 	sess.mu.Lock()
 	c.send(Attached, encode(sess.infoLocked()))
-	if sess.exited {
-		c.send(Exit, encode(ExitMsg{Code: sess.code}))
-		sess.mu.Unlock()
-		return nil
-	}
+	// An exited session replays too, so the owner sees why it ended.
 	replay := append(sess.modes.ReplayPrefix(), sess.ring.Snapshot()...)
 	for len(replay) > 0 {
 		n := min(len(replay), MaxPayload)
 		c.send(Output, replay[:n])
 		replay = replay[n:]
+	}
+	if sess.exited {
+		c.send(Exit, encode(ExitMsg{Code: sess.code}))
+		sess.mu.Unlock()
+		return nil
 	}
 	old := sess.conn
 	sess.conn = c
@@ -507,6 +522,15 @@ func (c *conn) writeLoop() {
 		case <-c.done:
 			return
 		}
+	}
+}
+
+func (c *conn) isClosed() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+		return false
 	}
 }
 
