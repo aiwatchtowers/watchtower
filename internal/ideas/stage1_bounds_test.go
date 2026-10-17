@@ -74,13 +74,13 @@ func TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags(t *testing.T) {
 			messages: []db.GmailExtractMessage{{BodyText: strings.Repeat("y ", 400)}}},
 	}
 
-	full, fullTags := renderEmailBlock(7, threads, 100000, 0)
+	full, fullTags := renderEmailBlock(gmailBox(7), threads, 100000, 0)
 	require.Contains(t, full, "thr-1")
 	require.Contains(t, full, "thr-2")
 	require.Len(t, fullTags, 2)
 
 	firstLineLen := strings.Index(full, "\n") + 1
-	bounded, tags := renderEmailBlock(7, threads, firstLineLen, 0)
+	bounded, tags := renderEmailBlock(gmailBox(7), threads, firstLineLen, 0)
 	assert.Contains(t, bounded, "thr-1")
 	assert.NotContains(t, bounded, "thr-2")
 	assert.LessOrEqual(t, len(bounded), firstLineLen)

@@ -1565,7 +1565,8 @@ CREATE TABLE IF NOT EXISTS email_accounts (
     last_uid       INTEGER NOT NULL DEFAULT 0,    -- sync watermark: highest IMAP UID synced
     uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY; a change means last_uid must reset
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ideas_email_floor REAL NOT NULL DEFAULT 0     -- ideas registry floor: unix seconds of the newest imap_messages.internal_date the email pre-digest mined (see 00135)
 );
 
 CREATE TABLE IF NOT EXISTS imap_messages (
@@ -1936,7 +1937,7 @@ CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
 CREATE TABLE IF NOT EXISTS idea_mentions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner')),
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap')),
     ref         TEXT NOT NULL DEFAULT '',
     quote       TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL DEFAULT '',
@@ -1947,11 +1948,11 @@ CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 
 -- Stage-1 pre-digests for streams that have no existing digest pipeline
--- (Gmail, Jira): a lightweight per-account topic summary the stage-2
+-- (Gmail, IMAP/Outlook mailboxes, Jira): a lightweight per-account topic summary the stage-2
 -- consolidator reads alongside Slack digests and meeting recaps.
 CREATE TABLE IF NOT EXISTS stream_digests (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    source       TEXT NOT NULL CHECK(source IN ('gmail','jira')),
+    source       TEXT NOT NULL CHECK(source IN ('gmail','jira','imap')),  -- 'imap' = an email_accounts mailbox (IMAP or Outlook), see 00135
     account_id   INTEGER NOT NULL,
     scope        TEXT NOT NULL DEFAULT '',
     period_from  TEXT NOT NULL,

@@ -704,6 +704,32 @@ func seedGmailMail(t *testing.T, database *db.DB, acct int64, id, body string, a
 	require.NoError(t, err)
 }
 
+// #615: an IMAP/Outlook chunk mines its mailbox's stream digests like a
+// Gmail chunk — stage 1 only, gated on streams.enabled.
+func TestHistoryBackfill_ImapSourceRunsStage1(t *testing.T) {
+	for _, streams := range []bool{false, true} {
+		d, database, _ := newBackfillDaemon(t)
+		d.config.Streams.Enabled = streams
+		d.config.Ideas.Enabled = true
+		gen := &stageGen{}
+		d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
+		from := time.Now().AddDate(0, 0, -20).Truncate(time.Second)
+		acct, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
+			Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
+		require.NoError(t, err)
+		require.NoError(t, database.SetImapWatermark(acct, 1, 1))
+		at := from.Add(time.Hour).UTC().Format(time.RFC3339)
+		require.NoError(t, database.UpsertImapMessage(db.ImapMessage{AccountID: acct, UID: 1, UIDValidity: 1,
+			Subject: "Subj", BodyText: "we should try X", InternalDate: at}, at))
+
+		complete, err := imapSource{id: acct, d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
+		require.NoError(t, err)
+		assert.True(t, complete)
+		assert.Equal(t, streams, gen.saw("we should try X"), "stage 1 runs only with streams on")
+		assert.Zero(t, gen.stage2, "no consolidator call from the backfill")
+	}
+}
+
 // R17/R28: the Gmail chunk runs only stage 1, gated on streams.enabled; the
 // consolidator is the regular ideas run's job, whatever ideas.enabled says.
 func TestHistoryBackfill_GmailSourceFlags(t *testing.T) {
