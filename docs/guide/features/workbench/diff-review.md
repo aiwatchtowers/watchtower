@@ -20,6 +20,7 @@ The AI overview is a short summary of the round: whether the changes cover the l
 
 - **Deep** makes it by itself when the round opens and whenever **Refresh** finds new changes.
 - **Quick** shows a saved overview at once, and otherwise offers **Make overview**. Until you press it, files are grouped by the agent's chapters or by folder.
+- When **Refresh** finds new changes in **Quick** and nothing is saved for them, the old risk marks and reading order go away and **Make overview** comes back. An overview you asked for keeps running through a refresh; if the changes moved meanwhile, it shows as being for an earlier version.
 
 If it fails, the reason shows with **Retry**, and the review works without it.
 

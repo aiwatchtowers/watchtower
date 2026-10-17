@@ -18,11 +18,11 @@ struct ReviewOverviewView: View {
         case .idle:
             EmptyView()
         case .onRequest:
-            HStack(alignment: .top, spacing: 6) {
-                Text("An AI summary, intent coverage, risk and reading order — one strong-model call.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                Button("Make overview") { model.makeOverview() }.controlSize(.small)
+            makeRow("An AI summary, intent coverage, risk and reading order — one strong-model call.")
+        case let .outdated(earlier):
+            VStack(alignment: .leading, spacing: 4) {
+                makeRow("This overview is for an earlier version of the changes. A new one is one strong-model call.")
+                Text(ReviewPresentation.firstLine(earlier.summary)).font(.callout).lineLimit(2).foregroundStyle(.secondary)
             }
         case .loading:
             HStack(spacing: 6) {
@@ -41,6 +41,14 @@ struct ReviewOverviewView: View {
             case .full: full(overview)
             case .compact: compact(overview)
             }
+        }
+    }
+
+    private func makeRow(_ note: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(note).font(.callout).foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Button("Make overview") { model.makeOverview() }.controlSize(.small)
         }
     }
 

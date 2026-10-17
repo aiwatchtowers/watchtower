@@ -186,19 +186,30 @@ action runs"), refuses before calling the CLI, shows Go's refusal text, then rel
 reverts and refreshes the round; undone hunks are listed in an **Undone** group.
 
 **AI overview (`internal/reviewai`, `workbench review overview`).** When it runs depends on
-the mode (board #585, owner ask #309): in **Deep** mode, on round open (and on a refresh
-that changed the tree) the Desktop runs `review overview --round R`; in **Quick** mode it
-runs `review overview --round R --cached-only` instead, which answers a cached overview
-(shown at once, no click) or `ok` with no overview and never loads the config or calls the
-model — the pane then shows **Make overview** (`OverviewState.onRequest`), and only that
-button (or **Retry**) runs the model call. Without a click, Quick's chapters come from the
-agent or the mechanical split. Switching to Deep while **Make overview** is shown makes the
-overview. The model call has a 330 s
-timeout (the cached-only read uses the CLI's default one; the CLI bounds the whole command — git, the model call, the db — at 5 minutes,
-`reviewAIBudget`, and a cancelled parent or a SIGINT/SIGTERM cancels the model call, which
-kills its claude/codex child). The refresh after an owner **Undo** does not ask for a new
-overview (ask #249): after an owner Undo, the overview is kept until the next Refresh, which
-regenerates it (as does an auto-refresh; one is asked for anyway when none is on screen). The cache is looked up before
+the mode (board #585, owner ask #309). **Deep**: on round open and on a refresh that changed
+the tree the Desktop runs `review overview --round R` (the model call). **Quick**: it runs
+`review overview --round R --cached-only`, which answers a cached overview (shown at once,
+no click) or `ok` with no overview, never loading the config or calling the model; the pane
+then shows **Make overview** (`OverviewState.onRequest`), and only that button runs the
+model call. A Quick refresh onto a new tree without a cached overview drops the old tree's
+AI state — risk badges, AI chapters, Wrap-up coverage — so chapters come from the agent or
+the mechanical split. **Retry** repeats what failed: a failed cached read retries the cached
+read, a failed model call the model call. Switching to Deep makes the overview unless the
+current tree's is shown. One place shows the spinner (`startOverview`, model calls only; a
+cached read keeps what is shown).
+
+A model call in flight (Make overview, Retry, or Deep's own) is never cancelled by a
+refresh, an Undo or a mode switch (`generationID`); only opening another round drops it.
+If the tree moved while it ran, it is followed up when it lands: Deep makes the new tree's
+overview; Quick reads the new tree's cache and, on a miss, shows the made overview as
+`outdated` ("for an earlier version of the changes") with **Make overview**, without its
+risks, chapters or coverage. The model call has a 330 s timeout (the cached-only read uses
+the CLI's default one); the CLI bounds the whole command — git, the model call, the db — at
+5 minutes, `reviewAIBudget`, and a cancelled parent or a SIGINT/SIGTERM cancels the model
+call, which kills its claude/codex child. The refresh after an owner **Undo** does not ask
+for a new overview (ask #249): after an owner Undo, the overview is kept until the next
+Refresh, which asks again (Deep makes one, Quick reads the cache; as does an auto-refresh;
+one is asked for anyway when none is on screen). The cache is looked up before
 the diff is read, and a failed cache write is logged to stderr while the overview is still
 answered. A linked target that cannot be read fails `review context` and `review overview`
 (`ok:false`, nothing cached) instead of being skipped. Input: the review
