@@ -74,7 +74,16 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
             of: #""file":{"#,
             with: #""carried_at":{"preset":"","ask_guard":"2026-10-17T09:00:00Z","finish_check":""},"file":{"#)
         let state = try decode(carried)
-        XCTAssertEqual(state.carriedLine(.askGuard), "Carried over from workflow.md on 2026-10-17 — the file no longer sets it.")
+        // 23:30 UTC is already the next day in UTC+3: the date is the viewer's local one.
+        let late = carried.replacingOccurrences(of: "2026-10-17T09:00:00Z", with: "2026-10-17T23:30:00Z")
+        let zone = try XCTUnwrap(TimeZone(secondsFromGMT: 3 * 3600))
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.timeZone = zone
+        let nextDay = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-18T12:00:00Z"))
+        XCTAssertEqual(try decode(late).carriedLine(.askGuard, timeZone: zone),
+                       "Carried over from workflow.md on \(formatter.string(from: nextDay)) — the file no longer sets it.")
         XCTAssertNil(state.carriedLine(.finishCheck), "not carried")
         XCTAssertNil(state.carriedLine(.preset))
     }

@@ -120,6 +120,36 @@ func TestWorkbenchMethodology_CarriesFileChecksOverOnce(t *testing.T) {
 	assert.Equal(t, []string{"finish_check: off"}, res.File.Ignored)
 }
 
+// Board #558: the carry-over never runs under an agent — a brief hook in a
+// session or an agent running the CLI leaves a pending workbench pending,
+// nothing copied; the owner's next run (no marker) carries it.
+func TestCarryOverWorkflowChecks_SkippedUnderAnAgent(t *testing.T) {
+	database, pid, folder := methodologyWorkbench(t)
+	id := strconv.FormatInt(pid, 10)
+	writeFolderWorkflow(t, folder, "---\nask_guard: off\nfinish_check: off\n---\n")
+	_, err := database.Exec(`UPDATE projects SET methodology_carry_pending = 1 WHERE id = ?`, pid)
+	require.NoError(t, err)
+
+	t.Setenv(agentEnvMarkers[0], "1")
+	_, _, err = runMethodology(t, id, "--json")
+	require.NoError(t, err)
+	unsetTerminalEnv(t)
+	runBriefHook(t, pid, "")
+	m, err := database.GetWorkbenchMethodology(pid)
+	require.NoError(t, err)
+	assert.Equal(t, db.WorkbenchMethodology{}, m, "nothing carried under an agent")
+	var pending int
+	require.NoError(t, database.QueryRow(`SELECT methodology_carry_pending FROM projects WHERE id = ?`, pid).Scan(&pending))
+	assert.Equal(t, 1, pending, "still pending")
+
+	require.NoError(t, os.Unsetenv(agentEnvMarkers[0]))
+	_, _, err = runMethodology(t, id, "--json")
+	require.NoError(t, err)
+	m, err = database.GetWorkbenchMethodology(pid)
+	require.NoError(t, err)
+	assert.Equal(t, db.WorkbenchMethodology{AskGuard: "off", FinishCheck: "off"}, m, "the owner's run carries it")
+}
+
 // Board #558: the checks are the owner's alone — under an agent the CLI
 // refuses to change them (AGENT-07's refusal) and writes nothing; a read
 // and a preset change still work.

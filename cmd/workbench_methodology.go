@@ -44,11 +44,17 @@ const methodologyFileValue = "file"
 
 // carryOverWorkflowChecks runs board #558's one-time carry-over
 // (workbenchmethod.CarryOverFileChecks) for the workbenches still marked
-// carry-pending by migration 00133: an owner process runs it — the daemon at
-// start, `workbench methodology` (Agent Settings) and the session brief — and
-// a workbench is processed once, whichever comes first. A failure is one line
-// on w; the rest is picked up by the next run.
+// carry-pending by migration 00133, only in an owner process: the daemon at
+// start, and `workbench methodology` or the brief when no agent marker is set
+// (the Desktop's Agent Settings, a plain Terminal). Under an agent — a
+// session's brief hook, an agent running the CLI — it does nothing
+// (refuseUnderAgent), so an agent never decides when a file is read for it.
+// A workbench is processed once, whichever runner comes first. A failure is
+// one line on w; the rest is picked up by the next run.
 func carryOverWorkflowChecks(database *db.DB, w io.Writer) {
+	if refuseUnderAgent("carry workflow.md checks over") != nil {
+		return
+	}
 	if _, err := workbenchmethod.CarryOverFileChecks(database, time.Now()); err != nil {
 		fmt.Fprintf(w, "watchtower: carrying workflow.md checks over to your settings: %v\n", err)
 	}

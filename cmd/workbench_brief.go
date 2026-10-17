@@ -166,9 +166,9 @@ func loadWorkbenchBriefFlag(raw string, stderr io.Writer) string {
 
 // loadWorkbenchBrief is workbench id's brief. It first runs the one-time
 // carry-over of the folder files' check settings for the workbenches that
-// existed at the board #558 upgrade (carryOverWorkflowChecks), so a session's
-// checks match what they were before; its failure goes to stderr (the hook
-// log) and the brief is printed as always.
+// existed at the board #558 upgrade (carryOverWorkflowChecks — a no-op under
+// an agent's markers, so in practice only a brief run outside a session); its
+// failure goes to stderr (the hook log) and the brief is printed as always.
 func loadWorkbenchBrief(id int64, stderr io.Writer) string {
 	if id <= 0 {
 		return briefUnavailable(id, "is unavailable: no --workbench id given")

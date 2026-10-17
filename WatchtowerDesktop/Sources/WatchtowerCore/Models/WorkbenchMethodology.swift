@@ -171,9 +171,15 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
 
     /// Under a personal value the upgrade carried over from workflow.md
     /// (board #558): that the owner did not pick it, and when; nil otherwise.
-    package func carriedLine(_ key: WorkbenchMethodologyKey) -> String? {
-        guard !personal[key].isEmpty, let at = carriedAt?[key], !at.isEmpty else { return nil }
-        return "Carried over from workflow.md on \(at.prefix(10)) — the file no longer sets it."
+    /// The date is shown in the viewer's time zone (`dateStyle` medium).
+    package func carriedLine(_ key: WorkbenchMethodologyKey, timeZone: TimeZone = .current) -> String? {
+        guard !personal[key].isEmpty, let at = carriedAt?[key], !at.isEmpty,
+              let date = ISO8601DateFormatter().date(from: at) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.timeZone = timeZone
+        return "Carried over from workflow.md on \(formatter.string(from: date)) — the file no longer sets it."
     }
 
     package var fileButtonTitle: String { file.present ? "Open workflow.md" : "Create workflow.md" }
