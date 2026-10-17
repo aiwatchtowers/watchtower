@@ -535,17 +535,11 @@ const SessionBuiltinTools = ChatBuiltinTools + "," + WebSearchTool
 // page's source file. The session's permission gate confines both to the
 // conversation's publish dir. Read and Edit stay hidden: Claude Code may run
 // a read-only built-in without asking, so the gate could not confine a Read.
-const ClaudeAISessionBuiltinTools = SessionBuiltinTools + "," + ArtifactTool + "," + WriteTool
+var ClaudeAISessionBuiltinTools = SessionBuiltinTools + "," + strings.Join(claudeAITools, ",")
 
 // claudeAITools are the built-ins claude.ai mode adds to the session and
 // unhides.
-var claudeAITools = []string{ArtifactTool, WriteTool}
-
-// ArtifactTool is Claude Code's built-in claude.ai publishing tool.
-const ArtifactTool = "Artifact"
-
-// WriteTool is Claude Code's built-in file writer.
-const WriteTool = "Write"
+var claudeAITools = []string{"Artifact", "Write"}
 
 // fileReadTools are the built-ins a read-folder run allows and unhides.
 var fileReadTools = []string{"Read", "Grep", "Glob", "LS"}

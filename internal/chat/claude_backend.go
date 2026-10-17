@@ -247,6 +247,15 @@ func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 	return args
 }
 
+// claudeEnv is the child's environment: this process's, a PATH that finds
+// the CLI's own helpers, the claude.ai mode values, then the extra
+// ClaudeOptions.Env (a later entry of a key wins).
+func claudeEnv(o ClaudeOptions) []string {
+	env := append(os.Environ(), "PATH="+claude.RichPATH())
+	env = append(env, claudeAIEnv(o.ClaudeAI)...)
+	return append(env, o.Env...)
+}
+
 // Start writes the prompt/MCP files and spawns the warm process.
 func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {

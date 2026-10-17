@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/claude"
 )
 
 // claudeAITestOptions is a warm-session ClaudeOptions with every argv field
@@ -79,15 +81,15 @@ func TestClaudeEnv_ClaudeAIMode(t *testing.T) {
 	on := claudeEnv(ClaudeOptions{ClaudeAI: ClaudeAIMode{On: true, Connectors: true}})
 	assert.Equal(t, "1", envValue(on, "CLAUDE_CODE_ARTIFACT"))
 	assert.Equal(t, "0", envValue(on, "CLAUDE_CODE_ARTIFACT_AUTO_OPEN"), "the CLI never opens a browser itself")
-	assert.Equal(t, "inherited", envValue(on, "ENABLE_CLAUDEAI_MCP_SERVERS"), "connectors on sets nothing")
-	assert.Contains(t, envValue(on, "PATH"), "/", "the rich PATH is still there")
+	assert.Equal(t, "1", envValue(on, "ENABLE_CLAUDEAI_MCP_SERVERS"), "the owner's switch wins over the inherited value")
+	assert.Equal(t, claude.RichPATH(), envValue(on, "PATH"), "the rich PATH is still there")
 
 	noConn := claudeEnv(ClaudeOptions{ClaudeAI: ClaudeAIMode{On: true}})
 	assert.Equal(t, "1", envValue(noConn, "CLAUDE_CODE_ARTIFACT"))
 	assert.Equal(t, "0", envValue(noConn, "CLAUDE_CODE_ARTIFACT_AUTO_OPEN"))
 	assert.Equal(t, "0", envValue(noConn, "ENABLE_CLAUDEAI_MCP_SERVERS"), "connectors off loads none")
 
-	off := claudeEnv(ClaudeOptions{ClaudeAI: ClaudeAIMode{Connectors: false}})
+	off := claudeEnv(ClaudeOptions{ClaudeAI: ClaudeAIMode{Connectors: true}})
 	for _, k := range keys {
 		assert.Equal(t, "inherited", envValue(off, k), "off adds no claude.ai value: %s", k)
 	}
@@ -124,8 +126,10 @@ func TestClaudeAIAvailability(t *testing.T) {
 		{"surface target", "claude", "target", nil, false, "claude.ai tools are available in the main chat only."},
 	}
 	for _, c := range cases {
-		on, reason := ClaudeAIAvailability(c.env, c.provider, c.surface)
-		assert.Equal(t, c.on, on, c.name)
-		assert.Equal(t, c.reason, reason, c.name)
+		t.Run(c.name, func(t *testing.T) {
+			on, reason := ClaudeAIAvailability(c.env, c.provider, c.surface)
+			assert.Equal(t, c.on, on)
+			assert.Equal(t, c.reason, reason)
+		})
 	}
 }

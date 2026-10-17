@@ -42,11 +42,18 @@ var approvedChatBuiltins = map[string][]string{
 
 // chatBuiltinRuns is each chat run's built-in allowlist (--tools) and deny
 // list (--disallowedTools), as buildArgs and cmd/ai_session.go pass them.
-var chatBuiltinRuns = map[string]struct{ tools, deny string }{
-	"one-shot ai query":                {ChatBuiltinTools, DisallowedTools},
-	"warm ai session":                  {SessionBuiltinTools, SessionDisallowedTools},
-	"warm ai session (claude.ai mode)": {ClaudeAISessionBuiltinTools, ClaudeAISessionDisallowedTools},
-	"code question (read folder)":      {ReadFolderBuiltinTools, ReadOnlyFolderDisallowedTools},
+// env is what the live check adds to the CLI's environment for the run.
+var chatBuiltinRuns = map[string]struct {
+	tools, deny string
+	env         []string
+}{
+	"one-shot ai query": {ChatBuiltinTools, DisallowedTools, nil},
+	"warm ai session":   {SessionBuiltinTools, SessionDisallowedTools, nil},
+	// The CLI registers Artifact in print mode only with this set (the warm
+	// session sets it in claude.ai mode).
+	"warm ai session (claude.ai mode)": {ClaudeAISessionBuiltinTools, ClaudeAISessionDisallowedTools,
+		[]string{"CLAUDE_CODE_ARTIFACT=1"}},
+	"code question (read folder)": {ReadFolderBuiltinTools, ReadOnlyFolderDisallowedTools, nil},
 }
 
 const builtinsSnapshot = "testdata/claude_builtins.txt"
@@ -220,13 +227,7 @@ func TestChatBuiltins_LiveCLI(t *testing.T) {
 		args := slices.Clone(base)
 		setFlag(t, args, "--tools", r.tools)
 		setFlag(t, args, "--disallowedTools", r.deny)
-		var env []string
-		if r.tools == ClaudeAISessionBuiltinTools {
-			// The CLI registers Artifact in print mode only with this set
-			// (the warm session sets it in claude.ai mode).
-			env = []string{"CLAUDE_CODE_ARTIFACT=1"}
-		}
-		exposed := builtinNames(liveInitTools(t, bin, args, env...))
+		exposed := builtinNames(liveInitTools(t, bin, args, r.env...))
 		// Two-way: an unapproved built-in exposed fails, and so does an
 		// approved one missing (a CLI dropping or renaming ToolSearch).
 		assert.ElementsMatch(t, approvedChatBuiltins[run], exposed, "%s: built-ins the CLI exposes", run)

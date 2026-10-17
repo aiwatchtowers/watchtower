@@ -1,11 +1,6 @@
 package chat
 
-import (
-	"os"
-	"strings"
-
-	"watchtower/internal/claude"
-)
+import "strings"
 
 // ClaudeAIMode turns on the warm Claude session's claude.ai tools: publishing
 // to the owner's claude.ai account and the account's claude.ai connectors.
@@ -37,8 +32,11 @@ var claudeAIOffMarkers = []struct{ name, uses string }{
 // mode: the Claude provider (provider is a resolved provider id, "claude"),
 // the main chat surface (embedded chats get nothing, decision Q2) and a child
 // environment env (KEY=VALUE entries, the last one of a key wins, as for
-// exec.Cmd.Env) that leaves the CLI on the owner's claude.ai login. When it
-// is off, reason says why, for the prompt and the Settings sidecar.
+// exec.Cmd.Env) that leaves the CLI on the owner's claude.ai login. env must
+// be the whole environment the child gets — os.Environ() plus
+// ClaudeOptions.Env — or a key inherited from the app's own environment is
+// missed. When it is off, reason says why, for the prompt and the Settings
+// sidecar.
 func ClaudeAIAvailability(env []string, provider, surface string) (on bool, reason string) {
 	if provider != "claude" {
 		return false, "claude.ai tools need the Claude provider."
@@ -68,24 +66,17 @@ func envValue(env []string, key string) string {
 
 // claudeAIEnv is the environment claude.ai mode adds to the child: Artifact
 // registered in print mode, the CLI never opening a browser itself (the
-// Desktop shows the link card), and no connectors when the owner switched
-// them off. Nil when the mode is off.
+// Desktop shows the link card), and the connectors exactly as the owner's
+// switch says — set both ways, so a value inherited from the app's own
+// environment never overrides Settings. Nil when the mode is off.
 func claudeAIEnv(m ClaudeAIMode) []string {
 	if !m.On {
 		return nil
 	}
-	env := []string{"CLAUDE_CODE_ARTIFACT=1", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN=0"}
-	if !m.Connectors {
-		env = append(env, "ENABLE_CLAUDEAI_MCP_SERVERS=0")
+	connectors := "0"
+	if m.Connectors {
+		connectors = "1"
 	}
-	return env
-}
-
-// claudeEnv is the child's environment: this process's, a PATH that finds
-// the CLI's own helpers, the claude.ai mode values, then the extra
-// ClaudeOptions.Env (a later entry of a key wins).
-func claudeEnv(o ClaudeOptions) []string {
-	env := append(os.Environ(), "PATH="+claude.RichPATH())
-	env = append(env, claudeAIEnv(o.ClaudeAI)...)
-	return append(env, o.Env...)
+	return []string{"CLAUDE_CODE_ARTIFACT=1", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN=0",
+		"ENABLE_CLAUDEAI_MCP_SERVERS=" + connectors}
 }
