@@ -11,6 +11,8 @@ WatchtowerDesktop/Sources/Views/Automations/AutomationsView.swift
 WatchtowerDesktop/Sources/Views/Automations/RunAutomationPalette.swift
 WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
 WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailView.swift
+WatchtowerDesktop/Sources/Views/Chat/AgentActionCardView.swift
+WatchtowerDesktop/Sources/Views/Chat/ChatMessageRow.swift
 WatchtowerDesktop/Sources/Views/Chat/ChatThreadView.swift
 WatchtowerDesktop/Sources/Views/Chat/ChatView.swift
 WatchtowerDesktop/Sources/Views/DayPlan/DayPlanView.swift
