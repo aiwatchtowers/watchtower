@@ -38,6 +38,10 @@ private final class RecordingNotifier: AutomationRunNotifying {
     func automationsFailed(count: Int) {
         failureCounts.append(count)
     }
+
+    func automationsDisabled(count: Int) {
+        failureCounts.append(-count)
+    }
 }
 
 /// Quick run's activation and finish watch (spec §12.7, Review Focus 8).

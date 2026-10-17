@@ -27,6 +27,12 @@ private final class FailureNotifier: AutomationRunNotifying {
     func automationsFailed(count: Int) {
         summaries.append(count)
     }
+
+    private(set) var disabledSummaries: [Int] = []
+
+    func automationsDisabled(count: Int) {
+        disabledSummaries.append(count)
+    }
 }
 
 /// #584: background failures and auto-disable are no longer silent.
@@ -74,6 +80,17 @@ final class AutomationFailureWatchTests: XCTestCase {
         AutomationFailureWatch(defaults: defaults, workspace: workspace, notifier: notifier)
     }
 
+    /// `existing` defaults to the listed ids.
+    private func notify(
+        _ w: AutomationFailureWatch,
+        _ items: [AutomationListItem],
+        runs: [Int64: AutomationRun],
+        existing: Set<Int64>? = nil,
+        now: Date
+    ) {
+        w.notify(items, runs: runs, existing: existing ?? Set(items.map(\.id)), now: now)
+    }
+
     private func runs(_ list: AutomationRun...) -> [Int64: AutomationRun] {
         Dictionary(uniqueKeysWithValues: list.map { ($0.automationID, $0) })
     }
@@ -102,30 +119,30 @@ final class AutomationFailureWatchTests: XCTestCase {
 
     func testBackgroundFailureNotifiesOncePerAutomationPerDay() {
         let w = watch()
-        w.notify([item(1), item(2)], runs: runs(run(10, automation: 1), run(11, automation: 2, trigger: "event")),
-                 now: now)
+        notify(w, [item(1), item(2)], runs: runs(run(10, automation: 1), run(11, automation: 2, trigger: "event")),
+               now: now)
         XCTAssertEqual(notifier.failedRunIDs, [10, 11])
 
         // The same run polled again, and a second failure within the day: no notice.
-        w.notify([item(1)], runs: runs(run(10, automation: 1)), now: now)
-        w.notify([item(1)], runs: runs(run(12, automation: 1, trigger: "catch_up")), now: now.addingTimeInterval(3600))
+        notify(w, [item(1)], runs: runs(run(10, automation: 1)), now: now)
+        notify(w, [item(1)], runs: runs(run(12, automation: 1, trigger: "catch_up")), now: now.addingTimeInterval(3600))
         XCTAssertEqual(notifier.failedRunIDs, [10, 11])
         // The suppressed run never notifies late.
-        w.notify([item(1)], runs: runs(run(12, automation: 1, trigger: "catch_up", finishedAgo: -3600)),
-                 now: now.addingTimeInterval(AutomationFailureWatch.noticeInterval + 1))
+        notify(w, [item(1)], runs: runs(run(12, automation: 1, trigger: "catch_up", finishedAgo: -3600)),
+               now: now.addingTimeInterval(AutomationFailureWatch.noticeInterval + 1))
         XCTAssertEqual(notifier.failedRunIDs, [10, 11])
 
         // A day later a new failure notifies again.
         let later = now.addingTimeInterval(AutomationFailureWatch.noticeInterval + 60)
-        w.notify([item(1)], runs: runs(AutomationRun(id: 13, automationID: 1, trigger: "schedule", status: .expired,
-                                                     finishedAt: later)), now: later)
+        notify(w, [item(1)], runs: runs(AutomationRun(id: 13, automationID: 1, trigger: "schedule", status: .expired,
+                                                      finishedAt: later)), now: later)
         XCTAssertEqual(notifier.failedRunIDs, [10, 11, 13])
     }
 
     func testManualButtonRestartAndOldFailuresDoNotNotify() {
         let w = watch()
         let items = (1...5).map { item(Int64($0)) }
-        w.notify(items, runs: runs(
+        notify(w, items, runs: runs(
             run(10, automation: 1, trigger: "manual"),
             run(11, automation: 2, trigger: "button"),
             run(12, automation: 3, errorKind: "interrupted"),
@@ -140,42 +157,74 @@ final class AutomationFailureWatchTests: XCTestCase {
 
     func testMoreThanTwoFailuresInOnePollPostOneSummary() {
         let w = watch()
-        w.notify((1...3).map { item(Int64($0)) },
-                 runs: runs(run(10, automation: 1), run(11, automation: 2), run(12, automation: 3)), now: now)
+        notify(w, (1...3).map { item(Int64($0)) },
+               runs: runs(run(10, automation: 1), run(11, automation: 2), run(12, automation: 3)), now: now)
         XCTAssertEqual(notifier.failedRunIDs, [])
         XCTAssertEqual(notifier.summaries, [3])
         // Each counted toward its automation's daily window.
-        w.notify([item(1)], runs: runs(run(20, automation: 1)), now: now.addingTimeInterval(60))
+        notify(w, [item(1)], runs: runs(run(20, automation: 1)), now: now.addingTimeInterval(60))
         XCTAssertEqual(notifier.failedRunIDs, [])
     }
 
     func testAutoDisableNotifiesOncePerDisableWhateverStartedIt() {
         let w = watch()
         // The day's failure window is spent and the disable is old: it still posts.
-        w.notify([item(1)], runs: runs(run(10, automation: 1)), now: now)
+        notify(w, [item(1)], runs: runs(run(10, automation: 1)), now: now)
         let old = now.addingTimeInterval(-3 * AutomationFailureWatch.noticeInterval)
         let manual = run(12, automation: 2, trigger: "manual", status: .cancelled)
-        w.notify([item(1, disabledAt: now), item(2, disabledAt: old)],
-                 runs: runs(run(11, automation: 1, status: .timedOut), manual), now: now)
+        notify(w, [item(1, disabledAt: now), item(2, disabledAt: old)],
+               runs: runs(run(11, automation: 1, status: .timedOut), manual), now: now)
         XCTAssertEqual(notifier.failedRunIDs, [10])
         XCTAssertEqual(notifier.disabled.map(\.runID), [11, 12])
         XCTAssertEqual(notifier.disabled.first?.reason, "runaway script")
 
         // Polled again: nothing new; a later disable (after a re-enable) posts again.
-        w.notify([item(1, disabledAt: now)], runs: [:], now: now)
-        w.notify([item(1, disabledAt: now.addingTimeInterval(60))], runs: [:], now: now)
+        notify(w, [item(1, disabledAt: now)], runs: [:], now: now)
+        notify(w, [item(1, disabledAt: now.addingTimeInterval(60))], runs: [:], now: now)
         XCTAssertEqual(notifier.disabled.map(\.runID), [11, 12, nil])
+    }
+
+    /// Verify F1: with the day's window unspent, a background run that
+    /// disabled its automation posts only the disabled notice.
+    func testRunawayBackgroundRunPostsOnlyTheDisabledNotice() {
+        let w = watch()
+        notify(w, [item(1, disabledAt: now)], runs: runs(run(10, automation: 1, status: .timedOut)), now: now)
+        XCTAssertEqual(notifier.failedRunIDs, [])
+        XCTAssertEqual(notifier.disabled.map(\.runID), [10])
+        // It still counts on the badge.
+        XCTAssertEqual(w.unseenCount([item(1, disabledAt: now)], runs: runs(run(10, automation: 1, status: .timedOut))), 1)
+    }
+
+    /// Verify F3: more than two disables in one pass post one summary.
+    func testMoreThanTwoDisablesInOnePollPostOneSummary() {
+        let w = watch()
+        notify(w, (1...3).map { item(Int64($0), disabledAt: now) }, runs: [:], now: now)
+        XCTAssertTrue(notifier.disabled.isEmpty)
+        XCTAssertEqual(notifier.disabledSummaries, [3])
+        notify(w, (1...3).map { item(Int64($0), disabledAt: now) }, runs: [:], now: now)
+        XCTAssertEqual(notifier.disabledSummaries, [3], "each disable posts once")
+    }
+
+    /// Verify F2: a recipe whose file is briefly gone leaves the list but
+    /// keeps its row; its state stays, so nothing posts twice.
+    func testStateOfARemovedRecipeIsKept() {
+        let w = watch()
+        notify(w, [item(1, disabledAt: now)], runs: runs(run(10, automation: 1)), now: now)
+        notify(w, [], runs: [:], existing: [1], now: now)
+        notify(w, [item(1, disabledAt: now)], runs: runs(run(10, automation: 1)), now: now)
+        XCTAssertEqual(notifier.disabled.count, 1)
     }
 
     func testStateOfGoneAutomationsIsPruned() {
         let w = watch()
-        w.notify([item(1)], runs: runs(run(10, automation: 1)), now: now)
+        notify(w, [item(1)], runs: runs(run(10, automation: 1)), now: now)
         w.markSeen(1, runs: runs(run(10, automation: 1)))
         let other = watch(workspace: "/ws/b.db")
-        other.notify([item(1)], runs: runs(run(10, automation: 1)), now: now)
+        notify(other, [item(1)], runs: runs(run(10, automation: 1)), now: now)
 
-        w.notify([], runs: [:], now: now)
-        for key in [AutomationFailureWatch.handledKey, AutomationFailureWatch.noticeKey, AutomationFailureWatch.seenKey] {
+        notify(w, [], runs: [:], now: now)
+        for key in [AutomationFailureWatch.handledKey, AutomationFailureWatch.noticeKey, AutomationFailureWatch.seenKey,
+                    AutomationFailureWatch.disabledKey] {
             let stored = defaults.dictionary(forKey: key) ?? [:]
             XCTAssertFalse(stored.keys.contains("/ws/a.db|1"), key)
         }

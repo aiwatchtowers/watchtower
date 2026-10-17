@@ -217,8 +217,9 @@ package final class AutomationsViewModel {
         var attentionCount: Int
         var inboxOutputCount: Int
         var headerButtons: [Int64: [AutomationHeaderButton]]
-        /// `AutomationQueries.newestEndedRuns`, read only with a failure watch.
+        /// `AutomationQueries.newestEndedRuns` and `allIDs`, read only with a failure watch.
         var endedRuns: [Int64: AutomationRun]
+        var allIDs: Set<Int64>
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
 
@@ -250,6 +251,7 @@ package final class AutomationsViewModel {
                 inboxOutputCount: try AutomationQueries.inboxOutputCount(db),
                 headerButtons: AutomationQueries.headerButtonsByProject(items),
                 endedRuns: failures ? try AutomationQueries.newestEndedRuns(db) : [:],
+                allIDs: failures ? try AutomationQueries.allIDs(db) : [],
                 card: card,
                 steps: steps
             )
@@ -265,7 +267,7 @@ package final class AutomationsViewModel {
             onInboxOutputCountChanged?()
         }
         for (runID, runSteps) in snapshot.steps { steps[runID] = runSteps }
-        applyFailures(snapshot.endedRuns)
+        applyFailures(snapshot.endedRuns, existing: snapshot.allIDs)
         // The selection may have moved while the read ran; keep only what matches it.
         if let card = snapshot.card, card.automationID == selectedID {
             runs[card.automationID] = card.runs
@@ -276,12 +278,12 @@ package final class AutomationsViewModel {
 
     /// The open card on a visible tab of an active app is seen; then new
     /// failures notify and the badge's failure share is counted.
-    private func applyFailures(_ runs: [Int64: AutomationRun]) {
+    private func applyFailures(_ runs: [Int64: AutomationRun], existing: Set<Int64>) {
         guard let failureWatch else { return }
         if tabVisible, let selectedID, isOwnerLooking() {
             failureWatch.markSeen(selectedID, runs: runs)
         }
-        failureWatch.notify(items, runs: runs, now: now())
+        failureWatch.notify(items, runs: runs, existing: existing, now: now())
         unseenFailureCount = failureWatch.unseenCount(items, runs: runs)
     }
 

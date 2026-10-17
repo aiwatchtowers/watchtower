@@ -22,6 +22,9 @@ package protocol AutomationRunNotifying {
 
     /// More background failures than `AutomationFailureWatch.coalesceAbove` in one poll.
     func automationsFailed(count: Int)
+
+    /// More disables than `AutomationFailureWatch.coalesceAbove` in one poll.
+    func automationsDisabled(count: Int)
 }
 
 /// Quick run (spec §12.7): the rows of the "Run Automation…" palette (⌃⌘R)
@@ -200,15 +203,15 @@ package final class QuickRunCenter {
         let ids = Array(watched.keys)
         let automationIDs = Array(Set(watched.values.map(\.automationID)))
         let runs: [AutomationRun]
-        let disabledAt: [Int64: Date]
+        let automations: [Int64: Automation]
         do {
-            (runs, disabledAt) = try await dbPool.read { db in
+            (runs, automations) = try await dbPool.read { db in
                 let runs = try AutomationQueries.fetchRuns(db, ids: ids)
-                var disabled: [Int64: Date] = [:]
+                var automations: [Int64: Automation] = [:]
                 for id in automationIDs {
-                    if let at = try AutomationQueries.fetchAutomation(db, id: id)?.disabledAt { disabled[id] = at }
+                    if let a = try AutomationQueries.fetchAutomation(db, id: id) { automations[id] = a }
                 }
-                return (runs, disabled)
+                return (runs, automations)
             }
         } catch {
             lastError = "Could not read automation runs: \(error.localizedDescription)"
@@ -224,7 +227,7 @@ package final class QuickRunCenter {
             }
             guard !run.status.isActive else { continue }
             watched[id] = nil
-            if let at = disabledAt[entry.automationID], at >= (run.startedAt ?? run.queuedAt ?? .distantPast) { continue }
+            if let a = automations[entry.automationID], AutomationFailureWatch.disabledItsAutomation(run, a) { continue }
             notifier.runFinished(name: entry.name, status: run.status, summary: run.summary, error: run.error,
                                  automationID: entry.automationID, runID: id)
         }

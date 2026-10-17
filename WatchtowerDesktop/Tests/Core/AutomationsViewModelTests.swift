@@ -115,6 +115,10 @@ private final class CountingNotifier: AutomationRunNotifying {
     func automationsFailed(count: Int) {
         failureCounts.append(count)
     }
+
+    func automationsDisabled(count: Int) {
+        failureCounts.append(-count)
+    }
 }
 
 @MainActor

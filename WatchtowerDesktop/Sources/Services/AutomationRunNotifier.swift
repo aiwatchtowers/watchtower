@@ -13,20 +13,21 @@ final class AutomationRunNotifier: AutomationRunNotifying {
     typealias Send = (_ name: String, _ status: AutomationRunStatus, _ summary: String, _ error: String,
                       _ automationID: Int64, _ runID: Int64) -> Void
     typealias SendDisabled = (_ name: String, _ reason: String, _ automationID: Int64, _ runID: Int64?) -> Void
-    typealias SendFailures = (_ count: Int) -> Void
+    /// A summary notice: its title and identifier.
+    typealias SendSummary = (_ title: String, _ identifier: String) -> Void
 
     private let send: Send
     private let sendDisabled: SendDisabled
-    private let sendFailures: SendFailures
+    private let sendSummary: SendSummary
 
     init(
         send: @escaping Send = NotificationService.shared.sendAutomationRunFinished,
         sendDisabled: @escaping SendDisabled = NotificationService.shared.sendAutomationDisabled,
-        sendFailures: @escaping SendFailures = NotificationService.shared.sendAutomationsFailed
+        sendSummary: @escaping SendSummary = NotificationService.shared.sendAutomationsSummary
     ) {
         self.send = send
         self.sendDisabled = sendDisabled
-        self.sendFailures = sendFailures
+        self.sendSummary = sendSummary
     }
 
     func runFinished(
@@ -45,7 +46,11 @@ final class AutomationRunNotifier: AutomationRunNotifying {
     }
 
     func automationsFailed(count: Int) {
-        sendFailures(count)
+        sendSummary(Self.failuresTitle(count: count), "automation-failures")
+    }
+
+    func automationsDisabled(count: Int) {
+        sendSummary(Self.disabledSummaryTitle(count: count), "automation-disables")
     }
 
     nonisolated static let pushType = "automation_run"
@@ -67,6 +72,11 @@ final class AutomationRunNotifier: AutomationRunNotifying {
     /// "3 automations failed".
     nonisolated static func failuresTitle(count: Int) -> String {
         "\(count) automations failed"
+    }
+
+    /// "3 automations were disabled".
+    nonisolated static func disabledSummaryTitle(count: Int) -> String {
+        "\(count) automations were disabled"
     }
 
     /// The disabled notice: the run's identifier when it has one (it then

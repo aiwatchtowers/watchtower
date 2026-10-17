@@ -374,15 +374,15 @@ final class NotificationService: Sendable {
             content: content, trigger: nil))
     }
 
-    /// Several background automations failed in one poll (#584): one
+    /// Several automations failed, or were disabled, in one poll (#584): one
     /// summary; a click opens the Automations tab.
-    func sendAutomationsFailed(count: Int) {
+    func sendAutomationsSummary(title: String, identifier: String) {
         let content = UNMutableNotificationContent()
-        content.title = AutomationRunNotifier.failuresTitle(count: count)
+        content.title = title
         content.body = "Open Automations to see which."
         content.sound = .default
         content.userInfo = AutomationRunNotifier.userInfo(automationID: nil, runID: nil)
-        post(UNNotificationRequest(identifier: "automation-failures", content: content, trigger: nil))
+        post(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
     }
 
     /// Every delivered session banner goes — on launch and on quit, when
