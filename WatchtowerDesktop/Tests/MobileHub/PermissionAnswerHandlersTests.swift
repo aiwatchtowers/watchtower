@@ -313,6 +313,24 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         XCTAssertEqual(try row(id)?["status"], "pending")
     }
 
+    /// A file linked into `.claude` is a settings path on the Mac too.
+    func testASettingsFileBehindASymlinkCannotBeAllowed() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let real = root.appendingPathComponent(".claude/settings.json")
+        try FileManager.default.createDirectory(at: real.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: real)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let link = root.appendingPathComponent("cfg.json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let session = try await liveSession()
+        let id = try await request(session, tool: "Edit", summary: link.path)
+
+        let outcome = try await makeHandlers().handle(answer(session, request: id))
+
+        XCTAssertEqual(outcome.reason, .answerOnMac)
+        XCTAssertEqual(try row(id)?["status"], "pending")
+    }
+
     /// A folder linked to `.claude` is a settings path on the Mac too.
     func testASettingsPathBehindASymlinkCannotBeAllowed() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
