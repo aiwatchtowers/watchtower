@@ -20,7 +20,9 @@ You ask "what did we decide about the payments rollout?" and get an answer drawn
 
 Only the main chat, the target chat and the automation editor can act, through proposals. The meeting, track, idea and setup chats are draft-only: they discuss and draft but never act. At most three replies across all of them run at once; a fourth shows **Queued**.
 
-Messages sent from the panel (**⌘/**) also tell the assistant which tab you are on, what status line an empty tab shows and which item is selected. That note goes to your AI provider but is never stored, so the history shows only what you typed. For questions about Watchtower itself the assistant searches this guide and links the section.
+**Questions about Watchtower itself.** The assistant searches this guide (built into the app, so it matches your version) and links the section it used; if the guide has nothing on it, it says so. An answer can also link a screen, such as **Briefings**: the link opens that tab, and only screens shown in your sidebar become links.
+
+Messages sent from the panel (**⌘/**) also tell the assistant which tab you are on, what status line an empty tab shows and which item is selected. That note goes to your AI provider but is never stored, so the history shows only what you typed.
 
 ## Using it
 
@@ -37,15 +39,11 @@ Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same 
 
 **Esc** stops a running answer; a second **Esc** closes the panel, and while one streams you can't send another message. In the **AI Chat** tab, **⌘/** puts the cursor in the message box; in a Workbench **Files** editor it still toggles a comment.
 
+**Watchtower User Guide** in the **Help** menu opens this guide's front page.
+
 ### Artifacts
 
-A document, table, email or Slack draft, event, code or HTML page opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it to a file (the extension follows the kind, for example .md, .csv or a language's extension for code).
-
-Select a passage and choose **Comment** to leave a note. Notes stay drafts until you click **Send N comments**, which sends them together; the assistant answers with a new version.
-
-An HTML page, such as a slide deck, shows rendered in the panel once it is fully written. Click the page, then use the arrow keys to page through a deck. **Present** opens it full screen (Esc leaves), **Open in Window** opens a big window, and **Reload** starts it over. The page runs with no internet access at all, so ask for one self-contained file, and links in it open nothing. It stays in Watchtower: there is no browser button, because a page written from your synced messages must not be able to send them anywhere. To keep or share it, use **Export…** to save the `.html` file. HTML pages take no passage comments.
-
-Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
+Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. See [Artifacts in the AI Chat](ai-chat-artifacts.md).
 
 ### Ask about a passage
 
@@ -75,6 +73,7 @@ Provider not signed in? See [The Claude or Codex tool is not found or not signed
 ## Related
 
 - [Writing, Slack send, Confluence and automations from the chat](ai-chat-actions.md)
+- [Artifacts in the AI Chat](ai-chat-artifacts.md)
 - [Memory](memory.md)
 - [Quick Connections](quick-connections.md)
 

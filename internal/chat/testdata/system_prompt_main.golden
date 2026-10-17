@@ -215,6 +215,8 @@ Workbench
 - Workbench (features/workbench/README.md)
 - Board and targets (features/workbench/board-and-targets.md)
 - Sessions (features/workbench/sessions.md)
+- Session report and analytics (features/workbench/session-report.md)
+- Updates and quitting (features/workbench/updates-and-quitting.md)
 - Asks (features/workbench/asks.md)
 - Code viewer (features/workbench/code-viewer.md)
 - Worktrees and cleanup (features/workbench/worktrees-and-cleanup.md)
@@ -224,8 +226,8 @@ Workbench
 - Agent analytics (features/agent-analytics.md)
 
 Automations & AI
-- Ask Watchtower (features/ask-watchtower.md)
 - AI Chat (features/ai-chat.md)
+- Artifacts in the AI Chat (features/ai-chat-artifacts.md)
 - Writing and changing things from the AI Chat (features/ai-chat-actions.md)
 - Quick Connections (features/quick-connections.md)
 - Memory (features/memory.md)
@@ -239,6 +241,7 @@ Meetings & calendar
 
 Apps & integration
 - iPhone (features/iphone.md)
+- iPhone: permission prompts and interrupts (features/iphone-agent-prompts.md)
 - Menu bar and updates (features/menu-bar-and-updates.md)
 - Claude Code integration (features/claude-code-integration.md)
 
