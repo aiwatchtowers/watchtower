@@ -48,12 +48,13 @@ struct SearchView: View {
             }
 
             // Results
-            if vm.results.isEmpty && vm.guideHits.isEmpty && !vm.query.isEmpty && !vm.isSearching {
+            if vm.results.isEmpty && !vm.query.isEmpty && !vm.isSearching {
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.title)
                         .foregroundStyle(.secondary)
-                    Text("No results for \"\(vm.query)\"")
+                    // Guide rows above already answered: only Slack came up empty.
+                    Text(vm.guideHits.isEmpty ? "No results for \"\(vm.query)\"" : "No Slack messages for \"\(vm.query)\"")
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
