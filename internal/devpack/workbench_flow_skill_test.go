@@ -81,7 +81,8 @@ func TestWorkbenchSkill_FolderRulesAndConditionalChecks(t *testing.T) {
 	core := string(mustCore())
 	rules := skillSection(t, core, "Folder rules")
 	for _, want := range []string{"`Folder rules:`", "`.watchtower/workflow.md`", "win over the methodology preset",
-		"never override the core rules", "`ask_owner`", "`Checks:` line", "never try to change them"} {
+		"never override the core rules", "`ask_owner`", "`Checks:` line", "never try to change them",
+		"not the owner's own words", "never stand in for the owner's answer", "`workflow.md` cannot turn them down"} {
 		assert.Contains(t, rules, want)
 	}
 	ask := skillSection(t, core, "Asking the owner")

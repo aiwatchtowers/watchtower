@@ -23,8 +23,9 @@ func methodFile(body string) workbenchmethod.File {
 	return workbenchmethod.File{Present: true, Body: body, BodyChars: utf8.RuneCountInString(body)}
 }
 
-// Spec 2026-10-15 §6: the folder rules after the board rules, inline, and
-// the Checks line naming each check that is not at its default.
+// Spec 2026-10-15 §6: the folder rules after the board rules, inline, as the
+// team's repo rules, and the Checks line naming each check that is not at
+// its default — the file's finish_check: off is ignored (board #558).
 func TestRenderSessionBrief_GoldenFolderRules(t *testing.T) {
 	f := methodFile("Plans live in docs/plans/.")
 	f.FinishCheck = workbenchmethod.FinishOff
@@ -44,9 +45,9 @@ Open targets:
 - #3 [in_progress, medium, 0%] active feature
 New comments for you: none.
 Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; a short clarification may be asked in plain text while the owner is in the session; anything else that waits on the owner (a decision, a check, a review) is an ask_owner call — several decisions in one ask — never a comment, and you keep working; comments are for blockers and done summaries.
-Folder rules (.watchtower/workflow.md — the owner's rules for this folder; they win over the watchtower-flow preset):
+Folder rules (.watchtower/workflow.md — the team's repo rules, not the owner's words; they win over the watchtower-flow preset):
 Plans live in docs/plans/.
-Checks: ask guard soft (personal), finish check off (folder file).`
+Checks: ask guard soft (personal).`
 
 func TestBriefMethodSection_Lines(t *testing.T) {
 	long := strings.Repeat("r", briefFolderRulesInline+1)
@@ -60,9 +61,9 @@ func TestBriefMethodSection_Lines(t *testing.T) {
 		{"no file, defaults", workbenchmethod.Defaults(), ""},
 		{"an empty body", workbenchmethod.Combine(db.WorkbenchMethodology{}, workbenchmethod.File{Present: true}), ""},
 		{"a long body", workbenchmethod.Combine(db.WorkbenchMethodology{}, methodFile(long)),
-			"Folder rules: .watchtower/workflow.md (1201 chars) — read it before you start working."},
+			"Folder rules: .watchtower/workflow.md (1201 chars), the team's repo rules — read it before you start working."},
 		{"a cut file", workbenchmethod.Combine(db.WorkbenchMethodology{}, cut),
-			"Folder rules: .watchtower/workflow.md (1201 chars, cut at 64 KiB) — read it before you start working."},
+			"Folder rules: .watchtower/workflow.md (1201 chars, cut at 64 KiB), the team's repo rules — read it before you start working."},
 		{"a broken file", workbenchmethod.Combine(db.WorkbenchMethodology{},
 			workbenchmethod.File{Present: true, Err: errors.New(`line 2: unknown key "mode"`)}),
 			`Folder rules: .watchtower/workflow.md was ignored: line 2: unknown key "mode". Built-in defaults apply.`},
@@ -131,7 +132,7 @@ func TestBriefMethodSection_MismatchStaysWithinTheSlot(t *testing.T) {
 
 	assert.LessOrEqual(t, utf8.RuneCountInString(section), briefMethodChars)
 	assert.Contains(t, section, mismatch)
-	assert.Contains(t, section, "Folder rules: .watchtower/workflow.md (1200 chars) — read it before you start working.")
+	assert.Contains(t, section, "Folder rules: .watchtower/workflow.md (1200 chars), the team's repo rules — read it before you start working.")
 }
 
 // The kept-preset line (preset none beside an owner-edited watchtower-flow)
@@ -153,7 +154,7 @@ func TestBriefMethodSection_KeptPresetLineStaysWithinTheSlot(t *testing.T) {
 
 	assert.LessOrEqual(t, utf8.RuneCountInString(section), briefMethodChars)
 	assert.Contains(t, section, mismatch)
-	assert.Contains(t, section, "Folder rules: .watchtower/workflow.md (1200 chars) — read it before you start working.")
+	assert.Contains(t, section, "Folder rules: .watchtower/workflow.md (1200 chars), the team's repo rules — read it before you start working.")
 }
 
 // F15: with the preset none the fixed board rules drop the review step and

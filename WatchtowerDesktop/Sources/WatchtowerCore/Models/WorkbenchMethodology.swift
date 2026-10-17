@@ -50,8 +50,10 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
     /// What a value does; soft names the Desktop-down limit (spec §7.1).
     package func choiceHelp(_ choice: String) -> String {
         switch (self, choice) {
-        case (_, Self.fromFile):
+        case (.preset, Self.fromFile):
             "Use the folder's .watchtower/workflow.md, else the built-in default."
+        case (_, Self.fromFile):
+            "Use the built-in default. The folder's workflow.md cannot turn this check down; only your setting here can."
         case (.preset, "watchtower-flow"):
             "Watchtower's default methodology: features, specs and plans become targets, and reviewer agents put work in review."
         case (.preset, "none"):
@@ -103,9 +105,13 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
         package let error: String
         package let bodyChars: Int
         package let truncated: Bool
+        /// The check settings the file asks for that were ignored
+        /// ("ask_guard: off"): only a personal setting turns a check down
+        /// (board #558). nil from a CLI that predates the key.
+        package let ignored: [String]?
 
         enum CodingKeys: String, CodingKey {
-            case present, error, truncated
+            case present, error, truncated, ignored
             case bodyChars = "body_chars"
         }
     }
@@ -157,11 +163,18 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
 
     package var fileButtonTitle: String { file.present ? "Open workflow.md" : "Create workflow.md" }
 
-    /// Why the folder file was ignored, or that it was cut; nil otherwise.
+    /// Why the folder file was ignored, that it was cut, or that it asks to
+    /// turn a check down, which only a personal setting can (board #558);
+    /// nil otherwise.
     package var fileNote: String? {
         if !file.error.isEmpty { return "workflow.md was ignored: \(file.error). The built-in defaults apply." }
-        if file.truncated { return "workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB." }
-        return nil
+        var notes: [String] = []
+        if file.truncated { notes.append("workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB.") }
+        if let ignored = file.ignored, !ignored.isEmpty {
+            notes.append("workflow.md asks for \(ignored.joined(separator: ", ")); that is ignored. "
+                + "Only your settings above can turn a check down.")
+        }
+        return notes.isEmpty ? nil : notes.joined(separator: " ")
     }
 
     /// After a preset change: preset none kept an edited or foreign

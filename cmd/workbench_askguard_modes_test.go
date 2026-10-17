@@ -143,8 +143,12 @@ func TestProj13_OffWithFinishOffCallsNoModel(t *testing.T) {
 			require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{
 				AskGuard: workbenchmethod.AskGuardOff, FinishCheck: workbenchmethod.FinishOff}))
 		}},
-		{"folder file", func(t *testing.T, database *db.DB, pid int64) {
-			writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\nfinish_check: off\n---\n")
+		// Board #558: only the owner's setting weakens the checks (the folder
+		// file no longer can); a file saying strict and on does not undo it.
+		{"personal over a strict folder file", func(t *testing.T, database *db.DB, pid int64) {
+			writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: strict\nfinish_check: on\n---\n")
+			require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{
+				AskGuard: workbenchmethod.AskGuardOff, FinishCheck: workbenchmethod.FinishOff}))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -164,6 +168,30 @@ func TestProj13_OffWithFinishOffCallsNoModel(t *testing.T) {
 			assert.Equal(t, "An older question?", q.Question)
 		})
 	}
+}
+
+// TestProj13_FolderFileNeverWeakensTheGuard (board #558, owner decision ask
+// #303 q4): the folder's .watchtower/workflow.md is repo content (any clone,
+// a pulled branch, or the agent editing its own worktree), so its
+// ask_guard: off and finish_check: off leave the guard strict and on: a full
+// request is sent back and the question tool is still denied. Only the
+// owner's personal setting weakens a check.
+func TestProj13_FolderFileNeverWeakensTheGuard(t *testing.T) {
+	database, pid, _ := stopGuardFixture(t)
+	writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\nfinish_check: off\n---\nTeam rules.\n")
+	gen := &stubAskGuardGen{reply: verdictJSON("full")}
+	useAskGuardGen(t, gen)
+	raw := strconv.FormatInt(pid, 10)
+
+	out, _, err := runAskGuardStopHook(t, raw, strings.NewReader(guardPayload("Review the spec, please.", false)))
+
+	require.NoError(t, err)
+	assert.Equal(t, guardBlock(t, askGuardReasonFull), out, "strict: a full request is sent back")
+	assert.Equal(t, 1, gen.calls)
+
+	out, _, err = runAskGuard(t, raw, strings.NewReader(askToolPayload("AskUserQuestion")))
+	require.NoError(t, err)
+	assert.Equal(t, denialWith(t, askToolDenialReasonAway), out, "strict: the question tool is denied")
 }
 
 // TestProj13_UnreadableModeIsStrict: when the modes cannot be read the
@@ -265,13 +293,14 @@ func TestProj13_PreToolUseFollowsMode(t *testing.T) {
 }
 
 // TestProj13_UnreadableSessionVariableIsStrict: a terminal-session variable
-// that is present but unreadable never resolves the workbench folder's rules
-// (which here say off): both hooks run strict. An absent variable keeps the
-// folder's rules.
+// that is present but unreadable never resolves the workbench's modes (which
+// here say off — the owner's setting since board #558, when the folder file
+// stopped weakening a check): both hooks run strict. An absent variable keeps
+// the owner's off.
 func TestProj13_UnreadableSessionVariableIsStrict(t *testing.T) {
 	t.Run("pre-tool-use", func(t *testing.T) {
 		database, pid, _ := stopGuardFixture(t)
-		writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\n---\n")
+		require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardOff}))
 		ask := func() string {
 			t.Helper()
 			out, _, err := runAskGuard(t, strconv.FormatInt(pid, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
@@ -281,11 +310,12 @@ func TestProj13_UnreadableSessionVariableIsStrict(t *testing.T) {
 		t.Setenv(terminalSessionEnv, "not-a-number")
 		assert.Equal(t, denialWith(t, askToolDenialReasonAway), ask(), "unreadable variable: strict")
 		require.NoError(t, os.Unsetenv(terminalSessionEnv))
-		assert.Empty(t, ask(), "absent variable: the folder's off applies")
+		assert.Empty(t, ask(), "absent variable: the owner's off applies")
 	})
 	t.Run("stop", func(t *testing.T) {
 		database, pid, _ := stopGuardFixture(t)
-		writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\nfinish_check: off\n---\n")
+		require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{
+			AskGuard: workbenchmethod.AskGuardOff, FinishCheck: workbenchmethod.FinishOff}))
 		gen := &stubAskGuardGen{reply: verdictJSON("full")}
 		useAskGuardGen(t, gen)
 		t.Setenv(terminalSessionEnv, "not-a-number")

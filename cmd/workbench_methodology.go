@@ -18,7 +18,9 @@ var workbenchMethodologyCmd = &cobra.Command{
 	Short: "Show or set a workbench's methodology preset, ask guard and finish check (your personal settings)",
 	Long: "Without a setting flag it prints the workbench's effective methodology and where each value\n" +
 		"comes from: your personal setting, the folder's .watchtower/workflow.md, or the built-in default\n" +
-		"(watchtower-flow, strict, on). --preset watchtower-flow|none, --ask-guard strict|soft|off and\n" +
+		"(watchtower-flow, strict, on). The folder file sets only the preset: its ask_guard and\n" +
+		"finish_check are ignored, so only your personal setting turns a check down.\n" +
+		"--preset watchtower-flow|none, --ask-guard strict|soft|off and\n" +
 		"--finish-check on|off set your personal value; the value file drops it, so the folder file (else\n" +
 		"the default) applies; --clear drops all three. A preset change updates the folder's skills.\n" +
 		"--create-file writes a commented .watchtower/workflow.md template when the folder has none (it\n" +
@@ -70,14 +72,16 @@ type methodologyValuesJSON struct {
 }
 
 // methodologyFileJSON is the folder file's state: present (a refused file
-// too), the reason it was ignored, the body's length in runes, and whether
-// it was cut at 64 KiB.
+// too), the reason it was ignored, the body's length in runes, whether it
+// was cut at 64 KiB, and the check settings it asks for that were ignored
+// ("ask_guard: off"; only a personal setting weakens a check, board #558).
 type methodologyFileJSON struct {
-	Path      string `json:"path"`
-	Present   bool   `json:"present"`
-	Error     string `json:"error"`
-	BodyChars int    `json:"body_chars"`
-	Truncated bool   `json:"truncated"`
+	Path      string   `json:"path"`
+	Present   bool     `json:"present"`
+	Error     string   `json:"error"`
+	BodyChars int      `json:"body_chars"`
+	Truncated bool     `json:"truncated"`
+	Ignored   []string `json:"ignored"`
 }
 
 // workbenchMethodologyJSON is `workbench methodology --json`, read by the
@@ -238,7 +242,10 @@ func fillMethodology(res *workbenchMethodologyJSON, personal db.WorkbenchMethodo
 	res.Sources = methodologyValuesJSON{Preset: string(e.Sources.Preset), AskGuard: string(e.Sources.AskGuard),
 		FinishCheck: string(e.Sources.FinishCheck)}
 	res.File = methodologyFileJSON{Path: workbenchmethod.FileRel, Present: e.File.Present, BodyChars: e.File.BodyChars,
-		Truncated: e.File.Truncated}
+		Truncated: e.File.Truncated, Ignored: e.FileIgnored()}
+	if res.File.Ignored == nil {
+		res.File.Ignored = []string{}
+	}
 	if e.File.Err != nil {
 		res.File.Error = e.File.Err.Error()
 	}
@@ -256,6 +263,10 @@ func printMethodologyReport(w io.Writer, res workbenchMethodologyJSON) {
 		fmt.Fprintf(w, "  folder file   %s, %d chars of rules\n", res.File.Path, res.File.BodyChars)
 	default:
 		fmt.Fprintf(w, "  folder file   none (%s)\n", res.File.Path)
+	}
+	if len(res.File.Ignored) > 0 {
+		fmt.Fprintf(w, "  ignored       %s in the folder file — only your personal setting turns a check down\n",
+			strings.Join(res.File.Ignored, ", "))
 	}
 	if res.FileCreated {
 		fmt.Fprintf(w, "Created %s.\n", res.File.Path)

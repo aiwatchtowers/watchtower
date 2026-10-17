@@ -55,7 +55,11 @@ func Defaults() Effective {
 }
 
 // Combine applies the precedence (spec §3): a valid personal value, else the
-// file's (only a file read without error counts), else the default.
+// file's (only a file read without error counts), else the default. The
+// folder file is repo content — any clone or branch, or the agent editing its
+// own worktree, can change it — so only its preset applies: the ask guard and
+// the finish check come from the owner's personal setting or the default,
+// never from the file (board #558); FileIgnored names what the file asked for.
 func Combine(personal db.WorkbenchMethodology, f File) Effective {
 	e := Defaults()
 	e.File = f
@@ -69,9 +73,27 @@ func Combine(personal db.WorkbenchMethodology, f File) Effective {
 		}
 	}
 	pick("preset", personal.Preset, f.Preset, &e.Preset, &e.Sources.Preset)
-	pick("ask_guard", personal.AskGuard, f.AskGuard, &e.AskGuard, &e.Sources.AskGuard)
-	pick("finish_check", personal.FinishCheck, f.FinishCheck, &e.FinishCheck, &e.Sources.FinishCheck)
+	pick("ask_guard", personal.AskGuard, "", &e.AskGuard, &e.Sources.AskGuard)
+	pick("finish_check", personal.FinishCheck, "", &e.FinishCheck, &e.Sources.FinishCheck)
 	return e
+}
+
+// FileIgnored lists the folder file's check settings that would weaken a
+// check and were ignored, as "key: value" ("ask_guard: off"); nil when the
+// file asks for none (a refused file asks for nothing). Only the owner's
+// personal setting weakens a check (board #558).
+func (e Effective) FileIgnored() []string {
+	if !e.File.Present || e.File.Err != nil {
+		return nil
+	}
+	var out []string
+	if Valid("ask_guard", e.File.AskGuard) && e.File.AskGuard != AskGuardStrict {
+		out = append(out, "ask_guard: "+e.File.AskGuard)
+	}
+	if e.File.FinishCheck == FinishOff {
+		out = append(out, "finish_check: "+FinishOff)
+	}
+	return out
 }
 
 // Resolve is workbench workbenchID's effective methodology with folder's

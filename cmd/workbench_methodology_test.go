@@ -48,7 +48,8 @@ func TestWorkbenchMethodology_ShowsDefaultsAndSources(t *testing.T) {
 	assert.Equal(t, methodologyValuesJSON{}, res.Personal)
 	assert.Equal(t, methodologyValuesJSON{Preset: "watchtower-flow", AskGuard: "strict", FinishCheck: "on"}, res.Effective)
 	assert.Equal(t, methodologyValuesJSON{Preset: "default", AskGuard: "default", FinishCheck: "default"}, res.Sources)
-	assert.Equal(t, methodologyFileJSON{Path: workbenchmethod.FileRel}, res.File)
+	assert.Equal(t, methodologyFileJSON{Path: workbenchmethod.FileRel, Ignored: []string{}}, res.File)
+	assert.Contains(t, out, `"ignored": []`, "an array, never null")
 	assert.JSONEq(t, `{"preset":"","ask_guard":"","finish_check":""}`, string(mustJSON(t, res.Personal)))
 }
 
@@ -68,9 +69,14 @@ func TestWorkbenchMethodology_SetsDropsAndClears(t *testing.T) {
 	require.NoError(t, err)
 	res := decodeMethodology(t, out)
 	assert.Equal(t, "soft", res.Personal.AskGuard, "the other setting stays")
-	assert.Equal(t, "off", res.Effective.FinishCheck)
-	assert.Equal(t, "file", res.Sources.FinishCheck)
-	assert.Equal(t, methodologyFileJSON{Path: workbenchmethod.FileRel, Present: true, BodyChars: 6}, res.File)
+	assert.Equal(t, "on", res.Effective.FinishCheck, "the file never turns a check down (board #558)")
+	assert.Equal(t, "default", res.Sources.FinishCheck)
+	assert.Equal(t, methodologyFileJSON{Path: workbenchmethod.FileRel, Present: true, BodyChars: 6,
+		Ignored: []string{"finish_check: off"}}, res.File)
+
+	text, _, err := runMethodology(t, id)
+	require.NoError(t, err)
+	assert.Contains(t, text, "ignored       finish_check: off in the folder file")
 
 	_, _, err = runMethodology(t, id, "--clear")
 	require.NoError(t, err)

@@ -16,7 +16,7 @@ import (
 const (
 	briefMethodChars       = 1400
 	briefFolderRulesInline = 1200
-	briefFolderRulesTitle  = "Folder rules (.watchtower/workflow.md — the owner's rules for this folder; they win over the watchtower-flow preset):"
+	briefFolderRulesTitle  = "Folder rules (.watchtower/workflow.md — the team's repo rules, not the owner's words; they win over the watchtower-flow preset):"
 )
 
 // briefMethodSection is the slot for e: the workflow.md body inline (at
@@ -86,7 +86,7 @@ func briefFolderRules(f workbenchmethod.File, room int) string {
 	if f.Truncated {
 		cut = ", cut at 64 KiB"
 	}
-	return fmt.Sprintf("Folder rules: %s (%d chars%s) — read it before you start working.", workbenchmethod.FileRel, f.BodyChars, cut)
+	return fmt.Sprintf("Folder rules: %s (%d chars%s), the team's repo rules — read it before you start working.", workbenchmethod.FileRel, f.BodyChars, cut)
 }
 
 // briefChecksLine names each end-of-turn check that is not at its built-in

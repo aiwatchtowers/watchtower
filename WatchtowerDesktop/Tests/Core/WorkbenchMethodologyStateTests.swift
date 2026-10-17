@@ -46,6 +46,26 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
                        #"workflow.md was ignored: line 2: unknown key "mode". The built-in defaults apply."#)
     }
 
+    /// Board #558: a repo file asking to weaken a check is ignored, and the
+    /// sheet says so, pointing at the owner's own settings.
+    func testFileNoteNamesTheIgnoredChecks() throws {
+        let asks = Self.envelope.replacingOccurrences(of: #""truncated":false"#,
+                                                      with: #""truncated":false,"ignored":["ask_guard: off","finish_check: off"]"#)
+        XCTAssertEqual(try decode(asks).file.ignored, ["ask_guard: off", "finish_check: off"])
+        XCTAssertEqual(try decode(asks).fileNote,
+                       "workflow.md asks for ask_guard: off, finish_check: off; that is ignored. "
+                           + "Only your settings above can turn a check down.")
+        let none = Self.envelope.replacingOccurrences(of: #""truncated":false"#, with: #""truncated":false,"ignored":[]"#)
+        XCTAssertNil(try decode(none).fileNote)
+        let cutToo = asks.replacingOccurrences(of: #""truncated":false"#, with: #""truncated":true"#)
+        XCTAssertEqual(try decode(cutToo).fileNote,
+                       "workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB. "
+                           + "workflow.md asks for ask_guard: off, finish_check: off; that is ignored. "
+                           + "Only your settings above can turn a check down.")
+        XCTAssertTrue(WorkbenchMethodologyKey.askGuard.choiceHelp("file").contains("cannot turn this check down"))
+        XCTAssertTrue(WorkbenchMethodologyKey.preset.choiceHelp("file").contains("workflow.md, else the built-in default"))
+    }
+
     func testFailureNamesWhatFailed() throws {
         let notSaved = Self.envelope.replacingOccurrences(of: #""ok":true,"error":"""#, with: #""ok":false,"error":"database is locked""#)
         XCTAssertEqual(try decode(notSaved).failure, "Could not save the setting: database is locked")
