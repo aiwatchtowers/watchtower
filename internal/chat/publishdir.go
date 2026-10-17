@@ -89,18 +89,15 @@ func (d *PublishDir) Path() string { return d.path }
 // The decision is lexical first, so a path outside is refused without a
 // single syscall — nothing outside the dir is ever stat'ed (no TCC prompt
 // for a path in ~/Documents). A relative p resolves against the work dir
-// (the CLI's cwd), not the publish dir; "~" (the CLI expands it to the home
-// folder) and any ".." component are refused outright, so cleaning can never
-// hide a component the walk below should have seen. Then every existing
-// component from the dir downward is Lstat'ed: a symlink, another user's
-// entry, a special file or a hard-linked file refuses; a missing tail is
-// fine (Write creates it).
+// (the CLI's cwd), not the publish dir, so "~/…" (which the CLI expands to
+// the home folder) lands outside. Any ".." component is refused outright, so
+// cleaning can never hide a component the walk below should have seen. Then
+// every existing component from the dir downward is Lstat'ed: a symlink,
+// another user's entry, a special file or a hard-linked file refuses; a
+// missing tail is fine (Write creates it).
 func (d *PublishDir) Check(p string) error {
 	if p == "" || strings.ContainsRune(p, 0) {
 		return fmt.Errorf("%q: %w", p, ErrOutsidePublishDir)
-	}
-	if strings.HasPrefix(p, "~") {
-		return fmt.Errorf("%s: %w", p, ErrOutsidePublishDir)
 	}
 	for _, part := range strings.Split(filepath.ToSlash(p), "/") {
 		if part == ".." {

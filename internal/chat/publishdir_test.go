@@ -77,7 +77,10 @@ func TestPublishDir_Check(t *testing.T) {
 				assert.NoError(t, err)
 				return
 			}
-			assert.ErrorIs(t, err, want)
+			require.ErrorIs(t, err, want)
+			if strings.Contains(tc.name, "symlink") {
+				assert.Contains(t, err.Error(), "is a symlink")
+			}
 		})
 	}
 }
