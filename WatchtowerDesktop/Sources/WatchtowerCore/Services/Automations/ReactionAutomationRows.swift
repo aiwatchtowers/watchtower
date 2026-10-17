@@ -22,8 +22,16 @@ package enum ReactionAutomationRows {
             guard automation.triggerKind == "event",
                   let event = AutomationTriggerText.eventSpec(specJSON: automation.triggerSpecJSON),
                   event.type == "slack.reaction_added" else { return nil }
-            return ReactionAutomationRow(id: automation.id, name: automation.name, emoji: event.where["emoji"])
+            return ReactionAutomationRow(id: automation.id, name: automation.name, emoji: bareEmoji(event.where["emoji"]))
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// The short name without surrounding colons, as the Go trigger parse
+    /// stores it; nil when there is none.
+    private static func bareEmoji(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let name = raw.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+        return name.isEmpty ? nil : name
     }
 }

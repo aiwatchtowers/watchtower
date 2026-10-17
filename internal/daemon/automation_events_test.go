@@ -688,3 +688,23 @@ func runSyncObservedPhases(t *testing.T) map[string][]string {
 
 // Compile-time: *automations.Bus is an AutomationEvents.
 var _ AutomationEvents = (*automations.Bus)(nil)
+
+// A wired bus whose Begin failed this cycle leaves cycleEvents nil, but a
+// listener exists: the poll must pass a nil sink (state untouched), not the
+// no-bus sink whose reset would drop the reactions placed meanwhile.
+func TestDaemon_ReactionPollBeginFailedLeavesEventSeeds(t *testing.T) {
+	ev := newRecordingEvents(automations.SlackReactionAdded)
+	ev.beginErr = errors.New("db locked")
+	d, database, _ := newEventsTestDaemon(t, ev)
+	id, err := database.CreateSlackAccount(db.SlackAccount{TeamDomain: "acme", Label: "work", CurrentUserID: "1:UOWNER"})
+	require.NoError(t, err)
+	d.config.ReactionCommands.Enabled = true
+	polls := reactionProbe(t, d, database, d.config)
+	stampReactionSeed(t, database)
+
+	require.Nil(t, d.cycleEvents)
+	d.phaseReactionCommands(context.Background())
+
+	assert.Equal(t, 1, *polls)
+	assert.True(t, reactionSeeded(t, database, id), "Begin failed, bus wired: the stamp stays")
+}

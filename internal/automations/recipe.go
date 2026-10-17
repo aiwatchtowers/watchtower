@@ -525,6 +525,12 @@ func parseEvent(n *yaml.Node) (*EventTrigger, error) {
 		if err := validateWhere(v, e); err != nil {
 			return nil, err
 		}
+		// The event carries the bare short name: ":eyes:" and "eyes" match alike.
+		if e.Type == SlackReactionAdded {
+			if emoji, ok := e.Where["emoji"]; ok {
+				e.Where["emoji"] = strings.Trim(emoji, ":")
+			}
+		}
 	}
 	return e, nil
 }

@@ -61,7 +61,7 @@ Two parts:
 - **Reactions section:**
   - The dictionary editor (`ReactionDictionaryViewModel`) moves here unchanged: add, remove, toggle, see trust.
   - Below it, **Recipes that listen to reactions**: every recipe whose trigger is `slack.reaction_added`, shown with its emoji (from `where.emoji`, or "any emoji" when absent). Clicking one opens its normal card.
-  - "New reaction automation" opens the New automation flow with the event trigger preset to `slack.reaction_added`.
+  - "New reaction automation" opens the generic New automation sheet (no preset; pick the `slack.reaction_added` event there).
   - Settings → Slack keeps a single line pointing to Automations → Reactions; the editor itself lives in one place only.
 - **Tracks section:** a list of custom tracks (name, enabled, last scan, events count). Clicking one opens its timeline in the Tracks tab (navigation, not a copy of the view). "New track" opens `CustomTrackManagementSheet`. The Tracks tab itself stays.
 - No new Desktop tables. The sections read what their existing view models already read.

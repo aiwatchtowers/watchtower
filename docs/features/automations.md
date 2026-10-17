@@ -272,6 +272,7 @@ Spec `docs/superpowers/specs/2026-10-18-rules-in-automations-design.md`, plan `d
 - **Calendar:** an event rescheduled beyond the sync window reads `cancelled`; widening the window (`SyncDaysAhead`) reads the newly visible events as `created`; a failed upsert can read as `cancelled` then `created`. A cancelled event confirmed again publishes nothing.
 - **Not event sources:** Linear (spec §8 lists none), history backfill. Comment-only Confluence changes (`children_changed_at`), blog posts and attachments are not events.
 - `where` globs use `path.Match`: `*` does not cross `/`.
+- **Reaction events:** with `reaction_commands.interval_hours > 0` a throttled cycle does not run the poll, so it does not reset the seed stamps either. `reactions.list` is capped (20 pages of 100 items): removing recent reactions can let older ones slide into the window and fire as new (the dictionary path shares this). The `emoji` `where` value is stored without surrounding colons (`:eyes:` = `eyes`).
 - The Desktop edit form picks **On an event** and its type, and edits or removes existing `where` rows; a new `where` key is written in the recipe text (Monaco editor, Change in words, a template).
 
 ## Phase status (P1–P6 shipped)

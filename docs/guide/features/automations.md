@@ -73,7 +73,7 @@ On the card, **Run now** does the same, and **Dry run** works even before you co
 
 A row of three choices above the tab switches between **Automations**, **Reactions** and **Tracks**. They gather your three kinds of rules in one place; each keeps working as before.
 
-- **Reactions** holds the **Reaction commands** list: an emoji you put on a Slack message runs a tool on it, such as a reminder or a draft Jira issue (see [Inbox](inbox.md#reaction-commands)). Below the list, **Automations that listen to reactions** shows each recipe that runs on a reaction, with its emoji, and **New reaction automation** starts one. When reading reactions is off, a banner says so and **Turn on** fixes it; the list stays editable.
+- **Reactions** holds the **Reaction commands** list: an emoji you put on a Slack message runs a tool on it, such as a reminder or a draft Jira issue (see [Inbox](inbox.md#reaction-commands)). Below the list, **Automations that listen to reactions** shows each recipe that runs on a reaction, with its emoji, and **New reaction automation** opens the New automation sheet, where you pick the Slack reaction event. When reading reactions is off, a banner says so and **Turn on** fixes it; the list stays editable.
 - **Tracks** lists your custom tracks. Click one to open its timeline in the Tracks tab; **New track** creates one. The choice appears only while Tracks is shown in the sidebar.
 
 An emoji can be in the list and also trigger a recipe: both happen, once each.

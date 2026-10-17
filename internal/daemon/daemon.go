@@ -1664,11 +1664,16 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		}
 	}
 
-	// The cycle's bus, or a sink nobody listens on (never a typed nil), so
-	// the pipeline clears its event seed stamps while no bus can listen.
-	var sink reactioncmd.EventSink = noReactionBus{}
-	if d.cycleEvents != nil {
+	// The cycle's bus. With no bus wired, a sink nobody listens on (never a
+	// typed nil) so the pipeline clears its event seed stamps. With a bus
+	// wired whose Begin failed this cycle, nil: the state is left alone,
+	// because a reset would drop the reactions placed meanwhile.
+	var sink reactioncmd.EventSink
+	switch {
+	case d.cycleEvents != nil:
 		sink = d.cycleEvents
+	case d.automationEvents == nil:
+		sink = noReactionBus{}
 	}
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
 		dispatched, err := d.reactionCmdPipe.Run(ctx, sink)

@@ -34,6 +34,13 @@ final class ReactionAutomationRowsTests: XCTestCase {
         ])
     }
 
+    func testStripsSurroundingColonsFromEmoji() {
+        let rows = ReactionAutomationRows.rows(from: [
+            item(1, "A", spec: #"{"event":{"type":"slack.reaction_added","where":{"emoji":":eyes:"}}}"#)
+        ])
+        XCTAssertEqual(rows.first?.emoji, "eyes")
+    }
+
     func testSortsByNameCaseInsensitively() {
         let spec = #"{"event":{"type":"slack.reaction_added"}}"#
         let rows = ReactionAutomationRows.rows(from: [

@@ -47,8 +47,8 @@ func (l *reactionList) get(ctx context.Context) ([]slack.ReactedItem, error) {
 }
 
 // resetEventSeeds clears every account's reaction-events stamp while the bus
-// has no listener for reaction events, so the next wanted poll records what was placed meanwhile as
-// history instead of firing for it. Best-effort: an error is logged.
+// has no listener for reaction events, so the next wanted poll records what
+// was placed meanwhile as history instead of firing for it. Best-effort: an error is logged.
 func (p *Pipeline) resetEventSeeds() {
 	if err := p.db.ResetReactionEventsSeeded(); err != nil {
 		p.logf("reaction-commands: clearing reaction-event seed stamps: %v", err)

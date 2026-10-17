@@ -47,7 +47,8 @@ package enum AutomationTriggerText {
             let type = spec?.event?.type ?? ""
             var filters = spec?.event?.where ?? [:]
             var base = eventWords[type] ?? (type.isEmpty ? "On event" : "On \(type)")
-            if type == "slack.reaction_added", let emoji = filters.removeValue(forKey: "emoji"), !emoji.isEmpty {
+            if type == "slack.reaction_added", let raw = filters.removeValue(forKey: "emoji"),
+               case let emoji = raw.trimmingCharacters(in: CharacterSet(charactersIn: ":")), !emoji.isEmpty {
                 base = "On :\(emoji): reactions"
             }
             let filter = filters.sorted { $0.key < $1.key }.map(\.value).joined(separator: ", ")

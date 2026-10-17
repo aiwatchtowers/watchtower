@@ -1,5 +1,6 @@
 package automations
 
+// SlackReactionAdded is the event type of an owner's Slack reaction.
 const SlackReactionAdded = "slack.reaction_added"
 
 // ReactionEvent is one slack.reaction_added event: the owner reacted to a

@@ -160,3 +160,12 @@ func TestReactionEvent_FieldsAndWhere(t *testing.T) {
 	frontmatter := "name: T\ntrigger:\n  event:\n    type: slack.reaction_added\n    where: {message_ts: x}\n"
 	wantParseError(t, recipeWith(frontmatter, "x\n"), "message_ts")
 }
+
+func TestReactionEvent_WhereEmojiColonsNormalised(t *testing.T) {
+	frontmatter := "name: T\ntrigger:\n  event:\n    type: slack.reaction_added\n    where: {emoji: \":eyes:\"}\n"
+	r := mustParse(t, recipeWith(frontmatter, "x\n"), Scope{Kind: ScopePersonal})
+	e := ReactionEvent("acme", "1:C1", "1700000000.000100", "eyes")
+	if !MatchWhere(r.Trigger.Event.Where, e) {
+		t.Errorf("where %v does not match the eyes event", r.Trigger.Event.Where)
+	}
+}
