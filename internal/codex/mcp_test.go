@@ -158,7 +158,7 @@ func TestWatchtowerServerTOML_EnvVars(t *testing.T) {
 // envVars the table carries no env_vars.
 func TestMCPOverride_EnvVars(t *testing.T) {
 	got, _, _ := mcpOverride("/tmp/w.db", []string{"--chat"}, []string{"WATCHTOWER_AUTOMATION_RUN_ID"}, nil, nil, nil)
-	if !strings.HasSuffix(got, `args=["mcp","--db-path","/tmp/w.db","--chat"],enabled=true,env_vars=["WATCHTOWER_AUTOMATION_RUN_ID"]}}`) {
+	if !strings.HasSuffix(got, `args=["mcp","--db-path","/tmp/w.db","--chat"],enabled=true,default_tools_approval_mode="approve",env_vars=["WATCHTOWER_AUTOMATION_RUN_ID"]}}`) {
 		t.Fatalf("override = %s", got)
 	}
 	if plain, _, _ := mcpOverride("/tmp/w.db", nil, nil, nil, nil, nil); strings.Contains(plain, "env_vars") {
@@ -331,6 +331,13 @@ func assertChatRunServers(t *testing.T, servers map[string]map[string]any) {
 	}
 	if got := servers["watchtower"]["args"]; strings.Join(toStrings(got), " ") != "mcp --db-path /tmp/w.db --chat --surface main" {
 		t.Errorf("watchtower args = %v", got)
+	}
+	// codex cancels an MCP call that needs an approval under
+	// approval_policy=never: every mounted server is pre-approved.
+	for _, name := range []string{"watchtower", "tracker", "notes"} {
+		if servers[name]["default_tools_approval_mode"] != "approve" {
+			t.Errorf("%s is not pre-approved: %v", name, servers[name])
+		}
 	}
 	tr := servers["tracker"]
 	if tr["command"] != "npx" || strings.Join(toStrings(tr["env_vars"]), ",") != "TRACKER_TOKEN" ||

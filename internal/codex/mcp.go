@@ -200,12 +200,23 @@ func freeKey(key, suffix string, taken map[string]bool) string {
 // --db-path <db> <extra…>`, env_vars = envVars, enabled.
 func watchtowerEntry(key, dbPath string, extra, envVars []string) string {
 	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
-	fields := []string{"command=" + TOMLString(watchtowerBinary()), "args=" + TOMLStringArray(args), "enabled=true"}
+	fields := []string{"command=" + TOMLString(watchtowerBinary()), "args=" + TOMLStringArray(args), "enabled=true", approveTools}
 	if len(envVars) > 0 {
 		fields = append(fields, "env_vars="+TOMLStringArray(envVars))
 	}
 	return TOMLString(key) + "={" + strings.Join(fields, ",") + "}"
 }
+
+// approveTools pre-approves a mounted server's tools: under
+// approval_policy=never codex 0.145 cancels ("user cancelled MCP tool
+// call") every MCP call that would need an approval, and a headless chat
+// cannot give one (verified with a real run). Safe here because what is
+// mounted is already gated: the watchtower chat server's writes are
+// proposals the owner approves in the app, and a Quick Connection exposes
+// only its QC-02 read-only tools (enabled_tools) — the claude chat's
+// --allowedTools twin. The workbench server does the same
+// (devpack.CodexMCPOverrides).
+const approveTools = `default_tools_approval_mode="approve"`
 
 // externalEntries is one table per mountable Quick Connection (a key not in
 // taken), the environment carrying their secrets, and the ones skipped for
@@ -251,7 +262,7 @@ func externalFields(s ai.ExternalMCPServer, set map[string]string) ([]string, []
 	if allow == nil {
 		allow = []string{}
 	}
-	return append(fields, "enabled_tools="+TOMLStringArray(allow)), env, ""
+	return append(fields, "enabled_tools="+TOMLStringArray(allow), approveTools), env, ""
 }
 
 // httpHeaderVar is the variable that carries header i of connection id.
