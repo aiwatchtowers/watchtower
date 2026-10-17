@@ -346,6 +346,25 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
 
     /// Imported rows reload; a name that was not imported keeps the sheet
     /// open with its reason.
+    /// After a partial failure the list is read again, so the sheet can
+    /// untick what was imported.
+    func testPartialImportReloadsTheList() async throws {
+        let runner = ScriptedToolsRunner { args in
+            args.contains("--")
+                ? Data((#"[{"name":"tracker","id":1,"status":"ok","sign_in":false},"#
+                    + #"{"name":"legacy","error":"cannot import: sse","sign_in":false}]"#).utf8)
+                : Data((#"{"servers":[{"name":"tracker","source":"codex","kind":"stdio","has_secret":false,"#
+                    + #""skip":"a Quick Connection with this name already exists"}],"warnings":[]}"#).utf8)
+        }
+        let vm = ExternalConnectionsViewModel(dbPool: try makePool()) { runner }
+
+        _ = await vm.importConnections(["tracker", "legacy"])
+
+        XCTAssertEqual(runner.invocations.last, ["connections", "import", "--json"])
+        XCTAssertEqual(vm.importList?.servers.first?.canImport, false)
+        XCTAssertEqual(vm.importError, "legacy: cannot import: sse", "the reload keeps the failure on screen")
+    }
+
     func testImportConnectionsReportsFailures() async throws {
         let pool = try makePool()
         let runner = ScriptedToolsRunner { _ in
@@ -359,7 +378,7 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
         let done = await vm.importConnections(["tracker", "legacy"])
 
         XCTAssertFalse(done)
-        XCTAssertEqual(runner.invocations, [["connections", "import", "--json", "--", "tracker", "legacy"]])
+        XCTAssertEqual(runner.invocations.first, ["connections", "import", "--json", "--", "tracker", "legacy"])
         XCTAssertEqual(vm.importError, "legacy: cannot import: sse")
         XCTAssertEqual(vm.connections.map(\.name), ["tracker"])
         XCTAssertFalse(vm.isImporting)

@@ -166,22 +166,23 @@ func TestMCPOverride_EnvVars(t *testing.T) {
 	}
 }
 
-// A connection whose env would change a variable codex already has (or one
-// codex reads itself) is not mounted and is reported; two connections
-// setting one variable differently mount only the first. Header variables
-// are named after the connection id, so two http connections never clash.
+// A connection whose env would change a variable codex reads itself (its
+// network, TLS, runtime, loader or locations — any case) or one codex
+// already holds is not mounted and is reported; two connections setting one
+// variable differently mount only the first. Header variables are named
+// after the connection id, so two http connections never clash.
 func TestMCPOverride_EnvConflictsSkipTheConnection(t *testing.T) {
 	ext := []ai.ExternalMCPServer{
 		{ID: 1, Name: "a", Kind: "stdio", Command: "a", Env: map[string]string{"TOKEN": "1"}},
 		{ID: 2, Name: "b", Kind: "stdio", Command: "b", Env: map[string]string{"TOKEN": "2"}},
 		{ID: 3, Name: "c", Kind: "stdio", Command: "c", Env: map[string]string{"HOME": "/elsewhere"}},
 		{ID: 4, Name: "d", Kind: "stdio", Command: "d", Env: map[string]string{"OPENAI_API_KEY": "k"}},
-		{ID: 5, Name: "e", Kind: "stdio", Command: "e", Env: map[string]string{"HOME": "/home/acme"}},
+		{ID: 5, Name: "e", Kind: "stdio", Command: "e", Env: map[string]string{"ACME_REGION": "eu"}},
 		{ID: 6, Name: "f", Kind: "http", URL: "https://f.example.com", Headers: map[string]string{"X": "1"}},
 		{ID: 7, Name: "g", Kind: "http", URL: "https://g.example.com", Headers: map[string]string{"X": "2"}},
 		{ID: 8, Name: "h", Kind: "http", URL: "https://h.example.com", Headers: map[string]string{"X": "3"}},
 	}
-	base := []string{"HOME=/home/acme", "WATCHTOWER_QC_8_0=already-set"}
+	base := []string{"HOME=/home/acme", "ACME_REGION=eu", "WATCHTOWER_QC_8_0=already-set"}
 	got, env, skipped := mcpOverride("/tmp/w.db", nil, nil, ext, nil, base)
 	servers := overrideServers(t, got)
 	for name, want := range map[string]bool{"a": true, "b": false, "c": false, "d": false, "e": true, "f": true, "g": true, "h": false} {
@@ -189,7 +190,7 @@ func TestMCPOverride_EnvConflictsSkipTheConnection(t *testing.T) {
 			t.Errorf("%s mounted = %v, want %v (%s)", name, ok, want, got)
 		}
 	}
-	if strings.Join(env, " ") != "TOKEN=1 HOME=/home/acme WATCHTOWER_QC_6_0=1 WATCHTOWER_QC_7_0=2" {
+	if strings.Join(env, " ") != "TOKEN=1 ACME_REGION=eu WATCHTOWER_QC_6_0=1 WATCHTOWER_QC_7_0=2" {
 		t.Errorf("env = %v", env)
 	}
 	if len(skipped) != 4 || !strings.Contains(skipped[2], "TOKEN") || !strings.Contains(skipped[8], "WATCHTOWER_QC_8_0") {
@@ -197,6 +198,21 @@ func TestMCPOverride_EnvConflictsSkipTheConnection(t *testing.T) {
 	}
 	if again := EnvConflicts(ext, base); len(again) != 4 {
 		t.Errorf("EnvConflicts = %v, want the same four", again)
+	}
+}
+
+// Every variable codex reads itself is refused whatever its value, so a
+// connection can never reconfigure the codex process.
+func TestEnvConflicts_CodexOwnVariables(t *testing.T) {
+	for i, k := range []string{"PATH", "https_proxy", "ALL_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR",
+		"RUST_LOG", "NODE_OPTIONS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "TMPDIR", "XDG_CONFIG_HOME", "CODEX_HOME", "OPENAI_BASE_URL"} {
+		got := EnvConflicts([]ai.ExternalMCPServer{{ID: int64(i + 1), Name: "s", Kind: "stdio", Command: "s", Env: map[string]string{k: "v"}}}, nil)
+		if !strings.Contains(got[int64(i+1)], k) {
+			t.Errorf("%s: not refused (%v)", k, got)
+		}
+	}
+	if got := EnvConflicts([]ai.ExternalMCPServer{{ID: 1, Kind: "stdio", Env: map[string]string{"ACME_TOKEN": "v"}}}, nil); len(got) != 0 {
+		t.Errorf("an ordinary variable is refused: %v", got)
 	}
 }
 

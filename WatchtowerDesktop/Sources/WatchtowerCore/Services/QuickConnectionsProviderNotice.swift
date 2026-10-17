@@ -25,9 +25,10 @@ public enum QuickConnectionsProviderNotice {
 
     /// The one-time notice for codex chat users (board #594): their own
     /// codex MCP servers no longer load in the chat until imported. Nil for
-    /// another provider or once dismissed (or after an import).
-    public static func codexImportNotice(forProvider provider: String?, dismissed: Bool) -> String? {
-        guard provider == "codex", !dismissed else { return nil }
+    /// another provider, once dismissed (or after an import), or when their
+    /// codex config declares no MCP server (`codex_servers`, nil = unknown).
+    public static func codexImportNotice(forProvider provider: String?, dismissed: Bool, codexServers: Int?) -> String? {
+        guard provider == "codex", !dismissed, (codexServers ?? 0) > 0 else { return nil }
         return "Your own codex MCP servers are no longer loaded in the Watchtower chat. "
             + "Import them to use them here, with read-only tools only."
     }

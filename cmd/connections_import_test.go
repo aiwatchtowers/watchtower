@@ -73,6 +73,9 @@ func TestConnectionsImport_ListAndImport(t *testing.T) {
 		byName[s.Name] = s
 	}
 	require.Len(t, byName, 6)
+	assert.Equal(t, 2, list.CodexServers)
+	assert.Equal(t, filepath.Join(os.Getenv("HOME"), ".codex", "config.toml"), list.Sources.Codex)
+	assert.Equal(t, filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json"), list.Sources.Claude)
 	assert.True(t, byName["tracker"].HasSecret)
 	assert.Empty(t, byName["tracker"].Skip, "the login shell's variable resolves the server")
 	assert.NotContains(t, stdout, "tok-1", "the list never prints a secret")

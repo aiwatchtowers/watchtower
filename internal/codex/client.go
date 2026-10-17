@@ -44,18 +44,10 @@ type Client struct {
 	// loadExternal yields the owner's enabled Quick Connections, called once
 	// per launch (SetExternalMCPServers / SetExternalMCPLoader).
 	loadExternal func() []ai.ExternalMCPServer
-	// onSkipped hears the Quick Connections a launch could not mount
-	// (SetExternalMCPSkipped).
-	onSkipped func(map[int64]string)
 	// serversFromHome: the child's CODEX_HOME declares its servers itself
 	// (SetServersFromHome); no -c override is added.
 	serversFromHome bool
 }
-
-// SetExternalMCPSkipped makes every launch report the Quick Connections it
-// could not mount (id → reason, mcpOverride) to f, so the caller can show
-// it on the connection's row.
-func (c *Client) SetExternalMCPSkipped(f func(map[int64]string)) { c.onSkipped = f }
 
 // SetServersFromHome is for a child whose CODEX_HOME (SetChildEnv) is a
 // scrubbed per-run home that already declares exactly its servers (the
@@ -295,10 +287,9 @@ func (c *Client) mount() (runMount, error) {
 	} else if c.loadExternal != nil {
 		external = c.loadExternal()
 	}
-	override, env, skipped := mcpOverride(dbPath, c.mcpArgs, c.mcpEnvVars, external, owner, base)
-	if len(skipped) > 0 && c.onSkipped != nil {
-		c.onSkipped(skipped)
-	}
+	// The caller already left out what EnvConflicts refuses; anything the
+	// override still skips is only logged.
+	override, env, _ := mcpOverride(dbPath, c.mcpArgs, c.mcpEnvVars, external, owner, base)
 	return runMount{args: []string{"-c", override}, env: env}, nil
 }
 

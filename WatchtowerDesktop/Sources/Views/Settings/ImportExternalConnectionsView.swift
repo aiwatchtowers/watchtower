@@ -2,7 +2,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// Sheet that imports the MCP servers of the owner's own codex
-/// (~/.codex/config.toml) and Claude Code (~/.claude.json) configs as Quick
+/// (CODEX_HOME/config.toml) and Claude Code (~/.claude.json) configs — the
+/// caption names the files the CLI read — as Quick
 /// Connections (board #594): the codex chat no longer reads ~/.codex, so this
 /// one click brings those servers back. Every importable server starts
 /// ticked unless its config turned it off; one that cannot be imported shows
@@ -25,8 +26,9 @@ struct ImportExternalConnectionsView: View {
                     .buttonStyle(.plain)
             }
             Text(
-                "Servers from ~/.codex/config.toml and ~/.claude.json. Each one you pick becomes a "
-                    + "Quick Connection: its keys move to a private file, and the assistant gets only its read-only tools."
+                "Servers from \(vm.importList?.sources?.described() ?? "your codex and Claude Code configs"). "
+                    + "Each one you pick becomes a Quick Connection: its keys move to a private file, "
+                    + "and the assistant gets only its read-only tools."
             )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -50,7 +52,13 @@ struct ImportExternalConnectionsView: View {
                 Button("Import") {
                     Task {
                         let names = vm.importList?.servers.map(\.name).filter(picked.contains) ?? []
-                        if await vm.importConnections(names) { dismiss() }
+                        if await vm.importConnections(names) {
+                            dismiss()
+                        } else {
+                            // Imported ones now read "already exists".
+                            let importable = Set(vm.importList?.servers.filter(\.canImport).map(\.name) ?? [])
+                            picked.formIntersection(importable)
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)

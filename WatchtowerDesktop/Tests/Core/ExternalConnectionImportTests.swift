@@ -36,6 +36,14 @@ final class ExternalConnectionImportTests: XCTestCase {
         XCTAssertEqual(list.servers[1].note, "named notes-2: notes is taken by another server")
     }
 
+    func testSourcesAndCodexServerCount() throws {
+        let json = #"{"servers":[],"warnings":[],"sources":{"codex":"/home/acme/.codex/config.toml","#
+            + #""claude":"/srv/claude/.claude.json"},"codex_servers":3}"#
+        let list = try JSONDecoder().decode(ExternalConnectionImportList.self, from: Data(json.utf8))
+        XCTAssertEqual(list.codexServers, 3)
+        XCTAssertEqual(list.sources?.described(home: "/home/acme"), "~/.codex/config.toml and /srv/claude/.claude.json")
+    }
+
     /// Go initialises both slices, so the empty state decodes.
     func testDecodesEmptyList() throws {
         let list = try JSONDecoder().decode(

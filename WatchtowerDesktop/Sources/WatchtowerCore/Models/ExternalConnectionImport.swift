@@ -8,6 +8,34 @@ import Foundation
 package struct ExternalConnectionImportList: Decodable, Equatable {
     package let servers: [Server]
     package let warnings: [String]
+    /// The two files the CLI read (nil from an older CLI).
+    package let sources: Sources?
+    /// How many servers the codex config declares, importable or not.
+    package let codexServers: Int?
+
+    package struct Sources: Decodable, Equatable {
+        package let codex: String
+        package let claude: String
+
+        package init(codex: String, claude: String) {
+            self.codex = codex
+            self.claude = claude
+        }
+
+        /// "<codex path> and <claude path>", the home folder shown as ~.
+        package func described(home: String = NSHomeDirectory()) -> String {
+            "\(Self.tilde(codex, home: home)) and \(Self.tilde(claude, home: home))"
+        }
+
+        package static func tilde(_ path: String, home: String) -> String {
+            path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case servers, warnings, sources
+        case codexServers = "codex_servers"
+    }
 
     package struct Server: Decodable, Equatable, Identifiable {
         package let name: String
@@ -69,9 +97,11 @@ package struct ExternalConnectionImportList: Decodable, Equatable {
         }
     }
 
-    package init(servers: [Server], warnings: [String]) {
+    package init(servers: [Server], warnings: [String], sources: Sources? = nil, codexServers: Int? = nil) {
         self.servers = servers
         self.warnings = warnings
+        self.sources = sources
+        self.codexServers = codexServers
     }
 
     /// `connections import --json`: what can be imported, read-only.

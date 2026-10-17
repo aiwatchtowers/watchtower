@@ -209,19 +209,22 @@ func TestCodexSessionClient_MountsConnectionsPerLaunch(t *testing.T) {
 	assert.Contains(t, got, `enabled_tools=["list_boards"]`)
 	assert.Contains(t, got, `"--surface","main"`)
 
-	// A connection codex cannot mount (its variable would change codex's
-	// own environment) is not mounted and says so on its row, not green.
+	// A connection codex cannot mount (its variable would reconfigure
+	// codex) is left out before its tools are touched — it was never
+	// listed, and a listing would have failed in cmd tests — and its row
+	// says why, turn after turn, never flipping to ok in between.
 	bad, err := database.InsertExternalConnection(db.ExternalConnection{Name: "clash", Kind: "stdio", Command: "srv", Enabled: true})
 	require.NoError(t, err)
-	require.NoError(t, database.SetExternalConnectionTools(bad,
-		[]db.ExternalTool{{Name: "list_items"}}, time.Now().UTC().Format(time.RFC3339)))
 	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), bad).Save(
-		&externalmcp.Secret{Env: map[string]string{"OPENAI_API_KEY": "k"}}))
-	assert.NotContains(t, override(), `"clash"`)
-	row, err := database.GetExternalConnection(bad)
-	require.NoError(t, err)
-	assert.Equal(t, "error", row.Status)
-	assert.Contains(t, row.Error, "not available in the codex chat")
+		&externalmcp.Secret{Env: map[string]string{"HTTPS_PROXY": "http://proxy.example.com:3128"}}))
+	for range 2 {
+		assert.NotContains(t, override(), `"clash"`)
+		row, err := database.GetExternalConnection(bad)
+		require.NoError(t, err)
+		assert.Equal(t, "error", row.Status)
+		assert.Contains(t, row.Error, "not available in the codex chat: its variable HTTPS_PROXY")
+		assert.False(t, row.ToolsListed, "its tools were never listed")
+	}
 }
 
 // Ollama has no default model; an unset one refuses the session up front

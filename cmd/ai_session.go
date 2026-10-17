@@ -245,8 +245,9 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 func codexSessionClient(w sessionWiring) *codex.Client {
 	c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
 	c.SetMCPArgs(w.mcpArgs)
-	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer { return loadExternalMCPServersFrom(w.cfg, w.database) })
-	c.SetExternalMCPSkipped(func(skipped map[int64]string) { markCodexSkipped(w.database, skipped) })
+	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
+		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
+	})
 	// CHAT-04 (spec §9): the chat session's system prompt and replayed
 	// history must never sit on this process's argv — route the whole
 	// turn through stdin instead of -c developer_instructions=... and a

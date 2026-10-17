@@ -31,6 +31,12 @@ struct QuickConnectionsDetail: View {
         .padding(.horizontal)
         .padding(.top, 4)
         .onAppear { providerID = Constants.aiProviderID() }
+        .task {
+            // The codex notice shows only when the owner's codex config has
+            // MCP servers to import.
+            guard Constants.aiProviderID() == "codex", !codexImportNoticeDismissed else { return }
+            await appState.externalConnectionsViewModel?.loadImportCandidates()
+        }
     }
 
     private var quickConnectionsSection: some View {
@@ -41,7 +47,8 @@ struct QuickConnectionsDetail: View {
                     .foregroundStyle(.secondary)
             }
             if let notice = QuickConnectionsProviderNotice.codexImportNotice(
-                forProvider: providerID, dismissed: codexImportNoticeDismissed
+                forProvider: providerID, dismissed: codexImportNoticeDismissed,
+                codexServers: appState.externalConnectionsViewModel?.importList?.codexServers
             ) {
                 codexImportNoticeRow(notice)
             }
@@ -80,11 +87,11 @@ struct QuickConnectionsDetail: View {
                     Button("Add Connection") {
                         showAddConnectionSheet = true
                     }
-                    Button("Import from ~/.codex and ~/.claude…") {
+                    Button("Import from codex and Claude Code…") {
                         showImportSheet = true
                         codexImportNoticeDismissed = true
                     }
-                    .help("Add the MCP servers you set up for codex or Claude Code as Quick Connections")
+                    .help("Add the MCP servers of your codex config (CODEX_HOME/config.toml) and ~/.claude.json as Quick Connections")
                 }
                 .disabled(vm.isBusy)
                 .sheet(isPresented: $showImportSheet) {

@@ -182,7 +182,8 @@ func mcpOverride(dbPath string, extra, envVars []string, external []ai.ExternalM
 
 // EnvConflicts are the Quick Connections a codex launch with baseEnv could
 // not mount (id → reason): the same check mcpOverride applies, so the
-// caller can show it on the connection's row.
+// caller can skip them before touching their credentials or tools and show
+// why on the connection's row.
 func EnvConflicts(external []ai.ExternalMCPServer, baseEnv []string) map[int64]string {
 	_, _, skipped := externalEntries(external, map[string]bool{}, envMap(baseEnv))
 	return skipped
@@ -300,8 +301,25 @@ func stdioEnv(s ai.ExternalMCPServer) []string {
 	return env
 }
 
+// codexOwnVars are variables the codex process itself reads (its network,
+// TLS, runtime, loader, locations and its own settings); codexOwnPrefixes
+// the families of them. A Quick Connection's env lands in codex's own
+// environment (env_vars passes it on), so one that sets any of these would
+// reconfigure codex and is not mounted. Compared upper-cased.
+var (
+	codexOwnVars = []string{
+		"PATH", "HOME", "TMPDIR", "SHELL", "USER", "LOGNAME", "LANG", "TERM",
+		"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+	}
+	codexOwnPrefixes = []string{"CODEX_", "OPENAI_", "RUST_", "NODE_", "DYLD_", "LD_", "XDG_", "LC_"}
+)
+
+// envConflicts: k would reconfigure codex itself (codexOwnVars), or it
+// already holds a different value in set.
 func envConflicts(k, v string, set map[string]string) bool {
-	if strings.HasPrefix(k, "CODEX_") || strings.HasPrefix(k, "OPENAI_") {
+	upper := strings.ToUpper(k)
+	if slices.Contains(codexOwnVars, upper) || slices.ContainsFunc(codexOwnPrefixes, func(p string) bool { return strings.HasPrefix(upper, p) }) {
 		return true
 	}
 	old, ok := set[k]

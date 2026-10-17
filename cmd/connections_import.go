@@ -44,10 +44,25 @@ func init() {
 	connectionsCmd.AddCommand(connectionsImportCmd)
 }
 
-// connectionImportListJSON is `connections import --json` without names.
+// connectionImportListJSON is `connections import --json` without names:
+// the servers, the two files read (Sources) and how many servers the codex
+// config declares (CodexServers, importable or not — the Desktop's codex
+// notice shows only when there are some).
 type connectionImportListJSON struct {
-	Servers  []externalmcp.ImportCandidate `json:"servers"`
-	Warnings []string                      `json:"warnings"`
+	Servers      []externalmcp.ImportCandidate `json:"servers"`
+	Warnings     []string                      `json:"warnings"`
+	Sources      importSourcesJSON             `json:"sources"`
+	CodexServers int                           `json:"codex_servers"`
+}
+
+// importSourcesJSON names the files `connections import` reads.
+type importSourcesJSON struct {
+	Codex  string `json:"codex"`
+	Claude string `json:"claude"`
+}
+
+func importSources() importSourcesJSON {
+	return importSourcesJSON{Codex: filepath.Join(codex.OwnerHome(), "config.toml"), Claude: claudeConfigPath()}
 }
 
 // connectionImportResultJSON is one imported name. SignIn: an http server
@@ -88,7 +103,8 @@ func importGetenv(k string) string {
 // `connections add` checks its flags and secret, with a server whose name
 // is already a Quick Connection marked as such.
 func importCandidates(database *db.DB) ([]externalmcp.ImportCandidate, []string, error) {
-	cands, warnings := externalmcp.DiscoverImports(filepath.Join(codex.OwnerHome(), "config.toml"), claudeConfigPath(), importGetenv)
+	src := importSources()
+	cands, warnings := externalmcp.DiscoverImports(src.Codex, src.Claude, importGetenv)
 	existing, err := database.ListExternalConnections()
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing connections: %w", err)
@@ -132,7 +148,14 @@ func runConnectionsImport(cmd *cobra.Command, names []string) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	if len(names) == 0 {
 		if connectionsImportFlagJSON {
-			return writeJSON(out, connectionImportListJSON{Servers: cands, Warnings: warnings})
+			codexServers := 0
+			for _, c := range cands {
+				if c.Source == "codex" {
+					codexServers++
+				}
+			}
+			return writeJSON(out, connectionImportListJSON{Servers: cands, Warnings: warnings,
+				Sources: importSources(), CodexServers: codexServers})
 		}
 		printImportCandidates(out, errOut, cands, warnings)
 		return nil

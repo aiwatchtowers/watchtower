@@ -214,20 +214,35 @@ var (
 // process the Desktop starts has a reduced environment. A shell that fails
 // or takes over 5 s yields none; its process group is killed.
 func LoginShellEnv() map[string]string {
-	loginEnvOnce.Do(func() { loginEnv = readLoginShellEnv() })
+	loginEnvOnce.Do(func() { loginEnv = readLoginShellEnv(loginShell(), 5*time.Second) })
 	return loginEnv
 }
 
-func readLoginShellEnv() map[string]string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// loginEnvMarker separates what the shell's startup files print from the
+// environment dump.
+const loginEnvMarker = "__WATCHTOWER_ENV__"
+
+// readLoginShellEnv runs shell as a login shell that prints its
+// environment; nil when it fails or takes longer than timeout (its whole
+// process group is then killed).
+func readLoginShellEnv(shell string, timeout time.Duration) map[string]string {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	const marker = "__WATCHTOWER_ENV__"
-	cmd := exec.CommandContext(ctx, loginShell(), "-l", "-c", "printf '\\n"+marker+"\\n'; env -0")
+	cmd := exec.CommandContext(ctx, shell, "-l", "-c", "printf '\\n"+loginEnvMarker+"\\n'; env -0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
-	out, _ := cmd.Output()
-	_, after, ok := bytes.Cut(out, []byte("\n"+marker+"\n"))
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	return parseLoginShellEnv(out)
+}
+
+// parseLoginShellEnv reads the NUL-separated `env -0` dump after the
+// marker line; nil without the marker.
+func parseLoginShellEnv(out []byte) map[string]string {
+	_, after, ok := bytes.Cut(out, []byte("\n"+loginEnvMarker+"\n"))
 	if !ok {
 		return nil
 	}

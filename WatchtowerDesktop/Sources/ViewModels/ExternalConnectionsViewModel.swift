@@ -361,6 +361,11 @@ final class ExternalConnectionsViewModel {
         await refreshAsync()
         guard let results else { return false }
         let failures = results.compactMap(\.failure) + (await signInImported(results))
+        if !failures.isEmpty, !importCancelled {
+            // The sheet stays open: list again, so what was imported reads
+            // "already exists" and drops out of the selection.
+            await loadImportCandidates()
+        }
         importError = failures.isEmpty ? nil : failures.joined(separator: "\n")
         return failures.isEmpty && !importCancelled
     }
