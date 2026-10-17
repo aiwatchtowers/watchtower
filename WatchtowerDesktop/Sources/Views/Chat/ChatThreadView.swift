@@ -2,12 +2,6 @@ import SwiftUI
 import AppKit
 import WatchtowerCore
 
-/// One assistant answer handed to `QuoteReplySheet`.
-private struct QuoteTarget: Identifiable {
-    let id: Int64
-    let text: String
-}
-
 /// The centered thread column (spec §3.1, max ~760 pt) on the shared
 /// `ChatFeedView`. Reads `liveTurn` identity only; its text is read by
 /// `LiveAssistantRow` alone.
@@ -16,11 +10,9 @@ struct ChatThreadView: View {
     @Environment(AppState.self) private var appState
     let ownerName: String
 
-    /// The answer being quoted ("Quote in reply"); nil = no sheet.
-    @State private var quoting: QuoteTarget?
-
     var body: some View {
         ChatFeedView(state: threadState, lastRowID: chatVM.thread.last?.id,
+                     selectionQuote: selectionQuote,
                      onScrollTargetConsumed: { chatVM.consumeScrollTarget() }, content: {
             if chatVM.thread.isEmpty {
                 ChatEmptyState(ownerName: ownerName, onPrompt: usePrompt)
@@ -38,9 +30,15 @@ struct ChatThreadView: View {
             }
             ChatErrorStrip(chatVM: chatVM)
         })
-        .sheet(item: $quoting) { target in
-            QuoteReplySheet(messageText: target.text) { chatVM.addQuote($0, comment: $1) }
-        }
+    }
+
+    /// "Ask about this" on a selected passage: it joins the composer's
+    /// quote batch (`ChatViewModel.addQuote`), which focuses the composer.
+    private var selectionQuote: ChatFeedSelectionQuote {
+        ChatFeedSelectionQuote(
+            ownerTexts: { chatVM.thread.filter(\.message.isUser).map { ChatTurnComposer.displayParts($0.message.text).body } },
+            onQuote: { chatVM.addQuote($0, comment: "") }
+        )
     }
 
     private var threadState: ChatAutoScrollPolicy.ThreadState {
@@ -99,8 +97,7 @@ struct ChatThreadView: View {
             submitEdit: { chatVM.edit(messageID: $0, newText: $1) },
             cancelEdit: { chatVM.editingMessageID = nil },
             openArtifact: { chatVM.openArtifact(key: $0) },
-            openSources: { chatVM.openSources(messageID: $0, sources: $1) },
-            quote: { id, text in quoting = QuoteTarget(id: id, text: text) }
+            openSources: { chatVM.openSources(messageID: $0, sources: $1) }
         )
     }
 

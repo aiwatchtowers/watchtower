@@ -2,19 +2,25 @@ import XCTest
 @testable import WatchtowerCore
 
 final class ChatQuoteReplyTests: XCTestCase {
-    func testArtifactFencesBecomeOneBracketedLine() {
-        let text = """
-        Intro text.
+    func testASelectionInAnAnswerQuotesItsSpan() {
+        let block = "Keep the retry budget small."
+        let range = (block as NSString).range(of: "retry budget")
+        XCTAssertEqual(ChatQuoteReply.selectionQuote(in: block, selection: range, ownerTexts: ["Why?"]), "retry budget")
+        XCTAssertNil(ChatQuoteReply.selectionQuote(in: block, selection: NSRange(location: 4, length: 1), ownerTexts: []),
+                     "whitespace only")
+    }
 
-        :::artifact key="plan" kind="document" title="Plan"
-        Body of the plan.
-        :::
+    func testASelectionInTheOwnersOwnMessageOffersNoQuote() {
+        let mine = "Keep the retry budget small."
+        let range = (mine as NSString).range(of: "retry budget")
+        XCTAssertNil(ChatQuoteReply.selectionQuote(in: mine, selection: range, ownerTexts: ["Hi", mine]))
+    }
 
-        Outro.
-        """
-        XCTAssertEqual(ChatQuoteReply.quotableMarkdown(text), "Intro text.\n\n[Artifact: Plan]\n\nOutro.")
-        XCTAssertEqual(ChatQuoteReply.quotableMarkdown(":::artifact key=\"k1\" kind=\"code\" title=\"\"\nx\n:::"),
-                       "[Artifact: k1]")
+    /// `NSTextView` reports UTF-16 offsets: an emoji is two of them.
+    func testASelectionAcrossAnEmojiKeepsWholeCharacters() {
+        let block = "Ship it \u{1F680} on Friday"
+        let range = (block as NSString).range(of: "\u{1F680} on")
+        XCTAssertEqual(ChatQuoteReply.selectionQuote(in: block, selection: range, ownerTexts: []), "\u{1F680} on")
     }
 
     func testSelectedTextIsTheRangeOrNilWhenEmpty() {

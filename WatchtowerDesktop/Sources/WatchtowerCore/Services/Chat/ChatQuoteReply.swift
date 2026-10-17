@@ -14,25 +14,19 @@ package struct ChatQuoteDraft: Identifiable, Equatable, Sendable {
     }
 }
 
-/// "Quote in reply" for the main chat. Pure.
+/// Quoting a passage selected in the main chat's feed into the reply batch
+/// ("Ask about this"). Pure.
 package enum ChatQuoteReply {
     package static let batchHeader = "About these parts of your answers:"
 
-    /// An assistant answer's markdown without its artifact fences: each
-    /// artifact becomes one bracketed line — the card the owner saw — so the
-    /// quote sheet never shows raw `:::artifact` syntax.
-    package static func quotableMarkdown(_ assistantText: String) -> String {
-        ArtifactParser.parse(assistantText, final: true).segments
-            .map { segment -> String in
-                switch segment {
-                case .markdown(let markdown):
-                    markdown.trimmingCharacters(in: .whitespacesAndNewlines)
-                case .artifact(let draft):
-                    "[Artifact: \(draft.title.isEmpty ? draft.key : draft.title)]"
-                }
-            }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
+    /// The quote a feed selection offers: the selected span of one rendered
+    /// text block (`blockText`, as the feed shows it), or nil when nothing
+    /// but whitespace is selected or the block is one of the owner's own
+    /// messages (`ownerTexts`, as their bubbles show them) — the batch
+    /// quotes the assistant's answers only.
+    package static func selectionQuote(in blockText: String, selection: NSRange, ownerTexts: [String]) -> String? {
+        guard !ownerTexts.contains(blockText) else { return nil }
+        return selectedText(blockText, selection: selection)
     }
 
     /// The selected span of `text` (a UTF-16 `NSRange`, as `NSTextView`

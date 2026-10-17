@@ -37,6 +37,8 @@ struct ChatComposerField: View {
     /// quote batch): enables Send with an empty field. Defaults to none, so
     /// every other call site is unchanged.
     var hasPendingContent = false
+    /// Each new value puts the keyboard in the field, caret at the end.
+    var focusRequest: UUID?
     @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
@@ -58,7 +60,8 @@ struct ChatComposerField: View {
             onRemoveAttachment: onRemoveAttachment,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
-            hasPendingContent: hasPendingContent
+            hasPendingContent: hasPendingContent,
+            focusRequest: focusRequest
         )
     }
 }
@@ -86,6 +89,7 @@ struct ChatComposerFieldContent: View {
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     var hasPendingContent = false
+    var focusRequest: UUID?
     @State private var inputHeight: CGFloat = 22
 
     var body: some View {
@@ -144,7 +148,8 @@ struct ChatComposerFieldContent: View {
                     onArrowUpWhenEmpty: onArrowUpWhenEmpty,
                     onPasteImage: onPasteImage,
                     onCursorChange: onCursorChange,
-                    onPickerKey: onPickerKey
+                    onPickerKey: onPickerKey,
+                    focusRequest: focusRequest
                 ) {
                     guard canSend else { return }
                     onSend()
@@ -227,6 +232,8 @@ struct ExpandingTextInput: NSViewRepresentable {
     var onCursorChange: ((String, Int) -> Void)?
     /// Offered Up/Down/Enter/Tab/Esc first while a picker may be open.
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// Each new value makes the text view first responder, caret at the end.
+    var focusRequest: UUID?
     var onSubmit: () -> Void
 
     private let minHeight: CGFloat = 20
@@ -281,6 +288,15 @@ struct ExpandingTextInput: NSViewRepresentable {
                 context.coordinator.recalculateHeight(textView)
             }
         }
+        if focusRequest != context.coordinator.focusRequest {
+            context.coordinator.focusRequest = focusRequest
+            if focusRequest != nil {
+                DispatchQueue.main.async {
+                    textView.window?.makeFirstResponder(textView)
+                    textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+                }
+            }
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -289,9 +305,13 @@ struct ExpandingTextInput: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ExpandingTextInput
+        /// The last `focusRequest` seen: only one made after the field
+        /// appeared moves the keyboard.
+        var focusRequest: UUID?
 
         init(_ parent: ExpandingTextInput) {
             self.parent = parent
+            focusRequest = parent.focusRequest
         }
 
         deinit {
