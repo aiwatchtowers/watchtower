@@ -3,6 +3,7 @@ package sessionhost
 import (
 	"bytes"
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -31,7 +32,7 @@ func TestFrame_RejectsOversize(t *testing.T) {
 }
 
 func TestFrame_Truncated(t *testing.T) {
-	if _, _, err := ReadFrame(bytes.NewReader(nil)); err == nil || err.Error() != "EOF" {
+	if _, _, err := ReadFrame(bytes.NewReader(nil)); !errors.Is(err, io.EOF) {
 		t.Fatalf("empty err = %v", err)
 	}
 	if _, _, err := ReadFrame(bytes.NewReader([]byte{0x84, 0, 0, 0, 5, 'a'})); err == nil {

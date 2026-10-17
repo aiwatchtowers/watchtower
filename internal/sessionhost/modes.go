@@ -15,7 +15,7 @@ var trackedModes = map[int]bool{
 	1004: false, 1006: false, 1047: false, 1049: false, 2004: false,
 }
 
-// ModeTracker follows DEC private mode changes (CSI ? Pm h|l) in an output
+// ModeTracker is not safe for concurrent use. It follows DEC private mode changes (CSI ? Pm h|l) in an output
 // stream so a fresh terminal can be put back into the same state.
 type ModeTracker struct {
 	state   map[int]bool
@@ -27,8 +27,11 @@ func (m *ModeTracker) Observe(p []byte) {
 	if m.state == nil {
 		m.state = map[int]bool{}
 	}
-	data := append(m.pending, p...) //nolint:gocritic // pending is reassigned below
-	m.pending = nil
+	data := p
+	if len(m.pending) > 0 {
+		data = append(m.pending, p...)
+		m.pending = nil
+	}
 	i := 0
 	for i < len(data) {
 		esc := bytes.IndexByte(data[i:], 0x1b)
