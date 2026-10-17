@@ -60,7 +60,7 @@ struct MobileSettingsView: View {
             Button("Allow") { model.confirmAllow() }
             Button("Cancel", role: .cancel) { model.pendingAllow = nil }
         } message: {
-            Text("The phone can then send text to sessions running on this Mac. Revoke turns it off again.")
+            Text(MobileSettingsViewModel.allowMessage(model.pendingAllow))
         }
         .confirmationDialog(
             MobileSettingsViewModel.startSessionsQuestion(name: model.pendingStartSessionsAllow?.name ?? "this phone"),

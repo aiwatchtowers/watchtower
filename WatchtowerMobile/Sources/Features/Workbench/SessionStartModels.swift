@@ -57,7 +57,7 @@ struct StartGrant: Equatable {
 
     init(_ grant: DeviceGrant?) {
         typingAllowed = grant?.typingAllowed ?? false
-        startSessionsAllowed = grant?.startSessionsAllowed ?? false
+        startSessionsAllowed = grant?.mayStartSessions ?? false
     }
 }
 

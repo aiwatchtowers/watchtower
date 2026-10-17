@@ -716,7 +716,8 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(grant.hubID, code.hubID)
         XCTAssertEqual(grant.scope, .private)
         XCTAssertFalse(grant.typingAllowed, "typing needs the owner's Allow")
-        XCTAssertFalse(grant.startSessionsAllowed, "starting sessions needs the owner's Allow (#565)")
+        XCTAssertTrue(grant.startSessionsAllowed, "the phone's own toggle, as an older phone reads it")
+        XCTAssertFalse(grant.mayStartSessions, "starting sessions needs the owner's Allow (#565)")
         XCTAssertEqual(try sidecar.linkCode(code.nonce)?.usedByDevice, phoneA)
         XCTAssertTrue(nudges.contains([.deviceGrant]))
         XCTAssertNil(center.openCode, "the code is used")
@@ -986,24 +987,23 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertNotNil(try sidecar.linkedDevice(phoneB))
     }
 
-    /// The same for the start-sessions choice: only B's own record changes B's toggle (its opt-out; the
-    /// owner's grant is the Mac's alone, #565).
+    /// The same for the start-sessions choice: only B's own record changes B's grant.
     func testAPhoneCannotChangeAnotherPhonesStartSessionsGrant() async throws {
         try await linkPhonesAAndB()
-        XCTAssertEqual(try sidecar.linkedDevice(phoneB)?.startSessionsAllowed, true)
+        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, true)
         let transport = StubHubTransport()
         try await transport.save([try TestRelayPhone.seal(try deviceRecord(phoneB, nonce: nil, startSessions: false))])
 
         try await relayDeviceRecords(over: transport)
 
-        XCTAssertEqual(try sidecar.linkedDevice(phoneB)?.startSessionsAllowed, true, "A's record for B changes nothing")
+        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, true, "A's record for B changes nothing")
 
         try await transport.save([
             try TestRelayPhone.seal(try deviceRecord(phoneB, nonce: nil, startSessions: false), as: TestE2E.strangerIdentity)
         ])
         try await relayDeviceRecords(over: transport)
 
-        XCTAssertEqual(try sidecar.linkedDevice(phoneB)?.startSessionsAllowed, false, "B's own record is applied")
+        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, false, "B's own record is applied")
     }
 
     /// Device ids match ignoring case everywhere: removing a phone by a differently spelled id unlinks it.
@@ -1235,7 +1235,7 @@ final class MobileLinkCenterTests: XCTestCase {
         ])
         _ = try await processor.processOnce()
         await center.closeAfterLink?.value
-        XCTAssertEqual(try sidecar.linkedDevice(phoneC)?.startSessionsAllowed, false)
+        XCTAssertEqual(try grants()[phoneC]?.startSessionsAllowed, false)
         XCTAssertEqual(try sidecar.relayOutcome(uploadName), RecordingUploadStatus.received.rawValue)
         XCTAssertEqual(try sidecar.deviceLastSeq(phoneC), 5_001)
         let echoesBefore = echoCount()
@@ -1255,7 +1255,7 @@ final class MobileLinkCenterTests: XCTestCase {
         _ = try await processor.processOnce()
         await center.closeAfterLink?.value
 
-        XCTAssertEqual(try sidecar.linkedDevice(phoneC)?.startSessionsAllowed, true, "the device record is applied")
+        XCTAssertEqual(try grants()[phoneC]?.startSessionsAllowed, true, "the device record is applied")
         XCTAssertGreaterThan(echoCount(), echoesBefore + 1, "the re-sealed recording is answered received again")
         XCTAssertEqual(try sidecar.relayOutcome(uploadName), RecordingUploadStatus.received.rawValue)
     }
@@ -1473,6 +1473,10 @@ final class MobileLinkCenterTests: XCTestCase {
     func testAllowAndRevokeSetTheGrantsTheSessionHandlersRead() async throws {
         let code = try await center.issueCode()
         try await link(try hello(identityA, nonce: code.nonce))
+        // Linked with the defaults (nothing allowed yet), not a missing row read as `denied`.
+        let linked = try XCTUnwrap(try sidecar.linkedDevice(phoneA), "the phone is linked")
+        XCTAssertFalse(linked.typingAllowed || linked.startSessionsGranted || linked.permissionsAllowed)
+        XCTAssertTrue(linked.startSessionsAllowed, "the phone's own toggle defaults on")
         XCTAssertEqual(MobileLinkCenter.sessionGrant(sidecar, deviceID: phoneA), .specDefaults)
         clock.advance(10)
 

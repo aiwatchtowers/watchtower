@@ -49,6 +49,10 @@ final class SessionStartStopHandlers {
         static let denied = Self(typingAllowed: false, startSessionsAllowed: false)
     }
 
+    /// The refusal of a start from a phone the owner has not allowed (#565).
+    nonisolated static let startNotAllowedMessage = "This phone is not allowed to start sessions. "
+        + "On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
+
     typealias Grant = @MainActor (_ deviceID: String?) -> DeviceGrant
     typealias Pause = @MainActor (Duration) async -> Void
 
@@ -136,7 +140,8 @@ final class SessionStartStopHandlers {
         }
         let grant = deviceGrant(action.deviceID)
         guard grant.startSessionsAllowed else {
-            return .failed(.deviceNotAllowed, message: "This phone is not allowed to start sessions on the Mac")
+            // An older phone build shows this message as is (#565): it says where the owner allows it.
+            return .failed(.deviceNotAllowed, message: Self.startNotAllowedMessage)
         }
         if let refusal = try await Self.scope(dbPool, targetID: targetID, workbenchID: workbenchID) { return refusal }
         guard let workbenches else { return .failed(.writeFailed, message: "The workbench is reloading on the Mac") }

@@ -320,9 +320,28 @@ final class MobileSettingsViewModelTests: XCTestCase {
         XCTAssertEqual(MobileSettingsViewModel.startSessionsLabel(phone), "Starting sessions off")
         phone.startSessionsGranted = true
         XCTAssertEqual(MobileSettingsViewModel.startSessionsLabel(phone), "Starting sessions allowed")
+        phone.startSessionsAllowed = false
+        XCTAssertEqual(
+            MobileSettingsViewModel.startSessionsLabel(phone), "Starting sessions allowed on the Mac — off on the phone"
+        )
         XCTAssertEqual(
             MobileSettingsViewModel.startSessionsQuestion(name: "iPhone"),
             "Allow \"iPhone\" to start Claude Code sessions on this Mac?"
+        )
+    }
+
+    /// #565: allowing typing again brings back a stored start grant, and the
+    /// typing confirmation says so.
+    func testTheTypingConfirmationMentionsAStoredStartGrant() {
+        var phone = HubSyncState.LinkedDevice(
+            deviceID: "phone-a", name: "iPhone", scope: .private, userRecordName: "_owner-acme", linkedAt: Date()
+        )
+        let base = "The phone can then send text to sessions running on this Mac. Revoke turns it off again."
+        XCTAssertEqual(MobileSettingsViewModel.allowMessage(phone), base)
+        phone.startSessionsGranted = true
+        XCTAssertEqual(
+            MobileSettingsViewModel.allowMessage(phone),
+            base + " Starting sessions, allowed earlier for this phone, comes back with it."
         )
     }
 

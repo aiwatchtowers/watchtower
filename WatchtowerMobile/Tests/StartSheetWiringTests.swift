@@ -528,6 +528,24 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertTrue(try form(415, allowed).canStart)
     }
 
+    /// #565: a newer hub's `start_sessions_granted` decides even when the
+    /// phone's own toggle (`start_sessions_allowed`) is on; Settings shows
+    /// the Mac's answer under the toggle.
+    func testTheMacsStartGrantDecidesOverThePhonesToggle() throws {
+        let refused = DeviceGrant(
+            deviceID: DemoSeed.device.deviceID, hubID: "hub", name: "Demo iPhone", scope: .private, linked: true,
+            typingAllowed: true, startSessionsAllowed: true, mayStartSessions: false
+        )
+        let model = try form(415, try snapshot(try TestPhone.replica(), grant: refused))
+        XCTAssertFalse(model.canStart)
+        XCTAssertEqual(model.startCaption, SessionStartText.notAllowed)
+        XCTAssertEqual(
+            SettingsView.startSessionsCaption(grant: refused),
+            "Allow it on your Mac: Watchtower → Settings → Mobile, after typing"
+        )
+        XCTAssertEqual(SettingsView.startSessionsCaption(grant: grant(typing: true, start: true)), "Allowed")
+    }
+
     /// From the Workbench header no target is set: Start waits for one, and
     /// picking one fills the brief from its work-on prompt. Archived
     /// targets are not offered.

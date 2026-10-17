@@ -38,9 +38,13 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public let linkedAt: Date?
     /// Default false: typing into sessions needs the owner's allow.
     public let typingAllowed: Bool
-    /// Whether a `session_start` from the phone goes (#565): the owner allowed starting sessions and typing on the
-    /// Mac, and the phone's own "Start sessions" toggle is on. Default false.
+    /// The phone's own "Start sessions" toggle as the hub stored it (its opt-out). Before #565 this alone let a
+    /// phone start sessions, and an older phone still reads it so; a newer one reads `mayStartSessions`.
     public let startSessionsAllowed: Bool
+    /// #565: whether a `session_start` from the phone goes — the owner allowed starting sessions and typing on the
+    /// Mac, and the phone's own toggle is on. A newer hub always writes it; absent (an older hub) falls back to
+    /// `startSessionsAllowed`, which was that hub's whole rule.
+    let startSessionsGranted: Bool? // swiftlint:disable:this discouraged_optional_boolean
     /// Answering permission prompts from the phone needs its own allow, never implied by typing
     /// (`permissionsAllowed`). Absent on the wire reads false, and false is not written, so older peers' bytes
     /// stay as they were.
@@ -61,6 +65,8 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public var recordName: String { SliceKind.deviceGrant.recordName(id: deviceID) }
     /// Default false.
     public var permissionsAllowed: Bool { permissionsGranted ?? false }
+    /// Whether the hub takes a `session_start` from this phone (#565; an older hub: its `startSessionsAllowed`).
+    public var mayStartSessions: Bool { startSessionsGranted ?? startSessionsAllowed }
 
     // convertFromSnakeCase maps "device_id" -> "deviceId" and "hub_id" ->
     // "hubId" (lowercase d), so the CodingKey stringValues use that form.
@@ -74,6 +80,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         case linkedAt
         case typingAllowed
         case startSessionsAllowed
+        case startSessionsGranted
         case permissionsGranted = "permissionsAllowed"
         case decidedAt
         case awaitingConfirmation
@@ -92,6 +99,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         linkedAt: Date? = nil,
         typingAllowed: Bool,
         startSessionsAllowed: Bool,
+        mayStartSessions: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         permissionsAllowed: Bool = false,
         decidedAt: Date? = nil,
         awaitingConfirmation: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
@@ -108,6 +116,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         self.linkedAt = linkedAt
         self.typingAllowed = typingAllowed
         self.startSessionsAllowed = startSessionsAllowed
+        startSessionsGranted = mayStartSessions
         permissionsGranted = permissionsAllowed ? true : nil
         self.decidedAt = decidedAt
         self.awaitingConfirmation = awaitingConfirmation

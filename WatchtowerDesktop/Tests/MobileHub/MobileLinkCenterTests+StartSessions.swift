@@ -21,7 +21,9 @@ extension MobileLinkCenterTests {
         XCTAssertTrue(device.startSessionsAllowed, "the phone's toggle is mirrored")
         XCTAssertFalse(device.startSessionsGranted, "but the owner has not allowed starts")
         XCTAssertFalse(MobileLinkCenter.sessionGrant(sidecar, deviceID: phoneA).startSessionsAllowed)
-        XCTAssertEqual(try grants()[phoneA]?.startSessionsAllowed, false, "the phone's Start stays off")
+        let grant = try XCTUnwrap(try grants()[phoneA])
+        XCTAssertFalse(grant.mayStartSessions, "the phone's Start stays off")
+        XCTAssertTrue(grant.startSessionsAllowed, "an older phone still reads its own toggle; the Mac refuses its start")
     }
 
     /// The owner's Allow opens starts only together with typing; revoking
@@ -32,7 +34,7 @@ extension MobileLinkCenterTests {
         try await link(try hello(identityA, nonce: code.nonce))
         func mayStart() throws -> (gate: Bool, published: Bool) {
             (MobileLinkCenter.sessionGrant(sidecar, deviceID: phoneA).startSessionsAllowed,
-             try XCTUnwrap(try grants()[phoneA]).startSessionsAllowed)
+             try XCTUnwrap(try grants()[phoneA]).mayStartSessions)
         }
 
         try center.setStartSessionsGranted(true, deviceID: phoneA)

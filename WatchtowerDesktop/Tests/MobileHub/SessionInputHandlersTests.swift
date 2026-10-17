@@ -364,6 +364,30 @@ final class SessionInputHandlersTests: XCTestCase {
     func testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored() async throws {
         _ = try sidecar.setDeviceGrant(.typing, false, deviceID: testPhoneID, at: Date())
         _ = try sidecar.setDeviceGrant(.startSessionsGrant, true, deviceID: testPhoneID, at: Date())
+
+        let (outcome, prompts) = try await startFromThePhone(brief: "Delete the tests")
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .deviceNotAllowed)
+        XCTAssertEqual(prompts, [], "nothing starts")
+        XCTAssertFalse(prompts.contains { $0?.contains("Delete the tests") == true })
+    }
+
+    /// #565 end to end: the owner's start grant, typing and the phone's own
+    /// toggle, read from the sidecar by the real `sessionGrant`, start the
+    /// session with the phone's brief.
+    func testAPhoneWithTheStartGrantAndTypingStartsASession() async throws {
+        _ = try sidecar.setDeviceGrant(.startSessionsGrant, true, deviceID: testPhoneID, at: Date())
+
+        let (outcome, prompts) = try await startFromThePhone(brief: "Fix the login")
+
+        XCTAssertEqual(outcome.status, .applied)
+        XCTAssertEqual(prompts, ["WATCHTOWER_FIRST_PROMPT=Fix the login"])
+    }
+
+    /// A `session_start` from `testPhoneID` through the real grant read; the
+    /// outcome and the launched first prompts.
+    private func startFromThePhone(brief: String) async throws -> (ActionOutcome, [String?]) {
         let acme = folder.path
         let (project, target) = try await pool.write { db -> (Int64, Int64) in
             let project = try TestDatabase.insertWorkbench(db, folder: acme)
@@ -382,18 +406,12 @@ final class SessionInputHandlersTests: XCTestCase {
             id: UUID().uuidString, kind: .sessionStart, entityID: String(target),
             params: [
                 "workbench_id": .integer(project), "mode": .string("new"), "plan_first": .bool(false),
-                "bring_forward": .bool(false), "brief": .string("Delete the tests")
+                "bring_forward": .bool(false), "brief": .string(brief)
             ],
             createdAt: Date(), deviceID: testPhoneID
         )
-
         let outcome = try await starts.handle(start)
-
-        XCTAssertEqual(outcome.status, .failed)
-        XCTAssertEqual(outcome.reason, .deviceNotAllowed)
-        let prompts = processes.flatMap(\.launches).map { $0.environment.last }
-        XCTAssertEqual(prompts, [], "nothing starts")
-        XCTAssertFalse(prompts.contains { $0?.contains("Delete the tests") == true })
+        return (outcome, processes.flatMap(\.launches).map { $0.environment.last })
     }
 
     /// Revoke on the Mac fails the device's held lines at once; nothing of

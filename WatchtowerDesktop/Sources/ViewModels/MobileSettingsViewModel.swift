@@ -96,7 +96,16 @@ final class MobileSettingsViewModel {
     /// because a started agent reads the target text the phone wrote.
     nonisolated static func startSessionsLabel(_ device: HubSyncState.LinkedDevice) -> String {
         if !device.typingAllowed { return "Starting sessions needs typing" }
-        return device.startSessionsGranted ? "Starting sessions allowed" : "Starting sessions off"
+        if !device.startSessionsGranted { return "Starting sessions off" }
+        return device.startSessionsAllowed ? "Starting sessions allowed" : "Starting sessions allowed on the Mac — off on the phone"
+    }
+
+    /// The typing confirmation's message; a start grant stored from before
+    /// comes back with typing (#565), so it says so.
+    nonisolated static func allowMessage(_ device: HubSyncState.LinkedDevice?) -> String {
+        let base = "The phone can then send text to sessions running on this Mac. Revoke turns it off again."
+        guard device?.startSessionsGranted == true else { return base }
+        return base + " Starting sessions, allowed earlier for this phone, comes back with it."
     }
 
     /// A phone row's permission-prompt state (#517).
