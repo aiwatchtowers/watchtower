@@ -3,6 +3,7 @@ package imap
 import (
 	"bytes"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -347,5 +348,50 @@ func TestDialRefusesCleartextToRemoteHost(t *testing.T) {
 		PasswordAuth{Username: testUsername, Password: testPassword})
 	if err == nil || !strings.Contains(err.Error(), "cleartext") || !strings.Contains(err.Error(), "loopback") {
 		t.Fatalf("Dial with security none to a remote host: err = %v, want a cleartext refusal", err)
+	}
+}
+
+// expungeUIDs deletes the given UIDs from INBOX through a second connection,
+// as another mail client would.
+func (ts *testServer) expungeUIDs(t *testing.T, uids ...uint32) {
+	t.Helper()
+	host, port := ts.hostPort(t)
+	cl, _, err := Dial(AccountConfig{Host: host, Port: port, Security: SecurityNone, Folder: "INBOX"},
+		PasswordAuth{Username: testUsername, Password: testPassword})
+	if err != nil {
+		t.Fatalf("dial for expunge: %v", err)
+	}
+	defer func() { _ = cl.Close() }()
+	var set goimap.UIDSet
+	for _, u := range uids {
+		set.AddNum(goimap.UID(u))
+	}
+	if err := cl.c.Store(set, &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Silent: true, Flags: []goimap.Flag{goimap.FlagDeleted}}, nil).Close(); err != nil {
+		t.Fatalf("store deleted: %v", err)
+	}
+	if err := cl.c.Expunge().Close(); err != nil {
+		t.Fatalf("expunge: %v", err)
+	}
+}
+
+func TestSearchAll_ReturnsEveryUID(t *testing.T) {
+	ts := startTestServer(t)
+	a := ts.seedMessage(t, simpleRawMessage)
+	b := ts.seedMessage(t, simpleRawMessage)
+	c := ts.seedMessage(t, simpleRawMessage)
+	host, port := ts.hostPort(t)
+	cl, _, err := Dial(AccountConfig{Host: host, Port: port, Security: SecurityNone, Folder: "INBOX"},
+		PasswordAuth{Username: testUsername, Password: testPassword})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = cl.Close() }()
+	got, err := cl.SearchAll()
+	if err != nil {
+		t.Fatalf("SearchAll: %v", err)
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	if len(got) != 3 || got[0] != a || got[1] != b || got[2] != c {
+		t.Fatalf("SearchAll = %v, want [%d %d %d]", got, a, b, c)
 	}
 }
