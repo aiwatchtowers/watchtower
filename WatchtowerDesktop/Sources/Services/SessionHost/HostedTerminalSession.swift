@@ -115,7 +115,8 @@ final class HostedTerminalSession: TerminalSessionProcess {
     private func reattach(_ info: SessionHostSessionInfo) {
         terminal.getTerminal().resetToInitialState()
         terminal.dropsTerminalReplies = true
-        pid = pid_t(info.pid)
+        // An exited run's pid may already belong to another process group.
+        pid = info.exited ? 0 : pid_t(info.pid)
         let key = SessionHostAttachRequest(row: info.row, run: info.run)
         connect(key) { .json(.attach, key) }
     }
@@ -195,15 +196,15 @@ final class HostedTerminalSession: TerminalSessionProcess {
         switch frame.type {
         case .launched, .attached:
             guard let info = try? frame.decoded(SessionHostSessionInfo.self) else { return }
-            pid = pid_t(info.pid)
+            pid = info.exited ? 0 : pid_t(info.pid)
             bound = true
             if hangUpOnBind, pid > 0 {
                 hangUpOnBind = false
                 client.signalGroup(pid, SIGHUP)
             }
             if frame.type == .attached {
-                if !info.exited { nudgeRedraw() }
-                endReplayQuiet(after: transport)
+                let sizeLater = !info.exited && nudgeRedraw()
+                endReplayQuiet(after: transport, thenReportSize: sizeLater)
             }
         case .output:
             terminal.feed(byteArray: frame.payload[...])
@@ -228,11 +229,19 @@ final class HostedTerminalSession: TerminalSessionProcess {
 
     /// Makes the child redraw at the pane's size after an attach. A resize
     /// to the same size does not make every program redraw (Node/Ink
-    /// ignores it), so the size goes out one column narrower first.
-    private func nudgeRedraw() {
+    /// ignores it), and two resizes back to back are read as one (Node
+    /// reads the size when its loop wakes), so the pane goes out one column
+    /// narrower now and at its real size after the replay's quiet period.
+    /// Returns whether the real size is still to be sent; with one column
+    /// it goes at once.
+    private func nudgeRedraw() -> Bool {
         let size = terminal.getTerminal()
-        if size.cols > 1 { resizeHost(cols: size.cols - 1, rows: size.rows) }
-        terminal.reportHostSize()
+        guard size.cols > 1 else {
+            terminal.reportHostSize()
+            return false
+        }
+        resizeHost(cols: size.cols - 1, rows: size.rows)
+        return true
     }
 
     /// Another app instance attached this run (a dev build shares the
@@ -250,11 +259,14 @@ final class HostedTerminalSession: TerminalSessionProcess {
     }
 
     /// Lets the terminal answer again once the replay is in.
-    private func endReplayQuiet(after transport: any SessionHostTransport) {
+    /// With `thenReportSize`, the pane's real size goes to the host then
+    /// too (`nudgeRedraw`).
+    private func endReplayQuiet(after transport: any SessionHostTransport, thenReportSize: Bool) {
         Task { [weak self, sleep] in
             await sleep(Self.replayQuietPeriod)
             guard let self, self.transport === transport else { return }
             terminal.dropsTerminalReplies = false
+            if thenReportSize, !exited { terminal.reportHostSize() }
         }
     }
 

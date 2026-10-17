@@ -369,6 +369,8 @@ final class HostedTerminalSessionTests: XCTestCase {
 
     func testReattachedSessionReportsBracketedPaste() async throws {
         let session = HostedTerminalSession(client: await connectedClient())
+        var release: (() -> Void)?
+        session.sleep = { _ in await withCheckedContinuation { release = $0.resume } }
         let info = SessionHostSessionInfo(row: 4, run: "run-a", pid: 777, startedAtMs: 1, exited: false, code: nil)
         session.attach(info)
         await session.connecting?.value
@@ -378,15 +380,37 @@ final class HostedTerminalSessionTests: XCTestCase {
         XCTAssertEqual(session.pid, 777)
         XCTAssertFalse(session.bracketedPasteMode)
         transport.push(.json(.attached, info))
-        // One column narrower first: a same-size resize does not make
-        // every program redraw.
+        // One column narrower at once; the real size only after the
+        // replay's quiet period, so the child sees a real change.
         let terminal = try terminalView(session).getTerminal()
-        XCTAssertEqual(try transport.sent(.resize).map { try $0.decoded(SessionHostResize.self) }, [
-            SessionHostResize(cols: terminal.cols - 1, rows: terminal.rows),
-            SessionHostResize(cols: terminal.cols, rows: terminal.rows)
-        ], "the pane's size goes to the host on attach, as a real change")
+        let resizes = { try transport.sent(.resize).map { try $0.decoded(SessionHostResize.self) } }
+        XCTAssertEqual(try resizes(), [SessionHostResize(cols: terminal.cols - 1, rows: terminal.rows)])
         transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[?2004h".utf8)))
         XCTAssertTrue(session.bracketedPasteMode)
+
+        await waitUntil { release != nil }
+        XCTAssertEqual(try resizes().count, 1, "the real size waits for the quiet period")
+        release?()
+        await waitUntil { transport.sent(.resize).count == 2 }
+        XCTAssertEqual(try resizes(), [
+            SessionHostResize(cols: terminal.cols - 1, rows: terminal.rows),
+            SessionHostResize(cols: terminal.cols, rows: terminal.rows)
+        ])
+    }
+
+    /// An exited run's pid may be reused: the session never holds it, so a
+    /// close before the Exit arrives signals nothing.
+    func testAttachingAnExitedRunHoldsNoPid() async throws {
+        let session = HostedTerminalSession(client: await connectedClient())
+        let info = SessionHostSessionInfo(row: 4, run: "run-a", pid: 777, startedAtMs: 1, exited: true, code: 0)
+        session.attach(info)
+        XCTAssertEqual(session.pid, 0)
+        await session.connecting?.value
+        let transport = try XCTUnwrap(transports.last)
+        transport.push(.json(.attached, info))
+        XCTAssertEqual(session.pid, 0)
+        session.detach()
+        XCTAssertTrue(signals.isEmpty)
     }
 
     func testAttachingAnExitedRunReportsItsExitAndForgets() async throws {
