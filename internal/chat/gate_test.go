@@ -949,7 +949,6 @@ func TestGate_ApprovedForeignUpdateIsNoStandingGrant(t *testing.T) {
 	require.NoError(t, h.finish())
 }
 
-// unitGate is a gate over sink answering on a pipe the test reads.
 // claimedByGate reports whether the gate holds toolUseID as claimed: the
 // sink row turns executing before the gate records the claim.
 func claimedByGate(g *gate, toolUseID string) bool {
@@ -959,6 +958,7 @@ func claimedByGate(g *gate, toolUseID string) bool {
 	return ok
 }
 
+// unitGate is a gate over sink answering on a pipe the test reads.
 func unitGate(t *testing.T, sink *fakeSink) (*gate, *claudeProc, *os.File) {
 	t.Helper()
 	g, err := newGate(GateOptions{Sink: sink, Policy: connectorpolicy.Policy{Disabled: map[string]bool{}},
