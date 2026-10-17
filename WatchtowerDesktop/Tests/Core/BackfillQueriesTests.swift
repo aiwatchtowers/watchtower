@@ -43,7 +43,7 @@ final class BackfillQueriesTests: XCTestCase {
         XCTAssertEqual(rows.map(\.waiting), ["held", "plan_limit"])
     }
 
-    /// #580: a database from before migration 00130 (new app, old daemon) has
+    /// #580: a database from before migration 00131 (new app, old daemon) has
     /// no held_since; the read still works and nothing reads "held".
     func testRowsWithoutHeldSinceColumn() throws {
         let db = try TestDatabase.create()

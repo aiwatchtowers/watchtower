@@ -14,7 +14,7 @@ package struct BackfillRow: Equatable {
 package enum BackfillQueries {
     /// `waiting` reads "held" while transient failures hold the row (held_since
     /// set and no plan-limit wait), as `watchtower backfill status` does. A
-    /// database from before migration 00130 (a new app on an old daemon) has
+    /// database from before migration 00131 (a new app on an old daemon) has
     /// no held_since and never reads "held".
     package static func rows(_ db: Database) throws -> [BackfillRow] {
         let waiting = try hasHeldSince(db)
@@ -30,7 +30,7 @@ package enum BackfillQueries {
         }
     }
 
-    /// Whether the database has migration 00130's held_since column (GRDB
+    /// Whether the database has migration 00131's held_since column (GRDB
     /// caches the probe per connection).
     private static func hasHeldSince(_ db: Database) throws -> Bool {
         try db.columns(in: "history_backfill").contains { $0.name == "held_since" }

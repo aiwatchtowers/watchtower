@@ -2949,7 +2949,7 @@ CREATE TABLE IF NOT EXISTS history_backfill (
     started_at     TEXT    NOT NULL,
     updated_at     TEXT    NOT NULL,
     done_at        TEXT,
-    held_since     TEXT,  -- when transient failures began holding the row (NULL = not held; 00130)
+    held_since     TEXT,  -- when transient failures began holding the row (NULL = not held; 00131)
     UNIQUE (source_kind, account_id)
 );
 
