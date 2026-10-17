@@ -40,6 +40,7 @@ final class PermissionAnswerHandlers {
     static let answeredOnMacMessage = "Answered on the Mac"
     static let tooLateMessage = "Too late — answer on the Mac"
     static let notFoundMessage = "This session no longer exists on the Mac"
+    static let needsApprovalMessage = "Needs approval — use Deny"
     static let notRunningMessage = "This session is not running on the Mac"
     /// `decided_by` when the device's name cannot be read.
     static let unnamedDevice = "phone"
@@ -174,10 +175,25 @@ final class PermissionAnswerHandlers {
             return .failed(.notWorking, message: "The agent is not working right now")
         }
         guard now().timeIntervalSince(action.createdAt) <= Self.interruptMaxAge else { return .expired }
+        // Claude Code draws a prompt before its hook reports it, so the
+        // state above may still say Working: a pending request means a
+        // prompt is on screen, and an Esc would reject it (spec §6).
+        guard try await !hasPendingRequest(sessionID) else {
+            return .failed(.notWorking, message: Self.needsApprovalMessage)
+        }
         guard terminalCenter.sendInterrupt(sessionID: sessionID) else {
             return .failed(.sessionNotRunning, message: Self.notRunningMessage)
         }
         return .applied()
+    }
+
+    private func hasPendingRequest(_ sessionID: Int64) async throws -> Bool {
+        try await dbPool.read { db in
+            try Bool.fetchOne(
+                db, sql: "SELECT EXISTS(SELECT 1 FROM permission_requests WHERE terminal_session_id = ? AND status = 'pending')",
+                arguments: [sessionID]
+            ) ?? false
+        }
     }
 
     /// Working for an interrupt: a live session whose current turn works,

@@ -336,6 +336,22 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         XCTAssertTrue(typed.isEmpty)
     }
 
+    /// The prompt is drawn before its hook reports: the state still says
+    /// Working, but a pending request means an Esc would reject the prompt.
+    func testInterruptWithAPendingRequestFailsNotWorking() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let id = try await request(session)
+
+        let outcome = try await makeHandlers().handle(interrupt(session))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .notWorking)
+        XCTAssertEqual(outcome.errorMessage, "Needs approval — use Deny")
+        XCTAssertEqual(try row(id)?["status"], "pending")
+        XCTAssertTrue(typed.isEmpty)
+    }
+
     func testInterruptWhenIdleFailsNotWorking() async throws {
         let session = try await liveSession()
         let handlers = try makeHandlers()
