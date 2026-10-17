@@ -109,7 +109,7 @@ func TestConnectors_SnapshotWaitsForPendingUpTo10s(t *testing.T) {
 	})
 	time.Sleep(100 * time.Millisecond) // five more poll intervals: the watch has stopped
 	require.NoError(t, h.finish())
-	assert.Equal(t, 4, mcpStatusRequests(t, fx), "empty, pending, pending, connected — then no more")
+	assert.Equal(t, 4, mcpStatusRequests(t, fx), "an empty list, pending twice, then connected — and no more")
 }
 
 func TestConnectors_GivesUpAfter10s(t *testing.T) {

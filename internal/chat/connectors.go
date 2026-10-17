@@ -222,7 +222,7 @@ func WriteConnectorsFile(path string, s ConnectorSnapshot) error {
 		out := connectorFileServer{Name: strings.TrimPrefix(srv.Name, claudeAIServerPrefix),
 			Status: fileStatus(srv.Status), Tools: []connectorFileTool{}}
 		for _, t := range srv.Tools {
-			out.Tools = append(out.Tools, connectorFileTool{Name: t.Name, ReadOnly: t.ReadOnly, Destructive: t.Destructive})
+			out.Tools = append(out.Tools, connectorFileTool(t))
 		}
 		f.Servers = append(f.Servers, out)
 	}
@@ -253,7 +253,7 @@ func ReadConnectorsFile(path string) (ConnectorSnapshot, error) {
 		srv := MCPServerStatus{Name: connectorServerName(in.Name), Status: in.Status,
 			Source: "claudeai", ConfigType: "claudeai-proxy"}
 		for _, t := range in.Tools {
-			srv.Tools = append(srv.Tools, MCPToolInfo{Name: t.Name, ReadOnly: t.ReadOnly, Destructive: t.Destructive})
+			srv.Tools = append(srv.Tools, MCPToolInfo(t))
 		}
 		s.Servers = append(s.Servers, srv)
 	}
