@@ -163,10 +163,6 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		// tools.ReadTools() — dev-mode MCP stays local-only (DEV-01).
 		tools.NewGetConfluencePage(confluencePageClientFactory(cfg)),
 		tools.NewEditConfluencePage(confluencePageClientFactory(cfg)),
-		// The embedded user guide (Ask Watchtower, #426): chat-only, never
-		// ReadTools (DEV-01); Version picks the published guide URL.
-		tools.NewSearchGuide(Version),
-		tools.NewGetGuidePage(Version),
 		// Slack send (#166): main chat + workbench sessions; in a workbench
 		// session it is recorded pending for the Desktop's Approve (DEV-06).
 		tools.NewSendSlackMessage(slackSenderFactory(cfg)),

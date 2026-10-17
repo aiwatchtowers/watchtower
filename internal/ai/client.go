@@ -176,8 +176,6 @@ type Client struct {
 	processGroup bool
 	// maxTurns, when > 0, is passed as --max-turns (SetMaxTurns).
 	maxTurns int
-	// noTools runs the CLI with no tool at all (SetNoTools).
-	noTools bool
 }
 
 // SetWatchtowerTools narrows --allowedTools from the whole `mcp__watchtower`
@@ -283,25 +281,6 @@ func (c *Client) SetExternalMCPServers(s []ExternalMCPServer) { c.externalServer
 // already be resolved to a workbench folder (cmd's resolveReadFolder).
 func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
-// SetNoTools makes the run tool-less (`ai query --no-tools`, the ⌘/ help
-// chat): no MCP server is mounted whatever dbPath is (`--strict-mcp-config`
-// with no `--mcp-config`), no `--allowedTools` is passed and `--tools ""`
-// hides every built-in. The model answers from the prompt alone and can
-// reach none of the owner's data.
-func (c *Client) SetNoTools() { c.noTools = true }
-
-// ArgsForTest returns buildArgs' argv for a fresh call (tests outside this
-// package: cmd's `ai query` wiring tests). Temp files it may write are removed.
-func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
-	args, _, _ := c.buildArgs(systemPrompt, userMessage, "stream-json", "")
-	for _, path := range []string{c.mcpConfigTempPath, c.systemPromptTempPath} {
-		if path != "" {
-			_ = os.Remove(path)
-		}
-	}
-	return args
-}
-
 // ExternalServersForTest exposes the registered external MCP servers for
 // tests outside this package (e.g. cmd's chat-wiring tests) — the field
 // itself stays unexported since nothing else needs to read it back.
@@ -358,7 +337,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		// must not be able to run shell commands. The task-chat agent still
 		// changes targets ONLY via watchtower-action approval cards, never by
 		// writing to the DB directly.
-	}, c.allowedToolsArgs(), []string{
+		"--allowedTools", c.allowedToolsFlag(),
 		// Built-in allowlist: the model sees exactly the Claude Code built-ins
 		// named here (MCP tools are unaffected), so a built-in a future CLI
 		// release adds stays hidden by default instead of slipping past the
@@ -400,7 +379,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	if outputFormat == "stream-json" {
 		args = append(args, "--verbose")
 	}
-	if c.dbPath != "" && !c.noTools {
+	if c.dbPath != "" {
 		mcpConfig := c.buildMCPConfig()
 		if c.hasSecret() {
 			// A secret (Env/Headers) must never sit in argv — it's visible to
@@ -435,12 +414,9 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	return args, stdin, nil
 }
 
-// builtinTools is the --tools allowlist: none for a no-tools run,
-// ReadFolderBuiltinTools for a read-folder run, ChatBuiltinTools otherwise.
+// builtinTools is the --tools allowlist: ReadFolderBuiltinTools for a
+// read-folder run, ChatBuiltinTools otherwise.
 func (c *Client) builtinTools() string {
-	if c.noTools {
-		return ""
-	}
 	if c.readFolder != "" {
 		return ReadFolderBuiltinTools
 	}
@@ -677,14 +653,6 @@ func ChatMCPConfig(dbPath string, mcpArgs []string, ext []ExternalMCPServer) str
 
 // allowedToolsFlag builds the --allowedTools value (see AllowedTools; no
 // external servers means byte-identical to the pre-feature value).
-// allowedToolsArgs is the --allowedTools pair, or nothing for a no-tools run.
-func (c *Client) allowedToolsArgs() []string {
-	if c.noTools {
-		return nil
-	}
-	return []string{"--allowedTools", c.allowedToolsFlag()}
-}
-
 func (c *Client) allowedToolsFlag() string {
 	if c.watchtowerToolsSet {
 		tokens := make([]string, len(c.watchtowerTools))

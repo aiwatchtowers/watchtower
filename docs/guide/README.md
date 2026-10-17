@@ -61,6 +61,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Workbench](features/workbench/README.md) — a folder, a board, agent sessions and asks: what a workbench is and how to start one
 - [Board and targets](features/workbench/board-and-targets.md) — the plan the agent and you share: Kanban, grouping, archive and the git drift check
 - [Sessions](features/workbench/sessions.md) — what each session's state means, and how to start, find, resume and clear them
+- [Session report and analytics](features/workbench/session-report.md) — a session's progress line, its Session view and what its agents cost
+- [Updates and quitting](features/workbench/updates-and-quitting.md) — what keeps running when you update, quit or restart with sessions at work
 - [Asks](features/workbench/asks.md) — reviews, checks and decisions the agent files for you, and how your answer gets back
 - [Code viewer](features/workbench/code-viewer.md) — read and edit the folder's files, jump to definitions with Open Quickly, and ask about code
 - [Worktrees and cleanup](features/workbench/worktrees-and-cleanup.md) — an own git worktree per parallel session, and safe removal of what a session leaves behind
@@ -71,8 +73,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 ## Automations & AI
 
-- [Ask Watchtower](features/ask-watchtower.md) — press ⌘/ to ask how the app works, from the guide, with links to the screens
-- [AI Chat](features/ai-chat.md) — ask the assistant about your work, attach files, get documents back, organize chats into projects
+- [AI Chat](features/ai-chat.md) — ask the assistant about your work or about Watchtower, from its tab or with ⌘/ over any tab; attach files, organize chats into projects
+- [Artifacts in the AI Chat](features/ai-chat-artifacts.md) — documents, drafts, tables and HTML pages the assistant writes: edit, comment, export, present
 - [Writing and changing things from the AI Chat](features/ai-chat-actions.md) — proposals you approve: tasks, Jira, Slack messages, Confluence edits, automation drafts
 - [Quick Connections](features/quick-connections.md) — plug other tools' MCP servers into the chat as read-only sources
 - [Memory](features/memory.md) — the assistant's long-term notebook of people, projects and beliefs, in plain files you can edit
@@ -88,6 +90,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 ## Apps & integration
 
 - [iPhone](features/iphone.md) — answer asks, edit the Workbench board, start sessions and record meetings from your phone, through your own iCloud
+- [iPhone: permission prompts and interrupts](features/iphone-agent-prompts.md) — allow or deny a Claude Code permission prompt and interrupt a working agent from your phone
 - [Menu bar and updates](features/menu-bar-and-updates.md) — what the menu shows, what closing and quitting do, and how updates arrive
 - [Claude Code integration](features/claude-code-integration.md) — let your coding agent query Watchtower through a read-only MCP server and three skills
 
