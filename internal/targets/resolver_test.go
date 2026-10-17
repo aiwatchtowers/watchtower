@@ -193,6 +193,24 @@ func TestSlackResolver_LocalMiss(t *testing.T) {
 	}
 }
 
+func TestSlackResolver_TombstoneIsNotInLocalDB(t *testing.T) {
+	d := newTestDB(t)
+	_, err := d.Exec(`INSERT INTO messages(channel_id, ts, user_id, text, is_deleted) VALUES ('C001','1714567890.123456','U001','',1)`)
+	if err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+
+	r := &SlackResolver{db: d}
+	m := URLMatch{Source: "slack", RawURL: "https://ws.slack.com/archives/C001/p1714567890123456", ChannelID: "C001", TS: "1714567890.123456"}
+	e, err := r.Resolve(context.Background(), m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if e.Body != "[slack url not in local DB]" {
+		t.Errorf("want annotated body, got %q", e.Body)
+	}
+}
+
 // --- JiraResolver tests ---
 
 type mockMCPClient struct {
