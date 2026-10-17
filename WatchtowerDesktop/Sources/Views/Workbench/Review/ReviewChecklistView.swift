@@ -16,7 +16,7 @@ struct ReviewChecklistView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(model.lensNotes, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
-                        ForEach(model.lenses.filter { !$0.items.isEmpty }) { lens in
+                        ForEach(shownLenses(chapterKey: chapterKey).filter { !$0.items.isEmpty }) { lens in
                             lensSection(lens, chapterKey: chapterKey)
                         }
                     }
@@ -27,6 +27,12 @@ struct ReviewChecklistView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
         }
+    }
+
+    /// An AI chapter shows the lenses it marks plus the owner's own; the others show all.
+    private func shownLenses(chapterKey: String) -> [ReviewLens] {
+        guard let chapter = model.chapters.first(where: { $0.key == chapterKey }) else { return model.lenses }
+        return ReviewChapters.lenses(for: chapter, all: model.lenses)
     }
 
     private func lensSection(_ lens: ReviewLens, chapterKey: String) -> some View {

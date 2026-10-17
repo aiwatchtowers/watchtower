@@ -446,6 +446,8 @@ final class WorkbenchesViewModel {
     /// when the session is deleted (`forgetProcessState`). Created during a
     /// view's body, hence not observed.
     @ObservationIgnored var reviewModels: [Int64: ReviewChangesModel] = [:]
+    /// Find Repeats' model per workbench, made on first use.
+    @ObservationIgnored var reviewLessonModels: [Int64: ReviewLessonsModel] = [:]
 
     /// `automations rescan --workbench N` (spec §13.4); nil without a CLI.
     /// A seam for tests.

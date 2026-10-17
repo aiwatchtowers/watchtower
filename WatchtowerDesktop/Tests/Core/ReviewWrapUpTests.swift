@@ -17,6 +17,20 @@ final class ReviewWrapUpTests: XCTestCase {
         XCTAssertEqual(items.map(\.text), ["Add X", "Fix Y"])
     }
 
+    func testIntentItemsFromCoverageFollowTheContextByIndex() {
+        let context = [ReviewContextItem(targetId: 12, text: "Add X"), ReviewContextItem(targetId: 15, text: "Docs")]
+        let a = ReviewWrapUp.intentItems(context, coverage: [(index: 1, status: "done"), (index: 2, status: "not_found")])
+        let b = ReviewWrapUp.intentItems(context, coverage: [(index: 2, status: "partial"), (index: 7, status: "done"), (index: 0, status: "done")])
+        XCTAssertEqual(a.map(\.key), ["target:12", "target:15"])
+        XCTAssertEqual(a.map(\.text), ["Add X", "Docs"], "the context's wording, never the model's")
+        XCTAssertEqual(a.map(\.aiStatus), ["done", "not_found"])
+        XCTAssertEqual(b.map(\.key), a.map(\.key), "another overview keeps the keys")
+        XCTAssertEqual(b.map(\.aiStatus), [nil, "partial"], "an unknown index is ignored")
+        let fallback = ReviewWrapUp.intentItems(context, coverage: [])
+        XCTAssertEqual(fallback.map(\.key), ["target:12", "target:15"])
+        XCTAssertNil(fallback[0].aiStatus)
+    }
+
     func testCommentsGroupedByChapterInChapterOrder() {
         let chapters = [
             ReviewChapter(key: "dir:a", title: "a", paths: ["a/x.go"], changedLines: 1, core: false),

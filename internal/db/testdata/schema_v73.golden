@@ -545,6 +545,9 @@ CREATE INDEX idx_workbench_board_columns_project ON workbench_board_columns(proj
 index	review_comments_round
 CREATE INDEX review_comments_round ON review_comments(round_id, id)
 
+index	review_notes_session
+CREATE INDEX review_notes_session ON review_notes(project_id, session_id, kind, ord)
+
 index	review_rounds_one_open
 CREATE UNIQUE INDEX review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL
 
@@ -2404,6 +2407,61 @@ agent_reply TEXT NOT NULL DEFAULT '',
 agent_reply_at TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
+table	review_lessons
+CREATE TABLE review_lessons (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+lens TEXT NOT NULL,
+text TEXT NOT NULL,
+source_comment_ids TEXT NOT NULL DEFAULT '[]',
+status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','accepted','dismissed')),
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+decided_at TEXT
+)
+
+table	review_notes
+CREATE TABLE review_notes (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+tree_sha TEXT NOT NULL,
+kind TEXT NOT NULL CHECK (kind IN ('note','chapter')),
+ord INTEGER NOT NULL,
+path TEXT NOT NULL DEFAULT '',
+start_line INTEGER NOT NULL DEFAULT 0,
+end_line INTEGER NOT NULL DEFAULT 0,
+quote TEXT NOT NULL DEFAULT '',
+text TEXT NOT NULL,
+paths_json TEXT NOT NULL DEFAULT '[]',
+core INTEGER NOT NULL DEFAULT 0 CHECK (core IN (0,1)),
+why TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
+table	review_overviews
+CREATE TABLE review_overviews (
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+tree_sha TEXT NOT NULL,
+base_sha TEXT NOT NULL,
+intent_hash TEXT NOT NULL,
+json TEXT NOT NULL,
+model TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+PRIMARY KEY (project_id, tree_sha, base_sha, intent_hash)
+)
+
+table	review_reverts
+CREATE TABLE review_reverts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+round_id INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+hunk_id TEXT NOT NULL,
+path TEXT NOT NULL,
+header TEXT NOT NULL,
+patch TEXT NOT NULL,
+at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+UNIQUE (round_id, hunk_id)
 )
 
 table	review_rounds
@@ -5042,6 +5100,51 @@ GROUP BY up.ancestor
 15	agent_reply_at	TEXT	notnull=0	dflt=NULL	pk=0
 16	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 17	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_lessons
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	lens	TEXT	notnull=1	dflt=NULL	pk=0
+3	text	TEXT	notnull=1	dflt=NULL	pk=0
+4	source_comment_ids	TEXT	notnull=1	dflt='[]'	pk=0
+5	status	TEXT	notnull=1	dflt='proposed'	pk=0
+6	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+7	decided_at	TEXT	notnull=0	dflt=NULL	pk=0
+
+## review_notes
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	session_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	tree_sha	TEXT	notnull=1	dflt=NULL	pk=0
+4	kind	TEXT	notnull=1	dflt=NULL	pk=0
+5	ord	INTEGER	notnull=1	dflt=NULL	pk=0
+6	path	TEXT	notnull=1	dflt=''	pk=0
+7	start_line	INTEGER	notnull=1	dflt=0	pk=0
+8	end_line	INTEGER	notnull=1	dflt=0	pk=0
+9	quote	TEXT	notnull=1	dflt=''	pk=0
+10	text	TEXT	notnull=1	dflt=NULL	pk=0
+11	paths_json	TEXT	notnull=1	dflt='[]'	pk=0
+12	core	INTEGER	notnull=1	dflt=0	pk=0
+13	why	TEXT	notnull=1	dflt=''	pk=0
+14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_overviews
+0	project_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	tree_sha	TEXT	notnull=1	dflt=NULL	pk=2
+2	base_sha	TEXT	notnull=1	dflt=NULL	pk=3
+3	intent_hash	TEXT	notnull=1	dflt=NULL	pk=4
+4	json	TEXT	notnull=1	dflt=NULL	pk=0
+5	model	TEXT	notnull=1	dflt=''	pk=0
+6	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_reverts
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	round_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	hunk_id	TEXT	notnull=1	dflt=NULL	pk=0
+3	path	TEXT	notnull=1	dflt=NULL	pk=0
+4	header	TEXT	notnull=1	dflt=NULL	pk=0
+5	patch	TEXT	notnull=1	dflt=NULL	pk=0
+6	at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## review_rounds
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

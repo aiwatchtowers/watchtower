@@ -258,8 +258,22 @@ extension WorkbenchesViewModel {
         guard let cli else { return nil }
         let model = ReviewChangesModel(
             projectID: projectID, sessionID: sessionID, cli: cli, db: dbPool, lineDelivery: lineDelivery
-        )
+        ) { [weak self] in
+            guard let self else { return false }
+            return ReviewChangesModel.agentWorks(
+                sessionID: sessionID, liveIDs: self.terminalCenter?.liveIDs ?? [], statuses: self.sessionStatuses
+            )
+        }
         reviewModels[sessionID] = model
+        return model
+    }
+
+    /// The workbench's Find Repeats model, made once; nil without the watchtower CLI.
+    func reviewLessonsModel(projectID: Int64) -> ReviewLessonsModel? {
+        if let model = reviewLessonModels[projectID] { return model }
+        guard let cli else { return nil }
+        let model = ReviewLessonsModel(projectID: projectID, cli: cli, db: dbPool)
+        reviewLessonModels[projectID] = model
         return model
     }
 
