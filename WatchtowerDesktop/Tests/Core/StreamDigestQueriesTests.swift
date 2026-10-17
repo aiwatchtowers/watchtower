@@ -37,6 +37,25 @@ final class StreamDigestQueriesTests: XCTestCase {
         XCTAssertEqual(digests.count, 2)
     }
 
+    // MARK: - IMAP source (#615)
+
+    /// An IMAP/Outlook mailbox's stream digest (source 'imap', accepted by the
+    /// migrated CHECK) reads back and is labelled "Email"; its mentions too.
+    func testImapStreamDigestReadsBackLabelledEmail() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertStreamDigest(db, source: "imap", createdAt: "2024-01-01T00:00:00Z")
+            try TestDatabase.insertStreamDigest(db, source: "jira", createdAt: "2024-01-02T00:00:00Z")
+            try TestDatabase.insertStreamDigest(db, source: "gmail", createdAt: "2024-01-03T00:00:00Z")
+        }
+
+        let digests = try db.read { try StreamDigestQueries.fetchAll($0) }
+
+        XCTAssertEqual(digests.map(\.sourceLabel), ["Gmail", "Jira", "Email"])
+        XCTAssertEqual(IdeaMention.Source(rawValue: "imap")?.label, "Email")
+        XCTAssertEqual(IdeaMention.Source.gmail.label, "Gmail")
+    }
+
     // MARK: - parsedTopics
 
     func testParsedTopicsDecodesGmailTopicsWithDecisions() throws {

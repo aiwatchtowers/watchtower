@@ -123,6 +123,41 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertEqual(center.readiness(for: .briefing), .scheduled(.nextCycle(minutes: 15)))
     }
 
+    /// F5 (#578): the backfill rows, memory's first run and the kill switch
+    /// reach Memory's readiness through the snapshot and the environment.
+    func testMemoryWaitsForHistoryWiring() async throws {
+        let pool = try makePool()
+        let started = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3600))
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO history_backfill (source_kind, account_id, floor_ts, upper_ts, reached_ts,
+                        status, started_at, updated_at)
+                    VALUES ('slack', 1, 0, 100, 100, 'running', ?, ?)
+                    """,
+                arguments: [started, started])
+        }
+        let environment = FakeReadinessEnvironment()
+        let center = ReadinessCenter(environment: environment)
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { $0[.memory] == .scheduled(.afterHistoryLoads) }
+
+        environment.backfillDays = 0
+        center.refresh()
+        XCTAssertEqual(center.readiness(for: .memory), .scheduled(.nextCycle(minutes: 15)))
+
+        environment.backfillDays = 30
+        center.refresh()
+        XCTAssertEqual(center.readiness(for: .memory), .scheduled(.afterHistoryLoads))
+        try await pool.write { db in
+            try db.execute(
+                sql: "INSERT INTO pipeline_runs (pipeline, status, started_at) VALUES ('memory', 'done', ?)",
+                arguments: [started])
+        }
+        await waitUntil(center) { $0[.memory] == .scheduled(.nextCycle(minutes: 15)) }
+    }
+
     /// Hermetic: the workspace directory and config.yaml are temp files.
     func testGarbageStampReadsNil() throws {
         let dir = NSTemporaryDirectory() + "watchtower_test_\(UUID().uuidString)"
@@ -131,7 +166,7 @@ final class ReadinessCenterTests: XCTestCase {
         try "abc".write(toFile: dir + "/last_people.txt", atomically: true, encoding: .utf8)
         try "1700000000\n".write(toFile: dir + "/last_ideas.txt", atomically: true, encoding: .utf8)
         let configPath = dir + "/config.yaml"
-        try "briefing:\n  hour: 7\nsync:\n  poll_interval: 30m\n".write(toFile: configPath, atomically: true, encoding: .utf8)
+        try "briefing:\n  hour: 7\nsync:\n  poll_interval: 30m\n  backfill_days: 0\n".write(toFile: configPath, atomically: true, encoding: .utf8)
 
         let environment = LiveReadinessEnvironment(
             daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
@@ -141,6 +176,7 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertEqual(environment.stamp("last_ideas.txt"), Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertEqual(environment.briefingHour, 7)
         XCTAssertEqual(environment.pollInterval, "30m")
+        XCTAssertEqual(environment.backfillDays, 0)
 
         let noWorkspace = LiveReadinessEnvironment(
             daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath

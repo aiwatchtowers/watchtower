@@ -62,6 +62,11 @@ final class IdeasViewModel {
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    private var refreshGate = ForegroundRefreshGate()
+    /// The load `setOnScreen` started — held so tests can await it.
+    private(set) var onScreenRefresh: Task<Void, Never>?
+    private var loadsStarted = 0
+    private var loadApplied = 0
     /// SB4: retained so cancelBackfill() has something to cancel — started
     /// and cleared by startBackfillTask, the sheet's Start-button entry point.
     private var backfillTask: Task<Void, Never>?
@@ -72,7 +77,8 @@ final class IdeasViewModel {
 
     /// Interval for the safety-net poll. GRDB ValueObservation cannot see writes
     /// from the Go daemon (separate process, separate SQLite update hooks), so
-    /// the registry needs a periodic reload to surface daemon-mined ideas.
+    /// the registry needs a periodic reload to surface daemon-mined ideas —
+    /// only while the UI is on screen (`refreshGate`, board #731).
     private let pollInterval: Duration = .seconds(30)
 
     /// SB1: pinned to UTC so the `--from`/`--to` calendar day the CLI parses
@@ -157,41 +163,101 @@ final class IdeasViewModel {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
-                guard !Task.isCancelled else { break }
-                self?.load()
+                guard !Task.isCancelled, let self else { break }
+                await self.pollTick()
             }
         }
     }
 
     func load() {
         isLoading = true
+        let token = beginLoad()
+        let query = currentQuery()
+        apply(Result { try dbManager.dbPool.read { try Self.read($0, query) } }, token: token)
+        isLoading = false
+    }
+
+    /// The same load, its read off the main actor (the poll and the return
+    /// on screen, board #731).
+    func reload() async {
+        let token = beginLoad()
+        let query = currentQuery()
+        let pool = dbManager.dbPool
+        let result: Result<Loaded, Error>
         do {
-            let loaded = try dbManager.dbPool.read { db in
-                let review = try IdeaQueries.fetchForReview(
-                    db,
-                    kind: kindMode,
-                    query: searchText.isEmpty ? nil : searchText
-                )
-                let registry = try IdeaQueries.fetchList(
-                    db,
-                    kind: kindMode,
-                    status: statusFilter,
-                    query: searchText.isEmpty ? nil : searchText,
-                    limit: registryLimit,
-                    excludingReviewQueue: true
-                )
-                return (review: review,
-                        registry: registry,
-                        total: try IdeaQueries.countIdeasAndNotes(db),
-                        counts: try IdeaQueries.reviewCountsByKind(db))
-            }
+            result = .success(try await pool.read { try Self.read($0, query) })
+        } catch {
+            result = .failure(error)
+        }
+        apply(result, token: token)
+    }
+
+    /// The UI went on or off screen (board #731): off screen the poll skips
+    /// its loads; back on screen after a skipped one, it loads at once.
+    func setOnScreen(_ onScreen: Bool) {
+        guard refreshGate.setOnScreen(onScreen) else { return }
+        onScreenRefresh = Task { await reload() }
+    }
+
+    /// One tick of the 30 s poll (its loop's body; tests call it directly).
+    func pollTick() async {
+        if refreshGate.tick() { await reload() }
+    }
+
+    private struct Query {
+        let kind: String
+        let status: String?
+        let text: String?
+        let limit: Int
+    }
+
+    private struct Loaded {
+        let review: [Idea]
+        let registry: [Idea]
+        let total: Int
+        let counts: [String: Int]
+    }
+
+    private func currentQuery() -> Query {
+        Query(kind: kindMode, status: statusFilter, text: searchText.isEmpty ? nil : searchText, limit: registryLimit)
+    }
+
+    /// Loads overlap (a poll, an action's synchronous one): only one started
+    /// after the last applied load lands, so a slow older read never undoes
+    /// a newer one.
+    private func beginLoad() -> Int {
+        loadsStarted += 1
+        return loadsStarted
+    }
+
+    nonisolated private static func read(_ db: Database, _ query: Query) throws -> Loaded {
+        Loaded(
+            review: try IdeaQueries.fetchForReview(db, kind: query.kind, query: query.text),
+            registry: try IdeaQueries.fetchList(
+                db,
+                kind: query.kind,
+                status: query.status,
+                query: query.text,
+                limit: query.limit,
+                excludingReviewQueue: true
+            ),
+            total: try IdeaQueries.countIdeasAndNotes(db),
+            counts: try IdeaQueries.reviewCountsByKind(db)
+        )
+    }
+
+    private func apply(_ result: Result<Loaded, Error>, token: Int) {
+        guard token > loadApplied else { return }
+        loadApplied = token
+        switch result {
+        case let .success(loaded):
             reviewItems = loaded.review
             registryItems = loaded.registry
             totalCount = loaded.total
             reviewCounts = loaded.counts
             errorMessage = nil
             reconcileSelection()
-        } catch {
+        case let .failure(error):
             reviewItems = []
             registryItems = []
             totalCount = 0
@@ -199,7 +265,6 @@ final class IdeasViewModel {
             selectedID = nil
             errorMessage = error.localizedDescription
         }
-        isLoading = false
     }
 
     /// Keeps the selection valid across reloads: an id still present (in either

@@ -363,7 +363,7 @@ func TestIdeas01_EmailFloorStopsAtBudgetDroppedThread(t *testing.T) {
 	// Budget the first thread's line exactly, so the second thread is dropped.
 	window, err := d.ListGmailThreadsForExtract(acctID, float64(base-10), 0, 500)
 	require.NoError(t, err)
-	full, _ := renderEmailBlock(acctID, groupThreads(window), 1000000, 0)
+	full, _ := renderEmailBlock(gmailBox(acctID), groupThreads(window), 1000000, 0)
 	budget := strings.Index(full, "\n") + 1
 
 	var seenBlock string
@@ -416,7 +416,7 @@ func TestIdeas01_EmailTieAtBudgetCut_DrainedNotBuried(t *testing.T) {
 	// A budget that fits the first thread's line only.
 	window, err := d.ListGmailThreadsForExtract(acctID, float64(base-10), 0, 500)
 	require.NoError(t, err)
-	full, _ := renderEmailBlock(acctID, groupThreads(window), 1000000, 0)
+	full, _ := renderEmailBlock(gmailBox(acctID), groupThreads(window), 1000000, 0)
 	budget := strings.Index(full, "\n") + 1
 
 	var seenBlock string

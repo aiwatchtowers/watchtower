@@ -80,6 +80,21 @@ func TestListCatchupStreams(t *testing.T) {
 	assert.Contains(t, items[0].Body, "Bug bash: 12 fixed")
 }
 
+// #615: an IMAP/Outlook mailbox's stream digest reads "Email · <address>",
+// not the raw 'imap' source.
+func TestListCatchupStreams_ImapTitledEmailWithAddress(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO stream_digests (source, account_id, scope, period_from, period_to)
+		VALUES ('imap', 2, 'me@example.com', '1970-01-01T00:20:00Z', '1970-01-01T00:30:00Z')`)
+	require.NoError(t, err)
+
+	items, err := d.ListCatchupStreams(1000, 2000, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Email · me@example.com", items[0].Title)
+	assert.Contains(t, items[0].Meta, "Email account 2")
+}
+
 func TestListCatchupMeetings_RecapAndAdHoc(t *testing.T) {
 	d := openTestDB(t)
 	// Recap title fallback chain: calendar event title → linked transcript title
