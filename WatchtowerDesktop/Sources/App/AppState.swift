@@ -1091,6 +1091,9 @@ final class AppState {
     /// The background sync did not come up, or died right after a start:
     /// the app-wide banner shows it with Retry.
     var daemonStartFailure: String?
+    /// The down stretch (`DaemonManager.notRunningSince`) whose "isn't
+    /// running" banner the owner dismissed.
+    var stoppedBannerDismissedFor: Date?
 
     // MARK: - Features for a source connected from Settings
 
@@ -1174,7 +1177,7 @@ final class AppState {
         // The connect that raised the offer may still be restarting the
         // daemon itself: one restart at a time.
         await awaitAccountDaemonRestarts()
-        let result = await featureManager.enableNow(ids) { try await daemon.restartWaiting() }
+        let result = await featureManager.enableNow(ids) { try await self.restartOnChain(daemon) }
         if result.busy {
             // Settings → Features is applying its own batch.
             featureSuggestionError = Self.featureChangesBusy
@@ -1185,7 +1188,7 @@ final class AppState {
             // Everything is on already (a retry after a failed restart): the
             // daemon still has to pick it up.
             do {
-                try await daemon.restartWaiting()
+                try await restartOnChain(daemon)
                 featureManager.loadError = nil
             } catch {
                 featureSuggestionError = error.localizedDescription
@@ -1269,7 +1272,7 @@ final class AppState {
         defer { turningOnFeatureID = nil }
         let daemon = daemonControl
         await awaitAccountDaemonRestarts()
-        let result = await featureManager.enableNow([featureID]) { try await daemon.restartWaiting() }
+        let result = await featureManager.enableNow([featureID]) { try await self.restartOnChain(daemon) }
         if result.busy {
             recordTurnOnError(featureID, Self.featureChangesBusy)
             return
@@ -1290,7 +1293,7 @@ final class AppState {
                 return
             }
             do {
-                try await daemon.restartWaiting()
+                try await restartOnChain(daemon)
             } catch {
                 recordTurnOnError(featureID, error.localizedDescription, featureWasOn: true)
                 return
@@ -1646,7 +1649,7 @@ final class AppState {
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {
-        let vm = SlackAccountsViewModel(dbPool: dbPool)
+        let vm = SlackAccountsViewModel(dbPool: dbPool, daemon: chainedAccountRestarter)
         vm.onAccountsChanged = { [weak self, weak vm] in
             if let vm { self?.slackAccountsDidChange(vm.accounts) }
             await self?.accountsChanged()
@@ -1700,7 +1703,7 @@ final class AppState {
     }
 
     func initJiraAccounts(dbPool: DatabasePool) {
-        let vm = JiraAccountsViewModel(dbPool: dbPool)
+        let vm = JiraAccountsViewModel(dbPool: dbPool, daemon: chainedAccountRestarter)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         jiraAccountsViewModel = vm
@@ -1979,7 +1982,7 @@ final class AppState {
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
-        let vm = GoogleAccountsViewModel(dbPool: dbPool)
+        let vm = GoogleAccountsViewModel(dbPool: dbPool, daemon: chainedAccountRestarter)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         googleAccountsViewModel = vm

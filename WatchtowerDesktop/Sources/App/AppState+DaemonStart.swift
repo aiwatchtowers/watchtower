@@ -51,8 +51,34 @@ extension AppState {
         }
     }
 
-    func dismissDaemonStartFailure() {
-        daemonStartFailure = nil
+    /// Dismiss: a failure goes; "isn't running" stays hidden for this down
+    /// stretch only (a start, then a new stop, brings it back).
+    func dismissDaemonBanner() {
+        if daemonStartFailure != nil {
+            daemonStartFailure = nil
+        } else {
+            stoppedBannerDismissedFor = daemonManager.notRunningSince
+        }
+    }
+
+    /// The restart a Turn on or a feature offer needs, on the start chain:
+    /// never in the middle of a banner Start's alive check.
+    func restartOnChain(_ daemon: any DaemonControl) async throws {
+        try await enqueueDaemonStart { () -> Result<Void, any Error> in
+            do {
+                try await daemon.restartWaiting()
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }.value.get()
+    }
+
+    /// The account view models' Add/Remove/re-login restarts, on the start chain.
+    var chainedAccountRestarter: any DaemonRestarting {
+        ChainedDaemonRestarter(inner: LiveDaemonRestarter()) { [weak self] operation in
+            await self?.enqueueDaemonStart { await operation() }.value
+        }
     }
 
     static func daemonStartFailureText(_ detail: String?) -> String {
@@ -64,8 +90,23 @@ extension AppState {
 
     /// What the app-wide banner shows: a failure first (it carries the
     /// reason), else "isn't running" once readiness saw the daemon down past
-    /// the grace.
+    /// the grace — unless the app stopped it on purpose, or the owner
+    /// dismissed this down stretch.
     var daemonBanner: DaemonBanner? {
-        DaemonBanner.current(failure: daemonStartFailure, daemonDown: readinessCenter.daemonDown)
+        let manager = daemonManager
+        let dismissed = manager.notRunningSince != nil && manager.notRunningSince == stoppedBannerDismissedFor
+        let quiet = manager.stoppedOnPurpose || dismissed
+        return DaemonBanner.current(failure: daemonStartFailure, daemonDown: readinessCenter.daemonDown && !quiet)
+    }
+}
+
+/// A `DaemonRestarting` that runs the restart on `AppState`'s start chain.
+struct ChainedDaemonRestarter: DaemonRestarting {
+    let inner: any DaemonRestarting
+    let enqueue: @Sendable @MainActor (@escaping @Sendable () async -> Void) async -> Void
+
+    func restartLogging() async {
+        let inner = inner
+        await enqueue { await inner.restartLogging() }
     }
 }

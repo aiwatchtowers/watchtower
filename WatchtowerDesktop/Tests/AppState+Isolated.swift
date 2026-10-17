@@ -61,6 +61,8 @@ final class FakeDaemon: DaemonControl {
     var startSucceeds = true
     /// The start exits 0 but the daemon is gone right after.
     var diesAfterStart = false
+    /// A restart reports the daemon down while it runs (its stop half).
+    var stopsDuringRestart = false
     var restartError: Error?
     var holdRestart = false
     /// The stopped daemon's process never goes.
@@ -83,6 +85,7 @@ final class FakeDaemon: DaemonControl {
 
     func restartWaiting() async throws {
         restarts += 1
+        if stopsDuringRestart { running = false }
         if holdRestart {
             await withCheckedContinuation { parked = $0 }
         }

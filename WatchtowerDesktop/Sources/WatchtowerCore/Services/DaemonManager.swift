@@ -46,6 +46,7 @@ package final class DaemonManager {
         didSet {
             if isRunning {
                 if notRunningSince != nil { notRunningSince = nil }
+                if stoppedOnPurpose { stoppedOnPurpose = false }
             } else if notRunningSince == nil {
                 notRunningSince = Date()
             }
@@ -58,6 +59,9 @@ package final class DaemonManager {
     /// anything was checked. Readiness waits `FeatureReadiness.daemonDownGrace`
     /// on it, so a restart does not flicker.
     package private(set) var notRunningSince: Date?
+    /// This down stretch began with the app's own `stopDaemon`: the "isn't
+    /// running" banner stays away for it. Cleared when the daemon runs again.
+    package private(set) var stoppedOnPurpose = false
     /// Called when `isRunning` flips (the status poll included).
     @ObservationIgnored package var onRunningChanged: (@MainActor (Bool) -> Void)?
     /// The daemon's live sync heartbeat, refreshed by `checkStatus()`. nil when
@@ -181,6 +185,7 @@ package final class DaemonManager {
             let status = try await Self.runProcess(path: path, arguments: ["sync", "stop"])
             if status == 0 {
                 isRunning = false
+                stoppedOnPurpose = true
                 errorMessage = nil
             } else {
                 errorMessage = "Failed to stop daemon (exit code \(status))"

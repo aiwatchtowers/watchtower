@@ -139,7 +139,7 @@ struct MainNavigationView: View {
                                 banner: banner,
                                 onStart: { appState.startDaemonFromBanner() },
                                 onOpenLogs: { openWindow(id: "logs") },
-                                onDismiss: { appState.dismissDaemonStartFailure() }
+                                onDismiss: { appState.dismissDaemonBanner() }
                             )
                         }
                     }

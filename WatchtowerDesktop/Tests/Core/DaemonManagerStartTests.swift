@@ -37,6 +37,22 @@ final class DaemonManagerStartTests: XCTestCase {
         XCTAssertNil(manager.notRunningSince)
     }
 
+    /// The app's own stop marks the down stretch as on purpose; the next
+    /// run clears it.
+    @MainActor
+    func testStopOnPurposeLastsUntilTheNextRun() async throws {
+        let manager = DaemonManager()
+        manager.watchtowerPath = try makeScript("exit 0")
+        manager.isRunning = true
+        await manager.stopDaemon()
+        XCTAssertFalse(manager.isRunning)
+        XCTAssertTrue(manager.stoppedOnPurpose)
+        manager.isRunning = false
+        XCTAssertTrue(manager.stoppedOnPurpose, "a later poll keeps it")
+        manager.isRunning = true
+        XCTAssertFalse(manager.stoppedOnPurpose)
+    }
+
     @MainActor
     func testFailedStartSurfacesCLIStderr() async throws {
         let script = try makeScript("echo 'workspace \"acme\" not found in config' >&2\nexit 1")

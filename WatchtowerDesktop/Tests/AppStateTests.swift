@@ -868,7 +868,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(daemon.starts, 1)
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertNotNil(appState.daemonStartFailure, "the landing says the sync did not start")
-        appState.dismissDaemonStartFailure()
+        appState.dismissDaemonBanner()
         XCTAssertNil(appState.daemonStartFailure)
     }
 

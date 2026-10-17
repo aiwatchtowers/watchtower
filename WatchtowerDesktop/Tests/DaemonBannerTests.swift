@@ -7,6 +7,26 @@ import WatchtowerTestSupport
 
 /// #577: the app-wide "Watchtower isn't running" banner, its Start, and the
 /// one daemon start chain.
+private actor Counter {
+    private(set) var value = 0
+    func bump() { value += 1 }
+}
+
+private struct CountingRestarter: DaemonRestarting {
+    let counter: Counter
+    func restartLogging() async { await counter.bump() }
+}
+
+/// A features CLI that reports memory on: a Turn on only restarts.
+private final class EnabledFeaturesRunner: CLIRunnerProtocol, @unchecked Sendable {
+    func run(args: [String]) async throws -> Data {
+        let row = #"{"id":"memory","title":"memory","description":"d","tagline":"t","benefits":[],"icon":"i","#
+            + #""state":"enabled","core":false,"parent":"","config_key":"memory.enabled","#
+            + #""cost":"light","feeds_into":[],"sub_toggles":[]}"#
+        return Data((#"{"features":["# + row + "]}").utf8)
+    }
+}
+
 @MainActor
 final class DaemonBannerTests: XCTestCase {
     private var poolPaths: [String] = []
@@ -105,6 +125,94 @@ final class DaemonBannerTests: XCTestCase {
         await appState.daemonStartChain?.value
         XCTAssertEqual(daemon.starts, 0, "already running after the restart")
         XCTAssertNil(appState.daemonStartFailure)
+    }
+
+    /// A Turn on during a banner Start waits for its alive check: its
+    /// restart's stop half must not read as "started but stopped again".
+    func testTurnOnDuringBannerStartIsNoFalseFailure() async {
+        let appState = AppState.isolated(featuresRunner: EnabledFeaturesRunner())
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        appState.daemonStartVerifyDelay = .milliseconds(100)
+        daemon.stopsDuringRestart = true
+        daemon.holdRestart = true
+
+        appState.startDaemonFromBanner()
+        let turnOn = Task { await appState.turnOnFeatureFromEmptyState("memory") }
+        for _ in 0..<200 where !daemon.isRestartParked { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(daemon.isRestartParked)
+        XCTAssertEqual(daemon.starts, 1, "the banner's start ran first")
+        XCTAssertNil(appState.daemonStartFailure, "its alive check ran before the restart")
+        daemon.releaseRestart()
+        await turnOn.value
+        await appState.daemonStartChain?.value
+        XCTAssertNil(appState.daemonStartFailure)
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "memory"))
+    }
+
+    func testAccountRestarterRunsOnTheChain() async {
+        let daemon = FakeDaemon()
+        daemon.holdRestart = true
+        let appState = makeAppState(daemon)
+        let held = appState.enqueueDaemonStart { try? await daemon.restartWaiting() }
+        let restarted = Counter()
+        let restarter = ChainedDaemonRestarter(inner: CountingRestarter(counter: restarted)) { operation in
+            await appState.enqueueDaemonStart { await operation() }.value
+        }
+        let account = Task { await restarter.restartLogging() }
+        for _ in 0..<10_000 where !daemon.isRestartParked { await Task.yield() }
+        for _ in 0..<100 { await Task.yield() }
+        let before = await restarted.value
+        XCTAssertEqual(before, 0, "waits for the restart ahead of it")
+        daemon.releaseRestart()
+        await held.value
+        await account.value
+        let after = await restarted.value
+        XCTAssertEqual(after, 1)
+    }
+
+    // MARK: - Owner's stop and Dismiss
+
+    func testDismissHidesUntilANewStop() async throws {
+        let appState = AppState.isolated()
+        let fake = try XCTUnwrap(appState.readinessEnvironmentOverride as? FakeReadinessEnvironment)
+        let center = appState.readinessCenter
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil { !center.readiness.isEmpty }
+        appState.daemonManager.isRunning = false
+        fake.daemonRunning = false
+        fake.daemonNotRunningSince = fake.now.addingTimeInterval(-60)
+        center.refresh()
+        XCTAssertEqual(appState.daemonBanner, .stopped)
+
+        appState.dismissDaemonBanner()
+        XCTAssertNil(appState.daemonBanner)
+
+        // A start, then a new stop: a new down stretch shows it again.
+        appState.daemonManager.isRunning = true
+        appState.daemonManager.isRunning = false
+        XCTAssertEqual(appState.daemonBanner, .stopped)
+    }
+
+    func testAppsOwnStopShowsNoBanner() async throws {
+        let script = NSTemporaryDirectory() + "daemon-stop-\(UUID().uuidString).sh"
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: URL(fileURLWithPath: script))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+        defer { try? FileManager.default.removeItem(atPath: script) }
+        let appState = AppState.isolated()
+        let fake = try XCTUnwrap(appState.readinessEnvironmentOverride as? FakeReadinessEnvironment)
+        let center = appState.readinessCenter
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil { !center.readiness.isEmpty }
+        appState.daemonManager.watchtowerPath = script
+        await appState.daemonManager.stopDaemon()
+        fake.daemonRunning = false
+        fake.daemonNotRunningSince = fake.now.addingTimeInterval(-60)
+        center.refresh()
+        XCTAssertTrue(center.daemonDown)
+        XCTAssertNil(appState.daemonBanner)
     }
 
     // MARK: - Shown after the grace

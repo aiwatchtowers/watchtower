@@ -103,7 +103,13 @@ One banner over every tab (`MainNavigationView`'s top inset,
   daemon (`DaemonManager.onRunningChanged`).
 - `stopped` — `ReadinessCenter.daemonDown`, the same
   `FeatureReadiness.isDaemonDown` rule as the readiness state (30 s grace):
-  "Watchtower isn't running, so nothing new arrives." with **Start**.
+  "Watchtower isn't running, so nothing new arrives." with **Start** and
+  **Dismiss**. Dismiss hides it for this down stretch only
+  (`stoppedBannerDismissedFor` = `DaemonManager.notRunningSince`): a start and
+  a new stop bring it back. A stretch that began with the app's own
+  `DaemonManager.stopDaemon` (`stoppedOnPurpose`, cleared when the daemon runs)
+  never shows it. A stop from outside the app (`watchtower sync stop`) shows it,
+  and Dismiss is the way to keep it away.
 
 Start and Retry run `AppState.startDaemonFromBanner`: a daemon already running
 is not a failure; otherwise `startDetached`, then the alive check.
@@ -113,7 +119,11 @@ is not a failure; otherwise `startDetached`, then the alive check.
 `bringUpDaemonInBackground`, the banner, the Calendar tab's restart, the Google
 reconnect restart and Settings → Slack disconnect's stop/start — goes through
 `AppState.enqueueDaemonStart`, which runs each after the previous one
-(`daemonStartChain`). The Calendar tab's own "sync isn't running" banner and
+(`daemonStartChain`). So do a tab's Turn on and the feature offer
+(`restartOnChain`), and the Slack/Google/Jira account view models'
+Add/Remove/re-login restarts (`ChainedDaemonRestarter`), so a restart never
+lands inside a banner Start's alive check. Reset LLM data still stops and
+restarts on its own after awaiting the chain. The Calendar tab's own "sync isn't running" banner and
 its Start Sync are gone: the app-wide banner covers it, and a failed Calendar
 restart still shows its reason there.
 
