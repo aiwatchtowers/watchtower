@@ -15,6 +15,7 @@ WatchtowerDesktop/Sources/Views/Chat/ChatThreadView.swift
 WatchtowerDesktop/Sources/Views/Chat/ChatView.swift
 WatchtowerDesktop/Sources/Views/DayPlan/DayPlanView.swift
 WatchtowerDesktop/Sources/Views/Digests/DigestListView.swift
+WatchtowerDesktop/Sources/Views/Help/AskPanel.swift
 WatchtowerDesktop/Sources/Views/Ideas/IdeasView.swift
 WatchtowerDesktop/Sources/Views/Inbox/ActionStripView.swift
 WatchtowerDesktop/Sources/Views/Jira/EpicCardView.swift
@@ -38,6 +39,7 @@ WatchtowerDesktop/Sources/Views/Workbench/WorkbenchSessionsPanel.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchTargetPanel.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchesView.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkspacePaneView.swift
+WatchtowerDesktop/Sources/WatchtowerCore/Database/DBLockMetrics.swift
 WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/AutomationCardPresentation.swift
 WatchtowerDesktop/Sources/WatchtowerCore/Services/WorkbenchBoardKanban.swift
 WatchtowerKit/Sources/WatchtowerE2ETesting/TestE2E.swift
