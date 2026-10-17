@@ -73,15 +73,17 @@ package enum OwnerQueries {
     }
 
     /// With the owner unknown: the connected source that will name the owner
-    /// once it reports who connected it — an enabled, non-removed Jira or
-    /// Linear account whose owner id is still empty (Jira fills it at connect
-    /// or lazily at daemon start). "Jira" before "Linear"; nil when neither.
+    /// once it reports who connected it — an enabled, healthy (`status = 'ok'`)
+    /// Jira or Linear account whose owner id is still empty (Jira fills it at
+    /// connect or lazily at daemon start). A revoked or failing account will
+    /// not report anything, so it never counts: the owner needs a (re)connect.
+    /// "Jira" before "Linear"; nil when neither.
     /// Only meaningful while `resolve` returns `Owner.unknown`.
     package static func pendingIdentitySource(_ db: Database) throws -> String? {
         for (name, table, column) in [("Jira", "jira_accounts", "owner_account_id"),
                                       ("Linear", "linear_accounts", "owner_user_id")] {
             let sql = """
-                SELECT EXISTS(SELECT 1 FROM \(table) WHERE enabled = 1 AND status != 'removed' AND \(column) = '')
+                SELECT EXISTS(SELECT 1 FROM \(table) WHERE enabled = 1 AND status = 'ok' AND \(column) = '')
                 """
             if try Bool.fetchOne(db, sql: sql) == true { return name }
         }

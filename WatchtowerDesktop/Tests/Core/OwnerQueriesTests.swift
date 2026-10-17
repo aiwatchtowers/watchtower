@@ -390,6 +390,17 @@ final class OwnerQueriesTests: XCTestCase {
         XCTAssertNil(try db.read { try OwnerQueries.resolveWithPending($0) }.1)
     }
 
+    /// Revoked or failing accounts will not report an owner: Home asks to
+    /// (re)connect instead of "Waiting…".
+    func testOwner01PendingIdentityIgnoresUnhealthyAccounts() throws {
+        for status in ["revoked", "error"] {
+            let db = try TestDatabase.create()
+            try db.write { try Self.seed($0, OwnerSeed(jira: [JiraSeed(cloudID: "c1", enabled: true, ownerAccountID: "")])) }
+            try db.write { try $0.execute(sql: "UPDATE jira_accounts SET status = ?", arguments: [status]) }
+            XCTAssertNil(try db.read { try OwnerQueries.resolveWithPending($0) }.1, status)
+        }
+    }
+
     /// The Swift twin of Go's `UpsertOwnerProfile` re-key: a profile write
     /// after a rung switch also moves the briefings and day plans written
     /// under the earlier id; a date the owner already has keeps its row.

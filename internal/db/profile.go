@@ -166,15 +166,9 @@ func (db *DB) AdoptOwnerRows(ownerID string) error {
 	if ownerID == "" {
 		return nil
 	}
-	var stale bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM briefings WHERE user_id != ?1)
-		OR EXISTS(SELECT 1 FROM day_plans WHERE user_id != ?1)
-		OR (EXISTS(SELECT 1 FROM user_profile) AND NOT EXISTS(SELECT 1 FROM user_profile WHERE slack_user_id = ?1))`,
-		ownerID).Scan(&stale); err != nil {
-		return fmt.Errorf("checking owner rows to adopt: %w", err)
-	}
-	if !stale {
-		return nil
+	movable, err := db.ownerRowsToAdopt(ownerID)
+	if err != nil || !movable {
+		return err
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -191,6 +185,26 @@ func (db *DB) AdoptOwnerRows(ownerID string) error {
 		return fmt.Errorf("committing owner row adoption: %w", err)
 	}
 	return nil
+}
+
+// ownerRowsToAdopt reports whether AdoptOwnerRows would move anything: a
+// briefing or day plan under another id on a date ownerID does not have yet,
+// or a profile when none is keyed ownerID. A leftover row on a date the owner
+// already has never moves (OR IGNORE), so it never counts — otherwise it
+// would open a write transaction every daemon cycle.
+func (db *DB) ownerRowsToAdopt(ownerID string) (bool, error) {
+	var movable bool
+	err := db.QueryRow(`SELECT
+		EXISTS(SELECT 1 FROM briefings b WHERE b.user_id != ?1
+			AND NOT EXISTS(SELECT 1 FROM briefings o WHERE o.user_id = ?1 AND o.date = b.date))
+		OR EXISTS(SELECT 1 FROM day_plans p WHERE p.user_id != ?1
+			AND NOT EXISTS(SELECT 1 FROM day_plans o WHERE o.user_id = ?1 AND o.plan_date = p.plan_date))
+		OR (EXISTS(SELECT 1 FROM user_profile) AND NOT EXISTS(SELECT 1 FROM user_profile WHERE slack_user_id = ?1))`,
+		ownerID).Scan(&movable)
+	if err != nil {
+		return false, fmt.Errorf("checking owner rows to adopt: %w", err)
+	}
+	return movable, nil
 }
 
 // rekeyOwnerDailyRows moves every briefing and day plan keyed under another

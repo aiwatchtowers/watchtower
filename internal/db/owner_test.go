@@ -279,6 +279,30 @@ func TestOwner01_AdoptKeepsTheOwnersOwnRow(t *testing.T) {
 	require.NoError(t, d.AdoptOwnerRows(""), "no owner adopts nothing")
 }
 
+// TestOwner01_LeftoverRowIsNotMovable: a leftover row on a date the owner
+// already has can never move, so it must not make every later
+// AdoptOwnerRows call (each daemon cycle) open a write transaction.
+func TestOwner01_LeftoverRowIsNotMovable(t *testing.T) {
+	d := openTestDB(t)
+	const day = "2026-10-17"
+	for _, id := range []string{"email:x@example.com", "jira:acc-9"} {
+		_, err := d.UpsertBriefing(Briefing{UserID: id, Date: day})
+		require.NoError(t, err)
+	}
+	movable, err := d.ownerRowsToAdopt("jira:acc-9")
+	require.NoError(t, err)
+	assert.False(t, movable, "a leftover on a date the owner has is not movable")
+	_, err = d.CreateDayPlan(&DayPlan{UserID: "email:x@example.com", PlanDate: day, Status: "active", GeneratedAt: time.Now()})
+	require.NoError(t, err)
+	movable, err = d.ownerRowsToAdopt("jira:acc-9")
+	require.NoError(t, err)
+	assert.True(t, movable, "a day plan the owner lacks still moves")
+	require.NoError(t, d.AdoptOwnerRows("jira:acc-9"))
+	movable, err = d.ownerRowsToAdopt("jira:acc-9")
+	require.NoError(t, err)
+	assert.False(t, movable, "after one adoption nothing is left to move")
+}
+
 // TestOwner01_ProfileWriteAdoptsBriefings: the profile re-key also moves the
 // briefings written under the earlier id (Swift twin:
 // testOwner01ProfileWriteAdoptsBriefingsAndDayPlans).
