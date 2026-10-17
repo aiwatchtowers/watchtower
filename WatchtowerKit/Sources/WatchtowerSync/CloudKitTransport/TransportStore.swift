@@ -303,35 +303,60 @@ public final class TransportStore: Sendable {
 
     // MARK: - Incoming buffer
 
-    func bufferChanged(_ records: [CloudRecord]) throws {
+    /// One fetched batch or poll page in one transaction: its changed
+    /// records, their system fields, and its deletions (which also drop
+    /// the deleted records' system fields). A failure writes nothing, so a
+    /// retried batch never leaves half of an earlier attempt behind.
+    func bufferFetched(
+        changed: [CloudRecord],
+        systemFields: [(name: String, zone: CloudZoneID, data: Data)],
+        deleted: [CloudZoneID: [String]]
+    ) throws {
         try queue.write { db in
-            for record in records {
-                try db.execute(
-                    sql: """
-                        INSERT INTO events
-                            (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path, creator,
-                             server_modified_at)
-                        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-                        """,
-                    arguments: [
-                        record.zone.rawValue, record.recordName, record.kind,
-                        record.modifiedAt.timeIntervalSince1970, record.payload,
-                        record.notifyLevel, record.assetFileURL?.path, record.creatorUserRecordName,
-                        record.serverModifiedAt?.timeIntervalSince1970
-                    ]
-                )
+            try Self.insertChanged(changed, db)
+            for entry in systemFields {
+                try Self.upsertSystemFields(entry.data, recordName: entry.name, zone: entry.zone, db)
+            }
+            for (zone, names) in deleted {
+                try Self.insertDeleted(recordNames: names, zone: zone, db)
+                try Self.removeSystemFields(recordNames: names, zone: zone, db)
             }
         }
     }
 
+    func bufferChanged(_ records: [CloudRecord]) throws {
+        try queue.write { try Self.insertChanged(records, $0) }
+    }
+
+    private static func insertChanged(_ records: [CloudRecord], _ db: Database) throws {
+        for record in records {
+            try db.execute(
+                sql: """
+                    INSERT INTO events
+                        (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path, creator,
+                         server_modified_at)
+                    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    record.zone.rawValue, record.recordName, record.kind,
+                    record.modifiedAt.timeIntervalSince1970, record.payload,
+                    record.notifyLevel, record.assetFileURL?.path, record.creatorUserRecordName,
+                    record.serverModifiedAt?.timeIntervalSince1970
+                ]
+            )
+        }
+    }
+
     func bufferDeleted(recordNames: [String], zone: CloudZoneID) throws {
-        try queue.write { db in
-            for name in recordNames {
-                try db.execute(
-                    sql: "INSERT INTO events (zone, record_name, deleted) VALUES (?, ?, 1)",
-                    arguments: [zone.rawValue, name]
-                )
-            }
+        try queue.write { try Self.insertDeleted(recordNames: recordNames, zone: zone, $0) }
+    }
+
+    private static func insertDeleted(recordNames: [String], zone: CloudZoneID, _ db: Database) throws {
+        for name in recordNames {
+            try db.execute(
+                sql: "INSERT INTO events (zone, record_name, deleted) VALUES (?, ?, 1)",
+                arguments: [zone.rawValue, name]
+            )
         }
     }
 
@@ -444,16 +469,18 @@ public final class TransportStore: Sendable {
     /// re-save of a server-known record carry the change tag instead of
     /// colliding with .serverRecordChanged forever.
     func saveSystemFields(_ data: Data, recordName: String, zone: CloudZoneID) throws {
-        try queue.write { db in
-            try db.execute(
-                sql: """
-                    INSERT INTO system_fields (record_name, zone, data)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(record_name, zone) DO UPDATE SET data = excluded.data
-                    """,
-                arguments: [recordName, zone.rawValue, data]
-            )
-        }
+        try queue.write { try Self.upsertSystemFields(data, recordName: recordName, zone: zone, $0) }
+    }
+
+    private static func upsertSystemFields(_ data: Data, recordName: String, zone: CloudZoneID, _ db: Database) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO system_fields (record_name, zone, data)
+                VALUES (?, ?, ?)
+                ON CONFLICT(record_name, zone) DO UPDATE SET data = excluded.data
+                """,
+            arguments: [recordName, zone.rawValue, data]
+        )
     }
 
     func systemFields(recordName: String, zone: CloudZoneID) throws -> Data? {
@@ -467,13 +494,15 @@ public final class TransportStore: Sendable {
     }
 
     func deleteSystemFields(recordNames: [String], zone: CloudZoneID) throws {
-        try queue.write { db in
-            for name in recordNames {
-                try db.execute(
-                    sql: "DELETE FROM system_fields WHERE record_name = ? AND zone = ?",
-                    arguments: [name, zone.rawValue]
-                )
-            }
+        try queue.write { try Self.removeSystemFields(recordNames: recordNames, zone: zone, $0) }
+    }
+
+    private static func removeSystemFields(recordNames: [String], zone: CloudZoneID, _ db: Database) throws {
+        for name in recordNames {
+            try db.execute(
+                sql: "DELETE FROM system_fields WHERE record_name = ? AND zone = ?",
+                arguments: [name, zone.rawValue]
+            )
         }
     }
 
@@ -794,17 +823,18 @@ public final class TransportStore: Sendable {
     }
 
     #if DEBUG
-    /// Test-only: makes every write to the incoming buffer fail (or work
-    /// again), as a full disk or a suspended database would.
-    func failBufferWrites(_ fail: Bool) throws {
+    /// Test-only: makes every insert into `table` (`events`, the incoming
+    /// buffer, or `system_fields`) fail, or work again, as a full disk or a
+    /// suspended database would.
+    func failInserts(into table: String = "events", _ fail: Bool) throws {
         try queue.write { db in
             if fail {
                 try db.execute(sql: """
-                    CREATE TEMP TRIGGER IF NOT EXISTS test_fail_buffer BEFORE INSERT ON events
-                    BEGIN SELECT RAISE(ABORT, 'buffer write failed'); END
+                    CREATE TEMP TRIGGER IF NOT EXISTS test_fail_\(table) BEFORE INSERT ON \(table)
+                    BEGIN SELECT RAISE(ABORT, 'write failed'); END
                     """)
             } else {
-                try db.execute(sql: "DROP TRIGGER IF EXISTS temp.test_fail_buffer")
+                try db.execute(sql: "DROP TRIGGER IF EXISTS temp.test_fail_\(table)")
             }
         }
     }

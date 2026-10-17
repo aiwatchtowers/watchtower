@@ -179,7 +179,13 @@ extension CloudKitTransport {
     /// records sat unread until an engine restart). Skipped once unlinked,
     /// stopped or throttled, and when the engine was replaced meanwhile (an
     /// account reset wiped the store this page would land in).
+    ///
+    /// A pass that buffers every zone up to date also covers an engine
+    /// batch that failed to buffer before it started, so it lets the
+    /// engine state be saved again (`saveEngineState`).
     private func pollZones(engine: any SyncEngineDriving) async throws {
+        let failuresBefore = engineBufferFailures
+        var allZonesUpToDate = true
         for zone in CloudZoneID.allCases {
             var moreComing = true
             while moreComing {
@@ -191,16 +197,24 @@ extension CloudKitTransport {
                 do {
                     page = try await engine.fetchZoneChanges(zoneID, since: try store.pollToken(zone: zone))
                 } catch let error as CKError {
+                    allZonesUpToDate = false
                     try await handlePollError(error, zone: zone, zoneID: zoneID, engine: engine)
                     break
                 }
                 guard self.engine === engine, !isStopped else { return }
-                // A page that did not reach the buffer keeps the token:
-                // the next pull reads it again.
-                guard bufferPolledChanges(page) else { return }
+                // A page that did not reach the buffer keeps the zone's
+                // token (the next pull reads it again); the other zones
+                // are still polled.
+                guard bufferPolledChanges(page) else {
+                    allZonesUpToDate = false
+                    break
+                }
                 try store.setPollToken(page.changeToken, zone: zone)
                 moreComing = page.moreComing
             }
+        }
+        if allZonesUpToDate, engineBufferFailures == failuresBefore {
+            engineBatchUnbuffered = false
         }
     }
 

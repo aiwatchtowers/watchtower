@@ -27,7 +27,12 @@ extension CloudKitTransport {
         }
     }
 
-    func handleEngineEvent(_ event: CKSyncEngine.Event) {
+    /// An event of the engine `box` belongs to. One from an engine that was
+    /// stopped or replaced is dropped: its state update could save a token
+    /// past a batch it failed to buffer, and the current engine resumes
+    /// from the stored state anyway.
+    func handleEngineEvent(_ event: CKSyncEngine.Event, from box: DelegateBox) {
+        guard isCurrentEngine(box) else { return }
         switch event {
         case .stateUpdate(let stateUpdate):
             persistEngineState(stateUpdate.stateSerialization)
@@ -66,6 +71,12 @@ extension CloudKitTransport {
         default:
             break
         }
+    }
+
+    /// Whether `box` is the delegate of the running engine (each engine
+    /// start makes its own). Internal for tests.
+    func isCurrentEngine(_ box: DelegateBox) -> Bool {
+        engine != nil && delegateBox === box
     }
 
     /// A server-side zone deletion evicts that zone's buffered events and
@@ -308,11 +319,11 @@ extension CloudKitTransport {
     /// Saves the engine's state (its change tokens) unless a batch this
     /// engine fetched failed to reach the buffer: CKSyncEngine counts a
     /// delivered batch as done, so a token saved past it would lose it for
-    /// good. The engine keeps running on its in-memory state; nothing more
-    /// is saved until the next engine start, which resumes from the last
-    /// good token and fetches that batch again (meanwhile a `pull()`'s zone
-    /// poll reads it again). Internal so tests drive it without a
-    /// CKSyncEngine state.
+    /// good. The engine keeps running on its in-memory state; nothing is
+    /// saved until a `pull()`'s zone poll has buffered every zone up to
+    /// date after the failure (see `pollZones`), or the next engine start,
+    /// which resumes from the last good token and fetches the batch again.
+    /// Internal so tests drive it without a CKSyncEngine state.
     func saveEngineState(_ data: Data) {
         guard !engineBatchUnbuffered else { return }
         do {
@@ -333,6 +344,7 @@ extension CloudKitTransport {
     func bufferEngineFetched(modifications: [CKRecord], deletions: [CKRecord.ID]) {
         if !bufferFetched(modifications: modifications, deletions: deletions) {
             engineBatchUnbuffered = true
+            engineBufferFailures += 1
         }
     }
 
@@ -341,7 +353,6 @@ extension CloudKitTransport {
     /// Returns false when the store write failed (recorded in `lastError`):
     /// the caller must not move its change token past this batch.
     /// Internal so tests feed it without fabricating an engine event.
-    @discardableResult
     func bufferFetched(modifications fetched: [CKRecord], deletions: [CKRecord.ID]) -> Bool {
         let modifications = fetched.filter { zones.cloudZone(for: $0.recordID.zoneID) != nil }
         let changed = modifications.compactMap { modification -> CloudRecord? in
@@ -378,23 +389,15 @@ extension CloudKitTransport {
             guard let zone = zones.cloudZone(for: deletion.zoneID) else { continue }
             deletedByZone[zone, default: []].append(deletion.recordName)
         }
+        // Persist the fetched records' system fields so a later local save
+        // of the same recordName goes out with the server's change tag
+        // (e.g. desktop status write-backs onto mobile-created records).
+        let systemFields = modifications.compactMap { modification -> (name: String, zone: CloudZoneID, data: Data)? in
+            guard let zone = zones.cloudZone(for: modification.recordID.zoneID) else { return nil }
+            return (name: modification.recordID.recordName, zone: zone, data: Self.archivedSystemFields(of: modification))
+        }
         do {
-            try store.bufferChanged(changed)
-            // Persist the fetched records' system fields so a later local save
-            // of the same recordName goes out with the server's change tag
-            // (e.g. desktop status write-backs onto mobile-created records).
-            for modification in modifications {
-                guard let zone = zones.cloudZone(for: modification.recordID.zoneID) else { continue }
-                try store.saveSystemFields(
-                    Self.archivedSystemFields(of: modification),
-                    recordName: modification.recordID.recordName,
-                    zone: zone
-                )
-            }
-            for (zone, names) in deletedByZone {
-                try store.bufferDeleted(recordNames: names, zone: zone)
-                try store.deleteSystemFields(recordNames: names, zone: zone)
-            }
+            try store.bufferFetched(changed: changed, systemFields: systemFields, deleted: deletedByZone)
             lastError = nil
             return true
         } catch {
