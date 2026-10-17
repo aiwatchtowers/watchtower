@@ -30,6 +30,7 @@ enum QuitCoordinator {
         closeTerminals: @escaping () async -> Void = {},
         detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
+        finishPendingDeletes: @escaping () async -> Void = {},
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
         let choice = hasBlockingWork
@@ -52,6 +53,10 @@ enum QuitCoordinator {
                 await closeTerminals()
             }
             await stopDaemon()
+            // PROJ-17: the sessions waiting in the Undo batch are deleted
+            // now, with the daemon's write lock gone (board #588) — on every
+            // quit, sessions kept or stopped. Bounded inside.
+            await finishPendingDeletes()
             // Always let termination proceed: a stuck daemon must never trap
             // the user in a quit — the next launch adopts or replaces it.
             reply(true)

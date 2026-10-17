@@ -81,23 +81,32 @@ extension WorkbenchesViewModel {
         for case let projectID? in lists { await asks.load(projectID: projectID) }
     }
 
-    /// The quit path (`willTerminate`): the batch is committed now, through
-    /// the same write as the window's, and the quit waits — bounded by
-    /// `quitDeleteWait` in all — for it and for a commit the window's timer
-    /// already started. A row still closing is committed too: the quit
-    /// closes every terminal anyway. A timeout or an error is logged; the
-    /// row then survives and is listed again on the next launch — the safe
-    /// side. Whether every write finished within the bound.
+    /// The quit path (`QuitCoordinator`'s async phase, after the daemon
+    /// stopped and so released its write lock; board #588): the batch is
+    /// committed now, through the same write as the window's, and the quit
+    /// waits — off the main thread, bounded by `quitDeleteWait` in all — for
+    /// it and for a commit the window's timer already started. The bound
+    /// outlasts the write's 5 s busy budget, so a briefly locked database no
+    /// longer loses the delete. A row still closing is committed too: the
+    /// quit closes every terminal anyway. A timeout or an error is logged;
+    /// the row then survives and is listed again on the next launch — the
+    /// safe side. Whether every write finished within the bound.
     @discardableResult
-    func commitPendingDeletesForQuit() -> Bool {
+    func commitPendingDeletesForQuit() async -> Bool {
         cancelPendingDeleteWindow()
         let ids = pendingDeletes.takeBatch().map(\.sessionID)
         if !ids.isEmpty { startSessionDeletes(ids) }
-        guard deleteWrites.wait(timeout: .now() + quitDeleteWait) == .success else {
-            NSLog("WorkbenchesViewModel: deleting sessions on quit timed out; they are listed again next launch")
-            return false
+        let writes = deleteWrites
+        let bound = quitDeleteWait
+        let finished = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: writes.wait(timeout: .now() + bound) == .success)
+            }
         }
-        return true
+        if !finished {
+            NSLog("WorkbenchesViewModel: deleting sessions on quit timed out; they are listed again next launch")
+        }
+        return finished
     }
 
     /// The workbench is gone and its delete cascaded its hidden sessions:

@@ -286,6 +286,12 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                 await app.terminalCenter.detachAll()
             },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
+            finishPendingDeletes: {
+                guard let workbenches = app.workbenchesViewModel else { return }
+                await QuitProgressPanel.showing("Finishing session deletes…") {
+                    _ = await workbenches.commitPendingDeletesForQuit()
+                }
+            },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
     }
@@ -304,6 +310,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         closeTerminals: @escaping () async -> Void = {},
         detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
+        finishPendingDeletes: @escaping () async -> Void = {},
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
         guard managesLifecycle else { return .terminateNow }
@@ -315,6 +322,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             closeTerminals: closeTerminals,
             detachTerminals: detachTerminals,
             stopDaemon: stopDaemon,
+            finishPendingDeletes: finishPendingDeletes,
             reply: reply
         )
     }

@@ -110,6 +110,7 @@ The **Analytics** button in the page header (or **Analytics** in a pane's title 
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.
 - Hover a session that is finished, stopped, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session (working, agents working, ready to check, waiting, asking for a permission, or running with no state yet) needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
+- If you quit before the bar goes away, the delete still happens. When the database is busy this can hold the quit for a few seconds, with a small "Finishing session deletes…" window.
 - When you delete a workbench session the dialog first checks what it left behind and may offer **Delete and Clean Up**. See [Worktrees and cleanup](worktrees-and-cleanup.md).
 
 ### Get notified

@@ -135,6 +135,28 @@ final class QuitCoordinatorTests: XCTestCase {
         XCTAssertEqual(reply, .terminateCancel)
     }
 
+    /// Board #588 (PROJ-17): the Undo batch's deletes run in the async
+    /// phase, after the daemon stopped (its write lock gone) and before the
+    /// reply — on a quit that keeps the sessions (Keep Sessions and Quit, an
+    /// update's relaunch) as on one that stops them.
+    func testPendingDeletesFinishAfterTheDaemonStopsBeforeTheReply() async {
+        for keeps in [false, true] {
+            var order: [String] = []
+            let replied = expectation(description: "replied")
+            _ = QuitCoordinator.shouldTerminate(
+                hasBlockingWork: false,
+                confirmQuit: { .cancel },
+                keepsSessions: keeps,
+                closeTerminals: { order.append("close") },
+                detachTerminals: { order.append("detach") },
+                stopDaemon: { order.append("daemon") },
+                finishPendingDeletes: { order.append("deletes") },
+                reply: { _ in order.append("reply"); replied.fulfill() })
+            await fulfillment(of: [replied], timeout: 5)
+            XCTAssertEqual(order, [keeps ? "detach" : "close", "daemon", "deletes", "reply"])
+        }
+    }
+
     /// Unasked, a quit that keeps sessions (an update, a logout) detaches.
     func testUnaskedQuitThatKeepsSessionsDetaches() async {
         var order: [String] = []

@@ -267,7 +267,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         await vm.delete(session)
         await vm.delete(shell)
 
-        vm.commitPendingDeletesForQuit()
+        await vm.commitPendingDeletesForQuit()
 
         let after = try await snapshot(session.id, askID: askID)
         XCTAssertTrue(after.session.isEmpty, "deleted before the window ended")
@@ -528,7 +528,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         var iterator = started.makeAsyncIterator()
         _ = await iterator.next()
 
-        let finished = vm.commitPendingDeletesForQuit()
+        let finished = await vm.commitPendingDeletesForQuit()
 
         XCTAssertTrue(finished)
         let gone = try await stored(row.id)
@@ -555,13 +555,36 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         await vm.delete(row)
 
         let start = Date()
-        let finished = vm.commitPendingDeletesForQuit()
+        let finished = await vm.commitPendingDeletesForQuit()
 
         XCTAssertFalse(finished, "timed out")
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "bounded by quitDeleteWait")
         XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
         let kept = try await stored(row.id)
         XCTAssertNotNil(kept, "listed again next launch")
+    }
+
+    /// Board #588: the quit's wait never holds the main thread — a write
+    /// that needs the main actor to make progress (here: the lock is let go
+    /// by main-actor work, as a busy database is by the app's own writes)
+    /// still lands, instead of timing out under a blocked main thread.
+    func testQuitWaitKeepsTheMainActorFree() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        vm.quitDeleteWait = 1
+        vm.commitSessionDeletes = { [pool] ids in
+            await Task { @MainActor in }.value
+            try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
+        }
+        await vm.reload()
+        await vm.delete(row)
+
+        let finished = await vm.commitPendingDeletesForQuit()
+
+        XCTAssertTrue(finished, "the write ran while the quit waited")
+        let gone = try await stored(row.id)
+        XCTAssertNil(gone)
     }
 
     func testQuitWriteFailureKeepsTheRow() async throws {
@@ -572,7 +595,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         await vm.reload()
         await vm.delete(row)
 
-        let finished = vm.commitPendingDeletesForQuit()
+        let finished = await vm.commitPendingDeletesForQuit()
 
         XCTAssertTrue(finished, "the failed write finished")
         XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
