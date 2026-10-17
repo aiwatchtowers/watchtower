@@ -35,15 +35,6 @@ struct SystemSettings: View {
         .safeAreaInset(edge: .bottom) { ConfigSaveBar(config: config) }
     }
 
-    /// Workbench → Default agent and the owner's instructions (WorkbenchSettingsSection).
-    private var workbenchSection: some View {
-        // The AI section shows the Codex path already when Codex is the AI provider.
-        WorkbenchSettingsSection(config: config,
-                                 showsCodexPath: config.workbenchDefaultAgent == .codex && selectedProviderID != "codex") {
-            codexCLIPathRow
-        }
-    }
-
     private var syncSection: some View {
         Section("Sync") {
             TextField(
@@ -117,7 +108,7 @@ struct SystemSettings: View {
     /// on the Go side — the placeholder and the test fallback share it).
     private static let defaultOllamaURL = "http://localhost:11434"
 
-    private var selectedProviderID: String {
+    var selectedProviderID: String {
         config.aiProvider ?? "claude"
     }
 
@@ -235,7 +226,7 @@ struct SystemSettings: View {
         .help("Override auto-detection. Run 'which claude' in terminal to find the path.")
     }
 
-    private var codexCLIPathRow: some View {
+    var codexCLIPathRow: some View {
         HStack {
             TextField(
                 "Codex CLI Path",
