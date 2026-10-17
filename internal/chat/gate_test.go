@@ -642,6 +642,24 @@ func TestGate_StopDeniesWaitingCall(t *testing.T) {
 		deny, interrupt := strings.Index(string(stdin), denyStopped), strings.Index(string(stdin), `"subtype":"interrupt"`)
 		assert.True(t, deny >= 0 && interrupt > deny, "the deny precedes the interrupt")
 	})
+	t.Run("the next turn asks again", func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+		h.next(EventToolWait)
+		h.send(Command{Type: CommandCancel})
+		h.next(EventTurnDone)
+
+		fx.setRequests(t, gmailSend("r2", "tu2"))
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "send again"})
+		wait := h.next(EventToolWait)
+		assert.Equal(t, "tu2", wait.ID, "a Stop holds for its own turn only")
+		assert.Equal(t, "pending", fx.sink.row(wait.ActionID).status)
+		require.True(t, fx.sink.reject(wait.ActionID))
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
+	})
 	t.Run("approved but unclaimed row is expired", func(t *testing.T) {
 		fx := gateFake(t, gmailSend("r1", "tu1"))
 		fx.opts.Gate.PollInterval = time.Hour // the approval is never read before Stop
@@ -1019,6 +1037,52 @@ func TestGate_ChildGoneRightAfterTheClaimIsASessionEnd(t *testing.T) {
 	row := sink.row(1)
 	assert.Equal(t, "failed", row.status)
 	assert.Equal(t, reasonSessionEnded, row.callErr)
+}
+
+// A claimed call whose tool_result is an error lands failed with its text,
+// never applied.
+func TestGate_ErrorResultLandsFailed(t *testing.T) {
+	for name, tc := range map[string]struct{ text, want string }{
+		"with text":  {"quota exceeded", "quota exceeded"},
+		"blank text": {"  \n", "the connector call failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := newFakeSink()
+			g, p, _ := unitGate(t, sink)
+			req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+			require.True(t, ok)
+			g.dispatch(p, req)
+			sink.waitRows(t, 1)
+			require.True(t, sink.approve(1, ""))
+			waitUntil(t, "the claim", func() bool { return sink.row(1).status == "executing" })
+
+			g.onResult(toolResult{toolUseID: "tu1", text: tc.text, isError: true})
+			row := sink.row(1)
+			assert.Equal(t, "failed", row.status)
+			assert.Equal(t, tc.want, row.callErr)
+		})
+	}
+}
+
+// A request the policy would allow that reaches the gate after Stop, before
+// the CLI's interrupt, is denied.
+func TestGate_AllowAfterStopIsDenied(t *testing.T) {
+	sink := newFakeSink()
+	g, p, r := unitGate(t, sink)
+	g.halt(false)
+	req, ok := parseControlRequest([]byte(canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__read",
+		"claude.ai Claude Docs", `{"ref":{"object":"project","id":"some-doc"}}`)))
+	require.True(t, ok)
+	g.dispatch(p, req)
+	waitUntil(t, "the answer", func() bool {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return len(g.waits) == 0
+	})
+	require.NoError(t, p.stdin.Close())
+	out, _ := io.ReadAll(r)
+	assert.Contains(t, string(out), denyStopped)
+	assert.NotContains(t, string(out), `"allow"`)
 }
 
 func TestGate_DuplicateRequestIDIsDenied(t *testing.T) {

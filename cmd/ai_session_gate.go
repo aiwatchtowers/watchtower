@@ -42,8 +42,8 @@ type claudeAISetup struct {
 	publish *chat.PublishDir
 	// reason is what Settings shows for a main chat without claude.ai
 	// tools (the unavailable sidecar); "" when it has them, the surface is
-	// not main, or the cause is this conversation's own (its publish dir) —
-	// the sidecar is shared by every conversation.
+	// not main, or the cause is this conversation's own (its provider, its
+	// publish dir) — the sidecar is shared by every conversation.
 	reason string
 }
 
@@ -61,7 +61,9 @@ func resolveClaudeAI(cfg *config.Config, surface string, convID int64, env []str
 	on, reason := chat.ClaudeAIAvailability(env, provider, surface)
 	switch {
 	case provider != "claude":
-		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptOtherProvider}, reason: reason}
+		// The provider is the conversation's own (the Desktop passes
+		// --provider per chat): Settings keeps what the Claude chats wrote.
+		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptOtherProvider}}
 	case !on:
 		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptUnavailable, Reason: reason}, reason: reason}
 	}

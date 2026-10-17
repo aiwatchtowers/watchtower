@@ -287,10 +287,7 @@ func (g *gate) handle(p *claudeProc, req permissionRequest, w *gateWait) {
 		g.refresh(p)
 		// The refresh took up to 2 s: a Stop or the CLI's withdrawal in
 		// that time is honoured before anything is allowed.
-		if stop, why := g.stopRequested(w); stop {
-			if why == stopByOwner {
-				g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
-			}
+		if g.settledByStop(p, req, w) {
 			return
 		}
 	}
@@ -300,6 +297,11 @@ func (g *gate) handle(p *claudeProc, req permissionRequest, w *gateWait) {
 	}
 	switch d.Verdict {
 	case connectorpolicy.Allow:
+		// A request that reached the gate after Stop, before the CLI's
+		// interrupt, runs nothing.
+		if g.settledByStop(p, req, w) {
+			return
+		}
 		input := req.Input
 		if d.UpdatedInput != nil {
 			input = d.UpdatedInput
@@ -341,6 +343,17 @@ func (g *gate) stopRequested(w *gateWait) (bool, stopReason) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.halted || g.closed, stopByOwner
+}
+
+// settledByStop answers a request that Stop or Close ended (denied when the
+// owner stopped it; the CLI's withdrawal needs no answer). False when it may
+// go on.
+func (g *gate) settledByStop(p *claudeProc, req permissionRequest, w *gateWait) bool {
+	stop, why := g.stopRequested(w)
+	if stop && why == stopByOwner {
+		g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
+	}
+	return stop
 }
 
 // childGone reports whether p exited or was replaced.

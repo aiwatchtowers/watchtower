@@ -14,7 +14,7 @@ struct ClaudeAIConnectorsSection: View {
     var body: some View {
         Section {
             if let file = model.file, !file.available {
-                // Go's reasons are whole sentences ("claude.ai tools need the Claude provider.").
+                // Go's reasons are whole sentences ("claude.ai tools need a claude.ai login; this chat uses an API key.").
                 Text(file.unavailableReason.isEmpty ? "claude.ai tools are off in the chat." : file.unavailableReason)
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -73,7 +73,7 @@ func TestAISession_PromptOptionsClaudeAIByProvider(t *testing.T) {
 		assert.Equal(t, chat.ClaudeAIPromptOtherProvider, s.prompt.Kind, p)
 		assert.False(t, s.mode.On, p)
 		assert.Nil(t, s.publish, p)
-		assert.NotEmpty(t, s.reason, p)
+		assert.Empty(t, s.reason, p+": the provider is this conversation's own, so Settings is not told")
 	}
 
 	// The key is in the child's environment only — the merged env decides.
