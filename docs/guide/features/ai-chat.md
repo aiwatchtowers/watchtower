@@ -36,11 +36,11 @@ Select a passage and choose **Comment** to leave a note. Notes stay drafts until
 
 Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 
-### Quote in reply
+### Ask about a passage
 
-Select a passage of an answer right in the chat, then click **Ask about this** next to it, or right-click the selection and choose **Ask About This**. The passage joins the quotes above the message box and the cursor moves there, so you type your follow-up. Quotes go out together with your next message, each with an optional comment.
+Select a passage of a finished answer right in the chat, then click **Ask about this** next to it. The passage joins the quotes above the message box and the cursor moves there, so you type your follow-up. Quotes go out together with your next message, each with an optional comment.
 
-A selection stays within one paragraph, list item or table cell; ⌘C copies it. Your own messages can be selected and copied, not quoted. The chats inside other tabs offer selection and copy only.
+A selection stays within one paragraph, list item or table cell. ⌘C and the right-click menu copy it as usual. Your own messages can be selected and copied, not quoted. The chats inside other tabs offer selection and copy only.
 
 ### Projects
 

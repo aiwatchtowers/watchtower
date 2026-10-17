@@ -5,7 +5,7 @@ import XCTest
 /// view — a selection is read from the window's field editor
 /// (`ChatSelectionQuote.swift`) — and neither the selection overlay nor the
 /// batch view can send: the batch goes out only through the chat's own send.
-final class ChatQuoteReplyScanTests: XCTestCase {
+final class ChatSelectionQuoteScanTests: XCTestCase {
     private func source(_ path: String) throws -> String {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Core
@@ -25,7 +25,7 @@ final class ChatQuoteReplyScanTests: XCTestCase {
         }
     }
 
-    func testTheQuoteSheetAndTheBatchViewNeverSend() throws {
+    func testTheSelectionOverlayAndTheBatchViewNeverSend() throws {
         for file in ["Views/Chat/ChatSelectionQuote.swift", "Views/Chat/QuoteBatchView.swift"] {
             let text = try source(file)
             for token in [".send(", "sendDraft", "startTurn", "ChatSessionPool", "Process(", "URLSession"] {

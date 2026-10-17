@@ -66,6 +66,8 @@ struct ChatFeedView<Content: View>: View {
                         content()
                         bottomSentinel
                     }
+                    // Finished answers mark their body as quotable.
+                    .environment(\.chatAnswerRegions, selectionQuote == nil ? nil : selectionTracker)
                     // No bottom padding: the sentinel's own height is it, so
                     // scrolling to the sentinel lands at the content's true
                     // bottom and the measured distance settles at 0.

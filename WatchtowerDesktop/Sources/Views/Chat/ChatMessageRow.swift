@@ -222,6 +222,9 @@ struct AssistantMessageBody: View {
     /// A question card's answer (the next owner message) and its sender.
     var questionAnswer: String?
     var onAnswerQuestion: ((String) -> Void)?
+    /// Set by a feed with "Ask about this": a finished answer's text is
+    /// where a selection may be quoted from.
+    @Environment(\.chatAnswerRegions) private var answerRegions
 
     var body: some View {
         // A question card leaves the text; while streaming its open block is
@@ -233,14 +236,19 @@ struct AssistantMessageBody: View {
                 StreamingIndicator()
             } else {
                 let parsed = ArtifactParser.parse(question.text, final: !isRunning)
-                ForEach(Array(parsed.segments.enumerated()), id: \.offset) { _, segment in
-                    switch segment {
-                    case .markdown(let markdown):
-                        MarkdownView(text: markdown)
-                    case .artifact(let draft):
-                        ArtifactCardView(draft: draft, isWriting: isRunning && !draft.isComplete,
-                                         version: versions[draft.key]) { onOpenArtifact(draft.key) }
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(parsed.segments.enumerated()), id: \.offset) { _, segment in
+                        switch segment {
+                        case .markdown(let markdown):
+                            MarkdownView(text: markdown)
+                        case .artifact(let draft):
+                            ArtifactCardView(draft: draft, isWriting: isRunning && !draft.isComplete,
+                                             version: versions[draft.key]) { onOpenArtifact(draft.key) }
+                        }
                     }
+                }
+                .background {
+                    if !isRunning, let answerRegions { ChatAnswerRegionMarker(tracker: answerRegions) }
                 }
             }
             if let card = question.card {

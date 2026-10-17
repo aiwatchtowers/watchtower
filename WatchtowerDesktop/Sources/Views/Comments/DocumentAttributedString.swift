@@ -42,7 +42,7 @@ enum DocumentAttributedString {
     }
 
     /// A few documents may be on screen at once (a project document, an
-    /// artifact panel, a quote sheet).
+    /// artifact panel, an owner ask's review body).
     private static let recentLimit = 4
     @MainActor private static var recent: [(key: Key, text: NSAttributedString)] = []
 

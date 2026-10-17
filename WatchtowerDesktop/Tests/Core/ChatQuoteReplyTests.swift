@@ -2,25 +2,11 @@ import XCTest
 @testable import WatchtowerCore
 
 final class ChatQuoteReplyTests: XCTestCase {
-    func testASelectionInAnAnswerQuotesItsSpan() {
-        let block = "Keep the retry budget small."
-        let range = (block as NSString).range(of: "retry budget")
-        XCTAssertEqual(ChatQuoteReply.selectionQuote(in: block, selection: range, ownerTexts: ["Why?"]), "retry budget")
-        XCTAssertNil(ChatQuoteReply.selectionQuote(in: block, selection: NSRange(location: 4, length: 1), ownerTexts: []),
-                     "whitespace only")
-    }
-
-    func testASelectionInTheOwnersOwnMessageOffersNoQuote() {
-        let mine = "Keep the retry budget small."
-        let range = (mine as NSString).range(of: "retry budget")
-        XCTAssertNil(ChatQuoteReply.selectionQuote(in: mine, selection: range, ownerTexts: ["Hi", mine]))
-    }
-
     /// `NSTextView` reports UTF-16 offsets: an emoji is two of them.
     func testASelectionAcrossAnEmojiKeepsWholeCharacters() {
         let block = "Ship it \u{1F680} on Friday"
         let range = (block as NSString).range(of: "\u{1F680} on")
-        XCTAssertEqual(ChatQuoteReply.selectionQuote(in: block, selection: range, ownerTexts: []), "\u{1F680} on")
+        XCTAssertEqual(ChatQuoteReply.selectedText(block, selection: range), "\u{1F680} on")
     }
 
     func testSelectedTextIsTheRangeOrNilWhenEmpty() {

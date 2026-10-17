@@ -35,10 +35,7 @@ struct ChatThreadView: View {
     /// "Ask about this" on a selected passage: it joins the composer's
     /// quote batch (`ChatViewModel.addQuote`), which focuses the composer.
     private var selectionQuote: ChatFeedSelectionQuote {
-        ChatFeedSelectionQuote(
-            ownerTexts: { chatVM.thread.filter(\.message.isUser).map { ChatTurnComposer.displayParts($0.message.text).body } },
-            onQuote: { chatVM.addQuote($0, comment: "") }
-        )
+        ChatFeedSelectionQuote { chatVM.addQuote($0, comment: "") }
     }
 
     private var threadState: ChatAutoScrollPolicy.ThreadState {
