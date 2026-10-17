@@ -953,3 +953,20 @@ func TestGate_DuplicateRequestIDIsDenied(t *testing.T) {
 	assert.Equal(t, 1, sink.count(), "the duplicate proposes nothing")
 	g.halt(true)
 }
+
+func TestGate_ChildDyingAfterTheClaimLeavesNoRowExecuting(t *testing.T) {
+	fx := gateFake(t, gmailSend("r1", "tu1"))
+	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_DIE_ON_ALLOW=1")
+	h := startSession(t, NewClaudeBackend(fx.opts), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+	wait := h.next(EventToolWait)
+	require.True(t, fx.sink.approve(wait.ActionID, ""))
+	h.next(EventError) // the child died mid-turn
+
+	// The warm session lives on; the call is settled without waiting for Close.
+	row := fx.sink.row(wait.ActionID)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, "session ended while the call ran; outcome unknown", row.callErr)
+	require.NoError(t, h.finish())
+}

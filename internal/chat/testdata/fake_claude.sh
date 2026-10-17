@@ -18,8 +18,9 @@
 #     preceded by its tool_use block carrying that input, all are sent before any answer is awaited, and each
 #     answer gets the tool_result the CLI gives — $FAKE_GATE_RESULT (default
 #     "ran") for an allow, the deny message as an error for a deny. An
-#     interrupt withdraws the open ones with control_cancel_request. Writes
-#     its pid to $FAKE_PID.)
+#     interrupt withdraws the open ones with control_cancel_request; with
+#     $FAKE_GATE_DIE_ON_ALLOW set it dies on an allow instead. Writes its pid
+#     to $FAKE_PID.)
 # The error results carry $FAKE_ERROR (default "request too large").
 # With $FAKE_INIT_SID set, every user message is first answered by a
 # system/init line carrying that session id (as the real CLI does).
@@ -107,7 +108,9 @@ gate_turn() {
       case "$line" in
         *"\"request_id\":\"${p%%:*}\""*)
           case "$line" in
-            *'"behavior":"allow"'*) tool_result "${p#*:}" "${FAKE_GATE_RESULT:-ran}" false ;;
+            *'"behavior":"allow"'*)
+              [ -n "$FAKE_GATE_DIE_ON_ALLOW" ] && exit 3
+              tool_result "${p#*:}" "${FAKE_GATE_RESULT:-ran}" false ;;
             *) tool_result "${p#*:}" "$(printf '%s' "$line" | sed -n 's/.*"message":"\(.*\)"}}}$/\1/p')" true ;;
           esac ;;
         *) rest="$rest $p" ;;
