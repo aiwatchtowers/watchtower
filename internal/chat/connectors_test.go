@@ -262,8 +262,10 @@ func TestConnectors_ServerConnectedMidSessionIsFoundByTheRefresh(t *testing.T) {
 func TestConnectors_UnavailableWritesReason(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ConnectorsFileName)
 	reason := "claude.ai tools need a claude.ai login; this chat uses an API key."
-	require.NoError(t, WriteConnectorsFile(path, UnavailableConnectors(time.Now(), reason)))
+	now := time.Now()
+	require.NoError(t, WriteConnectorsFile(path, UnavailableConnectors(now, reason)))
 	m := readSidecar(t, path)
+	assert.Equal(t, now.UTC().Truncate(time.Second).Format(time.RFC3339), m["updated_at"], "UTC, whole seconds")
 	assert.Equal(t, false, m["available"])
 	assert.Equal(t, reason, m["unavailable_reason"])
 	assert.Equal(t, []any{}, m["servers"])
@@ -316,12 +318,18 @@ func TestConnectors_AllOffKeepsTheLastListDisabled(t *testing.T) {
 	fx, path := sidecarFixture(t)
 	require.NoError(t, WriteConnectorsFile(path, fixtureSnapshot()))
 	fx.opts.ClaudeAI.Connectors = false
+	fx.setRequests(t, canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__read", "claude.ai Claude Docs", `{}`))
 	h := startSession(t, NewClaudeBackend(fx.opts), nil)
 	h.next(EventSessionReady)
 	waitUntil(t, "the sidecar rewrite", func() bool {
 		return sidecarStatuses(t, path)["claude.ai Claude Docs"] == ConnectorDisabled
 	})
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "read"})
+	h.next(EventTurnDone)
 	require.NoError(t, h.finish())
+	answers := fx.controlAnswers(t)["r1"]
+	require.Len(t, answers, 1)
+	assert.Equal(t, "deny", behavior(t, answers[0]), "the carried-over list is no catalog")
 
 	got, err := ReadConnectorsFile(path)
 	require.NoError(t, err)
@@ -331,7 +339,7 @@ func TestConnectors_AllOffKeepsTheLastListDisabled(t *testing.T) {
 		assert.Equal(t, ConnectorDisabled, s.Status, s.Name)
 		assert.Empty(t, s.Tools, s.Name)
 	}
-	assert.Zero(t, mcpStatusRequests(t, fx))
+	assert.Zero(t, mcpStatusRequests(t, fx), "no watch, no refresh")
 }
 
 func TestConnectors_ModeOffSendsNoStatusRequest(t *testing.T) {

@@ -26,7 +26,7 @@ import (
 // testdata/claude_ai_connectors.json:
 //
 //	{
-//	  "updated_at": "2026-10-17T09:30:00Z",     // RFC 3339, UTC
+//	  "updated_at": "2026-10-17T09:30:00Z",     // RFC 3339, UTC, whole seconds
 //	  "available": true,                          // false: claude.ai tools are off for this chat
 //	  "unavailable_reason": "",                   // why, when !available ("" otherwise)
 //	  "servers": [                                // account connectors only, sorted by name
@@ -213,7 +213,9 @@ func fileStatus(status string) string {
 // WriteConnectorsFile replaces the sidecar at path with s (0600, temp file +
 // rename).
 func WriteConnectorsFile(path string, s ConnectorSnapshot) error {
-	f := connectorsFile{UpdatedAt: s.UpdatedAt.UTC(), Available: s.Available,
+	// Whole seconds: a plain ISO 8601 decoder (Swift's .iso8601) refuses
+	// fractional seconds.
+	f := connectorsFile{UpdatedAt: s.UpdatedAt.UTC().Truncate(time.Second), Available: s.Available,
 		UnavailableReason: s.UnavailableReason, Servers: []connectorFileServer{}}
 	for _, srv := range s.Servers {
 		if !isAccountConnector(srv) {
@@ -374,6 +376,12 @@ func (c *connectorCatalog) markUnavailable(now time.Time, reason string) (Connec
 	return c.snap, true
 }
 
+func (c *connectorCatalog) isUnavailable() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.unavailable != ""
+}
+
 // Connector implements connectorpolicy.Catalog.
 func (c *connectorCatalog) Connector(serverToken string) bool {
 	return c.get().Connector(serverToken)
@@ -485,7 +493,11 @@ func (b *claudeBackend) routeStatusAnswer(line []byte) bool {
 func (b *claudeBackend) watchConnectors(p *claudeProc) {
 	defer b.watchers.Done()
 	if !b.opts.ClaudeAI.Connectors {
-		b.publishConnectors(carriedOverSnapshot(time.Now(), b.lastConnectors()))
+		// The file only: the catalog stays empty, so a connector call —
+		// none should come — is denied.
+		if !b.catalog.isUnavailable() {
+			b.writeConnectorsFile(carriedOverSnapshot(time.Now(), b.lastConnectors()))
+		}
 		return
 	}
 	deadline := time.Now().Add(b.connSettle)

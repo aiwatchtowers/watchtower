@@ -241,7 +241,11 @@ func NewClaudeBackend(opts ClaudeOptions) Backend {
 		b.catalog = newConnectorCatalog()
 		if b.gate != nil {
 			b.catalog = b.gate.catalog
-			b.gate.refresh = b.refreshConnectors
+			if opts.ClaudeAI.Connectors {
+				// Off, the CLI lists none: a refresh would only
+				// overwrite the sidecar's carried-over list.
+				b.gate.refresh = b.refreshConnectors
+			}
 		}
 	}
 	return b
