@@ -43,6 +43,7 @@ final class AppState {
     /// AppState). Its path lookup is deliberately deferred until after the CLI
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
+    let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -700,6 +701,7 @@ final class AppState {
     /// (reinitializeAfterOnboarding), which must not stack observers.
     private func installLifecycleHooks() {
         targetAssistantCenter.embeddedChats = embeddedChatCenter
+        startUIVisibility()
         if terminateObserver == nil {
             terminateObserver = NotificationCenter.default.addObserver(
                 forName: NSApplication.willTerminateNotification,
@@ -809,7 +811,7 @@ final class AppState {
                 // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
                 if !needsOnboarding {
                     initAutomations(dbPool: manager.dbPool)
-                    await initSidebarCounts(dbPool: manager.dbPool)
+                    sidebarCountsViewModel = await SidebarCountsViewModel.started(dbPool: manager.dbPool)
                 }
                 isLoading = false
                 // During onboarding only the account view models run (above):
@@ -1339,8 +1341,8 @@ final class AppState {
         }
         // The initialize() path skips sidebar counts while onboarding is pending, so build
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
-        if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
-            Task { await initSidebarCounts(dbPool: pool) }
+        if sidebarCountsViewModel == nil, sidebarCountsSetup == nil, let pool = databaseManager?.dbPool {
+            sidebarCountsSetup = Task { sidebarCountsViewModel = await SidebarCountsViewModel.started(dbPool: pool) }
         }
         if let pool = databaseManager?.dbPool {
             initAutomations(dbPool: pool)
@@ -1398,14 +1400,6 @@ final class AppState {
                 await vm?.loadDetail(id)
             }
         )
-    }
-
-    /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
-    private func initSidebarCounts(dbPool: DatabasePool) async {
-        let countsVM = SidebarCountsViewModel(dbPool: dbPool)
-        await countsVM.loadInitial()
-        countsVM.startObserving()
-        sidebarCountsViewModel = countsVM
     }
 
     /// The onboarding on screen was started from Settings: it can be
@@ -1585,6 +1579,7 @@ final class AppState {
         startSessionHost() // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
+        applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
@@ -1851,7 +1846,7 @@ final class AppState {
         sessionReportCenter?.stop()
         sessionReportCenter = reports
         replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
-        // The first poll also loads the list (onPolled → reload).
+        // The first poll also loads the list (onPolled → reload; off screen, once a window shows).
         notices.start()
         vm.startTitleRefresh()
         vm.asks.start()
@@ -2019,6 +2014,8 @@ final class AppState {
     /// The refresh `completeOnboarding()` kicked off — held so tests can
     /// await it.
     @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
+    /// The sidebar counts' build `completeOnboarding()` kicked off (tests cancel it).
+    @ObservationIgnored private(set) var sidebarCountsSetup: Task<Void, Never>?
 
     /// A Slack/Google/Jira account-list reload: re-resolves the owner
     /// (OWNER-02) and the connected sources the sidebar gates on.

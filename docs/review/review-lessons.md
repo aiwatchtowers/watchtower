@@ -1780,3 +1780,13 @@ Entry format:
 - weak-dimension: 7. Every event-source test seeds the diffed state by hand, not through the real syncer path.
 - rule-gap (candidate, dim 6): *an observer wrapped around a sync phase lists every call site of that phase, including startup pre-syncs outside the cycle, and every writer of the state it diffs on the default sync path.*
 - outcome: TBD
+
+## 2026-10-16 — fix/731-desktop-background-cpu (board #731 UI pollers rest while no window is on screen: `UIVisibilityCenter`/`UIVisibilityPolicy`, `ForegroundRefreshGate` on Calendar/Ideas/Workbench list/CodeFiles held FSEvents batches, off-main calendar/ideas reloads with load tokens, `fetchEventsByDay`, `WarmEnginePolicy.mayBeRecorded`, StatusBarView on the shared `DaemonManager`; #526 sidebar counts restart with `RestartBackoff`; Desktop only, 26 files +1.1k; panel: prosecutor + 3 specialists, codex DOWN (timed out twice); judge verified against ebf08dd9c by reading, lint result from the orchestrator's `make lint-swift`; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, 3 lanes): gating a poll that calls a general `reload()` also gates that reload's side effects. Here that was the vanished-workbench teardown that kills a deleted workbench's terminals. **When a change makes a refresh conditional ("only while on screen"), list everything the gated function does besides refreshing what a window shows, and keep the non-UI part unconditional.** [8]
+- contested (held major, 3 lanes): a restart backoff that resets on "any value" never doubles when the stream always emits an initial value on start (GRDB `ValueObservation`). **A reset-on-success must key on a value that proves recovery (a second value, or time up), not on the value every restart produces.** [6]
+- false-positive: silent-failure M1 (a stream that finishes normally freezes the badges). GRDB `values(in:)` ends only by throwing or being cancelled, so the plain `return` is reachable only on cancellation. [9]
+- miss: no lane ran or cited lint. The 4 SwiftLint violations (AppState file_length / function_body_length pushed over by the new hand-off lines, `Self.` in RestartBackoff) came only from the orchestrator's `make lint-swift`. Codex was absent. [3]
+- weak-dimension: 7. Bimodal again: tight pure-core tests (gate, backoff, policy, query oracle) beside zero tests for the AppState wiring that is the actual fix.
+- rule-gap: candidate for review-rules §4: "a single range query replacing N per-item queries must stay bounded when the items are non-contiguous". The pinned-day gap was found by 3 lanes. Promote if it recurs.
+- outcome: TBD
