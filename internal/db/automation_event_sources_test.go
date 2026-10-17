@@ -4,7 +4,11 @@ import (
 	"testing"
 )
 
-func TestAutomationEventSources_SlackReads(t *testing.T) {
+// seedSlackEventSources stores one labelled Slack account (id 1, owner
+// 1:UOWNER) with a synced channel 1:C1 holding five messages around its mark
+// and an unsynced channel 1:C2.
+func seedSlackEventSources(t *testing.T) (*DB, int64) {
+	t.Helper()
 	d := openTestDB(t)
 	acct, err := d.CreateSlackAccount(SlackAccount{TeamDomain: "acme", Label: "work", CurrentUserID: "1:UOWNER"})
 	if err != nil {
@@ -33,6 +37,11 @@ func TestAutomationEventSources_SlackReads(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return d, acct
+}
+
+func TestAutomationEventSources_SlackReads(t *testing.T) {
+	d, _ := seedSlackEventSources(t)
 
 	marks, err := d.SlackChannelSyncMarks()
 	if err != nil {
@@ -53,6 +62,10 @@ func TestAutomationEventSources_SlackReads(t *testing.T) {
 	if err != nil || n != 3 {
 		t.Errorf("count without owner = %d, %v; want 3", n, err)
 	}
+}
+
+func TestAutomationEventSources_SlackLabels(t *testing.T) {
+	d, acct := seedSlackEventSources(t)
 
 	label, owner, err := d.SlackEventLabels(acct)
 	if err != nil || label != "work" || owner != "1:UOWNER" {
@@ -71,19 +84,27 @@ func TestAutomationEventSources_SlackReads(t *testing.T) {
 	}
 }
 
+// seedMailEventSources stores a labelled Gmail account and an unlabelled IMAP
+// account on the same address.
+func seedMailEventSources(t *testing.T) (d *DB, gmail, imap int64) {
+	t.Helper()
+	d = openTestDB(t)
+	gmail, err := d.CreateGoogleAccount(GoogleAccount{Email: "owner@example.com", Label: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imap, err = d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: "owner@example.com", Host: "imap.example.com", Security: "ssl", Folder: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE email_accounts SET label = '' WHERE id = ?`, imap); err != nil {
+		t.Fatal(err)
+	}
+	return d, gmail, imap
+}
+
 func TestAutomationEventSources_MailReads(t *testing.T) {
-	d := openTestDB(t)
-	g, err := d.CreateGoogleAccount(GoogleAccount{Email: "owner@example.com", Label: "work"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	im, err := d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: "owner@example.com", Host: "imap.example.com", Security: "ssl", Folder: "INBOX"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Exec(`UPDATE email_accounts SET label = '' WHERE id = ?`, im); err != nil {
-		t.Fatal(err)
-	}
+	d, g, im := seedMailEventSources(t)
 
 	if label, err := d.MailEventLabel("gmail", g); err != nil || label != "work" {
 		t.Errorf("gmail label = %q, %v", label, err)
@@ -97,31 +118,30 @@ func TestAutomationEventSources_MailReads(t *testing.T) {
 	if _, err := d.MailEventLabel("gmail", 99); err == nil {
 		t.Error("missing account: want an error")
 	}
+}
 
-	for _, p := range []string{"gmail", "imap"} {
-		id := g
-		if p == "imap" {
-			id = im
-		}
-		if set, err := d.MailWatermarkSet(p, id); err != nil || set {
-			t.Errorf("%s before sync: set=%v, %v", p, set, err)
+// checkMailWatermarks asserts MailWatermarkSet for both accounts.
+func checkMailWatermarks(t *testing.T, d *DB, ids map[string]int64, want bool, when string) {
+	t.Helper()
+	for p, id := range ids {
+		if set, err := d.MailWatermarkSet(p, id); err != nil || set != want {
+			t.Errorf("%s %s: set=%v, %v; want %v", p, when, set, err, want)
 		}
 	}
+}
+
+func TestAutomationEventSources_MailWatermarks(t *testing.T) {
+	d, g, im := seedMailEventSources(t)
+	ids := map[string]int64{"gmail": g, "imap": im}
+
+	checkMailWatermarks(t, d, ids, false, "before sync")
 	if err := d.SetGmailAccountWatermark(g, 1700000000); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.SetImapWatermark(im, 42, 7); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"gmail", "imap"} {
-		id := g
-		if p == "imap" {
-			id = im
-		}
-		if set, err := d.MailWatermarkSet(p, id); err != nil || !set {
-			t.Errorf("%s after sync: set=%v, %v", p, set, err)
-		}
-	}
+	checkMailWatermarks(t, d, ids, true, "after sync")
 	if _, err := d.MailWatermarkSet("pop3", g); err == nil {
 		t.Error("unknown provider: want an error")
 	}
@@ -172,9 +192,13 @@ func TestAutomationEventSources_JiraReads(t *testing.T) {
 	}
 }
 
-func TestAutomationEventSources_CalendarReads(t *testing.T) {
-	d := openTestDB(t)
-	g, err := d.CreateGoogleAccount(GoogleAccount{Email: "owner@example.com", Label: "work"})
+// seedCalendarEventSources stores a labelled Google account with a selected
+// calendar holding one event, a labelled CalDAV account with its calendar,
+// and a calendar detached from any account.
+func seedCalendarEventSources(t *testing.T) (d *DB, google int64, davCal string) {
+	t.Helper()
+	d = openTestDB(t)
+	google, err := d.CreateGoogleAccount(GoogleAccount{Email: "owner@example.com", Label: "work"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,8 +206,8 @@ func TestAutomationEventSources_CalendarReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	davCal := CalendarAccountCalendarID("caldav", dav)
-	for acct, id := range map[int64]string{g: "primary@example.com", 0: davCal} {
+	davCal = CalendarAccountCalendarID("caldav", dav)
+	for acct, id := range map[int64]string{google: "primary@example.com", 0: davCal} {
 		if err := d.UpsertCalendar(acct, CalendarCalendar{ID: id, Name: "n", IsSelected: true}); err != nil {
 			t.Fatal(err)
 		}
@@ -196,6 +220,11 @@ func TestAutomationEventSources_CalendarReads(t *testing.T) {
 	if err := d.UpsertCalendarEvent(ev); err != nil {
 		t.Fatal(err)
 	}
+	return d, google, davCal
+}
+
+func TestAutomationEventSources_CalendarReads(t *testing.T) {
+	d, _, _ := seedCalendarEventSources(t)
 
 	marks, err := d.CalendarEventMarks()
 	if err != nil {
@@ -206,6 +235,10 @@ func TestAutomationEventSources_CalendarReads(t *testing.T) {
 	if len(marks) != 1 || marks["e1"] != want {
 		t.Errorf("marks = %+v, want e1 = %+v", marks, want)
 	}
+}
+
+func TestAutomationEventSources_CalendarLabels(t *testing.T) {
+	d, g, davCal := seedCalendarEventSources(t)
 
 	cases := []struct {
 		calendar, want string
