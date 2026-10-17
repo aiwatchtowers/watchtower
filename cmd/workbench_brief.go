@@ -165,19 +165,20 @@ func loadWorkbenchBriefFlag(raw string, stderr io.Writer) string {
 }
 
 // loadWorkbenchBrief is workbench id's brief. It first runs the one-time
-// carry-over of the folder files' check settings (board #558), so a
-// session's checks match what they were before the upgrade; its failure
-// goes to stderr (the hook log) and the brief is printed as always.
+// carry-over of the folder files' check settings for the workbenches that
+// existed at the board #558 upgrade (carryOverWorkflowChecks), so a session's
+// checks match what they were before; its failure goes to stderr (the hook
+// log) and the brief is printed as always.
 func loadWorkbenchBrief(id int64, stderr io.Writer) string {
 	if id <= 0 {
 		return briefUnavailable(id, "is unavailable: no --workbench id given")
 	}
-	cfg, database, err := openJiraCmdDB()
+	_, database, err := openJiraCmdDB()
 	if err != nil {
 		return briefUnavailable(id, "is unavailable: "+err.Error())
 	}
 	defer database.Close()
-	carryOverWorkflowChecksOnce(cfg.WorkspaceDir(), database, stderr)
+	carryOverWorkflowChecks(database, stderr)
 	p, err := database.GetWorkbench(id)
 	if errors.Is(err, db.ErrWorkbenchNotFound) {
 		return briefUnavailable(id, "no longer exists")

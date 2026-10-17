@@ -2,6 +2,7 @@ package workbenchmethod
 
 import (
 	"errors"
+	"time"
 
 	"watchtower/internal/db"
 )
@@ -114,46 +115,40 @@ func (e Effective) FileIgnored() []string {
 }
 
 // CarryOverFileChecks is the one-time upgrade step of board #558: for each
-// workbench whose folder's workflow.md sets a check weaker than the default
-// while the owner has no personal value for it, that value becomes the
-// owner's personal setting, so a setup that worked before the file stopped
-// counting keeps working. The caller runs it once per workspace (a stamp),
-// so a file added or edited later is never copied. It returns the ids it
-// changed; an error stops it (the caller retries the whole step next time —
-// a repeat changes nothing already carried).
-func CarryOverFileChecks(database *db.DB) ([]int64, error) {
-	list, err := database.ListWorkbenches()
+// workbench that existed at migration 00131 and is still carry-pending, a
+// check its folder's workflow.md sets weaker than the default becomes the
+// owner's personal setting where none is set, so a setup that worked before
+// the file stopped counting keeps working, and the mark is cleared
+// (db.CarryWorkflowChecks: one statement, so a value the owner sets meanwhile
+// is never overwritten). Workbenches created later, and a fresh install,
+// have no mark: their files are never copied. The file is read before the
+// write, outside any transaction. It returns the ids it processed; an error
+// stops it, and the next run picks up the rest.
+func CarryOverFileChecks(database *db.DB, now time.Time) ([]int64, error) {
+	pending, err := database.ListWorkbenchesCarryPending()
 	if err != nil {
 		return nil, err
 	}
-	var changed []int64
-	for _, w := range list {
-		weaker := weakerChecks(ReadFile(w.FolderPath))
-		if len(weaker) == 0 {
-			continue
-		}
-		personal, err := database.GetWorkbenchMethodology(w.ID)
-		if err != nil {
-			return changed, err
-		}
-		next := personal
-		for _, c := range weaker {
-			switch {
-			case c.key == "ask_guard" && personal.AskGuard == "":
-				next.AskGuard = c.value
-			case c.key == "finish_check" && personal.FinishCheck == "":
-				next.FinishCheck = c.value
+	stamp := now.UTC().Format(time.RFC3339)
+	var done []int64
+	for _, w := range pending {
+		var askGuard, finishCheck string
+		for _, c := range weakerChecks(ReadFile(w.FolderPath)) {
+			if c.key == "ask_guard" {
+				askGuard = c.value
+			} else {
+				finishCheck = c.value
 			}
 		}
-		if next == personal {
-			continue
+		ok, err := database.CarryWorkflowChecks(w.ID, askGuard, finishCheck, stamp)
+		if err != nil {
+			return done, err
 		}
-		if err := database.SetWorkbenchMethodology(w.ID, next); err != nil {
-			return changed, err
+		if ok {
+			done = append(done, w.ID)
 		}
-		changed = append(changed, w.ID)
 	}
-	return changed, nil
+	return done, nil
 }
 
 // Resolve is workbench workbenchID's effective methodology with folder's

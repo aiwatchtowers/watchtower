@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,15 +102,16 @@ func TestCombine_FileNeverWeakensTheChecks(t *testing.T) {
 		File{Present: true, AskGuard: AskGuardOff, FinishCheck: FinishOff}).FileIgnored())
 }
 
-// Board #558's one-time carry-over: a weaker check in a workbench folder's
-// file becomes the owner's personal value where none is set; a set value, a
-// strict file, a refused file and another workbench are left alone, and a
-// second run changes nothing.
+// Board #558's one-time carry-over: a carry-pending workbench (one that
+// existed at migration 00131) gets its file's weaker checks as the owner's
+// personal values where none is set, once; a set value, a strict or refused
+// file and a workbench that is not pending (created later, or a fresh
+// install) are left alone, and a second run changes nothing.
 func TestCarryOverFileChecks(t *testing.T) {
 	d := openDB(t)
-	off, mine, strict, broken := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	off, mine, strict, broken, fresh := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	ids := map[string]int64{}
-	for name, folder := range map[string]string{"off": off, "mine": mine, "strict": strict, "broken": broken} {
+	for name, folder := range map[string]string{"off": off, "mine": mine, "strict": strict, "broken": broken, "fresh": fresh} {
 		id, err := d.CreateWorkbench(name, folder)
 		require.NoError(t, err)
 		ids[name] = id
@@ -118,12 +120,18 @@ func TestCarryOverFileChecks(t *testing.T) {
 	writeWorkflow(t, mine, "---\nask_guard: off\nfinish_check: off\n---\n")
 	writeWorkflow(t, strict, "---\nask_guard: strict\n---\n")
 	writeWorkflow(t, broken, "---\nask_guard: off\nmode: x\n---\n")
+	writeWorkflow(t, fresh, "---\nask_guard: off\nfinish_check: off\n---\n")
 	require.NoError(t, d.SetWorkbenchMethodology(ids["mine"], db.WorkbenchMethodology{AskGuard: AskGuardSoft}))
+	// What migration 00131 does to the rows that exist at the upgrade.
+	_, err := d.Exec(`UPDATE projects SET methodology_carry_pending = 1 WHERE id IN (?, ?, ?, ?)`,
+		ids["off"], ids["mine"], ids["strict"], ids["broken"])
+	require.NoError(t, err)
+	now := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
 
-	changed, err := CarryOverFileChecks(d)
+	done, err := CarryOverFileChecks(d, now)
 
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []int64{ids["off"], ids["mine"]}, changed)
+	assert.ElementsMatch(t, []int64{ids["off"], ids["mine"], ids["strict"], ids["broken"]}, done)
 	got := func(name string) db.WorkbenchMethodology {
 		m, err := d.GetWorkbenchMethodology(ids[name])
 		require.NoError(t, err)
@@ -133,8 +141,12 @@ func TestCarryOverFileChecks(t *testing.T) {
 	assert.Equal(t, db.WorkbenchMethodology{AskGuard: AskGuardSoft, FinishCheck: FinishOff}, got("mine"), "a set value wins")
 	assert.Equal(t, db.WorkbenchMethodology{}, got("strict"))
 	assert.Equal(t, db.WorkbenchMethodology{}, got("broken"))
+	assert.Equal(t, db.WorkbenchMethodology{}, got("fresh"), "not pending: never carried")
+	carried, err := d.GetWorkbenchChecksCarried(ids["off"])
+	require.NoError(t, err)
+	assert.Equal(t, db.WorkbenchChecksCarried{AskGuard: "2026-10-17T09:00:00Z", FinishCheck: "2026-10-17T09:00:00Z"}, carried)
 
-	again, err := CarryOverFileChecks(d)
+	again, err := CarryOverFileChecks(d, now)
 	require.NoError(t, err)
 	assert.Empty(t, again)
 }

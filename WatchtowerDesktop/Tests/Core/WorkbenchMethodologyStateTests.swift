@@ -54,16 +54,29 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
         XCTAssertEqual(try decode(asks).file.ignored, ["ask_guard: off", "finish_check: off"])
         XCTAssertEqual(try decode(asks).fileNote,
                        "workflow.md asks for ask_guard: off, finish_check: off; that is ignored. "
-                           + "Only your settings above can turn a check down: pick the value here to keep it.")
+                           + "Only your settings can turn a check down: to turn it down, pick the value above.")
         let none = Self.envelope.replacingOccurrences(of: #""truncated":false"#, with: #""truncated":false,"ignored":[]"#)
         XCTAssertNil(try decode(none).fileNote)
         let cutToo = asks.replacingOccurrences(of: #""truncated":false"#, with: #""truncated":true"#)
         XCTAssertEqual(try decode(cutToo).fileNote,
                        "workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB. "
                            + "workflow.md asks for ask_guard: off, finish_check: off; that is ignored. "
-                           + "Only your settings above can turn a check down: pick the value here to keep it.")
+                           + "Only your settings can turn a check down: to turn it down, pick the value above.")
         XCTAssertTrue(WorkbenchMethodologyKey.askGuard.choiceHelp("file").contains("cannot turn this check down"))
         XCTAssertTrue(WorkbenchMethodologyKey.preset.choiceHelp("file").contains("workflow.md, else the built-in default"))
+    }
+
+    /// Board #558: a check the upgrade carried over from workflow.md says so,
+    /// with its date, so the owner knows they did not pick it.
+    func testCarriedLineNamesTheCarryOver() throws {
+        XCTAssertNil(try decode().carriedLine(.askGuard), "no carried_at from an older CLI")
+        let carried = Self.envelope.replacingOccurrences(
+            of: #""file":{"#,
+            with: #""carried_at":{"preset":"","ask_guard":"2026-10-17T09:00:00Z","finish_check":""},"file":{"#)
+        let state = try decode(carried)
+        XCTAssertEqual(state.carriedLine(.askGuard), "Carried over from workflow.md on 2026-10-17 — the file no longer sets it.")
+        XCTAssertNil(state.carriedLine(.finishCheck), "not carried")
+        XCTAssertNil(state.carriedLine(.preset))
     }
 
     func testFailureNamesWhatFailed() throws {

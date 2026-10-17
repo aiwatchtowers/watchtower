@@ -22,7 +22,7 @@ Each setting comes from the first of three places that has it:
 2. **The folder file** `.watchtower/workflow.md`, committed with the code, so a team shares it. It sets only **Methodology**.
 3. **The built-in default**.
 
-Only your own setting can turn the ask guard or the finish check down. Anyone who can change the repository can change the file, including the agent in its own worktree, so the file's `ask_guard` and `finish_check` keys are ignored. A workbench whose file already turned a check down when you updated Watchtower keeps it: that value became your own setting, once.
+Only your own setting can turn the ask guard or the finish check down. Anyone who can change the repository can change the file, including the agent in its own worktree, so the file's `ask_guard` and `finish_check` keys are ignored. A workbench whose file already turned a check down when you updated Watchtower keeps it: that value became your own setting, once, and **Agent Settings…** shows it as **Carried over from workflow.md on** the date.
 
 The file is a short frontmatter, then free text. The text is the team's rules for agents. The brief shows it as the team's rules, not as your words. Every session's brief shows them, up to about 1,200 characters; longer text becomes a pointer to the file. The file is read up to 64 KiB, and a symlink or special file is ignored.
 

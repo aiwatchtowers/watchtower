@@ -27,6 +27,12 @@ const (
 	briefFolderRulesQuote  = "| "
 )
 
+// briefLineBreaks turns every other line separator a reader may break on —
+// CR LF, a lone CR, VT, FF, NEL, U+2028, U+2029 — into "\n", so each piece
+// of the body gets its quote prefix.
+var briefLineBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n",
+	"\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
+
 // briefMethodSection is the slot for e: the Checks: line when a check
 // differs from the built-in default, the line naming the check keys the
 // folder file asks for that were ignored, mismatch (briefPresetMismatch),
@@ -99,7 +105,7 @@ func briefFolderRules(f workbenchmethod.File, room int) string {
 		return ""
 	}
 	inline := briefFolderRulesOpen + "\n" + briefFolderRulesQuote +
-		strings.ReplaceAll(f.Body, "\n", "\n"+briefFolderRulesQuote) + "\n" + briefFolderRulesClose
+		strings.ReplaceAll(briefLineBreaks.Replace(f.Body), "\n", "\n"+briefFolderRulesQuote) + "\n" + briefFolderRulesClose
 	if !f.Truncated && f.BodyChars <= briefFolderRulesInline && utf8.RuneCountInString(inline) <= room {
 		return inline
 	}

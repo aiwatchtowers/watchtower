@@ -126,6 +126,9 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
     package let personal: Values
     package let effective: Values
     package let sources: Values
+    /// When each check was carried over from workflow.md by the board #558
+    /// upgrade (RFC 3339; "" = the owner's pick); nil from an older CLI.
+    package let carriedAt: Values?
     package let file: File
     package let fileCreated: Bool
     package let fileCreateError: String
@@ -141,6 +144,7 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, ok, error, personal, effective, sources, file
+        case carriedAt = "carried_at"
         case fileCreated = "file_created"
         case fileCreateError = "file_create_error"
         case installRan = "install_ran"
@@ -165,6 +169,13 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
         return sources[key] == "file" ? "Now \(value), from .watchtower/workflow.md" : "Now \(value), the built-in default"
     }
 
+    /// Under a personal value the upgrade carried over from workflow.md
+    /// (board #558): that the owner did not pick it, and when; nil otherwise.
+    package func carriedLine(_ key: WorkbenchMethodologyKey) -> String? {
+        guard !personal[key].isEmpty, let at = carriedAt?[key], !at.isEmpty else { return nil }
+        return "Carried over from workflow.md on \(at.prefix(10)) — the file no longer sets it."
+    }
+
     package var fileButtonTitle: String { file.present ? "Open workflow.md" : "Create workflow.md" }
 
     /// Why the folder file was ignored, that it was cut, or that it asks to
@@ -176,7 +187,7 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
         if file.truncated { notes.append("workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB.") }
         if let ignored = file.ignored, !ignored.isEmpty {
             notes.append("workflow.md asks for \(ignored.joined(separator: ", ")); that is ignored. "
-                + "Only your settings above can turn a check down: pick the value here to keep it.")
+                + "Only your settings can turn a check down: to turn it down, pick the value above.")
         }
         return notes.isEmpty ? nil : notes.joined(separator: " ")
     }

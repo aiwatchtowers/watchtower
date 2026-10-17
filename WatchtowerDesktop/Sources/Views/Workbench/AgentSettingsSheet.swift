@@ -59,7 +59,7 @@ struct AgentSettingsSheet: View {
                 ForEach(key.choices, id: \.self) { Text(key.choiceLabel($0)).tag($0) }
             }
             .disabled(busy)
-            if let line = state.effectiveLine(key) {
+            if let line = state.effectiveLine(key) ?? state.carriedLine(key) {
                 Text(line).font(.caption).foregroundStyle(.secondary)
             }
             if choice == WorkbenchMethodologyKey.fromFile {
