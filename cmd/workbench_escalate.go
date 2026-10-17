@@ -162,7 +162,7 @@ func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult
 	}
 	database, err := db.Open(cfg.DBPath())
 	switch {
-	case db.IsBusy(err):
+	case db.IsBusy(err), errors.Is(err, db.ErrMigrationInProgress):
 		return escalateFailure(escalateErrBusy, fmt.Errorf("opening database: %w", err))
 	case errors.Is(err, db.ErrSchemaSetup):
 		return escalateFailure(escalateErrSchema, fmt.Errorf("opening database: %w", err))
