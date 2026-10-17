@@ -246,7 +246,9 @@ func TestChat04_CodexSessionArgvCarriesNoContent(t *testing.T) {
 func TestQuerySync_SmallPromptsNeverReachArgv(t *testing.T) {
 	const sysMarker, userMarker = "SYS-MARKER-566", "USER-MARKER-566"
 	script := filepath.Join(t.TempDir(), "fake-codex")
+	useRealVersionProbe(t)
 	body := `#!/bin/sh
+[ "$1" = "--version" ] && { echo "codex-cli 0.145.0"; exit 0; }
 reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
 case "$*" in *MARKER-566*) reply on-argv ;; esac
 input=$(cat)

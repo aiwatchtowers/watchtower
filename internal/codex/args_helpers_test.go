@@ -24,7 +24,7 @@ func clientArgsT(t *testing.T, c *Client, systemPrompt, userMessage, workDir str
 // genArgsT is the generator's buildArgs for tests, with the same cleanup.
 func genArgsT(t *testing.T, model, systemPrompt, userMessage string) ([]string, string) {
 	t.Helper()
-	args, stdin, promptFile, err := buildArgs(model, systemPrompt, userMessage)
+	args, stdin, promptFile, err := buildArgs("codex", model, systemPrompt, userMessage)
 	if err != nil {
 		t.Fatalf("buildArgs: %v", err)
 	}

@@ -177,6 +177,10 @@ func queryInput(args []string, stdin io.Reader) (prompt, systemPrompt string, er
 	if err := dec.Decode(&q); err != nil {
 		return "", "", fmt.Errorf("--prompt-stdin: stdin is not a query object: %w", err)
 	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		// A second object or stray bytes: the writer is not the one we expect.
+		return "", "", errors.New("--prompt-stdin: unexpected data after the query object")
+	}
 	if q.Prompt == "" {
 		// An empty prompt means the delivery failed: never run without it.
 		return "", "", errors.New("--prompt-stdin: the query has no prompt")

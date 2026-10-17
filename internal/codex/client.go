@@ -8,12 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"watchtower/internal/ai"
-	"watchtower/internal/fsutil"
 )
 
 // Client wraps the Codex CLI for AI queries (ask/chat).
@@ -109,25 +107,6 @@ func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 // watchtower MCP server (its env_vars; codex otherwise filters them out).
 func (c *Client) SetMCPEnvVars(names []string) { c.mcpEnvVars = names }
 
-// instructionsArgs hands a non-empty system prompt to codex as a 0600 file
-// named by `-c model_instructions_file="<path>"`: only the path is on argv.
-// The prompt carries the owner's data, which as `-c
-// developer_instructions=<text>` would be readable by every local process
-// through `ps` (and a large one would hit ARG_MAX). The model instructions
-// replace codex's built-in base instructions; Watchtower's prompts carry
-// their own rules and the tool list still reaches the model. path is the
-// file the caller removes once the child has exited ("" when none).
-func instructionsArgs(systemPrompt string) (args []string, path string, err error) {
-	if systemPrompt == "" {
-		return nil, "", nil
-	}
-	path, err = fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
-	if err != nil {
-		return nil, "", fmt.Errorf("writing system prompt file: %w", err)
-	}
-	return []string{"-c", "model_instructions_file=" + strconv.Quote(path)}, path, nil
-}
-
 // NewClient creates a new AI client that invokes the Codex CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
 // server is configured via .codex/config.toml.
@@ -141,23 +120,24 @@ func NewClient(model, dbPath, codexPath string) *Client {
 }
 
 // buildArgs constructs the CLI arguments for a codex exec call, plus its
-// stdin content. The argv carries flags and paths only: the system prompt
-// travels as a model_instructions_file (instructionsArgs) and the user
-// message on stdin behind the "-" positional — never as a positional prompt,
-// where `ps` would show it. promptFile is the system-prompt file to remove
-// once the child has exited. workDir is an optional working directory to
-// pass via --cd.
+// stdin content. The argv carries flags and paths only (promptArgs): the
+// system prompt travels as a model_instructions_file — or, on a codex too
+// old for one, ahead of the user message on stdin — and the user message on
+// stdin behind the "-" positional, never as a positional prompt, where `ps`
+// would show it. promptFile is the system-prompt file to remove once the
+// child has exited. workDir is an optional working directory to pass via
+// --cd.
 func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) (args []string, stdin, promptFile string, err error) {
 	args = c.execArgs()
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
 	}
-	instr, promptFile, err := instructionsArgs(systemPrompt)
+	instr, stdin, promptFile, err := promptArgs(c.codexCmd, systemPrompt, userMessage)
 	if err != nil {
 		return nil, "", "", err
 	}
 	args = append(append(args, instr...), "-")
-	return args, userMessage, promptFile, nil
+	return args, stdin, promptFile, nil
 }
 
 // execArgs is the `codex exec` prefix: the shared execArgs, plus web search

@@ -194,7 +194,7 @@ func TestQueryInput_PromptStdin(t *testing.T) {
 	if err != nil || prompt != "-v owner text" || sys != "private context" {
 		t.Fatalf("queryInput = %q, %q, %v", prompt, sys, err)
 	}
-	prompt, sys, err = queryInput(nil, strings.NewReader(`{"prompt":"hi"}`))
+	prompt, sys, err = queryInput(nil, strings.NewReader("{\"prompt\":\"hi\"}\n"))
 	if err != nil || prompt != "hi" || sys != "" {
 		t.Fatalf("no system prompt: %q, %q, %v", prompt, sys, err)
 	}
@@ -203,6 +203,8 @@ func TestQueryInput_PromptStdin(t *testing.T) {
 		"no prompt":     `{"system_prompt":"s"}`,
 		"not JSON":      "hello",
 		"unknown field": `{"prompt":"hi","model":"x"}`,
+		"two objects":   `{"prompt":"hi"}{"prompt":"again"}`,
+		"trailing text": `{"prompt":"hi"} extra`,
 	} {
 		if _, _, err := queryInput(nil, strings.NewReader(in)); err == nil {
 			t.Errorf("%s: must be refused", name)
@@ -266,6 +268,62 @@ func TestAIQueryCmd_SystemPromptStdinFlagParses(t *testing.T) {
 	}
 	if !got {
 		t.Fatal("--system-prompt-stdin did not reach RunE")
+	}
+}
+
+// runAIQueryStub runs rootCmd with args and aiQueryCmd's RunE replaced by
+// a stub that records the positional args it got (nil when RunE never ran).
+func runAIQueryStub(t *testing.T, args ...string) (gotArgs []string, ran bool, err error) {
+	t.Helper()
+	resetSystemPromptFlags(t)
+	origFlagConfig, origProvider := flagConfig, flagProvider
+	flagConfig = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	origRunE := aiQueryCmd.RunE
+	t.Cleanup(func() {
+		aiQueryCmd.RunE = origRunE
+		flagConfig, flagProvider = origFlagConfig, origProvider
+		rootCmd.PersistentFlags().Lookup("provider").Changed = false
+		resetSystemPromptFlags(t)
+		rootCmd.SetArgs(nil)
+	})
+	aiQueryCmd.RunE = func(_ *cobra.Command, a []string) error {
+		gotArgs, ran = a, true
+		return nil
+	}
+	rootCmd.SetArgs(args)
+	err = rootCmd.Execute()
+	return gotArgs, ran, err
+}
+
+// The Desktop's form (board #566): `ai query --prompt-stdin` with flags and
+// no positional prompt at all parses and reaches RunE with the flag set.
+func TestAIQueryCmd_PromptStdinWithoutPositional(t *testing.T) {
+	var flagSeen bool
+	got, ran, err := runAIQueryStub(t, "ai", "query", "--prompt-stdin", "--provider", "codex")
+	flagSeen = aiFlagPromptStdin
+	if err != nil || !ran {
+		t.Fatalf("ai query --prompt-stdin --provider codex: ran %v, err %v", ran, err)
+	}
+	if len(got) != 0 {
+		t.Errorf("positional args = %v, want none", got)
+	}
+	if !flagSeen {
+		t.Error("--prompt-stdin did not reach RunE")
+	}
+}
+
+// --prompt-stdin carries the system prompt itself: either system-prompt
+// flag next to it is refused before RunE.
+func TestAIQueryCmd_PromptStdinRefusesSystemPromptFlags(t *testing.T) {
+	for _, extra := range [][]string{
+		{"--system-prompt", "S"},
+		{"--system-prompt", ""},
+		{"--system-prompt-stdin"},
+	} {
+		args := append([]string{"ai", "query", "--prompt-stdin"}, extra...)
+		if _, ran, err := runAIQueryStub(t, args...); err == nil || ran {
+			t.Errorf("%v: must be refused before RunE (ran %v, err %v)", extra, ran, err)
+		}
 	}
 }
 
