@@ -234,6 +234,16 @@ final class TerminalCenter {
         }
     }
 
+    /// The connection `startSessionHost` began; a reattach waits for it.
+    @ObservationIgnored private(set) var sessionHostConnection: Task<Void, Never>?
+
+    /// Begins `connectSessionHost` once per app run, so a caller that comes
+    /// after it can wait for the connection (`sessionHostConnection`).
+    func startSessionHost(_ makeClient: @escaping () -> SessionHostClient) {
+        guard sessionHostConnection == nil else { return }
+        sessionHostConnection = Task { await self.connectSessionHost(makeClient) }
+    }
+
     /// Connects to the session host once per app run: a second call (the
     /// database wired again) reuses the first client and its connection.
     func connectSessionHost(_ makeClient: () -> SessionHostClient) async {
@@ -910,8 +920,17 @@ final class TerminalCenter {
     }
 
     private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?, setup: String?) {
+        let process = processes[session.id] ?? makeProcess()
+        wire(process, session: session, startedAt: now())
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: session.id, codex: codex, setup: setup))
+    }
+
+    /// Registers `process` as the row's current run, `.running` from
+    /// `startedAt`: exit, owner input and focus, links, and a fresh run's
+    /// prompt state. The caller then starts or attaches it.
+    private func wire(_ process: any TerminalSessionProcess, session: TerminalSession, startedAt started: Date) {
         let id = session.id
-        let process = processes[id] ?? makeProcess()
+        rows[id] = session
         process.onExit = { [weak self, weak process] code in
             guard let self else { return }
             let closedByApp = process.map { self.processes[id] !== $0 } ?? true
@@ -938,7 +957,7 @@ final class TerminalCenter {
                 open: { [weak self] askID in self?.onAskLink?(workbenchID, askID) }
             )
         }
-        startedAt[id] = now()
+        startedAt[id] = started
         lastRun += 1
         runs[id] = lastRun
         // A new run starts with an empty prompt: no line of the last run
@@ -947,7 +966,87 @@ final class TerminalCenter {
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex, setup: setup))
+    }
+
+    // MARK: Reattach at launch (board #496)
+
+    /// Takes over a run the session host still holds for `session` — one
+    /// started before the app last quit or was updated — as `.running`,
+    /// without launching anything: no `TerminalLaunch`, no `--resume`, no
+    /// new process. `startedAt` is the host's, so a hook state stamped
+    /// during the run stays trusted. Nothing happens while the row already
+    /// runs here or no host is connected.
+    func adopt(_ session: TerminalSession, info: SessionHostSessionInfo) {
+        guard let host = sessionHost, states[session.id] != .running else { return }
+        let process = processes[session.id] as? HostedTerminalSession ?? HostedTerminalSession(client: host)
+        wire(process, session: session, startedAt: Date(timeIntervalSince1970: Double(info.startedAtMs) / 1000))
+        process.attach(info)
+    }
+
+    /// Sorts out what the host listed at launch against the rows that still
+    /// exist (`rows`, by id): a running run of a row this center does not
+    /// run yet is adopted (the newest, when the host holds several); a
+    /// running run whose row is gone — or a second one for a row — is
+    /// stopped (hang-up, then kill after `killGrace`) and forgotten; an
+    /// exited run of a row nothing runs for is reported once through
+    /// `onSessionExit` as a natural exit, and every exited run is
+    /// forgotten. Runs this center already holds are left to their session.
+    /// Safe to call again: a second call finds its own runs held.
+    func reattach(_ listed: [SessionHostSessionInfo], rows existing: [Int64: TerminalSession]) async {
+        guard let host = sessionHost else { return }
+        let unheld = listed.filter { info in
+            (processes[info.row] as? HostedTerminalSession)?.key != SessionHostAttachRequest(row: info.row, run: info.run)
+        }
+        var strays: [SessionHostSessionInfo] = []
+        let running = Dictionary(grouping: unheld.filter { !$0.exited }, by: \.row)
+        for (row, runs) in running {
+            let newestFirst = runs.sorted { $0.startedAtMs > $1.startedAtMs }
+            if let session = existing[row], states[row] != .running, let newest = newestFirst.first {
+                adopt(session, info: newest)
+                strays += newestFirst.dropFirst()
+            } else {
+                strays += newestFirst
+            }
+        }
+        let exited = Dictionary(grouping: unheld.filter(\.exited), by: \.row)
+        for (row, runs) in exited {
+            guard let session = existing[row], running[row] == nil, processes[row] == nil,
+                  let last = runs.max(by: { $0.startedAtMs < $1.startedAtMs }) else { continue }
+            reportExitedWhileAway(session, code: last.code.map { Int32(clamping: $0) })
+        }
+        for info in unheld where info.exited {
+            await host.forget(row: info.row, run: info.run)
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for info in strays {
+                group.addTask { @MainActor in await self.stopStray(info, host: host) }
+            }
+        }
+    }
+
+    /// A run that ended while the app was away: the row reads as exited
+    /// with its code, and the exit goes out as one the app did not cause.
+    private func reportExitedWhileAway(_ session: TerminalSession, code: Int32?) {
+        rows[session.id] = session
+        states[session.id] = .exited(code)
+        onSessionExit?(session.id, code, false)
+    }
+
+    /// Stops a hosted run nothing here shows — its row is gone, or another
+    /// run of the row was adopted — the way `close` stops a session, then
+    /// forgets it in the host.
+    private func stopStray(_ info: SessionHostSessionInfo, host: SessionHostClient) async {
+        let pid = pid_t(info.pid)
+        if pid > 0 {
+            signaller.signal(pid, SIGHUP)
+            var waited: Duration = .zero
+            while waited < Self.killGrace, signaller.isAlive(pid) {
+                await signaller.sleep(Self.pollStep)
+                waited += Self.pollStep
+            }
+            if signaller.isAlive(pid) { signaller.signal(pid, SIGKILL) }
+        }
+        await host.forget(row: info.row, run: info.run)
     }
 
     func close(sessionID: Int64) async {

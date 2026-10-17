@@ -255,6 +255,10 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var notYetTitledStreak: [Int64: Int] = [:]
     /// When each running resume launched, until its process exits.
     @ObservationIgnored var resumeStarts: [Int64: Date] = [:]
+    /// The launch-time reattach (`startHostReattach`, board #496): a launch
+    /// waits for it, so a row whose run the host still holds is adopted,
+    /// not relaunched beside it.
+    @ObservationIgnored var hostReattach: Task<Void, Never>?
     /// Projects an `openMostRecentSession` is running for, and targets a
     /// `workOn` is running for: a double click must not create two rows.
     @ObservationIgnored var openingSession: Set<Int64> = []
