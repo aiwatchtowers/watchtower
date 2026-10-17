@@ -51,6 +51,8 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     /// `ask_alert-<owner_asks.id>`: written once per ask, deleted when the ask
     /// leaves `open` or after 7 days.
     case askAlert = "ask_alert"
+    /// A pending Claude Code permission prompt (#517), record name `permission_request-<permission_requests.id>`.
+    case permissionRequest = "permission_request"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"

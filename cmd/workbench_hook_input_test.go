@@ -217,8 +217,20 @@ func TestParseHookEvent_CodexFixtures(t *testing.T) {
 	require.Len(t, files, len(codexFixtureWants), "every Task 0 fixture has a want")
 	for name, want := range codexFixtureWants {
 		t.Run(name, func(t *testing.T) {
-			ev, err := parseHookEvent(agentkind.Codex, codexHookFixture(t, name))
+			raw := codexHookFixture(t, name)
+			ev, err := parseHookEvent(agentkind.Codex, raw)
 			require.NoError(t, err)
+			// tool_input is kept verbatim (the fixture's own indentation):
+			// checked as JSON against the fixture, then left out of the
+			// struct comparison.
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(raw, &fields))
+			if captured, ok := fields["tool_input"]; ok {
+				assert.JSONEq(t, string(captured), string(ev.ToolInput))
+			} else {
+				assert.Nil(t, ev.ToolInput)
+			}
+			ev.ToolInput = nil
 			assert.Equal(t, want, ev)
 			assert.False(t, ev.BackgroundTasks.present, "codex has no background_tasks")
 		})

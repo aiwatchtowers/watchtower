@@ -65,6 +65,13 @@ extension SlicePublisher {
         }
         let kindSources = sources.filter { $0.kind == kind }
         guard !kindSources.isEmpty else { return nil }
+        for source in kindSources {
+            do {
+                try source.prepare(dbPool)
+            } catch {
+                logger.warning("\(kind.rawValue, privacy: .public) prepare failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         let fetched = try fetchRecords(kindSources)
         var assetsByName: [String: SliceAsset] = [:]
         var unstageable: [String] = []

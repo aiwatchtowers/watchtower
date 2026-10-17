@@ -3065,3 +3065,19 @@ CREATE TABLE IF NOT EXISTS review_lessons (
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   decided_at         TEXT
 );
+
+-- Permission prompts a Claude Code PermissionRequest hook waits on, answered from the phone
+-- or the Mac (00130). summary is what the owner approves (clipped to 2000 chars); no tool_input.
+CREATE TABLE IF NOT EXISTS permission_requests (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    workbench_id        INTEGER NOT NULL,
+    tool_name           TEXT NOT NULL DEFAULT '',
+    summary             TEXT NOT NULL DEFAULT '',
+    summary_clipped     INTEGER NOT NULL DEFAULT 0,          -- 1: summary was cut short; the phone offers Deny only
+    status              TEXT NOT NULL CHECK (status IN ('pending','allowed','denied','answered_on_mac','expired')),
+    created_at          TEXT NOT NULL,                       -- agent-state stamp layout
+    decided_at          TEXT,
+    decided_by          TEXT                                 -- the phone's name; NULL otherwise
+);
+CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
