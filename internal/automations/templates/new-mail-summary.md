@@ -16,14 +16,18 @@ One run sums up at most 600 messages per mailbox, the oldest first; when more
 came in, the summary says how many newer messages are left, and the next run
 sums them up.
 
-The mail-sync event trigger fires once event triggers ship (P4). Until then,
-put your mailboxes' labels or addresses in `scheduledAccounts` in the script
-(a run without a sync event has no event to say which mailboxes got mail) and
-run it by hand (`watchtower automations run <its id>`), or switch it
-to a schedule by replacing the trigger with, for example,
+It covers Gmail and IMAP mailboxes alike. A run without a sync event (by
+hand with `watchtower automations run <its id>`, or on a schedule) has no
+event to say which mailboxes got mail, so it sums up the mailboxes whose
+labels or addresses you put in `scheduledAccounts` in the script. To run it
+on a schedule instead, replace the trigger with, for example,
 
     trigger:
       schedule: "0 9 * * 1-5"
+
+Each mailbox keeps its place under the one name `list_emails` gives it (its
+label, else its address), so naming it either way continues where the last
+run stopped.
 
 `gmail:read@*` reads every mailbox; narrow it to `gmail:read@<your label>`
 to read only that one.
@@ -64,15 +68,12 @@ function newMail(account, cursor) {
   const done = cursor ? cursor.ids : [];
   const kept = [];
   let total = 0;
-  let name = account;
   let before = "";
   let seen = []; // ids listed at the oldest second of the last page
   for (;;) {
     const args = { account: account, since: cursor ? cursor.date : dayAgo, limit: page };
     if (before) args.before = before;
-    const res = tool("list_emails", args);
-    name = res.account;
-    const msgs = res.messages;
+    const msgs = tool("list_emails", args).messages;
     if (msgs.length === 0) break;
     let added = 0;
     for (const m of msgs) {
@@ -98,12 +99,22 @@ function newMail(account, cursor) {
     }
   }
   kept.reverse();
-  return { name: name, messages: kept, total: total };
+  return { messages: kept, total: total };
+}
+
+// mailboxName is the name list_emails gives account's mailbox — its label,
+// else its address — whichever of the two account is. Cursors are kept
+// under it, so one mailbox has one cursor.
+function mailboxName(account) {
+  return tool("list_emails", { account: account, limit: 1 }).account;
 }
 
 let summed = 0;
 for (const account of accounts) {
-  const cursor = cursors[account];
+  const name = mailboxName(account);
+  // An older version of this script kept the cursor under the name the
+  // mailbox was given; it is read here once and moved under name below.
+  const cursor = cursors[name] || cursors[account];
   const got = newMail(account, cursor);
   const fresh = got.messages;
   if (fresh.length === 0) continue;
@@ -118,7 +129,7 @@ for (const account of accounts) {
   }
   const left = got.total - fresh.length;
   output.inbox({
-    title: "New mail in " + got.name + ": " + (left > 0 ? fresh.length + " of " + got.total : fresh.length) +
+    title: "New mail in " + name + ": " + (left > 0 ? fresh.length + " of " + got.total : fresh.length) +
       " message" + (got.total === 1 ? "" : "s"),
     body: parts.join("\n\n") +
       (left > 0 ? "\n\n" + left + " newer message" + (left === 1 ? " is" : "s are") + " left for the next run." : ""),
@@ -127,7 +138,8 @@ for (const account of accounts) {
   const newest = fresh[fresh.length - 1].date;
   let ids = fresh.filter((m) => m.date === newest).map((m) => m.id);
   if (cursor && cursor.date === newest) ids = cursor.ids.concat(ids);
-  cursors[account] = { date: newest, ids: ids };
+  cursors[name] = { date: newest, ids: ids };
+  if (account !== name) delete cursors[account];
   summed += fresh.length;
 }
 

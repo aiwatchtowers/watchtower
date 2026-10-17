@@ -53,7 +53,7 @@ Because the file belongs to the repository, it can arrive with a `git pull` or b
 | `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` |
 | `release-buttons` | workbench | by hand | three recipes (release, deploy to test, deploy to stage), each running one `make` target and asking before it acts |
 
-`new-mail-summary` runs on its own after a mail sync brings new mail; its card and file still say otherwise. A run by hand or on a schedule has no mail event, so first put your mailboxes' labels or addresses in `scheduledAccounts` in the script.
+`new-mail-summary` runs on its own after a Gmail or IMAP sync brings new mail. A run by hand or on a schedule has no mail event, so first put your mailboxes' labels or addresses in `scheduledAccounts` in the script. Each mailbox picks up where its last run stopped, whether you name it by label or by address.
 
 ## When it's empty or wrong
 - **"No templates yet."** The command-line tool is older than the app; update Watchtower.
