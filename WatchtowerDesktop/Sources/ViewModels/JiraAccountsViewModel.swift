@@ -22,6 +22,14 @@ final class JiraAccountsViewModel {
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
     @ObservationIgnored private(set) var daemonRestartTask: Task<Void, Never>?
+    /// The policy a connect held for its board step (`addAccountHoldingRestart`).
+    @ObservationIgnored private var heldRestart: DaemonRestartPolicy?
+    /// The sheet closed (`finishBoardStep`) while its connect was still
+    /// running: a connect that succeeds afterwards applies its policy at
+    /// once, since no one is left to release a held restart.
+    @ObservationIgnored private var boardStepClosed = false
+    /// The last browser flow ended in a user Cancel (SIGTERM/SIGKILL).
+    @ObservationIgnored private var lastAuthFlowCancelled = false
 
     private let dbPool: DatabasePool
     private let daemon: any DaemonRestarting
@@ -93,6 +101,43 @@ final class JiraAccountsViewModel {
         await runAuthFlow(args: Self.addArgs(site: site), failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
+    /// The add sheet's connect (#572): `addAccount` with the daemon restart
+    /// held while the board step is up, so the new site and its chosen
+    /// boards are wired in by one restart (`finishBoardStep`), not two
+    /// overlapping ones. If the sheet already went away, the policy applies
+    /// as soon as the connect succeeds. Also reads the account ids before
+    /// the connect, so the board step can list the site it added (nil when
+    /// that read fails).
+    func addAccountHoldingRestart(
+        site: String = "", daemonPolicy: DaemonRestartPolicy
+    ) async -> (connected: Bool, accountIDsBefore: Set<Int>?) {
+        boardStepClosed = false
+        heldRestart = nil
+        let before = try? await dbPool.read { db in Set(try JiraAccountQueries.fetchAll(db).map(\.id)) }
+        await addAccount(site: site, daemonPolicy: .deferred)
+        guard error == nil, !lastAuthFlowCancelled else { return (false, before) }
+        if boardStepClosed {
+            daemonRestartTask = daemonPolicy.apply(using: daemon)
+        } else {
+            heldRestart = daemonPolicy
+        }
+        return (true, before)
+    }
+
+    /// The board step closed (Done, Skip or the sheet went away): applies the
+    /// connect's held policy once — a restart under `.restart`, nothing under
+    /// onboarding's `.deferred` (the daemon starts at the finish). With the
+    /// connect still running, it marks the step closed so the connect applies
+    /// the policy itself. A second call does nothing.
+    func finishBoardStep() {
+        guard let policy = heldRestart else {
+            boardStepClosed = true
+            return
+        }
+        heldRestart = nil
+        daemonRestartTask = policy.apply(using: daemon)
+    }
+
     // MARK: - Re-login
 
     /// Builds the `jira login` args for re-consenting an existing account.
@@ -146,6 +191,7 @@ final class JiraAccountsViewModel {
     }
 
     func cancelConnect() {
+        lastAuthFlowCancelled = true
         if let process = authProcess, process.isRunning {
             process.terminate()
         }
@@ -220,6 +266,7 @@ final class JiraAccountsViewModel {
 
         isConnecting = true
         error = nil
+        lastAuthFlowCancelled = false
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -268,6 +315,7 @@ final class JiraAccountsViewModel {
         failurePrefix: String,
         daemonPolicy: DaemonRestartPolicy
     ) {
+        if result.exitCode == 15 || result.exitCode == 9 { lastAuthFlowCancelled = true }
         if result.exitCode == 0 {
             error = nil
             refresh()
