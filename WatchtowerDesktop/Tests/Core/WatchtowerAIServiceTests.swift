@@ -9,8 +9,6 @@ import XCTest
 final class WatchtowerAIServiceTests: XCTestCase {
     func testBuildArgsIncludesProviderFlagWhenSet() {
         let args = WatchtowerAIService.buildArgs(
-            prompt: "hello",
-            systemPrompt: nil,
             sessionID: nil,
             dbPath: nil,
             model: nil,
@@ -18,13 +16,11 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "--provider", "codex", "--", "hello"])
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--provider", "codex"])
     }
 
     func testBuildArgsOmitsProviderFlagWhenNil() {
         let args = WatchtowerAIService.buildArgs(
-            prompt: "hello",
-            systemPrompt: nil,
             sessionID: nil,
             dbPath: nil,
             model: nil,
@@ -37,8 +33,6 @@ final class WatchtowerAIServiceTests: XCTestCase {
 
     func testBuildArgsOmitsProviderFlagWhenEmpty() {
         let args = WatchtowerAIService.buildArgs(
-            prompt: "hello",
-            systemPrompt: nil,
             sessionID: nil,
             dbPath: nil,
             model: nil,
@@ -51,8 +45,6 @@ final class WatchtowerAIServiceTests: XCTestCase {
 
     func testBuildArgsIncludesModelAndProviderTogether() {
         let args = WatchtowerAIService.buildArgs(
-            prompt: "hello",
-            systemPrompt: nil,
             sessionID: nil,
             dbPath: nil,
             model: "gpt-5.4",
@@ -60,52 +52,37 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "--model", "gpt-5.4", "--provider", "codex", "--", "hello"])
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--model", "gpt-5.4", "--provider", "codex"])
     }
 
     func testBuildArgsEmitsChatToolModeFlags() {
         let mode = ChatToolMode(surface: "target", conversationID: 7, turnID: "t1", contextType: "target", contextID: "42")
         let args = WatchtowerAIService.buildArgs(
-            prompt: "hi", systemPrompt: nil, sessionID: nil, dbPath: "/tmp/w.db", model: nil, provider: nil, toolMode: mode
+            sessionID: nil, dbPath: "/tmp/w.db", model: nil, provider: nil, toolMode: mode
         )
-        XCTAssertEqual(args, ["ai", "query", "--db-path", "/tmp/w.db",
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--db-path", "/tmp/w.db",
                               "--tools", "chat", "--surface", "target", "--conversation", "7", "--turn", "t1",
-                              "--context-type", "target", "--context-id", "42", "--", "hi"])
+                              "--context-type", "target", "--context-id", "42"])
     }
 
-    /// An unconditional `--` separator: a prompt that looks like a flag
-    /// ("-v looks wrong") must still parse as the positional prompt, not as
-    /// `-v` plus a stray "looks"/"wrong". The separator is emitted for every
-    /// call, never only when the prompt starts with a dash — a conditional
-    /// separator would be a second path to get wrong. Flags must land BEFORE
-    /// `--`, so this asserts the whole array rather than merely
-    /// `args.contains("--")`, which would pass even for the broken ordering
-    /// (`--` before the flags).
-    func testBuildArgsPassesALeadingDashPromptAfterASeparator() {
-        let args = WatchtowerAIService.buildArgs(
-            prompt: "-v looks wrong",
-            systemPrompt: "S",
-            sessionID: nil,
-            dbPath: nil,
-            model: nil,
-            provider: "codex",
-            toolMode: nil
-        )
-
-        XCTAssertEqual(args, ["ai", "query", "--system-prompt-stdin", "--provider", "codex", "--", "-v looks wrong"])
-    }
-
-    /// The system prompt carries the chat's private context: it travels on
-    /// stdin, never as an argv value.
-    func testSystemPromptNeverOnArgv() {
+    /// Board #566: the owner's message and the chat's private system prompt
+    /// travel on stdin as one JSON object (`--prompt-stdin`), never on argv —
+    /// any local process could read argv through `ps`. A message that looks
+    /// like a flag ("-v looks wrong") is plain JSON data there.
+    func testPromptAndSystemPromptNeverOnArgv() throws {
         let secret = "PRIVATE-CONTEXT-7c1e"
+        let message = "-v OWNER-TEXT-3d2a"
         let args = WatchtowerAIService.buildArgs(
-            prompt: "hi", systemPrompt: secret, sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil
+            sessionID: nil, dbPath: nil, model: nil, provider: "codex", toolMode: nil
         )
-        XCTAssertFalse(args.contains { $0.contains(secret) })
+        XCTAssertFalse(args.contains { $0.contains(secret) || $0.contains("OWNER-TEXT") })
         XCTAssertFalse(args.contains("--system-prompt"))
-        XCTAssertTrue(args.contains("--system-prompt-stdin"))
-        XCTAssertEqual(WatchtowerAIService.stdinPayload(systemPrompt: secret), Data(secret.utf8))
+        XCTAssertFalse(args.contains("--"))
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--provider", "codex"])
+
+        let payload = WatchtowerAIService.stdinPayload(prompt: message, systemPrompt: secret)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: String])
+        XCTAssertEqual(object, ["prompt": message, "system_prompt": secret])
     }
 
     /// The payload reaches the reader and the pipe is closed (the CLI's
@@ -125,58 +102,58 @@ final class WatchtowerAIServiceTests: XCTestCase {
         WatchtowerAIService.feedStdin(pipe, payload: Data(repeating: 0x61, count: 1 << 20))
     }
 
-    func testNoSystemPromptMeansNoStdinFlagOrPayload() {
-        let args = WatchtowerAIService.buildArgs(
-            prompt: "hi", systemPrompt: "", sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil
-        )
-        XCTAssertFalse(args.contains("--system-prompt-stdin"))
-        XCTAssertNil(WatchtowerAIService.stdinPayload(systemPrompt: ""))
-        XCTAssertNil(WatchtowerAIService.stdinPayload(systemPrompt: nil))
+    /// No system prompt: the payload carries the prompt alone (the CLI then
+    /// runs without one, as before).
+    func testNoSystemPromptLeavesItOutOfThePayload() throws {
+        for system in [nil, ""] as [String?] {
+            let payload = WatchtowerAIService.stdinPayload(prompt: "hi", systemPrompt: system)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: String])
+            XCTAssertEqual(object, ["prompt": "hi"])
+        }
     }
 
     /// AGENT-04: no toolMode → no --tools flag, ever. And the retired
     /// --allowed-tools flag is gone for good.
     func testBuildArgsWithoutToolModeNeverEmitsToolsFlag() {
         let args = WatchtowerAIService.buildArgs(
-            prompt: "hi", systemPrompt: "s", sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude", toolMode: nil
+            sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude", toolMode: nil
         )
         XCTAssertFalse(args.contains("--tools"))
         XCTAssertFalse(args.contains("--allowed-tools"))
     }
 
     /// A code question runs `ai query --read-folder DIR` (spec 2026-10-02
-    /// §9.1): the folder rides ahead of the `--` separator, with no tool mode.
-    func testBuildArgsReadFolderGoesBeforeTheSeparator() {
+    /// §9.1), with no tool mode.
+    func testBuildArgsReadFolder() {
         let args = WatchtowerAIService.buildArgs(
-            prompt: "-what is this?", systemPrompt: "s", sessionID: nil, dbPath: "/tmp/w.db", model: nil,
+            sessionID: nil, dbPath: "/tmp/w.db", model: nil,
             provider: "codex", toolMode: nil, readFolder: "/work/acme"
         )
-        XCTAssertEqual(args, ["ai", "query", "--system-prompt-stdin", "--db-path", "/tmp/w.db", "--provider", "codex",
-                              "--read-folder", "/work/acme", "--", "-what is this?"])
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--db-path", "/tmp/w.db", "--provider", "codex",
+                              "--read-folder", "/work/acme"])
         XCTAssertFalse(args.contains("--tools"))
     }
 
-    /// The help chat runs `ai query --no-tools`: the flag rides ahead of the
-    /// `--` separator, with no tool mode.
-    func testBuildArgsNoToolsGoesBeforeTheSeparator() {
+    /// The help chat runs `ai query --no-tools`, with no tool mode.
+    func testBuildArgsNoTools() {
         let args = WatchtowerAIService.buildArgs(
-            prompt: "how do I add a source?", systemPrompt: "s", sessionID: nil, dbPath: nil, model: "m",
+            sessionID: nil, dbPath: nil, model: "m",
             provider: "claude", toolMode: nil, noTools: true
         )
-        XCTAssertEqual(args, ["ai", "query", "--system-prompt-stdin", "--model", "m", "--provider", "claude",
-                              "--no-tools", "--", "how do I add a source?"])
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--model", "m", "--provider", "claude",
+                              "--no-tools"])
     }
 
     /// Without a folder (every other chat) the argv is what it was.
     func testBuildArgsWithoutReadFolderIsUnchanged() {
         let args = WatchtowerAIService.buildArgs(
-            prompt: "hi", systemPrompt: nil, sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude",
+            sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude",
             toolMode: nil
         )
-        XCTAssertEqual(args, ["ai", "query", "--session-id", "sid", "--db-path", "/tmp/w.db", "--model", "m",
-                              "--provider", "claude", "--", "hi"])
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--session-id", "sid", "--db-path", "/tmp/w.db",
+                              "--model", "m", "--provider", "claude"])
         XCTAssertEqual(WatchtowerAIService.buildArgs(
-            prompt: "hi", systemPrompt: nil, sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude",
+            sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude",
             toolMode: nil, readFolder: ""
         ), args)
     }

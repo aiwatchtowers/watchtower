@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"watchtower/internal/ai"
-	"watchtower/internal/digest"
 )
 
 // Client wraps the Codex CLI for AI queries (ask/chat).
@@ -26,9 +25,6 @@ type Client struct {
 	mcpArgs []string
 	// mcpEnvVars are passed through to the MCP server (SetMCPEnvVars).
 	mcpEnvVars []string
-	// stdinOnly routes the system prompt and user message through stdin only
-	// (see SetStdinOnly) — never through argv.
-	stdinOnly bool
 	// readFolder, when set (SetReadFolder), is the run's working root
 	// (`--cd`, and the process cwd) under the read-only sandbox. Empty =
 	// today's run in a temp dir holding the MCP config.
@@ -97,7 +93,10 @@ func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
 		return nil
 	}
 	defer cleanup()
-	args, _ := c.buildArgs(systemPrompt, userMessage, dir)
+	args, _, promptFile, _ := c.buildArgs(systemPrompt, userMessage, dir)
+	if promptFile != "" {
+		_ = os.Remove(promptFile)
+	}
 	return args
 }
 
@@ -107,42 +106,6 @@ func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 // SetMCPEnvVars names environment variables codex passes through to the
 // watchtower MCP server (its env_vars; codex otherwise filters them out).
 func (c *Client) SetMCPEnvVars(names []string) { c.mcpEnvVars = names }
-
-// SetStdinOnly makes every subsequent call route the system prompt and user
-// message through stdin ONLY (CHAT-04, spec §9: no content on any process's
-// argv) instead of the default `-c developer_instructions=...` argv flag and
-// the positional-or-stdin heuristic in promptPositionalOrStdin. This is an
-// opt-in: existing callers (cliGenerator, digest generators, `ai query`)
-// never set it and keep today's behavior byte-for-byte. It exists for the
-// chat session's codex backend (`ai session --provider codex`,
-// cmd/ai_session.go's newSessionBackend), where the system prompt and the
-// replayed conversation can both carry arbitrarily sensitive content that
-// must never sit in a process listing (ps, /proc, crash reports).
-func (c *Client) SetStdinOnly(v bool) { c.stdinOnly = v }
-
-// codexStdinHeader/codexStdinUserHeader delimit the two sections of the
-// stdin-only payload (buildStdinOnlyArgs) so codex can still tell the system
-// instructions apart from the owner's turn even though both now arrive as
-// one stdin stream instead of separate channels.
-const (
-	codexStdinSystemHeader = "SYSTEM INSTRUCTIONS:\n"
-	codexStdinUserHeader   = "USER MESSAGE:\n"
-)
-
-// codexStdinContent renders the whole turn (system prompt + user message,
-// which for the chat session already carries the replayed history — see
-// chat.ReplayFromDB) as one delimited stdin payload.
-func codexStdinContent(systemPrompt, userMessage string) string {
-	var b strings.Builder
-	if systemPrompt != "" {
-		b.WriteString(codexStdinSystemHeader)
-		b.WriteString(systemPrompt)
-		b.WriteString("\n\n")
-	}
-	b.WriteString(codexStdinUserHeader)
-	b.WriteString(userMessage)
-	return b.String()
-}
 
 // NewClient creates a new AI client that invokes the Codex CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
@@ -156,56 +119,25 @@ func NewClient(model, dbPath, codexPath string) *Client {
 	}
 }
 
-// promptPositionalOrStdin builds the trailing positional prompt argument for
-// `codex exec`, plus the same message again as stdin content when it must
-// travel that way instead: either it exceeds digest.StdinThreshold (ARG_MAX
-// safety — the package-level buildArgs precedent in generator.go, hour-long
-// meeting transcripts run to hundreds of KB) or it begins with '-', which a
-// bare positional would otherwise be parsed as a codex flag rather than the
-// prompt text. codex reads the prompt from stdin when the positional is "-".
-func promptPositionalOrStdin(userMessage string) (positional, stdin string) {
-	if len(userMessage) > digest.StdinThreshold || strings.HasPrefix(userMessage, "-") {
-		return "-", userMessage
-	}
-	return userMessage, ""
-}
-
-// buildArgs constructs the CLI arguments for a codex exec call, plus stdin
-// content when userMessage must travel that way instead of inline (see
-// promptPositionalOrStdin). workDir is an optional working directory to pass
-// via --cd. When c.stdinOnly is set (SetStdinOnly), or the system prompt
-// exceeds digest.StdinThreshold (on argv it would overflow ARG_MAX and sit
-// readable in `ps`; codex has no file form of developer_instructions), it
-// instead never emits developer_instructions on argv and never places
-// userMessage positionally — see buildStdinOnlyArgs.
-func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
-	if c.stdinOnly || len(systemPrompt) > digest.StdinThreshold {
-		return c.buildStdinOnlyArgs(systemPrompt, userMessage, workDir)
-	}
-	args := c.execArgs()
+// buildArgs constructs the CLI arguments for a codex exec call, plus its
+// stdin content. The argv carries flags and paths only (promptArgs): the
+// system prompt travels as a model_instructions_file — or, on a codex too
+// old for one, ahead of the user message on stdin — and the user message on
+// stdin behind the "-" positional, never as a positional prompt, where `ps`
+// would show it. promptFile is the system-prompt file to remove once the
+// child has exited. workDir is an optional working directory to pass via
+// --cd.
+func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) (args []string, stdin, promptFile string, err error) {
+	args = c.execArgs()
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
 	}
-	if systemPrompt != "" {
-		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
+	instr, stdin, promptFile, err := promptArgs(c.codexCmd, systemPrompt, userMessage)
+	if err != nil {
+		return nil, "", "", err
 	}
-	positional, stdin := promptPositionalOrStdin(userMessage)
-	args = append(args, positional)
-	return args, stdin
-}
-
-// buildStdinOnlyArgs is buildArgs' CHAT-04 mode (see SetStdinOnly): no
-// -c developer_instructions=..., no positional prompt — codex always reads
-// "-" from stdin, and stdin carries the whole turn (system prompt then user
-// message, delimited by codexStdinContent) regardless of length or leading
-// characters.
-func (c *Client) buildStdinOnlyArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
-	args := c.execArgs()
-	if workDir != "" {
-		args = append(args, "--cd", workDir)
-	}
-	args = append(args, "-")
-	return args, codexStdinContent(systemPrompt, userMessage)
+	args = append(append(args, instr...), "-")
+	return args, stdin, promptFile, nil
 }
 
 // execArgs is the `codex exec` prefix: the shared execArgs, plus web search
@@ -281,12 +213,19 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 		defer cleanup()
 
-		args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
+		args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, workDir)
+		if buildErr != nil {
+			errCh <- buildErr
+			return
+		}
+		if promptFile != "" {
+			// Every return below comes after the child is reaped or never
+			// started, so the file is never removed while codex reads it.
+			defer os.Remove(promptFile)
+		}
 
 		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
-		if promptStdin != "" {
-			cmd.Stdin = strings.NewReader(promptStdin)
-		}
+		cmd.Stdin = strings.NewReader(promptStdin)
 		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 		defer reap()
 		cmd.Dir = c.processDir()
@@ -382,12 +321,16 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 	defer cleanup()
 
-	args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
+	args, promptStdin, promptFile, err := c.buildArgs(systemPrompt, userMessage, workDir)
+	if err != nil {
+		return "", nil, err
+	}
+	if promptFile != "" {
+		defer os.Remove(promptFile)
+	}
 
 	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
-	if promptStdin != "" {
-		cmd.Stdin = strings.NewReader(promptStdin)
-	}
+	cmd.Stdin = strings.NewReader(promptStdin)
 	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 	defer reap()
 	cmd.Dir = c.processDir()

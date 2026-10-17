@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,16 +23,22 @@ func containsPair(args []string, flag, value string) bool {
 	return false
 }
 
-func TestGenerateArgsSmallMessageInline(t *testing.T) {
-	args, stdin := generateArgs("m", "sys", "", "hello", false)
-	if stdin != "" {
-		t.Errorf("stdin = %q, want empty for small message", stdin)
+// A small message — the common daemon case — travels on stdin too, never
+// after -p on argv, where every local process could read it through `ps`
+// (board #566).
+func TestGenerateArgsSmallMessageViaStdin(t *testing.T) {
+	args, stdin := generateArgs("m", "", "hello")
+	if stdin != "hello" {
+		t.Errorf("stdin = %q, want the message", stdin)
 	}
-	if !containsPair(args, "-p", "hello") {
-		t.Errorf("args = %v, want -p followed by the message", args)
+	if slices.Contains(args, "hello") {
+		t.Errorf("args = %v carry the message", args)
 	}
-	if !containsPair(args, "--system-prompt", "sys") {
-		t.Errorf("args = %v, want --system-prompt sys", args)
+	if len(args) < 2 || args[0] != "-p" || !strings.HasPrefix(args[1], "--") {
+		t.Errorf("args = %v, want a bare -p followed by a flag", args)
+	}
+	if slices.Contains(args, "--system-prompt") || slices.Contains(args, "--system-prompt-file") {
+		t.Errorf("args = %v: no system prompt file, no system prompt flag", args)
 	}
 	if !containsPair(args, "--model", "m") {
 		t.Errorf("args = %v, want --model m", args)
@@ -39,8 +46,8 @@ func TestGenerateArgsSmallMessageInline(t *testing.T) {
 }
 
 func TestGenerateArgsLargeMessageViaStdin(t *testing.T) {
-	big := strings.Repeat("x", StdinThreshold+1)
-	args, stdin := generateArgs("m", "sys", "", big, false)
+	big := strings.Repeat("x", 64*1024+1)
+	args, stdin := generateArgs("m", "", big)
 	if stdin != big {
 		t.Errorf("stdin length = %d, want the full message (%d bytes)", len(stdin), len(big))
 	}
@@ -89,7 +96,7 @@ esac
 	}
 
 	gen := NewClaudeGenerator("test-model-light", "test-model", script)
-	big := strings.Repeat("x", StdinThreshold) + marker // > StdinThreshold → stdin path
+	big := strings.Repeat("x", 64*1024) + marker // well past a single argv value's limit
 
 	got, _, _, err := gen.Generate(context.Background(), "sys", big, "")
 	if err != nil {
@@ -257,14 +264,16 @@ func TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed(t *testing.T) {
 	}
 }
 
-func TestGenerateArgsThresholdBoundary(t *testing.T) {
-	exact := strings.Repeat("x", StdinThreshold)
-	args, stdin := generateArgs("m", "sys", "", exact, false)
-	if stdin != "" {
-		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
+// There is no size threshold any more: the 32 KiB message that used to be
+// the largest one inline travels on stdin like any other (board #566).
+func TestGenerateArgsMessageOnStdinAtAnySize(t *testing.T) {
+	exact := strings.Repeat("x", 32*1024)
+	args, stdin := generateArgs("m", "", exact)
+	if stdin != exact {
+		t.Errorf("stdin = %d bytes, want the whole %d-byte message", len(stdin), len(exact))
 	}
-	if !containsPair(args, "-p", exact) {
-		t.Error("args must carry the exactly-threshold message inline after -p")
+	if slices.Contains(args, exact) {
+		t.Error("args must never carry the message")
 	}
 }
 
@@ -317,7 +326,7 @@ echo "{\"type\":\"result\",\"result\":\"model:$model\",\"is_error\":false}"
 }
 
 func TestGenerateArgsSystemPromptFile(t *testing.T) {
-	args, _ := generateArgs("m", "sys", "/tmp/p.txt", "hello", false)
+	args, _ := generateArgs("m", "/tmp/p.txt", "hello")
 	if !containsPair(args, "--system-prompt-file", "/tmp/p.txt") {
 		t.Errorf("args = %v, want --system-prompt-file /tmp/p.txt", args)
 	}
@@ -328,9 +337,9 @@ func TestGenerateArgsSystemPromptFile(t *testing.T) {
 	}
 }
 
-// TestClaudeGeneratorLargeSystemPromptViaFile: a system prompt above
-// StdinThreshold (briefing, target extract) reaches the CLI through a
-// --system-prompt-file, never argv, and the file is removed after the call.
+// TestClaudeGeneratorLargeSystemPromptViaFile: a large system prompt
+// (briefing, target extract) reaches the CLI through a --system-prompt-file,
+// never argv, and the file is removed after the call.
 func TestClaudeGeneratorLargeSystemPromptViaFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -354,7 +363,7 @@ fi
 	}
 
 	gen := NewClaudeGenerator("test-model-light", "test-model", script)
-	sys := strings.Repeat("x", StdinThreshold) + marker
+	sys := strings.Repeat("x", 64*1024) + marker
 
 	got, _, _, err := gen.Generate(context.Background(), sys, "hello", "")
 	if err != nil {
@@ -368,11 +377,49 @@ fi
 	}
 }
 
+// TestClaudeGeneratorSmallPromptsNeverOnArgv (board #566): a small system
+// prompt and a small user message — the common daemon case — reach the CLI
+// through the 0600 file and stdin, and neither ever sits on the child's
+// argv, where every local process could read it through `ps`.
+func TestClaudeGeneratorSmallPromptsNeverOnArgv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	const sysMarker, userMarker = "SYS-MARKER-566", "USER-MARKER-566"
+	script := filepath.Join(t.TempDir(), "fake-claude")
+	scriptBody := `#!/bin/sh
+case "$*" in *MARKER-566*) echo '{"type":"result","result":"on-argv","is_error":false}'; exit 0 ;; esac
+input=$(cat)
+file=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--system-prompt-file" ]; then file="$2"; fi
+  shift
+done
+case "$input" in *` + userMarker + `*) ;; *) echo '{"type":"result","result":"user-missing","is_error":false}'; exit 0 ;; esac
+if [ -n "$file" ] && grep -q ` + sysMarker + ` "$file"; then
+  echo '{"type":"result","result":"ok","is_error":false}'
+else
+  echo '{"type":"result","result":"sys-missing","is_error":false}'
+fi
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("writing fake claude binary: %v", err)
+	}
+
+	gen := NewClaudeGenerator("test-model-light", "test-model", script)
+	got, _, _, err := gen.Generate(context.Background(), "sys "+sysMarker, "hello "+userMarker, "")
+	if err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("result = %q, want ok: the prompts must travel by file and stdin, never argv", got)
+	}
+}
+
 // A message beginning with '-' never follows -p on argv, where claude would
 // parse it as a flag (-c is --continue): it travels on stdin.
 func TestGenerateArgs_DashLeadingMessageViaStdin(t *testing.T) {
 	msg := "-c resume the last session"
-	args, stdin := generateArgs("m", "sys", "", msg, false)
+	args, stdin := generateArgs("m", "", msg)
 	if stdin != msg {
 		t.Errorf("stdin = %q, want the message", stdin)
 	}

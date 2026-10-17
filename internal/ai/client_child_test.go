@@ -20,14 +20,14 @@ const stubResult = `printf '%s' '{"type":"result","result":"ok","usage":{}}'` + 
 func TestBuildArgs_WatchtowerToolsPerTool(t *testing.T) {
 	c := NewClient("m", "", "")
 	c.SetWatchtowerTools([]string{"list_jira_issues", "create_target"})
-	args, _, err := c.buildArgs("sys", "hi", "json", "")
+	args, _, err := buildArgsT(t, c, "sys", "hi", "json", "")
 	require.NoError(t, err)
 	assert.Equal(t, "mcp__watchtower__list_jira_issues,mcp__watchtower__create_target",
 		flagValue(t, args, "--allowedTools"))
 
 	// A hostile name cannot inject a comma-separated token.
 	c.SetWatchtowerTools([]string{"ok,Bash", "a b"})
-	args, _, err = c.buildArgs("sys", "hi", "json", "")
+	args, _, err = buildArgsT(t, c, "sys", "hi", "json", "")
 	require.NoError(t, err)
 	got := flagValue(t, args, "--allowedTools")
 	assert.Equal(t, "mcp__watchtower__ok_Bash,mcp__watchtower__a_b", got)
@@ -38,7 +38,7 @@ func TestBuildArgs_WatchtowerToolsEmptyGrantsNone(t *testing.T) {
 	for _, names := range [][]string{nil, {}} {
 		c := NewClient("m", "", "")
 		c.SetWatchtowerTools(names)
-		args, _, err := c.buildArgs("sys", "hi", "json", "")
+		args, _, err := buildArgsT(t, c, "sys", "hi", "json", "")
 		require.NoError(t, err)
 		assert.Equal(t, "", flagValue(t, args, "--allowedTools"))
 	}
@@ -46,7 +46,7 @@ func TestBuildArgs_WatchtowerToolsEmptyGrantsNone(t *testing.T) {
 	c := NewClient("m", "", "")
 	c.SetWatchtowerTools(nil)
 	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "github", AllowTools: []string{"get_issue"}}})
-	args, _, err := c.buildArgs("sys", "hi", "json", "")
+	args, _, err := buildArgsT(t, c, "sys", "hi", "json", "")
 	require.NoError(t, err)
 	assert.Equal(t, "mcp__github__get_issue", flagValue(t, args, "--allowedTools"))
 }
@@ -54,19 +54,19 @@ func TestBuildArgs_WatchtowerToolsEmptyGrantsNone(t *testing.T) {
 func TestBuildArgs_MaxTurns(t *testing.T) {
 	c := NewClient("m", "", "")
 	c.SetMaxTurns(7)
-	args, _, err := c.buildArgs("sys", "hi", "json", "")
+	args, _, err := buildArgsT(t, c, "sys", "hi", "json", "")
 	require.NoError(t, err)
 	assert.Equal(t, "7", flagValue(t, args, "--max-turns"))
 }
 
 func TestBuildArgs_DefaultsUnchanged(t *testing.T) {
 	c := NewClient("m", "", "")
-	args, stdin, err := c.buildArgs("sys", "hi", "json", "")
+	args, stdin, err := buildArgsT(t, c, "sys", "hi", "json", "")
 	require.NoError(t, err)
-	assert.Empty(t, stdin)
+	assert.Equal(t, "hi", stdin)
 	assert.NotContains(t, args, "--max-turns")
 	assert.Equal(t, []string{
-		"-p", "hi",
+		"-p",
 		"--output-format", "json",
 		"--model", "m",
 		"--allowedTools", "mcp__watchtower",
@@ -74,7 +74,7 @@ func TestBuildArgs_DefaultsUnchanged(t *testing.T) {
 		"--disallowedTools", DisallowedTools,
 		"--setting-sources", c.settingSources(),
 		"--strict-mcp-config",
-		"--system-prompt", "sys",
+		"--system-prompt-file", flagValue(t, args, "--system-prompt-file"),
 	}, args)
 }
 
