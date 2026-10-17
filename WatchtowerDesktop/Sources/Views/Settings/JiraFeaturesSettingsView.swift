@@ -64,7 +64,7 @@ struct JiraFeaturesSettingsView: View {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cliPath)
             process.arguments = ["jira", "features", "--json"]
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = await Constants.resolvedEnvironmentAsync()
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
@@ -240,7 +240,7 @@ struct JiraFeaturesDetailView: View {
             process.arguments = [
                 "jira", "features", action, key,
             ]
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = await Constants.resolvedEnvironmentAsync()
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
@@ -282,7 +282,7 @@ struct JiraFeaturesDetailView: View {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cliPath)
             process.arguments = ["jira", "features", "reset"]
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = await Constants.resolvedEnvironmentAsync()
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
@@ -331,7 +331,7 @@ struct JiraFeaturesDetailView: View {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cliPath)
             process.arguments = ["jira", "features", "--json"]
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = await Constants.resolvedEnvironmentAsync()
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 

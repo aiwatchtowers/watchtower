@@ -125,11 +125,11 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
     }
 
     package func run(args: [String]) async throws -> Data {
-        try await run(args: args, environment: Constants.resolvedEnvironment())
+        try await run(args: args, environment: await Constants.resolvedEnvironmentAsync())
     }
 
     package func run(args: [String], stdin: Data) async throws -> Data {
-        try await run(args: args, environment: Constants.resolvedEnvironment(), stdin: stdin)
+        try await run(args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: stdin)
     }
 
     /// `run(args:)` with the child's whole environment given: a caller that
@@ -142,7 +142,7 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
     }
 
     package func run(args: [String], timeout: TimeInterval) async throws -> Data {
-        try await run(args: args, environment: Constants.resolvedEnvironment(), stdin: nil, timeout: timeout)
+        try await run(args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: nil, timeout: timeout)
     }
 
     /// The one launch path: `stdin` fed and closed when given, the child
