@@ -350,7 +350,7 @@ func (p Policy) checkPath(path string) error {
 		return fmt.Errorf("no publish dir")
 	}
 	if hasDotDot(path) {
-		return fmt.Errorf("path climbs with ..")
+		return fmt.Errorf("path has a .. component")
 	}
 	return p.PathCheck(path)
 }
