@@ -132,10 +132,10 @@ package enum Eta: Equatable, Sendable {
 package enum Readiness: Equatable, Sendable {
     case off
     case needsSource(ReadinessSource)
-    /// On, but the daemon skips it while Slack Digests is off
-    /// (`ReadinessFeature.runsOnlyWithDigests`, #575).
-    case needsDigests
     case ready
+    /// On, with no content yet, and the daemon skips it while Slack Digests
+    /// is off (`ReadinessFeature.runsOnlyWithDigests`, #575).
+    case needsDigests
     case preparing(detail: String?)
     case error(message: String)
     case waitingForSync(detail: String?)

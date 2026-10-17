@@ -148,6 +148,29 @@ final class EmptyStateTabWiringTests: XCTestCase {
         return context
     }
 
+    /// #575: the Tracks tab's Turn on, progress and error are Slack
+    /// Digests' while it waits on it, and its error and retry stay after a
+    /// failed restart moved the state on (review F1).
+    func testTracksTabTurnsOnSlackDigests() throws {
+        var performed: EmptyStateAction?
+        var context = withReadiness(.needsDigests)
+        context.isTurningOn = { $0 == "slack-digests" }
+        context.perform = { performed = $0 }
+        let waiting = TabEmptyState(.tracks, context: context)
+        XCTAssertNoThrow(try waiting.inspect().find(text: "Needs Slack Digests"))
+        let button = try waiting.inspect().find(button: "Turn on Slack Digests")
+        XCTAssertTrue(button.isDisabled(), "progress is keyed by slack-digests")
+        XCTAssertNoThrow(try waiting.inspect().find(ViewType.ProgressView.self))
+
+        context = withReadiness(.scheduled(.nextCycle(minutes: 15)))
+        context.turnOnError = { $0 == "slack-digests" ? "boom" : nil }
+        context.perform = { performed = $0 }
+        let failed = TabEmptyState(.tracks, context: context)
+        XCTAssertNoThrow(try failed.inspect().find(text: "boom"))
+        try failed.inspect().find(button: "Try again").tap()
+        XCTAssertEqual(performed, .turnOn(featureID: "slack-digests"))
+    }
+
     func testCalendarEmptyOffersConnect() throws {
         var performed: EmptyStateAction?
         var context = withReadiness(.needsSource(.calendar))

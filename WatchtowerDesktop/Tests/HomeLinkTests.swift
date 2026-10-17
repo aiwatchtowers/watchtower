@@ -40,7 +40,8 @@ final class HomeLinkTests: XCTestCase {
             (.workbenches, Landing(destination: .workbench)),
             (.catchUp, Landing(destination: .catchUp)),
             (.feature(.tracks), Landing(destination: .tracks)),
-            (.feature(.jira), Landing(destination: .boards))
+            (.feature(.jira), Landing(destination: .boards)),
+            (.turnOn(featureID: "slack-digests"), Landing(destination: .home))
         ]
         for (link, expected) in cases {
             let appState = AppState.isolated()
@@ -57,6 +58,25 @@ final class HomeLinkTests: XCTestCase {
         XCTAssertEqual(appState.pendingWorkbenchRoute, route)
         XCTAssertEqual(appState.pendingWorkbenchRoute?.pane, .board, "no live session → the board")
         XCTAssertEqual(appState.selectedDestination, .workbench)
+    }
+
+    /// #575: a card's Turn on goes through the empty states' Turn on
+    /// (`features enable` + one restart), not a tab.
+    func testTurnOnRunsTheEmptyStateTurnOn() async {
+        let row = """
+            {"id":"slack-digests","title":"Slack Digests","description":"d","tagline":"t","benefits":[],"icon":"i",\
+            "state":"disabled","core":false,"parent":"","config_key":"digest.enabled",\
+            "cost":"heavy","feeds_into":[],"sub_toggles":[]}
+            """
+        let runner = FakeCLIRunner(stdout: Data("{\"features\":[\(row)]}".utf8))
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.selectedDestination = .home
+        appState.openHomeLink(.turnOn(featureID: "slack-digests"))
+        for _ in 0..<2000 where !runner.invocations.contains(["features", "enable", "slack-digests"]) {
+            await Task.yield()
+        }
+        XCTAssertTrue(runner.invocations.contains(["features", "enable", "slack-digests"]))
+        XCTAssertEqual(appState.selectedDestination, .home)
     }
 
     func testConnectOpensConnections() {

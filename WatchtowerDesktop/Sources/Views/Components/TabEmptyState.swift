@@ -53,13 +53,18 @@ struct TabEmptyState<Extra: View>: View {
             for: destination.rawValue, briefingHour: context.briefingHour, dayPlanHour: context.dayPlanHour
         ) {
             let readiness = copy.feature.flatMap(context.readiness)
-            let featureID = FeatureEmptyState<Extra>.turnOnFeatureID(copy: copy, readiness: readiness)
+            let featureID = copy.feature.flatMap { feature in
+                FeatureReadiness.turnOnFeatureID(
+                    for: feature, readiness: readiness,
+                    digestsTurnOnFailed: ReadinessFeature.digests.featureID.flatMap(context.turnOnError) != nil)
+            }
             FeatureEmptyState(
                 copy: copy,
                 readiness: readiness,
                 syncLine: context.syncLine,
                 turnOnError: featureID.flatMap(context.turnOnError),
                 isTurningOn: featureID.map(context.isTurningOn) ?? false,
+                turnOnFeatureID: featureID,
                 onAction: { action in
                     if case .tabAction = action {
                         onTabAction()

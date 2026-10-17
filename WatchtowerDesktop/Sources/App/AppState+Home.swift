@@ -39,6 +39,15 @@ extension AppState {
         return Self.homeAlwaysAllowed.union(followed)
     }
 
+    /// The Slack Digests Turn on for Home's cards (#575); read inside a
+    /// view's body, so the card follows it.
+    var digestsTurnOnState: DigestsTurnOnState {
+        let id = ReadinessFeature.digests.featureID ?? ""
+        return DigestsTurnOnState(
+            busy: isTurningOnFromEmptyState, isTurningOn: turningOnFeatureID == id,
+            error: emptyStateTurnOnError(for: id))
+    }
+
     /// A Home click: a tab, or an item through the tab's own navigate helper.
     /// A tab hidden right now is left to `applyFeatureFallback` (Navigation),
     /// so a stale link lands on Home.

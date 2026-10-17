@@ -7,17 +7,20 @@ import WatchtowerCore
 struct GettingReadyZoneView: View {
     let zone: GettingReadyZone
     let firstSync: FirstSyncLine?
+    let digestsTurnOn: DigestsTurnOnState
     let onLink: (HomeLink) -> Void
     let onHide: () -> Void
 
     init(
         zone: GettingReadyZone,
         firstSync: FirstSyncLine?,
+        digestsTurnOn: DigestsTurnOnState = .idle,
         onLink: @escaping (HomeLink) -> Void,
         onHide: @escaping () -> Void
     ) {
         self.zone = zone
         self.firstSync = firstSync
+        self.digestsTurnOn = digestsTurnOn
         self.onLink = onLink
         self.onHide = onHide
     }
@@ -53,7 +56,7 @@ struct GettingReadyZoneView: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12, alignment: .top)], spacing: 12) {
                 ForEach(cards, id: \.feature) { card in
-                    GettingReadyCardView(card: card, onLink: onLink)
+                    GettingReadyCardView(card: card, digestsTurnOn: digestsTurnOn, onLink: onLink)
                 }
             }
             ForEach(sourceRows, id: \.source) { row in
@@ -114,10 +117,40 @@ private struct FirstSyncBanner: View {
     }
 }
 
+/// The Slack Digests Turn on as a Home card shows it (#575): the same
+/// progress, busy and error the tabs' empty states show.
+struct DigestsTurnOnState: Equatable {
+    /// Some empty-state Turn on is running (one at a time).
+    var busy = false
+    /// The running one is Slack Digests.
+    var isTurningOn = false
+    /// `AppState.emptyStateTurnOnError(for: "slack-digests")`.
+    var error: String?
+
+    static let idle = Self()
+}
+
 /// One feature: its name, what it makes, and its readiness.
 struct GettingReadyCardView: View {
     let card: GettingReadyCard
+    let digestsTurnOn: DigestsTurnOnState
     let onLink: (HomeLink) -> Void
+
+    init(card: GettingReadyCard, digestsTurnOn: DigestsTurnOnState = .idle, onLink: @escaping (HomeLink) -> Void) {
+        self.card = card
+        self.digestsTurnOn = digestsTurnOn
+        self.onLink = onLink
+    }
+
+    /// Slack Digests' id when this card offers to turn it on: the feature
+    /// waits on it, or its Turn on failed and only a retry restarts
+    /// (`FeatureReadiness.turnOnFeatureID`, as the tabs do).
+    private var digestsTurnOnID: String? {
+        guard card.feature.runsOnlyWithDigests, card.readiness != .ready, card.readiness != nil else { return nil }
+        let id = FeatureReadiness.turnOnFeatureID(
+            for: card.feature, readiness: card.readiness, digestsTurnOnFailed: digestsTurnOn.error != nil)
+        return id == ReadinessFeature.digests.featureID ? id : nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -153,10 +186,16 @@ struct GettingReadyCardView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if readiness == .needsDigests, let featureID = ReadinessFeature.digests.featureID {
+                if let featureID = digestsTurnOnID {
                     Spacer(minLength: 0)
-                    Button("Turn on Slack Digests") { onLink(.turnOn(featureID: featureID)) }
-                        .buttonStyle(.link)
+                    if digestsTurnOn.isTurningOn {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button(digestsTurnOn.error == nil ? "Turn on Slack Digests" : "Try again") {
+                        onLink(.turnOn(featureID: featureID))
+                    }
+                    .buttonStyle(.link)
+                    .disabled(digestsTurnOn.busy)
                 }
                 if case .needsSource(let source) = readiness, source.isOwnerIdentity {
                     Spacer(minLength: 0)
@@ -164,6 +203,12 @@ struct GettingReadyCardView: View {
                     Button("Open Connections") { onLink(.connect(source)) }
                         .buttonStyle(.link)
                 }
+            }
+            if digestsTurnOnID != nil, let error = digestsTurnOn.error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

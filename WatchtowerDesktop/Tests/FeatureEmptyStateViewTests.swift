@@ -84,12 +84,34 @@ final class FeatureEmptyStateViewTests: XCTestCase {
             icon: "binoculars", title: "No tracks yet", landsHere: "Ongoing stories.",
             feature: .tracks, primaryAction: nil)
         var tapped: EmptyStateAction?
-        let view = makeView(copy: tracks, readiness: .needsDigests) { tapped = $0 }
-        XCTAssertNoThrow(try view.inspect().find(text: "Needs Slack Digests — Turn on"))
-        try view.inspect().find(button: "Turn on").tap()
+        let view = FeatureEmptyState(
+            copy: tracks, readiness: .needsDigests, syncLine: nil, turnOnError: nil, isTurningOn: false,
+            turnOnFeatureID: "slack-digests", onAction: { tapped = $0 }, extra: { EmptyView() })
+        XCTAssertNoThrow(try view.inspect().find(text: "Needs Slack Digests"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Turn on"), "it starts another, heavy feature: named")
+        try view.inspect().find(button: "Turn on Slack Digests").tap()
         XCTAssertEqual(tapped, .turnOn(featureID: "slack-digests"))
-        XCTAssertEqual(FeatureEmptyState<EmptyView>.turnOnFeatureID(copy: tracks, readiness: .needsDigests), "slack-digests")
-        XCTAssertEqual(FeatureEmptyState<EmptyView>.turnOnFeatureID(copy: tracks, readiness: .off), "tracks")
+        // Its own Turn on stays plain, and so does Digests' own.
+        XCTAssertEqual(FeatureEmptyState<EmptyView>.label(for: .turnOn(featureID: "tracks"), ownFeatureID: "tracks"), "Turn on")
+        XCTAssertEqual(
+            FeatureEmptyState<EmptyView>.label(for: .turnOn(featureID: "slack-digests"), ownFeatureID: "slack-digests"),
+            "Turn on")
+    }
+
+    /// F1 of #575's review: Slack Digests turned on but the restart failed —
+    /// tracks no longer waits on it, yet the error and the retry of Slack
+    /// Digests stay.
+    func testDigestsRestartFailureKeepsItsRetry() throws {
+        let tracks = EmptyStateCopy(
+            icon: "binoculars", title: "No tracks yet", landsHere: "Ongoing stories.",
+            feature: .tracks, primaryAction: nil)
+        var tapped: EmptyStateAction?
+        let view = FeatureEmptyState(
+            copy: tracks, readiness: .scheduled(.nextCycle(minutes: 15)), syncLine: nil, turnOnError: "boom",
+            isTurningOn: false, turnOnFeatureID: "slack-digests", onAction: { tapped = $0 }, extra: { EmptyView() })
+        XCTAssertNoThrow(try view.inspect().find(text: "boom"))
+        try view.inspect().find(button: "Try again").tap()
+        XCTAssertEqual(tapped, .turnOn(featureID: "slack-digests"))
     }
 
     func testTurnOnErrorShownWithTheButton() throws {

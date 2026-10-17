@@ -76,11 +76,12 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.digests, input), .off)
         XCTAssertEqual(evaluate(.tracks, input), .needsDigests)
         XCTAssertEqual(evaluate(.peopleCards, input), .needsDigests)
-        // Content does not hide it: nothing new arrives while Digests is off.
-        input.contentPresent = [.tracks]
+        // It beats a run's state: no run comes while Digests is off.
         input.latestRuns = ["people": RunSnapshot(status: "error", startedAt: now.addingTimeInterval(-60), errorMessage: "x")]
-        XCTAssertEqual(evaluate(.tracks, input), .needsDigests)
         XCTAssertEqual(evaluate(.peopleCards, input), .needsDigests)
+        // Content wins: the tab shows it and Home keeps its Open.
+        input.contentPresent = [.tracks]
+        XCTAssertEqual(evaluate(.tracks, input), .ready)
         // Features that run without Slack Digests are untouched.
         XCTAssertEqual(evaluate(.ideas, input), .scheduled(.nextCycle(minutes: 15)))
         XCTAssertEqual(evaluate(.briefing, input), .scheduled(.nextCycle(minutes: 15)))
@@ -101,7 +102,52 @@ final class FeatureReadinessTests: XCTestCase {
         let input = inputs(now: today(10))
         XCTAssertEqual(evaluate(.tracks, input), .scheduled(.nextCycle(minutes: 15)))
         XCTAssertEqual(evaluate(.peopleCards, input), .scheduled(.nextCycle(minutes: 15)))
-        XCTAssertEqual(FeatureReadiness.line(.needsDigests), "Needs Slack Digests — Turn on")
+        XCTAssertEqual(FeatureReadiness.line(.needsDigests), "Needs Slack Digests")
+    }
+
+    /// A Turn on for tracks or people cards starts Slack Digests while they
+    /// wait on it and while its Turn on failed (the restart retry, #575).
+    func testTurnOnFeatureIDFollowsSlackDigests() {
+        let id = FeatureReadiness.turnOnFeatureID
+        XCTAssertEqual(id(.tracks, .needsDigests, false), "slack-digests")
+        XCTAssertEqual(id(.peopleCards, .scheduled(.inAboutADay), true), "slack-digests")
+        XCTAssertEqual(id(.tracks, .scheduled(.nextCycle(minutes: 15)), false), "tracks")
+        XCTAssertEqual(id(.tracks, .off, true), "tracks", "its own switch first")
+        XCTAssertEqual(id(.ideas, .scheduled(.nextCycle(minutes: 15)), true), "ideas")
+        XCTAssertNil(id(.calendar, nil, true))
+    }
+
+    /// Dual path (#575): the daemon's compound `Digest.Enabled` gates, read
+    /// straight from the Go source (the `OnboardingFeaturePlanTests`
+    /// registry-drift precedent), name exactly the features
+    /// `runsOnlyWithDigests` marks. A new gate fails here until mapped.
+    func testRunsOnlyWithDigestsMatchesTheDaemonGates() throws {
+        let daemonDir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/daemon")
+        let section = #"d\.config\.(\w+)\.Enabled"#
+        let digest = #"d\.config\.Digest\.Enabled"#
+        let gate = try NSRegularExpression(pattern: [
+            #"\#(section)\s*&&\s*\#(digest)"#, #"\#(digest)\s*&&\s*\#(section)"#,
+            #"!\#(section)\s*\|\|\s*!\#(digest)"#, #"!\#(digest)\s*\|\|\s*!\#(section)"#
+        ].joined(separator: "|"))
+        var sections: Set<String> = []
+        for name in ["daemon.go", "history_backfill.go"] {
+            let source = try String(contentsOf: daemonDir.appendingPathComponent(name), encoding: .utf8) as NSString
+            for match in gate.matches(in: source as String, range: NSRange(location: 0, length: source.length)) {
+                for group in 1..<match.numberOfRanges where match.range(at: group).location != NSNotFound {
+                    sections.insert(source.substring(with: match.range(at: group)))
+                }
+            }
+        }
+        let byConfigSection: [String: ReadinessFeature] = ["Tracks": .tracks, "People": .peopleCards]
+        XCTAssertEqual(sections, Set(byConfigSection.keys), "map a new Digest.Enabled gate to its feature")
+        XCTAssertEqual(
+            Set(sections.compactMap { byConfigSection[$0] }),
+            Set(ReadinessFeature.allCases.filter(\.runsOnlyWithDigests)))
     }
 
     func testContentMeansReadyEvenWhileRunning() {
