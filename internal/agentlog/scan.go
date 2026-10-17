@@ -256,37 +256,50 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 		if pr.PriorLoaded {
 			o.PriorSkills = nil // already in Skills; otherwise a later slice may still need them
 		}
-		f := db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
-			ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
-		if pr.More {
-			// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
-			f.Size, f.MTime = f.ReadOffset, ""
-		}
-		b := db.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events, ToolResults: pr.ToolResults,
-			Sessions: ownedSessions(pr.Sessions, tf, wb)}
-		applied, err := d.ApplyAgentLogBatch(b)
+		next, applied, err := storeSlice(d, tf, wb, pr, start, expect)
 		if err != nil {
-			return fmt.Errorf("storing %s: %w", tf.Path, err)
+			return err
 		}
 		if first {
 			res.FilesScanned++
 		}
-		for k, v := range pr.Unknown {
-			res.UnknownRecords[k] += v
+		res.addSlice(pr, applied)
+		if !applied || !pr.More {
+			return nil // done, or another writer moved the offset and reads the rest
 		}
-		res.LongLines += pr.LongLines
-		if !applied {
-			return nil // another writer moved the offset: it reads the rest
-		}
-		res.EventsWritten += len(pr.Events)
-		if !pr.More {
-			return nil
-		}
-		start, expect = f.ReadOffset, f.ReadOffset
+		start, expect = next, next
 		if stop() {
 			res.Incomplete = true
 			return nil
 		}
+	}
+}
+
+// storeSlice writes one parsed slice of tf with the offset compare-and-set
+// and returns the new offset and whether the slice was applied.
+func storeSlice(d *db.DB, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
+	f := db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
+		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
+	if pr.More {
+		// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
+		f.Size, f.MTime = f.ReadOffset, ""
+	}
+	applied, err := d.ApplyAgentLogBatch(db.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
+		ToolResults: pr.ToolResults, Sessions: ownedSessions(pr.Sessions, tf, wb)})
+	if err != nil {
+		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
+	}
+	return f.ReadOffset, applied, nil
+}
+
+// addSlice counts one stored slice's records into the scan result.
+func (res *Result) addSlice(pr *ParseResult, applied bool) {
+	for k, v := range pr.Unknown {
+		res.UnknownRecords[k] += v
+	}
+	res.LongLines += pr.LongLines
+	if applied {
+		res.EventsWritten += len(pr.Events)
 	}
 }
 
