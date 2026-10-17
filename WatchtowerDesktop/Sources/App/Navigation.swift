@@ -313,7 +313,11 @@ struct MainNavigationView: View {
                     },
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,
-                    chats: automationEditorChatHooks
+                    chats: automationEditorChatHooks,
+                    tracksVisible: SidebarDestination.tracks.isVisible(
+                        disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
+                        connected: appState.featureVisibility.connectedSources
+                    )
                 )
             } else {
                 Text("Automations unavailable")

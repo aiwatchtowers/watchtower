@@ -48,12 +48,15 @@ struct AutomationsView: View {
     var emptyStateContext: EmptyStateContext = .neutral
     var editor: AutomationEditorCenter?
     var chats: AutomationEditorChatHooks?
+    /// Whether the Tracks sidebar tab is visible; the Tracks section follows it.
+    var tracksVisible = true
 
     /// A sheet shown for one automation.
     private struct SheetTarget: Identifiable {
         let id: Int64
     }
 
+    @AppStorage(AutomationsSection.storageKey) private var storedSection = ""
     @State private var searchText = ""
     @State private var editing: SheetTarget?
     @State private var confirming: SheetTarget?
@@ -104,8 +107,13 @@ struct AutomationsView: View {
         }
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
+    private var section: AutomationsSection {
+        AutomationsSection.resolve(stored: storedSection, tracksVisible: tracksVisible)
+    }
+
+    /// Today's tab: the recipe list and card, or its empty state. The section
+    /// picker sits above it, so Reactions and Tracks stay reachable with no recipes.
+    @ViewBuilder private var automationsContent: some View {
             if let message = vm.lastError {
                 errorBanner(message)
             }
@@ -124,6 +132,36 @@ struct AutomationsView: View {
                     cardPanel
                         .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
                 }
+            }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Section", selection: Binding(
+                get: { section },
+                set: { storedSection = $0.rawValue }
+            )) {
+                ForEach(AutomationsSection.visible(tracksVisible: tracksVisible), id: \.self) {
+                    Text($0.title).tag($0)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 360)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            Divider()
+            switch section {
+            case .automations:
+                automationsContent
+            case .reactions:
+                ReactionsSectionView(items: vm.items, onOpenAutomation: { id in
+                    storedSection = AutomationsSection.automations.rawValue
+                    searchText = ""
+                    vm.select(id)
+                }, onNew: cardActions.onNew)
+            case .tracks:
+                TracksSectionView()
             }
         }
         .navigationTitle("Automations")

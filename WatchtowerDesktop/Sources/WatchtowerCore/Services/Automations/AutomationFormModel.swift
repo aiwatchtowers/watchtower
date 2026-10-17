@@ -24,7 +24,7 @@ package final class AutomationFormModel {
     /// Go's `automations.EventTypes`, in its order.
     nonisolated package static let eventTypes = [
         "slack.new_messages", "gmail.new_messages", "jira.issue_changed", "calendar.event_changed",
-        "confluence.page_changed"
+        "confluence.page_changed", "slack.reaction_added"
     ]
     /// Go's `automations.EventFields`: per event type, the fields a `where`
     /// may match.
@@ -33,7 +33,8 @@ package final class AutomationFormModel {
         "gmail.new_messages": ["account", "provider"],
         "jira.issue_changed": ["account", "key", "project", "field"],
         "calendar.event_changed": ["account", "event_id", "change"],
-        "confluence.page_changed": ["space", "page_id"]
+        "confluence.page_changed": ["space", "page_id"],
+        "slack.reaction_added": ["account", "channel_id", "emoji"]
     ]
 
     /// The trigger the form's **On an event** choice starts from.
