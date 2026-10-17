@@ -14,11 +14,13 @@ var syncOnlyWords = map[string]bool{
 // names after a dot (`x.async`), object keys (`{async: 1}`) and `typeof`
 // probes (`typeof setTimeout`) are allowed; a
 // word inside a regular-expression literal is not told apart and is refused.
+// It also refuses a BigInt literal (`1n`, `0xffn`; BigInt is not available
+// in automations, ask #331), with the same lexical limits.
 func PreParse(script string) error {
 	s := &jsScan{src: script, line: 1}
 	for s.i < len(s.src) {
 		if word, line := s.next(); word != "" {
-			return &PreParseError{Word: word, Line: line}
+			return &PreParseError{Word: word, Line: line, BigInt: isDigit(word[0])}
 		}
 	}
 	return nil
@@ -56,6 +58,8 @@ func (s *jsScan) next() (string, int) {
 		s.closeBrace()
 	case isIdentByte(c) && !isDigit(c):
 		return s.word()
+	case isDigit(c):
+		return s.number()
 	default:
 		s.advance()
 	}
@@ -140,6 +144,21 @@ func (s *jsScan) word() (string, int) {
 		return "", 0
 	}
 	return w, s.line
+}
+
+// number consumes a numeric literal's digits and letters (identifiers are
+// consumed whole by word, so a digit here starts a number) and reports a
+// BigInt literal: one that ends in "n" (no decimal, hex, octal or binary
+// digit is an "n").
+func (s *jsScan) number() (string, int) {
+	start := s.i
+	for s.i < len(s.src) && isIdentByte(s.src[s.i]) {
+		s.i++
+	}
+	if lit := s.src[start:s.i]; strings.HasSuffix(lit, "n") {
+		return lit, s.line
+	}
+	return "", 0
 }
 
 // afterDot reports a property access (`x.async`), not a spread (`...x`).

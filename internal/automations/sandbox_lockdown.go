@@ -60,6 +60,8 @@ func init() {
 // Function.prototype.call, Math.floor or any other global changes nothing.
 //   - Code from strings: eval, Function and Promise are deleted; every
 //     function prototype's constructor throws EvalError.
+//   - No BigInt: BigInt, BigInt64Array, BigUint64Array and DataView's
+//     BigInt accessors are deleted (PreParse refuses BigInt literals).
 //   - Size and depth limits: the allocation caps (MaxBuiltinAlloc) on the
 //     builtins listed there, nesting deeper than maxDepth in
 //     JSON.stringify, JSON.parse and flat, and bind chains deeper than
@@ -497,7 +499,7 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 	});
 	capConstructor("ArrayBuffer", true, lengthArg("ArrayBuffer", 1));
 	var typed = ["Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array",
-		"Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"];
+		"Uint32Array", "Float32Array", "Float64Array"];
 	var TypedProto = getPrototypeOf(Int8Array.prototype);
 	guarded(TypedProto, "sort", function (arr, a) {
 		if (a[0] === undefined && arr.length > maxSort) {
@@ -526,12 +528,17 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNe
 			}
 			return apply(origJoin, parts, [sep]);
 		} });
-	// BigInt.asIntN/asUintN build 2^bits first: bits capped at maxAlloc bytes.
-	function bitsCapped(key) {
-		guarded(g.BigInt, key, function (self, a) { cap("BigInt." + key, toLen(a[0]) / 8); });
-	}
-	bitsCapped("asIntN");
-	bitsCapped("asUintN");
+	// No BigInt (owner decision, ask #331): its ** and << operators build a
+	// result of any size in one native step, out of any wrapper's reach.
+	// PreParse refuses BigInt literals; these are the other ways to one.
+	delete g.BigInt;
+	delete g.BigInt64Array;
+	delete g.BigUint64Array;
+	var DVP = g.DataView.prototype;
+	delete DVP.getBigInt64;
+	delete DVP.setBigInt64;
+	delete DVP.getBigUint64;
+	delete DVP.setBigUint64;
 
 	var stringify = JSON.stringify;
 	// propertyList is JSON.stringify's array replacer as the spec builds it:

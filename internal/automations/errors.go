@@ -85,12 +85,17 @@ func (e *ScriptError) Error() string {
 }
 
 // PreParseError is a script PreParse refuses; Line is the script's own
-// 1-based line (ParseRecipe adds the block offset).
+// 1-based line (ParseRecipe adds the block offset). BigInt marks a BigInt
+// literal (Word) rather than an async word.
 type PreParseError struct {
-	Word string
-	Line int
+	Word   string
+	Line   int
+	BigInt bool
 }
 
 func (e *PreParseError) Error() string {
+	if e.BigInt {
+		return fmt.Sprintf("BigInt is not available in automations: %q", e.Word)
+	}
 	return fmt.Sprintf("the script API is synchronous: %q is not available", e.Word)
 }

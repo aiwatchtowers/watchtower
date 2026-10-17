@@ -1,6 +1,7 @@
 package automations
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,6 @@ var sandboxBombs = map[string]string{
 	"normalize NFKD":             `"ﷺ".repeat(16e6).normalize("NFKD")`,
 	"encodeURIComponent":         `encodeURIComponent("一".repeat(16e6))`,
 	"escape":                     `escape("一".repeat(16e6))`,
-	"BigInt.asUintN":             `BigInt.asUintN(2 ** 40, 1n)`,
 	"apply array-like":           `Math.max.apply(null, { length: 4e9 })`,
 	"Reflect.apply array-like":   `Reflect.apply(Math.max, null, { length: 4e9 })`,
 	"Reflect.construct":          `Reflect.construct(Array, { length: 4e9 })`,
@@ -208,13 +208,12 @@ func TestSandbox_WrappedBuiltinsMatchGoja(t *testing.T) {
 		`(function () { try { [{ toLocaleString: 1 }].toLocaleString() } catch (e) { return e.name } })()`,
 		`new Uint8Array([1, 2, 30]).toLocaleString()`,
 		`new Float64Array([1.5, -2]).toLocaleString()`,
-		`new Float64Array([1.5, -2, NaN]).join() + "|" + new Int8Array([1, -2]).join(" - ") + "|" + String(new Uint8Array([1, 2])) + "|" + new BigInt64Array([5n]).join(undefined)`,
+		`new Float64Array([1.5, -2, NaN]).join() + "|" + new Int8Array([1, -2]).join(" - ") + "|" + String(new Uint8Array([1, 2]))`,
 		`(function () { try { Uint8Array.prototype.join.call([1]) } catch (e) { return e.name } })()`,
 		`["ẛ̣".normalize(), "ẛ̣".normalize("NFD"), "ẛ̣".normalize("NFKC"), "ﷺ".normalize("NFKD"), "abc".normalize()].join("|")`,
 		`(function () { try { "a".normalize("NFX") } catch (e) { return e.name } })()`,
 		`[encodeURI("a b/é?#"), encodeURIComponent("a b/é?#"), escape("a b/é一"), encodeURIComponent.name, encodeURI.length].join("|")`,
 		`(function () { try { encodeURIComponent("\ud800") } catch (e) { return e.name } })()`,
-		`[BigInt.asUintN(64, -1n), BigInt.asIntN(8, 255n)].join("|")`,
 		`[Math.max.apply(null, [1, 3, 2]), Reflect.apply(Math.min, null, [4, 2]), Reflect.construct(Array, [1, 2]).length, String.fromCharCode.apply(null, { length: 2, 0: 65, 1: 66 })].join("|")`,
 		`[[3, 1, 2].toSorted().join(), [1, 2].toReversed().join(), [1, 2].with(0, 9).join(), [1, 2, 3].toSpliced(1, 1).join(), [1, 2, 3].slice(-2).join(), Array.prototype.slice.call({ length: 2, 0: "a" }).length].join("|")`,
 		`(function () { var a = [1, 2, 3]; var r = a.splice(1, 1); return a.join() + "|" + r.join() })()`,
@@ -259,5 +258,43 @@ func TestSandbox_ToLocaleStringForwardsLocales(t *testing.T) {
 		return [e, e].toLocaleString("de", { k: 1 })`, sbOpts{})
 	if got != "de/1,de/1" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// BigInt is not available in automations (owner decision, ask #331): its
+// ** and << operators build a result of any size in one native step. A
+// BigInt literal is refused before the script runs, with a clear error, and
+// nothing else in the sandbox yields a BigInt.
+func TestSandbox_BigIntNotAvailable(t *testing.T) {
+	for _, script := range []string{
+		`return 2n ** 4000000000n`,
+		`return 1n << 40000000000n`,
+		`var x = 0xffn`,
+		`var x = 1_000n`,
+		"var x = `${10n}`",
+	} {
+		var pe *PreParseError
+		err := PreParse(script)
+		if !errors.As(err, &pe) || !pe.BigInt || !strings.Contains(err.Error(), "BigInt is not available in automations") {
+			t.Errorf("PreParse(%q) = %v; want the BigInt refusal", script, err)
+		}
+		if _, err := NewSandbox(&Env{Ctx: t.Context(), Recipe: &Recipe{Script: script}, Journal: NewMemoryJournal(),
+			Meter: NewMeter(Budget{Tokens: 1, Minutes: 1}, nil)}, nil); !errors.As(err, &pe) {
+			t.Errorf("NewSandbox(%q) = %v; want the BigInt refusal", script, err)
+		}
+	}
+	for _, script := range []string{
+		`var n1 = 2, a1n = 3; return a1n + n1`, `return "10n"`, `// 5n`, `return 1e5 + 0x1f + 0b1 + 0o7 + 1.5`,
+		`return (1).toString() + x.n1`, `/* 3n */ return 1`,
+	} {
+		if err := PreParse(script); err != nil {
+			t.Errorf("PreParse(%q) = %v; want nil", script, err)
+		}
+	}
+	got := mustRun(t, `return [typeof BigInt, typeof BigInt64Array, typeof BigUint64Array,
+		typeof DataView.prototype.getBigInt64, typeof DataView.prototype.setBigInt64,
+		typeof DataView.prototype.getBigUint64, typeof DataView.prototype.setBigUint64].join(",")`, sbOpts{})
+	if want := strings.TrimSuffix(strings.Repeat("undefined,", 7), ","); got != want {
+		t.Fatalf("got %v; want %s", got, want)
 	}
 }
