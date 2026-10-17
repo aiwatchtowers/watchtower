@@ -44,11 +44,39 @@ final class SidebarCountsViewModel {
         unreadDigestCount + unreadStreamCount + unreadDecisionCount
     }
 
+    /// The tables' change signals, one stream per (re)start; seamed so a
+    /// test can fail one.
+    typealias Changes = @Sendable (DatabasePool) -> AsyncThrowingStream<Void, Error>
+
     private let dbPool: DatabasePool
+    private let changes: Changes
+    private let backoff: RestartBackoff
+    /// The wait before a restart; seamed so a test reads the pauses.
+    private let pause: @Sendable (Duration) async -> Void
     private var observationTask: Task<Void, Never>?
 
-    init(dbPool: DatabasePool) {
+    init(
+        dbPool: DatabasePool,
+        changes: @escaping Changes = SidebarCountsViewModel.tableChanges,
+        backoff: RestartBackoff = RestartBackoff(),
+        pause: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) {
         self.dbPool = dbPool
+        self.changes = changes
+        self.backoff = backoff
+        self.pause = pause
+    }
+
+    /// A view model with its counts loaded and its observation started;
+    /// nil when the calling task is cancelled meanwhile (a test's database
+    /// going away, board #526).
+    static func started(dbPool: DatabasePool) async -> SidebarCountsViewModel? {
+        guard !Task.isCancelled else { return nil }
+        let countsVM = SidebarCountsViewModel(dbPool: dbPool)
+        await countsVM.loadInitial()
+        guard !Task.isCancelled else { return nil }
+        countsVM.startObserving()
+        return countsVM
     }
 
     /// Loads the counts once and updates the published properties.
@@ -69,37 +97,42 @@ final class SidebarCountsViewModel {
     }
 
     /// Begins observing the source tables and refreshes counts on each change.
-    /// Idempotent — safe to call after `loadInitial()`.
+    /// Idempotent — safe to call after `loadInitial()`. Every value reloads
+    /// the counts, the first one too: a write landing between `loadInitial()`
+    /// and the observation's start would otherwise be in the skipped first
+    /// value and never show. A failed observation (a read error) starts again
+    /// after a pause (`RestartBackoff`, board #526), and its first value
+    /// reloads what changed meanwhile; before, one error froze the badges
+    /// until a relaunch. The pause is back to its first length only after a
+    /// change was delivered (a second value of one run): every start
+    /// delivers one, so an error right after each start keeps doubling.
     func startObserving() {
         guard observationTask == nil else { return }
         let pool = dbPool
+        let changes = changes
+        let pause = pause
+        let initialBackoff = backoff
         observationTask = Task { [weak self] in
-            // Observe row counts of every source table so any write (including
-            // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
-            let observation = ValueObservation.tracking { db -> [Int] in
-                // agent_actions, reminders and automation_outputs are the
-                // Inbox badge's own sources (inboxStripCount) — before the
-                // inbox demolition the badge only ever re-fired because
-                // inbox_items/situations happened to be in this list. An
-                // output's Done/Dismiss changes no count, but GRDB re-fetches
-                // on any write to a tracked table and the loop below does not
-                // drop duplicates, so it still refreshes the badge.
-                let tables = ["tracks", "briefings", "targets", "digests",
-                              "stream_digests", "catchup_recaps",
-                              "memory_dispute_flags", "ideas",
-                              "agent_actions", "reminders", "automation_outputs"]
-                return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
-            }
-            do {
-                for try await _ in observation.values(in: pool).dropFirst() {
-                    if Task.isCancelled { break }
-                    guard let self else { break }
-                    let counts = await self.fetch()
-                    if Task.isCancelled { break }
-                    self.apply(counts)
+            var backoff = initialBackoff
+            while !Task.isCancelled {
+                do {
+                    var values = 0
+                    for try await _ in changes(pool) {
+                        values += 1
+                        if values == 2 { backoff.succeeded() }
+                        guard !Task.isCancelled, let self else { return }
+                        let counts = await self.fetch()
+                        guard !Task.isCancelled else { return }
+                        self.apply(counts)
+                    }
+                    return
+                } catch {
+                    // Stopped, or the view model is gone: nothing to restart for.
+                    guard !Task.isCancelled, self != nil else { return }
+                    let wait = backoff.failed()
+                    print("SidebarCounts observation error, restarting in \(wait): \(error)")
+                    await pause(wait)
                 }
-            } catch {
-                print("SidebarCounts observation error: \(error)")
             }
         }
     }
@@ -107,6 +140,39 @@ final class SidebarCountsViewModel {
     func stopObserving() {
         observationTask?.cancel()
         observationTask = nil
+    }
+
+    /// Observe row counts of every source table so any write (including
+    /// read_at changes from Catch-Up mark-read on digests) signals a
+    /// refresh, starting with one for the start itself.
+    nonisolated static func tableChanges(_ pool: DatabasePool) -> AsyncThrowingStream<Void, Error> {
+        let observation = ValueObservation.tracking { db -> [Int] in
+            // agent_actions, reminders and automation_outputs are the
+            // Inbox badge's own sources (inboxStripCount) — before the
+            // inbox demolition the badge only ever re-fired because
+            // inbox_items/situations happened to be in this list. An
+            // output's Done/Dismiss changes no count, but GRDB re-fetches
+            // on any write to a tracked table and nothing drops
+            // duplicates, so it still refreshes the badge.
+            let tables = ["tracks", "briefings", "targets", "digests",
+                          "stream_digests", "catchup_recaps",
+                          "memory_dispute_flags", "ideas",
+                          "agent_actions", "reminders", "automation_outputs"]
+            return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
+        }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await _ in observation.values(in: pool) {
+                        continuation.yield()
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     private struct Counts {

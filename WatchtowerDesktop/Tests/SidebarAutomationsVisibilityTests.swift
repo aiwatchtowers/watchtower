@@ -49,7 +49,10 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
         XCTAssertNil(appState.automationsViewModel)
 
         appState.completeOnboarding()
-        defer { appState.automationsViewModel?.stop() }
+        defer {
+            appState.automationsViewModel?.stop()
+            appState.stopSidebarCounts()
+        }
 
         let vm = try XCTUnwrap(appState.automationsViewModel)
         appState.completeOnboarding()
@@ -67,7 +70,10 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
         appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = manager
         appState.completeOnboarding()
-        defer { appState.automationsViewModel?.stop() }
+        defer {
+            appState.automationsViewModel?.stop()
+            appState.stopSidebarCounts()
+        }
 
         appState.openAutomationRun(automationID: 4, runID: 9)
 
