@@ -1821,3 +1821,12 @@ Entry format:
 - weak-dimension: 7. Each BackgroundLoad test passes on a regression by timing out slowly (a 60 s wait that still returns the value), and nothing tests the Silero → NotReady wiring or cancellation during the wait.
 - rule-gap (candidate, dim 6/9): *a background-load or cache primitive states four contracts in its doc, each with a test: how long a caller waits (per call or per owner), what cancelling the caller does, who receives a failure (only the waiters of that attempt, never a later caller as a stale error), and how a load-side CancellationError differs from the caller's.*
 - outcome: TBD
+
+## 2026-10-17 — chore/modernize-fix PR #369 (mechanical `golangci-lint run --fix` modernize pass: 543 rewrites over 279 Go files, plus 3a072ece1 tidying five leftovers; panel: prosecutor (5 nits) + codex (0, default prompt), 3 specialists DOWN (not installed); judge verified against 3a072ece1 by reading the fix diff, grep spot checks of the SplitSeq / min-max / wg.Go categories, `go vet` + cached `go test` of the five touched packages) — verdict: approve
+
+- contested: none. Two compound clamps (`max(min(budget-tokensUsed, searchBudget), 0)` and `max((budget-overhead)/700, 20)`) were checked against the deleted if-chains and match, including the order of the clamps. [6]
+- false-positive: none dismissed. All five prosecutor nits held (an empty statement, a misplaced import group, a half-inlined helper, a no-op write, a string round trip). These are the residue a `--fix` pass leaves behind: it rewrites the expression and never cleans up its surroundings. [3]
+- miss: none. A `git diff origin/main..HEAD` (two dots) on a branch behind main showed 427 files, Swift and inventory edits included. The real PR is the merge-base diff (`...`, 279 Go-only files). Judge scope on a stale branch must use three dots. [8]
+- weak-dimension: none. Codex on its default prompt again added nothing on a mechanical PR, the same as on chore/revdiff-linters.
+- rule-gap (candidate, dim 3): *a PR that applies an autofixer (modernize, gofmt -r, errorlint --fix) gets a human tidy pass over the files the fixer touched: a leftover statement, an import group, a wrapper the rewrite made trivial. Reviewers check the residue, not only equivalence.*
+- outcome: TBD
