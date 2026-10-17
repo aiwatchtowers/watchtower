@@ -20,6 +20,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"watchtower/internal/db/lockmetrics"
+	"watchtower/internal/fsutil"
 )
 
 // DB wraps a *sql.DB connection to the watchtower SQLite database.
@@ -206,23 +207,9 @@ func Open(dbPath string) (*DB, error) {
 
 	db := openPool(sqliteDSN(dbPath, openDSN))
 
-	if err := db.setPragmas(); err != nil {
+	if err := db.setupSchema(dbPath); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
-	}
-
-	// The lock-metrics sink sits next to the file. It is pointed there only
-	// once the connection works (a failed open must not re-point this
-	// process's sink) and before the migrations, so a slow one is recorded.
-	// An in-memory open is never measured and must not unset the sink
-	// another open configured.
-	if dbPath != ":memory:" {
-		lockmetrics.Configure(dbPath)
-	}
-
-	if err := db.migrate(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
+		return nil, err
 	}
 
 	// Logged, not returned: a database missing one feature's table must still
@@ -354,6 +341,52 @@ func (db *DB) setPragmas() error {
 		if _, err := db.Exec(p); err != nil {
 			return fmt.Errorf("executing %q: %w", p, err)
 		}
+	}
+	return nil
+}
+
+// migrateLockWait bounds how long Open waits for another process's
+// migration run; past it the Open fails with ErrSchemaSetup, as a migration
+// that cannot run would.
+const migrateLockWait = 2 * time.Minute
+
+// setupSchema is Open's pragmas and migrations, run under an exclusive flock
+// on <dbPath>.migrate.lock, so two processes opening the database right after
+// an update (the CLI, MCP servers, the session host's children) never apply
+// the same pending migration at once: goose reads the applied versions once
+// and then applies each pending one without re-checking, so a second runner
+// would re-run DDL ("table already exists") or interleave a NO TRANSACTION
+// table recreation. The waiter runs goose once the holder is done and finds
+// nothing pending. The WAL switch is under the lock too: on a new file two
+// concurrent switches fail one opener with SQLITE_BUSY. The hooks on a hard
+// time budget never get here: they open with OpenExisting*, which runs no
+// migration; the Desktop's GRDB pool never takes this lock either.
+func (db *DB) setupSchema(dbPath string) error {
+	if dbPath != ":memory:" {
+		ctx, cancel := context.WithTimeout(context.Background(), migrateLockWait)
+		defer cancel()
+		unlock, err := fsutil.LockFile(ctx, dbPath+".migrate.lock")
+		if err != nil {
+			return fmt.Errorf("waiting for another process's migrations: %w: %w", ErrSchemaSetup, err)
+		}
+		defer unlock()
+	}
+
+	if err := db.setPragmas(); err != nil {
+		return fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
+	}
+
+	// The lock-metrics sink sits next to the file. It is pointed there only
+	// once the connection works (a failed open must not re-point this
+	// process's sink) and before the migrations, so a slow one is recorded.
+	// An in-memory open is never measured and must not unset the sink
+	// another open configured.
+	if dbPath != ":memory:" {
+		lockmetrics.Configure(dbPath)
+	}
+
+	if err := db.migrate(); err != nil {
+		return fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
 	}
 	return nil
 }
