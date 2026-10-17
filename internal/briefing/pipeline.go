@@ -118,6 +118,20 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	return p.RunForDate(ctx, today)
 }
 
+// runOwner is the owner a run is for (db.ErrNoOwner when none), with any
+// briefing written under an earlier owner id adopted first, so a rung switch
+// never regenerates today's briefing under the new id.
+func (p *Pipeline) runOwner() (db.Owner, error) {
+	owner, err := p.db.RequireOwner()
+	if err != nil {
+		return db.Owner{}, fmt.Errorf("briefing: %w", err)
+	}
+	if err := p.db.AdoptOwnerRows(owner.ID); err != nil {
+		return db.Owner{}, fmt.Errorf("briefing: %w", err)
+	}
+	return owner, nil
+}
+
 // RunForDate generates a briefing for the given date (YYYY-MM-DD).
 func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	if !p.cfg.Briefing.Enabled {
@@ -126,9 +140,9 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 
 	// No owner is db.ErrNoOwner, never (0, nil): that shape means "nothing to
 	// summarize", and the daemon must be able to tell the two apart.
-	owner, err := p.db.RequireOwner()
+	owner, err := p.runOwner()
 	if err != nil {
-		return 0, fmt.Errorf("briefing: %w", err)
+		return 0, err
 	}
 	currentUserID := owner.ID
 

@@ -88,7 +88,7 @@ func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) 
 	case owner.Known():
 		fmt.Fprintf(&b, "Owner: %s\n", id)
 	default:
-		b.WriteString("Owner: unknown — no Slack, Google, Jira or Linear identity is connected yet.\n")
+		b.WriteString("Owner: unknown — no Slack, Google, Jira, Linear or email identity is connected yet.\n")
 	}
 	b.WriteString("\n" + prompts.ChatDirective(cfg.Digest.Language))
 	return b.String(), nil

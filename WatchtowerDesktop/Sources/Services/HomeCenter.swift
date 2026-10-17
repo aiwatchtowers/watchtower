@@ -9,6 +9,8 @@ protocol HomeEnvironment: AnyObject {
     var now: Date { get }
     var calendar: Calendar { get }
     var ownerKnown: Bool { get }
+    /// `AppState.ownerPendingSource`.
+    var ownerPendingSource: String? { get }
     /// `AppState.firstSyncLine`.
     var firstSync: FirstSyncLine? { get }
     /// `AppState.homeTodayCardsAllowed`.
@@ -186,6 +188,7 @@ final class HomeCenter {
                 briefingHour: readiness.briefingHour,
                 dayPlanHour: readiness.dayPlanHour,
                 ownerKnown: environment.ownerKnown,
+                ownerPendingSource: environment.ownerPendingSource,
                 firstSync: environment.firstSync,
                 allowed: environment.allowedTodayCards
             )
@@ -212,6 +215,7 @@ final class HomeCenter {
         let briefingHour: Int
         let dayPlanHour: Int
         let ownerKnown: Bool
+        let ownerPendingSource: String?
         let firstSync: FirstSyncLine?
         let allowed: Set<TodayCardKind>
     }
@@ -221,7 +225,8 @@ final class HomeCenter {
     private func makeSnapshot(_ data: HomeTodayData, _ inputs: Inputs, now: Date, calendar: Calendar) -> HomeSnapshot {
         let memory = store.memory
         let step = GettingReadyPolicy.step(
-            readiness: inputs.readiness, ownerKnown: inputs.ownerKnown, memory: memory, sawUnready: sawUnready,
+            readiness: inputs.readiness, ownerKnown: inputs.ownerKnown, ownerPendingSource: inputs.ownerPendingSource,
+            memory: memory, sawUnready: sawUnready,
             now: now, briefingHour: inputs.briefingHour, dayPlanHour: inputs.dayPlanHour)
         sawUnready = step.sawUnready
         if step.memory != memory { store.memory = step.memory }
@@ -249,6 +254,7 @@ final class LiveHomeEnvironment: HomeEnvironment {
     var now: Date { Date() }
     var calendar: Calendar { .current }
     var ownerKnown: Bool { appState?.owner.isKnown ?? false }
+    var ownerPendingSource: String? { appState?.ownerPendingSource }
     var firstSync: FirstSyncLine? { appState?.firstSyncLine }
     var allowedTodayCards: Set<TodayCardKind> { appState?.homeTodayCardsAllowed ?? AppState.homeAlwaysAllowed }
 }
