@@ -124,11 +124,25 @@ func Search(ctx context.Context, d *db.DB, req Request) (Result, error) {
 			}
 		}
 	}
+	if guideOnly(req.Sources) {
+		// The owner index's state says nothing about the embedded guide.
+		return Result{Hits: f.hits(now, limit)}, nil
+	}
 	note, err := indexNote(ctx, d, now)
 	if err != nil {
 		return Result{}, err
 	}
 	return Result{Hits: f.hits(now, limit), IndexNote: note}, nil
+}
+
+// guideOnly reports whether a sources filter asks for the guide alone.
+func guideOnly(sources []string) bool {
+	for _, s := range sources {
+		if s != GuideSource {
+			return false
+		}
+	}
+	return len(sources) > 0
 }
 
 // workbenchDocVisible is the SQL condition (over kb_documents aliased d) that
@@ -319,7 +333,7 @@ func (f *fusion) hits(now time.Time, limit int) []Hit {
 			Ref: best.docID, Source: best.source, Title: best.title, When: best.docTime, Link: best.link,
 			Anchor: best.anchor, Chunk: best.chunkIdx, ChunkAnchor: best.chunkAnchor, Snippets: []string{},
 			InScope: best.inScope,
-			score:   best.score * recencyFactor(best.docUnix, now),
+			score:   best.score * hitRecency(best.source, best.docUnix, now),
 		}
 		for _, c := range chunks {
 			if len(h.Snippets) == snippetsMax {
@@ -346,6 +360,15 @@ func (f *fusion) hits(now time.Time, limit int) []Hit {
 		out = append(out, docs[i].hit)
 	}
 	return out
+}
+
+// hitRecency is the recency factor of a hit; the guide has no date and is
+// never penalised for it.
+func hitRecency(source string, docUnix float64, now time.Time) float64 {
+	if source == GuideSource {
+		return 1
+	}
+	return recencyFactor(docUnix, now)
 }
 
 // recencyFactor is max(1/(1+0.5·age_years), 0.75); an unknown time (0) gets

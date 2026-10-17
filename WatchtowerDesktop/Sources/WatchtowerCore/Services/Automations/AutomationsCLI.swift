@@ -257,9 +257,19 @@ extension AutomationsCLI {
     package struct InstallResult: Decodable, Equatable, Sendable {
         package let automationID: Int64
         package let path: String
+        /// Each param's values as installed, given or chosen by the CLI
+        /// (#582); empty from an older CLI.
+        package let params: [String: [String]]
 
         enum CodingKeys: String, CodingKey {
-            case automationID = "automation_id", path
+            case automationID = "automation_id", path, params
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            automationID = try c.decode(Int64.self, forKey: .automationID)
+            path = try c.decode(String.self, forKey: .path)
+            params = try c.decodeIfPresent([String: [String]].self, forKey: .params) ?? [:]
         }
     }
 }

@@ -37,8 +37,6 @@ var (
 	aiFlagContextID         string
 	aiFlagEvents            string
 	aiFlagReadFolder        string
-	// aiFlagNoTools runs the provider with no tool at all (the ⌘/ help chat).
-	aiFlagNoTools bool
 )
 
 var aiCmd = &cobra.Command{
@@ -104,10 +102,6 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 	aiQueryCmd.Flags().StringVar(&aiFlagReadFolder, "read-folder", "",
 		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
-	aiQueryCmd.Flags().BoolVar(&aiFlagNoTools, "no-tools", false,
-		"run with no tools at all: no MCP server (so none of the workspace's data), no built-in tools; the answer comes from the prompt alone")
-	aiQueryCmd.MarkFlagsMutuallyExclusive("no-tools", "tools")
-	aiQueryCmd.MarkFlagsMutuallyExclusive("no-tools", "read-folder")
 }
 
 // maxStdinSystemPrompt bounds --system-prompt-stdin; a chat prompt is tens of
@@ -451,10 +445,6 @@ func resolveReadFolder(dbPath string) (string, error) {
 // that relaunch this binary as an MCP server. Ollama has no tools at all, so
 // the flag is a no-op there — the Desktop already builds an honest prompt.
 type mcpConfigurable interface{ SetMCPArgs(extra []string) }
-
-// noToolsConfigurable is a provider client that can run tool-less (claude,
-// codex: `ai query --no-tools`).
-type noToolsConfigurable interface{ SetNoTools() }
 
 // externalMCPConfigurable is implemented by ai.Client (claude) — it merges
 // owner-added external MCP servers ("Quick Connections", internal/externalmcp)

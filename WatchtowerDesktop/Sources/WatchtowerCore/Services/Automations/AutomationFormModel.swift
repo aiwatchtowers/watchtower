@@ -52,7 +52,7 @@ package final class AutomationFormModel {
 
     package var fields: RecipeFrontmatter {
         didSet {
-            guard fields != oldValue, !frontmatterEditedInRecipe else { return }
+            guard fields != oldValue, !paused else { return }
             writeFields()
         }
     }
@@ -76,6 +76,7 @@ package final class AutomationFormModel {
 
     package init(detail: AutomationDetail) {
         self.detail = detail
+        currentParseError = detail.parseError
         fields = RecipeFrontmatter(detail: detail)
         buffer = RecipeBufferModel(automationID: detail.id, text: detail.recipeText, contentHash: detail.contentHash)
         formBlock = RecipeFrontmatter.block(in: detail.recipeText).map(String.init)
@@ -112,6 +113,22 @@ package final class AutomationFormModel {
         RecipeFrontmatter.block(in: buffer.text).map(String.init) != formBlock
     }
 
+    /// The recipe as loaded does not parse (`parse_error`): its index row
+    /// holds column defaults, not the file's settings, so the form's fields
+    /// do not describe it and must never be spliced over it (#582). The
+    /// owner fixes it in the recipe editor.
+    package var recipeUnparsed: Bool { !detail.parseError.isEmpty }
+
+    /// Why the text as it is now does not parse ("" once it does): starts as
+    /// the loaded `parse_error`, re-checked by
+    /// `AutomationEditorCenter.recheckParse` as the owner fixes the recipe.
+    /// The form stays paused either way: its fields never described the file.
+    package var currentParseError: String
+
+    /// The form neither writes nor checks its fields: the recipe does not
+    /// parse, or its settings were edited in the Monaco pane.
+    package var paused: Bool { recipeUnparsed || frontmatterEditedInRecipe }
+
     /// The text a Save writes: the buffer, which holds the form's fields and
     /// the owner's edits in the Monaco pane.
     package func renderedText() -> String {
@@ -120,7 +137,7 @@ package final class AutomationFormModel {
 
     /// Out-of-range values, blocked in the form before `validate` runs.
     package var problems: [String] {
-        guard !frontmatterEditedInRecipe else { return [] }
+        guard !paused else { return [] }
         var out: [String] = []
         let name = fields.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !Self.nameRunes.contains(name.unicodeScalars.count) { out.append("Name must be 1–80 characters.") }

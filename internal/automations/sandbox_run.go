@@ -3,6 +3,10 @@ package automations
 import (
 	"errors"
 	"fmt"
+	"math/big"
+	"reflect"
+	"runtime"
+	"runtime/metrics"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -108,11 +112,142 @@ func scriptShapeError(script string) error {
 	switch {
 	case err != nil:
 		return nil //nolint:nilerr // a syntax error is the sandbox's to report, with its line
-	case wrapperIntact(prog, src):
-		return nil
-	default:
+	case !wrapperIntact(prog, src):
 		return errors.New(errWrapperBroken)
+	default:
+		return bigIntRefusal(prog)
 	}
+}
+
+// execHelper is the global the compiler routes direct `x.exec(…)` and
+// `x["exec"](…)` calls through (rewriteExecCalls): goja reports a regexp2
+// match that timed out as "no match", and RegExp.prototype.exec itself is
+// left alone (replacing it takes every RegExp method off goja's fast path),
+// so the helper times the call instead. A script may not use the name.
+const execHelper = "$__automationExec"
+
+// bigIntRefusal refuses a program holding a BigInt literal (BigInt is not
+// available in automations, owner decision ask #331: its ** and <<
+// operators build a result of any size in one native step) or naming
+// execHelper. It walks the parsed program, so nothing can hide where a
+// lexical scan would miss it. Line is the script's own 1-based line (the
+// wrapper prefix sits on the script's first line).
+func bigIntRefusal(prog *ast.Program) error {
+	var refusal *PreParseError
+	walkAST(reflect.ValueOf(prog), func(node any) walkStep {
+		switch n := node.(type) {
+		case *ast.NumberLiteral:
+			if _, isBig := n.Value.(*big.Int); isBig {
+				refusal = &PreParseError{Word: n.Literal, Line: programLine(prog, n.Idx), BigInt: true}
+			}
+		case *ast.Identifier:
+			if n.Name == execHelper {
+				refusal = &PreParseError{Word: execHelper, Line: programLine(prog, n.Idx), Reserved: true}
+			}
+		}
+		if refusal != nil {
+			return walkStop
+		}
+		return walkInto
+	})
+	if refusal == nil {
+		return nil
+	}
+	return refusal
+}
+
+func programLine(prog *ast.Program, idx file.Idx) int {
+	if prog.File == nil {
+		return 0
+	}
+	return prog.File.Position(int(idx) - prog.File.Base()).Line
+}
+
+// rewriteExecCalls turns `x.exec(a…)` and `x["exec"](a…)` into
+// `$__automationExec(x, a…)`. Not rewritten: `super.exec(…)` (a RegExp
+// subclass calling its parent), anything inside an optional chain
+// (`a?.b.exec(x)` must stay undefined on a nullish receiver), and an
+// aliased exec (`var f = re.exec; f.call(re, s)`).
+func rewriteExecCalls(prog *ast.Program) {
+	walkAST(reflect.ValueOf(prog), func(node any) walkStep {
+		switch n := node.(type) {
+		case *ast.OptionalChain:
+			return walkSkip
+		case *ast.CallExpression:
+			if target := execCallTarget(n.Callee); target != nil {
+				n.Callee = &ast.Identifier{Name: execHelper, Idx: n.Callee.Idx0()}
+				n.ArgumentList = append([]ast.Expression{target}, n.ArgumentList...)
+			}
+		}
+		return walkInto
+	})
+}
+
+// execCallTarget is x of a callee `x.exec` or `x["exec"]` (nil for super).
+func execCallTarget(callee ast.Expression) ast.Expression {
+	var target ast.Expression
+	switch c := callee.(type) {
+	case *ast.DotExpression:
+		if c.Identifier.Name == "exec" {
+			target = c.Left
+		}
+	case *ast.BracketExpression:
+		if lit, ok := c.Member.(*ast.StringLiteral); ok && lit.Value == "exec" {
+			target = c.Left
+		}
+	}
+	if _, super := target.(*ast.SuperExpression); super {
+		return nil
+	}
+	return target
+}
+
+// walkStep is what walkAST does after visiting a node.
+type walkStep int
+
+const (
+	walkInto walkStep = iota // go on into the node's children
+	walkSkip                 // skip the node's children
+	walkStop                 // end the walk
+)
+
+// walkAST calls visit on every node of an AST value (pointers, interfaces,
+// structs, slices), parents before children, as visit's walkStep says; it
+// reports whether the walk ran to the end.
+func walkAST(v reflect.Value, visit func(node any) walkStep) bool {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return true
+		}
+		if _, ok := v.Interface().(*file.File); ok {
+			return true // source text and line tables, no nodes
+		}
+		if v.Kind() == reflect.Pointer {
+			switch visit(v.Interface()) {
+			case walkStop:
+				return false
+			case walkSkip:
+				return true
+			case walkInto:
+			}
+		}
+		return walkAST(v.Elem(), visit)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() && !walkAST(v.Field(i), visit) {
+				return false
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			if !walkAST(v.Index(i), visit) {
+				return false
+			}
+		}
+	default: // scalars, strings and maps hold no AST nodes
+	}
+	return true
 }
 
 type runResult struct {
@@ -132,14 +267,26 @@ func (s *Sandbox) Run() (any, error) {
 	}
 	s.ran = true
 	s.mu.Unlock()
-	done, watched := make(chan struct{}), make(chan struct{})
+	runEvents.Add(1)
+	defer runEvents.Add(1)
+	// The memory baseline is read here, before the script can run: read in
+	// the watchdog goroutine, it raced the script's first allocations (a
+	// busy machine schedules the script first) and could take them in.
+	heap := heapWatch{events: runEvents.Load()}
+	_, heap.base = heapReadings()
+	done, watched, heapWatched := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watched)
 		s.watchDeadline(done)
 	}()
+	go func() {
+		defer close(heapWatched)
+		s.watchHeap(done, heap)
+	}()
 	defer func() {
 		close(done)
 		<-watched
+		<-heapWatched
 		s.cancel()
 	}()
 	results := make(chan runResult, 1)
@@ -180,8 +327,9 @@ func (s *Sandbox) execute() (r runResult) {
 }
 
 // abandon leaves a script goroutine stuck past the grace behind; it counts
-// in AbandonedRuns until it ends. The error is the run's: the fatal SDK
-// error, else a *RunInterrupted marked Abandoned.
+// in AbandonedRuns until it ends. The error is the run's: a memory
+// interrupt for a script stopped for memory, else the fatal SDK error, else
+// a *RunInterrupted marked Abandoned.
 func (s *Sandbox) abandon(results <-chan runResult) error {
 	abandonedRuns.Add(1)
 	go func() {
@@ -191,7 +339,12 @@ func (s *Sandbox) abandon(results <-chan runResult) error {
 	s.mu.Lock()
 	fatal, reason := s.fatal, s.reason
 	s.mu.Unlock()
-	if fatal != nil {
+	var se *ScriptError
+	switch {
+	case errors.As(fatal, &se) && se.Message == errTooMuchMemory().Message:
+		// stopped for memory, then stuck in a native call: a runaway
+		return &RunInterrupted{Reason: InterruptMemory, Abandoned: true}
+	case fatal != nil:
 		return fatal
 	}
 	return &RunInterrupted{Reason: reason, Abandoned: true}
@@ -225,6 +378,97 @@ func (s *Sandbox) outcome(_ goja.Value, runErr error) (any, error) {
 		return nil, runErr
 	default:
 		return nil, &ScriptError{Message: runErr.Error()}
+	}
+}
+
+// RunHeapBudget is how far the Go heap's live bytes may grow above a run's
+// baseline before the run is stopped ("the automation used too much
+// memory"). goja has no heap limit and many builtins allocate in proportion
+// to their input; the per-builtin caps stop single huge calls, this stops
+// everything else (a string doubled in a loop, many mid-sized calls).
+//
+// The heap is the whole daemon's, so the baseline moves up to the heap's
+// current objects (garbage included: it errs towards the run) whenever the run resumes from a wait or another run starts or
+// ends, and nothing is sampled while the run waits: another run's growth is
+// not charged to this one. The baseline never rises more than RunHeapBudget
+// above where it stood at the run's start, so the limit (baseline +
+// RunHeapBudget) is never more than start + 2 × RunHeapBudget. Every
+// heapPollInterval the live heap as of the last GC (/gc/heap/live:bytes,
+// garbage never counts) is checked against the limit; when the heap's
+// objects now (/memory/classes/heap/objects:bytes, updated continuously,
+// garbage included) are past the limit while that live reading is not, a GC
+// is forced for an exact live reading (at most once per quarter budget of
+// growth), since a growing heap pushes the next GC ever further out. So a
+// run is stopped within about one poll of its live heap passing the limit,
+// plus one native step still running.
+var RunHeapBudget uint64 = 1 << 30
+
+// heapPollInterval is how often watchHeap samples the heap.
+const heapPollInterval = 10 * time.Millisecond
+
+// runEvents counts sandbox runs starting and ending: a change re-baselines
+// every running watchHeap.
+var runEvents atomic.Int64
+
+// errTooMuchMemory ends a run whose heap growth passed RunHeapBudget.
+func errTooMuchMemory() *ScriptError {
+	return &ScriptError{Name: "RangeError",
+		Message: fmt.Sprintf("the automation used too much memory (more than %d MiB)", RunHeapBudget>>20)}
+}
+
+// heapReadings returns the live heap as of the last GC and the heap's
+// objects now (live plus not yet collected garbage, updated continuously).
+func heapReadings() (live, objects uint64) {
+	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}, {Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(sample)
+	return sample[0].Value.Uint64(), sample[1].Value.Uint64()
+}
+
+// heapWatch is a run's starting point for watchHeap: the baseline (the
+// heap's objects, garbage included, erring towards the run: the live
+// reading may predate what a sibling just allocated) and the run-events
+// count, both read before the script starts.
+type heapWatch struct {
+	base   uint64
+	events int64
+}
+
+// watchHeap stops the run (uncatchably, like an interrupt: the memory must
+// be released) on the first sample whose live heap passed the baseline plus
+// RunHeapBudget (see RunHeapBudget for when the baseline moves).
+func (s *Sandbox) watchHeap(done <-chan struct{}, start heapWatch) {
+	m := s.env.Meter
+	base, events, paused := start.base, start.events, false
+	ceiling := base + RunHeapBudget // the baseline never rises above this
+	var nextGC uint64               // objects reading that may force the next confirming GC
+	tick := time.NewTicker(heapPollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-tick.C:
+		}
+		if m.Paused() {
+			paused = true
+			continue
+		}
+		live, objects := heapReadings()
+		if e := runEvents.Load(); paused || e != events {
+			paused, events, base = false, e, min(max(base, objects), ceiling)
+		}
+		limit := base + RunHeapBudget
+		if live <= limit && objects > limit && objects >= nextGC {
+			// The live reading waits for the next GC, which a growing heap
+			// pushes ever further out (GOGC=100): get an exact one now.
+			runtime.GC()
+			live, objects = heapReadings()
+			nextGC = objects + RunHeapBudget/4
+		}
+		if live > limit {
+			s.abort(errTooMuchMemory())
+			return
+		}
 	}
 }
 
