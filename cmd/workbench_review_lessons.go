@@ -55,7 +55,7 @@ func lessonsJSON(ls []db.ReviewLesson) []reviewLessonJSON {
 }
 
 func runWorkbenchReviewLessonsPropose(cmd *cobra.Command, _ []string) error {
-	if err := refuseUnderAgent("propose review lessons"); err != nil {
+	if err := requireOwnerConfirmation("propose review lessons", ""); err != nil {
 		return err
 	}
 	ctx, cancel := reviewAIContext(cmd)
@@ -96,7 +96,7 @@ func runWorkbenchReviewLessonsPropose(cmd *cobra.Command, _ []string) error {
 func errLessonDecided(id int64) error { return fmt.Errorf("lesson %d was already decided", id) }
 
 func runWorkbenchReviewLessonsAccept(cmd *cobra.Command, _ []string) error {
-	if err := refuseUnderAgent("accept a review lesson"); err != nil {
+	if err := requireOwnerConfirmation("accept a review lesson", ""); err != nil {
 		return err
 	}
 	database, p, err := reviewTarget()
@@ -137,7 +137,7 @@ func runWorkbenchReviewLessonsAccept(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkbenchReviewLessonsDismiss(cmd *cobra.Command, _ []string) error {
-	if err := refuseUnderAgent("dismiss a review lesson"); err != nil {
+	if err := requireOwnerConfirmation("dismiss a review lesson", ""); err != nil {
 		return err
 	}
 	database, p, err := reviewTarget()

@@ -65,7 +65,7 @@ func runAutomationsAuto(cmd *cobra.Command, args []string) error {
 // the automation exists → --hash is its current approval hash → it parses → the tool exists → not AlwaysAsk (D14)
 // → the manifest admits it as a write → the store's hash check.
 func automationsAutoOn(cmd *cobra.Command, arg, toolName string) error {
-	if err := refuseUnderAgent("turn on auto for an automation's tool"); err != nil {
+	if err := requireOwnerConfirmation("turn on auto for an automation's tool", ""); err != nil {
 		return err
 	}
 	if autoFlags.Hash == "" {

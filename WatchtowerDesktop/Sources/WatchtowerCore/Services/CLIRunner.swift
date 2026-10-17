@@ -163,6 +163,9 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         let stdinPipe = stdin.map { _ in Pipe() }
         if let stdinPipe { process.standardInput = stdinPipe }
 
+        // A command the Desktop starts is the owner's (AGENT-07, board #568):
+        // its owner-only gesture is confirmed without a window.
+        OwnerConfirmGrants.shared.register(args)
         do {
             try process.run()
         } catch {

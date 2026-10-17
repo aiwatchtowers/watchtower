@@ -156,6 +156,7 @@ func TestCarryOverWorkflowChecks_SkippedUnderAnAgent(t *testing.T) {
 func TestWorkbenchMethodology_RefusesCheckWritesUnderAnAgent(t *testing.T) {
 	database, pid, _ := methodologyWorkbench(t)
 	id := strconv.FormatInt(pid, 10)
+	withoutOwnerDesktop(t)
 	t.Setenv(agentEnvMarkers[0], "1")
 	for _, args := range [][]string{{"--ask-guard", "off"}, {"--finish-check", "off"}, {"--ask-guard", "file"}, {"--clear"}} {
 		_, _, err := runMethodology(t, append([]string{id}, args...)...)

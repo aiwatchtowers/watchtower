@@ -116,6 +116,7 @@ func TestAutomationsCLI_SessionCommandsRefusedUnderAgentMarkers(t *testing.T) {
 			c := newAutoCLI(t)
 			wakes := countSessionWakes(t)
 			_, step, sess := sessionCLIStep(t, c)
+			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 			_, err := runAutomations(t, "session-launched", "--step", idArg(step), "--session", idArg(sess))
 			require.ErrorContains(t, err, marker)

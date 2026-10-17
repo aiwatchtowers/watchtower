@@ -52,11 +52,12 @@ func TestAgent03_AutoGrantRefusedUnderAgentMarkers(t *testing.T) {
 			out, err := runAutomations(t, "auto", idArg(a.ID), "create_target", "on", "--hash", a.ApprovalHash)
 			require.NoError(t, err, out)
 
+			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 			_, err = runAutomations(t, "auto", idArg(a.ID), "create_idea", "on", "--hash", a.ApprovalHash)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), marker)
-			assert.Contains(t, err.Error(), "the owner decides in Watchtower Desktop (or runs this from a plain Terminal)")
+			assert.Contains(t, err.Error(), "the owner confirms it in Watchtower Desktop")
 			_, err = runAutomations(t, "auto", "999999", "create_idea", "on", "--hash", a.ApprovalHash)
 			require.ErrorContains(t, err, marker, "refused before the automation is looked up")
 			gs := c.grantRows(t, a.ID)

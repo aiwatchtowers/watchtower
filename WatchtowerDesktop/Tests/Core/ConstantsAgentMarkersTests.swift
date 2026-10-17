@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerCore
 
 /// The app's resolved environment drops every marker of an AI agent's shell
-/// (Go `agentEnvMarkers`, cmd/actions.go): launched from Claude Code, Codex
+/// (Go `agentEnvMarkers`, cmd/owner_confirm.go): launched from Claude Code, Codex
 /// or a workbench terminal, the app's own `watchtower actions approve` would
 /// otherwise be refused as if an agent ran it (AGENT-07).
 final class ConstantsAgentMarkersTests: XCTestCase {

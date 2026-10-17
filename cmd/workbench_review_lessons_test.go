@@ -136,6 +136,7 @@ func TestWorkbenchReviewLessons_AcceptRefusedUnderAgentMarkers(t *testing.T) {
 				id := proposed(t, database, wb)
 				g := &fakeReviewGen{out: `{"lessons":[]}`}
 				useReviewGen(t, g)
+				withoutOwnerDesktop(t)
 				t.Setenv(marker, "1")
 				args := []string{}
 				if sub != "propose" {

@@ -1487,7 +1487,7 @@ setups made before the change keep working, migration `00133` marks the workbenc
 upgrade `methodology_carry_pending = 1` (a fresh install and every later workbench: 0), and a one-time
 carry-over (`workbenchmethod.CarryOverFileChecks`, run only by owner processes — the daemon at start, and
 `workbench methodology` or `workbench brief` with no agent marker set, i.e. the Desktop's Agent Settings
-or a plain Terminal; under an agent's markers it is skipped, `refuseUnderAgent`) copies each pending workbench folder's weaker
+or a plain Terminal; under an agent's markers it is skipped, `agentMarker`) copies each pending workbench folder's weaker
 `ask_guard`/`finish_check` into the owner's personal setting where none is set and clears the mark, in one
 statement (`db.CarryWorkflowChecks`: a value the owner set meanwhile is never overwritten), recording
 `*_carried_at`; a file of a workbench that is not pending is never copied. Changing `--ask-guard` or

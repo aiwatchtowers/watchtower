@@ -211,11 +211,12 @@ func TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers(t *testing.T) {
 		t.Run(marker, func(t *testing.T) {
 			c := newAutoCLI(t)
 			a := c.indexRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 			_, err := runAutomations(t, "confirm", idArg(a.ID), "--hash", a.ApprovalHash)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), marker)
-			assert.Contains(t, err.Error(), "the owner decides in Watchtower Desktop (or runs this from a plain Terminal)")
+			assert.Contains(t, err.Error(), "the owner confirms it in Watchtower Desktop")
 			row, err := c.d.GetAutomation(a.ID)
 			require.NoError(t, err)
 			assert.Empty(t, row.ConfirmedHash, "nothing confirmed under %s", marker)
@@ -246,6 +247,7 @@ func TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers(t *testing.T) {
 			a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
 			out, err := runAutomations(t, "disable", idArg(a.ID))
 			require.NoError(t, err, out)
+			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 			for _, verb := range []string{"enable", "delete"} {
 				_, err := runAutomations(t, verb, idArg(a.ID))
@@ -321,6 +323,7 @@ func TestAutomationsCLI_SaveIsAtomicAndIndexes(t *testing.T) {
 
 	for _, marker := range agentEnvMarkers {
 		t.Run(marker, func(t *testing.T) {
+			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 			path := filepath.Join(c.personal, "agent.md")
 			_, err := runAutomations(t, "save", "--file", src, "--path", path, "--confirm-hash", v["approval_hash"].(string))
@@ -375,6 +378,7 @@ func TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers(t *testing.T) 
 			c := newAutoCLI(t)
 			a := c.indexRecipe(t, "digest", autoCLIRecipeText(`llm("x"); return 1`))
 			confirmed := c.confirmedRecipe(t, "confirmed", autoCLIRecipeText(`llm("x"); return 2`))
+			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 			for _, args := range [][]string{{"dry-run", idArg(a.ID)}, {"dry-run", "--file", a.Path}} {
 				_, err := runAutomations(t, args...)
@@ -524,6 +528,7 @@ func TestAutomationsCLI_DryRunRecipeChangedBeforeClaimRefused(t *testing.T) {
 				require.NoError(t, err)
 			}
 			t.Cleanup(func() { automationsBeforeDryRunClaim = orig })
+			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 
 			_, err := runAutomations(t, "dry-run", idArg(a.ID))

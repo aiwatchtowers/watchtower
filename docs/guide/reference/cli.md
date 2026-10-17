@@ -54,6 +54,15 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust |
 | `watchtower reaction-commands` | Slack emoji reactions that drive the assistant |
 
+### Why the app asks you to confirm a command
+
+Some commands are yours alone: `actions approve` and `apply`, `actions trust … execute`, `automations confirm`, `enable`, `delete` and `auto … on`, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the exact command; the command waits up to 100 seconds for your **Confirm** and stops on **Deny**. The same click is what stops a coding agent from approving its own proposal.
+
+- The buttons in the app never ask: the app confirms its own commands.
+- With the app closed, the terminal prints a six-digit code; type it back to go ahead.
+- A coding agent's shell with the app closed is refused outright.
+- One window at a time: a second command is refused with **another confirmation is already open**.
+
 ## Workbench and coding agents
 
 | Command | What it does |

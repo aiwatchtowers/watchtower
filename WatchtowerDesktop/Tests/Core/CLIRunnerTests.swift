@@ -49,6 +49,16 @@ struct CLIRunnerTests {
         #expect(out.contains("hello"))
     }
 
+    /// AGENT-07 (board #568): the Desktop's own launch is the owner's, so its
+    /// owner-only gesture is confirmed without a window.
+    @Test("ProcessCLIRunner registers the child's argv as the owner's launch")
+    func processRunnerRegistersOwnerLaunch() async throws {
+        let args = ["owner-launch", UUID().uuidString]
+        _ = try await ProcessCLIRunner(binaryPath: "/bin/echo").run(args: args)
+        #expect(OwnerConfirmGrants.shared.consume(args))
+        #expect(!OwnerConfirmGrants.shared.consume(args))
+    }
+
     @Test("ProcessCLIRunner writes stdin to the child and closes it")
     func processRunnerStdin() async throws {
         let runner = ProcessCLIRunner(binaryPath: "/bin/cat")

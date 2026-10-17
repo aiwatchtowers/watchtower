@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/extract"
 	"watchtower/internal/gittest"
+	"watchtower/internal/ownerconfirm"
 )
 
 // TestMain installs the db schema template cache before running tests and
@@ -84,6 +86,14 @@ func TestMain(m *testing.M) {
 	codexAppServerStart = func(context.Context, string, []string, []string) (codex.AppServer, error) {
 		return nil, errors.New("the codex app-server is stubbed out in cmd tests")
 	}
+	// No cmd test may ask a running Desktop for the owner's confirmation
+	// (AGENT-07) or read a code from the terminal: by default the owner
+	// confirms, as their click in the Desktop would. The AGENT-07 guards put
+	// the refusals back (withoutOwnerDesktop, withOwnerDesktop).
+	askOwnerDesktop = func(context.Context, string, ownerconfirm.Request) (ownerconfirm.Reply, error) {
+		return ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil
+	}
+	ownerTerminal = func() (io.Reader, io.Writer, bool) { return nil, nil, false }
 	// No git a cmd test starts may leave maintenance writing into a
 	// t.TempDir repository after it returns.
 	gittest.DisableBackgroundGit()

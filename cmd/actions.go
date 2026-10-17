@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
@@ -346,33 +344,28 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	return nil
 }
 
-// agentEnvMarkers are the variables an AI coding agent's shell carries:
-// Claude Code sets CLAUDECODE=1; Codex sets CODEX_THREAD_ID on every command
-// it runs and CODEX_SANDBOX when it runs one sandboxed; a Watchtower
-// workbench terminal hands its agent tools.TerminalSessionEnv (a plain shell
-// terminal does not get it); a child an automation run starts carries
-// automations.RunEnvMarker.
-var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", tools.TerminalSessionEnv,
-	automations.RunEnvMarker}
-
-// refuseUnderAgent keeps the owner's decision the owner's (AGENT-07): an
-// agent that can run `watchtower` could otherwise approve or apply its own
-// proposal (a prompt-injected send_slack_message, then `actions approve` on
-// the id its receipt names). Refused when any marker is set: the approve,
-// the apply and an execute trust grant; `automations confirm`,
-// `automations save --confirm-hash` and `automations dry-run` of a recipe
-// that is not confirmed yet (spec 2026-10-14 §14.3, D16); `automations
-// enable` and `automations delete` (D24, ask #293); `automations auto …
-// on` (spec §6.4, P2); `automations session-launched` and `session-ended`
-// (P5). The Desktop's buttons are the path. Reject and the read verbs stay open.
-func refuseUnderAgent(verb string) error {
-	for _, name := range agentEnvMarkers {
-		if os.Getenv(name) != "" {
-			return fmt.Errorf("refusing to %s under an AI agent (%s is set): the owner decides in Watchtower Desktop "+
-				"(or runs this from a plain Terminal)", verb, name)
-		}
+// actionConfirmDetail is the line the owner's confirmation shows for the
+// action idArg names: its tool and stored args (and the --patch edits),
+// clipped; "" when the row cannot be read (the command reports that itself).
+func actionConfirmDetail(idArg string) string {
+	id, err := parseActionID(idArg)
+	if err != nil {
+		return ""
 	}
-	return nil
+	database, err := openDBFromConfig()
+	if err != nil {
+		return ""
+	}
+	defer database.Close()
+	row, err := database.GetAgentAction(id)
+	if err != nil || row == nil {
+		return ""
+	}
+	detail := fmt.Sprintf("Action #%d %s: %s", id, row.Tool, briefClip(row.ArgsJSON, 400))
+	if actionsFlagPatch != "" {
+		detail += " — with edits: " + briefClip(actionsFlagPatch, 200)
+	}
+	return detail
 }
 
 // decide records the owner's decision. An approval goes through the
@@ -390,7 +383,7 @@ func decide(reg *tools.Registry, database *db.DB, id int64, from []string, to st
 }
 
 func runActionsApprove(cmd *cobra.Command, args []string) error {
-	if err := refuseUnderAgent("approve an action"); err != nil {
+	if err := requireOwnerConfirmation("approve an action", actionConfirmDetail(args[0])); err != nil {
 		return err
 	}
 	return decideAndMaybeApply(cmd, args[0], []string{"pending"}, "approved", true)
@@ -401,7 +394,7 @@ func runActionsReject(cmd *cobra.Command, args []string) error {
 }
 
 func runActionsApply(cmd *cobra.Command, args []string) error {
-	if err := refuseUnderAgent("apply an action"); err != nil {
+	if err := requireOwnerConfirmation("apply an action", actionConfirmDetail(args[0])); err != nil {
 		return err
 	}
 	return decideAndMaybeApply(cmd, args[0], nil, "", true)
@@ -409,7 +402,7 @@ func runActionsApply(cmd *cobra.Command, args []string) error {
 
 func runActionsTrust(cmd *cobra.Command, args []string) error {
 	if tools.Trust(args[1]) == tools.TrustExecute {
-		if err := refuseUnderAgent("grant execute trust"); err != nil {
+		if err := requireOwnerConfirmation("grant execute trust", ""); err != nil {
 			return err
 		}
 	}

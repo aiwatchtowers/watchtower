@@ -200,13 +200,13 @@ func runAutomationsRescan(cmd *cobra.Command, _ []string) error {
 }
 
 // ownerOnlyAutomationHint ends the refusal of `automations enable` and
-// `automations delete` under an AI agent's markers (AGENT-07, ask #293).
+// `automations delete` without the owner's confirmation (AGENT-07, ask #293).
 const ownerOnlyAutomationHint = "enable and delete are owner-only"
 
-// refuseOwnerOnlyAutomationVerb refuses an owner-only automations verb under
-// any AGENT-07 marker, before anything is read or written (ask #293).
+// refuseOwnerOnlyAutomationVerb refuses an owner-only automations verb the
+// owner did not confirm (AGENT-07), before anything is read or written (ask #293).
 func refuseOwnerOnlyAutomationVerb(verb string) error {
-	if err := refuseUnderAgent(verb); err != nil {
+	if err := requireOwnerConfirmation(verb, ""); err != nil {
 		return fmt.Errorf("%w; %s", err, ownerOnlyAutomationHint)
 	}
 	return nil
@@ -247,10 +247,10 @@ func setAutomationsEnabled(cmd *cobra.Command, arg string, on bool) error {
 }
 
 // runAutomationsConfirm records the owner's confirmation of the recipe at
-// --hash (spec §2.5 (c)). Refused under an AI agent's markers (AGENT-07): an
+// --hash (spec §2.5 (c)). Refused without the owner's confirmation (AGENT-07): an
 // agent must not confirm the manifest it may have written.
 func runAutomationsConfirm(cmd *cobra.Command, args []string) error {
-	if err := refuseUnderAgent("confirm an automation"); err != nil {
+	if err := requireOwnerConfirmation("confirm an automation", ""); err != nil {
 		return err
 	}
 	id, err := parseAutomationID("automation id", args[0])
@@ -324,12 +324,12 @@ func resolveSaveTarget(cfg *config.Config, database *db.DB, file, target string)
 // runAutomationsSave writes --file's recipe atomically to its recipe folder
 // (automations.Indexer.WriteRecipe — the one path P3's save_automation and P6's
 // install-template reuse), indexes the folder and, with --confirm-hash,
-// confirms it. --confirm-hash is refused under an AI agent's markers
+// confirms it. --confirm-hash is refused without the owner's confirmation
 // (AGENT-07) before anything is written, and a hash that is not the saved
 // recipe's is refused before the write too.
 func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 	if autoFlags.ConfirmHash != "" {
-		if err := refuseUnderAgent("confirm an automation"); err != nil {
+		if err := requireOwnerConfirmation("confirm an automation", ""); err != nil {
 			return err
 		}
 	}
@@ -446,7 +446,7 @@ func indexedRecipeAt(ctx context.Context, cfg *config.Config, database *db.DB, s
 // statement that holds only while no run is running or waiting (cancel the run
 // first), and the file is removed only after it succeeded. P1 has no pending
 // proposals or grants, so nothing else is withdrawn. Owner-only (AGENT-07,
-// ask #293): refused under an agent's markers before anything is read.
+// ask #293): refused without the owner's confirmation before anything is read.
 func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 	if err := refuseOwnerOnlyAutomationVerb("delete an automation"); err != nil {
 		return err
