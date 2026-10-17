@@ -230,7 +230,9 @@ func upsertAgentLogSession(tx *sql.Tx, s AgentLogSession) error {
 		ON CONFLICT(session_uuid) DO UPDATE SET
 		  model = CASE WHEN excluded.model <> '' AND excluded.ended_at >= agent_log_sessions.ended_at
 		               THEN excluded.model ELSE agent_log_sessions.model END,
-		  started_at = MIN(agent_log_sessions.started_at, excluded.started_at),
+		  started_at = CASE WHEN excluded.started_at = '' THEN agent_log_sessions.started_at
+		                    WHEN agent_log_sessions.started_at = '' THEN excluded.started_at
+		                    ELSE MIN(agent_log_sessions.started_at, excluded.started_at) END,
 		  ended_at = MAX(agent_log_sessions.ended_at, excluded.ended_at),
 		  git_branch = CASE WHEN agent_log_sessions.git_branch = '' THEN excluded.git_branch ELSE agent_log_sessions.git_branch END,
 		  project_id = COALESCE(agent_log_sessions.project_id, excluded.project_id),
@@ -394,8 +396,9 @@ func (db *DB) RepriceAgentLogEvents(version int, price func(model, speed string,
 	return done, nil
 }
 
-// agentLogRepriceSlice is how many rows one reprice transaction updates.
-const agentLogRepriceSlice = 1000
+// agentLogRepriceSlice is how many rows one reprice transaction updates
+// (a variable so tests can force several slices).
+var agentLogRepriceSlice = 1000
 
 // AgentLogStats aggregates the stored analytics of one workbench.
 func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {

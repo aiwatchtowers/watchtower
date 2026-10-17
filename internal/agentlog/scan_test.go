@@ -397,15 +397,14 @@ func TestScan_LongTranscriptCommittedInSlicesAndResumes(t *testing.T) {
 	}
 	p := f.write(f.folder, "s1.jsonl", body)
 
-	// Out of time after the first slice: one slice committed, the rest left.
-	clock := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
-	calls := 0
+	// Out of time as soon as the first slice is committed (the file row
+	// exists), whatever the number of clock reads before it.
+	start := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 	now := func() time.Time {
-		calls++
-		if calls > 2 { // Scan's deadline base and the first file check pass
-			clock = clock.Add(time.Hour)
+		if fr, err := f.d.GetAgentLogFile(p); err == nil && fr != nil {
+			return start.Add(time.Hour)
 		}
-		return clock
+		return start
 	}
 	r, err := Scan(context.Background(), f.d, f.wb, Options{ClaudeDir: f.claude, Budget: time.Second, Now: now})
 	require.NoError(t, err)
@@ -431,4 +430,24 @@ func TestScan_LongTranscriptCommittedInSlicesAndResumes(t *testing.T) {
 	require.NoError(t, f.d.QueryRow(`SELECT outcome FROM agent_log_events WHERE key = 'tool:t1'`).Scan(&outcome))
 	assert.Equal(t, "ok", outcome)
 	assert.Equal(t, 1, f.scan().FilesSkipped)
+}
+
+// #571 review: a slash command in a later slice of an incremental read still
+// finds the skill_listing that sits before the read's start offset.
+func TestScan_SlashSkillInLaterSliceOfIncrementalRead(t *testing.T) {
+	old := batchRows
+	batchRows = 2
+	t.Cleanup(func() { batchRows = old })
+	f := newFixture(t)
+	listing := line(t, map[string]any{"type": "attachment", "sessionId": "s1",
+		"attachment": map[string]any{"type": "skill_listing", "names": []string{"review"}}})
+	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.scan()
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u2", "m2", "r2", 5)+call(t, "s1", f.folder, "u3", "m3", "r3", 5)+
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "cwd": f.folder,
+			"message": map[string]any{"role": "user", "content": "<command-name>/review</command-name>"}}))
+	f.scan()
+	var n int
+	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE kind = 'skill' AND name = 'review' AND trigger = 'slash'`).Scan(&n))
+	assert.Equal(t, 1, n)
 }

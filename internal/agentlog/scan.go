@@ -252,7 +252,10 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 		if err != nil {
 			return err
 		}
-		o.KnownSkills, o.PriorSkills = pr.Skills, nil // the next slice starts where this one ended
+		o.KnownSkills = pr.Skills // the next slice starts where this one ended
+		if pr.PriorLoaded {
+			o.PriorSkills = nil // already in Skills; otherwise a later slice may still need them
+		}
 		f := db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
 			ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
 		if pr.More {
