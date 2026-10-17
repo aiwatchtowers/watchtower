@@ -25,6 +25,9 @@ type claudeLine struct {
 	Message         json.RawMessage `json:"message"`
 	ParentToolUseID *string         `json:"parent_tool_use_id"`
 	Errors          []string        `json:"errors"`
+	// APIKeySource is the init event's auth source: "none" under the
+	// claude.ai login (probe answer 9).
+	APIKeySource string `json:"apiKeySource"`
 }
 
 type claudeUsage struct {
@@ -102,6 +105,8 @@ type fedLine struct {
 	events    []Event
 	sessionID string
 	results   []toolResult
+	// apiKeySource is an init line's auth source ("" on other lines).
+	apiKeySource string
 }
 
 type pendingBlock struct {
@@ -196,6 +201,10 @@ func (t *ClaudeTranslator) feed(line []byte) (fedLine, error) {
 		f.events, f.results = t.toolResults(m)
 	case "result":
 		f.events = t.result(l)
+	case "system":
+		if l.Subtype == "init" {
+			f.apiKeySource = l.APIKeySource
+		}
 	}
 	return f, nil
 }

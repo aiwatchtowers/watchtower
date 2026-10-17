@@ -227,12 +227,39 @@ func gmailSend(requestID, toolUseID string) string {
 	return canUseTool(requestID, toolUseID, "mcp__claude_ai_Gmail__send", "claude.ai Gmail", gmailSendInput)
 }
 
+// testConnectors is the mcp_status list the gate tests' fake CLI answers:
+// Gmail (send unannotated) and Claude Docs, as the probe recorded them.
+const testConnectors = `[` +
+	`{"name":"claude.ai Gmail","status":"connected","source":"claudeai","config":{"type":"claudeai-proxy"},` +
+	`"tools":[{"name":"send","annotations":{}},{"name":"search","annotations":{"readOnly":true}}]},` +
+	`{"name":"claude.ai Claude Docs","status":"connected","source":"claudeai","config":{"type":"claudeai-proxy"},` +
+	`"tools":[{"name":"read","annotations":{"readOnly":true}},{"name":"create","annotations":{}},` +
+	`{"name":"update","annotations":{}},{"name":"batch","annotations":{}},{"name":"delete","annotations":{"destructive":true}}]}]`
+
+// testCatalog is testConnectors as a snapshot.
+func testCatalog(t *testing.T) ConnectorSnapshot {
+	t.Helper()
+	line := `{"type":"control_response","response":{"subtype":"success","request_id":"s","response":{"mcpServers":` + testConnectors + `}}}`
+	servers, ok, err := parseMCPStatusResponse([]byte(line), "s")
+	require.True(t, ok)
+	require.NoError(t, err)
+	return newConnectorSnapshot(time.Now(), servers, nil)
+}
+
 type gateFixture struct {
 	opts     ClaudeOptions
 	files    fakeFiles
 	sink     *fakeSink
 	pub      *PublishDir
 	requests string
+	status   string // the fake's mcp_status answers, one list per line
+}
+
+// setStatus makes the fake answer its k-th mcp_status with lists[k-1] (the
+// last one repeating).
+func (fx *gateFixture) setStatus(t *testing.T, lists ...string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(fx.status, []byte(strings.Join(lists, "\n")+"\n"), 0o600))
 }
 
 // gateFake runs the fake CLI in gate mode with requests as each turn's
@@ -245,7 +272,9 @@ func gateFake(t *testing.T, requests ...string) *gateFixture {
 	pub, err := NewPublishDir(f.workDir, 7)
 	require.NoError(t, err)
 	fx.pub = pub
-	opts.Env = append(opts.Env, "FAKE_CLAUDE_GATE_REQUESTS="+fx.requests)
+	fx.status = filepath.Join(filepath.Dir(f.argv), "mcp_status")
+	fx.setStatus(t, testConnectors)
+	opts.Env = append(opts.Env, "FAKE_CLAUDE_GATE_REQUESTS="+fx.requests, "FAKE_MCP_STATUS="+fx.status)
 	opts.ClaudeAI = ClaudeAIMode{On: true, Connectors: true}
 	opts.Gate = &GateOptions{Sink: fx.sink, Publish: pub,
 		Policy: connectorpolicy.Policy{Disabled: map[string]bool{}}, PollInterval: 10 * time.Millisecond}
@@ -828,6 +857,7 @@ func TestGate_WithdrawnBeforeTheRowExistsNeverWaits(t *testing.T) {
 	g, err := newGate(GateOptions{Sink: sink, Policy: connectorpolicy.Policy{Disabled: map[string]bool{}},
 		PollInterval: 10 * time.Millisecond}, func() string { return "t1" }, io.Discard)
 	require.NoError(t, err)
+	g.catalog.set(testCatalog(t))
 	p, r := pipeProc(t)
 	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
 	require.True(t, ok)
@@ -874,6 +904,7 @@ func unitGate(t *testing.T, sink *fakeSink) (*gate, *claudeProc, *os.File) {
 	g, err := newGate(GateOptions{Sink: sink, Policy: connectorpolicy.Policy{Disabled: map[string]bool{}},
 		PollInterval: 10 * time.Millisecond}, func() string { return "t1" }, io.Discard)
 	require.NoError(t, err)
+	g.catalog.set(testCatalog(t))
 	p, r := pipeProc(t)
 	return g, p, r
 }

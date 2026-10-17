@@ -20,8 +20,18 @@ const (
 	ownC = `"container":{"kind":"project","id":"own-doc"}`
 )
 
-// fakeCatalog maps "token/tool" to annotations.
+// fakeCatalog maps "token/tool" to annotations; a server with any entry, or
+// a bare "token" key, is a listed connector.
 type fakeCatalog map[string]Annotations
+
+func (f fakeCatalog) Connector(serverToken string) bool {
+	for k := range f {
+		if k == serverToken || strings.HasPrefix(k, serverToken+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 func (f fakeCatalog) Lookup(serverToken, tool string) (Annotations, bool) {
 	a, ok := f[serverToken+"/"+tool]
@@ -56,6 +66,8 @@ func testPolicy() Policy {
 			"claude_ai_Gmail/draft":        {},
 			"claude_ai_Claude_Docs/delete": {ReadOnly: ptr(true)},
 			"claude_ai_Claude_Docs/batch":  {ReadOnly: ptr(false)},
+			"claude_ai_Caf_Notes":          {}, // listed, its tools not yet known
+			"claude_ai_Slack":              {},
 		},
 		Disabled:    map[string]bool{"claude_ai_Slack": true},
 		PathCheck:   lexicalCheck,
@@ -365,11 +377,43 @@ func TestPolicy_FailsClosedWithoutSessionState(t *testing.T) {
 
 func TestPolicy_UnknownCatalogEntryAsks(t *testing.T) {
 	p := testPolicy()
-	p.Catalog = fakeCatalog{}
-	for _, c := range []Call{gmail("search"), gmail("send"),
-		{Tool: "mcp__claude_ai_New_Server__fetch", Server: "claude.ai New Server", Input: json.RawMessage(`{}`)}} {
+	p.Catalog = fakeCatalog{"claude_ai_Gmail": {}}
+	for _, c := range []Call{gmail("search"), gmail("send")} {
 		if got := p.Decide(c); got.Verdict != Ask {
 			t.Errorf("%s: verdict = %v, want ask", c.Tool, got.Verdict)
+		}
+	}
+}
+
+// A server the catalog does not list as an account connector is denied,
+// whatever its name says (spec D1/D3): only a nil catalog asks.
+func TestPolicy_UnlistedServerIsDenied(t *testing.T) {
+	p := testPolicy()
+	p.Catalog = fakeCatalog{"claude_ai_Gmail": {}}
+	for _, c := range []Call{
+		{Tool: "mcp__claude_ai_New_Server__fetch", Server: "claude.ai New Server", Input: json.RawMessage(`{}`)},
+		docs("read", `{}`),
+	} {
+		got := p.Decide(c)
+		if got.Verdict != Deny || !strings.Contains(got.Reason, "not one of this account's claude.ai connectors") {
+			t.Errorf("%s: %v (%q), want deny", c.Tool, got.Verdict, got.Reason)
+		}
+	}
+	p.Catalog = nil
+	if got := p.Decide(gmail("send")); got.Verdict != Ask {
+		t.Errorf("nil catalog: %v, want ask", got.Verdict)
+	}
+}
+
+func TestPolicy_ReservedServerToken(t *testing.T) {
+	for token, want := range map[string]bool{
+		"claude_ai": true, "claude_ai_Gmail": true, "Claude_AI_Gmail": true, "CLAUDE_AI_x": true,
+		"claude__ai_Gmail": true, "_claude_ai_Gmail": true, "claude_ai__Gmail__send": true,
+		"claude_aix": false, "claude-ai_Gmail": false, "claudeai_Gmail": false, "my_claude_ai_x": false,
+		"github": false, "": false,
+	} {
+		if got := ReservedServerToken(token); got != want {
+			t.Errorf("ReservedServerToken(%q) = %v, want %v", token, got, want)
 		}
 	}
 }

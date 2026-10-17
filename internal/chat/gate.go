@@ -90,8 +90,9 @@ type GateOptions struct {
 	// sources are confined to it, and Close removes it. Nil confines to
 	// nothing (every path is denied).
 	Publish *PublishDir
-	// Policy carries the catalog and the switched-off servers; the gate
-	// fills its path check and the own-artifact and own-doc lookups.
+	// Policy carries the switched-off servers; the gate fills its catalog
+	// (the session's live mcp_status snapshot), its path check and the
+	// own-artifact and own-doc lookups, replacing whatever is there.
 	// Disabled must be non-nil (empty = nothing switched off): a caller that
 	// failed to load the owner's switches must not pass nil, so a nil map
 	// refuses to start.
@@ -162,6 +163,11 @@ type gate struct {
 	policy connectorpolicy.Policy
 	turnID func() string
 	warn   io.Writer
+	// catalog is the policy's Catalog; refresh, when set, re-reads it from
+	// p's mcp_status (bounded) before a connector call it does not list is
+	// decided.
+	catalog *connectorCatalog
+	refresh func(p *claudeProc)
 
 	wg sync.WaitGroup // every request goroutine; Add only while !closed
 
@@ -201,6 +207,8 @@ func newGate(opts GateOptions, turnID func() string, warn io.Writer) (*gate, err
 		g.policy.PathCheck, g.policy.PublishDir = opts.Publish.Check, opts.Publish.Path()
 	}
 	g.policy.OwnArtifact, g.policy.OwnDoc = g.ownLink, g.ownLink
+	g.catalog = newConnectorCatalog()
+	g.policy.Catalog = g.catalog
 	return g, nil
 }
 
@@ -252,7 +260,14 @@ func (g *gate) handle(p *claudeProc, req permissionRequest, w *gateWait) {
 		g.answer(p, permissionDenyLine(req.RequestID, req.Malformed))
 		return
 	}
-	d := g.policy.Decide(req.policyCall())
+	call := req.policyCall()
+	// A connector or tool that appeared after the last mcp_status (the
+	// owner connected it on claude.ai mid-session) gets one refresh; still
+	// unlisted, the policy denies the server or asks for the tool.
+	if g.refresh != nil && req.MCPServerSource == "claudeai" && !g.catalog.knows(call.Tool) {
+		g.refresh(p)
+	}
+	d := g.policy.Decide(call)
 	switch d.Verdict {
 	case connectorpolicy.Allow:
 		input := req.Input

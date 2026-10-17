@@ -21,9 +21,13 @@
 #     interrupt withdraws the open ones with control_cancel_request; with
 #     $FAKE_GATE_DIE_ON_ALLOW set it dies on an allow instead. Writes its pid
 #     to $FAKE_PID.)
+# Every mode answers an mcp_status control request with the k-th line of the
+# file $FAKE_MCP_STATUS (an mcpServers JSON list; the last line repeats; no
+# file = []).
 # The error results carry $FAKE_ERROR (default "request too large").
 # With $FAKE_INIT_SID set, every user message is first answered by a
-# system/init line carrying that session id (as the real CLI does).
+# system/init line carrying that session id (as the real CLI does), and
+# $FAKE_API_KEY_SOURCE as its apiKeySource when set.
 # Appends argv (one arg per line, runs separated by "--") to $FAKE_ARGV and
 # every stdin line to $FAKE_STDIN (and its physical cwd to $FAKE_CWD). "Once" modes key on the $FAKE_MARK file.
 { for a in "$@"; do printf '%s\n' "$a"; done; echo "--"; } >> "$FAKE_ARGV"
@@ -73,6 +77,18 @@ tool_calls() {
   printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"lt1","content":"[]"}]}}'
 }
 
+status_n=0
+# mcp_status_answer answers the mcp_status request line $1.
+mcp_status_answer() {
+  status_n=$((status_n+1))
+  list='[]'
+  if [ -n "$FAKE_MCP_STATUS" ] && [ -s "$FAKE_MCP_STATUS" ]; then
+    list=$(sed -n "${status_n}p" "$FAKE_MCP_STATUS")
+    [ -z "$list" ] && list=$(tail -n 1 "$FAKE_MCP_STATUS")
+  fi
+  printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"mcpServers":%s}}}\n' "$(field "$1" request_id)" "$list"
+}
+
 field() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
 
 tool_result() { # tool_use_id, content (JSON-string-safe), is_error
@@ -94,6 +110,9 @@ gate_turn() {
   while [ -n "$pending" ] && IFS= read -r line; do
     printf '%s\n' "$line" >> "$FAKE_STDIN"
     case "$line" in
+      *'"subtype":"mcp_status"'*)
+        mcp_status_answer "$line"
+        continue ;;
       *'"subtype":"interrupt"'*)
         for p in $pending; do
           printf '{"type":"control_cancel_request","request_id":"%s"}\n' "${p%%:*}"
@@ -134,6 +153,8 @@ n=0
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$FAKE_STDIN"
   case "$line" in
+    *'"subtype":"mcp_status"'*)
+      mcp_status_answer "$line" ;;
     *'"subtype":"interrupt"'*)
       [ "$FAKE_MODE" = "ignore_interrupt" ] && continue
       printf '%s\n' '{"type":"control_response","response":{"subtype":"success"}}'
@@ -141,7 +162,11 @@ while IFS= read -r line; do
       ;;
     *'"type":"user"'*)
       n=$((n+1))
-      [ -n "$FAKE_INIT_SID" ] && printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$FAKE_INIT_SID"
+      if [ -n "$FAKE_API_KEY_SOURCE" ]; then
+        printf '{"type":"system","subtype":"init","session_id":"%s","apiKeySource":"%s"}\n' "${FAKE_INIT_SID:-sess-fake}" "$FAKE_API_KEY_SOURCE"
+      elif [ -n "$FAKE_INIT_SID" ]; then
+        printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$FAKE_INIT_SID"
+      fi
       case "$FAKE_MODE" in
         crash_once)
           if first_time; then exit 3; fi ;;

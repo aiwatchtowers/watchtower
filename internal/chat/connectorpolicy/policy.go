@@ -60,11 +60,15 @@ type Annotations struct {
 // Catalog resolves a connector tool's annotations from the session's
 // mcp_status snapshot.
 type Catalog interface {
+	// Connector reports whether the snapshot lists serverToken as one of
+	// the account's claude.ai connectors (source claudeai, config type
+	// claudeai-proxy). Any other server is denied (spec D1/D3).
+	Connector(serverToken string) bool
 	Lookup(serverToken, tool string) (Annotations, bool)
 }
 
 // Policy is the per-session input of the decision table. A nil Catalog asks
-// for every connector call, a nil PathCheck denies every path, a nil
+// for every connector call (the gate always passes one), a nil PathCheck denies every path, a nil
 // OwnArtifact asks before updating any existing artifact and a nil OwnDoc
 // asks before any Claude Docs write to an existing doc. Disabled is the
 // one field whose nil value allows: it means nothing is switched off, so the
@@ -105,6 +109,9 @@ func (p Policy) Decide(c Call) Decision {
 	name := displayName(c.Server)
 	if p.Disabled[server] {
 		return deny("%s is switched off in Settings → AI", name)
+	}
+	if p.Catalog != nil && !p.Catalog.Connector(server) {
+		return deny("%s is not one of this account's claude.ai connectors", c.Server)
 	}
 	if tool == "authenticate" || tool == "complete_authentication" {
 		return deny("connect %s on claude.ai first", name)
@@ -471,6 +478,22 @@ func ServerToken(displayName string) string {
 		token = strings.ReplaceAll(token, "__", "_")
 	}
 	return strings.Trim(token, "_")
+}
+
+// ReservedServerToken reports whether a server token — or a Quick
+// Connection name, which the CLI uses as its token as is — falls in the
+// claude.ai connectors' namespace: "claude_ai" or "claude_ai_…", in any
+// case, after the claude.ai folding of "_" runs and edge "_". A local
+// server there could share a token with an account connector, and an
+// --allowedTools entry of its would then pre-allow the connector's tools
+// past the gate.
+func ReservedServerToken(token string) bool {
+	folded := token
+	for strings.Contains(folded, "__") {
+		folded = strings.ReplaceAll(folded, "__", "_")
+	}
+	folded = strings.ToLower(strings.Trim(folded, "_"))
+	return folded == "claude_ai" || strings.HasPrefix(folded, "claude_ai_")
 }
 
 // ParseToolName splits mcp__<server>__<tool> the way the CLI does: the server

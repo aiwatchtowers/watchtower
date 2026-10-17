@@ -45,6 +45,10 @@ type ClaudeOptions struct {
 	// nil denies every request ("not available in this chat"), so a child
 	// that asks is never left waiting.
 	Gate *GateOptions
+	// ConnectorsFile is the claude.ai connectors sidecar (ConnectorsFileName
+	// beside the database) a claude.ai-mode session rewrites from each
+	// child's mcp_status; "" writes none.
+	ConnectorsFile string
 	// WorkDir is the child's working directory; "" = NeutralWorkDir(). It
 	// must hold no CLAUDE.md: claude loads project instructions from its cwd
 	// (and its parents) into the session. It must also be stable across
@@ -161,6 +165,22 @@ type claudeBackend struct {
 	active     atomic.Bool  // a Turn is in flight
 	closeOnce  sync.Once
 
+	// catalog is the claude.ai-mode connector catalog (the gate's own when
+	// there is a gate); nil when the mode is off.
+	catalog *connectorCatalog
+	// statusWaits are the mcp_status requests awaiting the CLI's answer,
+	// by request id.
+	statusMu    sync.Mutex
+	statusWaits map[string]chan mcpStatusAnswer
+	statusSeq   atomic.Int64
+	fileMu      sync.Mutex     // serialises the sidecar writes
+	watchers    sync.WaitGroup // each child's watchConnectors
+	// connPoll, connSettle and connAnswer bound the connector watch: an
+	// mcp_status is re-sent every connPoll while the list settles, for at
+	// most connSettle, and each answer is awaited up to connAnswer (also the
+	// gate's refresh bound).
+	connPoll, connSettle, connAnswer time.Duration
+
 	mu        sync.Mutex
 	proc      *claudeProc
 	resume    string // session id the next spawn resumes ("" = fresh)
@@ -215,6 +235,15 @@ func NewClaudeBackend(opts ClaudeOptions) Backend {
 	if opts.Gate != nil {
 		b.gate, b.gateErr = newGate(*opts.Gate, turnID, opts.Warn)
 	}
+	if opts.ClaudeAI.On {
+		b.statusWaits = map[string]chan mcpStatusAnswer{}
+		b.connPoll, b.connSettle, b.connAnswer = connectorsPollInterval, connectorsSettleWindow, connectorsAnswerWait
+		b.catalog = newConnectorCatalog()
+		if b.gate != nil {
+			b.catalog = b.gate.catalog
+			b.gate.refresh = b.refreshConnectors
+		}
+	}
 	return b
 }
 
@@ -246,8 +275,15 @@ func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 		args = append(args, "--mcp-config", mcpFile)
 	}
 	args = append(args, "--tools", o.Tools)
-	if o.AllowedTools != "" {
-		args = append(args, "--allowedTools", o.AllowedTools)
+	allowed := o.AllowedTools
+	if o.ClaudeAI.On {
+		// A pre-allowed tool never reaches the gate: no entry may name a
+		// server in the account connectors' namespace (a Quick Connection
+		// named claude_ai_Gmail would pre-allow the real Gmail's send).
+		allowed = withoutReservedAllowTokens(allowed)
+	}
+	if allowed != "" {
+		args = append(args, "--allowedTools", allowed)
 	}
 	if o.DisallowedTools != "" {
 		args = append(args, "--disallowedTools", o.DisallowedTools)
@@ -552,6 +588,10 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	}()
 	go b.read(p, outR)
 	b.proc = p
+	if b.catalog != nil {
+		b.watchers.Add(1)
+		go b.watchConnectors(p)
+	}
 	return p, nil
 }
 
@@ -566,7 +606,7 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	// Tool results arrive as one line each; allow multi-megabyte lines.
 	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
 	for sc.Scan() {
-		if b.routeControl(p, sc.Bytes()) {
+		if b.routeStatusAnswer(sc.Bytes()) || b.routeControl(p, sc.Bytes()) {
 			continue
 		}
 		f, err := b.tr.feed(sc.Bytes())
@@ -580,6 +620,9 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 		}
 		if f.sessionID != "" {
 			b.noteSessionID(p, f.sessionID)
+		}
+		if f.apiKeySource != "" {
+			b.noteAPIKeySource(f.apiKeySource)
 		}
 		for _, r := range f.results {
 			b.gate.onResult(r)
@@ -1162,6 +1205,14 @@ func (b *claudeBackend) Close() error {
 				waitClosed(p.outDone, exitedOutputWait)
 			}
 		}
+		// Every child is stopped, so each watch is ending: no sidecar
+		// write outlives the session.
+		watched := make(chan struct{})
+		go func() {
+			b.watchers.Wait()
+			close(watched)
+		}()
+		waitClosed(watched, gateStopWait)
 		b.gate.shutdown()
 		for _, f := range []string{b.promptFile, b.mcpFile} {
 			if f != "" {

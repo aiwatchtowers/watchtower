@@ -1,0 +1,54 @@
+{
+  "updated_at": "2026-10-17T09:30:00Z",
+  "available": true,
+  "unavailable_reason": "",
+  "servers": [
+    {
+      "name": "Claude Docs",
+      "status": "connected",
+      "tools": [
+        {
+          "name": "read",
+          "read_only": true
+        },
+        {
+          "name": "update"
+        },
+        {
+          "name": "delete",
+          "destructive": true
+        }
+      ]
+    },
+    {
+      "name": "Connector A",
+      "status": "needs-auth",
+      "tools": []
+    },
+    {
+      "name": "Connector B",
+      "status": "disabled",
+      "tools": [
+        {
+          "name": "search",
+          "read_only": true,
+          "destructive": false
+        },
+        {
+          "name": "send",
+          "read_only": false
+        }
+      ]
+    },
+    {
+      "name": "Connector C",
+      "status": "pending",
+      "tools": []
+    },
+    {
+      "name": "Connector D",
+      "status": "failed",
+      "tools": []
+    }
+  ]
+}
