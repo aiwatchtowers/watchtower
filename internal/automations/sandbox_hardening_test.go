@@ -125,12 +125,8 @@ func TestSandbox_HugeJoinEndsWithinDeadlinePlusGrace(t *testing.T) {
 }
 
 func TestSandbox_DeepJSONStringifyRefused(t *testing.T) {
-	deep := `var o = {}, c = o; for (var i = 0; i < 200000; i++) { c.a = {}; c = c.a }`
-	start := time.Now()
-	got := mustRun(t, deep+` try { JSON.stringify(o); return "ran" } catch (e) { return e.name }`, sbOpts{})
-	if got != "RangeError" || time.Since(start) > 5*time.Second {
-		t.Fatalf("deep stringify = %v after %v; want a quick RangeError", got, time.Since(start))
-	}
+	wantLimitHit(t, "deep stringify", `var o = {}, c = o; for (var i = 0; i < 200000; i++) { c.a = {}; c = c.a }
+		try { JSON.stringify(o); return "ran" } catch (e) { return e.name }`)
 	ok := mustRun(t, `var o = {}, c = o; for (var i = 0; i < 900; i++) { c.a = {}; c = c.a }
 		var cyc = {}; cyc.self = cyc; var cycErr = "";
 		try { JSON.stringify(cyc) } catch (e) { cycErr = e.name }
@@ -141,12 +137,10 @@ func TestSandbox_DeepJSONStringifyRefused(t *testing.T) {
 }
 
 func TestSandbox_RepeatCapped(t *testing.T) {
-	got := mustRun(t, `var out = ["ab".repeat(3)];
-		try { "x".repeat(32 * 1024 * 1024) } catch (e) { out.push(e.name) }
-		return out.join(",")`, sbOpts{})
-	if got != "ababab,RangeError" {
+	if got := mustRun(t, `return "ab".repeat(3)`, sbOpts{}); got != "ababab" {
 		t.Fatalf("got %v", got)
 	}
+	wantLimitHit(t, "repeat", `try { "x".repeat(32 * 1024 * 1024) } catch (e) { return e.name }`)
 }
 
 func TestSandbox_ReturnValueSerialisedUnderInterrupt(t *testing.T) {
@@ -306,14 +300,17 @@ func TestJournal_MarkWrapsErrors(t *testing.T) {
 const deepJS = `function deep(n) { var o = {}, c = o; for (var i = 0; i < n; i++) { c.a = {}; c = c.a } return o }
 `
 
-// wantQuickRangeError runs script (which returns e.name or "ran") and wants
-// a RangeError within 5 s and no abandoned goroutine.
-func wantQuickRangeError(t *testing.T, name, script string) {
+// wantLimitHit runs script (whose catch, if reached, returns) and wants the
+// run to end within 5 s on a sandbox limit: an uncatchable RangeError marked
+// Limit (its automation is disabled), and no abandoned goroutine.
+func wantLimitHit(t *testing.T, name, script string) {
 	t.Helper()
 	start := time.Now()
-	got := mustRun(t, deepJS+script, sbOpts{})
-	if got != "RangeError" || time.Since(start) > 5*time.Second || AbandonedRuns() != 0 {
-		t.Errorf("%s: got %v after %v (abandoned %d); want a quick RangeError", name, got, time.Since(start), AbandonedRuns())
+	v, err := runScript(t, deepJS+script, sbOpts{})
+	var se *ScriptError
+	if !errors.As(err, &se) || !se.Limit || se.Name != "RangeError" || time.Since(start) > 5*time.Second || AbandonedRuns() != 0 {
+		t.Errorf("%s: got %v, %v after %v (abandoned %d); want a quick uncatchable limit RangeError",
+			name, v, err, time.Since(start), AbandonedRuns())
 	}
 }
 
@@ -339,7 +336,7 @@ func TestSandbox_JSONDepthCannotBeBypassed(t *testing.T) {
 		"array replacer": wrap(`JSON.stringify(deep(200000), ["a"])`),
 	}
 	for name, script := range cases {
-		wantQuickRangeError(t, name, script)
+		wantLimitHit(t, name, script)
 	}
 	_, err := runScript(t, deepJS+"return deep(2000)", sbOpts{})
 	var se *ScriptError
@@ -409,10 +406,7 @@ func TestSandbox_AllocationCaps(t *testing.T) {
 		`String.raw({ raw: { length: 1e9 } })`,
 	}
 	for _, expr := range refused {
-		got := mustRun(t, "try { "+expr+"; return 'ran' } catch (e) { return e.name }", sbOpts{})
-		if got != "RangeError" {
-			t.Errorf("%s → %v; want RangeError", expr, got)
-		}
+		wantLimitHit(t, expr, "try { "+expr+"; return 'ran' } catch (e) { return e.name }")
 	}
 	got := mustRun(t, `return [
 		"ab".repeat(3), "7".padStart(3, "0"), [1, 2].join("-"), Array(3).length, new Array(1, 2).length,
@@ -474,10 +468,12 @@ func TestSandbox_AllocationCapsRound3(t *testing.T) {
 		`new ArrayBuffer(32 * 1024 * 1024)`,
 		`new Uint8Array(32 * 1024 * 1024)`,
 		`new Float64Array(17 * 1024 * 1024)`,
-		`var a = []; a.length = 1000001; a.sort()`,
-		`new Int32Array(1000001).sort()`,
 	}
 	for _, expr := range refused {
+		wantLimitHit(t, expr, "try { "+expr+"; return 'ran' } catch (e) { return e.name }")
+	}
+	// The default-sort cap bounds time, not memory: a catchable RangeError.
+	for _, expr := range []string{`var a = []; a.length = 1000001; a.sort()`, `new Int32Array(1000001).sort()`} {
 		got := mustRun(t, "try { "+expr+"; return 'ran' } catch (e) { return e.name }", sbOpts{})
 		if got != "RangeError" {
 			t.Errorf("%s → %v; want RangeError", expr, got)

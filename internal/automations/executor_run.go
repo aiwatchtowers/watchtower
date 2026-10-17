@@ -13,8 +13,10 @@ import (
 // runEnd is how a run ends: its terminal status, error kind and message.
 type runEnd struct {
 	status, kind, msg string
-	// abandoned: the script goroutine was left behind (AbandonedRuns).
-	abandoned bool
+	// disable: a runaway script — its goroutine was left behind
+	// (AbandonedRuns) or it hit a sandbox size or depth limit
+	// (ScriptError.Limit) — so its automation is disabled.
+	disable bool
 }
 
 func failedEnd(kind string, err error) *runEnd {
@@ -46,8 +48,8 @@ func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation
 	if e.runGone(runID) {
 		return
 	}
-	f, commit, abandoned := e.outcome(ctx, env, v, runErr, inline)
-	e.finish(runID, a, f, commit, abandoned)
+	f, commit, disable := e.outcome(ctx, env, v, runErr, inline)
+	e.finish(runID, a, f, commit, disable)
 }
 
 // runGone reports whether the run's row is gone: a workbench delete removes
@@ -224,7 +226,7 @@ func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error, i
 		end.status, end.kind, end.msg = db.RunFailed, db.ErrKindInterrupted, stoppedMessage(inline)
 	}
 	f.Status, f.ErrorKind, f.Error = end.status, end.kind, end.msg
-	return f, nil, end.abandoned
+	return f, nil, end.disable
 }
 
 // stoppedMessage is the error of a run whose executor's ctx ended under it.
@@ -243,10 +245,14 @@ func classifyRunError(err error) *runEnd {
 	switch {
 	case errors.As(err, &ri):
 		end := interruptEnd(ri.Reason)
-		end.msg, end.abandoned = ri.Error(), ri.Abandoned
+		end.msg, end.disable = ri.Error(), ri.Abandoned
 		return end
 	case errors.As(err, &se) && se.Name == ErrNamePermissionDenied:
 		return failedEnd(db.ErrKindPermission, err)
+	case errors.As(err, &se) && se.Limit:
+		end := failedEnd(db.ErrKindScript, err)
+		end.disable = true
+		return end
 	case errors.As(err, &se), errors.As(err, &pe):
 		return failedEnd(db.ErrKindScript, err)
 	default:
@@ -283,11 +289,11 @@ func runSummary(b *CommitBuffer, returned any) string {
 // finish writes the run's terminal status (and commit). A run already ended
 // by someone else (a CLI cancel, the stale-dry-run sweep) refuses with
 // ErrRunNotActive: that is the expected end of a cancelled run, not an
-// error. An abandoned script disables its automation.
-func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit *db.RunCommit, abandoned bool) {
+// error. A runaway script (runEnd.disable) disables its automation.
+func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit *db.RunCommit, disable bool) {
 	now := e.clock.Now()
 	f.Now = now
-	if abandoned {
+	if disable {
 		f.Error += "; the automation was disabled: " + runawayDisabledReason
 	}
 	err := e.db.FinishAutomationRun(runID, f, commit)
@@ -304,11 +310,11 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	case err != nil:
 		e.logger.Printf("automations: run %d: finishing as %s: %v", runID, f.Status, err)
 	}
-	if !abandoned {
+	if !disable {
 		return
 	}
-	e.logger.Printf("automations: run %d of %q: its script did not stop after the interrupt and was abandoned; automation disabled (%s)",
-		runID, a.Slug, runawayDisabledReason)
+	e.logger.Printf("automations: run %d of %q: runaway script (%s); automation disabled (%s)",
+		runID, a.Slug, f.Error, runawayDisabledReason)
 	if err := e.db.SetAutomationEnabled(a.ID, false, now); err != nil {
 		e.logger.Printf("automations: disabling runaway automation %q: %v", a.Slug, err)
 	}

@@ -330,7 +330,12 @@ waits ≤ `pause_timeout_hours` (→ `expired`). There is no token cap across ru
 cancel interrupts cannot be caught by the script's `catch`. A script stuck in
 a native builtin past `AbandonGrace` (2 s) after an interrupt is abandoned:
 its run ends, and its automation is disabled ("runaway script — check and
-re-enable"). Every run reaches exactly one terminal status, including after a
+re-enable"). A script that hits a sandbox size or depth limit (nesting deeper
+than 1000 in `JSON.parse`/`JSON.stringify`/`flat`, or one capped builtin call
+past 16 Mi characters or elements) ends at once with a `RangeError` its
+`catch` cannot intercept, the run `failed`, and its automation is disabled the
+same way; no script, however deep or large its data, ends the daemon process.
+Every run reaches exactly one terminal status, including after a
 daemon restart: on start the executor ends every `running`/`waiting` run
 `failed`/`interrupted` — except a live CLI dry run, which is swept only past
 its deadline plus one minute; a stop mid-run ends it `failed`/`interrupted`.
@@ -343,6 +348,7 @@ model quota.
 **Test guards:**
 - `internal/automations/sandbox_test.go` — `TestAuto08_InterruptOnTimeout`, `TestSandbox_InterruptIsNotCatchable`
 - `internal/automations/sandbox_hardening_test.go` — `TestSandbox_CatastrophicRegexEndsWithinDeadline`, `TestSandbox_StuckNativeIsAbandonedAfterGrace`
+- `internal/automations/sandbox_bombs_test.go` — `TestSandbox_NativeBombsEndTheRunNotTheProcess` (each bomb of security review #5 runs in the test process: Go-stack recursion in `JSON.parse`/reviver/`flat`, unbounded `replace`/`replaceAll`/`@@replace`/`JSON.stringify`/`toLocaleString`/`flat`/`flatMap` results); `internal/automations/executor_test.go` — `TestExecutor_LimitHitDisablesAutomation`
 - `internal/automations/executor_test.go` — `TestAuto08_InterruptOnBudget`, `TestAuto08_CatchAllLoopStillEndsOnBudget`, `TestAuto08_NoDailyCapAcrossRuns`, `TestAuto08_RestartMarksInterrupted`, `TestBudget_EstimatesTokensWhenUsageMissing`, `TestWaiter_PauseTimeoutExpires`, `TestExecutor_DaemonStopMidRunEndsInterrupted`, `TestExecutor_AbandonedRunDisablesAutomation`, `TestExecutor_SweepsStaleDryRuns`, `TestExecutor_StartSparesLiveCLIDryRun`
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_BudgetBound`
 - P6 (`agent()`): `internal/automations/sdk_agent_test.go` — `TestAgent_BudgetCarvedFromRun`, `TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded` (a spent carved minutes deadline throws a catchable `BudgetExceeded`; the run's own deadline stays uncatchable), `TestAgent_ResultUsageDebitedOnce`; `cmd/automations_agent_test.go` — `TestAgent_RunBudgetCrossedInterruptsRun`, `TestAgent_LocalBudgetSpentThrowsCatchable`, `TestAgent_IterationsCapped12`, `TestAgent_CLIUsageDebitedOrEstimated`, `TestAgent_CancelKillsCLIChild` (the whole process group dies); `internal/ai/client_child_test.go` — `TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace` (`ai.GroupKillGrace` = 1 s, inside the 2 s `AbandonGrace`)
@@ -516,6 +522,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-17 (board #561, security review #5; owner decision ask #304 q3): **AUTO-08 strengthened** — a sandbox size or depth limit ends the run uncatchably and disables the automation, and deep/huge data can no longer end the daemon (goja's `JSON.parse`/`flat` overflowed the Go stack — an unrecoverable fatal error — and several builtins allocated without bound, so the abandon/auto-disable net never ran and the daemon crash-looped). The existing allocation caps and the `JSON.stringify` depth cap, catchable before, now end the run the same way; the regex timeout and default-sort cap stay catchable. Guards added: `TestSandbox_NativeBombsEndTheRunNotTheProcess`, `TestExecutor_LimitHitDisablesAutomation`. No guard relaxed (`TestExecutor_AbandonedRunDisablesAutomation` unchanged).
 - 2026-10-17 (Automations P4, board #753; spec §8): **the event half of AUTO-09 flips from Planned to Enforced** — the one P4 status flip. Observable gains the event bus: `Flush` (once per sync cycle, cycle id = `syncStart` in RFC 3339 UTC, called right after `phaseExternalSync`) only inserts `queued` rows, one per automation per cycle, and merges into a still-queued event run; event runs carry ids, labels, enums and counts only. Guards added: `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (`internal/automations/bus_test.go`), `TestBus_EventsCarryNoContent` (`internal/automations/events_test.go`). Module list gains `internal/automations/bus.go`, `internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`, `internal/db/automation_event_sources.go`. No new AUTO number; no AGENT/STRIP/REACT entry touched (reaction commands are not an event source). No guard relaxed.
 - 2026-10-16 (Automations P5 part 2, board #753; spec §12.4, §13.1, §13.3, §13.4, §14.6): P5 part 2 — workbench saves (PROJ-03 amended, ask #272, `docs/inventory/workbench.md`), the Desktop session launch center (`AutomationSessionCenter`), header buttons, automation asks in the Desktop, rescans on page open and on recipe-folder changes. **AUTO-09's Desktop guard for the header buttons is in place** (`testAuto09_HeaderButtonOnlyQueues`, Task 11, listed under AUTO-09); no status flip — the event half stays Planned for P4. Change in words is on for workbench recipes (R-P3-5 lifted for the editor chat too); an automation's closed asks get their own "⚙ Automations" line instead of "Outside the app". No guard relaxed.
 - 2026-10-16 — agent() child env adds proxy, CA and TMPDIR variables (owner, ask #185). AUTO-07's guard `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` is extended, not relaxed: it still proves no API key, token or `CLAUDECODE` reaches the child. `shell()`'s env is unchanged.
