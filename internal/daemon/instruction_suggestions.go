@@ -82,8 +82,9 @@ func (d *Daemon) saveLastInstructionSuggestions() {
 }
 
 // phaseInstructionSuggestions runs the suggestion miner once a calendar day.
-// The stamp is written after a run that returned without error (including
-// "nothing to do"); a failed run leaves it so the next cycle retries.
+// The stamp is written after every run, a failed one included: a failure is
+// retried the next day, not every cycle (each run re-reads 14 days of
+// transcripts and calls the model).
 func (d *Daemon) phaseInstructionSuggestions(ctx context.Context) {
 	if d.db == nil {
 		return
@@ -112,12 +113,12 @@ func (d *Daemon) phaseInstructionSuggestions(ctx context.Context) {
 		if usage != nil {
 			stats.inTok, stats.outTok, stats.totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
 		}
-		if err != nil {
-			d.logger.Printf("instruction suggestions: %v", err)
-			return stats
-		}
 		d.lastInstructionSuggestions = now
 		d.saveLastInstructionSuggestions()
+		if err != nil {
+			d.logger.Printf("instruction suggestions: %v (retried next day)", err)
+			return stats
+		}
 		d.logger.Printf("instruction suggestions: %d written", n)
 		return stats
 	})

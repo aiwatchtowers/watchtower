@@ -69,16 +69,20 @@ func TestPhaseInstructionSuggestions_SkipsNearLimit(t *testing.T) {
 	assert.NoFileExists(t, d.lastInstructionSuggestionsPath())
 }
 
-func TestPhaseInstructionSuggestions_ErrorDoesNotStamp(t *testing.T) {
+func TestPhaseInstructionSuggestions_ErrorWaitsForNextDay(t *testing.T) {
 	d, _, _ := newBackfillDaemon(t)
 	calls := stubMiner(t, 0, errors.New("boom"))
 
 	d.phaseInstructionSuggestions(context.Background())
-	assert.True(t, d.lastInstructionSuggestions.IsZero())
-	assert.NoFileExists(t, d.lastInstructionSuggestionsPath())
+	assert.False(t, d.lastInstructionSuggestions.IsZero(), "a failed run stamps the day")
+	assert.FileExists(t, d.lastInstructionSuggestionsPath())
 
 	d.phaseInstructionSuggestions(context.Background())
-	assert.Equal(t, 2, *calls, "a failed run retries")
+	assert.Equal(t, 1, *calls, "a failed run is not retried the same day")
+
+	d.lastInstructionSuggestions = time.Now().AddDate(0, 0, -1)
+	d.phaseInstructionSuggestions(context.Background())
+	assert.Equal(t, 2, *calls, "the next day runs again")
 }
 
 // The owner's text must reach the model on stdin only: a fake claude records
