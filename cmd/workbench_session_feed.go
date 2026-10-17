@@ -121,7 +121,7 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireClaudeSession(sess); err != nil {
+	if err := requireAgentSession(sess); err != nil {
 		return err
 	}
 	convs, err := sessionFeedConversations(ctx, database, sess)
@@ -142,13 +142,11 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// requireClaudeSession refuses sessions the feed cannot read.
-func requireClaudeSession(sess *db.TerminalSession) error {
+// requireAgentSession refuses sessions the feed cannot read: shells.
+func requireAgentSession(sess *db.TerminalSession) error {
 	switch agentkind.Kind(sess.Kind) {
-	case agentkind.Claude:
+	case agentkind.Claude, agentkind.Codex:
 		return nil
-	case agentkind.Codex:
-		return fmt.Errorf("session %d: codex sessions are not supported yet", sess.ID)
 	default:
 		return fmt.Errorf("session %d is not an agent session", sess.ID)
 	}
@@ -193,6 +191,16 @@ func sessionFeedConversations(ctx context.Context, database *db.DB, sess *db.Ter
 	ledger, err := database.ListTerminalAgentSessions(sess.ID)
 	if err != nil {
 		return nil, err
+	}
+	if agentkind.Kind(sess.Kind) == agentkind.Codex {
+		home := terminalCodexHome()
+		var convs []sessionfeed.Conversation
+		for _, l := range ledger {
+			if p, ok := sessionfeed.LocateCodex(home, l.AgentSessionID, sess.TranscriptPath.String); ok {
+				convs = append(convs, sessionfeed.Conversation{AgentSessionID: l.AgentSessionID, Path: p, Codex: true})
+			}
+		}
+		return convs, nil
 	}
 	roots := append([]string{sess.FolderPath}, agentlog.WorktreeRoots(ctx, sess.FolderPath)...)
 	projects := filepath.Join(agentsClaudeDir(), "projects")
