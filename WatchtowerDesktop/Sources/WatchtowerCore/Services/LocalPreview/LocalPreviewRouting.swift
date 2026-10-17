@@ -237,6 +237,7 @@ package enum LocalPreviewHTTP {
         case 403: "Forbidden"
         case 404: "Not Found"
         case 405: "Method Not Allowed"
+        case 406: "Not Acceptable"
         case 413: "Content Too Large"
         case 416: "Range Not Satisfiable"
         default: "Error"

@@ -211,8 +211,21 @@ final class SandboxedHTMLViewTests: XCTestCase {
         </script></body></html>
         """.write(to: folder.appendingPathComponent("ok.html"), atomically: true, encoding: .utf8)
         try "TOPSECRET".write(to: folder.appendingPathComponent("secret.txt"), atomically: true, encoding: .utf8)
+        try #"{"key":"TOPSECRET"}"#.write(to: folder.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        // A sibling's data as a JSON module: static, dynamic and through an
+        // import map — none loads (#563).
+        let modules = """
+        <script type="importmap">{"imports":{"cfg":"./config.json"}}</script>
+        <script type="module">import j from "./config.json" with { type: "json" }; window.jsonStatic = j.key;</script>
+        <script type="module">
+        import("./config.json", { with: { type: "json" } }).then(m => { window.jsonDynamic = m.default.key })
+          .catch(() => { window.jsonDynamic = "blocked" });
+        import("cfg", { with: { type: "json" } }).then(m => { window.jsonMapped = m.default.key })
+          .catch(() => { window.jsonMapped = "blocked" });
+        </script>
+        """
         let index = """
-        <html><head><link rel="stylesheet" href="style.css"><script src=".secrets/config.js"></script>
+        <html><head>\(modules)<link rel="stylesheet" href="style.css"><script src=".secrets/config.js"></script>
         <script src="notes.js"></script><script src="x/hook.js"></script></head><body>
         <img src="https://\(counter.hostPort)/net.png"><iframe src=".hidden.html"></iframe><iframe id="ok" src="ok.html"></iframe>
         <iframe id="secret" src="secret.txt"></iframe>
@@ -229,7 +242,8 @@ final class SandboxedHTMLViewTests: XCTestCase {
         fetch("style.css").then(r => r.text()).then(() => { fetched = "read" }).catch(() => { fetched = "blocked" });
         window.onload = () => setTimeout(() => {
           document.title = [getComputedStyle(document.body).color, window.leaked || 0, window.gitLeaked || 0,
-                            framed.sort().join("+"), fetched, evaluated, readable("secret"), readable("ok")].join("|");
+                            framed.sort().join("+"), fetched, evaluated, readable("secret"), readable("ok"),
+                            window.jsonStatic || "blocked", window.jsonDynamic || "pending", window.jsonMapped || "pending"].join("|");
         }, 500);
         </script></body></html>
         """
@@ -237,7 +251,7 @@ final class SandboxedHTMLViewTests: XCTestCase {
         try index.write(to: file, atomically: true, encoding: .utf8)
         let webView = try host(.file(file, folder: folder))
         let title = try await waitForTitle(webView) { $0.contains("|") }
-        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok:rgb(1, 2, 3)|blocked|42|opaque|opaque",
+        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok:rgb(1, 2, 3)|blocked|42|opaque|opaque|blocked|blocked|blocked",
                        "visible siblings load and frame (with their own style sheet); no dotfile does, directly or by a link; "
                            + "no script reads a file as text, by fetch or through a frame; new Function runs")
         try await Task.sleep(for: .milliseconds(300))

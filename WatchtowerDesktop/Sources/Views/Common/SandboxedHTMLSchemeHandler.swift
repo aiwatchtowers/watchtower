@@ -54,9 +54,10 @@ final class SandboxedHTMLSchemeHandler: NSObject, WKURLSchemeHandler {
         let id = ObjectIdentifier(task)
         running.insert(id)
         let range = task.request.value(forHTTPHeaderField: "Range")
+        let accept = task.request.value(forHTTPHeaderField: "Accept")
         let isPage = site.page != nil && Self.path(of: url) == site.page
         queue.async { [weak self] in
-            let reply = HTMLPreviewReply.reply(for: url, folder: site.folder, range: range, isPage: isPage)
+            let reply = HTMLPreviewReply.reply(for: url, folder: site.folder, range: range, isPage: isPage, accept: accept)
             self?.answer(task, id: id, url: url, reply: reply)
         }
     }

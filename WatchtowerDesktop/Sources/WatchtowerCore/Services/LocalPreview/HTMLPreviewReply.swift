@@ -30,9 +30,19 @@ package enum HTMLPreviewReply: Equatable, Sendable {
     /// — a framed file above all — is also `sandbox allow-scripts`, an opaque
     /// origin the page cannot read (`contentDocument` is null), so a page
     /// cannot frame a sibling file and read it.
+    /// A request whose `Accept` starts with `application/json` (a JSON
+    /// module) is refused (406) before the file is looked at.
     package static func reply(
-        for url: URL, folder: URL, range rangeHeader: String?, isPage: Bool = false, fileManager: FileManager = .default
+        for url: URL,
+        folder: URL,
+        range rangeHeader: String?,
+        isPage: Bool = false,
+        accept: String? = nil,
+        fileManager: FileManager = .default
     ) -> Self {
+        if let accept, accept.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("application/json") {
+            return refusal(406)
+        }
         guard let file = HTMLPreviewPolicy.previewFile(for: url, folder: folder, fileManager: fileManager),
               let size = (try? fileManager.attributesOfItem(atPath: file.path))?[.size] as? Int else {
             return refusal(404)
@@ -57,12 +67,20 @@ package enum HTMLPreviewReply: Equatable, Sendable {
 
     /// The server's table (text types in UTF-8), plus audio and video by
     /// their system type: the handler answers ranges, so media can seek.
+    /// JSON and source maps go out as `text/plain` (with `nosniff`): a JSON
+    /// module import (static, dynamic or through an import map) is refused
+    /// for any type but JSON, so a page cannot read a sibling's data as a
+    /// module (#563) — as with `file:` before.
     package static func contentType(forExtension ext: String) -> String {
+        if plainTextExtensions.contains(ext.lowercased()) { return "text/plain; charset=utf-8" }
         let type = LocalPreviewHTTP.contentType(forExtension: ext)
         guard type == "application/octet-stream", let media = UTType(filenameExtension: ext.lowercased()),
               media.conforms(to: .audiovisualContent), let mime = media.preferredMIMEType else { return type }
         return mime
     }
+
+    /// Text a module loader would take as JSON.
+    private static let plainTextExtensions: Set<String> = ["json", "map", "jsonld", "webmanifest", "geojson"]
 
     /// On every reply: a sandboxed in-app CSP (no fetch/XHR, sockets or
     /// workers; subresources from the folder and the CDN allowlist only;

@@ -60,6 +60,21 @@ final class HTMLPreviewReplyTests: XCTestCase {
                       "the browser shares the same source directives")
     }
 
+    /// No sibling is readable as a JSON module (#563): JSON and source maps
+    /// go out as plain text, and a JSON-module request is refused outright.
+    func testJSONIsNeverServedAsJSON() throws {
+        try #"{"key":"TOP"}"#.write(to: folder.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        try "{}".write(to: folder.appendingPathComponent("app.js.map"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(reply("config.json").headers["Content-Type"], "text/plain; charset=utf-8")
+        XCTAssertEqual(reply("app.js.map").headers["Content-Type"], "text/plain; charset=utf-8")
+        XCTAssertEqual(reply("config.json").headers["X-Content-Type-Options"], "nosniff")
+        let url = URL(string: "wtpreview://0a1b/config.json")!
+        for accept in ["application/json", "application/json,*/*;q=0.5", " Application/JSON"] {
+            XCTAssertEqual(HTMLPreviewReply.reply(for: url, folder: folder, range: nil, accept: accept).status, 406, accept)
+        }
+        XCTAssertEqual(HTMLPreviewReply.reply(for: url, folder: folder, range: nil, accept: "*/*").status, 200)
+    }
+
     func testRangesAreAnsweredWith206Or416() {
         let partial = reply("index.html", range: "bytes=4-7")
         XCTAssertEqual(partial.status, 206)
