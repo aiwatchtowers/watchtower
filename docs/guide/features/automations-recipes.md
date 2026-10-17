@@ -21,7 +21,7 @@ An event trigger runs the recipe after a sync brings something new. For example,
 | Type | When | `where` keys |
 |---|---|---|
 | `slack.new_messages` | new messages in a channel, not counting your own | `account`, `channel`, `channel_id` |
-| `gmail.new_messages` | a mailbox sync stored new mail (Gmail or IMAP) | `account`, `provider` |
+| `gmail.new_messages` | a mailbox sync stored mail that arrived after you connected it (Gmail or IMAP) | `account`, `provider` |
 | `jira.issue_changed` | an issue changed; `field` says which: `status`, `assignee`, `priority`, `comment` or `other` | `account`, `key`, `project`, `field` |
 | `calendar.event_changed` | an event was created, updated or cancelled | `account`, `event_id`, `change` |
 | `confluence.page_changed` | a page is new or has a new version | `space`, `page_id` |

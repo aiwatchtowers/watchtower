@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -144,15 +145,21 @@ func TestPhaseSlackSync_PublishesNewMessages(t *testing.T) {
 	}}, ev.published[0])
 }
 
-// countMailSyncer is a mailSyncer whose Sync returns a scripted count and
-// error.
+// countMailSyncer is a mailSyncer whose Sync runs store (when set), then
+// returns a scripted count and error.
 type countMailSyncer struct {
 	accountID int64
 	n         int
 	err       error
+	store     func()
 }
 
-func (s *countMailSyncer) Sync(context.Context) (int, error) { return s.n, s.err }
+func (s *countMailSyncer) Sync(context.Context) (int, error) {
+	if s.store != nil {
+		s.store()
+	}
+	return s.n, s.err
+}
 func (s *countMailSyncer) FetchRange(context.Context, time.Time, time.Time) (int, error) {
 	return 0, nil
 }
@@ -161,62 +168,98 @@ func (s *countMailSyncer) FirstSyncFrom() (time.Time, bool) { return time.Time{}
 
 var errPartial = errors.New("partial fetch")
 
-// mailPublishCase runs one mail phase over four accounts — (3, nil),
-// (2, errPartial), (0, nil) and a first sync of 5 (watermark unset) — and
-// returns the published counts.
-func mailPublishCase(t *testing.T, provider string, newAccount func(*db.DB, string) int64,
-	setWatermark func(*db.DB, int64), wire func(*Daemon, []mailSyncer), run func(*Daemon)) []any {
+// mailProvider is one mail provider's test wiring: account creation, the
+// watermark a sync leaves, how its syncer stores message i of an account
+// dated date, and the daemon's syncer slot and phase.
+type mailProvider struct {
+	name         string
+	newAccount   func(t *testing.T, d *db.DB, email string) int64
+	setWatermark func(t *testing.T, d *db.DB, accountID int64)
+	store        func(t *testing.T, d *db.DB, accountID int64, i int, date string)
+	wire         func(*Daemon, []mailSyncer)
+	run          func(*Daemon)
+}
+
+// mailPublishCase runs one mail phase over four accounts whose syncers store
+// 3 messages (nil), 2 (errPartial), 0 (nil) and a first sync of 5 (watermark
+// unset), all dated after the accounts were connected, and returns the
+// published counts.
+func mailPublishCase(t *testing.T, p mailProvider) []any {
 	t.Helper()
 	ev := newRecordingEvents("gmail.new_messages")
 	d, database, _ := newEventsTestDaemon(t, ev)
+	date := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	var syncers []mailSyncer
 	for i, sc := range []struct {
 		n      int
 		err    error
 		synced bool
 	}{{3, nil, true}, {2, errPartial, true}, {0, nil, true}, {5, nil, false}} {
-		id := newAccount(database, string(rune('a'+i))+"@example.com")
+		id := p.newAccount(t, database, string(rune('a'+i))+"@example.com")
 		if sc.synced {
-			setWatermark(database, id)
+			p.setWatermark(t, database, id)
 		}
-		syncers = append(syncers, &countMailSyncer{accountID: id, n: sc.n, err: sc.err})
+		store := func() {
+			for m := range sc.n {
+				p.store(t, database, id, m+1, date)
+			}
+		}
+		syncers = append(syncers, &countMailSyncer{accountID: id, n: sc.n, err: sc.err, store: store})
 	}
-	wire(d, syncers)
-	run(d)
+	p.wire(d, syncers)
+	p.run(d)
 	var counts []any
 	for _, e := range ev.published {
 		assert.Equal(t, "gmail.new_messages", e.Type)
-		assert.Equal(t, provider, e.Fields["provider"])
+		assert.Equal(t, p.name, e.Fields["provider"])
 		counts = append(counts, e.Fields["count"])
 	}
 	return counts
 }
 
+var gmailProvider = mailProvider{
+	name: "gmail",
+	newAccount: func(t *testing.T, database *db.DB, email string) int64 {
+		id, err := database.CreateGoogleAccount(db.GoogleAccount{Email: email, GmailEnabled: true})
+		require.NoError(t, err)
+		return id
+	},
+	setWatermark: func(t *testing.T, database *db.DB, id int64) {
+		require.NoError(t, database.SetGmailAccountWatermark(id, 1700000000))
+	},
+	store: func(t *testing.T, database *db.DB, id int64, i int, date string) {
+		require.NoError(t, database.UpsertGmailMessage(id, db.GmailMessage{ID: fmt.Sprintf("m%d", i), InternalDate: date}))
+	},
+	wire: func(d *Daemon, s []mailSyncer) { d.gmailSyncers = s },
+	run:  func(d *Daemon) { d.phaseGmailSync(context.Background()) },
+}
+
+var imapProvider = mailProvider{
+	name: "imap",
+	newAccount: func(t *testing.T, database *db.DB, email string) int64 {
+		id, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: email,
+			Host: "imap.example.com", Security: "ssl", Folder: "INBOX"})
+		require.NoError(t, err)
+		return id
+	},
+	setWatermark: func(t *testing.T, database *db.DB, id int64) {
+		require.NoError(t, database.SetImapWatermark(id, 1, 1))
+	},
+	store: func(t *testing.T, database *db.DB, id int64, i int, date string) {
+		require.NoError(t, database.UpsertImapMessage(db.ImapMessage{AccountID: id, UID: int64(i), UIDValidity: 1, InternalDate: date}, date))
+	},
+	wire: func(d *Daemon, s []mailSyncer) { d.imapSyncers = s },
+	run:  func(d *Daemon) { d.phaseImapSync(context.Background()) },
+}
+
 func TestPhaseGmailSync_PublishesNewMessages(t *testing.T) {
-	counts := mailPublishCase(t, "gmail",
-		func(database *db.DB, email string) int64 {
-			id, err := database.CreateGoogleAccount(db.GoogleAccount{Email: email, GmailEnabled: true})
-			require.NoError(t, err)
-			return id
-		},
-		func(database *db.DB, id int64) { require.NoError(t, database.SetGmailAccountWatermark(id, 1700000000)) },
-		func(d *Daemon, s []mailSyncer) { d.gmailSyncers = s },
-		func(d *Daemon) { d.phaseGmailSync(context.Background()) })
-	assert.Equal(t, []any{3, 2}, counts, "(0, nil) and the first sync publish nothing")
+	counts := mailPublishCase(t, gmailProvider)
+	assert.Equal(t, []any{3, 2}, counts, "nothing stored and the first sync publish nothing")
 }
 
 func TestPhaseImapSync_PublishesNewMessages(t *testing.T) {
-	counts := mailPublishCase(t, "imap",
-		func(database *db.DB, email string) int64 {
-			id, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: email,
-				Host: "imap.example.com", Security: "ssl", Folder: "INBOX"})
-			require.NoError(t, err)
-			return id
-		},
-		func(database *db.DB, id int64) { require.NoError(t, database.SetImapWatermark(id, 1, 1)) },
-		func(d *Daemon, s []mailSyncer) { d.imapSyncers = s },
-		func(d *Daemon) { d.phaseImapSync(context.Background()) })
-	assert.Equal(t, []any{3, 2}, counts, "(0, nil) and the first sync publish nothing")
+	counts := mailPublishCase(t, imapProvider)
+	assert.Equal(t, []any{3, 2}, counts, "nothing stored and the first sync publish nothing")
 }
 
 // writingJiraSyncer is a stubJiraSyncer whose Sync runs write first.
@@ -396,7 +439,17 @@ func TestRunSync_RealBusQueuesOneRun(t *testing.T) {
 	id, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "owner@example.com", Label: "work", GmailEnabled: true})
 	require.NoError(t, err)
 	require.NoError(t, database.SetGmailAccountWatermark(id, 1700000000))
-	d.gmailSyncers = []mailSyncer{&countMailSyncer{accountID: id, n: 3}, &countMailSyncer{accountID: id, n: 1}}
+	// Messages first..last, dated a minute apart after the connect.
+	store := func(first, last int) func() {
+		return func() {
+			for i := first; i <= last; i++ {
+				at := time.Now().Add(time.Hour + time.Duration(i)*time.Minute).UTC().Format(time.RFC3339)
+				require.NoError(t, database.UpsertGmailMessage(id, db.GmailMessage{ID: fmt.Sprintf("m%d", i), InternalDate: at}))
+			}
+		}
+	}
+	d.gmailSyncers = []mailSyncer{&countMailSyncer{accountID: id, n: 3, store: store(1, 3)},
+		&countMailSyncer{accountID: id, n: 1, store: store(4, 4)}}
 
 	d.runSync(context.Background())
 
@@ -420,8 +473,8 @@ func TestDaemon_NoSubscribersTakesNoSnapshots(t *testing.T) {
 	assert.Zero(t, src.befores+src.afters, "no subscriber, no snapshot")
 	assert.Empty(t, ev.published)
 
-	// No mail subscriber: the watermark is never read (a nil database would
-	// panic) and nothing is published.
+	// No mail subscriber: the mail source takes no snapshot (a nil database
+	// would panic) and nothing is published.
 	d.db = nil
 	d.gmailSyncers = []mailSyncer{&countMailSyncer{accountID: 1, n: 3}}
 	assert.NotPanics(t, func() { d.phaseGmailSync(context.Background()) })

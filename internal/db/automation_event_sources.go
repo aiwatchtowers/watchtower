@@ -88,8 +88,8 @@ func (db *DB) MailEventLabel(provider string, accountID int64) (string, error) {
 
 // MailWatermarkSet reports whether a mail account has synced before — a
 // non-zero Gmail internalDate or IMAP UID watermark. Read before the syncer
-// runs, it tells an incremental sync (publish) from the initial backfill
-// (publish nothing). A missing account reads as unset. Read-only.
+// runs, it tells a later sync from the account's first one, which publishes
+// nothing. A missing account reads as unset. Read-only.
 func (db *DB) MailWatermarkSet(provider string, accountID int64) (bool, error) {
 	switch provider {
 	case "gmail":
@@ -101,6 +101,53 @@ func (db *DB) MailWatermarkSet(provider string, accountID int64) (bool, error) {
 	default:
 		return false, fmt.Errorf("mail watermark: unknown provider %q", provider)
 	}
+}
+
+// mailNewsFloorQueries are, per mail event provider, the account's news
+// floor: the later of its created_at (when it was connected) and its newest
+// stored message date. Both are RFC 3339 UTC text, so they compare as text.
+var mailNewsFloorQueries = map[string]string{
+	"gmail": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(internal_date) FROM gmail_messages
+            WHERE account_id = a.id), '')) FROM google_accounts a WHERE a.id = ?`,
+	"imap": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(internal_date) FROM imap_messages
+            WHERE account_id = a.id), '')) FROM email_accounts a WHERE a.id = ?`,
+}
+
+// mailCountQueries count, per mail event provider, an account's stored
+// messages dated after a floor (the (account_id, internal_date) index).
+var mailCountQueries = map[string]string{
+	"gmail": `SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND internal_date > ?`,
+	"imap":  `SELECT COUNT(*) FROM imap_messages WHERE account_id = ? AND internal_date > ?`,
+}
+
+// MailNewsFloor returns the date a mail account's message must be after to
+// be news: the later of the account's connect time (created_at) and its
+// newest stored message date. Read before the syncer runs. A missing
+// account or another provider is an error. Read-only.
+func (db *DB) MailNewsFloor(provider string, accountID int64) (string, error) {
+	query, ok := mailNewsFloorQueries[provider]
+	if !ok {
+		return "", fmt.Errorf("mail news floor: unknown provider %q", provider)
+	}
+	var floor string
+	if err := db.QueryRow(query, accountID).Scan(&floor); err != nil {
+		return "", fmt.Errorf("reading %s account %d news floor: %w", provider, accountID, err)
+	}
+	return floor, nil
+}
+
+// CountMailAfter counts a mail account's stored messages dated after floor.
+// Read-only.
+func (db *DB) CountMailAfter(provider string, accountID int64, floor string) (int, error) {
+	query, ok := mailCountQueries[provider]
+	if !ok {
+		return 0, fmt.Errorf("counting mail: unknown provider %q", provider)
+	}
+	var n int
+	if err := db.QueryRow(query, accountID, floor).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting %s account %d mail: %w", provider, accountID, err)
+	}
+	return n, nil
 }
 
 // JiraIssueRef names one Jira issue: its account and key.

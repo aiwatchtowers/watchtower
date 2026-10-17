@@ -142,6 +142,56 @@ func TestAutomationEventSources_MailWatermarks(t *testing.T) {
 	}
 }
 
+func TestAutomationEventSources_MailNewsFloor(t *testing.T) {
+	d, g, im := seedMailEventSources(t)
+	const connected = "2026-10-10T00:00:00Z"
+	for _, q := range []string{`UPDATE google_accounts SET created_at = ?`, `UPDATE email_accounts SET created_at = ?`} {
+		if _, err := d.Exec(q, connected); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := map[string]int64{"gmail": g, "imap": im}
+	store := func(provider, date string, n int64) {
+		var err error
+		if provider == "gmail" {
+			err = d.UpsertGmailMessage(g, GmailMessage{ID: date, InternalDate: date})
+		} else {
+			err = d.UpsertImapMessage(ImapMessage{AccountID: im, UID: n, UIDValidity: 1, InternalDate: date}, date)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, id := range ids {
+		// No mail, or only mail older than the connect: the floor is the connect.
+		store(p, "2026-10-05T00:00:00Z", 1)
+		if floor, err := d.MailNewsFloor(p, id); err != nil || floor != connected {
+			t.Errorf("%s floor = %q, %v; want %q", p, floor, err, connected)
+		}
+		store(p, "2026-10-12T00:00:00Z", 2)
+		store(p, "2026-10-11T00:00:00Z", 3)
+		floor, err := d.MailNewsFloor(p, id)
+		if err != nil || floor != "2026-10-12T00:00:00Z" {
+			t.Errorf("%s floor = %q, %v; want the newest message", p, floor, err)
+		}
+		if n, err := d.CountMailAfter(p, id, connected); err != nil || n != 2 {
+			t.Errorf("%s count after connect = %d, %v; want 2", p, n, err)
+		}
+		if n, err := d.CountMailAfter(p, id, floor); err != nil || n != 0 {
+			t.Errorf("%s count after floor = %d, %v; want 0", p, n, err)
+		}
+	}
+	if _, err := d.MailNewsFloor("gmail", 99); err == nil {
+		t.Error("missing account: want an error")
+	}
+	if _, err := d.MailNewsFloor("pop3", g); err == nil {
+		t.Error("unknown provider: want an error")
+	}
+	if _, err := d.CountMailAfter("pop3", g, connected); err == nil {
+		t.Error("unknown provider: want an error")
+	}
+}
+
 func TestAutomationEventSources_JiraReads(t *testing.T) {
 	d := openTestDB(t)
 	acct, err := d.CreateJiraAccount(JiraAccount{CloudID: "c1", SiteURL: "https://acme.example.com", SiteName: "acme", Label: "work"})

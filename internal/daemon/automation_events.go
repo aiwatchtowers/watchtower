@@ -73,38 +73,6 @@ func (d *Daemon) observePhase(ctx context.Context, src automations.EventSource, 
 	ev.Publish(events...)
 }
 
-// watchMail reports whether this cycle publishes a mail account's new
-// messages: the bus wants gmail.new_messages and the account synced before.
-// Read before the syncer runs — an account's initial backfill is not news.
-func (d *Daemon) watchMail(provider string, accountID int64) bool {
-	ev := d.cycleEvents
-	if ev == nil || !ev.Wants(automations.MailNewMessages) {
-		return false
-	}
-	set, err := d.db.MailWatermarkSet(provider, accountID)
-	if err != nil {
-		d.logger.Printf("automations: %s events: %v", automations.MailNewMessages, err)
-		return false
-	}
-	return set
-}
-
-// publishMail publishes one mail account's sync of n messages when watchMail
-// said so — also after a Sync that returned an error with n > 0.
-func (d *Daemon) publishMail(watch bool, provider string, accountID int64, n int) {
-	if !watch {
-		return
-	}
-	e, ok, err := automations.MailEvent(d.db, provider, accountID, n)
-	if err != nil {
-		d.logger.Printf("automations: %s events: %v", automations.MailNewMessages, err)
-		return
-	}
-	if ok {
-		d.cycleEvents.Publish(e)
-	}
-}
-
 // flushAutomationEvents queues the cycle's event runs, cycle id = syncStart
 // in RFC 3339 UTC, and ends the cycle's events. The bus logs each
 // automation's error itself; this logs one summary line.

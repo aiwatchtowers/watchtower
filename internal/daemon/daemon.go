@@ -825,9 +825,9 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 // aborting the rest of the accounts.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
 	for _, s := range d.gmailSyncers {
-		watch := d.watchMail("gmail", s.AccountID())
-		n, err := s.Sync(ctx)
-		d.publishMail(watch, "gmail", s.AccountID(), n)
+		var n int
+		var err error
+		d.observePhase(ctx, automations.MailSource(d.db, "gmail", s.AccountID()), func() { n, err = s.Sync(ctx) })
 		if from, ok := s.FirstSyncFrom(); ok {
 			d.startHistoryBackfill("gmail", s.AccountID(), from)
 		}
@@ -845,9 +845,9 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 // and skipped rather than aborting the rest of the accounts.
 func (d *Daemon) phaseImapSync(ctx context.Context) {
 	for _, s := range d.imapSyncers {
-		watch := d.watchMail("imap", s.AccountID())
-		n, err := s.Sync(ctx)
-		d.publishMail(watch, "imap", s.AccountID(), n)
+		var n int
+		var err error
+		d.observePhase(ctx, automations.MailSource(d.db, "imap", s.AccountID()), func() { n, err = s.Sync(ctx) })
 		if from, ok := s.FirstSyncFrom(); ok {
 			d.startHistoryBackfill("imap", s.AccountID(), from)
 		}
