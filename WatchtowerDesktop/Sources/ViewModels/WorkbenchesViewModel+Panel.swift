@@ -138,10 +138,15 @@ extension WorkbenchesViewModel {
         drilledWorkbenchID != nil || !panelVisible
     }
 
-    /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
-    func liveSessionCount(workbenchID: Int64) -> Int {
-        guard let terminalCenter else { return 0 }
-        return terminalCenter.sessionIDs(ofWorkbench: workbenchID).intersection(terminalCenter.liveIDs).count
+    /// The workbench's sessions whose agent works now — a turn running, or
+    /// background agents after it — as the sessions panel shows them
+    /// (`SessionAgentStateCenter`, live sessions only). A live session
+    /// waiting at its prompt does not count.
+    func workingSessionCount(workbenchID: Int64) -> Int {
+        guard let agentStates else { return 0 }
+        return agentStates.statuses.values.filter { status in
+            status.workbenchID == workbenchID && [.working, .background].contains(status.state.kind)
+        }.count
     }
 
     /// A level-2 click on a session — or a pick in the collapsed header's

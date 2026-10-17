@@ -81,7 +81,7 @@ Pull request details need the GitHub CLI (`gh`). Without it, only whether a bran
 
 - ⌘1…⌘9 open the first nine sessions of the list.
 - **Go to…** (⌘K on the Workbench tab) searches names across every workbench and its sessions. Type `#` and a target number to find the session on that target.
-- The workbench name at the top of the panel is a switcher with **Find workbench**. ⌘[ goes back to the workbench list.
+- The workbench name at the top of the panel is a switcher with **Find workbench**. Each row shows the new agent comments on open targets, the blocked targets and how many sessions are working now; with none working, how long ago a session was last active. ⌘[ goes back to the workbench list.
 - ⌥⌘S hides and shows the sessions panel.
 
 ### Read the Session view

@@ -121,7 +121,7 @@ package enum WorkbenchQueries {
     }
 
     /// The switcher's rows (board #250): `summaries` plus the blocked count
-    /// and the session count and latest activity, in `summaries`' order.
+    /// and the latest session activity, in `summaries`' order.
     package static func switcherSummaries(_ db: Database) throws -> [WorkbenchSwitcherSummary] {
         var blocked: [Int64: Int] = [:]
         for row in try Row.fetchAll(db, sql: """
@@ -130,19 +130,18 @@ package enum WorkbenchQueries {
             """) {
             blocked[row["project_id"]] = row["n"]
         }
-        var sessions: [Int64: (count: Int, last: String)] = [:]
+        var lastActivity: [Int64: String] = [:]
         for row in try Row.fetchAll(db, sql: """
-            SELECT project_id, COUNT(*) AS n, MAX(last_active_at) AS last FROM terminal_sessions
+            SELECT project_id, MAX(last_active_at) AS last FROM terminal_sessions
             WHERE project_id IS NOT NULL GROUP BY project_id
             """) {
-            sessions[row["project_id"]] = (row["n"], row["last"] ?? "")
+            lastActivity[row["project_id"]] = row["last"] ?? ""
         }
         return try summaries(db).map { summary in
             WorkbenchSwitcherSummary(
                 summary: summary,
                 blockedTargets: blocked[summary.id] ?? 0,
-                sessionCount: sessions[summary.id]?.count ?? 0,
-                lastSessionActivity: sessions[summary.id]?.last ?? ""
+                lastSessionActivity: lastActivity[summary.id] ?? ""
             )
         }
     }
@@ -232,10 +231,16 @@ package enum WorkbenchQueries {
     }
 
     /// Unread agent comments per project (projects with none are absent).
+    /// Unread agent comments per workbench, on its open targets only: a
+    /// closed target — or an archived one, which is always closed — keeps
+    /// its comments out of the badges, else every done summary an agent
+    /// leaves on closing would count forever (ask #339).
     package static func unreadCounts(_ db: Database) throws -> [Int64: Int] {
         let rows = try Row.fetchAll(db, sql: """
-            SELECT project_id, COUNT(*) AS n FROM project_comments
-            WHERE author = 'agent' AND read_at = '' GROUP BY project_id
+            SELECT c.project_id, COUNT(*) AS n FROM project_comments c
+            JOIN targets t ON t.id = c.target_id
+            WHERE c.author = 'agent' AND c.read_at = '' AND t.status NOT IN ('done', 'dismissed')
+            GROUP BY c.project_id
             """)
         return Dictionary(uniqueKeysWithValues: rows.map { (row: Row) -> (Int64, Int) in
             (row["project_id"], row["n"])
