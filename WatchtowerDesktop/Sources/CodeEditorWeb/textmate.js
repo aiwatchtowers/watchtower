@@ -147,7 +147,8 @@
   // says "string".
   var TOKEN_TYPES = {
     "meta.template.expression": 0, "meta.template.expression string": 2, "meta.template.expression comment": 1,
-    "meta.interpolation.hcl": 0, "storage.type.string.go": 0
+    "meta.interpolation.hcl": 0, "meta.interpolation.hcl string": 2, "meta.interpolation.hcl comment": 1,
+    "storage.type.string.go": 0
   };
 
   var GRAMMAR_FOR_SCOPE = {};
