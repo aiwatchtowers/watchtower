@@ -85,6 +85,9 @@ type claudeProc struct {
 	gotResult atomic.Bool
 	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
 	sessionID atomic.Value // string: the latest session id the child reported (see noteSessionID)
+	// unreadable is set once a JSON line the translator could not read was
+	// reported, so a protocol change is noted once per child, not per line.
+	unreadable atomic.Bool
 }
 
 // exitedOutputWait bounds how long an exited child's stdout may take to be
@@ -570,7 +573,7 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 		if err != nil {
 			// Non-JSON noise on stdout is not a protocol event; a JSON line
 			// the translator cannot read is a protocol change worth a note.
-			if json.Valid(sc.Bytes()) {
+			if json.Valid(sc.Bytes()) && !p.unreadable.Swap(true) {
 				fmt.Fprintf(b.warn(), "chat: unreadable CLI line skipped: %v\n", err)
 			}
 			continue

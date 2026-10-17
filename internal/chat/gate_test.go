@@ -36,6 +36,7 @@ type fakeSink struct {
 	// entered: a test holds the gate there.
 	beforePropose func()
 	beforeStatus  func(id int64)
+	afterClaim    func(id int64)
 }
 
 type fakeRow struct {
@@ -88,6 +89,11 @@ func (s *fakeSink) ClaimApproved(_ context.Context, id int64) (json.RawMessage, 
 		return nil, false, nil
 	}
 	r.status = "executing"
+	if s.afterClaim != nil {
+		s.mu.Unlock()
+		s.afterClaim(id)
+		s.mu.Lock()
+	}
 	return r.input, true, nil
 }
 
@@ -860,4 +866,90 @@ func TestGate_ApprovedForeignUpdateIsNoStandingGrant(t *testing.T) {
 	require.True(t, fx.sink.reject(again.ActionID))
 	h.next(EventTurnDone)
 	require.NoError(t, h.finish())
+}
+
+// unitGate is a gate over sink answering on a pipe the test reads.
+func unitGate(t *testing.T, sink *fakeSink) (*gate, *claudeProc, *os.File) {
+	t.Helper()
+	g, err := newGate(GateOptions{Sink: sink, Policy: connectorpolicy.Policy{Disabled: map[string]bool{}},
+		PollInterval: 10 * time.Millisecond}, func() string { return "t1" }, io.Discard)
+	require.NoError(t, err)
+	p, r := pipeProc(t)
+	return g, p, r
+}
+
+func TestGate_ApprovedFreshDocIsNotTheSessionsOwn(t *testing.T) {
+	const newDoc = "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"
+	// A birth that mentions someone asks; the owner approves it.
+	birth := `{"container":{"kind":"project","create":{"name":"Plan","doc":{"blocks":{"m":{"type":"mention","user":"someone@example.com"}},"markdown":"# Plan"}}},"batch":[]}`
+	fx := gateFake(t, canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__batch", "claude.ai Claude Docs", birth))
+	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT=created https://claude.ai/artifact/Plan-"+newDoc)
+	h := startSession(t, NewClaudeBackend(fx.opts), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "make a doc"})
+	wait := h.next(EventToolWait)
+	require.True(t, fx.sink.approve(wait.ActionID, ""))
+	h.next(EventTurnDone)
+
+	update := `{"ref":{"object":"node","id":"n1"},"container":{"kind":"project","id":"` + newDoc + `"},"payload":{"ops":[]}}`
+	fx.setRequests(t, canUseTool("r2", "tu2", "mcp__claude_ai_Claude_Docs__update", "claude.ai Claude Docs", update))
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "edit it"})
+	again := h.next(EventToolWait)
+	assert.Equal(t, "tu2", again.ID, "a doc an approved call made is not free to edit")
+	require.True(t, fx.sink.reject(again.ActionID))
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+}
+
+func TestGate_ClaimedCallOfAGoneChildIsOfUnknownOutcome(t *testing.T) {
+	sink := newFakeSink()
+	g, p, _ := unitGate(t, sink)
+	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+	require.True(t, ok)
+	g.dispatch(p, req)
+	sink.waitRows(t, 1)
+	require.True(t, sink.approve(1, ""))
+	waitUntil(t, "the claim", func() bool { return sink.row(1).status == "executing" })
+
+	g.procGone(p) // the child died before its tool_result
+	row := sink.row(1)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, "session ended while the call ran; outcome unknown", row.callErr)
+	assert.Equal(t, 1, row.finishes)
+	g.onResult(toolResult{toolUseID: "tu1", text: "late"})
+	assert.Equal(t, 1, sink.row(1).finishes, "a late result records nothing twice")
+}
+
+func TestGate_StopRightAfterTheClaimSendsNothing(t *testing.T) {
+	sink := newFakeSink()
+	g, p, r := unitGate(t, sink)
+	sink.afterClaim = func(int64) { g.withdraw("r1") }
+	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+	require.True(t, ok)
+	g.dispatch(p, req)
+	sink.waitRows(t, 1)
+	require.True(t, sink.approve(1, ""))
+	waitUntil(t, "the claimed call to settle", func() bool { return sink.row(1).finishes == 1 })
+
+	row := sink.row(1)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, "stopped before the approved call was sent", row.callErr)
+	require.NoError(t, p.stdin.Close())
+	rest, _ := io.ReadAll(r)
+	assert.NotContains(t, string(rest), `"allow"`, "no allow after the stop")
+}
+
+func TestGate_DuplicateRequestIDIsDenied(t *testing.T) {
+	sink := newFakeSink()
+	g, p, r := unitGate(t, sink)
+	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+	require.True(t, ok)
+	g.dispatch(p, req)
+	sink.waitRows(t, 1)
+	g.dispatch(p, req)
+	line := readLine(t, r)
+	assert.Contains(t, line, `"behavior":"deny"`)
+	assert.Contains(t, line, "already being answered")
+	assert.Equal(t, 1, sink.count(), "the duplicate proposes nothing")
+	g.halt(true)
 }

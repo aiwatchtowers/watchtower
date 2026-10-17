@@ -536,8 +536,7 @@ func (p Policy) decideOverride(o override, input json.RawMessage) Decision {
 // docsWriteStaysInOwnDoc reports whether a Claude Docs create/update/batch
 // only touches a doc this session created, read by exact key: a batch whose
 // container births a new doc, or a container naming an own doc, with every
-// ref inside it (refRule) and every doc ref anywhere in the input
-// (projectRefsAreOwn) proven own. Anything else — a call naming no doc, a key
+// ref anywhere inside the call proven to stay in it (refRule, nestedRefsOK). Anything else — a call naming no doc, a key
 // it reads also spelled in another case, a value of the wrong type, a
 // member-level container — fails: an unproven write asks.
 func (p Policy) docsWriteStaysInOwnDoc(tool string, input json.RawMessage) bool {
@@ -574,11 +573,7 @@ func (p Policy) docsWriteStaysInOwnDoc(tool string, input json.RawMessage) bool 
 	default:
 		return false
 	}
-	if !p.batchMembersStayInOwnDoc(in) {
-		return false
-	}
-	var whole any
-	return json.Unmarshal(input, &whole) == nil && p.projectRefsAreOwn(whole)
+	return p.batchMembersStayInOwnDoc(in) && p.nestedRefsOK(in)
 }
 
 // ownDocRef reports whether obj names an own doc: obj[kindKey] is "project"
@@ -602,7 +597,14 @@ func (p Policy) ownDocRef(obj fields, kindKey string) bool {
 // doc (those ids are global), so it asks.
 func (p Policy) refRule(raw json.RawMessage, inBatch bool) bool {
 	ref, err := parseObject(raw)
-	if err != nil || ref.caseVariant("object", "id") {
+	if err != nil {
+		return false
+	}
+	return p.refFieldsRule(ref, inBatch)
+}
+
+func (p Policy) refFieldsRule(ref fields, inBatch bool) bool {
+	if ref.caseVariant("object", "id") {
 		return false
 	}
 	object, ok, err := ref.str("object")
@@ -652,34 +654,100 @@ func (p Policy) batchMembersStayInOwnDoc(in fields) bool {
 	return true
 }
 
-// projectRefsAreOwn walks the whole input: any object whose "object" or
-// "kind" says project, in any case, must carry the id of an own doc or the
-// doc being born — so a doc named anywhere (a comment's parent, a payload
-// field) is never one the gate did not check.
-func (p Policy) projectRefsAreOwn(v any) bool {
+// nestedRefsOK walks every value of the call except the top-level container
+// (checked by the caller) — and the type a create or a batch member names
+// with its own "object" key — and holds each nested object to refRule: any
+// object carrying an "object" key is a ref, any carrying "kind":"project"
+// must name an own doc, and a "parent" or "answering" that is not a ref
+// object (a bare comment or thread id) asks. So a comment's parent, a
+// thread answer or a doc named deep in a payload is never one the gate did
+// not check.
+func (p Policy) nestedRefsOK(in fields) bool {
+	for k, raw := range in {
+		if k == "container" {
+			continue
+		}
+		var v any
+		if json.Unmarshal(raw, &v) != nil {
+			return false
+		}
+		if strings.EqualFold(k, "parent") || strings.EqualFold(k, "answering") {
+			if _, isObject := v.(map[string]any); !isObject {
+				return false
+			}
+		}
+		members := k == "batch"
+		if list, ok := v.([]any); ok && members {
+			for _, m := range list {
+				member, ok := m.(map[string]any)
+				if !ok || !p.childrenOK(member, true) {
+					return false
+				}
+			}
+			continue
+		}
+		if !p.valueOK(v, members) {
+			return false
+		}
+	}
+	return true
+}
+
+// valueOK applies the nestedRefsOK rules to v and everything under it.
+func (p Policy) valueOK(v any, inBatch bool) bool {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
 			s, _ := val.(string)
-			if (strings.EqualFold(k, "object") || strings.EqualFold(k, "kind")) && strings.EqualFold(s, "project") {
-				id, _ := t["id"].(string)
-				if _, born := t["create"]; !born && !strings.HasPrefix(id, "$lid:") &&
-					(id == "" || p.OwnDoc == nil || !p.OwnDoc(id)) {
+			switch {
+			case strings.EqualFold(k, "object"):
+				raw, err := json.Marshal(t)
+				if err != nil || !p.refRule(raw, inBatch) {
+					return false
+				}
+			case strings.EqualFold(k, "kind") && strings.EqualFold(s, "project"):
+				if !p.ownDocRef(fieldsOf(t), k) {
 					return false
 				}
 			}
-			if !p.projectRefsAreOwn(val) {
-				return false
-			}
 		}
+		return p.childrenOK(t, inBatch)
 	case []any:
 		for _, val := range t {
-			if !p.projectRefsAreOwn(val) {
+			if !p.valueOK(val, inBatch) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// childrenOK applies valueOK to every value of obj (not to obj itself), and
+// asks when a "parent" or "answering" there is not an object.
+func (p Policy) childrenOK(obj map[string]any, inBatch bool) bool {
+	for k, val := range obj {
+		if strings.EqualFold(k, "parent") || strings.EqualFold(k, "answering") {
+			if _, isObject := val.(map[string]any); !isObject {
+				return false
+			}
+		}
+		if !p.valueOK(val, inBatch) {
+			return false
+		}
+	}
+	return true
+}
+
+// fieldsOf re-encodes a decoded object for the exact-key readers; a value
+// that cannot be encoded back is dropped, which only fails a check.
+func fieldsOf(m map[string]any) fields {
+	f := fields{}
+	for k, v := range m {
+		if raw, err := json.Marshal(v); err == nil {
+			f[k] = raw
+		}
+	}
+	return f
 }
 
 // shareKeys are object keys that would change who can see a doc. No Claude
