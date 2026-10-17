@@ -1249,10 +1249,77 @@ enum TerminalPalette {
     }
 }
 
+/// The terminal view's `terminalDelegate`: everything goes to the view as
+/// SwiftTerm set it up, except an OSC 52 clipboard **read** (`ESC ] 52 ; c ; ?`),
+/// which gets nothing — so output printed in the terminal (a `cat` of a repo
+/// file, a tool's stdout) cannot read the owner's clipboard back into the
+/// pty. OSC 52 **write** still reaches the view: copying from Claude Code,
+/// vim or tmux keeps working. SwiftTerm's `clipboardRead` is public, not
+/// open, so it cannot be overridden in the subclass.
+@MainActor
+final class TerminalClipboardReadGuard: TerminalViewDelegate {
+    private unowned let view: LocalProcessTerminalView
+
+    init(view: LocalProcessTerminalView) {
+        self.view = view
+    }
+
+    nonisolated func clipboardRead(source: TerminalView) -> Data? { nil }
+
+    // SwiftTerm calls its delegate on the main thread (it is fed there).
+    nonisolated func clipboardCopy(source: TerminalView, content: Data) {
+        MainActor.assumeIsolated { view.clipboardCopy(source: source, content: content) }
+    }
+
+    nonisolated func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        MainActor.assumeIsolated { view.sizeChanged(source: source, newCols: newCols, newRows: newRows) }
+    }
+
+    nonisolated func setTerminalTitle(source: TerminalView, title: String) {
+        MainActor.assumeIsolated { view.setTerminalTitle(source: source, title: title) }
+    }
+
+    nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        MainActor.assumeIsolated { view.hostCurrentDirectoryUpdate(source: source, directory: directory) }
+    }
+
+    nonisolated func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        MainActor.assumeIsolated { view.send(source: source, data: data) }
+    }
+
+    nonisolated func scrolled(source: TerminalView, position: Double) {
+        MainActor.assumeIsolated { view.scrolled(source: source, position: position) }
+    }
+
+    nonisolated func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        MainActor.assumeIsolated { view.requestOpenLink(source: source, link: link, params: params) }
+    }
+
+    nonisolated func bell(source: TerminalView) {
+        MainActor.assumeIsolated { view.bell(source: source) }
+    }
+
+    nonisolated func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {
+        MainActor.assumeIsolated { view.iTermContent(source: source, content: content) }
+    }
+
+    nonisolated func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
+        MainActor.assumeIsolated { view.rangeChanged(source: source, startY: startY, endY: endY) }
+    }
+}
+
 /// A terminal view in `TerminalPalette`'s colours.
 final class PalettedTerminalView: LocalProcessTerminalView {
+    /// The view's `terminalDelegate` (held here: that property is weak).
+    private var clipboardGuard: TerminalClipboardReadGuard?
+
     override init(frame: CGRect) {
         super.init(frame: frame)
+        // OSC 52 read off (board #564): printed output must not read the
+        // clipboard back into the pty. OSC 52 write stays on.
+        let delegateGuard = TerminalClipboardReadGuard(view: self)
+        clipboardGuard = delegateGuard
+        terminalDelegate = delegateGuard
         installColors(TerminalPalette.ansi)
         nativeForegroundColor = TerminalPalette.foreground
         caretColor = TerminalPalette.caret
