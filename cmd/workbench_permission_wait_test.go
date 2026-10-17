@@ -40,7 +40,7 @@ func runPermissionWait(t *testing.T, workbenchID int64, stdin string) (stdout, s
 	t.Helper()
 	rootCmd.SetIn(strings.NewReader(stdin))
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	out, errOut, err := runWorkbenchAs(t, "workbench", "permission-wait", "--workbench", strconv.FormatInt(workbenchID, 10))
+	out, errOut, err := runWorkbench(t, "permission-wait", "--workbench", strconv.FormatInt(workbenchID, 10))
 	require.NoError(t, err, "the hook always exits 0")
 	return out, errOut
 }

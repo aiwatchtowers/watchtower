@@ -70,7 +70,7 @@ var workbenchPermissionWaitCmd = &cobra.Command{
 }
 
 func init() {
-	addWorkbenchIDFlag(workbenchPermissionWaitCmd, &workbenchPermissionWaitFlagWorkbench, "workbench id")
+	workbenchPermissionWaitCmd.Flags().StringVar(&workbenchPermissionWaitFlagWorkbench, workbenchFlag, "", "workbench id")
 	workbenchCmd.AddCommand(workbenchPermissionWaitCmd)
 }
 
