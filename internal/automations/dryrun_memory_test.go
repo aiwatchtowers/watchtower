@@ -128,30 +128,62 @@ func TestDryRunInMemory_AgentIsNotRun(t *testing.T) {
 	}
 }
 
-// A draft's dry run never reaches a Quick Connection (ask #326): its script is
-// chat-written, and even a read tool's arguments carry data to the server.
-func TestDryRunInMemory_MCPIsNotCalled(t *testing.T) {
-	m := &automationstest.FakeMCP{}
-	b := automations.Backends{Generator: usageGen(10, 5), Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart), MCP: m}
-	text := strings.Replace(exRecipeText(`var r = mcp("github", "search_issues", {q: "secret"}); return r.status`, ""),
-		"  - llm:light\n", "  - llm:light\n  - mcp:github/*\n", 1)
+// draftMCPRecipe parses a draft granted mcp:github/* running script.
+func draftMCPRecipe(t *testing.T, script string) *automations.Recipe {
+	t.Helper()
+	text := strings.Replace(exRecipeText(script, ""), "  - llm:light\n", "  - llm:light\n  - mcp:github/*\n", 1)
 	r, err := automations.ParseRecipe("draft", []byte(text), automations.Scope{Kind: automations.ScopePersonal})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return r
+}
+
+// A draft's dry run never reaches a Quick Connection (ask #326): its script is
+// chat-written, and even a read tool's arguments carry data to the server. It
+// stops cleanly at the first mcp() call — a script that reads the result
+// never fails on a stub — and the steps before it show as usual.
+func TestDryRunInMemory_MCPIsNotCalled(t *testing.T) {
+	m := &automationstest.FakeMCP{}
+	b := automations.Backends{Generator: usageGen(10, 5), Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart), MCP: m}
+	r := draftMCPRecipe(t, `tool("list_targets", {});
+var r = mcp("github", "search_issues", {q: "secret"}); log("after"); return r.prs[0]`)
 
 	rep, err := automations.DryRunInMemory(context.Background(), b, r, automations.DryRunOptions{})
 	if err != nil {
 		t.Fatalf("DryRunInMemory: %v", err)
 	}
 
-	if rep.Status != db.RunSucceeded || stepStatusesOf(rep.Steps) != "mcp:dry_run" {
-		t.Fatalf("status %s (%s), steps %s; want one mcp:dry_run step", rep.Status, rep.Error, stepStatusesOf(rep.Steps))
+	if rep.Status != automations.DryRunStopped || rep.Error != automations.MCPDraftStop {
+		t.Fatalf("status %s (%s); want stopped with the draft note", rep.Status, rep.Error)
+	}
+	if got := stepStatusesOf(rep.Steps); got != "tool:ok,mcp:dry_run" {
+		t.Fatalf("steps = %s; want the read, then the stopped mcp step and nothing after", got)
 	}
 	if n := len(m.Calls()); n != 0 {
 		t.Errorf("the Quick Connection was called %d times; want 0", n)
 	}
-	if !strings.Contains(rep.Steps[0].ResultSummary, "not called in a draft") {
-		t.Errorf("summary = %s; want the draft note", rep.Steps[0].ResultSummary)
+	if !strings.Contains(rep.Steps[1].ResultSummary, "not made in a draft") {
+		t.Errorf("summary = %s; want the draft note", rep.Steps[1].ResultSummary)
+	}
+}
+
+// The manifest check precedes the draft stop: a tool the draft did not
+// declare is PermissionDenied, as in a real run, and the script goes on.
+func TestDryRunInMemory_MCPOutsideManifestIsDenied(t *testing.T) {
+	m := &automationstest.FakeMCP{}
+	b := automations.Backends{Generator: usageGen(10, 5), Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart), MCP: m}
+	r := draftMCPRecipe(t, `try { mcp("gitlab", "list_prs"); return "called" } catch (e) { return e.name }`)
+
+	rep, err := automations.DryRunInMemory(context.Background(), b, r, automations.DryRunOptions{})
+	if err != nil {
+		t.Fatalf("DryRunInMemory: %v", err)
+	}
+
+	if rep.Status != db.RunSucceeded || stepStatusesOf(rep.Steps) != "mcp:denied" {
+		t.Fatalf("status %s (%s), steps %s; want succeeded with one denied mcp step", rep.Status, rep.Error, stepStatusesOf(rep.Steps))
+	}
+	if rep.Steps[0].Permission != "mcp:gitlab/list_prs" || len(m.Calls()) != 0 {
+		t.Fatalf("step %+v, calls %d; want denied needing mcp:gitlab/list_prs and no call", rep.Steps[0], len(m.Calls()))
 	}
 }

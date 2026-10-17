@@ -15,9 +15,11 @@ import (
 // (AllowMCP) first, then the Quick Connection call, which applies QC-02's
 // verdict itself. A dry run of a saved recipe calls for real: only tools QC-02
 // allows (read-only or owner-named non-writes) are ever called. A draft's
-// in-memory dry run (draft_automation, run id 0) calls nothing: its script is
-// chat-written and unconfirmed, and even a read tool's arguments carry data to
-// the server (ask #326). The result is the tool's JSON, held to the SDK
+// in-memory dry run (draft_automation) calls nothing and stops there: its
+// script is chat-written and unconfirmed, and even a read tool's arguments
+// carry data to the server (ask #326). The step closes dry_run and the draft
+// ends DryRunStopped, so a script that reads the result never fails on a
+// stub. The result is the tool's JSON, held to the SDK
 // result size boundary.
 func MCPModule(b Backends) Module {
 	return sdkModule{name: "mcp", fns: map[string]SDKFunc{"mcp": func(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
@@ -39,8 +41,9 @@ func MCPModule(b Backends) Module {
 				return nil, err
 			}
 			step.SetPermission(entry)
-			if env.DryRun && env.Run != nil && env.Run.ID == 0 {
-				return dryRunResult(step, map[string]any{"note": mcpDraftNote}), nil
+			if env.InMemoryDraft() {
+				dryRunResult(step, map[string]any{"note": MCPDraftStop})
+				return nil, &RunInterrupted{Reason: InterruptDraftStop}
 			}
 			if b.MCP == nil {
 				return nil, notAvailable("no Quick Connection caller is configured")
@@ -57,7 +60,9 @@ func MCPModule(b Backends) Module {
 	}}}
 }
 
-const mcpDraftNote = "mcp() is not called in a draft; dry-run the saved recipe from its card to see it"
+// MCPDraftStop is why a draft's dry run ended at its first mcp() call: the
+// step's note and DryRunReport.Error of a DryRunStopped report.
+const MCPDraftStop = "Stopped at mcp(): external calls are not made in a draft; dry-run the saved recipe from its card to see the rest"
 
 // mcpCall is one mcp(server, tool, args) call's arguments.
 type mcpCall struct {
