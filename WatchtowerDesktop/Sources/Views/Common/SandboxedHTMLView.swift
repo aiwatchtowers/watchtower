@@ -1,7 +1,10 @@
 import AppKit
+import os
 import SwiftUI
 import WatchtowerCore
 import WebKit
+
+private let htmlPreviewLog = Logger(subsystem: Constants.bundleID, category: "html-preview")
 
 /// What the sandboxed HTML view shows (board #535).
 enum SandboxedHTMLContent: Equatable {
@@ -20,12 +23,15 @@ enum SandboxedHTMLContent: Equatable {
 /// injection: JavaScript on (decks need it), a non-persistent data store, no
 /// script message handlers (no bridge to the app), network loads blocked by
 /// a content rule list (`HTMLPreviewPolicy.contentRules`: none at all for a
-/// chat artifact), WebRTC removed by a document-start script in every frame
-/// (best effort: content rules do not cover it), every navigation away from
+/// chat artifact; a file preview gets the CDN allowlist and its folder
+/// through `SandboxedHTMLSchemeHandler`, which refuses hidden files and
+/// symlinks into them, #563), WebRTC and DNS prefetch turned off in the
+/// preferences (`lockDown`, every frame) plus a document-start script
+/// removing the WebRTC globals in every frame, every navigation away from
 /// its own content cancelled — links open nothing — and a UI delegate that
 /// opens no window, grants no camera or microphone and picks no file.
 /// Nothing loads until the rule list is installed; if it cannot be compiled
-/// the page is never shown.
+/// the page is never shown (the rules are the network barrier).
 struct SandboxedHTMLView: NSViewRepresentable {
     let content: SandboxedHTMLContent
     /// Bump to load the content again (Reload, a file changed on disk).
@@ -43,8 +49,43 @@ struct SandboxedHTMLView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    /// The WebKit preferences (no public API) behind `lockDown`.
+    struct LockDownSelectors {
+        var setPeerConnection = "_setPeerConnectionEnabled:"
+        var peerConnection = "_peerConnectionEnabled"
+        var setDNSPrefetching = "_setDNSPrefetchingEnabled:"
+    }
+
+    /// Turns WebRTC (and DNS prefetch, best effort) off in `preferences`, so
+    /// in every frame of a web view made with them, a fresh iframe included
+    /// (#563). Nil when WebRTC is off, else why not (a WebKit without the
+    /// selectors): the caller logs it and goes on with the document-start
+    /// script, which removes the WebRTC globals in every frame too.
+    static func lockDown(_ preferences: WKPreferences, selectors: LockDownSelectors = .init()) -> String? {
+        _ = setFlag(preferences, selectors.setDNSPrefetching, false)
+        guard setFlag(preferences, selectors.setPeerConnection, false) else {
+            return "WKPreferences has no \(selectors.setPeerConnection)"
+        }
+        let getter = NSSelectorFromString(selectors.peerConnection)
+        guard preferences.responds(to: getter) else { return "WKPreferences has no \(selectors.peerConnection)" }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+        let enabled = unsafeBitCast(preferences.method(for: getter), to: Getter.self)(preferences, getter)
+        return enabled ? "\(selectors.peerConnection) still reads true" : nil
+    }
+
+    private static func setFlag(_ preferences: WKPreferences, _ name: String, _ value: Bool) -> Bool {
+        let selector = NSSelectorFromString(name)
+        guard preferences.responds(to: selector) else { return false }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(preferences.method(for: selector), to: Setter.self)(preferences, selector, value)
+        return true
+    }
+
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        if let failure = Self.lockDown(config.preferences) {
+            htmlPreviewLog.error("WebRTC stays on in the preferences (\(failure, privacy: .public)); the page script removes it")
+        }
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.preferences.isElementFullscreenEnabled = true
@@ -52,6 +93,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
         config.userContentController.addUserScript(
             WKUserScript(source: Self.removeWebRTC, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
+        config.setURLSchemeHandler(context.coordinator.files, forURLScheme: HTMLPreviewPolicy.scheme)
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -76,8 +118,14 @@ struct SandboxedHTMLView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         weak var webView: WKWebView?
         var focusOnLoad = false
+        /// Serves a file preview's folder under `HTMLPreviewPolicy.scheme`.
+        let files = SandboxedHTMLSchemeHandler()
+        /// Where the rule list comes from (a test swaps in a failing one).
+        var rules: @MainActor (_ allowFiles: Bool) async throws -> WKContentRuleList = { try await SandboxedHTMLRules.list(allowFiles: $0) }
         private var shown: SandboxedHTMLContent?
         private var shownToken = 0
+        /// The preview URL of the file shown; nil for an in-memory page.
+        private var page: URL?
         private var focused = false
         private var load: Task<Void, Never>?
         /// The rule list in force. A different one is added before this one
@@ -90,21 +138,42 @@ struct SandboxedHTMLView: NSViewRepresentable {
             shownToken = token
             load?.cancel()
             load = Task { [weak self] in
-                let rules = await SandboxedHTMLRules.list(allowFiles: content.allowsFiles)
-                guard let self, !Task.isCancelled, let webView = self.webView else { return }
-                guard let rules else {
+                guard let self else { return }
+                let rules: WKContentRuleList
+                do {
+                    rules = try await self.rules(content.allowsFiles)
+                } catch {
+                    guard !Task.isCancelled else { return }
                     // Fail closed: without the network block nothing is shown.
-                    webView.loadHTMLString("<p style=\"font:13px -apple-system\">The preview could not be prepared.</p>", baseURL: nil)
+                    htmlPreviewLog.error("HTML preview rules did not compile: \(error.localizedDescription, privacy: .public)")
+                    self.showMessage("The preview could not be prepared: \(error.localizedDescription)")
                     return
                 }
+                guard !Task.isCancelled, let webView = self.webView else { return }
                 self.install(rules, on: webView.configuration.userContentController)
                 switch content {
                 case let .page(html):
+                    self.page = nil
+                    self.files.serve(nil)
                     webView.loadHTMLString(html, baseURL: nil)
                 case let .file(url, folder):
-                    webView.loadFileURL(url, allowingReadAccessTo: folder)
+                    let token = self.files.serve(folder)
+                    self.page = HTMLPreviewPolicy.pageURL(file: url, folder: folder, token: token)
+                    guard let page = self.page else {
+                        return self.showMessage("The preview could not be prepared: the file is not in its folder.")
+                    }
+                    self.files.setPage(page)
+                    webView.load(URLRequest(url: page))
                 }
             }
+        }
+
+        /// A fixed message in place of the page; never the content.
+        private func showMessage(_ text: String) {
+            page = nil
+            files.serve(nil)
+            let escaped = text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+            webView?.loadHTMLString("<p style=\"font:13px -apple-system\">\(escaped)</p>", baseURL: nil)
         }
 
         private func install(_ rules: WKContentRuleList, on controller: WKUserContentController) {
@@ -121,15 +190,8 @@ struct SandboxedHTMLView: NSViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
-            var page: URL?
-            var folder: URL?
-            if case let .file(url, root) = shown {
-                page = url
-                folder = root
-            }
             let allowed = HTMLPreviewPolicy.allowsNavigation(
-                to: navigationAction.request.url, isMainFrame: navigationAction.targetFrame?.isMainFrame ?? true,
-                page: page, folder: folder
+                to: navigationAction.request.url, isMainFrame: navigationAction.targetFrame?.isMainFrame ?? true, page: page
             )
             decisionHandler(allowed ? .allow : .cancel)
         }
@@ -172,21 +234,43 @@ struct SandboxedHTMLView: NSViewRepresentable {
     }
 }
 
-/// The compiled content rule lists, one per mode, compiled once per launch.
+/// The two compiled content rule lists (in-memory page, file preview), each
+/// compiled once per launch — one compile in flight per mode — into WebKit's
+/// default store. The first compile also drops the lists earlier versions
+/// stored under other identifiers.
 @MainActor
-private enum SandboxedHTMLRules {
-    private static var compiled: [Bool: WKContentRuleList] = [:]
+enum SandboxedHTMLRules {
+    private static var compiled: [Bool: Task<WKContentRuleList, Error>] = [:]
+    private static var cleaned = false
+    private static let version = "v3"
+    private static let stale = ["watchtower.html-preview.page.v2", "watchtower.html-preview.file.v2"]
 
-    static func list(allowFiles: Bool) async -> WKContentRuleList? {
-        if let list = compiled[allowFiles] { return list }
-        let identifier = "watchtower.html-preview.\(allowFiles ? "file" : "page").v2"
-        let rules = HTMLPreviewPolicy.contentRules(allowFiles: allowFiles)
-        guard let store = WKContentRuleListStore.default(),
-              let list = try? await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: rules) else {
-            return nil
+    struct Unavailable: LocalizedError {
+        var errorDescription: String? { "WebKit's content rule store is unavailable." }
+    }
+
+    static func list(allowFiles: Bool) async throws -> WKContentRuleList {
+        if let task = compiled[allowFiles] { return try await task.value }
+        let task = Task { @MainActor () throws -> WKContentRuleList in
+            guard let store = WKContentRuleListStore.default() else { throw Unavailable() }
+            if !cleaned {
+                cleaned = true
+                for identifier in stale { store.removeContentRuleList(forIdentifier: identifier) { _ in } }
+            }
+            let identifier = "watchtower.html-preview.\(allowFiles ? "file" : "page").\(version)"
+            let rules = HTMLPreviewPolicy.contentRules(allowFiles: allowFiles)
+            guard let list = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: rules) else {
+                throw Unavailable()
+            }
+            return list
         }
-        compiled[allowFiles] = list
-        return list
+        compiled[allowFiles] = task
+        do {
+            return try await task.value
+        } catch {
+            compiled[allowFiles] = nil // a later view tries again
+            throw error
+        }
     }
 }
 

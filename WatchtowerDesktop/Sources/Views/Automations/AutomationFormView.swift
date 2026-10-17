@@ -499,6 +499,12 @@ private struct AutomationFormContent: View {
                     .disabled(form.detail.needsConfirmation)
                     .help(form.detail.needsConfirmation ? "Confirm the recipe first" : "")
                 }
+                if let line = AutomationLLMWarning.line(
+                    feedsSourcesToLLM: form.detail.feedsSourcesToLLM,
+                    tools: form.detail.autoTools.filter { $0.external && !$0.alwaysAsks }.map(\.tool)
+                ) {
+                    LLMWarningLabel(text: line)
+                }
                 if let error = editor.autoErrors[id] {
                     Text(error).font(.caption).foregroundStyle(.red)
                 }

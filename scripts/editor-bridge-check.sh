@@ -6,11 +6,11 @@
 # definition, usages and the cursor stream, Monaco's keybindings for the app's
 # navigation chords, the code question messages — selection, scroll, askAI,
 # selectionRect, proposeEdit/clearProposal, applyEdit, setReadOnly) and spot-checks the file associations and Monarch
-# grammars of languages.js, and smoke-tests the Changes pane's diff page
+# grammars of languages.js and the TextMate highlighting of textmate.js, and smoke-tests the Changes pane's diff page
 # (diff.html: showDiff, setComments, the Comment post). Not part of any gate; run it after touching
 # CodeEditorWeb/ or bumping Monaco.
 #
-# Needs the Monaco build: scripts/fetch-monaco.sh. Loads local files only.
+# Needs the Monaco build and the TextMate grammars: scripts/fetch-monaco.sh. Loads local files only.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,6 +18,12 @@ WEB="$(dirname "$SCRIPT_DIR")/WatchtowerDesktop/Sources/CodeEditorWeb"
 
 if [ ! -f "$WEB/vs/loader.js" ]; then
     echo "Monaco is not installed in WatchtowerDesktop/Sources/CodeEditorWeb/vs." >&2
+    echo "Run scripts/fetch-monaco.sh first." >&2
+    exit 2
+fi
+
+if [ ! -f "$WEB/textmate/vscode-textmate.js" ]; then
+    echo "The TextMate grammars are not installed in WatchtowerDesktop/Sources/CodeEditorWeb/textmate." >&2
     echo "Run scripts/fetch-monaco.sh first." >&2
     exit 2
 fi

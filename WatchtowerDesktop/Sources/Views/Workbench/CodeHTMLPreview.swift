@@ -14,8 +14,30 @@ struct CodeHTMLPreviewBar: View {
     @Binding var isOn: Bool
     @Binding var reload: Int
     @State private var notice: String?
+    /// The blocked-resources line, while Preview is on (#563).
+    @State private var blocked: String?
 
     var body: some View {
+        VStack(spacing: 0) {
+            row
+            if isOn, let blocked {
+                CodeHTMLBlockedBanner(text: blocked)
+            }
+        }
+        // Scanned off the main thread, once per disk version of the file,
+        // and only while Preview is on.
+        .task(id: isOn ? buffer.diskText : nil) {
+            guard isOn else {
+                blocked = nil
+                return
+            }
+            let html = buffer.diskText
+            let banner = await Task.detached(priority: .utility) { HTMLBlockedResources.scan(html).banner() }.value
+            if !Task.isCancelled { blocked = banner }
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 8) {
             Picker("View", selection: $isOn) {
                 Text("Source").tag(false)
@@ -31,7 +53,7 @@ struct CodeHTMLPreviewBar: View {
                     .accessibilityLabel("Reload")
             }
             Button {
-                HTMLPreviewWindow.show(CodeHTMLPreview.content(buffer.url), title: buffer.url.lastPathComponent, fullScreen: true)
+                HTMLPreviewWindow.show(CodeHTMLPreview.content(buffer.url, root: root), title: buffer.url.lastPathComponent, fullScreen: true)
             } label: { Image(systemName: "play.rectangle") }
                 .buttonStyle(.borderless)
                 .help("Present full screen; the arrow keys page through a deck, Esc leaves")
@@ -54,23 +76,51 @@ struct CodeHTMLPreviewBar: View {
     }
 }
 
+/// "Blocked N external resources: host1, host2… · 1 hidden file" under the
+/// bar (#563): what the file's markup asks to load that neither the preview
+/// nor the browser loads (`HTMLBlockedResources`).
+private struct CodeHTMLBlockedBanner: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: "shield.lefthalf.filled")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help("\(text). Only \(HTMLPreviewPolicy.cdnHosts.joined(separator: ", ")) are allowed, and no hidden file.")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 3)
+    }
+}
+
 /// The preview itself, over the editor while Preview is on. It loads again
 /// whenever the file's text on disk changes (an autosave, or another
 /// program — an agent — writing it) and on Reload.
 struct CodeHTMLPreviewPane: View {
     let buffer: CodeFileBuffer
+    /// The code root the file is in: no hidden folder below it is previewed.
+    let root: URL
     let reload: Int
     @State private var diskChanges = 0
 
     var body: some View {
-        SandboxedHTMLView(content: CodeHTMLPreview.content(buffer.url), reloadToken: diskChanges &+ reload, focusOnLoad: true)
+        SandboxedHTMLView(content: CodeHTMLPreview.content(buffer.url, root: root), reloadToken: diskChanges &+ reload, focusOnLoad: true)
             .onChange(of: buffer.diskText) { diskChanges &+= 1 }
     }
 }
 
 enum CodeHTMLPreview {
-    static func content(_ file: URL) -> SandboxedHTMLContent {
-        .file(file, folder: file.deletingLastPathComponent())
+    /// The file served from its folder (symlinks resolved), when the browser
+    /// would serve that folder too (`LocalPreviewHTTP.servableFolder`, #563):
+    /// inside the code root `root`, no hidden folder below it. Otherwise a
+    /// page saying so.
+    static func content(_ file: URL, root: URL) -> SandboxedHTMLContent {
+        guard let folder = LocalPreviewHTTP.servableFolder(file.deletingLastPathComponent(), within: root) else {
+            return .page("<p style=\"font:13px -apple-system\">Files in a hidden folder are not previewed.</p>")
+        }
+        return .file(folder.appendingPathComponent(file.lastPathComponent), folder: folder)
     }
 }
 

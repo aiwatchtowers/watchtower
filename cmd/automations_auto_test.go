@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/stretchr/testify/assert"
@@ -243,7 +244,7 @@ func autoToolsOf(t *testing.T, show map[string]any) map[string]bool {
 	out := map[string]bool{}
 	for _, e := range raw {
 		m := e.(map[string]any)
-		wantKeys(t, m, "tool", "always_asks")
+		wantKeys(t, m, "tool", "always_asks", "external")
 		out[m["tool"].(string)] = m["always_asks"].(bool)
 	}
 	return out
@@ -268,6 +269,90 @@ func TestAutomationsCLI_ShowAutoTools(t *testing.T) {
 
 	broken := c.indexRecipe(t, "broken", "broken")
 	assert.Empty(t, automationAutoTools(tools.New(c.d), broken), "a parse-error row admits nothing")
+}
+
+// llmSendRecipe is defaultGrantRecipe plus llm:light and slack:write@*
+// (jira:read@* already brings data in).
+func llmSendRecipe(g grantRecipe) string {
+	return strings.Replace(g.text(), "  - ideas:write\n", "  - ideas:write\n  - llm:light\n  - slack:write@*\n", 1)
+}
+
+// externalOf reads show --json's auto_tools as tool → external.
+func externalOf(t *testing.T, show map[string]any) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for _, e := range show["auto_tools"].([]any) {
+		m := e.(map[string]any)
+		out[m["tool"].(string)] = m["external"].(bool)
+	}
+	return out
+}
+
+// llmAutoWritesOf reads show --json's llm_auto_writes.
+func llmAutoWritesOf(t *testing.T, id int64) []any {
+	t.Helper()
+	got, ok := runAutomationsJSON(t, "show", idArg(id))["llm_auto_writes"].([]any)
+	require.True(t, ok, "llm_auto_writes is an array, never null")
+	return got
+}
+
+// show --json's llm_auto_writes names the External tools with an auto grant
+// (paused ones too) when the recipe feeds its sources to llm() (#559): the
+// confirmation sheet warns about them.
+func TestAutomationsCLI_ShowLLMAutoWrites(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "llmsend", llmSendRecipe(defaultGrantRecipe()))
+	_, stderr, err := runAutomationsStreams(t, "auto", idArg(a.ID), "send_slack_message", "on", "--hash", a.ApprovalHash)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "Warning: This recipe passes data from its sources to llm(). With auto on for send_slack_message,")
+	_, stderr, err = runAutomationsStreams(t, "auto", idArg(a.ID), "create_idea", "on", "--hash", a.ApprovalHash)
+	require.NoError(t, err)
+	assert.Empty(t, stderr, "a local tool gets no warning")
+	assert.Equal(t, []any{"send_slack_message"}, llmAutoWritesOf(t, a.ID), "the local create_idea is not External")
+	show := runAutomationsJSON(t, "show", idArg(a.ID))
+	assert.Equal(t, true, show["feeds_sources_to_llm"])
+	assert.Equal(t, map[string]bool{"create_idea": false, "create_target": false, "send_slack_message": true},
+		externalOf(t, show))
+	text, err := runAutomations(t, "show", idArg(a.ID))
+	require.NoError(t, err)
+	assert.Contains(t, text, "  warning:     This recipe passes data from its sources to llm(). With auto on for send_slack_message,")
+
+	edited := defaultGrantRecipe()
+	edited.script = "return 2"
+	writeRecipe(t, c.personal, "llmsend", llmSendRecipe(edited))
+	out, err := runAutomations(t, "rescan")
+	require.NoError(t, err, out)
+	assert.Equal(t, map[string]bool{"send_slack_message": false, "create_idea": false},
+		grantsOf(t, runAutomationsJSON(t, "show", idArg(a.ID))), "the edit paused both grants")
+	assert.Equal(t, []any{"send_slack_message"}, llmAutoWritesOf(t, a.ID), "a paused grant still warns")
+}
+
+// Without an llm: entry, or without an External grant, nothing is listed.
+func TestAutomationsCLI_ShowLLMAutoWritesNeedsLLMAndExternalGrant(t *testing.T) {
+	c := newAutoCLI(t)
+	noLLM := c.confirmedRecipe(t, "nollm",
+		strings.Replace(defaultGrantRecipe().text(), "  - ideas:write\n", "  - ideas:write\n  - slack:write@*\n", 1))
+	out, err := runAutomations(t, "auto", idArg(noLLM.ID), "send_slack_message", "on", "--hash", noLLM.ApprovalHash)
+	require.NoError(t, err, out)
+	assert.Empty(t, llmAutoWritesOf(t, noLLM.ID), "no llm: entry")
+	assert.Equal(t, false, runAutomationsJSON(t, "show", idArg(noLLM.ID))["feeds_sources_to_llm"])
+	v := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "draft", llmSendRecipe(defaultGrantRecipe())))
+	assert.Equal(t, true, v["feeds_sources_to_llm"], "validate reports it for the unsaved text")
+
+	noGrant := c.confirmedRecipe(t, "nogrant", llmSendRecipe(defaultGrantRecipe()))
+	assert.Empty(t, llmAutoWritesOf(t, noGrant.ID), "no grant")
+
+	// A grant row the manifest no longer admits (slack:write dropped) is not listed.
+	notAdmitted := c.confirmedRecipe(t, "notadmitted",
+		strings.Replace(defaultGrantRecipe().text(), "  - ideas:write\n", "  - ideas:write\n  - llm:light\n", 1))
+	require.NoError(t, c.d.SetAutomationToolGrant(notAdmitted.ID, "send_slack_message", notAdmitted.ApprovalHash, time.Now()))
+	assert.Empty(t, llmAutoWritesOf(t, notAdmitted.ID), "the manifest does not admit send_slack_message")
+	text, err := runAutomations(t, "show", idArg(notAdmitted.ID))
+	require.NoError(t, err)
+	assert.NotContains(t, text, "warning:")
+
+	broken := c.indexRecipe(t, "broken", "broken")
+	assert.Empty(t, automationLLMAutoWrites(tools.New(c.d), broken, nil), "a parse-error row lists nothing")
 }
 
 // An AlwaysAsk write the manifest admits is listed with always_asks, so the

@@ -16,9 +16,9 @@ Edits save themselves about a second after you stop typing, and at once when you
 
 ### Previewing HTML files
 
-An `.html` or `.htm` file, such as a slide deck an agent wrote, has a **Source** | **Preview** switch above it. **Preview** renders the file as it is on disk, and reloads it each time the file changes (your edit saves itself in about a second, or the agent writes it again). Its CSS, scripts, fonts and images load from the file's own folder, or over https from a CDN (so a reveal.js deck works). Nothing else reaches the internet, and its links open nothing. Click it and use the arrow keys to page through a deck.
+An `.html` or `.htm` file, such as a slide deck an agent wrote, has a **Source** | **Preview** switch above it. **Preview** renders the file as it is on disk, and reloads it each time the file changes (your edit saves itself in about a second, or the agent writes it again). Its CSS, scripts, fonts and images load from the file's own folder, without hidden files such as `.env` (nor a link to one), or over https from jsDelivr, cdnjs, unpkg or Google Fonts (so a reveal.js deck works). Nothing else reaches the internet, and its links open nothing. While you preview, a line under the switch names what the file asks for and does not get, such as **Blocked 2 external resources: example.com, … · 1 hidden file**. The page shows without them; Watchtower never fetches them for it. Click it and use the arrow keys to page through a deck.
 
-The buttons next to the switch are **Reload** (while previewing), **Present** (full screen, Esc leaves) and **Open in Browser**. The browser gets the file from a private address on your Mac (`http://127.0.0.1:…`) that serves only that file's folder, without hidden files, until you quit Watchtower. There the page runs sandboxed: it can load the folder's and a CDN's scripts, styles, fonts and images, but its script cannot read the folder's other files, keeps no cookies, and opens no pop-ups. It can still go to another website, as any page you open can. Video files do not play from this address.
+The buttons next to the switch are **Reload** (while previewing), **Present** (full screen, Esc leaves) and **Open in Browser**. The browser gets the file from a private address on your Mac (`http://127.0.0.1:…`) that serves only that file's folder, without hidden files, until you quit Watchtower. There the page runs sandboxed: it can load scripts, styles, fonts and images from the folder and from the same four CDNs, nothing from other sites, but its script cannot read the folder's other files, keeps no cookies, and opens no pop-ups. It can still go to another website, as any page you open can. Video files do not play from this address.
 
 ### Finding things
 
@@ -57,8 +57,8 @@ The **+** in **FILES** and each row's menu create files and folders, rename, cop
 - **"Git status unavailable — the marks may be out of date."** Git failed to answer. The last marks stay.
 - **A banner says the file changed.** Another program wrote it. Choose **Reload from disk**, or keep your version.
 - **Navigate items are grey.** The workbench window is not in front.
-- **"Files in a hidden folder are not opened in the browser."** The file sits in a folder whose name starts with a dot, inside the workbench (for example `.config`). Move it, or use **Preview**. Files over 100 MB are not served either.
-- **The HTML preview misses images or styles.** They live outside the file's folder (for example `../assets`), come over plain `http://`, or are fetched by a script rather than linked. Move them next to the file, or load them over `https://` with a `<script>`, `<link>` or `<img>` tag.
+- **"Files in a hidden folder are not opened in the browser."** or **Files in a hidden folder are not previewed.** The file sits in a folder whose name starts with a dot, inside the workbench (for example `.config`). Move it to a visible folder. Files over 100 MB are not served either.
+- **The HTML preview misses images or styles.** They live outside the file's folder (for example `../assets`) or in a hidden folder, come over plain `http://` or from a site other than jsDelivr, cdnjs, unpkg or Google Fonts (the **Blocked … external resources** line names it), or are fetched by a script rather than linked. Move them next to the file, or load them from one of those CDNs with a `<script>`, `<link>` or `<img>` tag.
 
 ## Related
 

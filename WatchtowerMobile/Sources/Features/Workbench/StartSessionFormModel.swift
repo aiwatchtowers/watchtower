@@ -80,7 +80,8 @@ struct StartSessionFormModel {
     let progress: StartProgressModel?
     /// Start (and Open it, Start a new one) can send.
     let canStart: Bool
-    /// Why starting is off: the grant first, then a missing target; nil when it is on.
+    /// Why starting is off: the phone's own toggle, then the Mac's grant,
+    /// then a missing target; nil when it is on.
     let startCaption: String?
 
     init?(
@@ -90,7 +91,8 @@ struct StartSessionFormModel {
         grant: DeviceGrant?,
         attempt: StartAttempt?,
         inFlight: Set<String>,
-        now: Date
+        now: Date,
+        startsTurnedOn: Bool = true
     ) {
         guard let workbench = snapshot.workbench(workbenchID) else { return nil }
         self.workbenchID = workbenchID
@@ -111,8 +113,10 @@ struct StartSessionFormModel {
         existing = target.flatMap { Self.existingSession(of: $0, in: snapshot, now: now) }
         progress = target.flatMap { StartProgressModel.of(targetID: $0.id, attempt: attempt, snapshot: snapshot, now: now) }
         let sending = target.map { inFlight.contains(SessionStarter.startKey($0.id)) } ?? false
-        canStart = target.map { !$0.archived } == true && grant.startSessionsAllowed && !sending
-        startCaption = if !grant.startSessionsAllowed {
+        canStart = target.map { !$0.archived } == true && startsTurnedOn && grant.startSessionsAllowed && !sending
+        startCaption = if !startsTurnedOn {
+            SessionStartText.turnedOff
+        } else if !grant.startSessionsAllowed {
             SessionStartText.notAllowed
         } else if target == nil {
             SessionStartText.chooseTarget

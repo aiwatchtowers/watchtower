@@ -1,7 +1,9 @@
-// Headless check of the Files pane's editor page (CodeEditorWeb/index.html)
-// and of the Monarch grammars in CodeEditorWeb/languages.js. Run through
+// Headless check of the Files pane's editor page (CodeEditorWeb/index.html),
+// of the Monarch grammars in CodeEditorWeb/languages.js and of the TextMate
+// highlighting in CodeEditorWeb/textmate.js. Run through
 // scripts/editor-bridge-check.sh, which compiles this file and passes the
-// CodeEditorWeb folder; it needs the Monaco build from scripts/fetch-monaco.sh.
+// CodeEditorWeb folder; it needs the Monaco build and the TextMate grammars
+// from scripts/fetch-monaco.sh.
 //
 // The page is driven the way MonacoEditorView.Coordinator drives it
 // (WatchtowerDesktop/Sources/Views/Workbench/CodeFilesPaneView.swift):
@@ -258,6 +260,16 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
     func evalString(_ script: String) async -> String? { await eval(script) as? String }
     func evalInt(_ script: String) async -> Int? { await eval(script) as? Int }
+
+    /// callAsyncJavaScript: `body` may `await`; its `return` is the result.
+    func evalAsync(_ body: String) async -> Any? {
+        do {
+            return try await webView.callAsyncJavaScript(body, contentWorld: .page)
+        } catch {
+            errors.append("callAsyncJavaScript: \(error.localizedDescription) — \(body.prefix(80))")
+            return nil
+        }
+    }
 }
 
 // MARK: - Harness helpers injected into the page
@@ -640,7 +652,9 @@ func detectionChecks(_ page: Page) async {
         ("server.log", "", "log"),
         ("server.log.1", "", "log"),
         ("data.csv", "", "csv"),
-        ("data.tsv", "", "tsv")
+        ("data.tsv", "", "tsv"),
+        ("App.tsx", "", "typescriptreact"),
+        ("app.ts", "", "typescript")
     ]
     for item in cases {
         let got = await page.evalString("__h.detect(\(jsonArgument(item.path)), \(jsonArgument(item.text)))")
@@ -704,7 +718,7 @@ func tokenChecks(_ page: Page) async {
     }
     // setTheme falls back silently on an unknown name, so a theme counts as
     // defined only when Monaco's generated token colours include a colour
-    // that only its extraRules in languages.js set.
+    // that only its palette rows in languages.js set.
     for (theme, colour) in [("wt-dark", "#85e89d"), ("wt-light", "#22863a")] {
         let css = await page.evalString("""
             (function () {
@@ -717,6 +731,178 @@ func tokenChecks(_ page: Page) async {
         check("themes: \(theme) is defined (its diff colour \(colour) is in the token colours)",
               css.contains(colour), css.isEmpty ? "no token colour style found" : "colour absent")
     }
+}
+
+/// TextMate highlighting (textmate.js, board #738): every language with a
+/// grammar gets its tokenizer, the token classes the themes colour come
+/// out where the grammars (and the Go/Python/Swift refiners) put them,
+/// and both themes carry the palette.
+@MainActor
+func textMateChecks(_ page: Page) async {
+    let languages = await page.eval("wtTextMate.languages()") as? [String] ?? []
+    check("textmate: languages listed", languages.count > 40, "\(languages.count)")
+    let unknown = await page.evalString("""
+        (function () {
+          var ids = monaco.languages.getLanguages().map(function (l) { return l.id; });
+          return wtTextMate.languages().filter(function (id) { return ids.indexOf(id) < 0; }).join(",");
+        })()
+        """)
+    check("textmate: every language id is one Monaco knows", unknown == "", "unknown: \(unknown ?? "nil")")
+    let ready = await page.evalAsync("""
+        var failed = [];
+        for (const id of wtTextMate.languages()) {
+          // A model asks Monaco for the language's tokenizer (as opening a
+          // file does); monaco.editor.tokenize alone would not.
+          var m = monaco.editor.createModel("", id);
+          m.tokenization.forceTokenization(1);
+          if (!(await wtTextMate.whenReady(id))) { failed.push(id); }
+          m.dispose();
+        }
+        await new Promise(function (r) { setTimeout(r, 50); });
+        return failed.join(",");
+        """) as? String
+    check("textmate: every language's grammar loads", ready == "", "failed: \(ready ?? "nil")")
+    let gone = await page.evalAsync("return await wtTextMate.whenReady('plaintext');") as? Bool
+    check("textmate: a language without a grammar keeps Monarch (no TextMate tokenizer)", gone == false)
+
+    // (language, sample, [(line, needle, expected class)])
+    let samples: [(String, String, [(Int, String, String)])] = [
+        ("go", """
+            // Package x does things.
+            package x
+
+            import (
+            \t"fmt"
+            \tstr "strings"
+            \t"example.com/kit/v2"
+            )
+
+            type Item struct {
+            \tName string
+            }
+
+            func (it *Item) Label(n int) string {
+            \tfmt.Println(it.Name, str.ToUpper("a"), kit.Max, 42)
+            \treturn it.Name
+            }
+            """, [
+            (0, "// Package", "comment"), (1, "package", "keyword"), (1, "x", "namespace"),
+            (4, "\"fmt\"", "string"), (5, "str", "namespace"),
+            (9, "Item", "type"), (10, "Name", "property"), (10, "string", "keyword"),
+            (13, "func", "keyword"), (13, "it", "parameter"), (13, "Label", "function"), (13, "n int", "parameter"),
+            (14, "fmt", "namespace"), (14, "Println", "function"), (14, "Name", "property"),
+            (14, "str", "namespace"), (14, "kit", "namespace"), (14, "42", "number"),
+            (15, "return", "keyword")
+        ]),
+        ("swift", "import SwiftUI\n/// Doc.\n@MainActor\nstruct Row: View {\n    let item: Item\n    func f(for x: Int) -> Int { g(at: x) }\n}\n", [
+            (0, "SwiftUI", "namespace"), (1, "/// Doc.", "comment.doc"), (2, "MainActor", "annotation"),
+            (3, "struct", "keyword"), (3, "Row", "type"), (3, "View", "type"), (4, "Item", "type"),
+            (5, "f(", "function"), (5, "at", "parameter")
+        ]),
+        ("typescript", "import * as path from \"path\";\nexport function load(dir: string): number {\n  return this.items.size + 1;\n}\n", [
+            (0, "import", "keyword"), (0, "\"path\"", "string"), (1, "load", "function"), (1, "dir", "parameter"),
+            (1, "string", "keyword"), (2, "this", "variable.language"), (2, "items", "property"), (2, "1", "number")
+        ]),
+        ("typescriptreact", "const a = <div className=\"x\">{v}</div>;\n", [
+            (0, "div", "tag"), (0, "className", "attribute.name"), (0, "\"x\"", "string")
+        ]),
+        ("python", "import json as j\n@dataclass\nclass P:\n    def f(self, n):\n        return j.dumps(self.n)\n", [
+            (0, "json", "namespace"), (1, "dataclass", "annotation"), (2, "P", "type"), (3, "f(", "function"),
+            (3, "n", "parameter"), (4, "j", "namespace"), (4, "dumps", "function"), (4, "n)", "property")
+        ]),
+        ("json", "{\"name\": \"x\", \"n\": 1, \"ok\": true}\n", [
+            (0, "\"name\"", "property.string"), (0, "\"x\"", "string"), (0, "1", "number"), (0, "true", "constant.language")
+        ]),
+        ("yaml", "name: build\ncount: 3 # c\n", [(0, "name", "property.string"), (0, "build", "string"), (1, "3", "number"), (1, "# c", "comment")]),
+        ("markdown", "# Title\n\n```go\nfunc main() {}\n```\n", [(0, "# Title", "markup.heading"), (3, "func", "keyword"), (3, "main", "function")]),
+        // Code inside a string is code; its braces are delimiters.
+        ("typescript", "const s = `a${f(x[0])}`;\n", [
+            (0, "`a", "string"), (0, "${", "delimiter.embedded"), (0, "f(", "function"), (0, "(x", "embedded"), (0, "`;", "string")
+        ]),
+        // Imports the grammar's keyword starts, not words in strings and comments.
+        ("python", "\"\"\"\nimport foo\n\"\"\"\nfoo.bar()\nimport os, sys  # see docs, also\nalso.x\nfrom pkg import mod\n", [
+            (1, "foo", "string"), (3, "foo", ""), (4, "sys", "namespace"), (4, "also", "comment"), (5, "also", ""),
+            (6, "pkg", "namespace")
+        ]),
+        ("swift", "let s = \"\"\"\nimport Foo\n\"\"\"\n", [(1, "Foo", "string")]),
+        // Go package names: the path's last element without decorations; an
+        // alias or a blank import binds its own name or none.
+        ("go", "package x\n\nimport (\n\t\"gopkg.in/yaml.v3\"\n\t\"example.com/go-foo\"\n\t_ \"embed\"\n\tstr \"strings\"\n)\n\nvar _ = yaml.A + foo.B + embed.C + strings.D + str.E\n", [
+            (9, "yaml", "namespace"), (9, "foo", "namespace"), (9, "embed", "variable"), (9, "strings", "variable"),
+            (9, "str.", "namespace")
+        ])
+    ]
+    for (language, sample, needles) in samples {
+        let array = needles.map { "[\($0.0), \(jsonArgument($0.1))]" }.joined(separator: ", ")
+        let got = await page.eval("__h.tokens(\(jsonArgument(sample)), \(jsonArgument(language)), [\(array)])") as? [String] ?? []
+        for (index, needle) in needles.enumerated() {
+            let actual = index < got.count ? got[index] : "<missing>"
+            check("textmate \(language): line \(needle.0) \"\(needle.1)\" → \(needle.2)", actual == needle.2,
+                  "got \(actual.isEmpty ? "(plain)" : actual)")
+        }
+    }
+
+    // Standard token types, which bracket matching and colours go by:
+    // brackets in a template expression are code, brackets in a JSON key
+    // are string.
+    let brackets = await page.evalAsync("""
+        function match(text, lang, col) {
+          var m = monaco.editor.createModel(text, lang);
+          m.tokenization.forceTokenization(1);
+          var hit = m.bracketPairs.matchBracket({ lineNumber: 1, column: col });
+          m.dispose();
+          return hit ? "pair" : "none";
+        }
+        return [match("const s = `a${f(x[0])}`;", "typescript", 16), match("{\\"k[]\\": 1}", "json", 4),
+          match("var s = \\"[]\\"", "go", 10), match("let s = format!(\\"{}\\", a);", "rust", 18),
+          match("const a = <div>{f(x)}</div>;", "typescriptreact", 18), match("s = \\"#{f(x[0])}\\"", "ruby", 9),
+          match("let s = \\"\\\\(f(x[0]))\\"", "swift", 13), match("x = \\"${var.l[0]}\\"", "hcl", 13),
+          match("x = \\"${f(\\"(\\")}\\"", "hcl", 11), match("const s = `${f(\\"(\\")}`;", "typescript", 17)].join(",");
+        """) as? String
+    check("textmate: brackets in template expressions and interpolations pair; in a JSON key or a string they do not",
+          brackets == "pair,none,none,none,pair,pair,pair,pair,none,none", "\(brackets ?? "nil")")
+    // .tsx takes TypeScript's language configuration (its word pattern keeps `$`).
+    let tsxWord = await page.evalAsync("""
+        var m = monaco.editor.createModel("const $a = 1;", "typescriptreact");
+        await new Promise(function (r) { setTimeout(r, 100); });
+        var w = m.getWordAtPosition({ lineNumber: 1, column: 8 });
+        m.dispose();
+        return w ? w.word : "";
+        """) as? String
+    check("textmate: .tsx borrows TypeScript's language configuration", tsxWord == "$a", "\(tsxWord ?? "nil")")
+
+    // An edited import re-tokenizes the lines below it (the imported names
+    // ride in the line state).
+    let retokenized = await page.evalAsync("""
+        var m = monaco.editor.createModel("package x\\nimport \\"fmt\\"\\nvar _ = fmt.X\\n", "go");
+        function colours() {
+          m.tokenization.forceTokenization(3);
+          var t = m.tokenization.getLineTokens(3), out = [];
+          for (var i = 0; i < t.getCount(); i++) { out.push(t.getForeground(i)); }
+          return out.join(",");
+        }
+        var before = colours();
+        m.applyEdits([{ range: new monaco.Range(2, 9, 2, 12), text: "log" }]);
+        var after = colours();
+        m.dispose();
+        return before + " | " + after;
+        """) as? String ?? ""
+    let halves = retokenized.components(separatedBy: " | ")
+    check("textmate go: an edited import re-colours the lines below it (the names ride in the line state)",
+          halves.count == 2 && !halves[0].isEmpty && halves[0] != halves[1], retokenized)
+
+    for (theme, colour) in [("wt-dark", "#16baac"), ("wt-light", "#a65e00")] {
+        let css = await page.evalString("""
+            (function () {
+              monaco.editor.setTheme(\(jsonArgument(theme)));
+              return Array.prototype.map.call(document.querySelectorAll('style'), function (s) {
+                return s.textContent.indexOf('.mtk') >= 0 ? s.textContent : '';
+              }).join('').toLowerCase();
+            })()
+            """) ?? ""
+        check("themes: \(theme) carries the TextMate palette (type colour \(colour))", css.contains(colour), "colour absent")
+    }
+    _ = await page.evalString("(function () { monaco.editor.setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'wt-dark' : 'wt-light'); return ''; })()")
 }
 
 /// Go to definition, the cursor stream and the §10 chords (spec §8.2,
@@ -1095,6 +1281,8 @@ func diffPageChecks(root: URL) async {
     ) as? [String]
     check("showDiff: both sides, the language from the path",
           sides == ["go", "package main\n\nfunc b() {}\n"], "\(String(describing: sides))")
+    let diffTextMate = await page.evalAsync("return await wtTextMate.whenReady('go');") as? Bool
+    check("diff page: Go is highlighted with its TextMate grammar", diffTextMate == true, "\(String(describing: diffTextMate))")
     let zone = await page.eval(
         "(function () { var n = document.querySelector('.wt-comment');"
             + " return n ? [n.textContent, n.querySelectorAll('b').length] : null; })()"
@@ -1173,6 +1361,64 @@ func diffNotesAndHunksChecks(_ page: Page) async {
     check("showDiff: clears the notes and hunk zones", cleared == 0, "\(String(describing: cleared))")
 }
 
+/// Without textmate/ (a build where scripts/fetch-monaco.sh did not run),
+/// a TextMate language keeps Monaco's Monarch grammar and the page posts
+/// the failure once. Served from a temporary copy of the page with vs/
+/// linked in and textmate/ left out.
+@MainActor
+func fallbackChecks(root: URL) async {
+    let fm = FileManager.default
+    let copy = fm.temporaryDirectory.appendingPathComponent("editor-bridge-fallback-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: copy) }
+    do {
+        try fm.createDirectory(at: copy, withIntermediateDirectories: true)
+        for name in try fm.contentsOfDirectory(atPath: root.path) where name != "textmate" && name != "vs" {
+            try fm.copyItem(at: root.appendingPathComponent(name), to: copy.appendingPathComponent(name))
+        }
+        try fm.createSymbolicLink(at: copy.appendingPathComponent("vs"), withDestinationURL: root.appendingPathComponent("vs"))
+    } catch {
+        check("fallback: copy the page without textmate/", false, error.localizedDescription)
+        return
+    }
+    let page = Page(root: copy)
+    page.load()
+    let loaded = await wait(30) { page.ready || page.loadError != nil }
+    check("fallback: the page loads without textmate/", loaded && page.ready, page.loadError ?? "no ready")
+    guard page.ready else { return }
+    let result = await page.evalAsync("""
+        var m = monaco.editor.createModel("package x\\nfunc f() {}\\n", "go");
+        m.tokenization.forceTokenization(2);
+        var textMate = await wtTextMate.whenReady("go");
+        await new Promise(function (r) { setTimeout(r, 50); });
+        var types = monaco.editor.tokenize("func f() {}", "go")[0].map(function (t) { return t.type; }).join(",");
+        m.dispose();
+        return textMate + " " + types;
+        """) as? String ?? ""
+    check("fallback: Go keeps Monaco's Monarch grammar", result.hasPrefix("false ") && result.contains("identifier.go"), result)
+    let json = await page.evalAsync("""
+        var m = monaco.editor.createModel("{\\"k\\": 1}", "json");
+        m.tokenization.forceTokenization(1);
+        await wtTextMate.whenReady("json");
+        await new Promise(function (r) { setTimeout(r, 300); });
+        var types = monaco.editor.tokenize("{\\"k\\": 1}", "json")[0].map(function (t) { return t.type; }).join(",");
+        m.dispose();
+        return types;
+        """) as? String ?? ""
+    check("fallback: JSON gets the JSON mode's own colours back", json.contains("string.key.json"), json)
+    _ = await page.evalAsync("""
+        var m = monaco.editor.createModel("x = 1\\n", "python");
+        m.tokenization.forceTokenization(1);
+        await wtTextMate.whenReady("python");
+        m.dispose();
+        return true;
+        """)
+    let engineErrors = page.errors.filter { $0.contains("TextMate engine failed to load") }
+    check("fallback: the missing engine is posted once, with the remedy",
+          engineErrors.count == 1 && engineErrors.first?.contains("scripts/fetch-monaco.sh") == true
+              && page.errors.count == 1,
+          page.errors.joined(separator: "; "))
+}
+
 // MARK: - Main
 
 @MainActor
@@ -1185,6 +1431,9 @@ func run(root: URL) async -> Int32 {
         return 1
     }
     check("page load: posts ready with no error", page.errors.isEmpty, "\(page.errors)")
+    // Nothing of the TextMate engine loads before a file needs it.
+    let early = await page.evalInt("document.querySelectorAll('script[src*=\"textmate/\"]').length")
+    check("textmate: nothing loaded at startup", early == 0, "\(String(describing: early)) scripts")
     _ = await page.eval(helpers)
 
     await protocolChecks(page)
@@ -1193,8 +1442,10 @@ func run(root: URL) async -> Int32 {
     await questionChecks(page)
     await detectionChecks(page)
     await tokenChecks(page)
+    await textMateChecks(page)
     await readOnlyChecks(page)
     await diffPageChecks(root: root)
+    await fallbackChecks(root: root)
 
     check("no error posted by the page during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
     print("\n\(passes) passed, \(failures) failed")
