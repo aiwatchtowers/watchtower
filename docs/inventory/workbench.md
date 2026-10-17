@@ -1713,7 +1713,9 @@ sent the line drops it and echoes it `cancelled` (another phone's cancel is
 withheld the Return) → `applied` with `delivery: typed`, and the phone says
 "Typed into the session — press Return on the Mac"; copied → `failed` /
 `cannot_type`. A `session_start` brief edited on the phone is used only from
-a device with `typing_allowed`; otherwise the Mac's own work-on prompt goes.
+a device with `typing_allowed`; a device without it cannot start a session
+at all (#565: a start needs the owner's start grant and `typing_allowed`,
+else `device_not_allowed`).
 No phone action writes to a session's terminal while its state is
 `needsApproval`, and the phone shows "Needs approval on the Mac" with no
 send.
@@ -1732,6 +1734,17 @@ points to PROJ-21 for the one structured answer channel and for the
 interrupt. Every condition for typed lines and every guard is unchanged;
 `testProj16_NeedsApprovalNeverGetsAPhoneLine` keeps its meaning (no typed
 line at Needs approval).
+
+**Amended 2026-10-17 (board #565, owner approved, ask #305 q3):** a
+`session_start` needs the owner's start grant on the Mac
+(`start_sessions_granted`, Settings → Mobile) and `typing_allowed`; the
+phone's own "Start sessions" toggle is only its opt-out. A device not
+allowed to type therefore cannot start a session at all, so its edited
+brief never reaches one: `testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored`
+now gives such a device the start grant and checks the start is refused
+`device_not_allowed` with nothing launched (it was: started with the Mac's
+own prompt). The brief rule itself is unchanged
+(`SessionStartHandlerTests::testABriefFromADeviceThatMayNotTypeIsIgnoredForTheBasePrompt`).
 
 **Why locked:** Any device signed into the owner's Apple ID can write relay
 records. Without a Mac-side grant, that device could drive a Claude Code

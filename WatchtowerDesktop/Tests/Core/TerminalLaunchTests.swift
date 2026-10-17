@@ -130,6 +130,19 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertFalse(TerminalLaunch.workOnGroupPrompt(targetID: 9_223_372_036_854_775_807).contains("'"))
     }
 
+    /// Board #476: the group wording goes only to a skill that knows it; any
+    /// other gets the target wording.
+    func testWorkOnPromptSendsTheGroupWordingOnlyToASkillThatKnowsIt() {
+        let target = TerminalLaunch.workOnTargetPrompt(targetID: 7)
+        let group = TerminalLaunch.workOnGroupPrompt(targetID: 7)
+        for (isGroup, knows, want) in [(true, true, group), (true, false, target), (false, true, target), (false, false, target)] {
+            XCTAssertEqual(
+                TerminalLaunch.workOnPrompt(targetID: 7, isGroup: isGroup, skillKnowsGroups: knows),
+                want, "isGroup=\(isGroup) skillKnowsGroups=\(knows)"
+            )
+        }
+    }
+
     /// The prompts name the current skill and stay one line without control
     /// characters.
     func testPromptsNameTheWorkbenchSkill() {
@@ -142,9 +155,12 @@ final class TerminalLaunchTests: XCTestCase {
                        "Work on target #7 using the watchtower-workbench skill.")
         XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7),
                        "Work on group #7 using the watchtower-workbench skill.")
-        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true),
+        // `integrate status`'s group_prompt looks for this prefix in the
+        // installed skill (Go `groupPromptMarker`, internal/devpack/workbench.go).
+        XCTAssertTrue(TerminalLaunch.workOnGroupPrompt(targetID: 7).hasPrefix("Work on group #"))
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true, skillKnowsGroups: true),
                        TerminalLaunch.workOnGroupPrompt(targetID: 7))
-        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false),
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false, skillKnowsGroups: true),
                        TerminalLaunch.workOnTargetPrompt(targetID: 7))
         for prompt in [
             TerminalLaunch.firstRunPrompt,

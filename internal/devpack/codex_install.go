@@ -52,6 +52,9 @@ type CodexStatus struct {
 	TrustError         string
 
 	SkillState State
+	// GroupPrompt: the skill copy knows the group first prompt
+	// (skillKnowsGroupPrompt); set by a status only.
+	GroupPrompt bool
 	// FlowState and SingleFileLayout are the preset's outcome beside the
 	// skill copy, as WorkbenchInstallReport's Flow and SingleFileLayout.
 	FlowState         State
@@ -221,6 +224,7 @@ func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, resolve func() 
 		return CodexStatus{}, err
 	}
 	st.SkillState = sk.State
+	st.GroupPrompt = skillKnowsGroupPrompt(sk.Path)
 	// An outdated copy (StateUpdated: a previously shipped version) is set
 	// up and needs a Repair, not "never set up"; SkillState says which.
 	st.Skill = sk.State != StateMissing

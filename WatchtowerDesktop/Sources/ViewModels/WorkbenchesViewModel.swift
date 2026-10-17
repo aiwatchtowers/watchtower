@@ -365,6 +365,10 @@ final class WorkbenchesViewModel {
     /// sidebar on Projects, main window visible). The git status refresh
     /// runs only then. Unwired = never on screen.
     var isTabOnScreen: () -> Bool = { false }
+    /// `refreshOnPoll`'s visibility gate (board #731).
+    @ObservationIgnored private var pollRefreshGate = ForegroundRefreshGate()
+    /// The reload `setOnScreen` started — held so tests can await it.
+    @ObservationIgnored private(set) var onScreenRefresh: Task<Void, Never>?
     /// The project a delete is running for; the page disables Delete meanwhile.
     private(set) var deletingWorkbenchID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
@@ -674,9 +678,31 @@ final class WorkbenchesViewModel {
     }
 
     /// The notification center's 30 s poll. The agent writes comments and
-    /// asks from another process (DB only), so the list — and the badge — reloads.
+    /// asks from another process (DB only), so the list — and the badge —
+    /// reloads, while the UI is on screen (board #731; the notices
+    /// themselves go out either way). Off screen only the workbench ids are
+    /// read: one deleted elsewhere (the CLI) still has its terminals closed
+    /// and its state dropped by a full reload at once.
     func refreshOnPoll() async {
-        await reload()
+        if pollRefreshGate.tick() {
+            await reload()
+            return
+        }
+        let ids: [Int64]
+        do {
+            ids = try await dbPool.read { try WorkbenchQueries.fetchAll($0).map(\.id) }
+        } catch {
+            print("[Workbenches] off-screen poll read failed: \(error.localizedDescription)")
+            return
+        }
+        if !Self.vanished(previous: summaries.map(\.id), current: ids).isEmpty { await reload() }
+    }
+
+    /// The UI went on or off screen: back on screen after a skipped poll,
+    /// the list reloads at once.
+    func setOnScreen(_ onScreen: Bool) {
+        guard pollRefreshGate.setOnScreen(onScreen) else { return }
+        onScreenRefresh = Task { _ = await reload() }
     }
 
     nonisolated static func vanished(previous: [Int64], current: [Int64]) -> [Int64] {
@@ -928,6 +954,13 @@ final class WorkbenchesViewModel {
         defer { repairing.remove(projectID) }
         await installCodexPart(projectID: projectID, failure: "Setting up Codex failed:")
         await refreshInstallStatus(projectID: projectID)
+    }
+
+    /// Whether the skill the agent's session reads knows the group first
+    /// prompt (`WorkbenchInstallStatus.skillKnowsGroupPrompt`); yes while the
+    /// status is unknown, as the shipped skill does.
+    func skillKnowsGroupPrompt(projectID: Int64, agent: AgentKind) -> Bool {
+        installStatus[projectID]?.skillKnowsGroupPrompt(agent) ?? true
     }
 
     /// Reads `integrate status` for one project. The page runs this in
