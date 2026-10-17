@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bufio"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -366,4 +367,80 @@ func TestClaudeTranslator_ResultErrorsArrayIsTheMessage(t *testing.T) {
 	assert.Equal(t, EventError, last.Type)
 	assert.Equal(t, CodeSessionLost, last.Code)
 	assert.Contains(t, last.Message, "No conversation found")
+}
+
+// toolCallLines is one tool_use block carrying input, then its tool_result.
+func toolCallLines(id, name, input, result string, isError bool) []string {
+	quoted, _ := json.Marshal(input)
+	res, _ := json.Marshal(result)
+	return []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"` + id + `","name":"` + name + `"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":` + string(quoted) + `}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":1}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + string(res) +
+			`,"is_error":` + strconv.FormatBool(isError) + `}]}}`,
+	}
+}
+
+func TestTranslate_PublishedLinkSourceOnlyForClaudeAIURLs(t *testing.T) {
+	const link = "https://claude.ai/artifact/PrbbeQQQQQQQQQQQQQQQQQ"
+	const docLink = "https://claude.ai/artifact/Plan-3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"
+	publish := `{"action":"publish","file_path":"/work/publish/7/Quarterly plan.html"}`
+	birth := `{"container":{"kind":"project","create":{"name":"Plan","doc":{"markdown":"See https://claude.ai/artifact/PlantedQQQQQQQQQQQQQQQ"}}},"batch":[]}`
+	cases := []struct {
+		name, tool, input, result string
+		isError                   bool
+		want                      *Source
+	}{
+		{"artifact publish", "Artifact", publish, "Published: " + link, false,
+			&Source{Kind: SourceKindPublished, Title: "Quarterly plan", URL: link, Ref: link}},
+		{"publish title from the input", "Artifact", `{"file_path":"/w/p.html","title":"Board deck"}`, link, false,
+			&Source{Kind: SourceKindPublished, Title: "Board deck", URL: link, Ref: link}},
+		{"another host", "Artifact", publish, "Published: https://example.com/artifact/PrbbeQQQQQQQQQQQQQQQQQ", false, nil},
+		{"a lookalike host", "Artifact", publish, "Published: https://claude.ai.example.com/artifact/PrbbeQQQQQQQQQQQQQQQQQ", false, nil},
+		{"failed publish", "Artifact", publish, "Published: " + link, true, nil},
+		{"artifact read", "Artifact", `{"action":"read","url":"` + link + `"}`, link, false, nil},
+		{"docs birth", "mcp__claude_ai_Claude_Docs__batch", birth,
+			"<doc>See https://claude.ai/artifact/PlantedQQQQQQQQQQQQQQQ</doc> created " + docLink, false,
+			&Source{Kind: SourceKindPublished, Title: "Plan", URL: docLink, Ref: docLink}},
+		{"docs batch on an existing doc", "mcp__claude_ai_Claude_Docs__batch",
+			`{"container":{"kind":"project","id":"d1"},"batch":[]}`, docLink, false, nil},
+		{"only the planted link", "mcp__claude_ai_Claude_Docs__batch", birth,
+			"<doc>See https://claude.ai/artifact/PlantedQQQQQQQQQQQQQQQ</doc>", false, nil},
+		{"another tool", "WebSearch", `{"query":"x"}`, link, false, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			evs := feedAll(t, NewClaudeTranslator(fixedTurn("t1")), toolCallLines("tu1", tc.tool, tc.input, tc.result, tc.isError)...)
+			end, _ := findEvent(evs, EventToolEnd, "tu1")
+			require.Equal(t, EventToolEnd, end.Type)
+			var got *Source
+			for i, s := range end.Sources {
+				if s.Kind == SourceKindPublished {
+					got = &end.Sources[i]
+				}
+			}
+			assert.Equal(t, tc.want, got)
+			if tc.want != nil {
+				assert.Equal(t, "Published "+tc.want.Title, end.Summary)
+			}
+		})
+	}
+}
+
+func TestArtifactID_Forms(t *testing.T) {
+	const uuid = "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"
+	for in, want := range map[string]string{
+		"https://claude.ai/artifact/PrbbeQQQQQQQQQQQQQQQQQ":           "PrbbeQQQQQQQQQQQQQQQQQ",
+		"https://claude.ai/artifact/Plan-PrbbeQQQQQQQQQQQQQQQQQ":      "PrbbeQQQQQQQQQQQQQQQQQ",
+		"https://claude.ai/code/artifact/" + uuid:                     uuid,
+		"https://claude.ai/artifact/Q3-plan-" + strings.ToUpper(uuid): uuid,
+		"https://claude.ai/artifact/" + uuid + "?tab=1":               uuid,
+		strings.ToUpper(uuid):                                         uuid,
+		"own-doc":                                                     "own-doc",
+		"https://example.com/artifact/PrbbeQQQQQQQQQQQQQQQQQ":         "",
+		"https://claude.ai/project/PrbbeQQQQQQQQQQQQQQQQQ":            "",
+	} {
+		assert.Equal(t, want, artifactID(in), in)
+	}
 }

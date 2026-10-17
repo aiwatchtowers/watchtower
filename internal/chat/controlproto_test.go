@@ -475,3 +475,35 @@ func TestEvents_PublishedSourceEncoding(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, golden[0], string(b), "the Swift link-card test reads this line")
 }
+
+func TestControlProto_OtherControlRequestGetsAnErrorAnswer(t *testing.T) {
+	id, subtype, ok := parseOtherControlRequest([]byte(`{"type":"control_request","request_id":"r9","request":{"subtype":"hook_callback","callback_id":"c"}}`))
+	require.True(t, ok)
+	assert.Equal(t, "r9", id)
+	assert.Equal(t, "hook_callback", subtype)
+
+	for _, line := range []string{
+		`{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Write"}}`,
+		`{"type":"control_request","request":{"subtype":"hook_callback"}}`,
+		`{"type":"control_response","response":{"subtype":"success","request_id":"r1"}}`,
+		`{"type":"control_cancel_request","request_id":"r1"}`,
+		`not json`,
+	} {
+		_, _, ok := parseOtherControlRequest([]byte(line))
+		assert.False(t, ok, line)
+	}
+	// No request object at all is still answered: the CLI waits on the id.
+	_, _, ok = parseOtherControlRequest([]byte(`{"type":"control_request","request_id":"r2"}`))
+	assert.True(t, ok)
+
+	var got struct {
+		Type     string            `json:"type"`
+		Response map[string]string `json:"response"`
+	}
+	line := controlErrorLine("r9", "unsupported control request hook_callback")
+	require.True(t, strings.HasSuffix(string(line), "\n"))
+	require.NoError(t, json.Unmarshal(line, &got))
+	assert.Equal(t, "control_response", got.Type)
+	assert.Equal(t, map[string]string{"subtype": "error", "request_id": "r9",
+		"error": "unsupported control request hook_callback"}, got.Response)
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -78,6 +79,27 @@ func (m *claudeMessage) blocks() []claudeContent {
 	return out
 }
 
+// toolCall is a started tool call's raw CLI name and input.
+type toolCall struct {
+	raw  string
+	args json.RawMessage
+}
+
+// toolResult is one tool_result a line carried, for the permission gate,
+// which records the outcome of a call it let run (FinishCall).
+type toolResult struct {
+	toolUseID, text string
+	isError         bool
+}
+
+// fedLine is what one stdout line translates to.
+type fedLine struct {
+	events []Event
+	// sessionID is the session id the line itself carries ("" when none).
+	sessionID string
+	results   []toolResult
+}
+
 type pendingBlock struct {
 	kind, id, name string
 	args           strings.Builder
@@ -95,8 +117,9 @@ type ClaudeTranslator struct {
 
 	mu          sync.Mutex
 	blocks      map[int]*pendingBlock
-	toolNames   map[string]string // tool_use id → display name
-	hidden      map[string]bool   // tool_use ids of Claude-internal tools
+	toolNames   map[string]string   // tool_use id → display name
+	calls       map[string]toolCall // tool_use id → raw name and input, until its result
+	hidden      map[string]bool     // tool_use ids of Claude-internal tools
 	model       string
 	sessionID   string
 	interrupted bool
@@ -111,7 +134,7 @@ type ClaudeTranslator struct {
 // NewClaudeTranslator returns a translator stamping events with turnID().
 func NewClaudeTranslator(turnID func() string) *ClaudeTranslator {
 	return &ClaudeTranslator{turnID: turnID, blocks: map[int]*pendingBlock{},
-		toolNames: map[string]string{}, hidden: map[string]bool{}}
+		toolNames: map[string]string{}, calls: map[string]toolCall{}, hidden: map[string]bool{}}
 }
 
 // MarkInterrupted records that an interrupt was requested for the running
@@ -132,45 +155,45 @@ func (t *ClaudeTranslator) SessionID() string {
 // Feed translates one stdout line. A blank line yields nothing; a line that
 // is not JSON is an error the caller may log and skip.
 func (t *ClaudeTranslator) Feed(line []byte) ([]Event, error) {
-	evs, _, err := t.feed(line)
-	return evs, err
+	f, err := t.feed(line)
+	return f.events, err
 }
 
-// feed is Feed that also returns the session id the line itself carries
-// ("" when it carries none) — the backend learns a fresh child's id from its
-// first line, long before the turn's result reports it.
-func (t *ClaudeTranslator) feed(line []byte) ([]Event, string, error) {
+// feed is Feed that also returns the session id the line itself carries —
+// the backend learns a fresh child's id from its first line, long before the
+// turn's result reports it — and the line's tool results.
+func (t *ClaudeTranslator) feed(line []byte) (fedLine, error) {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
-		return nil, "", nil
+		return fedLine{}, nil
 	}
 	var l claudeLine
 	if err := json.Unmarshal(line, &l); err != nil {
-		return nil, "", fmt.Errorf("decoding claude stream line: %w", err)
+		return fedLine{}, fmt.Errorf("decoding claude stream line: %w", err)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if l.SessionID != "" {
 		t.sessionID = l.SessionID
 	}
+	f := fedLine{sessionID: l.SessionID}
 	switch l.Type {
 	case "stream_event":
-		if l.Event == nil || (l.ParentToolUseID != nil && *l.ParentToolUseID != "") {
-			return nil, l.SessionID, nil
+		if l.Event != nil && (l.ParentToolUseID == nil || *l.ParentToolUseID == "") {
+			f.events = t.streamEvent(l.Event)
 		}
-		return t.streamEvent(l.Event), l.SessionID, nil
 	case "user":
 		var m *claudeMessage
 		if l.Message != nil {
 			if err := json.Unmarshal(l.Message, &m); err != nil {
-				return nil, l.SessionID, fmt.Errorf("decoding claude user message: %w", err)
+				return f, fmt.Errorf("decoding claude user message: %w", err)
 			}
 		}
-		return t.toolResults(m), l.SessionID, nil
+		f.events, f.results = t.toolResults(m)
 	case "result":
-		return t.result(l), l.SessionID, nil
+		f.events = t.result(l)
 	}
-	return nil, l.SessionID, nil
+	return f, nil
 }
 
 func (t *ClaudeTranslator) streamEvent(ev *claudeStreamEv) []Event {
@@ -234,11 +257,14 @@ func (t *ClaudeTranslator) toolStart(b *pendingBlock) []Event {
 	}
 	name := displayToolName(b.name)
 	t.toolNames[b.id] = name
-	return []Event{{Type: EventToolStart, TurnID: t.turnID(), ID: b.id, Name: name, Args: toolArgs(b.args.String())}}
+	args := toolArgs(b.args.String())
+	t.calls[b.id] = toolCall{raw: b.name, args: args}
+	return []Event{{Type: EventToolStart, TurnID: t.turnID(), ID: b.id, Name: name, Args: args}}
 }
 
-func (t *ClaudeTranslator) toolResults(m *claudeMessage) []Event {
+func (t *ClaudeTranslator) toolResults(m *claudeMessage) ([]Event, []toolResult) {
 	var out []Event
+	var results []toolResult
 	for _, c := range m.blocks() {
 		if c.Type != "tool_result" {
 			continue
@@ -248,18 +274,24 @@ func (t *ClaudeTranslator) toolResults(m *claudeMessage) []Event {
 			continue
 		}
 		text := toolResultText(c.Content)
+		results = append(results, toolResult{toolUseID: c.ToolUseID, text: text, isError: c.IsError})
+		call := t.calls[c.ToolUseID]
+		delete(t.calls, c.ToolUseID)
 		ok := !c.IsError
 		var summary string
 		var sources []Source
-		if ok {
+		switch src, published := publishedLink(call, text); {
+		case ok && published:
+			summary, sources = truncateRunes("Published "+src.Title, SummaryMaxRunes), []Source{src}
+		case ok:
 			summary, sources = SummarizeToolResult(t.toolNames[c.ToolUseID], text)
-		} else {
+		default:
 			summary = truncateRunes(collapseSpace(text), SummaryMaxRunes)
 		}
 		out = append(out, Event{Type: EventToolEnd, TurnID: t.turnID(), ID: c.ToolUseID, OK: &ok,
 			Summary: summary, Sources: sources})
 	}
-	return out
+	return out, results
 }
 
 func (t *ClaudeTranslator) result(l claudeLine) []Event {
@@ -290,6 +322,98 @@ func (t *ClaudeTranslator) result(l claudeLine) []Event {
 		code, retry := ClassifyClaudeError(msg)
 		return []Event{usage, errorEvent(turnID, code, msg, retry)}
 	}
+}
+
+// claudeAIArtifactURL matches a claude.ai page or doc link: scheme https,
+// host exactly claude.ai (the Desktop renders a link card for nothing else).
+var claudeAIArtifactURL = regexp.MustCompile(`https://claude\.ai/(?:code/)?artifact/[A-Za-z0-9_-]+`)
+
+// claudeDocsBatchTool is the Claude Docs tool that births a doc.
+const claudeDocsBatchTool = "mcp__claude_ai_Claude_Docs__batch"
+
+// publishedLink returns the link card of a successful Artifact publish or a
+// Claude Docs batch that created a doc: the first claude.ai link in the
+// result whose id the call's own input does not carry — a fresh page's id
+// cannot be in it, while a link the model wrote into the page or doc can,
+// and the session must never take such a link for one it published
+// (claudeBackend.noteOwn). An Artifact update of the link its input names
+// keeps that link.
+func publishedLink(call toolCall, result string) (Source, bool) {
+	in, ok := decodeObject(call.args)
+	if !ok {
+		return Source{}, false
+	}
+	var title, update string
+	switch call.raw {
+	case "Artifact":
+		if action := in.str("action"); (action != "" && action != "publish") || string(in["asset"]) == "true" {
+			return Source{}, false
+		}
+		title, update = in.str("title"), in.str("url")
+		if path := in.str("file_path"); title == "" && path != "" {
+			title = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		}
+		if title == "" {
+			title = "claude.ai page"
+		}
+	case claudeDocsBatchTool:
+		container, _ := decodeObject(in["container"])
+		create, ok := decodeObject(container["create"])
+		if !ok {
+			return Source{}, false
+		}
+		if title = create.str("name"); title == "" {
+			title = "claude.ai doc"
+		}
+	default:
+		return Source{}, false
+	}
+	for _, link := range claudeAIArtifactURL.FindAllString(result, -1) {
+		if id := artifactID(link); id != "" && !bytes.Contains(call.args, []byte(id)) {
+			return publishedSource(link, title), true
+		}
+	}
+	if update != "" && claudeAIArtifactURL.FindString(update) == update && strings.Contains(result, artifactID(update)) {
+		return publishedSource(update, title), true
+	}
+	return Source{}, false
+}
+
+// uuidSuffix is a UUID at the end of a link segment.
+var uuidSuffix = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// artifactShortIDLen is the length of a claude.ai artifact's short id.
+const artifactShortIDLen = 22
+
+// artifactID returns the id a claude.ai page or doc is known by: a bare id
+// as given (a UUID lower-cased), or the id a https://claude.ai/[code/]artifact/
+// [<title>-]<id> link ends with — a UUID, or the last 22 characters after
+// the title's "-". "" for a link to anywhere else.
+func artifactID(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.Contains(s, "/") {
+		if uuidSuffix.MatchString(s) && len(s) == 36 {
+			return strings.ToLower(s)
+		}
+		return s
+	}
+	if !strings.HasPrefix(s, "https://claude.ai/") {
+		return ""
+	}
+	_, seg, ok := strings.Cut(s, "/artifact/")
+	if !ok {
+		return ""
+	}
+	if i := strings.IndexAny(seg, "/?#"); i >= 0 {
+		seg = seg[:i]
+	}
+	if m := uuidSuffix.FindString(seg); m != "" {
+		return strings.ToLower(m)
+	}
+	if n := len(seg); n > artifactShortIDLen && seg[n-artifactShortIDLen-1] == '-' {
+		return seg[n-artifactShortIDLen:]
+	}
+	return seg
 }
 
 // claudeInternalTools are Claude Code's own plumbing tools (ToolSearch loads

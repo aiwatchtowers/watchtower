@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,10 @@ type ClaudeOptions struct {
 	// caller pairs it with ai.ClaudeAISessionBuiltinTools and
 	// ai.ClaudeAISessionDisallowedTools.
 	ClaudeAI ClaudeAIMode
+	// Gate answers the child's permission requests in claude.ai mode (#737);
+	// nil denies every request ("not available in this chat"), so a child
+	// that asks is never left waiting.
+	Gate *GateOptions
 	// WorkDir is the child's working directory; "" = NeutralWorkDir(). It
 	// must hold no CLAUDE.md: claude loads project instructions from its cwd
 	// (and its parents) into the session. It must also be stable across
@@ -145,6 +150,8 @@ func (p *claudeProc) closeStdin() {
 type claudeBackend struct {
 	opts       ClaudeOptions
 	tr         *ClaudeTranslator
+	gate       *gate // nil without ClaudeOptions.Gate
+	gateErr    error // invalid ClaudeOptions.Gate: Start refuses
 	promptFile string
 	mcpFile    string
 	curTurn    atomic.Value // string: the running turn id (read by the translator)
@@ -200,7 +207,11 @@ func NewClaudeBackend(opts ClaudeOptions) Backend {
 	}
 	b := &claudeBackend{opts: opts, resume: opts.ResumeSessionID}
 	b.curTurn.Store("")
-	b.tr = NewClaudeTranslator(func() string { s, _ := b.curTurn.Load().(string); return s })
+	turnID := func() string { s, _ := b.curTurn.Load().(string); return s }
+	b.tr = NewClaudeTranslator(turnID)
+	if opts.Gate != nil {
+		b.gate, b.gateErr = newGate(*opts.Gate, turnID, opts.Warn)
+	}
 	return b
 }
 
@@ -260,6 +271,16 @@ func claudeEnv(o ClaudeOptions) []string {
 func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+	if b.gateErr != nil {
+		return "", b.gateErr
+	}
+	if b.gate != nil {
+		// Before the first spawn: no row a dead session of this conversation
+		// left open may ever be claimed or shown as waiting (AGENT-05).
+		if err := b.gate.opts.Sink.ExpireOrphans(ctx); err != nil {
+			return "", fmt.Errorf("closing the connector calls a previous session left open: %w", err)
+		}
 	}
 	var err error
 	if b.promptFile, err = fsutil.WritePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
@@ -541,14 +562,23 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	// Tool results arrive as one line each; allow multi-megabyte lines.
 	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
 	for sc.Scan() {
-		evs, sid, err := b.tr.feed(sc.Bytes())
+		if b.routeControl(p, sc.Bytes()) {
+			continue
+		}
+		f, err := b.tr.feed(sc.Bytes())
 		if err != nil {
 			continue // non-JSON noise on stdout is not a protocol event
 		}
-		if sid != "" {
-			b.noteSessionID(p, sid)
+		if f.sessionID != "" {
+			b.noteSessionID(p, f.sessionID)
 		}
-		for _, e := range evs {
+		if b.gate != nil {
+			for _, r := range f.results {
+				b.gate.onResult(r)
+			}
+		}
+		for _, e := range f.events {
+			b.notePublished(e)
 			// lostMsg before gotResult: a reader seen half-way must never
 			// show a result without the rejection it carried.
 			if e.Type == EventError && e.Code == CodeSessionLost {
@@ -562,6 +592,59 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			case <-p.stop:
 				return
 			}
+		}
+	}
+}
+
+// routeControl answers the CLI's control lines: a can_use_tool goes to the
+// gate (denied without one), a withdrawn request stops its wait, and any
+// other control request gets an error answer instead of a silent hang.
+// False for every other line, which the translator reads.
+func (b *claudeBackend) routeControl(p *claudeProc, line []byte) bool {
+	if !bytes.Contains(line, []byte(`"control_`)) {
+		return false // the cheap test keeps the stream's hot path decode-free
+	}
+	if req, ok := parseControlRequest(line); ok {
+		if b.gate != nil {
+			b.gate.dispatch(p, req)
+			return true
+		}
+		tool := req.ToolName
+		if tool == "" {
+			tool = "This tool"
+		}
+		go b.writeControl(p, permissionDenyLine(req.RequestID, tool+" is not available in this chat"))
+		return true
+	}
+	if id, ok := parseControlCancel(line); ok {
+		if b.gate != nil {
+			b.gate.withdraw(id)
+		}
+		return true
+	}
+	if id, subtype, ok := parseOtherControlRequest(line); ok {
+		go b.writeControl(p, controlErrorLine(id, fmt.Sprintf("unsupported control request %q", subtype)))
+		return true
+	}
+	return false
+}
+
+// writeControl writes a control answer to the child, off the reader.
+func (b *claudeBackend) writeControl(p *claudeProc, line []byte) {
+	if err := p.write(line); err != nil {
+		fmt.Fprintf(b.warn(), "chat: answering a control request: %v\n", err)
+	}
+}
+
+// notePublished tells the gate about a page or doc this session published
+// (the link card of a tool_end), so updating it later needs no approval.
+func (b *claudeBackend) notePublished(e Event) {
+	if b.gate == nil || e.Type != EventToolEnd {
+		return
+	}
+	for _, s := range e.Sources {
+		if s.Kind == SourceKindPublished {
+			b.gate.noteOwn(s.URL)
 		}
 	}
 }
@@ -620,6 +703,9 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 	}()
 	b.curTurn.Store(c.TurnID)
 	b.tr.clearInterrupted()
+	if b.gate != nil {
+		b.gate.resume()
+	}
 	b.active.Store(true)
 	defer b.active.Store(false)
 
@@ -877,6 +963,11 @@ func (b *claudeBackend) replayText(turnID string) (string, error) {
 // Turn has reached the child: the recorded flag then stops the message from
 // being sent at all (see send).
 func (b *claudeBackend) Cancel() error {
+	if b.gate != nil {
+		// A call waiting for the owner is denied and its row rejected (or
+		// expired, when approved but not yet claimed) before the interrupt.
+		b.gate.halt(false)
+	}
 	b.mu.Lock()
 	b.cancelled = true
 	p, inFlight := b.proc, b.inFlight
@@ -1072,6 +1163,9 @@ func checkWorkDirEntries(dir string) error {
 // sweeps its process group and removes the temp files. Idempotent.
 func (b *claudeBackend) Close() error {
 	b.closeOnce.Do(func() {
+		if b.gate != nil {
+			b.gate.halt(true)
+		}
 		b.mu.Lock()
 		b.closed = true
 		p := b.proc
@@ -1079,6 +1173,14 @@ func (b *claudeBackend) Close() error {
 		b.mu.Unlock()
 		if p != nil {
 			b.stopProc(p)
+			if b.gate != nil {
+				// The reader records the results the child printed before
+				// it went; whatever is still claimed after that is unknown.
+				waitClosed(p.outDone, exitedOutputWait)
+			}
+		}
+		if b.gate != nil {
+			b.gate.shutdown()
 		}
 		for _, f := range []string{b.promptFile, b.mcpFile} {
 			if f != "" {

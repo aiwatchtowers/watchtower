@@ -169,6 +169,37 @@ func controlResponseLine(requestID string, response any) ([]byte, error) {
 	return buf.Bytes(), nil // Encode appends the newline
 }
 
+// parseOtherControlRequest returns the request id and subtype of a CLI
+// control_request the session does not serve (anything but can_use_tool):
+// none was recorded, so the gate answers each with controlErrorLine rather
+// than leaving the CLI waiting. False for a can_use_tool, a request without a
+// request_id and any other line.
+func parseOtherControlRequest(line []byte) (requestID, subtype string, ok bool) {
+	env, ok := decodeObject(line)
+	if !ok || env.str("type") != "control_request" || env.str("request_id") == "" {
+		return "", "", false
+	}
+	req, _ := decodeObject(env["request"])
+	subtype = req.str("subtype")
+	if subtype == "can_use_tool" {
+		return "", "", false
+	}
+	return env.str("request_id"), subtype, true
+}
+
+// controlErrorLine answers a control_request with an error, the SDKs' shape
+// for a request the host cannot serve.
+func controlErrorLine(requestID, message string) []byte {
+	b, err := json.Marshal(map[string]any{
+		"type":     "control_response",
+		"response": map[string]string{"subtype": "error", "request_id": requestID, "error": message},
+	})
+	if err != nil {
+		panic(fmt.Sprintf("encoding a control error: %v", err)) // only strings: cannot fail
+	}
+	return append(b, '\n')
+}
+
 // mcpStatusRequestLine asks the CLI for its MCP servers and their tools.
 func mcpStatusRequestLine(requestID string) []byte {
 	b, err := json.Marshal(map[string]any{
