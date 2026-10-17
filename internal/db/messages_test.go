@@ -144,33 +144,8 @@ func TestGetMessagesDefaultLimit(t *testing.T) {
 	assert.Len(t, msgs, 100) // Default limit is 100
 }
 
-func TestGetMessagesByTimeRange(t *testing.T) {
-	db, err := Open(":memory:")
-	require.NoError(t, err)
-	defer db.Close()
-
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "early"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000500.000001", UserID: "U001", Text: "middle"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700001000.000001", UserID: "U001", Text: "late"}))
-
-	// Get middle range
-	msgs, err := db.GetMessagesByTimeRange("C001", 1700000100, 1700000600)
-	require.NoError(t, err)
-	require.Len(t, msgs, 1)
-	assert.Equal(t, "middle", msgs[0].Text)
-
-	// Get all
-	msgs, err = db.GetMessagesByTimeRange("C001", 1700000000, 1700002000)
-	require.NoError(t, err)
-	assert.Len(t, msgs, 3)
-	// Should be sorted descending (newest first)
-	assert.Equal(t, "late", msgs[0].Text)
-	assert.Equal(t, "early", msgs[2].Text)
-}
-
-// TestGetOldestMessagesByTimeRange pins the two contracts that separate this
-// loader from GetMessagesByTimeRange, both load-bearing for the per-channel
-// digest watermark: rows come back OLDEST first, and the limit therefore
+// TestGetOldestMessagesByTimeRange pins the two contracts that are
+// load-bearing for the per-channel digest watermark: rows come back OLDEST first, and the limit therefore
 // truncates at the NEWER end — the only end a later cycle's window can reach
 // once the watermark has advanced past what was rendered.
 func TestGetOldestMessagesByTimeRange(t *testing.T) {
@@ -187,7 +162,7 @@ func TestGetOldestMessagesByTimeRange(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, msgs, 3, "C002's message is inside the window but belongs to another channel")
 	assert.Equal(t, []string{"early", "middle", "late"}, []string{msgs[0].Text, msgs[1].Text, msgs[2].Text},
-		"oldest first — the reverse of GetMessagesByTimeRange")
+		"oldest first — newest-first truncation would strand the older remainder")
 
 	// The limit drops the NEWEST rows, leaving a remainder a later window reaches.
 	msgs, err = db.GetOldestMessagesByTimeRange("C001", 1700000000, 1700002000, 2)
@@ -196,7 +171,7 @@ func TestGetOldestMessagesByTimeRange(t *testing.T) {
 	assert.Equal(t, []string{"early", "middle"}, []string{msgs[0].Text, msgs[1].Text},
 		"truncation must leave the newer remainder, never strand the older one")
 
-	// Bounds are inclusive at both ends, matching GetMessagesByTimeRange.
+	// Bounds are inclusive at both ends.
 	msgs, err = db.GetOldestMessagesByTimeRange("C001", 1700000500, 1700001000, 10)
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
@@ -204,16 +179,6 @@ func TestGetOldestMessagesByTimeRange(t *testing.T) {
 	assert.Equal(t, "late", msgs[1].Text)
 
 	msgs, err = db.GetOldestMessagesByTimeRange("C001", 1700002000, 1700003000, 10)
-	require.NoError(t, err)
-	assert.Empty(t, msgs)
-}
-
-func TestGetMessagesByTimeRangeEmpty(t *testing.T) {
-	db, err := Open(":memory:")
-	require.NoError(t, err)
-	defer db.Close()
-
-	msgs, err := db.GetMessagesByTimeRange("C001", 1700000000, 1700001000)
 	require.NoError(t, err)
 	assert.Empty(t, msgs)
 }

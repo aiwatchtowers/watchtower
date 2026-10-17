@@ -8,7 +8,7 @@ When a message, email or comment is deleted at the source, by its author or by t
 
 ## Shared facts
 
-- **FTS is already handled.** The `messages_au` trigger (`internal/db/migrations/00001_init.sql:106-112`) drops the FTS row when `is_deleted` goes to 1 or the text changes. Search (`internal/db/search.go:132`), memory refs (`internal/db/memory.go:632`), style samples and KB builds (`internal/kb/source_slack.go:35,41`) filter on `is_deleted = 0`, but not every reader does: `GetMessages`, `GetMessagesByTimeRange`, `GetOldestMessagesByTimeRange`, `GetThreadReplies` and `GetMessageNear` in `internal/db/messages.go` have no such predicate (they feed `tools/taskcontext.go`, `tools/experts.go`, `reactioncmd/pipeline.go`, `guide/pipeline.go`), so a tombstone would still be returned by them. Phase 1 adds the predicate to those readers.
+- **FTS is already handled.** The `messages_au` trigger (`internal/db/migrations/00001_init.sql:106-112`) drops the FTS row when `is_deleted` goes to 1 or the text changes. Search (`internal/db/search.go:132`), memory refs (`internal/db/memory.go:632`), style samples and KB builds (`internal/kb/source_slack.go:35,41`) filter on `is_deleted = 0`, but not every reader does: `GetMessages`, `GetOldestMessagesByTimeRange`, `GetThreadReplies` and `GetMessageNear` in `internal/db/messages.go` have no such predicate (their production callers are `guide/pipeline.go`, `digest/pipeline.go`, `tools/taskcontext.go`, `tools/experts.go`, `reactioncmd/pipeline.go` and `ai/response_renderer.go`), so a tombstone would still be returned by them and would surface in digests and rendered refs. Phase 1 adds the predicate to those readers.
 - **KB has a gap for both deletions and edits.** Slack `Changed` only sees new rowids plus a 48 h `ts_unix` tail (`internal/kb/source_slack.go:97-125`, `slackTail` at line 18). Gmail and IMAP `Changed` use `updated_at`. The daily reconcile (`internal/kb/indexer.go:360-404`) removes a document only when its whole key is gone. So a thread or day document that loses one message older than 48 h, or has one edited, keeps the old text in the KB until something else rebuilds it. The same is true today for old edits.
 - **AI-derived text** (digests, memory notes, ideas, briefings) is a summary, not a copy. Memory refs to a tombstoned message already fail closed through `MessageExists`.
 
@@ -63,7 +63,7 @@ Add one small table, `kb_dirty(source, key)`. Any writer that tombstones, delete
 
 ## Recommendation and phased order
 
-1. **Phase 1, highest value, no new API cost:** add `is_deleted = 0` to the message readers that lack it (`GetMessages`, `GetMessagesByTimeRange`, `GetOldestMessagesByTimeRange`, `GetThreadReplies`, `GetMessageNear` in `internal/db/messages.go`), `kb_dirty`, Jira comment set-replace, IMAP UID diff plus the old-UIDVALIDITY cleanup, and the Slack live-window diff with its guard.
+1. **Phase 1, highest value, no new API cost:** add `is_deleted = 0` to the message readers that lack it (`GetMessages`, `GetOldestMessagesByTimeRange`, `GetThreadReplies`, `GetMessageNear` in `internal/db/messages.go`), `kb_dirty`, Jira comment set-replace, IMAP UID diff plus the old-UIDVALIDITY cleanup, and the Slack live-window diff with its guard.
 2. **Phase 2:** the Slack rolling day sweep (old deletions, retention purges, old edits) and the Gmail daily ID diff.
 3. **Phase 3, optional:** a Jira deleted-issue key diff, and an optional local "retention mirror" (purge Slack rows older than N days) if the owner wants a hard ceiling that does not depend on search.
 
