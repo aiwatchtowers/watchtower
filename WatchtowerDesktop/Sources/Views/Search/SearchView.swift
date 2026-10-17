@@ -48,7 +48,7 @@ struct SearchView: View {
             }
 
             // Results
-            if vm.results.isEmpty && !vm.query.isEmpty && !vm.isSearching {
+            if vm.results.isEmpty && vm.guideHits.isEmpty && !vm.query.isEmpty && !vm.isSearching {
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.title)

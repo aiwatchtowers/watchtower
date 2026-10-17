@@ -42,7 +42,8 @@ struct HelpChatPanel: View {
         HStack(spacing: 8) {
             Text("Ask Watchtower").font(.headline)
             Spacer()
-            Button("New") { chatVM.newConversation() }
+            // The tab's own New: no empty conversation row until a send.
+            Button("New") { chatVM.showLanding() }
                 .disabled(chatVM.isStreaming)
             Button("Open in AI Chat") {
                 appState.selectedDestination = .chat

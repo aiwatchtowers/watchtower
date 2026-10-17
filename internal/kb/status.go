@@ -95,7 +95,9 @@ func indexNote(ctx context.Context, d *db.DB, now time.Time) (string, error) {
 		}
 	}
 	var last string
-	if err := d.QueryRowContext(ctx, `SELECT COALESCE(MAX(updated_at), '') FROM kb_sources`).Scan(&last); err != nil {
+	// The guide is reconciled daily even with Knowledge search off, so its
+	// row would hide a frozen owner index.
+	if err := d.QueryRowContext(ctx, `SELECT COALESCE(MAX(updated_at), '') FROM kb_sources WHERE source <> ?`, GuideSource).Scan(&last); err != nil {
 		return "", fmt.Errorf("kb: reading last update: %w", err)
 	}
 	if t, err := time.Parse(isoLayout, last); err == nil && t.Before(now.Add(-staleAfter)) {

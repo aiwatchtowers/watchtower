@@ -124,11 +124,25 @@ func Search(ctx context.Context, d *db.DB, req Request) (Result, error) {
 			}
 		}
 	}
+	if guideOnly(req.Sources) {
+		// The owner index's state says nothing about the embedded guide.
+		return Result{Hits: f.hits(now, limit)}, nil
+	}
 	note, err := indexNote(ctx, d, now)
 	if err != nil {
 		return Result{}, err
 	}
 	return Result{Hits: f.hits(now, limit), IndexNote: note}, nil
+}
+
+// guideOnly reports whether a sources filter asks for the guide alone.
+func guideOnly(sources []string) bool {
+	for _, s := range sources {
+		if s != GuideSource {
+			return false
+		}
+	}
+	return len(sources) > 0
 }
 
 // workbenchDocVisible is the SQL condition (over kb_documents aliased d) that
