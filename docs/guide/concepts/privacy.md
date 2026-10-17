@@ -52,7 +52,7 @@ A phone pairs only after you confirm it on the Mac with a four-digit code. An iP
 
 A message, mail or comment you delete at its source disappears from Watchtower too, and from search.
 
-- **Slack:** a deleted message disappears within about a day. Today's messages are checked every sync cycle, and older days are checked one per cycle, so an old deletion shows up as the check reaches its day. If Slack still returns the message later, it comes back.
+- **Slack:** a message deleted today disappears within a sync cycle or two (the newest two hours are not checked yet). Older days are checked one stored day per sync cycle, so a deletion in an older message can take longer to show. If Slack still returns the message later, it comes back.
 - **Gmail:** mail you delete or trash disappears within a day. Archived mail stays.
 - **IMAP:** mail you delete or move out of the synced folder disappears on the next sync.
 - **Jira:** a deleted comment disappears the next time that issue is synced.

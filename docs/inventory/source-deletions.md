@@ -26,6 +26,8 @@
 - IMAP: `internal/imap/sync_test.go::TestSync_EmptyMailboxDeletesNothing`, `TestSync_OverHalfGoneDeletesNothing`
 - Jira: `internal/jira/sync_comments_test.go::TestSyncComments_IncompleteListingDeletesNothing`, `TestSyncComments_FetchErrorDeletesNothing`
 
+**Why locked:** A diff trusting a truncated, empty or failed listing would delete real mail, messages and comments that still exist at the source, and the loss is silent and unrecoverable for everything but Slack.
+
 **Locked since:** 2026-10-17
 
 ## SRCDEL-02 — A Slack deletion is a self-healing tombstone
@@ -40,6 +42,8 @@
 - `internal/sync/deletions_test.go::TestLiveDiff_TombstonesMissingRow`
 - `internal/kb/dirty_test.go::TestDrainDirty_HealedMessageReturnsToIndex`
 
+**Why locked:** A hard delete would break threads, ids and digests that point at the message, and a tombstone that cannot heal would make one wrong search result a permanent loss.
+
 **Locked since:** 2026-10-17
 
 ## SRCDEL-03 — Every deletion and edit reaches the KB in the same write
@@ -52,6 +56,8 @@
 - Guard: `internal/kb/dirty_test.go::TestSRCDEL03_TriggerKeysMatchSourceKeys`
 - Supporting: `internal/kb/dirty_test.go::TestDrainDirty_ReMarkDuringRenderSurvives`
 - `internal/db/kb_dirty_test.go::TestKBDirty_SlackTextChangeMarksThreadAndDay`, `TestKBDirty_TombstoneMarks`, `TestKBDirty_GmailDeleteMarksThreadOrMessageKey`, `TestKBDirty_JiraCommentDeleteMarksIssue`
+
+**Why locked:** Without the same-write mark, deleted or edited text stays searchable and quotable by the assistant until a rebuild, and a mark cleared against a newer gen drops a later change.
 
 **Locked since:** 2026-10-17
 

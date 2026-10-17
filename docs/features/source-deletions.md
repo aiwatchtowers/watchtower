@@ -6,7 +6,7 @@ A message, mail or comment deleted or edited at its source disappears or updates
 
 | Source | Mechanism | Cadence |
 |---|---|---|
-| Slack | `search.messages` listing diffed against stored rows (`internal/sync/deletions.go`); a missing row becomes a tombstone | live window every cycle (UTC today up to now − 2 h, `liveDiffLag`), plus one stored past day per cycle (the sweep) |
+| Slack | `search.messages` listing diffed against stored rows (`internal/sync/deletions.go`); a missing row becomes a tombstone | live window every cycle (UTC today up to now − 2 h, `liveDiffLag`), plus one stored past day per cycle (the sweep); both run only after a completed live search |
 | Gmail | stored message IDs diffed against the account's full ID listing, all mail except trash and spam (`internal/gmail/deletions.go`); archived mail stays | once a day per account (`google_accounts.deletions_checked_at`); an incomplete listing leaves no stamp and retries next cycle |
 | IMAP | UID diff against the synced folder, plus cleanup of rows stored under an old UIDVALIDITY (`reconcileDeletions` in `internal/imap/sync.go`) | every sync |
 | Jira comments | an issue's comments are replaced by what the refetch returns (`internal/jira/sync.go`) | whenever the issue is refetched |
@@ -32,6 +32,7 @@ Migration 00136 adds `kb_dirty(source, key, gen)` and AFTER triggers: `messages_
 
 ## v1 limits
 
+- The Slack live diff and the sweep run only after a completed live search; a rate-limited or incomplete search skips both for that cycle.
 - A Slack day whose widened query needs more than 10 pages (about 1000 searchable messages, fewer for the day itself) is skipped by the sweep and logged; the live window is not capped.
 - A message moved out of the synced IMAP folder, or out of a Slack channel the token can no longer search, counts as deleted. Losing access counts as deletion.
 - AI-derived text (digests, memory, ideas, briefings) is left as is. Only raw rows, FTS and the KB follow the source.
