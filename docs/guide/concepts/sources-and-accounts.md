@@ -20,7 +20,7 @@ Slack is read-only. The assistant sends a Slack message only after you approve i
 
 Each account syncs on its own. One account failing never stops the others, and its row shows the problem while the rest keep working.
 
-Slack and Jira rows have an **Enabled** switch to pause an account without removing it. Names are made automatically (team name, site name, mail domain) and **Rename…** changes one.
+Slack and Jira rows have an **Enabled** switch that stops syncing an account without removing it. Turning it back on syncs new messages again, but a month of history that was still loading does not resume. Names are made automatically (team name, site name, mail domain) and **Rename…** changes one.
 
 A red dot on a service means at least one of its accounts has a problem. An expired or revoked sign-in is the usual cause.
 
