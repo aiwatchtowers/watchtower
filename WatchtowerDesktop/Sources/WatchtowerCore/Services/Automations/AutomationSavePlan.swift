@@ -11,6 +11,9 @@ package struct AutomationSavePlan: Equatable, Sendable {
     package let wasConfirmed: Bool
     /// Tools whose auto grant the save pauses, sorted.
     package let pausedGrants: [String]
+    /// The paused grants of External tools when the new text feeds its
+    /// sources to `llm()`: the sheet's #559 warning (`AutomationLLMWarning`).
+    package let llmWarningTools: [String]
     /// The paused grants the owner chose to keep: `auto … on --hash <new>` after the save.
     package var keepAuto: Set<String> = []
     /// The current approval hash the plan was measured against.
@@ -32,12 +35,31 @@ package struct AutomationSavePlan: Equatable, Sendable {
         let paused = hashChanged
             ? grants.filter { $0.isActive(approvalHash: current.approvalHash) }.map(\.tool).sorted()
             : []
+        let external = Set(current.autoTools.filter(\.external).map(\.tool))
         return Self(
             validated: validated,
             wasConfirmed: !current.confirmedHash.isEmpty && current.confirmedHash == current.approvalHash,
             pausedGrants: paused,
+            llmWarningTools: validated.feedsSourcesToLLM ? paused.filter(external.contains) : [],
             currentApprovalHash: current.approvalHash
         )
+    }
+}
+
+/// The #559 warning: a recipe that feeds its sources to `llm()` with auto
+/// on for a tool that writes outside Watchtower can send model text written
+/// over other people's messages without a card. Shown by the confirmation
+/// sheet (`llm_auto_writes`), the edit form's Auto toggles (External
+/// `auto_tools`) and the Save sheet's "Keep auto" boxes; Go's
+/// `llmAutoWarning` says the same.
+package enum AutomationLLMWarning {
+    /// The warning, or nil when the recipe does not feed its sources to
+    /// `llm()` or no tool is named.
+    package static func line(feedsSourcesToLLM: Bool, tools: [String]) -> String? {
+        guard feedsSourcesToLLM, !tools.isEmpty else { return nil }
+        return "This recipe passes data from its sources to llm(). With auto on for "
+            + tools.joined(separator: ", ")
+            + ", text the model writes from other people's messages can be sent without asking you."
     }
 }
 

@@ -137,7 +137,7 @@ func TestManifest_PersonalRefusesShellSessionAsk(t *testing.T) {
 }
 
 // FeedsSourcesToLLM needs an llm: entry and an entry that brings data in
-// (#559): a read capability, tool:, mcp: or shell:.
+// (#559): a read capability, tool:, mcp:, shell: or session:.
 func TestManifest_FeedsSourcesToLLM(t *testing.T) {
 	cases := []struct {
 		perms []string
@@ -147,6 +147,7 @@ func TestManifest_FeedsSourcesToLLM(t *testing.T) {
 		{[]string{"llm:strong", "tool:list_messages"}, true},
 		{[]string{"llm:light", "mcp:acme/*"}, true},
 		{[]string{"llm:light", `shell:"gh pr list"`}, true},
+		{[]string{"llm:light", "session:start"}, true},
 		{[]string{"llm:light", "slack:write@*"}, false},
 		{[]string{"llm:light"}, false},
 		{[]string{"jira:read@PAY", "slack:write@*"}, false},

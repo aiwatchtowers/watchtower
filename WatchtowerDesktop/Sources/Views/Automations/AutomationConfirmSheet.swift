@@ -99,13 +99,9 @@ struct AutomationConfirmSheet: View {
     /// #559: model text written over other people's mail, messages or
     /// tickets can reach these tools without a card.
     @ViewBuilder private func llmAutoWarning(_ detail: AutomationDetail) -> some View {
-        if !detail.llmAutoWrites.isEmpty {
-            Label("This recipe passes data from your sources to llm(), and auto is on or paused for "
-                + detail.llmAutoWrites.joined(separator: ", ")
-                + ". Text the model writes from other people's messages can then be sent without asking you.",
-                systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
+        if let line = AutomationLLMWarning.line(feedsSourcesToLLM: detail.feedsSourcesToLLM,
+                                                tools: detail.llmAutoWrites) {
+            LLMWarningLabel(text: line)
         }
     }
 

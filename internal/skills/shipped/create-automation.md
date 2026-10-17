@@ -201,7 +201,10 @@ writes, `output.*` and `state.set` touch nothing; `llm` and read tools run for
 real.
 
 Write scripts that fetch, filter in code, then call `llm` once over the
-reduced data. Keep a cursor in `state` (a timestamp) so the next run reads only
+reduced data. Pass mail, messages, tickets and other source text as `input`,
+never concatenated into the prompt: `llm` marks `input` as data written by
+other people that the model must not obey. The owner's own rules, rubrics and
+wording belong in the prompt, not in `input`. Keep a cursor in `state` (a timestamp) so the next run reads only
 what is new. Never put secrets in a recipe.
 
 ## Templates
