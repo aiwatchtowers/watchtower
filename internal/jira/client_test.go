@@ -81,6 +81,22 @@ func TestClient_GetIssueComments_StopsOnEmptyPage(t *testing.T) {
 	assert.False(t, complete)
 }
 
+// TestClient_GetIssueComments_MissingTotalIsIncomplete: a 200 without a
+// total must not read as a complete, empty listing; total:0 still does.
+func TestClient_GetIssueComments_MissingTotalIsIncomplete(t *testing.T) {
+	for body, want := range map[string]bool{`{}`: false, `{"comments":[]}`: false, `{"total":0,"comments":[]}`: true} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		c := makeTestClient(t, srv.URL)
+		comments, complete, err := c.GetIssueComments(context.Background(), "PROJ-1")
+		srv.Close()
+		require.NoError(t, err)
+		assert.Empty(t, comments)
+		assert.Equal(t, want, complete, body)
+	}
+}
+
 // TestClient_GetIssueComments_PropagatesAuthRevoked ensures a persistent 401
 // surfaces as ErrAuthRevoked, not a plain "status 401" error — Syncer.Sync
 // relies on errors.Is to decide whether to abort the whole account.

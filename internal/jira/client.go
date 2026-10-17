@@ -404,6 +404,14 @@ var searchFields = []string{
 // startAt < total: the listing is then short and must not be taken as the
 // issue's full comment set.
 func (c *Client) GetIssueComments(ctx context.Context, key string) (comments []IssueComment, complete bool, err error) {
+	comments, complete, _, err = c.getIssueComments(ctx, key)
+	return comments, complete, err
+}
+
+// getIssueComments is GetIssueComments that also reports the API's total
+// (-1 when the response carried none). A response without a total is never
+// complete: an empty or unexpected body must not read as "no comments".
+func (c *Client) getIssueComments(ctx context.Context, key string) (comments []IssueComment, complete bool, total int, err error) {
 	path := fmt.Sprintf("/rest/api/3/issue/%s/comment", url.PathEscape(key))
 	var all []IssueComment
 	startAt := 0
@@ -414,17 +422,20 @@ func (c *Client) GetIssueComments(ctx context.Context, key string) (comments []I
 		}
 		var page CommentList
 		if err := c.getWithQuery(ctx, path, params, &page); err != nil {
-			return nil, false, fmt.Errorf("fetching comments for %s (startAt=%d): %w", key, startAt, err)
+			return nil, false, -1, fmt.Errorf("fetching comments for %s (startAt=%d): %w", key, startAt, err)
 		}
 
 		all = append(all, page.Comments...)
 		startAt += len(page.Comments)
 
-		if startAt >= page.Total {
-			return all, true, nil
+		if page.Total == nil {
+			return all, false, -1, nil
+		}
+		if startAt >= *page.Total {
+			return all, true, *page.Total, nil
 		}
 		if len(page.Comments) == 0 {
-			return all, false, nil
+			return all, false, *page.Total, nil
 		}
 	}
 }
