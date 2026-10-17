@@ -1559,6 +1559,7 @@ final class AppState {
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
         initWorkbenches(dbPool: manager.dbPool)
+        startSessionHost()
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
@@ -1861,6 +1862,16 @@ final class AppState {
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
         initMobileHub(dbPool: dbPool)
+    }
+
+    /// Connects the terminals to this build's session host (board #496), started when
+    /// none serves the socket. Until it answers, or when it cannot, sessions run locally.
+    private func startSessionHost() {
+        let socket = SessionHostPaths.socketPath(bundleID: Constants.bundleID, tempDir: NSTemporaryDirectory())
+        let client = SessionHostClient(socketPath: socket) { Constants.findCLIPath() }
+        Task { [terminalCenter] in
+            terminalCenter.sessionHost = await client.ensureRunning() ? client : nil
+        }
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.

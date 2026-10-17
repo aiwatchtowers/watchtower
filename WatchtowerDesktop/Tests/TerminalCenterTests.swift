@@ -152,6 +152,50 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt(.current))")
     }
 
+    private static let inertSignaller = ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
+
+    /// No session host: the default factory builds the local process, and
+    /// the pane is told the session stops with the app (board #496).
+    func testLaunchFallsBackToLocalWhenHostUnavailable() throws {
+        let local = FakeTerminalSession()
+        let center = TerminalCenter(makeLocalProcess: { local }, signaller: Self.inertSignaller)
+        center.shell = { "/bin/zsh" }
+        XCTAssertNil(center.sessionHost)
+        let s = try row(kind: .shell)
+        center.start(s, fresh: true)
+        XCTAssertTrue(center.process(for: s.id) === local)
+        XCTAssertEqual(local.launches.count, 1)
+        XCTAssertEqual(center.unprotected, [s.id])
+        local.exit(0)
+        center.start(s, fresh: false)
+        XCTAssertEqual(center.unprotected, [s.id], "a relaunch in the same local process stays unprotected")
+    }
+
+    func testLaunchRunsInTheHostWhenAvailable() async throws {
+        var transports: [FakeSessionHostTransport] = []
+        let client = SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in
+            let transport = FakeSessionHostTransport()
+            transports.append(transport)
+            return transport
+        })
+        let center = TerminalCenter(
+            makeLocalProcess: {
+                XCTFail("no local process while the host is available")
+                return FakeTerminalSession()
+            },
+            signaller: Self.inertSignaller
+        )
+        center.shell = { "/bin/zsh" }
+        center.sessionHost = client
+        let s = try row(kind: .shell)
+        center.start(s, fresh: true)
+        let hosted = try XCTUnwrap(center.process(for: s.id) as? HostedTerminalSession)
+        XCTAssertTrue(center.unprotected.isEmpty)
+        await hosted.connecting?.value
+        let launch = try XCTUnwrap(transports.first { !$0.sent(.launch).isEmpty }?.sent(.launch).first)
+        XCTAssertEqual(try launch.decoded(SessionHostLaunchRequest.self).row, s.id)
+    }
+
     func testNonFreshStartResumesTheStoredSession() throws {
         let center = makeCenter()
         let s = try row()

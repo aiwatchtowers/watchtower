@@ -37,9 +37,14 @@ protocol TerminalSessionProcess: AnyObject {
     /// ask `lookUp` finds for it in the session's workbench, and a click on
     /// it calls `open`. A number `lookUp` finds nothing for is no link.
     func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void)
+    /// Whether the session host runs the process, so it outlives the app
+    /// (board #496); a local process dies when the app quits.
+    var isHosted: Bool { get }
 }
 
 extension TerminalSessionProcess {
+    var isHosted: Bool { false }
+
     var onOwnerFocus: (() -> Void)? {
         get { nil }
         set {} // swiftlint:disable:this unused_setter_value
@@ -155,7 +160,17 @@ final class TerminalCenter {
     /// The row each process was started from, so a project's sessions can be
     /// found (and closed) after the project's rows are gone.
     @ObservationIgnored private var rows: [Int64: TerminalSession] = [:]
+    /// Builds each session's process. By default a `HostedTerminalSession`
+    /// while `sessionHost` is set, else `makeLocalProcess`.
     @ObservationIgnored var makeProcess: () -> any TerminalSessionProcess
+    /// The local fallback process (`SwiftTermSession`). A seam for tests.
+    @ObservationIgnored var makeLocalProcess: () -> any TerminalSessionProcess
+    /// The session host new sessions launch in (board #496); nil while no
+    /// host is available — they then run locally and stop with the app.
+    @ObservationIgnored var sessionHost: SessionHostClient?
+    /// Sessions whose current process runs locally, not in the session
+    /// host: the pane says they stop when Watchtower quits.
+    private(set) var unprotected: Set<Int64> = []
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
     @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
@@ -203,10 +218,16 @@ final class TerminalCenter {
     // (MainActor) init body sidesteps that.
     init(
         makeProcess: (() -> any TerminalSessionProcess)? = nil,
+        makeLocalProcess: (() -> any TerminalSessionProcess)? = nil,
         signaller: ProcessGroupSignaller = .live
     ) {
-        self.makeProcess = makeProcess ?? { SwiftTermSession() }
+        self.makeLocalProcess = makeLocalProcess ?? { SwiftTermSession() }
+        self.makeProcess = { SwiftTermSession() }
         self.signaller = signaller
+        self.makeProcess = makeProcess ?? { [weak self] in
+            guard let self else { return SwiftTermSession() }
+            return sessionHost.map { HostedTerminalSession(client: $0) } ?? self.makeLocalProcess()
+        }
     }
 
     var liveIDs: Set<Int64> {
@@ -889,6 +910,7 @@ final class TerminalCenter {
         // A click into one terminal of a split makes it the active session.
         process.onOwnerFocus = { [weak self] in self?.focus(id) }
         processes[id] = process
+        if process.isHosted { unprotected.remove(id) } else { unprotected.insert(id) }
         if let workbenchID = session.projectID {
             // ⌘-click on `path:line` in a workbench session opens Files;
             // the path resolves in the session's code root (board #565).
@@ -960,6 +982,7 @@ final class TerminalCenter {
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
+        unprotected.remove(sessionID)
         focusOrder.removeAll { $0 == sessionID }
     }
 
@@ -1082,9 +1105,42 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     }
 
     /// Every byte for the process: keystrokes and pastes are the owner's.
+    /// A hosted session's bytes go to the session host instead.
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         if !forwardingAppInput { onOwnerInput?(Array(data)) }
+        if let hostInput {
+            hostInput(Array(data))
+            return
+        }
         super.send(source: source, data: data)
+    }
+
+    // MARK: Session host (board #496)
+
+    /// Set for a hosted session: the bytes for the process go here, not
+    /// to the (never started) local process.
+    var hostInput: (([UInt8]) -> Void)?
+    /// Set for a hosted session: the terminal's new columns and rows.
+    var hostResize: ((_ cols: Int, _ rows: Int) -> Void)?
+    /// The size last reported through `hostResize`.
+    private var hostSize: (cols: Int, rows: Int)?
+
+    /// SwiftTerm's `sizeChanged(source:newCols:newRows:)` is public, not
+    /// open: the grid's new size is read here, after SwiftTerm resized it.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        guard hostResize != nil else { return }
+        let terminal = getTerminal()
+        if let hostSize, hostSize.cols == terminal.cols, hostSize.rows == terminal.rows { return }
+        reportHostSize()
+    }
+
+    /// Reports the current size through `hostResize`, changed or not (an
+    /// attach: the host nudges the child to redraw).
+    func reportHostSize() {
+        let terminal = getTerminal()
+        hostSize = (terminal.cols, terminal.rows)
+        hostResize?(terminal.cols, terminal.rows)
     }
 
     // MARK: path:line links (spec 2026-10-02 §9.5)
@@ -1403,13 +1459,10 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     var pid: pid_t { terminal.process?.shellPid ?? 0 }
 
     func start(_ launch: TerminalLaunch) {
-        var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
-        environment.append("SHELL=\(launch.executable)")
-        environment.append(contentsOf: launch.environment)
         terminal.startProcess(
             executable: launch.executable,
             args: launch.args,
-            environment: environment,
+            environment: launch.processEnvironment,
             execName: nil,
             currentDirectory: launch.currentDirectory
         )
@@ -1442,5 +1495,18 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         // LocalProcess delivers on the main queue (its default dispatch queue).
         MainActor.assumeIsolated { onExit?(exitCode) }
+    }
+}
+
+extension TerminalLaunch {
+    /// The environment the launch's process starts with, locally or in the
+    /// session host: SwiftTerm's terminal basics (`TERM=xterm-256color`,
+    /// the locale, the owner's `USER`/`HOME`), `SHELL`, then the launch's
+    /// own entries.
+    var processEnvironment: [String] {
+        var processEnvironment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        processEnvironment.append("SHELL=\(executable)")
+        processEnvironment.append(contentsOf: environment)
+        return processEnvironment
     }
 }
