@@ -1868,13 +1868,6 @@ final class AppState {
         (agentAnalyticsCenter, vm.agentAnalytics) = (analytics, analytics)
     }
 
-    /// Connects the terminals to this build's session host (board #496), started when
-    /// none serves the socket. Until it answers, or when it cannot, sessions run locally.
-    private func startSessionHost() {
-        let socket = SessionHostPaths.socketPath(bundleID: Constants.bundleID, tempDir: NSTemporaryDirectory())
-        terminalCenter.startSessionHost { SessionHostClient(socketPath: socket) { Constants.findCLIPath() } }
-    }
-
     /// Claude plan limits: the previous center stopped, a new one polling.
     private func initPlanUsage(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) {
         planUsageCenter?.stop()
