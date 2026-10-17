@@ -203,6 +203,32 @@ final class AutomationFormTests: XCTestCase {
         XCTAssertEqual(form.problems, ["The button label must be 1–24 characters."])
     }
 
+    // MARK: - Event trigger
+
+    func testEventTriggerChoiceIsValidAndRenders() throws {
+        let form = AutomationFormModel(detail: try Fixtures.detail())
+        form.fields.trigger = AutomationFormModel.defaultEventTrigger
+        XCTAssertEqual(form.fields.trigger, .event(type: "slack.new_messages", where: [:]))
+        XCTAssertEqual(form.problems, [])
+        XCTAssertTrue(form.renderedText().contains("trigger:\n  event:\n    type: \"slack.new_messages\"\n"))
+    }
+
+    func testEventTypesMirrorGo() {
+        // internal/automations: EventTypes and EventFields.
+        XCTAssertEqual(AutomationFormModel.eventTypes, [
+            "slack.new_messages", "gmail.new_messages", "jira.issue_changed", "calendar.event_changed",
+            "confluence.page_changed"
+        ])
+        XCTAssertEqual(Set(AutomationFormModel.eventFields.keys), Set(AutomationFormModel.eventTypes))
+    }
+
+    func testChangingEventTypeDropsFieldsTheNewTypeLacks() {
+        let next = AutomationFormModel.eventTrigger(
+            type: "jira.issue_changed", keeping: ["account": "work", "channel": "releases"]
+        )
+        XCTAssertEqual(next, .event(type: "jira.issue_changed", where: ["account": "work"]))
+    }
+
     // MARK: - Schedule picker
 
     func testScheduleChoiceReadsAndWritesCron() throws {

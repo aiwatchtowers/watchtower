@@ -71,7 +71,7 @@ On the card, **Run now** does the same, and **Dry run** works even before you co
 - **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
-- **An event recipe didn't run.** It runs only after a sync that brought something new and matched its `where`. A source's first sync, history backfill and your own Slack messages never count. Jira comment changes count only while Stream Digests is on (Settings, Features). In the edit form, **On new mail / message (soon)** stays greyed out: write the trigger in the recipe text.
+- **An event recipe didn't run.** It runs only after a sync that brought something new and matched its `where`. A source's first sync, history backfill and your own Slack messages never count. Jira comment changes count only while Stream Digests is on (Settings, Features). In the edit form, **On an event** picks the event type; a `where` filter is written in the recipe text.
 
 ## Related
 
