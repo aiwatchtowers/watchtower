@@ -899,13 +899,13 @@ CHECK (status != 'sent' OR sent_at IS NOT NULL)
 )
 
 table	chat_artifacts
-CREATE TABLE chat_artifacts (
+CREATE TABLE "chat_artifacts" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
 message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
 artifact_key TEXT NOT NULL,
 version INTEGER NOT NULL,
-kind TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code')),
+kind TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code','html')),
 title TEXT NOT NULL DEFAULT '',
 content TEXT NOT NULL,
 meta_json TEXT NOT NULL DEFAULT '{}',

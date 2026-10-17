@@ -252,6 +252,13 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         windows.filter { $0.attachedSheet != nil }
     }
 
+    /// Runs on every termination, whichever quit path led here (sessions
+    /// closed or kept, a duplicate instance quitting at once): the html
+    /// preview's loopback server (#535), if it ever started, stops.
+    func applicationWillTerminate(_ notification: Notification) {
+        LocalPreviewServer.shared.stop()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let app = AppState.shared
         let plan = Self.quitPlan(

@@ -1256,20 +1256,6 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
     created_at      REAL NOT NULL,
     CHECK ((conversation_id IS NULL) <> (project_id IS NULL))
 );
-CREATE TABLE IF NOT EXISTS chat_artifacts (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-    message_id      INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
-    artifact_key    TEXT NOT NULL,
-    version         INTEGER NOT NULL,
-    kind            TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code')),
-    title           TEXT NOT NULL DEFAULT '',
-    content         TEXT NOT NULL,
-    meta_json       TEXT NOT NULL DEFAULT '{}',
-    edited          INTEGER NOT NULL DEFAULT 0,
-    created_at      REAL NOT NULL,
-    UNIQUE(conversation_id, artifact_key, version)
-);
 CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(
     text,
     content='chat_messages', content_rowid='id',
@@ -2055,6 +2041,20 @@ CREATE TABLE IF NOT EXISTS review_lessons (
   status             TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','accepted','dismissed')),
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   decided_at         TEXT
+);
+CREATE TABLE IF NOT EXISTS "chat_artifacts" (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    message_id      INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    artifact_key    TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    kind            TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code','html')),
+    title           TEXT NOT NULL DEFAULT '',
+    content         TEXT NOT NULL,
+    meta_json       TEXT NOT NULL DEFAULT '{}',
+    edited          INTEGER NOT NULL DEFAULT 0,
+    created_at      REAL NOT NULL,
+    UNIQUE(conversation_id, artifact_key, version)
 );
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE

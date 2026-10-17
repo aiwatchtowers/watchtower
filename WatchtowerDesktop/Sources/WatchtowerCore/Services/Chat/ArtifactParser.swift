@@ -41,7 +41,7 @@ package struct ParsedMessage: Equatable, Sendable {
 /// block as an incomplete draft; `final: true` keeps an unterminated block as
 /// complete content. A fence inside a ``` / ~~~ code block is literal text.
 package enum ArtifactParser {
-    package static let knownKinds: Set<String> = ["document", "table", "email", "slack", "event", "code"]
+    package static let knownKinds: Set<String> = ["document", "table", "email", "slack", "event", "code", "html"]
     static let opener = ":::artifact"
 
     private final class Box {
@@ -242,7 +242,8 @@ private struct Machine {
             body = []
             return
         }
-        if draft.kind != "code" {
+        // Raw kinds: a ``` line inside code or an html page is content, not a fence.
+        if draft.kind != "code" && draft.kind != "html" {
             if let fence = innerFence {
                 if fence.isClosed(by: line) { innerFence = nil }
             } else if let fence = CodeFence.opening(line) {
