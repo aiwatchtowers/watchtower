@@ -130,10 +130,15 @@ func readLayer(path string) (codexLayer, error) {
 // envVars, when given, become the server's env_vars: codex starts MCP
 // servers with a filtered environment, so a variable the server needs (an
 // automation's run marker) must be named to reach it. The automation
-// agent() child's own CODEX_HOME declares it (cmd's codexAgentHome).
+// agent() child's own CODEX_HOME declares it (cmd's codexAgentHome). Its
+// tools are pre-approved (approveTools): under approval_policy=never codex
+// would cancel every call, and an agent() call always resolves to ask
+// (AGENT-03, Binding.AutomationAgent), so approving at codex's level only
+// lets the proposal reach Watchtower.
 func WatchtowerServerTOML(dbPath string, extra, envVars []string) string {
 	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
-	s := fmt.Sprintf("[mcp_servers.watchtower]\ncommand = %s\nargs = [%s]\n", TOMLString(watchtowerBinary()), quotedList(args))
+	s := fmt.Sprintf("[mcp_servers.watchtower]\ncommand = %s\n%s\nargs = [%s]\n",
+		TOMLString(watchtowerBinary()), strings.Replace(approveTools, "=", " = ", 1), quotedList(args))
 	if len(envVars) > 0 {
 		s += fmt.Sprintf("env_vars = [%s]\n", quotedList(envVars))
 	}

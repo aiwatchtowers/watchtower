@@ -153,6 +153,33 @@ func TestWatchtowerServerTOML_EnvVars(t *testing.T) {
 	}
 }
 
+// The agent() child's server table pre-approves its tools: codex cancels
+// any MCP call needing an approval under approval_policy=never, and an
+// agent() call resolves to ask in Watchtower anyway (AGENT-03).
+func TestWatchtowerServerTOML_ApprovesTools(t *testing.T) {
+	var cfg struct {
+		MCPServers map[string]map[string]any `toml:"mcp_servers"`
+	}
+	if err := toml.Unmarshal([]byte(WatchtowerServerTOML("/tmp/w.db", nil, []string{"X"})), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.MCPServers["watchtower"]["default_tools_approval_mode"]; got != "approve" {
+		t.Errorf("default_tools_approval_mode = %v, want approve", got)
+	}
+}
+
+// A connection with no allowed tool listed (nil or empty) is mounted with
+// enabled_tools=[] — none of its tools — even though it is pre-approved.
+func TestMCPOverride_NoAllowedToolsMountsNone(t *testing.T) {
+	for _, allow := range [][]string{nil, {}} {
+		got, _, _ := mcpOverride("/tmp/w.db", nil, nil,
+			[]ai.ExternalMCPServer{{ID: 1, Name: "acme", Kind: "stdio", Command: "srv", AllowTools: allow}}, nil, nil)
+		if !strings.Contains(got, `"acme"={command="srv",args=[],enabled_tools=[],default_tools_approval_mode="approve"}`) {
+			t.Errorf("allow %#v: override = %s", allow, got)
+		}
+	}
+}
+
 // An env var the server needs (an automation's run marker) is named in
 // env_vars: codex starts MCP servers with a filtered environment. Without
 // envVars the table carries no env_vars.

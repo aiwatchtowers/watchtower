@@ -547,6 +547,9 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(homeTOML), `web_search = "disabled"`)
 	assert.Contains(t, string(homeTOML), "[mcp_servers.watchtower]")
+	// codex would cancel every call under approval_policy=never; the
+	// proposals still resolve to ask in Watchtower (AGENT-03).
+	assert.Contains(t, string(homeTOML), `default_tools_approval_mode = "approve"`)
 	assert.Equal(t, 1, strings.Count(string(homeTOML), "[mcp_servers."), "no server of the owner's: %s", homeTOML)
 	assert.Contains(t, string(homeTOML), `"--surface", "automation", "--automation-run", "`+runID+`", "--automation-tools", "create_target,list_targets"`)
 	// codex starts MCP servers with a filtered environment: the run marker
