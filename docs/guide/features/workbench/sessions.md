@@ -10,6 +10,8 @@ With several sessions running, the terminals tell you nothing until you open eac
 
 A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs.
 
+Copying from inside the terminal works as in your own terminal: when Claude Code, vim or tmux copies text, it lands on your clipboard. The terminal no longer answers clipboard-read requests hidden in program output, so a file or tool output shown there cannot pull in what you copied. Programs you run can still read the clipboard their own way (for example `pbpaste`), as in any terminal. Paste with ⌘V as usual.
+
 Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](#updates-and-quitting).
 
 ### Session states
@@ -108,6 +110,7 @@ The **Analytics** button in the page header (or **Analytics** in a pane's title 
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.
 - Hover a session that is finished, stopped, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session (working, agents working, ready to check, waiting, asking for a permission, or running with no state yet) needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
+- If you quit before the bar goes away, the delete still happens. When the database is busy this can hold the quit for a few seconds, with a small "Finishing session deletes…" window.
 - When you delete a workbench session the dialog first checks what it left behind and may offer **Delete and Clean Up**. See [Worktrees and cleanup](worktrees-and-cleanup.md).
 
 ### Get notified

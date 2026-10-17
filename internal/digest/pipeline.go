@@ -201,7 +201,7 @@ type backfillScope struct {
 	mu         sync.Mutex
 	considered map[string]float64
 	failed     map[string]bool
-	lastErr    error
+	errs       []error // every failure of the call, in order
 }
 
 // inBackfill reports whether the pipeline is writing a backfill digest or
@@ -224,7 +224,7 @@ func (p *Pipeline) markBackfillFailed(err error, channelIDs ...string) {
 	for _, id := range channelIDs {
 		b.failed[id] = true
 	}
-	b.lastErr = err
+	b.errs = append(b.errs, err)
 }
 
 // SetJiraKeyDetector sets an optional Jira key detector for linking digest decisions to Jira issues.
@@ -2154,12 +2154,6 @@ func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry
 	return &batchDigestOutput{results: results, rendered: rendered, usage: usage, promptVersion: pv}, nil
 }
 
-// isFirstRun checks if there are any existing channel digests in the DB.
-func (p *Pipeline) isFirstRun() bool {
-	digests, err := p.db.GetDigests(db.DigestFilter{Type: "channel", Limit: 1})
-	return err != nil || len(digests) == 0
-}
-
 // formatMessages renders messages for a digest prompt. Every line carries the
 // raw Slack ts ("ts=") next to the human-readable HH:MM: the prompts ask the
 // model to copy message_ts exactly from the messages it is shown, so the ref it
@@ -2383,7 +2377,7 @@ func (p *Pipeline) loadCaches() {
 			p.channelTypes[ch.ID] = ch.Type
 			// For DMs, show the other user's display name instead of raw ID
 			if ch.Type == "dm" || ch.Type == "im" {
-				uid := ""
+				var uid string
 				if ch.DMUserID.Valid {
 					uid = ch.DMUserID.String
 				} else {

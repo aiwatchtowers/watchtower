@@ -394,7 +394,12 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 			s.logger.Printf("sync: project %s has no watermark, running a full scan", projectKey)
 		}
 	}
-	jql := buildIncrementalJQL(projectKey, lastSyncedAt, time.Now().UTC())
+	// The watermark is the moment this pass STARTED, not when it finished:
+	// the issue reader, the changelog and the comment pass can take longer
+	// than the JQL's 2-minute overlap, and an issue updated after the reader's
+	// last page but before a finish-time stamp would never be asked for again.
+	passStart := time.Now().UTC()
+	jql := buildIncrementalJQL(projectKey, lastSyncedAt, passStart)
 
 	n, changedKeys, err := s.syncWithJQL(ctx, jql, boardID)
 	if err != nil {
@@ -429,7 +434,7 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 		return n, nil
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := passStart.Format(time.RFC3339)
 	issuesSynced := n
 	if syncState != nil {
 		issuesSynced += syncState.IssuesSynced
@@ -466,6 +471,7 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 			continue
 		}
 
+		passStart := time.Now().UTC() // the watermark, as in syncProject
 		jql := fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
 		// Comments are not backfilled during the initial load — only the
 		// daemon's regular incremental Sync fetches comments, keeping the
@@ -477,8 +483,7 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 		}
 		total += n
 
-		now := time.Now().UTC().Format(time.RFC3339)
-		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, n)
+		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, passStart.Format(time.RFC3339), n)
 	}
 
 	if err := s.SyncSprints(ctx); err != nil {

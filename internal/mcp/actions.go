@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strconv"
 	"strings"
 
-	"github.com/google/jsonschema-go/jsonschema"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"watchtower/internal/db"
@@ -40,12 +38,6 @@ type getActionArgs struct {
 // Write tools and get_action mount only when mountWrites is set (chat mode) —
 // dev mode passes false, so the developer surface never sees a write tool.
 //
-// A legacy workbench session (binding.LegacyNames, `mcp --project N`) lists
-// the renamed workbench tools under their pre-rename names and reads every
-// description, refusal and receipt in that vocabulary (Binding.Spell); the
-// call itself dispatches by the tool's current name, the one agent_actions
-// records.
-//
 // hooks narrow the mounted set and gate each call (an automation agent()'s
 // server); their zero value changes nothing.
 func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding, mountWrites bool, hooks callHooks) {
@@ -55,9 +47,9 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 			continue
 		}
 		listed := &mcpsdk.Tool{
-			Name:        binding.Spell(tool.Name),
-			Description: binding.Spell(tool.Description),
-			InputSchema: spellSchema(binding, tool.Name, tool.InputSchema),
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: tool.InputSchema,
 		}
 		if tool.Access == tools.AccessRead {
 			s.AddTool(listed, readToolHandler(reg, tool, binding, hooks))
@@ -79,7 +71,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 // result check.
 func readToolHandler(reg *tools.Registry, tool *tools.Tool, binding tools.Binding, hooks callHooks) mcpsdk.ToolHandler {
 	return func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-		args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments, binding)
+		args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments)
 		if refused != nil {
 			return refused, nil
 		}
@@ -87,19 +79,19 @@ func readToolHandler(reg *tools.Registry, tool *tools.Tool, binding tools.Bindin
 		if err != nil {
 			var verr *tools.ValidationError
 			if errors.As(err, &verr) {
-				return errResult(binding.Spell(verr.Msg)), nil
+				return errResult(verr.Msg), nil
 			}
-			return errResult(binding.Spell(err.Error())), nil
+			return errResult(err.Error()), nil
 		}
 		return hooks.result(data)
 	}
 }
 
 // writeToolHandler serves a write tool: the call gate, Propose, then the
-// result check over the spelled receipt.
+// result check over the receipt.
 func writeToolHandler(reg *tools.Registry, tool *tools.Tool, binding tools.Binding, hooks callHooks) mcpsdk.ToolHandler {
 	return func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-		args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments, binding)
+		args, refused := hooks.gateCall(ctx, tool, req.Params.Arguments)
 		if refused != nil {
 			return refused, nil
 		}
@@ -107,11 +99,10 @@ func writeToolHandler(reg *tools.Registry, tool *tools.Tool, binding tools.Bindi
 		if err != nil {
 			var verr *tools.ValidationError
 			if errors.As(err, &verr) {
-				return errResult(binding.Spell(verr.Msg)), nil
+				return errResult(verr.Msg), nil
 			}
-			return errResult(binding.Spell(fmt.Sprintf("recording proposal: %v", err))), nil
+			return errResult(fmt.Sprintf("recording proposal: %v", err)), nil
 		}
-		rc.Tool, rc.Message, rc.Error = binding.Spell(rc.Tool), binding.Spell(rc.Message), binding.Spell(rc.Error)
 		return hooks.result(rc)
 	}
 }
@@ -125,7 +116,7 @@ func registerGetAction(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, b
 			"failed), result and error. Use it when the owner asks what happened to a proposal.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getActionArgs) (*mcpsdk.CallToolResult, any, error) {
 		if err := reg.WorkbenchAlive(ctx, binding); err != nil {
-			return errResult(binding.Spell(err.Error())), nil, nil
+			return errResult(err.Error()), nil, nil
 		}
 		row, err := database.GetAgentAction(args.ID)
 		if err != nil {
@@ -135,11 +126,9 @@ func registerGetAction(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, b
 			return errResult(fmt.Sprintf("no action #%d", args.ID)), nil, nil
 		}
 		view := newActionView(*row)
-		// The tool by the name this session lists it under: a row recorded
-		// under either spelling reads as the current name, or, in a legacy
-		// session, as the old one.
-		view.Tool = binding.Spell(tools.CanonicalToolName(row.Tool))
-		view.Error = binding.Spell(view.Error)
+		// A row recorded before the Workbench rename reads under the
+		// tool's current name, the one this session lists.
+		view.Tool = tools.CanonicalToolName(row.Tool)
 		return jsonResult(view)
 	})
 }
@@ -154,13 +143,13 @@ type callHooks struct {
 
 // gateCall runs the call gate: the args to dispatch, or the error result of a
 // refused call.
-func (h callHooks) gateCall(ctx context.Context, t *tools.Tool, args json.RawMessage, binding tools.Binding) (json.RawMessage, *mcpsdk.CallToolResult) {
+func (h callHooks) gateCall(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, *mcpsdk.CallToolResult) {
 	if h.gate == nil {
 		return args, nil
 	}
 	gated, err := h.gate(ctx, t, args)
 	if err != nil {
-		return nil, errResult(binding.Spell(err.Error()))
+		return nil, errResult(err.Error())
 	}
 	return gated, nil
 }
@@ -179,29 +168,6 @@ func (h callHooks) result(v any) (*mcpsdk.CallToolResult, error) {
 		return errResult(err.Error()), nil
 	}
 	return res, nil
-}
-
-// spellSchema is a tool's input schema as binding's session lists it: the
-// registry's own schema, or, for a legacy session, a copy whose texts name
-// the renamed tools by their old names (Binding.Spell). The registry's
-// schema is shared by every session and is never changed. Should the copy
-// fail, the registry's schema is listed as it is (current names in its
-// texts) and the failure goes to stderr — stdout is the MCP stream.
-func spellSchema(binding tools.Binding, toolName string, schema *jsonschema.Schema) any {
-	if !binding.LegacyNames || schema == nil {
-		return schema
-	}
-	raw, err := json.Marshal(schema)
-	if err != nil {
-		log.Printf("mcp: spelling the %s input schema for a legacy session: %v", toolName, err)
-		return schema
-	}
-	var spelled map[string]any
-	if err := json.Unmarshal([]byte(binding.Spell(string(raw))), &spelled); err != nil {
-		log.Printf("mcp: spelling the %s input schema for a legacy session: %v", toolName, err)
-		return schema
-	}
-	return spelled
 }
 
 // actionVisible decides whether get_action may show row to this session. An

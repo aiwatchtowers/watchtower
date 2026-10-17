@@ -84,7 +84,8 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   unlinks it (`unlinked: true`) or sets its start-sessions grant and its
 ///   typing request (spec §10: a request asks the owner —
 ///   `onTypingRequested` — and never grants; the phone's toggle off revokes
-///   the grant).
+///   the grant). Its request to answer permission prompts (#517) is
+///   stored the same way and revokes that separate grant when turned off.
 /// - Revoke, Remove and the phone's own revoke or unlink tell
 ///   `onTypingRevoked`, which fails the phone's held lines (PROJ-16).
 ///
@@ -712,6 +713,7 @@ final class MobileLinkCenter {
             try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
         }
         try applyTypingRequest(payload.typingRequested, of: device)
+        try applyPermissionsRequest(payload.permissionsRequested, of: device)
     }
 
     /// Stores the phone's typing request; asks the owner when it newly
@@ -729,6 +731,20 @@ final class MobileLinkCenter {
         } else if !requested, device.typingRequested, device.typingAllowed {
             logger.info("phone \(device.deviceID, privacy: .public) turned typing off: grant revoked")
             try setTypingAllowed(false, deviceID: device.deviceID)
+        }
+    }
+
+    /// Stores the phone's request to answer permission prompts (#517, spec
+    /// §5.1); Settings → Mobile shows it. As for typing, only the stored
+    /// request going from on to off revokes the grant (a rewrite for
+    /// another toggle keeps it); the typing grant is never touched.
+    private func applyPermissionsRequest(_ requested: Bool, of device: HubSyncState.LinkedDevice) throws {
+        if try sidecar.setPermissionsRequested(requested, deviceID: device.deviceID) {
+            reloadDevices()
+        }
+        if !requested, device.permissionsRequested, device.permissionsAllowed {
+            logger.info("phone \(device.deviceID, privacy: .public) turned permission answers off: grant revoked")
+            try setPermissionsAllowed(false, deviceID: device.deviceID)
         }
     }
 
@@ -1077,6 +1093,12 @@ final class MobileLinkCenter {
         try setGrant(.typing, allowed, deviceID: deviceID)
     }
 
+    /// Allow… / Revoke of answering permission prompts (#517): its own
+    /// grant, never implied by typing.
+    func setPermissionsAllowed(_ allowed: Bool, deviceID: String) throws {
+        try setGrant(.permissions, allowed, deviceID: deviceID)
+    }
+
     /// Whether the phone may start sessions (default on).
     func setStartSessionsAllowed(_ allowed: Bool, deviceID: String) throws {
         try setGrant(.startSessions, allowed, deviceID: deviceID)
@@ -1089,6 +1111,19 @@ final class MobileLinkCenter {
         if grant == .typing, !allowed { onTypingRevoked?(deviceID) }
     }
 
+    /// The linked phone's name (`permission_requests.decided_by`, #517);
+    /// nil without a device or with an unreadable sidecar.
+    nonisolated static func deviceName(_ sidecar: HubSyncState, deviceID: String?) -> String? {
+        guard let deviceID else { return nil }
+        do {
+            return try sidecar.linkedDevice(deviceID)?.name
+        } catch {
+            Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
+                .error("device name unreadable: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     /// The grants a session start or input from `deviceID` gets. The relay
     /// gate already refused an unlinked device; an unreadable sidecar
     /// grants nothing.
@@ -1096,7 +1131,10 @@ final class MobileLinkCenter {
         guard let deviceID else { return .denied }
         do {
             guard let device = try sidecar.linkedDevice(deviceID) else { return .denied }
-            return .init(typingAllowed: device.typingAllowed, startSessionsAllowed: device.startSessionsAllowed)
+            return .init(
+                typingAllowed: device.typingAllowed, startSessionsAllowed: device.startSessionsAllowed,
+                permissionsAllowed: device.permissionsAllowed
+            )
         } catch {
             Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
                 .error("device grants unreadable: \(error.localizedDescription, privacy: .public)")

@@ -44,7 +44,7 @@ var reviewAIGeneratorFactory = func(cfg *config.Config) digest.Generator { retur
 var workbenchReviewOverviewCmd = &cobra.Command{Use: "overview", Short: "AI overview of a round: intent coverage, risk, chapters", RunE: runWorkbenchReviewOverview}
 
 func init() {
-	addWorkbenchIDFlag(workbenchReviewOverviewCmd, &reviewFlagWorkbench, "workbench id")
+	workbenchReviewOverviewCmd.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 	workbenchReviewOverviewCmd.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 	workbenchReviewOverviewCmd.Flags().Int64Var(&reviewFlagRound, "round", 0, "review round id")
 	workbenchReviewCmd.AddCommand(workbenchReviewOverviewCmd)

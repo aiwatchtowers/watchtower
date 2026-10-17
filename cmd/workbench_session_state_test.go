@@ -40,7 +40,7 @@ func runSessionState(t *testing.T, workbenchID int64, stdin io.Reader, extra ...
 	rootCmd.SetIn(stdin)
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
 	args := append([]string{"session-state", "--workbench", strconv.FormatInt(workbenchID, 10)}, extra...)
-	return runWorkbenchAs(t, "workbench", args...)
+	return runWorkbench(t, args...)
 }
 
 // stepClock makes every hook event one second later than the previous one,
@@ -517,21 +517,6 @@ func TestSessionState_StopHookLostStateIsOneLine(t *testing.T) {
 			assert.Empty(t, storedAgentState(t, database, row))
 		})
 	}
-}
-
-// A folder still on the legacy Stop entry (`project check --project N`)
-// records the state like the new one once it has the state hooks.
-func TestSessionState_LegacyStopHookRecordsWaiting(t *testing.T) {
-	database, pid, row := stopStateFixture(t, "open")
-	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-	var out, errOut bytes.Buffer
-
-	runStopHook(context.Background(), strings.NewReader(statePayload("Stop", briefLaunchID, "")), &out, &errOut,
-		strconv.FormatInt(pid, 10), legacyWorkbenchVocabulary)
-
-	assert.Empty(t, out.String())
-	assert.Empty(t, errOut.String())
-	assert.Equal(t, "waiting", storedAgentState(t, database, row))
 }
 
 // A failed state write on the Stop path is one stderr line; stdout stays
@@ -1347,9 +1332,9 @@ func subagentStart(agentID, agentType string) string {
 // withTeammates is the background_tasks array list with n running teammate
 // entries in front, ids that are never a hook agent_id (spec Appendix C).
 func withTeammates(n int, list string) string {
-	entries := make([]string, n)
-	for i := range entries {
-		entries[i] = `{"id":"tm` + strconv.Itoa(i) + `","type":"teammate","status":"running"}`
+	entries := make([]string, 0, n+1)
+	for i := range n {
+		entries = append(entries, `{"id":"tm`+strconv.Itoa(i)+`","type":"teammate","status":"running"}`)
 	}
 	rest := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(list, "["), "]"))
 	if rest != "" {

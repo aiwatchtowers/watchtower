@@ -102,6 +102,13 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// Set by `stop()`, cleared only by the public `start()`: a reset's
     /// queued relaunch must not bring back an engine the owner stopped.
     var isStopped = false
+    /// A batch the running engine fetched did not reach the buffer: the
+    /// engine state is not saved until a full zone poll or the next engine
+    /// start covers it (see `saveEngineState`).
+    var engineBatchUnbuffered = false
+    /// Engine batches that failed to buffer so far: a zone poll lifts
+    /// `engineBatchUnbuffered` only when none failed while it ran.
+    var engineBufferFailures = 0
 
     // Send-side error state (spec §9).
     var batchLimit = maxBatchSize
@@ -321,7 +328,7 @@ final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Sendable {
     }
 
     func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
-        await transport?.handleEngineEvent(event)
+        await transport?.handleEngineEvent(event, from: self)
     }
 
     func nextRecordZoneChangeBatch(

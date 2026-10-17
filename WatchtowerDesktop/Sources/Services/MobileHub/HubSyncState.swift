@@ -134,8 +134,11 @@ final class HubSyncState: Sendable {
             }
             // A sidecar created before the Mac kept the phone's typing
             // request gains it, unrequested.
-            if try !db.columns(in: "devices").contains(where: { $0.name == "typing_requested" }) {
-                try db.execute(sql: "ALTER TABLE devices ADD COLUMN typing_requested INTEGER NOT NULL DEFAULT 0")
+            // ... and, from before #517, the separate "answer permission
+            // prompts" grant and request: off, unrequested.
+            let deviceColumns = Set(try db.columns(in: "devices").map(\.name))
+            for name in ["typing_requested", "permissions_allowed", "permissions_requested"] where !deviceColumns.contains(name) {
+                try db.execute(sql: "ALTER TABLE devices ADD COLUMN \(name) INTEGER NOT NULL DEFAULT 0")
             }
             return .commit
         }
@@ -160,7 +163,9 @@ final class HubSyncState: Sendable {
                     typing_allowed INTEGER NOT NULL DEFAULT 0,
                     start_sessions_allowed INTEGER NOT NULL DEFAULT 1,
                     decided_at REAL,
-                    typing_requested INTEGER NOT NULL DEFAULT 0
+                    typing_requested INTEGER NOT NULL DEFAULT 0,
+                    permissions_allowed INTEGER NOT NULL DEFAULT 0,
+                    permissions_requested INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS link_refusals (
                     device_id TEXT PRIMARY KEY,

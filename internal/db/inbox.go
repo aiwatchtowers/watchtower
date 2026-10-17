@@ -1,7 +1,9 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,7 +19,7 @@ const inboxSelectCols = `id, channel_id, message_ts, thread_ts, sender_user_id,
 	COALESCE(read_at,''), created_at, updated_at,
 	COALESCE(item_class,'actionable'), COALESCE(archived_at,''), COALESCE(archive_reason,''),
 	COALESCE(why_matters,''), COALESCE(thread_digest,''), COALESCE(draft_reply,''), COALESCE(card_status,'none'), COALESCE(card_generated_at,''),
-	COALESCE(composed_at,'')`
+	COALESCE(composed_at,''), mentions, mentions_earlier`
 
 // inboxItemColumns is an alias for inboxSelectCols used by feed queries.
 const inboxItemColumns = inboxSelectCols
@@ -33,7 +35,7 @@ func scanInboxItem(row interface{ Scan(...any) error }) (*InboxItem, error) {
 		&it.ReadAt, &it.CreatedAt, &it.UpdatedAt,
 		&it.ItemClass, &it.ArchivedAt, &it.ArchiveReason,
 		&it.WhyMatters, &it.ThreadDigest, &it.DraftReply, &it.CardStatus, &cardGeneratedAt,
-		&it.ComposedAt,
+		&it.ComposedAt, &it.Mentions, &it.MentionsEarlier,
 	); err != nil {
 		return nil, err
 	}
@@ -70,11 +72,14 @@ func (db *DB) CreateInboxItem(it InboxItem) (int64, error) {
 		it.ItemClass = "actionable"
 	}
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	if it.Mentions == "" {
+		it.Mentions = "[]"
+	}
 	res, err := db.Exec(`INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
-		trigger_type, snippet, context, raw_text, permalink, status, priority, ai_reason, waiting_user_ids, item_class, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		trigger_type, snippet, context, raw_text, permalink, status, priority, ai_reason, waiting_user_ids, item_class, mentions, mentions_earlier, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		it.ChannelID, it.MessageTS, it.ThreadTS, it.SenderUserID,
-		it.TriggerType, it.Snippet, it.Context, it.RawText, it.Permalink, it.Status, it.Priority, it.AIReason, it.WaitingUserIDs, it.ItemClass, now, now,
+		it.TriggerType, it.Snippet, it.Context, it.RawText, it.Permalink, it.Status, it.Priority, it.AIReason, it.WaitingUserIDs, it.ItemClass, it.Mentions, it.MentionsEarlier, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting inbox item: %w", err)
@@ -84,26 +89,33 @@ func (db *DB) CreateInboxItem(it InboxItem) (int64, error) {
 
 // FindPendingInboxByThread returns the ID of an existing pending inbox item
 // for the same thread (channel_id + thread_ts). For non-threaded messages
-// (threadTS=""), finds the channel-level inbox item. Returns 0 if not found.
+// (threadTS=""), finds the channel-level inbox item. Returns 0, nil if there
+// is none; any other read error is returned — read as "none" it would mint a
+// duplicate item and hide the failure from the INBOX-09 watermark gate.
 func (db *DB) FindPendingInboxByThread(channelID, threadTS string) (int, error) {
 	var id int
 	err := db.QueryRow(`SELECT id FROM inbox_items
 		WHERE channel_id = ? AND thread_ts = ? AND status = 'pending'
 		ORDER BY created_at DESC LIMIT 1`,
 		channelID, threadTS).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
 	if err != nil {
-		return 0, nil //nolint:nilerr // not found is not an error
+		return 0, fmt.Errorf("finding pending inbox item for %s/%q: %w", channelID, threadTS, err)
 	}
 	return id, nil
 }
 
 // UpdateInboxItemSnippet updates the snippet, context, raw_text, sender,
 // message_ts and permalink of an existing inbox item (the detector's
-// thread-fold path).
+// thread-fold path), marks it unread and stamps mentioned_at, so a reply
+// folded into an older thread item reaches Catch-Up's window (#586).
 func (db *DB) UpdateInboxItemSnippet(id int, messageTS, senderUserID, snippet, context, rawText, permalink string) error {
 	_, err := db.Exec(`UPDATE inbox_items SET
 		message_ts = ?, sender_user_id = ?, snippet = ?, context = ?, raw_text = ?, permalink = ?,
 		ai_reason = '', read_at = NULL,
+		mentioned_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ?`,
 		messageTS, senderUserID, snippet, context, rawText, permalink, id)
@@ -298,7 +310,7 @@ func (db *DB) GetInboxItemsForBriefing() ([]InboxItem, error) {
 		WHERE status = 'pending' AND archived_at IS NULL
 		ORDER BY
 			CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
-			created_at DESC
+			MAX(created_at, mentioned_at) DESC
 		LIMIT 20`)
 	if err != nil {
 		return nil, fmt.Errorf("querying inbox items for briefing: %w", err)
@@ -431,6 +443,7 @@ func (db *DB) FindPendingMentions(accountID int64, currentUserID string, sinceTS
 			SELECT 1 FROM inbox_items ii
 			WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		)
+		AND `+notListedInMentions+`
 		ORDER BY m.ts_unix DESC`,
 		strictPattern, pipePattern, prefix, currentUserID, sinceTS)
 	if err != nil {
@@ -468,6 +481,7 @@ func (db *DB) FindPendingDMs(accountID int64, currentUserID string, sinceTS floa
 			SELECT 1 FROM inbox_items ii
 			WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		)
+		AND `+notListedInMentions+`
 		ORDER BY m.ts_unix DESC`,
 		prefix, currentUserID, sinceTS)
 	if err != nil {
@@ -513,6 +527,7 @@ func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sin
 		      SELECT 1 FROM inbox_items ii
 		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		  )
+		  AND `+notListedInMentions+`
 		ORDER BY m.ts_unix DESC`,
 		prefix, currentUserID, sinceTS, currentUserID)
 	if err != nil {
@@ -553,6 +568,7 @@ func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceT
 		      SELECT 1 FROM inbox_items ii
 		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		  )
+		  AND `+notListedInMentions+`
 		GROUP BY m.channel_id, m.ts
 		ORDER BY m.ts_unix DESC`,
 		currentUserID, prefix, currentUserID, sinceTS)

@@ -85,7 +85,7 @@ final class CloudKitTransportPollTests: XCTestCase {
         let store = try TransportStore.inMemory()
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: store, engine: engine)
-        await transport.bufferFetched(modifications: [ckRecord("known", zone: .relay)], deletions: [])
+        _ = await transport.bufferFetched(modifications: [ckRecord("known", zone: .relay)], deletions: [])
         let relay = HubZones.test().zoneID(for: .relay)
         engine.enqueueZonePage(page(deletions: [
             CKRecord.ID(recordName: "known", zoneID: relay),

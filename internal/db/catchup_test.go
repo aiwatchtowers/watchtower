@@ -199,6 +199,7 @@ func TestListCatchupInbox_ActionablePendingInWindow(t *testing.T) {
 	assert.Contains(t, items[0].Meta, "#eng")
 	assert.Equal(t, "1:C1", items[0].ChannelID)
 	assert.Equal(t, "1:U1", items[0].SenderID)
+	assert.NotContains(t, items[0].Meta, "messages", "a one-message item names no count")
 }
 
 func TestListCatchupTracksAndTargets(t *testing.T) {

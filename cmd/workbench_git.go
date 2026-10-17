@@ -82,7 +82,7 @@ var (
 
 func init() {
 	for _, c := range []*cobra.Command{workbenchGitStatusCmd, workbenchGitBranchesCmd, workbenchGitSwitchCmd, workbenchGitCreateCmd} {
-		addWorkbenchIDFlag(c, &workbenchGitFlagWorkbench, "workbench id")
+		c.Flags().Int64Var(&workbenchGitFlagWorkbench, workbenchFlag, 0, "workbench id")
 		c.Flags().BoolVar(&workbenchGitFlagJSON, "json", false, "output JSON")
 		c.Flags().StringVar(&workbenchGitFlagFolder, "folder", "",
 			"an absolute folder in one of the repository's worktrees (a session's); default the workbench folder")
@@ -107,13 +107,9 @@ func init() {
 func workbenchGitTarget(ctx context.Context, cmd *cobra.Command) (
 	id int64, o workbenchgit.Options, folder workbenchgit.ResolvedFolder, resolveErr, err error,
 ) {
-	if err = checkWorkbenchIDFlags(cmd); err != nil {
-		return 0, o, folder, nil, err
-	}
 	id = workbenchGitFlagWorkbench
 	if id <= 0 {
-		return 0, o, folder, nil, fmt.Errorf("%s: a positive workbench id is required",
-			workbenchFlagName(cmd.Flags().Changed(legacyWorkbenchFlag)))
+		return 0, o, folder, nil, fmt.Errorf("--%s: a positive workbench id is required", workbenchFlag)
 	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {

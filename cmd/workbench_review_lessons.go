@@ -30,7 +30,7 @@ var (
 
 func init() {
 	for _, c := range []*cobra.Command{workbenchReviewLessonsProposeCmd, workbenchReviewLessonsAcceptCmd, workbenchReviewLessonsDismissCmd} {
-		addWorkbenchIDFlag(c, &reviewFlagWorkbench, "workbench id")
+		c.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 		c.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 		workbenchReviewLessonsCmd.AddCommand(c)
 	}
@@ -60,7 +60,7 @@ func runWorkbenchReviewLessonsPropose(cmd *cobra.Command, _ []string) error {
 	}
 	ctx, cancel := reviewAIContext(cmd)
 	defer cancel()
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func runWorkbenchReviewLessonsAccept(cmd *cobra.Command, _ []string) error {
 	if err := refuseUnderAgent("accept a review lesson"); err != nil {
 		return err
 	}
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func runWorkbenchReviewLessonsDismiss(cmd *cobra.Command, _ []string) error {
 	if err := refuseUnderAgent("dismiss a review lesson"); err != nil {
 		return err
 	}
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}

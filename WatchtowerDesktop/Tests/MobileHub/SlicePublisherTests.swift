@@ -65,7 +65,7 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(SlicePublisher.Timing.standard.urgentTick, .seconds(10))
         XCTAssertEqual(SlicePublisher.Timing.standard.fastWindow, .seconds(1))
         XCTAssertEqual(SlicePublisher.Timing.standard.fastSpacing, .seconds(2))
-        XCTAssertEqual(SlicePublisher.urgentKinds, [.ownerAsk, .askAlert, .deviceGrant])
+        XCTAssertEqual(SlicePublisher.urgentKinds, [.ownerAsk, .askAlert, .deviceGrant, .permissionRequest])
         XCTAssertEqual(SlicePublisher.unlinkedKinds, [.deviceGrant])
         XCTAssertTrue(SlicePublisher.sliceSQL.isEmpty, "A publishes no SQL slice; B and C add sources")
     }

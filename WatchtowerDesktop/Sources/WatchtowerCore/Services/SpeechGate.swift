@@ -25,12 +25,31 @@ package enum SpeechGate {
     /// L5 (spec D5): the samples with everything outside `speech` set to
     /// exactly 0, for engines that decode the whole recording at once.
     package static func muted(_ samples: [Float], keeping speech: [Range<Int>]) -> [Float] {
-        var muted = [Float](repeating: 0, count: samples.count)
-        for range in speech {
-            let kept = range.clamped(to: 0..<samples.count)
-            muted.replaceSubrange(kept, with: samples[kept])
+        [Float](unsafeUninitializedCapacity: samples.count) { buffer, count in
+            writeMuted(samples, keeping: speech, into: buffer)
+            count = samples.count
         }
-        return muted
+    }
+
+    /// `muted`, written straight into `destination` (at least
+    /// `samples.count` long), so an engine that copies the samples into its
+    /// own buffer anyway mutes them on the way instead of holding one more
+    /// copy of the recording (board #564).
+    package static func writeMuted(
+        _ samples: [Float],
+        keeping speech: [Range<Int>],
+        into destination: UnsafeMutableBufferPointer<Float>
+    ) {
+        precondition(destination.count >= samples.count)
+        guard let base = destination.baseAddress else { return }
+        base.initialize(repeating: 0, count: samples.count)
+        samples.withUnsafeBufferPointer { source in
+            for range in speech {
+                let kept = range.clamped(to: 0..<samples.count)
+                guard !kept.isEmpty, let from = source.baseAddress else { continue }
+                (base + kept.lowerBound).update(from: from + kept.lowerBound, count: kept.count)
+            }
+        }
     }
 
     /// Sorted ranges with overlapping or touching neighbours joined.

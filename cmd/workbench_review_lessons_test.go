@@ -16,7 +16,7 @@ import (
 
 func lessonsJSONCall(t *testing.T, wb int64, sub string, args ...string) (map[string]any, error) {
 	t.Helper()
-	out, _, err := runWorkbenchAs(t, "workbench", append([]string{"review", "lessons", sub, "--workbench", itoa(wb), "--json"}, args...)...)
+	out, _, err := runWorkbench(t, append([]string{"review", "lessons", sub, "--workbench", itoa(wb), "--json"}, args...)...)
 	resetSetFlags(workbenchReviewLessonsCmd.Commands()...)
 	if err != nil {
 		return nil, err

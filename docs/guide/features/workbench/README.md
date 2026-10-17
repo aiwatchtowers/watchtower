@@ -43,7 +43,7 @@ The agent writes board text in the language you use with it. Write to it in anot
 - **"No workbenches yet".** You have not added a folder. Press **Add a folder** and pick one.
 - **A session shows only a green dot, no state caption.** The folder was set up by an older Watchtower. In the page header's **…** menu, **Repair install** adds what is missing, or **Re-run Setup** brings it fully up to date. It only adds: the board, comments, asks and description stay as they are.
 - **An orange install icon in the header.** Something in the folder install is missing. Hover it for the list, then use **Repair install**.
-- **A blue up-arrow icon in the header.** The folder was set up by an older Watchtower, before the rename to Workbench. Nothing changes until you choose **Re-run Setup** in the **…** menu.
+- **An orange install icon saying "Set up under the old Projects name".** The folder was set up before the rename to Workbench, and that setup no longer runs: its hooks only tell the agent to ask you for Repair, and its `watchtower-project` connection fails to start. Choose **Repair install** (or **Re-run Setup**) in the **…** menu; it migrates the folder, and keeps your own edited copy of the old skill, which you then delete.
 - **A state shows only for sessions started in Watchtower's terminal.** A session in your own terminal app, or in a standalone terminal under **Terminals**, reports no state and has no board tools.
 - **Workbench targets do not show elsewhere.** They live only on their board, not in Targets, the day plan or Catch Up. The daily briefing mentions workbench activity on its own.
 - **Deleting a workbench** (**…** → **Delete…**) removes the board, asks and comments and what Watchtower installed in the folder. Your files stay.

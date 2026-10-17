@@ -135,7 +135,7 @@ func TestIntegrateProjectStatusJSON(t *testing.T) {
 	if got.WorkbenchID != 7 || got.Folder != p.FolderPath || got.Skill != "unchanged" || !got.Hook || !got.MCP || !got.ClaudeFound {
 		t.Fatalf("unexpected status: %+v", got)
 	}
-	if !got.StopHook || !got.StateHooks || !got.AskGuard || !got.AskToolBlock {
+	if !got.StopHook || !got.StateHooks || !got.AskGuard || !got.AskToolBlock || !got.PermissionWait {
 		t.Fatalf("every hook is installed: %+v", got)
 	}
 	if !got.GroupPrompt {
@@ -260,8 +260,8 @@ func editSettingsHooks(t *testing.T, folder string, edit func(hooks map[string]a
 }
 
 func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
-	if err := checkWorkbenchFlags("--workbench", false, "", false, false); err != nil {
-		t.Fatalf("plain --project must be accepted: %v", err)
+	if err := checkWorkbenchFlags(false, "", false, false); err != nil {
+		t.Fatalf("plain --workbench must be accepted: %v", err)
 	}
 	for name, args := range map[string][4]any{
 		"scope":       {true, "", false, false},
@@ -269,8 +269,8 @@ func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
 		"skills-only": {false, "", true, false},
 		"mcp-only":    {false, "", false, true},
 	} {
-		if err := checkWorkbenchFlags("--project", args[0].(bool), args[1].(string), args[2].(bool), args[3].(bool)); err == nil || !strings.HasPrefix(err.Error(), "--project ") {
-			t.Fatalf("--project with --%s must be refused", name)
+		if err := checkWorkbenchFlags(args[0].(bool), args[1].(string), args[2].(bool), args[3].(bool)); err == nil || !strings.HasPrefix(err.Error(), "--workbench ") {
+			t.Fatalf("--workbench with --%s must be refused", name)
 		}
 	}
 }
@@ -529,7 +529,7 @@ func TestIntegrateCodex_AppServerContextFollowsTheCaller(t *testing.T) {
 			return runWorkbenchStatus(ctx, w, p, true)
 		},
 	} {
-		f.ctx = nil
+		f.ctx = nil //nolint:fatcontext // resets the fake's recorded context, nothing nests
 		ctx, cancel := context.WithCancel(context.Background())
 		var out bytes.Buffer
 		_ = run(ctx, &out, p)
@@ -541,9 +541,9 @@ func TestIntegrateCodex_AppServerContextFollowsTheCaller(t *testing.T) {
 		}
 		cancel()
 		f.ctx = nil
-		ctx, cancel = context.WithCancel(context.Background())
-		cancel()
-		_ = run(ctx, &out, p)
+		cancelled, cancelNow := context.WithCancel(context.Background())
+		cancelNow()
+		_ = run(cancelled, &out, p)
 		if f.ctx == nil || !errors.Is(f.ctx.Err(), context.Canceled) {
 			t.Fatalf("%s: a cancelled caller must cancel the app-server context", name)
 		}
@@ -689,5 +689,31 @@ func TestWorkbenchResync_ConfigErrorWithoutCodexIsReported(t *testing.T) {
 	printResyncReport(&out, p, res)
 	if !strings.Contains(out.String(), "FAILED — loading config (codex_path ignored") {
 		t.Fatalf("text report:\n%s", out.String())
+	}
+}
+
+// permission_wait goes false with its PermissionRequest entry gone (the
+// Desktop then offers Repair).
+func TestIntegrateWorkbenchStatusJSON_PermissionWaitKey(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runWorkbenchInstall(context.Background(), &out, p); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	out.Reset()
+	if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(out.String(), `"permission_wait": true`) {
+		t.Fatalf("an installed workbench reports permission_wait true:\n%s", out.String())
+	}
+	editSettingsHooks(t, p.FolderPath, func(hooks map[string]any) { delete(hooks, "PermissionRequest") })
+	out.Reset()
+	if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(out.String(), `"permission_wait": false`) {
+		t.Fatalf("a missing PermissionRequest entry reports false:\n%s", out.String())
 	}
 }

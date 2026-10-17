@@ -7,7 +7,7 @@ final class TerminalLaunchTests: XCTestCase {
     /// The prompt travels in the environment and the command names only the
     /// variable, so no prompt text is ever parsed by the shell.
     func testNewClaudeWithPromptPassesItThroughTheEnvironment() {
-        let prompt = TerminalLaunch.workOnTargetPrompt(targetID: 42, vocabulary: .current)
+        let prompt = TerminalLaunch.workOnTargetPrompt(targetID: 42)
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt))
         let command = "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'"
         XCTAssertEqual(l.args, ["-l", "-c", command])
@@ -111,7 +111,7 @@ final class TerminalLaunchTests: XCTestCase {
     }
 
     func testFirstRunKeepsTheSetupPrompt() {
-        let prompt = TerminalLaunch.firstRunPrompt(.current)
+        let prompt = TerminalLaunch.firstRunPrompt
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt))
         XCTAssertEqual(l.environment, ["\(TerminalLaunch.firstPromptEnv)=\(prompt)"])
     }
@@ -125,64 +125,49 @@ final class TerminalLaunchTests: XCTestCase {
     }
 
     func testFixedPromptsHoldNoQuote() {
-        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
-            XCTAssertFalse(TerminalLaunch.firstRunPrompt(vocabulary).contains("'"))
-            XCTAssertFalse(TerminalLaunch.workOnTargetPrompt(targetID: 9_223_372_036_854_775_807, vocabulary: vocabulary).contains("'"))
-            XCTAssertFalse(TerminalLaunch.workOnGroupPrompt(targetID: 9_223_372_036_854_775_807, vocabulary: vocabulary).contains("'"))
-        }
+        XCTAssertFalse(TerminalLaunch.firstRunPrompt.contains("'"))
+        XCTAssertFalse(TerminalLaunch.workOnTargetPrompt(targetID: 9_223_372_036_854_775_807).contains("'"))
+        XCTAssertFalse(TerminalLaunch.workOnGroupPrompt(targetID: 9_223_372_036_854_775_807).contains("'"))
     }
 
     /// Board #476: the group wording goes only to a skill that knows it; any
-    /// other gets the target wording, in the folder's vocabulary.
+    /// other gets the target wording.
     func testWorkOnPromptSendsTheGroupWordingOnlyToASkillThatKnowsIt() {
-        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
-            let target = TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: vocabulary)
-            let group = TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: vocabulary)
-            for (isGroup, knows, want) in [(true, true, group), (true, false, target), (false, true, target), (false, false, target)] {
-                XCTAssertEqual(
-                    TerminalLaunch.workOnPrompt(targetID: 7, isGroup: isGroup, skillKnowsGroups: knows, vocabulary: vocabulary),
-                    want, "\(vocabulary) isGroup=\(isGroup) skillKnowsGroups=\(knows)"
-                )
-            }
+        let target = TerminalLaunch.workOnTargetPrompt(targetID: 7)
+        let group = TerminalLaunch.workOnGroupPrompt(targetID: 7)
+        for (isGroup, knows, want) in [(true, true, group), (true, false, target), (false, true, target), (false, false, target)] {
+            XCTAssertEqual(
+                TerminalLaunch.workOnPrompt(targetID: 7, isGroup: isGroup, skillKnowsGroups: knows),
+                want, "isGroup=\(isGroup) skillKnowsGroups=\(knows)"
+            )
         }
     }
 
-    /// A folder set up before the Workbench rename has only the old skill
-    /// (spec 2026-10-02 §5.3); the prompts name what the folder has, and stay
-    /// one line without control characters.
-    func testPromptsNameTheFoldersSkill() {
+    /// The prompts name the current skill and stay one line without control
+    /// characters.
+    func testPromptsNameTheWorkbenchSkill() {
         // The skill's "Working a target" / "Working a group" sections key on the
         // "Work on target #" / "Work on group #" prefixes: keep them in step with
         // internal/devpack/workbench_skill_tools_test.go TestWorkbenchSkill_ExplainsBothWorkOnPrompts.
-        XCTAssertEqual(TerminalLaunch.firstRunPrompt(.current),
+        XCTAssertEqual(TerminalLaunch.firstRunPrompt,
                        "Set up this Watchtower workbench using the watchtower-workbench skill.")
-        XCTAssertEqual(TerminalLaunch.firstRunPrompt(.legacy),
-                       "Set up this Watchtower workbench using the watchtower-project skill.")
-        XCTAssertEqual(TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .current),
+        XCTAssertEqual(TerminalLaunch.workOnTargetPrompt(targetID: 7),
                        "Work on target #7 using the watchtower-workbench skill.")
-        XCTAssertEqual(TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .legacy),
-                       "Work on target #7 using the watchtower-project skill.")
-        XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .current),
+        XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7),
                        "Work on group #7 using the watchtower-workbench skill.")
-        XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .legacy),
-                       "Work on group #7 using the watchtower-project skill.")
         // `integrate status`'s group_prompt looks for this prefix in the
         // installed skill (Go `groupPromptMarker`, internal/devpack/workbench.go).
-        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
-            XCTAssertTrue(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: vocabulary).hasPrefix("Work on group #"))
-        }
-        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true, skillKnowsGroups: true, vocabulary: .current),
-                       TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .current))
-        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false, skillKnowsGroups: true, vocabulary: .current),
-                       TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .current))
-        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
-            for prompt in [
-                TerminalLaunch.firstRunPrompt(vocabulary),
-                TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: vocabulary),
-                TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: vocabulary)
-            ] {
-                XCTAssertFalse(prompt.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) })
-            }
+        XCTAssertTrue(TerminalLaunch.workOnGroupPrompt(targetID: 7).hasPrefix("Work on group #"))
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true, skillKnowsGroups: true),
+                       TerminalLaunch.workOnGroupPrompt(targetID: 7))
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false, skillKnowsGroups: true),
+                       TerminalLaunch.workOnTargetPrompt(targetID: 7))
+        for prompt in [
+            TerminalLaunch.firstRunPrompt,
+            TerminalLaunch.workOnTargetPrompt(targetID: 7),
+            TerminalLaunch.workOnGroupPrompt(targetID: 7)
+        ] {
+            XCTAssertFalse(prompt.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) })
         }
     }
 

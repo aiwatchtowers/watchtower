@@ -36,18 +36,18 @@ protocol WhisperWindowEngine: Sendable {
     func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment]
     /// The same, with L3 (spec D3: drop the segments the model itself doubts)
     /// on or off. The transcribers pass `config.speechGate`, so the kill switch
-    /// and the dictation lane keep today's decode. Engines without L3 keep the
-    /// default, which ignores the flag.
+    /// and the dictation lane keep today's decode. Also returns what the
+    /// engine dropped from THIS decode (L3 confidence, phrase filter), counts
+    /// only: the caller's run adds them up, so two runs sharing one engine
+    /// (a live tail and a batch job) never report each other's drops (board
+    /// #564). Engines without L3 keep the default, which ignores the flag and
+    /// drops nothing.
     func transcribeWindow(
         _ samples: [Float],
         language: String,
         prompt: String?,
         dropDoubtful: Bool
-    ) async throws -> [TranscribedSegment]
-    /// Segments the engine dropped itself (L3 confidence, phrase filter)
-    /// since the last call — read once per recording for the gate's summary
-    /// log. Engines that drop nothing keep the default.
-    func takeDropCounts() -> WindowDropCounts
+    ) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts)
 }
 
 extension WhisperWindowEngine {
@@ -56,11 +56,9 @@ extension WhisperWindowEngine {
         language: String,
         prompt: String?,
         dropDoubtful: Bool
-    ) async throws -> [TranscribedSegment] {
-        try await transcribeWindow(samples, language: language, prompt: prompt)
+    ) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) {
+        (try await transcribeWindow(samples, language: language, prompt: prompt), WindowDropCounts())
     }
-
-    func takeDropCounts() -> WindowDropCounts { WindowDropCounts() }
 }
 
 /// What an engine dropped from its own decodes: counts only, never text.
@@ -365,6 +363,22 @@ func decodeWithPromptFallback(
         guard containsSpeech(retried) else { throw error }
         return retried
     }
+}
+
+/// `decodeWithPromptFallback` over a decode that also reports what the
+/// engine dropped (`WhisperKitEngine`): the drops of every pass it runs are
+/// added up, the discarded prompted pass's included (board #564).
+func decodeWithPromptFallback(
+    promptTokens: [Int]?,
+    countingDrops decode: ([Int]?) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts)
+) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) {
+    var drops = WindowDropCounts()
+    let segments = try await decodeWithPromptFallback(promptTokens: promptTokens) { tokens in
+        let decoded = try await decode(tokens)
+        drops.add(decoded.drops)
+        return decoded.segments
+    }
+    return (segments, drops)
 }
 
 /// Whether a decode produced anything usable, under the same trimming rule

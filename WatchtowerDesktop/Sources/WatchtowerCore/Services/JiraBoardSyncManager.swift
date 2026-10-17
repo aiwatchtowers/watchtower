@@ -66,7 +66,7 @@ package final class JiraBoardSyncManager {
             "jira", "--account", String(accountID),
             "sync", "--board", String(boardID), "--progress-json"
         ]
-        proc.environment = Constants.resolvedEnvironment()
+        proc.environment = await Constants.resolvedEnvironmentAsync()
         proc.currentDirectoryURL = Constants.processWorkingDirectory()
 
         let stdoutPipe = Pipe()

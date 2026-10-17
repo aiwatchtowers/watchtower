@@ -469,7 +469,7 @@ extension WorkbenchesViewModel {
                   agent.rawValue, projectID, targetID)
         }
         return TerminalLaunch.workOnPrompt(
-            targetID: targetID, isGroup: isGroup, skillKnowsGroups: knows, vocabulary: vocabulary(projectID: projectID)
+            targetID: targetID, isGroup: isGroup, skillKnowsGroups: knows
         )
     }
 
@@ -689,13 +689,15 @@ extension WorkbenchesViewModel {
     /// database path, `SessionHostPaths.scope`), then reattaches once the
     /// session host connection (`TerminalCenter.startSessionHost`) is done;
     /// with none begun it ends at once. `activate` waits for it
-    /// (`hostReattach`), not for the stops of stray runs.
+    /// (`hostReattach`), not for the stops of stray runs. Its end, whatever
+    /// the reattach did, marks the center's liveness settled.
     func startHostReattach() {
         terminalCenter?.sessionHostScope = SessionHostPaths.scope(databasePath: dbPool.path)
         let connection = terminalCenter?.sessionHostConnection
-        hostReattach = Task { [weak self] in
+        hostReattach = Task { [weak self, weak center = terminalCenter] in
             await connection?.value
             await self?.reattachHostedSessions()
+            center?.markHostRunsSettled()
         }
     }
 

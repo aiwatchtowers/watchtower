@@ -47,6 +47,10 @@ public enum ActionKind: String, Codable, CaseIterable {
     case sessionStop = "session_stop"
     /// Entity: session id. Idempotent.
     case sessionReportRequest = "session_report_request"
+    /// Entity: session id; params carry the request id. Allow once or deny; needs the permissions grant.
+    case permissionAnswer = "permission_answer"
+    /// Entity: session id. Sends Esc to a Working session; needs the typing grant.
+    case sessionInterrupt = "session_interrupt"
 }
 
 /// Wire status of one action record (spec §5.2). Only the Mac moves a record

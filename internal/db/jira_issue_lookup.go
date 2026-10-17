@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -11,7 +12,7 @@ import (
 func (db *DB) GetJiraIssue(accountID int64, key string) (*JiraIssue, error) {
 	row := db.QueryRow(`SELECT `+jiraIssueColumns+` FROM jira_issues WHERE account_id = ? AND key = ?`, accountID, key)
 	issue, err := scanJiraIssue(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

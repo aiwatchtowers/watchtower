@@ -30,6 +30,10 @@ package enum DryRunPresentation {
             return outputLine(step)
         case ("state", "dry_run"):
             return "Would save state"
+        case ("mcp", "dry_run"):
+            // A draft stops at its first mcp() call (ask #326); a saved
+            // recipe's dry run calls the Quick Connection for real.
+            return "Stopped before calling \(step.name): Quick Connections are not called in a draft"
         case ("llm", "ok"):
             let tokens = tokenFormatter.string(from: NSNumber(value: step.inputTokens + step.outputTokens)) ?? "0"
             return "Asked the assistant · \(tokens) tokens"

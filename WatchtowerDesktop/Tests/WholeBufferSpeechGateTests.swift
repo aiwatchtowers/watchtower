@@ -45,8 +45,8 @@ final class WholeBufferSpeechGateTests: XCTestCase {
                 log.record(samples)
                 return text
             }),
-            ("apple", AppleTranscriber(speechDetector: LoudDetector()) { samples, _ in
-                log.record(samples)
+            ("apple", AppleTranscriber(speechDetector: LoudDetector()) { audio, _ in
+                log.record(audio.muted())
                 return text
             })
         ]
@@ -107,5 +107,108 @@ final class WholeBufferSpeechGateTests: XCTestCase {
         let input = try XCTUnwrap(log.decoded.first)
         XCTAssertTrue(input[(45 * rate)..<(46 * rate)].allSatisfy { $0 == 0.4 })
         XCTAssertEqual(input.filter { $0 != 0 }.count, rate)
+    }
+
+    func testWordAcrossAChunkSeamIsKept() async throws {
+        // Board #564: 0.4 s of speech at 29.8–30.2 s. Cut at the 30 s seam,
+        // each piece (0.2 s) is under the detector's minimum speech; the
+        // overlapping chunk sees it whole.
+        var samples = [Float](repeating: 0.001, count: 60 * rate)
+        let word = (29 * rate + rate * 8 / 10)..<(30 * rate + rate * 2 / 10)
+        for i in word { samples[i] = 0.4 }
+        let log = BufferDecodeLog()
+        _ = try await ParakeetTranscriber(speechDetector: MinimumSpeechDetector()) { buffer in
+            log.record(buffer)
+            return "x"
+        }.transcribe(samples, config: TranscriptionConfig()) { _, _ in }
+        let input = try XCTUnwrap(log.decoded.first, "the word is speech: the recording is decoded")
+        XCTAssertTrue(input[word].allSatisfy { $0 == 0.4 }, "the word reaches the engine unmuted")
+    }
+
+    /// Every chunk length it was asked about; speech = the loud samples.
+    private final class ChunkLog: SpeechDetector, @unchecked Sendable {
+        private let lock = NSLock()
+        private var asked: [Int] = []
+        var lengths: [Int] { lock.withLock { asked } }
+        func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
+            lock.withLock { asked.append(samples.count) }
+            return try await LoudDetector().speechRanges(in: samples)
+        }
+    }
+
+    func testChunkBoundaries() async {
+        // 30 s chunks stepping 28 s; the last chunk ends at the recording's end.
+        let second = rate
+        let cases: [(samples: Int, chunks: [Int])] = [
+            (1, [1]),
+            (30 * second, [30 * second]),
+            (58 * second, [30 * second, 30 * second]),
+            (58 * second + 1, [30 * second, 30 * second, 2 * second + 1])
+        ]
+        for (count, chunks) in cases {
+            let detector = ChunkLog()
+            _ = await speechOnlyBuffer([Float](repeating: 0.001, count: count), detector: detector,
+                                       config: TranscriptionConfig())
+            XCTAssertEqual(detector.lengths, chunks, "\(count) samples")
+        }
+    }
+
+    func testMultiChunkAllSpeechRecordingIsNotCopied() async throws {
+        // 45 s of speech: two chunks whose ranges only cover the whole
+        // recording once merged.
+        let samples = [Float](repeating: 0.3, count: 45 * rate)
+        let (audio, _) = await speechOnlyBuffer(samples, detector: ChunkLog(), config: TranscriptionConfig())
+        let speech = try XCTUnwrap(audio)
+        XCTAssertNil(speech.speech, "nothing to mute")
+        XCTAssertEqual(baseAddress(speech.muted()), baseAddress(samples), "nothing copied")
+    }
+
+    /// `LoudDetector` with Silero's segmentation rules that matter at a
+    /// seam: a run shorter than 0.3 s is not speech, and every window with
+    /// under 0.3 s of speech is silent.
+    private final class MinimumSpeechDetector: SpeechDetector, @unchecked Sendable {
+        func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
+            let minimum = Int(0.3 * Double(TranscriptionConfig.sampleRate))
+            return try await LoudDetector().speechRanges(in: samples).filter { $0.count >= minimum }
+        }
+    }
+
+    // MARK: Memory (board #564)
+
+    private func baseAddress(_ samples: [Float]) -> UnsafeRawPointer? {
+        samples.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+    }
+
+    func testAppleGetsTheRecordingItselfAndMutesIntoItsPCMBuffer() async throws {
+        // No muted copy of the recording besides the analyzer's own PCM
+        // buffer: the decode is handed the caller's samples (same storage)
+        // and the speech ranges, and the PCM copy mutes on the way.
+        let samples = noisy()
+        final class Box: @unchecked Sendable { var audio: SpeechOnlyAudio? }
+        let box = Box()
+        _ = try await AppleTranscriber(speechDetector: LoudDetector()) { audio, _ in
+            box.audio = audio
+            return "x"
+        }.transcribe(samples, config: TranscriptionConfig()) { _, _ in }
+        let audio = try XCTUnwrap(box.audio)
+        XCTAssertEqual(baseAddress(audio.samples), baseAddress(samples), "the recording is not copied")
+        XCTAssertEqual(audio.speech, [0..<rate, (3 * rate)..<(4 * rate)])
+
+        let buffer = try AppleTranscriber.makePCMBuffer(audio: audio)
+        let channel = Array(UnsafeBufferPointer(start: try XCTUnwrap(buffer.floatChannelData)[0],
+                                                count: Int(buffer.frameLength)))
+        XCTAssertEqual(channel, audio.muted(), "the PCM buffer holds the muted recording")
+    }
+
+    func testAllSpeechRecordingIsNotCopied() async throws {
+        let samples = [Float](repeating: 0.3, count: 2 * rate)
+        final class Box: @unchecked Sendable { var decoded: [Float]? }
+        let box = Box()
+        _ = try await ParakeetTranscriber(speechDetector: LoudDetector()) { input in
+            box.decoded = input
+            return "x"
+        }.transcribe(samples, config: TranscriptionConfig()) { _, _ in }
+        let decoded = try XCTUnwrap(box.decoded)
+        XCTAssertEqual(baseAddress(decoded), baseAddress(samples), "nothing to mute, nothing copied")
     }
 }

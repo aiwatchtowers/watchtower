@@ -67,7 +67,7 @@ func (x *Extractor) runPDFHelper(ctx context.Context, path string) ([]pdfPage, b
 	defer cancel()
 	argv := x.PDFHelper
 	args := append(append([]string(nil), argv[1:]...), path)
-	cmd := exec.CommandContext(cctx, argv[0], args...) //nolint:gosec // argv is our own executable, set by the caller
+	cmd := exec.CommandContext(cctx, argv[0], args...) // argv is our own executable, set by the caller
 	out := &cappedBuffer{max: maxPDFHelperOutput}
 	stderr := &cappedBuffer{max: maxPDFHelperStderr, truncate: true}
 	cmd.Stdout, cmd.Stderr = out, stderr

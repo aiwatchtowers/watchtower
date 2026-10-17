@@ -101,8 +101,20 @@ final class CatchUpViewModel {
     /// reload to surface the `building` row and its transition to ready/failed.
     private let pollInterval: Duration = .seconds(1)
 
-    init(dbPool: DatabasePool) {
+    /// The clock the stale-`building` projection reads, and the sleep the
+    /// stale recheck waits with (it returns once its task is cancelled);
+    /// tests drive both.
+    @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
+
+    init(
+        dbPool: DatabasePool,
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) {
         self.dbPool = dbPool
+        self.now = now
+        self.sleep = sleep
     }
 
     // MARK: - Loading
@@ -111,9 +123,10 @@ final class CatchUpViewModel {
     func startObserving() {
         guard observationTask == nil else { return }
         let pool = dbPool
+        let now = now
         observationTask = Task { [weak self] in
             do {
-                for try await recaps in CatchUpQueries.observeRecaps().values(in: pool) {
+                for try await recaps in CatchUpQueries.observeRecaps(now: now).values(in: pool) {
                     guard !Task.isCancelled, let self else { break }
                     await self.apply(recaps)
                 }
@@ -128,7 +141,8 @@ final class CatchUpViewModel {
     /// because cross-process writes are invisible to ValueObservation.
     func reload() async {
         do {
-            let recaps = try await dbPool.read { try CatchUpQueries.fetchRecaps($0) }
+            let at = now()
+            let recaps = try await dbPool.read { try CatchUpQueries.fetchRecaps($0, now: at) }
             await apply(recaps)
         } catch {
             self.error = error.localizedDescription
@@ -168,9 +182,10 @@ final class CatchUpViewModel {
         staleRecheckTask = nil
         guard let due = recaps.compactMap(\.staleAt).min() else { return }
         // One second past the threshold: the projection flips strictly after it.
-        let delay = max(due.timeIntervalSinceNow, 0) + 1
+        let delay = max(due.timeIntervalSince(now()), 0) + 1
+        let sleep = sleep
         staleRecheckTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
+            await sleep(.seconds(delay))
             guard !Task.isCancelled, let self else { return }
             await self.reload()
         }
@@ -456,10 +471,36 @@ final class CatchUpViewModel {
             return ""
         }
 
+        // An accumulated channel item (#586) names everyone who wrote, not
+        // only the newest sender.
+        let sender = item.isAccumulated
+            ? item.mentionSendersLabel(names: inboxMentionSenders(item))
+            : names.sender
+        return Self.originCaption(sender: sender, channel: names.channel)
+    }
+
+    /// "from Ann in #eng"; either half dropped when empty.
+    nonisolated static func originCaption(sender: String, channel: String) -> String {
         var parts: [String] = []
-        if !names.sender.isEmpty { parts.append("from \(names.sender)") }
-        if !names.channel.isEmpty { parts.append("in #\(names.channel)") }
+        if !sender.isEmpty { parts.append("from \(sender)") }
+        if !channel.isEmpty { parts.append("in #\(channel)") }
         return parts.joined(separator: " ")
+    }
+
+    /// Display names of the senders an accumulated channel item lists (#586),
+    /// keyed by namespaced user id; an unresolved sender is simply absent.
+    func inboxMentionSenders(_ item: InboxItem) -> [String: String] {
+        guard item.isAccumulated else { return [:] }
+        let names = resolve("inbox mention senders for item \(item.id)") { db -> [String: String]? in
+            var names: [String: String] = [:]
+            for id in Set(item.mentionList.map(\.sender)) {
+                if let name = try UserQueries.fetchByID(db, id: id)?.bestName, !name.isEmpty {
+                    names[id] = name
+                }
+            }
+            return names
+        }
+        return names ?? [:]
     }
 
     /// Message deep link for an inbox source: the item's stored permalink when
@@ -471,6 +512,12 @@ final class CatchUpViewModel {
         return SlackDeepLink.archives(channelID: item.channelID, messageTS: item.messageTS)
     }
 
+    /// The same rule for one message of an accumulated channel item (#586).
+    nonisolated static func slackMessageURL(for mention: InboxItem.Mention, channelID: String) -> URL? {
+        if let permalink = mention.permalink, !permalink.isEmpty { return URL(string: permalink) }
+        return SlackDeepLink.archives(channelID: channelID, messageTS: mention.ts)
+    }
+
     // MARK: - CLI (drains stdout+stderr concurrently, off the concurrency pool)
 
     nonisolated private static func runCLI(
@@ -479,7 +526,7 @@ final class CatchUpViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         return await ProcessPipes.run(process).trimmed
     }

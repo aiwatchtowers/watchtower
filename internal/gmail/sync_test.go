@@ -693,7 +693,6 @@ func TestRecordAuthResultLiveContext(t *testing.T) {
 // the already-seen filter both exclude it.
 func TestSyncStopsWatermarkAtFirstFailureButStillStoresLaterMessages(t *testing.T) {
 	const t1Unix = 1700000000 // oldest, stored
-	const t2Unix = 1700003600 // middle, fetch fails
 	const t3Unix = 1700007200 // newest, stored
 
 	mux := http.NewServeMux()

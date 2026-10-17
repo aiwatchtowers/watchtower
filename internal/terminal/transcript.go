@@ -136,7 +136,7 @@ func scanOwnerText(br *bufio.Reader, capChars int, lineText func([]byte) string)
 	total := 0
 	for total < capChars {
 		line, err := readLine(br, maxTranscriptLine)
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			return "", fmt.Errorf("reading transcript: %w", err)
 		}
 		if line != nil {
@@ -145,7 +145,7 @@ func scanOwnerText(br *bufio.Reader, capChars int, lineText func([]byte) string)
 				total += utf8.RuneCountInString(text) + 1
 			}
 		}
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 	}

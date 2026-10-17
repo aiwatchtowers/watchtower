@@ -20,7 +20,7 @@ Slack is read-only. The assistant sends a Slack message only after you approve i
 
 Each account syncs on its own. One account failing never stops the others, and its row shows the problem while the rest keep working.
 
-Slack and Jira rows have an **Enabled** switch to pause an account without removing it. Names are made automatically (team name, site name, mail domain) and **Rename…** changes one.
+Slack and Jira rows have an **Enabled** switch that stops syncing an account without removing it. Turning it back on syncs new messages again, but a month of history that was still loading does not resume. Names are made automatically (team name, site name, mail domain) and **Rename…** changes one.
 
 A red dot on a service means at least one of its accounts has a problem. An expired or revoked sign-in is the usual cause.
 
@@ -37,9 +37,9 @@ It depends on the source. **Remove** always stops syncing and deletes the sign-i
 
 ## Why Watchtower needs to know who you are
 
-Briefings, Day Plan and Inbox are about you, so they need your identity before they run. Watchtower takes it from the first source that can supply it, in this order: Slack account #1 (if you remove it, another workspace does not take over), the first Google account, the first enabled Jira site, the first enabled Linear account. Other accounts then add details such as your email or Jira id.
+Briefings, Day Plan and Inbox are about you, so they need your identity before they run. Watchtower takes it from the first source that can supply it, in this order: Slack account #1 (if you remove it, another workspace does not take over), the first Google account, the first enabled Jira site, the first enabled Linear account, the first email (IMAP or Outlook) account's address. Other accounts then add details such as your email or Jira id.
 
-With none connected, Briefings and Day Plan say "Connect Slack, Google, Jira or Linear so Watchtower knows who you are", and those three never run. Connecting any one fixes it. A freshly connected Jira site can show this message for a moment, until Jira reports who you are.
+With none connected, Briefings, Day Plan and Inbox say "Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are", Home's cards for them name the same accounts, and those three never run. A calendar alone does not identify you. Connecting any one fixes it. A freshly connected Jira site can show this message for a moment, until Jira reports who you are.
 
 ## Related
 

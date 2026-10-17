@@ -55,7 +55,7 @@ func TestManifest_DeniedCarriesCause(t *testing.T) {
 	if !errors.As(err, &pd) || pd.Cause == nil || pd.Needed != "slack:write@*" {
 		t.Fatalf("err = %#v, want a PermissionDenied with a Cause", err)
 	}
-	if errors.Unwrap(err) != pd.Cause {
+	if errors.Unwrap(err) != pd.Cause { //nolint:errorlint // asserts Unwrap returns the cause itself, not a wrapper of it
 		t.Error("Unwrap does not return the Cause")
 	}
 

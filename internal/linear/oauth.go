@@ -127,7 +127,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opt LoginOptions
 	mux.HandleFunc(callbackPath, callback)
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go server.Serve(listener) //nolint:errcheck
+	go server.Serve(listener)
 	defer func() {
 		time.Sleep(500 * time.Millisecond)
 		server.Close()
@@ -172,7 +172,7 @@ func postToken(ctx context.Context, endpoint string, form url.Values) (*Token, e
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := tokenHTTPClient.Do(req) //nolint:gosec // endpoint is a package var, overridden only by tests
+	resp, err := tokenHTTPClient.Do(req) // endpoint is a package var, overridden only by tests
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}
@@ -222,7 +222,7 @@ func Revoke(ctx context.Context, accessToken string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := tokenHTTPClient.Do(req) //nolint:gosec // endpoint is a package var, overridden only by tests
+	resp, err := tokenHTTPClient.Do(req) // endpoint is a package var, overridden only by tests
 	if err != nil {
 		return fmt.Errorf("revoke request: %w", err)
 	}

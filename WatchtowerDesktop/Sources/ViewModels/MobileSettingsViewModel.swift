@@ -13,7 +13,8 @@ protocol MobileSettingsHost: AnyObject {
 
 /// Settings → Mobile on the Mac (mobile POC spec §2.3, §8 I-1, §9, §10):
 /// the "Sync with iPhone" opt-in, the hub status, the QR sheet and
-/// the linked phones (Allow… / Revoke typing, Remove).
+/// the linked phones (Allow… / Revoke typing, Allow… / Revoke answering
+/// permission prompts, Remove).
 ///
 /// The hub and its link center are the app's (`AppState.mobileHub`); this
 /// model reads them and refreshes the polled parts (iCloud account, last
@@ -54,6 +55,12 @@ final class MobileSettingsViewModel {
         "Allow \"\(name)\" to type into Claude Code sessions?"
     }
 
+    /// The confirmation of answering permission prompts (#517, spec §5.1),
+    /// the dialog's title.
+    nonisolated static func permissionsQuestion(name: String) -> String {
+        "Allow \"\(name)\" to approve commands in Claude Code sessions?"
+    }
+
     /// Remove's confirmation (spec §2.3), the dialog's title.
     nonisolated static func removeQuestion(name: String) -> String {
         "Remove \"\(name)\"?"
@@ -79,6 +86,12 @@ final class MobileSettingsViewModel {
         return device.typingRequested ? "Asks to type into sessions" : "Typing off"
     }
 
+    /// A phone row's permission-prompt state (#517).
+    nonisolated static func permissionsLabel(_ device: HubSyncState.LinkedDevice) -> String {
+        if device.permissionsAllowed { return "Permission prompts allowed" }
+        return device.permissionsRequested ? "Asks to answer permission prompts" : "Permission prompts off"
+    }
+
     /// `CloudKitTransport.entitlementPresent()`: false on an ad-hoc build,
     /// which cannot turn the toggle on (an inherited on can be turned off).
     let entitlementPresent: Bool
@@ -97,6 +110,8 @@ final class MobileSettingsViewModel {
     private(set) var notice: String?
     /// The phone whose Allow… waits for confirmation.
     var pendingAllow: HubSyncState.LinkedDevice?
+    /// The phone whose permission-prompts Allow… waits for confirmation.
+    var pendingPermissionsAllow: HubSyncState.LinkedDevice?
     /// The phone whose Remove waits for confirmation; drives the dialog.
     var pendingRemove: HubSyncState.LinkedDevice?
     /// The phone the Remove dialog is about, kept while it dismisses (when
@@ -277,6 +292,30 @@ final class MobileSettingsViewModel {
             notice = nil
         } catch {
             notice = "Couldn't change typing for \(device.name): \(error.localizedDescription)"
+        }
+    }
+
+    func requestPermissionsAllow(_ device: HubSyncState.LinkedDevice) {
+        pendingPermissionsAllow = device
+    }
+
+    func confirmPermissionsAllow() {
+        guard let device = pendingPermissionsAllow else { return }
+        pendingPermissionsAllow = nil
+        setPermissions(true, device)
+    }
+
+    func revokePermissions(_ device: HubSyncState.LinkedDevice) {
+        setPermissions(false, device)
+    }
+
+    private func setPermissions(_ allowed: Bool, _ device: HubSyncState.LinkedDevice) {
+        guard let center = hub?.linkCenter else { return }
+        do {
+            try center.setPermissionsAllowed(allowed, deviceID: device.deviceID)
+            notice = nil
+        } catch {
+            notice = "Couldn't change permission prompts for \(device.name): \(error.localizedDescription)"
         }
     }
 

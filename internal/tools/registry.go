@@ -66,9 +66,6 @@ const AutomationEditorSurface = "automation_editor"
 // scope every row they touch to it (DEV-06). DirectApply makes Propose apply a
 // non-External tool inline for this call only — the owner's standing trust
 // rows are neither read nor changed — and refuses an External one outright.
-// LegacyNames marks a session started the pre-rename way (`mcp --project N`):
-// the MCP adapter lists the renamed workbench tools under their old names
-// (LegacyWorkbenchToolNames) and spells its texts the same way (Spell).
 // ChatProjectID is the chat project of a project chat (`ai session
 // --project-id N`, passed on as `mcp --chat --chat-project N`): it only
 // steers search_knowledge toward the project's pinned sources, and grants
@@ -83,7 +80,6 @@ type Binding struct {
 	WorkbenchID    int64
 	ChatProjectID  int64
 	DirectApply    bool
-	LegacyNames    bool
 	// Agent is `mcp --agent`: the agent a workbench session runs, when no
 	// terminal session row names it (agentLabelFor). Empty = not given.
 	Agent agentkind.Kind
@@ -297,8 +293,7 @@ func (r *Registry) Register(t *Tool) error {
 
 // Get returns the named tool, or false when it is not registered. A renamed
 // workbench tool resolves under its pre-rename name too (CanonicalToolName),
-// so a legacy session's call, and an agent_actions row recorded before the
-// rename, still find it.
+// so an agent_actions row recorded before the rename still finds it.
 func (r *Registry) Get(name string) (*Tool, bool) {
 	t, ok := r.tools[name]
 	if !ok {
@@ -431,9 +426,11 @@ func reasonOf(args json.RawMessage) string {
 
 // Propose validates a write-tool call and records it. With trust "ask" the
 // row is pending and nothing executes; with "execute" the row is inserted as
-// approved and applied inline, so the model sees the result immediately. A
-// call by a pre-rename workbench tool name is recorded under the tool's
-// current name (Tool.Name), the one name agent_actions.tool ever gets.
+// approved and applied inline, so the model sees the result immediately. The
+// row records the tool's current name (Tool.Name), the one name
+// agent_actions.tool ever gets. A pre-rename workbench tool name still
+// resolves here only so rows stored under it keep working; no adapter sends
+// one.
 func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessage, b Binding) (Receipt, error) {
 	t, ok := r.Get(name)
 	if !ok {

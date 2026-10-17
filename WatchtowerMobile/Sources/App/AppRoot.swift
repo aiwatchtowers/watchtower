@@ -839,7 +839,8 @@ extension AppRoot: LinkHost {
             return DevicePayload(
                 deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion,
                 scope: device.scope, userRecordName: device.userRecordName, linkNonce: linkNonce,
-                unlinked: unlinked ? true : nil, typingRequested: false, startSessions: true, updatedAt: now
+                unlinked: unlinked ? true : nil, typingRequested: false, startSessions: true, permissionsRequested: false,
+                updatedAt: now
             )
         }
         return session.deviceSettings.devicePayload(for: device, linkNonce: linkNonce, unlinked: unlinked, now: now)
