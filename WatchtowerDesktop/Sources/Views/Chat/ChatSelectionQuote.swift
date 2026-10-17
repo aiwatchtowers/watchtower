@@ -132,8 +132,13 @@ final class ChatSelectionQuoteTracker {
         // feed's own window: the composer and every field the owner types in
         // are editable, and a selection in another window never touches the
         // feed's.
-        guard let textView, textView.isFieldEditor, !textView.isEditable,
-              let window = anchor?.window, textView.window === window else { return }
+        guard let textView, let window = anchor?.window, textView.window === window else { return }
+        // The owner moved to a field they type in (the composer, a search
+        // field): the answer's selection is gone.
+        guard textView.isFieldEditor, !textView.isEditable else {
+            clear()
+            return
+        }
         editor = textView
         region = nil
         stopObservingGeometry()

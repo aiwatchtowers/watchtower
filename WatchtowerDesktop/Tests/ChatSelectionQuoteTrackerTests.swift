@@ -182,6 +182,24 @@ final class ChatSelectionQuoteTrackerTests: XCTestCase {
         XCTAssertNil(feed.tracker.selection)
     }
 
+    /// Typing somewhere in the feed's window (the composer, a search field)
+    /// drops the answer's selection and its chip.
+    func testAnEditableEditorInTheFeedsWindowClearsTheSelection() throws {
+        let text = "Keep the retry budget small."
+        let feed = try makeFeed(text: text)
+        feed.editor.setSelectedRange((text as NSString).range(of: "retry"))
+        XCTAssertNotNil(feed.tracker.selection)
+
+        // Its own editor, so the answer's field editor never ends editing
+        // here: only the notification can clear the selection.
+        let composerEditor = NSTextView(frame: NSRect(x: 20, y: 200, width: 400, height: 24))
+        composerEditor.isFieldEditor = true
+        composerEditor.isEditable = true
+        feed.root.addSubview(composerEditor)
+        NotificationCenter.default.post(name: NSTextView.didChangeSelectionNotification, object: composerEditor)
+        XCTAssertNil(feed.tracker.selection)
+    }
+
     /// A selection in another window neither offers a quote nor clears the
     /// feed's.
     func testASelectionInAnotherWindowLeavesTheFeedAlone() throws {
