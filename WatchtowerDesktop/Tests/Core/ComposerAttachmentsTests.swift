@@ -54,11 +54,19 @@ final class ComposerAttachmentsTests: XCTestCase {
 
     func testTakeForSendHandsOverAndClears() throws {
         let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
-        model.addPastedImage(AttachmentValidatorTests.png, conversationID: conversationID)
+        model.addPasted(AttachmentValidatorTests.png, name: "Pasted image.png", conversationID: conversationID)
         let taken = model.takeForSend()
         XCTAssertEqual(taken.map(\.name), ["Pasted image.png"])
         XCTAssertTrue(model.pending.isEmpty)
         XCTAssertNil(model.errorMessage)
+    }
+
+    func testAddPastedReportsSuccessAndRejection() {
+        let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
+        XCTAssertTrue(model.addPasted(Data("long text".utf8), name: "Pasted text.txt", conversationID: conversationID))
+        XCTAssertEqual(model.pending.map(\.mime), ["text/plain"])
+        XCTAssertFalse(model.addPasted(AttachmentValidatorTests.zip, name: "Pasted image.png", conversationID: conversationID))
+        XCTAssertEqual(model.errorMessage, AttachmentRejection.unsupportedType(fileName: "Pasted image.png").message)
     }
 
     func testNoWorkspaceSaysSo() {
