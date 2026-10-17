@@ -228,3 +228,69 @@ func (db *DB) GmailMessagesSyncedAfter(accountID int64, sinceISO string) ([]Gmai
 	}
 	return out, rows.Err()
 }
+
+// GmailStoredIDs returns the ids of the messages stored for accountID whose
+// internal_date parses, and the oldest of those dates as unix seconds. Rows
+// with an empty or unparseable date are left out: a date-bounded listing
+// cannot vouch for them.
+func (db *DB) GmailStoredIDs(accountID int64) (ids []string, oldestUnix float64, err error) {
+	rows, err := db.Query(`SELECT id, internal_date FROM gmail_messages WHERE account_id = ?`, accountID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing stored gmail ids for account %d: %w", accountID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, date string
+		if err := rows.Scan(&id, &date); err != nil {
+			return nil, 0, fmt.Errorf("scanning stored gmail id: %w", err)
+		}
+		t, perr := time.Parse(time.RFC3339, date)
+		if perr != nil {
+			continue // undated rows are never deletion candidates
+		}
+		ids = append(ids, id)
+		if u := float64(t.Unix()); oldestUnix == 0 || u < oldestUnix {
+			oldestUnix = u
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterating stored gmail ids: %w", err)
+	}
+	return ids, oldestUnix, nil
+}
+
+// DeleteGmailMessages removes the given messages of accountID in one
+// transaction and returns how many rows went. The gmail_messages delete
+// trigger marks the affected KB threads.
+func (db *DB) DeleteGmailMessages(accountID int64, ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("beginning gmail delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	total := 0
+	const chunk = 500
+	for start := 0; start < len(ids); start += chunk {
+		part := ids[start:min(start+chunk, len(ids))]
+		args := make([]any, 0, len(part)+1)
+		args = append(args, accountID)
+		for _, id := range part {
+			args = append(args, id)
+		}
+		//nolint:gosec // G202: only "?" placeholders are concatenated; every value is a bound arg.
+		res, err := tx.Exec(`DELETE FROM gmail_messages WHERE account_id = ? AND id IN (`+
+			strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("deleting gmail messages for account %d: %w", accountID, err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing gmail delete: %w", err)
+	}
+	return total, nil
+}
