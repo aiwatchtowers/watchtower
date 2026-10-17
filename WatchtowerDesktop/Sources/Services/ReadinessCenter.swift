@@ -8,6 +8,8 @@ import WatchtowerCore
 protocol ReadinessEnvironment: AnyObject {
     var now: Date { get }
     var daemonRunning: Bool { get }
+    /// `DaemonManager.notRunningSince`.
+    var daemonNotRunningSince: Date? { get }
     var syncProgress: SyncProgress? { get }
     /// When the last Slack sync finished (`last_sync.json`); nil before the first.
     var lastSyncTime: Date? { get }
@@ -159,6 +161,7 @@ final class ReadinessCenter {
             disabledFeatureIDs: environment.disabledFeatureIDs,
             connected: environment.connected,
             daemonRunning: environment.daemonRunning,
+            daemonNotRunningSince: environment.daemonNotRunningSince,
             syncProgress: environment.syncProgress,
             lastSyncTime: environment.lastSyncTime,
             latestRuns: snapshot.latestRuns,
@@ -204,6 +207,7 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
 
     var now: Date { Date() }
     var daemonRunning: Bool { daemon.isRunning }
+    var daemonNotRunningSince: Date? { daemon.notRunningSince }
     var syncProgress: SyncProgress? { daemon.syncProgress }
     var lastSyncTime: Date? { daemon.lastSyncTime }
     var disabledFeatureIDs: Set<String> { visibility.disabledFeatureIDs }

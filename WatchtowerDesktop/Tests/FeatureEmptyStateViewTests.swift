@@ -77,6 +77,15 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(button: "Turn on"))
     }
 
+    func testDaemonStoppedShowsStart() throws {
+        var tapped: EmptyStateAction?
+        let view = makeView(readiness: .daemonStopped) { tapped = $0 }
+        XCTAssertNoThrow(try view.inspect().find(text: "Watchtower isn't running — Start"))
+        try view.inspect().find(button: "Start Watchtower").tap()
+        XCTAssertEqual(tapped, .startDaemon)
+        XCTAssertThrowsError(try view.inspect().find(button: "Turn on"))
+    }
+
     func testTurnOnErrorShownWithTheButton() throws {
         let view = makeView(readiness: .off, turnOnError: AppState.featureChangesBusy)
         XCTAssertNoThrow(try view.inspect().find(text: AppState.featureChangesBusy))

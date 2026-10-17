@@ -1086,7 +1086,7 @@ final class AppState {
     /// Starts (or, with `startOnly` false, restarts) the daemon in the
     /// background, after any earlier bring-up still running: two restarts
     /// overlapping would read as a failed start.
-    private func bringUpDaemonInBackground(startOnly: Bool) {
+    func bringUpDaemonInBackground(startOnly: Bool) {
         let daemon = daemonControl
         let previous = onboardingDaemonStart
         onboardingDaemonStart = Task {

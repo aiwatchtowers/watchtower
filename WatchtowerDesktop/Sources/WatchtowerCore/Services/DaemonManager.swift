@@ -43,8 +43,21 @@ enum PidWaitOutcome: Equatable {
 @Observable
 package final class DaemonManager {
     package var isRunning = false {
-        didSet { if isRunning != oldValue { onRunningChanged?(isRunning) } }
+        didSet {
+            if isRunning {
+                if notRunningSince != nil { notRunningSince = nil }
+            } else if notRunningSince == nil {
+                notRunningSince = Date()
+            }
+            if isRunning != oldValue { onRunningChanged?(isRunning) }
+        }
     }
+    /// Since when the daemon has been seen down: set by the first status
+    /// read (or stop) that finds it not running, cleared when it runs. nil
+    /// before the first read, so a launch never reads as "down" before
+    /// anything was checked. Readiness waits `FeatureReadiness.daemonDownGrace`
+    /// on it, so a restart does not flicker.
+    package private(set) var notRunningSince: Date?
     /// Called when `isRunning` flips (the status poll included).
     @ObservationIgnored package var onRunningChanged: (@MainActor (Bool) -> Void)?
     /// The daemon's live sync heartbeat, refreshed by `checkStatus()`. nil when

@@ -26,20 +26,28 @@ until the next morning's hour.
      (`ReadinessSource.isConnected`, `Readiness.swift:77`);
   3. `ready` — the feature's content table has any row; content wins even while
      a new run is going;
-  4. `preparing(detail)` — the newest `pipeline_runs` row is `running`, the
+  4. `daemonStopped` (#577, owner ask #307 q4) — the daemon is not running and
+     has been seen down for `daemonDownGrace` (30 s) or longer
+     (`ReadinessInputs.daemonNotRunningSince` = `DaemonManager.notRunningSince`,
+     set by the first status read or stop that finds it down, cleared when it
+     runs, nil before the first read). Every later state is a promise a stopped
+     daemon does not keep, so it wins over all of them; the grace keeps a
+     restart (stop, then start) from flickering. With the 10 s status poll and
+     the 30 s readiness tick it shows 30–60 s after the daemon went down;
+  5. `preparing(detail)` — the newest `pipeline_runs` row is `running`, the
      daemon is running and `started_at` is under `preparingMaxAge` (2 h,
      `FeatureReadiness.swift:9`). An older `running` row is a dead process's
      leftover (`reapStalePipelineRuns` only reaps after 24 h) and falls through;
-  5. `error(message)` — the newest run is `error` and there is no content;
-  6. `waitingForSync(detail)` — the feature reads synced data, **Slack is
+  6. `error(message)` — the newest run is `error` and there is no content;
+  7. `waitingForSync(detail)` — the feature reads synced data, **Slack is
      connected** and `lastSyncTime == nil` (R7);
-  7. `scheduled(Eta)` — the next run time from the feature's gate.
+  8. `scheduled(Eta)` — the next run time from the feature's gate.
 - **`lastSyncTime` means "the first Slack sync finished".** It is the mtime of
   `last_sync.json` (`DaemonManager.readLastSyncTime`,
   `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift:95`), which only the Slack sync paths
   write: the daemon's Slack sync phase (`internal/daemon/daemon.go:631`) and
   a foreground `watchtower sync` (`cmd/sync.go:608`, `:628`). Without Slack it stays nil for ever,
-  so rule 6 applies only while Slack is connected (`FeatureReadiness.swift:37`);
+  so rule 7 applies only while Slack is connected (`FeatureReadiness.swift:37`);
   a mail/Jira-only install goes straight to `scheduled`.
 - **`Eta` is a vocabulary, not a duration** (`Readiness.swift:91`):
   `afterCurrentSync`, `nextCycle(minutes:)` from `sync.poll_interval`
@@ -48,7 +56,7 @@ until the next morning's hour.
   from `last_ideas.txt`/`last_streams.txt`, rounded up). No countdowns. Phrases
   and the one-line state wording live in `FeatureReadiness.phrase`/`line`
   (`FeatureReadiness.swift:94-115`): "Off — Turn on", "Connect Slack to get
-  this", "Preparing now", "Didn't work yet — retries automatically · <first line
+  this", "Watchtower isn't running — Start", "Preparing now", "Didn't work yet — retries automatically · <first line
   of error_msg, ≤ 80 chars>", "Starts after the first sync", "Within ~15 min",
   "Today at 08:00", "In about a day". The spec's "link to Usage → Pipelines" on
   `error` is not built.
@@ -151,7 +159,10 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   before its empty state. "No matches" filter states are untouched.
 - **The one button** (`FeatureEmptyState.visibleAction`, `:103`): Turn on while
   `off` — for **any** off feature with a registry id, hiding the tab's own
-  action while off (R13); Connect <source> while `needsSource`; otherwise the
+  action while off (R13); Connect <source> while `needsSource`; **Start
+  Watchtower** while `daemonStopped` (`EmptyStateAction.startDaemon` →
+  `AppState.bringUpDaemonInBackground(startOnly: true)`; a failed start shows
+  the "did not start" banner); otherwise the
   table's action ("Change the hour" for the hours, which opens Settings →
   Features — owner, ask #299 —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
   never show in a state that doesn't call for them.
@@ -294,6 +305,8 @@ the zone and the memory to persist out. Rules, first match wins:
    Neither → hidden: a Development-only install (the knowledge-index card,
    Connect rows for the bare Slack/Calendar/Jira sources) does not open it.
 6. Some card with a source, and every card terminal (ready or error) →
+   (`daemonStopped` is not terminal — tone `waiting` — so a stopped daemon
+   never completes the zone; its cards carry a **Start** link, `HomeLink.startDaemon`)
    `completedAt = now`; "Everything's ready" if the zone showed unready cards
    during this launch, else hidden. A zone of Connect rows only (perhaps with
    the knowledge-index card) is never complete: it stays until a source
