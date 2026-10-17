@@ -128,16 +128,15 @@ func TestBuildSystemPrompt_GatesAndSurfaces(t *testing.T) {
 	assert.Contains(t, got, "No tools are connected in this session")
 	assert.NotContains(t, got, "=== AGENT ACTIONS ===")
 	assert.NotContains(t, got, "search_knowledge")
-	assert.NotContains(t, got, "search_guide", "no tools → search_guide is not mounted")
-	assert.Contains(t, got, "Watchtower is a macOS app")
+	assert.Contains(t, got, "=== WATCHTOWER APP ===", "no tools → the guide map stays, to link only")
 
 	o.ToolsAvailable = true
 	o.Surface = "target"
 	got, err = BuildSystemPrompt(context.Background(), d, cfg, o)
 	require.NoError(t, err)
 	assert.Contains(t, got, "Never create other Watchtower tasks from here")
-	assert.NotContains(t, got, "search_guide", "search_guide is mounted on the main surface only")
-	assert.Contains(t, got, "Watchtower is a macOS app")
+	assert.Contains(t, got, `sources ["guide"]`)
+	assert.NotContains(t, got, "watchtower-nav://", "screen links render on the main surface only")
 
 	o.Surface = "meeting"
 	_, err = BuildSystemPrompt(context.Background(), d, cfg, o)
@@ -366,10 +365,22 @@ func TestArtifactsContract(t *testing.T) {
 	assert.Contains(t, c, "never send", "CHAT-05: artifacts only open or copy")
 }
 
-func TestPromptAppGuideMentionsSearchGuide(t *testing.T) {
-	d, cfg, o := promptFixture(t)
-	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
-	require.NoError(t, err)
-	assert.Contains(t, got, "search_guide")
-	assert.NotContains(t, got, "Sidebar:")
+func TestSystemPromptCarriesGuideCatalogue(t *testing.T) {
+	got := appGuideSection(PromptOptions{Surface: "main", ToolsAvailable: true})
+	assert.Contains(t, got, `sources ["guide"]`)
+	assert.Contains(t, got, "(features/workbench/README.md)")
+	assert.NotContains(t, got, "=== WATCHTOWER APP (answer questions about the app from this) ===")
+	assert.NotContains(t, got, "search_guide", "the guide is searched only through search_knowledge")
+}
+
+func TestSystemPromptGuideWithoutToolsDoesNotPromiseSearch(t *testing.T) {
+	got := appGuideSection(PromptOptions{Surface: "main"})
+	assert.NotContains(t, got, "search_knowledge")
+	assert.Contains(t, got, "(features/workbench/README.md)")
+}
+
+// Screen links render only in AI Chat and its ⌘/ popup (the main surface).
+func TestSystemPromptScreenLinksOnMainSurfaceOnly(t *testing.T) {
+	assert.Contains(t, appGuideSection(PromptOptions{Surface: "main", ToolsAvailable: true}), "watchtower-nav://<screen>")
+	assert.NotContains(t, appGuideSection(PromptOptions{Surface: "target", ToolsAvailable: true}), "watchtower-nav://")
 }

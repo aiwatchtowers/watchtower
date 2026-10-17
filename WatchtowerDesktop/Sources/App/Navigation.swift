@@ -151,6 +151,12 @@ struct MainNavigationView: View {
             StatusBarView()
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .topTrailing) {
+            if appState.isHelpChatShown, let chatVM = appState.chatViewModel {
+                HelpChatPanel(chatVM: chatVM)
+                    .padding(12)
+            }
+        }
         .alert(
             "Google Calendar disconnected",
             isPresented: Binding(
@@ -176,7 +182,11 @@ struct MainNavigationView: View {
         .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
         // Direct writes (deep links, Day Plan, the action strip, Catch-Up
         // cards) must not land on a hidden tab either.
-        .onChange(of: appState.selectedDestination) { _, _ in applyFeatureFallback() }
+        .onChange(of: appState.selectedDestination) { _, new in
+            applyFeatureFallback()
+            // The AI Chat tab shows the same thread; one view of it at a time.
+            if new == .chat { appState.isHelpChatShown = false }
+        }
     }
 
     /// Redirects away from the current tab when it becomes hidden — a
@@ -310,6 +320,9 @@ struct MainNavigationView: View {
                     actions: automationsTabActions,
                     workbenchName: { id in
                         appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
+                    },
+                    workbenches: (appState.workbenchesViewModel?.summaries ?? []).map {
+                        AutomationTemplateGallery.InstallTarget(id: $0.project.id, name: $0.project.name)
                     },
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,

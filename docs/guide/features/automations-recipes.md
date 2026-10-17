@@ -40,26 +40,28 @@ Because the file belongs to the repository, it can arrive with a `git pull` or b
 
 ## Using it
 1. In **Automations**, click **Templates** (or **Browse templates** on an empty tab).
-2. Pick a card and click **Use template**. The copy arrives unconfirmed and disabled.
-3. If the card names a placeholder, such as the Jira project key, replace it in **Edit**.
-4. **Dry run**, then **Review…**, then **Confirm and enable**.
+2. Pick a card and click **Use template**. For a workbench template with several workbenches, pick the workbench from its menu. The copy arrives unconfirmed and disabled.
+3. **Dry run**, then **Review…**, then **Confirm and enable**.
 
 ### The templates
 | Template | Where | When | What it does |
 |---|---|---|---|
 | `new-mail-summary` | personal | after a mail sync brings new mail | summarises new mail, at most 600 messages per mailbox per run |
-| `jira-state-report` | personal | Mondays 09:00 | weekly Jira report to reports and the briefing; needs your project key |
+| `jira-state-report` | personal | Mondays 09:00 | weekly Jira report to reports and the briefing, on your active projects |
 | `team-performance-report` | personal | Fridays 17:00 | report from Jira, people cards and Slack |
 | `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` |
 | `release-buttons` | workbench | by hand | three recipes (release, deploy to test, deploy to stage), each running one `make` target and asking before it acts |
 
 `new-mail-summary` runs on its own after a Gmail or IMAP sync brings new mail. A run by hand or on a schedule has no mail event, so first put your mailboxes' labels or addresses in `scheduledAccounts` in the script. Each mailbox picks up where its last run stopped, whether you name it by label or by address.
 
+`jira-state-report` picks its projects when you install it: every synced Jira project with an open issue assigned to you or reported by you. The form that opens says which ("Covers: PAY, OPS"). Each project gets its own `jira:read@…` permission and an entry in the script's `projects` list; to add or drop one later, change both.
+
 ## When it's empty or wrong
 - **"No templates yet."** The command-line tool is older than the app; update Watchtower.
 - **Install refused.** A recipe with that name already exists (a removed one counts), or a symlink is in the way. Nothing is left half-installed.
-- **The form opens on a parse error.** The placeholder is still in the file; replace it.
-- **A workbench template cannot be installed.** In the app the gallery installs personal templates only; the command line installs workbench ones with `--workbench`.
+- **The Jira state report won't install.** It needs a synced Jira project with an open issue assigned to you or reported by you. Connect Jira, let it sync, and try again.
+- **The form says the recipe can't be read.** The file has an error, named next to it. The form's controls stay off so they never overwrite the file's settings; click **Open in editor** and fix the recipe there. The note turns to "The recipe reads now" once the fix parses; then save.
+- **A workbench template's button is off.** You have no workbench yet; add one first.
 
 ## Related
 - [Automations](automations.md)

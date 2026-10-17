@@ -39,8 +39,6 @@ type Client struct {
 	childEnv     []string
 	childEnvSet  bool
 	processGroup bool
-	// noTools runs codex with no MCP server and no web search (SetNoTools).
-	noTools bool
 }
 
 // SetChildEnv replaces the inherited environment of the child with env (the
@@ -80,26 +78,6 @@ func (c *Client) childEnviron() []string {
 // overrides, since dir — not a temp dir — is the working root. dir must
 // already be resolved to a workbench folder (cmd's resolveReadFolder).
 func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
-
-// SetNoTools makes the run tool-less (`ai query --no-tools`, the ⌘/ help
-// chat): the watchtower MCP server is never mounted whatever dbPath is, the
-// owner's own codex config servers are cleared (mcp_servers={}), and web
-// search is off on top of execArgs' disabled local tools. The model
-// answers from the prompt alone and can reach none of the owner's data.
-func (c *Client) SetNoTools() { c.noTools = true }
-
-// ArgsForTest returns the argv a Query would run (tests outside this
-// package: cmd's `ai query` wiring tests). A temp MCP dir it may create is
-// removed.
-func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
-	dir, cleanup, err := c.workDir()
-	if err != nil {
-		return nil
-	}
-	defer cleanup()
-	args, _ := c.buildArgs(systemPrompt, userMessage, dir)
-	return args
-}
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
 func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
@@ -208,15 +186,9 @@ func (c *Client) buildStdinOnlyArgs(systemPrompt, userMessage, workDir string) (
 	return args, codexStdinContent(systemPrompt, userMessage)
 }
 
-// execArgs is the `codex exec` prefix: the shared execArgs, plus web search
-// off for a no-tools run (SetNoTools), or for a read-folder run the
-// read-only sandbox with the shell on (SetReadFolder).
+// execArgs is the `codex exec` prefix: the shared execArgs, or for a
+// read-folder run the read-only sandbox with the shell on (SetReadFolder).
 func (c *Client) execArgs() []string {
-	if c.noTools {
-		// mcp_servers={} also drops servers from the owner's own
-		// ~/.codex/config.toml: a help run loads no MCP server at all.
-		return append(execArgs(c.model), "-c", `web_search="disabled"`, "-c", "mcp_servers={}")
-	}
 	if c.readFolder == "" {
 		return execArgs(c.model)
 	}
@@ -235,12 +207,12 @@ func (c *Client) execArgs() []string {
 
 // workDir prepares where the run works: the read folder as is, or a temp
 // dir holding the MCP config when there is a database (removed by the
-// returned cleanup), or none — always none for a no-tools run.
+// returned cleanup), or none.
 func (c *Client) workDir() (dir string, cleanup func(), err error) {
 	if c.readFolder != "" {
 		return c.readFolder, func() {}, nil
 	}
-	if c.dbPath == "" || c.noTools {
+	if c.dbPath == "" {
 		return "", func() {}, nil
 	}
 	tmpDir, err := mcpWorkDir(c.dbPath, c.mcpArgs, c.mcpEnvVars)

@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"watchtower/docs/guide"
 )
 
 var (
@@ -15,6 +17,10 @@ var (
 	// and the Makefile build/install targets.
 	BuildFlavor = ""
 )
+
+// The guide's links follow the release tag of a clean version (ldflags set
+// Version before any init runs).
+func init() { guide.Version = Version }
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
