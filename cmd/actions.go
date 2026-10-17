@@ -283,6 +283,11 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 		return err
 	}
 	defer database.Close()
+	if execute {
+		if execute, err = mayApplyHere(reg, database, id, to); err != nil {
+			return err
+		}
+	}
 	env := actionEnvelope{OK: true}
 	switch {
 	case to != "":
@@ -344,6 +349,26 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 		fmt.Fprintf(cmd.OutOrStdout(), "  warning: %s\n", env.Warning)
 	}
 	return nil
+}
+
+// mayApplyHere is whether this command may run row id itself. A
+// session-applied row (claude_ai_connector_call, #737) runs only in the chat
+// session that proposed it: approve stops at `approved` (the session claims
+// it), and a bare apply — --force included — is refused before anything is
+// written, so not even an `executing` row is reclaimed here.
+func mayApplyHere(reg *tools.Registry, database *db.DB, id int64, to string) (bool, error) {
+	row, err := database.GetAgentAction(id)
+	if err != nil || row == nil {
+		return true, err // a missing row is reported by the usual path
+	}
+	t, ok := reg.Get(row.Tool)
+	switch {
+	case !ok || !t.AppliedBySession:
+		return true, nil
+	case to == "":
+		return false, fmt.Errorf("action #%d: %s %w", id, t.Name, tools.ErrSessionApplied)
+	}
+	return false, nil
 }
 
 // agentEnvMarkers are the variables an AI coding agent's shell carries:
@@ -494,8 +519,9 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 	out := make([]toolJSON, 0, len(listed))
 	for _, t := range listed {
 		// Settings → Assistant tools draws a trust switch per surface, so
-		// only what trust can act on is listed (CheckTrustable).
-		if tools.CheckTrustable(t) != nil {
+		// only what trust can act on is listed (CheckTrustable); a
+		// session-applied tool is no assistant tool a switch could govern.
+		if tools.CheckTrustable(t) != nil || t.AppliedBySession {
 			continue
 		}
 		// Never nil, so JSON carries []; the automation surface is listed with

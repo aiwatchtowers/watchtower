@@ -632,3 +632,62 @@ func TestActionsTrust_FanOutSkipsAutomation(t *testing.T) {
 		})
 	}
 }
+
+const sessionCallArgs = `{"server":"claude.ai Connector A","tool":"send_mail","input":{"body":"hi"},"reason":"r"}`
+
+// A session-applied row (#737): approve records the owner's decision with the
+// usual envelope and stops at `approved` — the chat session claims and runs
+// it; the CLI never does.
+func TestActions_ApproveSessionCallDoesNotApply(t *testing.T) {
+	database := writeActionsConfig(t)
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool, External: true,
+		ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", ConversationID: 7})
+	require.NoError(t, err)
+
+	out, err := runActions(t, "approve", strconv.FormatInt(id, 10), "--patch", `{"input":{"body":"edited"}}`,
+		"--args-sha256", tools.ArgsSHA256(sessionCallArgs), "--json")
+	require.NoError(t, err, out)
+	var env struct {
+		OK        bool   `json:"ok"`
+		AppliedOK bool   `json:"applied_ok"`
+		Error     string `json:"error"`
+		Action    struct {
+			Status string `json:"status"`
+		} `json:"action"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &env), out)
+	assert.True(t, env.OK)
+	assert.False(t, env.AppliedOK)
+	assert.Empty(t, env.Error)
+	assert.Equal(t, "approved", env.Action.Status)
+	row, err := database.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, "approved", row.Status)
+	assert.Contains(t, row.ArgsJSON, `"edited"`)
+	assert.Empty(t, row.AppliedAt)
+
+	out, err = runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	assert.NotContains(t, out, tools.ClaudeAIConnectorCallTool, "no Settings trust switch for a session call")
+}
+
+// `actions apply` — with or without --force — never runs a session call and
+// writes nothing: not even an `executing` row is reclaimed.
+func TestActions_ApplySessionCallRefused(t *testing.T) {
+	database := writeActionsConfig(t)
+	for _, status := range []string{"approved", "failed", "executing"} {
+		id, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool, External: true,
+			ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", ConversationID: 7, Status: status})
+		require.NoError(t, err)
+		for _, args := range [][]string{{"apply", strconv.FormatInt(id, 10), "--json"},
+			{"apply", strconv.FormatInt(id, 10), "--force", "--json"}} {
+			_, err := runActions(t, args...)
+			require.Error(t, err, args)
+			assert.ErrorIs(t, err, tools.ErrSessionApplied)
+			assert.Contains(t, err.Error(), "claude_ai_connector_call runs only in the chat session that proposed it")
+			row, err := database.GetAgentAction(id)
+			require.NoError(t, err)
+			assert.Equal(t, status, row.Status, args)
+		}
+	}
+}
