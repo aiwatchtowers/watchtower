@@ -156,7 +156,7 @@ func TestResolveRefs_Found(t *testing.T) {
 }
 
 // TestResolveRefs_PermalinkPerAccount is resolveRefs' analog of
-// context_builder_test.go's TestFormatMessage_PermalinkPerAccount — the
+// the former ContextBuilder's TestFormatMessage_PermalinkPerAccount — the
 // resolveLinkTarget call sites in ContextBuilder and ResponseRenderer were
 // verbatim-duplicated code with only one of the two under test; this closes
 // the gap for ResponseRenderer's copy (now the shared resolveSlackLinkTarget

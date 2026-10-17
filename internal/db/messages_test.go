@@ -46,7 +46,7 @@ func TestUpsertMessage(t *testing.T) {
 	err = db.UpsertMessage(msg)
 	require.NoError(t, err)
 
-	msgs, err := db.GetMessagesByChannel("C001", 10)
+	msgs, err := db.GetMessages(MessageOpts{ChannelID: "C001", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "Hello world", msgs[0].Text)
@@ -66,7 +66,7 @@ func TestUpsertMessageUpdate(t *testing.T) {
 	msg.IsEdited = true
 	require.NoError(t, db.UpsertMessage(msg))
 
-	msgs, err := db.GetMessagesByChannel("C001", 10)
+	msgs, err := db.GetMessages(MessageOpts{ChannelID: "C001", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "edited", msgs[0].Text)
@@ -90,7 +90,7 @@ func TestUpsertMessageWithThread(t *testing.T) {
 	}
 	require.NoError(t, db.UpsertMessage(reply))
 
-	msgs, err := db.GetMessagesByChannel("C001", 10)
+	msgs, err := db.GetMessages(MessageOpts{ChannelID: "C001", Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, msgs, 2)
 }
@@ -218,7 +218,7 @@ func TestGetMessagesByTimeRangeEmpty(t *testing.T) {
 	assert.Empty(t, msgs)
 }
 
-func TestGetMessagesByChannel(t *testing.T) {
+func TestGetMessagesChannelLimit(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
 	defer db.Close()
@@ -227,7 +227,7 @@ func TestGetMessagesByChannel(t *testing.T) {
 	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000002.000001", UserID: "U001", Text: "new"}))
 	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000003.000001", UserID: "U001", Text: "other"}))
 
-	msgs, err := db.GetMessagesByChannel("C001", 10)
+	msgs, err := db.GetMessages(MessageOpts{ChannelID: "C001", Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, msgs, 2)
 	// Newest first
@@ -235,7 +235,7 @@ func TestGetMessagesByChannel(t *testing.T) {
 	assert.Equal(t, "old", msgs[1].Text)
 
 	// Test limit
-	msgs, err = db.GetMessagesByChannel("C001", 1)
+	msgs, err = db.GetMessages(MessageOpts{ChannelID: "C001", Limit: 1})
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 	assert.Equal(t, "new", msgs[0].Text)
@@ -274,41 +274,6 @@ func TestGetThreadRepliesEmpty(t *testing.T) {
 	assert.Empty(t, msgs)
 }
 
-func TestGetAllThreadParents(t *testing.T) {
-	db, err := Open(":memory:")
-	require.NoError(t, err)
-	defer db.Close()
-
-	// Channel 1: needs sync
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "ch1 thread", ReplyCount: 2}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000001.000001", UserID: "U002", Text: "reply", ThreadTS: sql.NullString{String: "1700000000.000001", Valid: true}}))
-
-	// Channel 2: needs sync
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000010.000001", UserID: "U001", Text: "ch2 thread", ReplyCount: 5}))
-
-	// Channel 3: fully synced — should not appear
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C003", TS: "1700000020.000001", UserID: "U001", Text: "synced", ReplyCount: 1}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C003", TS: "1700000021.000001", UserID: "U002", Text: "reply", ThreadTS: sql.NullString{String: "1700000020.000001", Valid: true}}))
-
-	parents, err := db.GetAllThreadParents(1000)
-	require.NoError(t, err)
-	require.Len(t, parents, 2)
-
-	// Should be sorted by ts_unix DESC
-	assert.Equal(t, "C002", parents[0].ChannelID)
-	assert.Equal(t, "C001", parents[1].ChannelID)
-}
-
-func TestGetAllThreadParentsEmpty(t *testing.T) {
-	db, err := Open(":memory:")
-	require.NoError(t, err)
-	defer db.Close()
-
-	parents, err := db.GetAllThreadParents(1000)
-	require.NoError(t, err)
-	assert.Empty(t, parents)
-}
-
 func TestUpsertMessageUnicode(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
@@ -322,7 +287,7 @@ func TestUpsertMessageUnicode(t *testing.T) {
 	}
 	require.NoError(t, db.UpsertMessage(msg))
 
-	msgs, err := db.GetMessagesByChannel("C001", 10)
+	msgs, err := db.GetMessages(MessageOpts{ChannelID: "C001", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, msg.Text, msgs[0].Text)
@@ -341,7 +306,7 @@ func TestUpsertMessageEmptyText(t *testing.T) {
 	}
 	require.NoError(t, db.UpsertMessage(msg))
 
-	msgs, err := db.GetMessagesByChannel("C001", 10)
+	msgs, err := db.GetMessages(MessageOpts{ChannelID: "C001", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "", msgs[0].Text)

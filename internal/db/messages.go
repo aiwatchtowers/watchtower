@@ -323,27 +323,6 @@ func (db *DB) GetUserActivityCounts(from, to float64, limit int) ([]UserMessageC
 	return results, rows.Err()
 }
 
-// GetMessagesByChannel returns the most recent messages in a channel.
-func (db *DB) GetMessagesByChannel(channelID string, limit int) ([]Message, error) {
-	if limit <= 0 {
-		limit = DefaultMessageLimit
-	}
-	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
-		FROM messages
-		WHERE channel_id = ?
-		ORDER BY ts_unix DESC
-		LIMIT ?`,
-		channelID, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("querying messages by channel: %w", err)
-	}
-	defer rows.Close()
-
-	return scanMessages(rows)
-}
-
 // GetThreadReplies returns messages in a thread (including the parent), limited to 200 replies.
 func (db *DB) GetThreadReplies(channelID, threadTS string) ([]Message, error) {
 	rows, err := db.Query(`
@@ -356,37 +335,6 @@ func (db *DB) GetThreadReplies(channelID, threadTS string) ([]Message, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying thread replies: %w", err)
-	}
-	defer rows.Close()
-
-	return scanMessages(rows)
-}
-
-// GetAllThreadParents returns messages with reply_count > 0 across all channels
-// that likely need thread reply syncing, limited to at most `limit` rows.
-// NOTE: For large databases, consider adding an index on (channel_id, thread_ts)
-// to optimize this query's JOIN + subquery.
-// GetAllThreadParents returns messages with reply_count > 0 that don't have all replies synced.
-func (db *DB) GetAllThreadParents(limit int) ([]Message, error) {
-	if limit <= 0 {
-		limit = 1000
-	}
-	rows, err := db.Query(`
-		SELECT m.channel_id, m.ts, m.user_id, m.text, m.thread_ts, m.reply_count,
-			m.is_edited, m.is_deleted, m.subtype, m.permalink, m.ts_unix
-		FROM messages m
-		LEFT JOIN (
-			SELECT channel_id, thread_ts, COUNT(*) as cnt
-			FROM messages
-			WHERE thread_ts IS NOT NULL
-			GROUP BY channel_id, thread_ts
-		) r ON r.channel_id = m.channel_id AND r.thread_ts = m.ts
-		WHERE m.reply_count > 0 AND COALESCE(r.cnt, 0) < m.reply_count
-		ORDER BY m.ts_unix DESC
-		LIMIT ?`, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("querying all thread parents: %w", err)
 	}
 	defer rows.Close()
 
@@ -493,51 +441,6 @@ func (db *DB) FilterExistingMessageTS(channelID string, tss []string) (map[strin
 		found[ts] = struct{}{}
 	}
 	return found, rows.Err()
-}
-
-// GetThreadRepliesAfterTS returns thread replies in a channel where
-// thread_ts matches the given parent TS and the message TS is strictly
-// greater than afterTS. Results are ordered oldest-first, capped at 200.
-func (db *DB) GetThreadRepliesAfterTS(channelID, threadTS, afterTS string) ([]Message, error) {
-	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
-		FROM messages
-		WHERE channel_id = ? AND thread_ts = ? AND ts > ?
-		ORDER BY ts_unix ASC
-		LIMIT 200`,
-		channelID, threadTS, afterTS,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("querying thread replies after ts: %w", err)
-	}
-	defer rows.Close()
-
-	return scanMessages(rows)
-}
-
-// GetChannelMessagesAfterTS returns non-thread channel messages after the given
-// timestamp. Used to detect completion signals and status updates for action items
-// that appear as standalone messages rather than thread replies.
-// Results are ordered oldest-first, capped at the given limit.
-func (db *DB) GetChannelMessagesAfterTS(channelID, afterTS string, limit int) ([]Message, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	rows, err := db.Query(`
-		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
-		FROM messages
-		WHERE channel_id = ? AND ts > ? AND (thread_ts IS NULL OR thread_ts = '' OR thread_ts = ts)
-		  AND text != '' AND is_deleted = 0
-		ORDER BY ts_unix ASC
-		LIMIT ?`,
-		channelID, afterTS, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("querying channel messages after ts: %w", err)
-	}
-	defer rows.Close()
-
-	return scanMessages(rows)
 }
 
 func scanMessages(rows *sql.Rows) ([]Message, error) {

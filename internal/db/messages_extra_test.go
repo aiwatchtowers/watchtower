@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -130,58 +129,6 @@ func TestGetMessagesTimeFilter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 	assert.Equal(t, "early", msgs[0].Text)
-}
-
-func TestGetThreadRepliesAfterTS(t *testing.T) {
-	db := openTestDB(t)
-
-	threadTS := "1700000000.000001"
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: threadTS, UserID: "U1", Text: "parent", ReplyCount: 3,
-	}))
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1700000001.000001", UserID: "U2", Text: "reply1",
-		ThreadTS: sql.NullString{String: threadTS, Valid: true},
-	}))
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1700000002.000001", UserID: "U3", Text: "reply2",
-		ThreadTS: sql.NullString{String: threadTS, Valid: true},
-	}))
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1700000003.000001", UserID: "U2", Text: "reply3",
-		ThreadTS: sql.NullString{String: threadTS, Valid: true},
-	}))
-
-	// Only replies after reply1
-	msgs, err := db.GetThreadRepliesAfterTS("C1", threadTS, "1700000001.000001")
-	require.NoError(t, err)
-	assert.Len(t, msgs, 2)
-	assert.Equal(t, "reply2", msgs[0].Text)
-	assert.Equal(t, "reply3", msgs[1].Text)
-}
-
-func TestGetChannelMessagesAfterTS(t *testing.T) {
-	db := openTestDB(t)
-
-	threadTS := "1700000000.000001"
-	// Standalone messages
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1700000001.000001", UserID: "U1", Text: "msg1"}))
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1700000002.000001", UserID: "U2", Text: "msg2"}))
-	// Thread reply — should be excluded
-	require.NoError(t, db.UpsertMessage(Message{
-		ChannelID: "C1", TS: "1700000003.000001", UserID: "U3", Text: "reply",
-		ThreadTS: sql.NullString{String: threadTS, Valid: true},
-	}))
-	// Deleted message — should be excluded
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1700000004.000001", UserID: "U1", Text: "deleted", IsDeleted: true}))
-	// Empty text — should be excluded
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1700000005.000001", UserID: "U1", Text: ""}))
-
-	msgs, err := db.GetChannelMessagesAfterTS("C1", "1700000000.000001", 10)
-	require.NoError(t, err)
-	assert.Len(t, msgs, 2)
-	assert.Equal(t, "msg1", msgs[0].Text)
-	assert.Equal(t, "msg2", msgs[1].Text)
 }
 
 func TestGetMessageNear_NotFound(t *testing.T) {
