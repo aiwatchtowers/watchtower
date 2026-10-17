@@ -40,10 +40,8 @@ private struct ConnectorInputEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            TextEditor(text: $text)
-                .font(.system(.caption, design: .monospaced))
+            PlainJSONEditor(text: $text)
                 .frame(minHeight: 80, maxHeight: 260)
-                .scrollContentBackground(.hidden)
                 .padding(4)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
@@ -53,6 +51,53 @@ private struct ConnectorInputEditor: View {
             } else if approval != .plain {
                 Text("Edited — Approve sends your version.").font(.caption).foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+/// A monospaced plain-text editor with every macOS substitution off: a smart
+/// quote would break the JSON (Approve disabled for no visible reason) and a
+/// smart dash inside a string would silently change what is sent. The
+/// `ComposerTextInput` (CreateTargetSheet) shape.
+private struct PlainJSONEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        textView.delegate = context.coordinator
+        textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.string = text
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        textView.isEditable = context.environment.isEnabled
+        if textView.string != text { textView.string = text }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: PlainJSONEditor
+
+        init(_ parent: PlainJSONEditor) { self.parent = parent }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
         }
     }
 }

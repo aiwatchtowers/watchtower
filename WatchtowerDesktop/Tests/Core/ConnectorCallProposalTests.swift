@@ -46,8 +46,9 @@ final class ConnectorCallProposalTests: XCTestCase {
         XCTAssertNil(ConnectorCallProposal(action: action(args: #"{"server":"s","tool":"","input":{}}"#)), "empty tool")
     }
 
-    /// The card shows the input exactly as stored: numbers and escapes are
-    /// never re-encoded, key order is kept, nested values are indented.
+    /// The card shows the input as stored: numbers are never re-encoded, key
+    /// order is kept, nested values are indented, and a printable `\u`
+    /// escape reads as its character.
     func testConnectorInputIsShownAsStored() throws {
         let args = #"{"input":{"z":0.30000000000000001,"big":12345678901234567890,"#
             + #""s":"a,b:{\"q\"}\u00e9","list":[1,{"k":[]}],"e":{}},"server":"s","tool":"t"}"#
@@ -56,7 +57,7 @@ final class ConnectorCallProposalTests: XCTestCase {
             {
               "z": 0.30000000000000001,
               "big": 12345678901234567890,
-              "s": "a,b:{\"q\"}\u00e9",
+              "s": "a,b:{\"q\"}é",
               "list": [
                 1,
                 {
@@ -67,6 +68,15 @@ final class ConnectorCallProposalTests: XCTestCase {
             }
             """#)
         XCTAssertEqual(p.approval(editedInput: p.inputJSON), .plain)
+        // Go's json.Marshal HTML-escapes <, > and &: shown as written; a
+        // quote and a control character stay escaped.
+        let html = try XCTUnwrap(ConnectorCallProposal(action: action(args:
+            #"{"server":"s","tool":"t","input":{"body":"\u003cp\u003eQ\u0026A\u003c/p\u003e \u0022 \u0001 \\u003c"}}"#)))
+        XCTAssertEqual(html.inputJSON, #"""
+            {
+              "body": "<p>Q&A</p> \u0022 \u0001 \\u003c"
+            }
+            """#)
         let patch = try XCTUnwrap(p.patch(editedInput: p.inputJSON))
         XCTAssertTrue(patch.contains("12345678901234567890"), "an edit keeps untouched numbers as stored")
     }
@@ -98,9 +108,18 @@ final class ConnectorCallProposalTests: XCTestCase {
                        "Failed")
         XCTAssertFalse(Card.labelCarriesError(action(status: "failed", error: "connector said no")),
                        "a connector's own error is shown on its own line")
-        for known in [Card.sessionEndedBeforeApproval, Card.sessionEndedWhileRunning, Card.notApprovedInTime, Card.stopped] {
+        XCTAssertEqual(Card.statusLabel(for: action(status: "failed", error: Card.stopped), sessionHolds: true),
+                       "Chat stopped — not sent")
+        for known in [Card.sessionEndedBeforeApproval, Card.sessionEndedWhileRunning, Card.stopped] {
             XCTAssertTrue(Card.labelCarriesError(action(status: "failed", error: known)), known)
         }
+        for known in [Card.notApprovedInTime, Card.stopped] {
+            XCTAssertTrue(Card.labelCarriesError(action(status: "rejected", error: known)), known)
+        }
+        XCTAssertFalse(Card.labelCarriesError(action(status: "failed", error: Card.notApprovedInTime)),
+                       "a reason the label does not word for this status stays visible")
+        XCTAssertFalse(Card.labelCarriesError(action(status: "failed", error: Card.stopped, tool: "create_jira_issue")),
+                       "another tool's error is never hidden")
         XCTAssertEqual(Card.statusLabel(for: action(status: "failed"), sessionHolds: true), "Failed")
         XCTAssertEqual(Card.statusLabel(for: action(status: "failed", error: Card.sessionEndedBeforeApproval), sessionHolds: true),
                        "Chat session ended — not sent")

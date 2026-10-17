@@ -83,10 +83,16 @@ package struct ConnectorCallProposal: Equatable, Sendable {
         action.isPending && sessionHolds
     }
 
-    /// The four row errors the status label already words; any other error
-    /// is shown on its own line.
+    /// Whether the status label already words this session call's error
+    /// (the expiry and cancel reasons, per status); any other error is shown
+    /// on its own line.
     package static func labelCarriesError(_ action: AgentAction) -> Bool {
-        [sessionEndedBeforeApproval, sessionEndedWhileRunning, notApprovedInTime, stopped].contains(action.error)
+        guard action.isSessionApplied else { return false }
+        switch action.status {
+        case "rejected": return [notApprovedInTime, stopped].contains(action.error)
+        case "failed": return [sessionEndedBeforeApproval, sessionEndedWhileRunning, stopped].contains(action.error)
+        default: return false
+        }
     }
 
     /// The card's status line. Approve stops at `approved` (the session runs
@@ -112,6 +118,8 @@ package struct ConnectorCallProposal: Equatable, Sendable {
             switch action.error {
             case sessionEndedBeforeApproval: return "Chat session ended — not sent"
             case sessionEndedWhileRunning: return "Chat session ended — outcome unknown"
+            // Stop after the owner approved (`ExpireSessionCall`): never sent.
+            case stopped: return "Chat stopped — not sent"
             default: return "Failed"
             }
         default:
@@ -148,7 +156,10 @@ enum RawJSON {
     }
 
     /// `json` with two-space indentation and `"key": value` spacing; every
-    /// token is copied verbatim, so no number or escape is re-encoded.
+    /// token is copied verbatim, so no number is re-encoded — except that a
+    /// string's `\uXXXX` escape of a printable character is shown as that
+    /// character (Go's `json.Marshal` writes `<`, `>`, `&` as `\u003c`…, and
+    /// an HTML mail body must read as written). The text stays equivalent JSON.
     static func indented(_ json: String) -> String {
         let chars = Array(json.unicodeScalars)
         var out = String.UnicodeScalarView()
@@ -160,7 +171,7 @@ enum RawJSON {
             switch c {
             case "\"":
                 let end = valueEnd(chars, i)
-                out.append(contentsOf: chars[i..<end])
+                appendString(chars[i..<end], to: &out)
                 i = end
                 continue
             case "{", "[":
@@ -190,6 +201,30 @@ enum RawJSON {
             i += 1
         }
         return String(out)
+    }
+
+    /// Copies a string token, turning `\uXXXX` of a printable scalar (not
+    /// `"`, `\`, a control character or a surrogate) into the scalar itself.
+    private static func appendString(_ token: ArraySlice<Unicode.Scalar>, to out: inout String.UnicodeScalarView) {
+        var i = token.startIndex
+        while i < token.endIndex {
+            let c = token[i]
+            guard c == "\\", i + 1 < token.endIndex else {
+                out.append(c)
+                i += 1
+                continue
+            }
+            if token[i + 1] == "u", i + 6 <= token.endIndex,
+               let code = UInt32(String(String.UnicodeScalarView(token[(i + 2)..<(i + 6)])), radix: 16),
+               code >= 0x20, code != 0x22, code != 0x5C, !(0x7F...0x9F).contains(code),
+               let scalar = Unicode.Scalar(code) {
+                out.append(scalar)
+                i += 6
+            } else {
+                out.append(contentsOf: token[i...(i + 1)])
+                i += 2
+            }
+        }
     }
 
     private static func skipSpace(_ chars: [Unicode.Scalar], _ from: Int) -> Int {
