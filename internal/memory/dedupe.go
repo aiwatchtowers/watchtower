@@ -214,7 +214,7 @@ func (c epCandidate) sharesRef(o epCandidate) bool {
 func parseProvenance(body string) []episodeRef {
 	var refs []episodeRef
 	inProv := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## ") {
 			inProv = trimmed == "## Provenance"

@@ -19,7 +19,7 @@ func NoSymlinkComponents(path string) (bool, error) {
 		return false, fmt.Errorf("%q is not an absolute path", path)
 	}
 	cur := string(filepath.Separator)
-	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
+	for part := range strings.SplitSeq(filepath.Clean(path), string(filepath.Separator)) {
 		if part == "" {
 			continue
 		}

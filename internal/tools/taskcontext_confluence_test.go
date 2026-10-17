@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,11 +101,12 @@ func TestGetTaskContext_ConfluenceCapAndStaleLink(t *testing.T) {
 
 // A long page is excerpted around the key.
 func TestConfluenceSnippet(t *testing.T) {
-	long := string(make([]rune, 0))
+	var long strings.Builder
+	long.WriteString(string(make([]rune, 0)))
 	for range 50 {
-		long += "filler words here. "
+		long.WriteString("filler words here. ")
 	}
-	text := long + "The PROJ-7 decision." + long
+	text := long.String() + "The PROJ-7 decision." + long.String()
 	s := confluenceSnippet(text, "PROJ-7")
 	assert.Contains(t, s, "PROJ-7")
 	assert.LessOrEqual(t, len([]rune(s)), 2*confluenceSnippetRadius+len("PROJ-7")+2)

@@ -291,7 +291,7 @@ func TestProj10_CreateRefusesAnInvalidName(t *testing.T) {
 func stashes(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	m := map[string]string{}
-	for _, line := range strings.Split(gitIn(t, dir, "stash", "list", "--format=%H %gs"), "\n") {
+	for line := range strings.SplitSeq(gitIn(t, dir, "stash", "list", "--format=%H %gs"), "\n") {
 		if line == "" {
 			continue
 		}

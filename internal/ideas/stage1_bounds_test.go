@@ -102,7 +102,7 @@ func TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags(t *testing.T) {
 func TestRenderJiraBlock_CapsCommentsPerIssue(t *testing.T) {
 	issues := []db.JiraIssue{{Key: "WT-1", ProjectKey: "WT", Summary: "s", Status: "Open"}}
 	var comments []db.JiraComment
-	for i := 0; i < maxCommentsPerIssue+10; i++ {
+	for i := range maxCommentsPerIssue + 10 {
 		comments = append(comments, db.JiraComment{IssueKey: "WT-1", Author: "Ann", BodyText: fmt.Sprintf("comment-%02d", i)})
 	}
 

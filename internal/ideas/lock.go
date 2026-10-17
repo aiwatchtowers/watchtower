@@ -282,11 +282,11 @@ func BackfillLockFresh(workspaceDir string) bool {
 // file's contents.
 func parseLockStarted(contents string) (time.Time, bool) {
 	const marker = "started="
-	idx := strings.Index(contents, marker)
-	if idx < 0 {
+	_, after, ok := strings.Cut(contents, marker)
+	if !ok {
 		return time.Time{}, false
 	}
-	rest := strings.TrimSpace(contents[idx+len(marker):])
+	rest := strings.TrimSpace(after)
 	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
 		rest = rest[:sp]
 	}
@@ -301,11 +301,11 @@ func parseLockStarted(contents string) (time.Time, bool) {
 // contents, up to the end of the line.
 func parseLockOwner(contents string) (string, bool) {
 	const marker = "owner="
-	idx := strings.Index(contents, marker)
-	if idx < 0 {
+	_, after, ok := strings.Cut(contents, marker)
+	if !ok {
 		return "", false
 	}
-	rest := contents[idx+len(marker):]
+	rest := after
 	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
 		rest = rest[:nl]
 	}

@@ -116,7 +116,7 @@ func (transcriptSource) Build(ctx context.Context, q Queryer, key string) (*Doc,
 	// indexed by its title; only a NULL/invalid/empty list falls back to the
 	// flat text.
 	if len(segments) == 0 {
-		for _, line := range strings.Split(text, "\n") {
+		for line := range strings.SplitSeq(text, "\n") {
 			if line = strings.TrimSpace(line); line != "" {
 				doc.Sections = append(doc.Sections, Section{Text: line})
 			}

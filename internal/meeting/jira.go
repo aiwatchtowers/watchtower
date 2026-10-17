@@ -167,10 +167,7 @@ func formatAttendeeSections(sb *strings.Builder, attendees []attendeeJira, today
 		sb.WriteString(fmt.Sprintf("- Open issues: %d (%.0f SP), Blocked: %d, Overdue: %d\n",
 			len(aj.issues), aj.totalSP, aj.blocked, aj.overdue))
 
-		limit := issueLimit
-		if len(aj.issues) < limit {
-			limit = len(aj.issues)
-		}
+		limit := min(len(aj.issues), issueLimit)
 		for _, iss := range aj.issues[:limit] {
 			sb.WriteString(fmt.Sprintf("- [%s %s %s", iss.Key, iss.Status, iss.Priority))
 			if isOverdue(iss, today) {

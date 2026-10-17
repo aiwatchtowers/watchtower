@@ -191,9 +191,9 @@ func nsHeavy(head, tail string, n, decls int) func(io.Writer) error {
 	return func(w io.Writer) error {
 		var b strings.Builder
 		b.WriteString(head)
-		for d := 0; d < n; d++ {
+		for d := range n {
 			b.WriteString("<a")
-			for k := 0; k < decls; k++ {
+			for k := range decls {
 				fmt.Fprintf(&b, ` xmlns:p%d_%d="u"`, d, k)
 			}
 			b.WriteString(">")

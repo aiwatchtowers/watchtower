@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -170,13 +171,12 @@ func TestScan_DeletedFileKeepsRowsAndParserBumpRereadsPresentOnly(t *testing.T) 
 
 func TestScan_ConcurrentWritersCountOnce(t *testing.T) {
 	f := newFixture(t)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u"+string(rune('a'+i)), "m"+string(rune('a'+i)), "r", 1))
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); _, _ = Scan(context.Background(), f.d, f.wb, Options{ClaudeDir: f.claude}) }()
+	for range 2 {
+		wg.Go(func() { ; _, _ = Scan(context.Background(), f.d, f.wb, Options{ClaudeDir: f.claude}) })
 	}
 	wg.Wait()
 	calls, out := f.totals()
@@ -218,17 +218,15 @@ func TestScan_BudgetStopDoesNotMarkUnreadFilesMissing(t *testing.T) {
 
 func TestScan_ConcurrentScansBothSucceed(t *testing.T) {
 	f := newFixture(t)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u"+string(rune('a'+i)), "m"+string(rune('a'+i)), "r", 1))
 	}
 	errs := make([]error, 2)
 	var wg sync.WaitGroup
 	for i := range errs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, errs[i] = Scan(context.Background(), f.d, f.wb, Options{ClaudeDir: f.claude})
-		}()
+		})
 	}
 	wg.Wait()
 	assert.NoError(t, errs[0])
@@ -389,13 +387,14 @@ func TestScan_LongTranscriptCommittedInSlicesAndResumes(t *testing.T) {
 	f := newFixture(t)
 	a := assistant("s1", "u1", "m1", "r1", 5, toolUse("t1", "Bash", map[string]any{"command": "make test"}))
 	a["cwd"] = f.folder
-	body := line(t, a) + // api_call m1 + tool t1: one full slice
+	var body strings.Builder
+	body.WriteString(line(t, a) + // api_call m1 + tool t1: one full slice
 		call(t, "s1", f.folder, "u2", "m1", "r1", 9) + // streaming repeat of m1 in the next slice
-		toolResultLine(t, "s1", "r1", "t1", "ok", false, nil)
-	for i := 0; i < 6; i++ {
-		body += call(t, "s1", f.folder, "v"+string(rune('a'+i)), "n"+string(rune('a'+i)), "r", 1)
+		toolResultLine(t, "s1", "r1", "t1", "ok", false, nil))
+	for i := range 6 {
+		body.WriteString(call(t, "s1", f.folder, "v"+string(rune('a'+i)), "n"+string(rune('a'+i)), "r", 1))
 	}
-	p := f.write(f.folder, "s1.jsonl", body)
+	p := f.write(f.folder, "s1.jsonl", body.String())
 
 	// Out of time as soon as the first slice is committed (the file row
 	// exists), whatever the number of clock reads before it.

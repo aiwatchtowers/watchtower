@@ -117,7 +117,7 @@ func sessionFlagHooks(args []string) []codex.HookEntry {
 		}
 		for g, grp := range doc.V {
 			for h, hk := range grp.Hooks {
-				sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d", grp.Matcher, hk.Command, hk.Timeout)))
+				sum := sha256.Sum256(fmt.Appendf(nil, "%s|%s|%d", grp.Matcher, hk.Command, hk.Timeout))
 				out = append(out, codex.HookEntry{
 					Key:         fmt.Sprintf("/<session-flags>/config.toml:%s:%d:%d", snakeEvent(event), g, h),
 					Command:     hk.Command,

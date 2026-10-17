@@ -39,7 +39,7 @@ func TestListCatchupDigests_WindowOverlapAndTopics(t *testing.T) {
 func TestListCatchupDigests_CapTruncates(t *testing.T) {
 	d := openTestDB(t)
 	const limit = 3
-	for i := 0; i < limit+2; i++ {
+	for i := range limit + 2 {
 		_, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'channel', 'x')`,
 			1000+i, 1100+i)
 		require.NoError(t, err)
@@ -242,7 +242,7 @@ func TestListCatchupTargets_InWindowOutranksOverdue(t *testing.T) {
 	d := openTestDB(t)
 	const limit = 3
 	// The window unix 1000..2000 is 00:16..00:33 UTC.
-	for i := 0; i < limit+1; i++ {
+	for i := range limit + 1 {
 		_, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, status, priority, due_date)
 			VALUES (?, '1969-12-31', '1969-12-31', 'todo', 'high', ?)`,
 			fmt.Sprintf("Overdue %d", i), fmt.Sprintf("1969-12-31T0%d:00", i))

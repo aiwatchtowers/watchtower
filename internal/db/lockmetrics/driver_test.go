@@ -62,7 +62,7 @@ func readEvents(t *testing.T, path string) []lockmetrics.Event {
 		t.Fatalf("read sink: %v", err)
 	}
 	var out []lockmetrics.Event
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
 		var e lockmetrics.Event
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			t.Fatalf("bad line %q: %v", line, err)

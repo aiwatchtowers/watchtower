@@ -555,7 +555,7 @@ func TestServer_HostedChildKeepsDefaultSighup(t *testing.T) {
 	path := startServer(t, Options{})
 	c := dial(t, path)
 	c.launch(1, `kill -HUP $$; echo survived`)
-	out := ""
+	var out strings.Builder
 	for {
 		ft, p := c.read()
 		if ft == Exit {
@@ -567,9 +567,9 @@ func TestServer_HostedChildKeepsDefaultSighup(t *testing.T) {
 		if ft != Output {
 			t.Fatalf("got frame %#x", ft)
 		}
-		out += string(p)
+		out.WriteString(string(p))
 	}
-	if strings.Contains(out, "survived") {
-		t.Fatalf("child survived SIGHUP: %q", out)
+	if strings.Contains(out.String(), "survived") {
+		t.Fatalf("child survived SIGHUP: %q", out.String())
 	}
 }

@@ -246,7 +246,7 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 
 func TestStopHookReason_CapsAndClips(t *testing.T) {
 	var findings []workbenchcheck.Finding
-	for i := 0; i < stopHookMaxFindings+5; i++ {
+	for i := range stopHookMaxFindings + 5 {
 		findings = append(findings, workbenchcheck.Finding{TargetID: i + 1, Title: strings.Repeat("x", 600), Status: "in_progress",
 			Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"})
 	}

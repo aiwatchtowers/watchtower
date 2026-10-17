@@ -176,19 +176,15 @@ func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 	runCtx, cancel := context.WithCancel(ctx)
 	var wg gosync.WaitGroup
 	for name, r := range map[string]AutomationRunner{"scheduler": d.automationScheduler, "executor": d.automationExecutor} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := r.Run(runCtx); err != nil {
 				d.logger.Printf("automations: %s stopped: %v", name, err)
 			}
-		}()
+		})
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		d.forwardAutomationWakes(runCtx)
-	}()
+	})
 	d.logger.Println("automations: scheduler and executor started")
 	return func() {
 		cancel()

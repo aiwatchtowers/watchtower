@@ -10,6 +10,7 @@
 package reactioncmd
 
 import (
+	"slices"
 	watchtowerslack "watchtower/internal/slack"
 
 	"github.com/slack-go/slack"
@@ -78,10 +79,5 @@ func extractOwnerReactions(items []slack.ReactedItem, ownerRawID string, dict ma
 // list is excluded rather than attributed to the owner, since this predicate
 // gates a write and a phantom command is worse than a missed one.
 func reactorIsOwner(users []string, ownerRawID string) bool {
-	for _, u := range users {
-		if u == ownerRawID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(users, ownerRawID)
 }

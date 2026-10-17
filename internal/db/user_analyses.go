@@ -915,10 +915,7 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 	sort.Slice(sortable, func(i, j int) bool {
 		return sortable[i].score > sortable[j].score
 	})
-	limit := 50
-	if len(sortable) < limit {
-		limit = len(sortable)
-	}
+	limit := min(len(sortable), 50)
 	results := make([]UserInteraction, 0, limit)
 	for _, s := range sortable[:limit] {
 		results = append(results, *resultMap[s.uid])

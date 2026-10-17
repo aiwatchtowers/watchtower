@@ -375,13 +375,7 @@ func (cb *ContextBuilder) buildRelevantContext(query ParsedQuery, budget int, se
 			Limit:      100,
 		})
 		if err == nil && len(results) > 0 {
-			remaining := budget - tokensUsed
-			if remaining > searchBudget {
-				remaining = searchBudget
-			}
-			if remaining < 0 {
-				remaining = 0
-			}
+			remaining := max(min(budget-tokensUsed, searchBudget), 0)
 			section := cb.formatSearchResults(results, remaining, seen)
 			if section != "" {
 				b.WriteString(section)
@@ -732,10 +726,7 @@ func (cb *ContextBuilder) formatThreadSummary(channelID, threadTS, channelName s
 	tokensUsed := estimateTokens(b.String())
 
 	// Show up to 3 most recent replies
-	limit := 3
-	if len(threadReplies) < limit {
-		limit = len(threadReplies)
-	}
+	limit := min(len(threadReplies), 3)
 	start := len(threadReplies) - limit
 	for i := start; i < len(threadReplies); i++ {
 		reply := threadReplies[i]

@@ -295,7 +295,7 @@ func (r *repo) findStash(ctx context.Context, msg string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(out), "\n"), "\n") {
 		if line == "" {
 			continue
 		}

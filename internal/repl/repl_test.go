@@ -392,7 +392,7 @@ func TestStreamCancelConcurrency(t *testing.T) {
 	r, _ := newTestREPL(t)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
@@ -613,10 +613,10 @@ func TestRunStatusLargeNumbers(t *testing.T) {
 	seedWorkspace(t, deps.DB)
 
 	// Insert many channels
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		seedChannel(t, deps.DB, fmt.Sprintf("C%04d", i), fmt.Sprintf("chan-%d", i))
 	}
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		seedUser(t, deps.DB, fmt.Sprintf("U%04d", i), fmt.Sprintf("user-%d", i))
 	}
 

@@ -172,7 +172,7 @@ func TestGatherMemoryRevisions_CapsAtFive(t *testing.T) {
 	section := memoryRevisionsSection(t, prompt)
 
 	var lines []string
-	for _, l := range strings.Split(section, "\n") {
+	for l := range strings.SplitSeq(section, "\n") {
 		if strings.TrimSpace(l) != "" {
 			lines = append(lines, l)
 		}

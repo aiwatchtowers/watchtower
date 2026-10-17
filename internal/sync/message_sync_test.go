@@ -762,7 +762,7 @@ func TestSyncMessagesEmptyResponse(t *testing.T) {
 func TestSyncMessagesLargeVolume(t *testing.T) {
 	// Create 10 messages per channel to test higher volume
 	msgs := make([]map[string]any, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		msgs[i] = map[string]any{
 			"ts":   fmt.Sprintf("170000%04d.000000", i),
 			"user": "U001",

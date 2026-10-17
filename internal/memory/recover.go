@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -252,10 +253,8 @@ func treePaths(t *object.Tree) (map[string]bool, error) {
 // the pattern set is fixed and written by initVault itself.
 func isIgnoredVaultPath(rel string) bool {
 	segments := strings.Split(filepath.ToSlash(rel), "/")
-	for _, seg := range segments[:len(segments)-1] {
-		if seg == ".obsidian" {
-			return true
-		}
+	if slices.Contains(segments[:len(segments)-1], ".obsidian") {
+		return true
 	}
 	base := segments[len(segments)-1]
 	return base == ".obsidian" || base == ".DS_Store" || strings.HasSuffix(base, ".tmp")

@@ -41,10 +41,10 @@ func TestEXT01_ConfluenceAPIIsGETOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	apiType := reflect.TypeOf(&ConfluenceAPI{})
+	apiType := reflect.TypeFor[*ConfluenceAPI]()
 	var exported []string
-	for i := 0; i < apiType.NumMethod(); i++ {
-		exported = append(exported, apiType.Method(i).Name)
+	for method := range apiType.Methods() {
+		exported = append(exported, method.Name)
 	}
 	sort.Strings(exported)
 	require.Equal(t, []string{"Download", "GetJSON", "PutJSON"}, exported,

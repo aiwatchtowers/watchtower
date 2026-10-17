@@ -515,7 +515,7 @@ func TestTracks06_HistoryCapAt30(t *testing.T) {
 
 	// Alternate between two distinct values to guarantee a real change every step.
 	priorities := []string{"high", "low"}
-	for i := 0; i < 35; i++ {
+	for i := range 35 {
 		require.NoError(t, db.UpdateTrackPriority(int(id), priorities[i%2]))
 	}
 

@@ -409,7 +409,7 @@ func TestLogin_ScopeReflectsWithConfluence(t *testing.T) {
 	parsed, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
 	scope := strings.Fields(parsed.Query().Get("scope"))
-	for _, s := range strings.Fields(ConfluenceScopes) {
+	for s := range strings.FieldsSeq(ConfluenceScopes) {
 		assert.NotContains(t, scope, s, "default Login must not request Confluence scopes")
 	}
 
@@ -417,10 +417,10 @@ func TestLogin_ScopeReflectsWithConfluence(t *testing.T) {
 	parsed, err = url.Parse(authorizeURL)
 	require.NoError(t, err)
 	scope = strings.Fields(parsed.Query().Get("scope"))
-	for _, s := range strings.Fields(ConfluenceScopes) {
+	for s := range strings.FieldsSeq(ConfluenceScopes) {
 		assert.Contains(t, scope, s, "WithConfluence must request every Confluence scope")
 	}
-	for _, s := range strings.Fields(ConfluenceWriteScopes) {
+	for s := range strings.FieldsSeq(ConfluenceWriteScopes) {
 		assert.NotContains(t, scope, s, "WithConfluence alone must not request the write scopes")
 	}
 }
@@ -436,10 +436,10 @@ func TestLogin_ScopeReflectsWithConfluenceWrite(t *testing.T) {
 	parsed, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
 	scope := strings.Fields(parsed.Query().Get("scope"))
-	for _, s := range strings.Fields(ConfluenceScopes) {
+	for s := range strings.FieldsSeq(ConfluenceScopes) {
 		assert.Contains(t, scope, s, "WithConfluenceWrite must imply every Confluence read scope")
 	}
-	for _, s := range strings.Fields(ConfluenceWriteScopes) {
+	for s := range strings.FieldsSeq(ConfluenceWriteScopes) {
 		assert.Contains(t, scope, s, "WithConfluenceWrite must request every Confluence write scope")
 	}
 }

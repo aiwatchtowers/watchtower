@@ -188,7 +188,7 @@ func (d *definer) Define(path string, fn SDKFunc) {
 }
 
 func validSDKPath(path string) bool {
-	for _, seg := range strings.Split(path, ".") {
+	for seg := range strings.SplitSeq(path, ".") {
 		if seg == "" || strings.ContainsAny(seg, " \t\n") {
 			return false
 		}

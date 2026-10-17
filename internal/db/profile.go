@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -238,10 +239,8 @@ func (db *DB) AddStarredChannel(slackUserID, channelID string) error {
 	}
 
 	// Check if already starred
-	for _, ch := range channels {
-		if ch == channelID {
-			return nil // Already starred, idempotent
-		}
+	if slices.Contains(channels, channelID) {
+		return nil // Already starred, idempotent
 	}
 
 	channels = append(channels, channelID)
@@ -306,10 +305,8 @@ func (db *DB) AddStarredPerson(slackUserID, personUserID string) error {
 	}
 
 	// Check if already starred
-	for _, p := range people {
-		if p == personUserID {
-			return nil // Already starred, idempotent
-		}
+	if slices.Contains(people, personUserID) {
+		return nil // Already starred, idempotent
 	}
 
 	people = append(people, personUserID)

@@ -207,7 +207,7 @@ func TestDaemon_DayPlanBackoff_BenignNoUserSkipDoesNotConsumeBudget(t *testing.T
 	d.SetDayPlanPipeline(fp)
 
 	testTime := time.Date(2026, 4, 23, 8, 0, 0, 0, time.Local)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		d.runDayPlanPhase(context.Background(), testTime.Add(time.Duration(i)*time.Hour), d.dayPlanOwner(testTime.Add(time.Duration(i)*time.Hour)))
 	}
 
@@ -405,7 +405,7 @@ func TestDaemon_BriefingBackoff_BenignNoUserSkipDoesNotConsumeBudget(t *testing.
 	d.SetDB(database)
 	d.SetBriefingPipeline(briefing.New(database, cfg, gen, d.logger))
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		d.phaseBriefing(context.Background())
 	}
 
@@ -626,7 +626,7 @@ func TestDaemon_RollupBackoff_BenignSkipDoesNotConsumeBudget(t *testing.T) {
 	d.SetDB(database)
 	d.SetDigestPipeline(digest.New(database, cfg, gen, d.logger))
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	}
 

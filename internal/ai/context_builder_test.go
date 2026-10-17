@@ -124,7 +124,7 @@ func setupTestDB(t *testing.T) (*db.DB, time.Time) {
 	}
 
 	// Messages in #random (C003) — more messages for broad context
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		tsUnix := float64(refTime.Add(-time.Duration(i*10) * time.Minute).Unix())
 		ts := fmt.Sprintf("%.6f", tsUnix)
 		uid := fmt.Sprintf("U00%d", (i%3)+1)
