@@ -20,8 +20,8 @@ import (
 func TestExtractDeadlineCoversTheOCRWorstCase(t *testing.T) {
 	const killGrace = 5 * time.Second
 	batches := (extract.MaxOCRPages + extract.OCRBatchPages - 1) / extract.OCRBatchPages
-	runs := time.Duration(batches + 1)
+	runs := batches + 1
 	worst := extract.PDFHelperTimeout + 2*extract.CodesignTimeout +
-		extract.OCRTimeout*time.Duration(batches) + killGrace*runs
+		extract.OCRTimeout*time.Duration(batches) + killGrace*time.Duration(runs)
 	assert.GreaterOrEqual(t, extsync.ExtractDeadline, worst, "worst case %s", worst)
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -899,7 +900,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		// telemetry — and with stderr empty. Parse it first so that message
 		// survives instead of a bare "exit code 1" (the digest generator's
 		// errorEnvelopeMessage precedent, internal/digest/generator.go).
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
 				return "", nil, fmt.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
 					exitErr.ExitCode(), resp.Subtype, envelopeMessage(resp.Result))
@@ -911,7 +913,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	resp, err := parseCLIOutput(output)
 	if err != nil {
 		// Fallback: treat as plain text if JSON parsing fails (e.g. old CLI version)
-		return strings.TrimRight(string(output), "\n"), nil, nil //nolint:nilerr // intentional fallback to plain text
+		return strings.TrimRight(string(output), "\n"), nil, nil // intentional fallback to plain text
 	}
 
 	if resp.IsError {
@@ -1009,14 +1011,13 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 // classifyError wraps CLI errors with user-friendly messages.
 func classifyError(err error, stderr string) error {
 	// Check if claude binary is not found
-	if execErr, ok := err.(*exec.Error); ok {
-		if execErr.Err == exec.ErrNotFound {
-			return fmt.Errorf("claude CLI not found — install Claude Code first: https://docs.anthropic.com/en/docs/claude-code")
-		}
+	if errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf("claude CLI not found — install Claude Code first: https://docs.anthropic.com/en/docs/claude-code")
 	}
 
 	// Check exit error for details
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
 		code := exitErr.ExitCode()
 		stderrMsg := strings.TrimSpace(stderr)
 		if stderrMsg == "" {

@@ -135,25 +135,12 @@ RunChannelDigests(ctx)
     │    ├─ channelNames: map[channelID → name]
     │    └─ profile: UserProfile (for personalization)
     │
-    ├─ isFirstRun()? (no channel digests in DB)
-    │    │
-    │    ├─ YES → runInitialDayByDay()
-    │    │         for d = historyDays..1:
-    │    │           dayStart = midnight(now - d days)
-    │    │           dayEnd = dayStart + 24h
-    │    │           RunChannelDigestsForWindow(dayStart, dayEnd)
-    │    │           RunDailyRollupForDate(dayStart)
-    │    │         process today (partial)
-    │    │         RunWeeklyTrends()
-    │    │
-    │    └─ NO → standard incremental flow ↓
-    │
-    ├─ Determine time window
-    │    since = latest channel digest's period_to
+    ├─ Resolve one window per channel (resolveChannelWindows)
+    │    since = that channel's own last digest period_to
+    │            (first run: now - InitialHistoryDays; never before the
+    │             FEAT-03 fast-forward floor)
     │    now = time.Now()
-    │
-    ├─ Find channels with new messages since `since`
-    │    SELECT DISTINCT channel_id FROM messages WHERE ts_unix > since
+    │    `digest generate --since` overrides every window with one range
     │
     ├─ For each channel: filter by threshold
     │    │

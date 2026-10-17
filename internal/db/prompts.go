@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -17,7 +18,7 @@ func (db *DB) UpsertPrompt(p Prompt) error {
 
 	var existing int
 	err = tx.QueryRow(`SELECT version FROM prompts WHERE id = ?`, p.ID).Scan(&existing)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		// New prompt: insert and record in history.
 		if _, err := tx.Exec(`INSERT INTO prompts (id, template, version, language)
 			VALUES (?, ?, ?, ?)`, p.ID, p.Template, p.Version, p.Language); err != nil {
@@ -63,7 +64,7 @@ func (db *DB) UpdatePrompt(id, template, reason string, customized bool) error {
 	var current Prompt
 	err = tx.QueryRow(`SELECT id, template, version, language FROM prompts WHERE id = ?`, id).
 		Scan(&current.ID, &current.Template, &current.Version, &current.Language)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("prompt %q not found", id)
 	}
 	if err != nil {

@@ -101,7 +101,7 @@ func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
 	agent, err := hookAgentFor(cmd, workbenchBriefFlagAgent)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: workbench brief: %v\n", err)
-		return nil //nolint:nilerr // a hook never fails: the reason is one stderr line
+		return nil // a hook never fails: the reason is one stderr line
 	}
 	if agent == agentkind.Codex {
 		runCodexBrief(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())

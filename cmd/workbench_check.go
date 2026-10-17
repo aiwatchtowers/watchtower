@@ -559,13 +559,9 @@ func workbenchHasStateHooks(database *db.DB, id int64) (bool, error) {
 	return has, nil
 }
 
-// readHookInput decodes a hook's JSON input from stdin, giving up at ctx's
-// deadline (a run from a terminal may never send one).
-func readHookInput[T any](ctx context.Context, stdin io.Reader) (T, error) {
-	return readHookInputLimit[T](ctx, stdin, hookStdinLimit)
-}
-
-// readHookInputLimit is readHookInput reading at most limit bytes.
+// readHookInputLimit decodes a hook's JSON input from stdin, reading at most
+// limit bytes and giving up at ctx's deadline (a run from a terminal may never
+// send one).
 func readHookInputLimit[T any](ctx context.Context, stdin io.Reader, limit int64) (T, error) {
 	type result struct {
 		in  T

@@ -205,7 +205,7 @@ func tightenVaultPerms(vaultPath string) {
 			// user's own home directory; a symlink swap between the stat and
 			// this chmod requires write access to that directory already,
 			// which is equivalent to being the user.
-			if cerr := os.Chmod(p, want); cerr != nil { //nolint:gosec
+			if cerr := os.Chmod(p, want); cerr != nil {
 				slog.Warn("could not restrict memory vault permissions", "path", p, "error", cerr)
 			}
 		}

@@ -133,11 +133,11 @@ const gmailMessageQuery = `SELECT ` + gmailSelectCols + `
 func (gmailSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	rest, ok := splitRef(key, "gmail:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	i := strings.Index(rest, ":")
 	if i <= 0 || i == len(rest)-1 {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	accountID, tid := rest[:i], rest[i+1:]
 
@@ -212,11 +212,11 @@ func (imapSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
 func (imapSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	rest, ok := splitRef(key, "imap:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	parts := strings.SplitN(rest, ":", 3)
 	if len(parts) != 3 {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	accountID, uidvalidity, uid := parts[0], parts[1], parts[2]
 

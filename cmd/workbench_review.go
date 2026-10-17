@@ -187,7 +187,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if open == nil && reviewFlagRefresh {
 		return failReview(cmd, errNoOpenReviewRound)
 	}
-	folder := ""
+	var folder string
 	if open != nil {
 		folder = open.FolderRoot
 	} else if folder, err = tools.ReviewSessionFolder(ctx, database, p, reviewFlagSession); err != nil {

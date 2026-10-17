@@ -109,7 +109,7 @@ func (db *DB) DismissTracks(ids []int) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	//nolint:gosec // G202: only "?" placeholders are concatenated; ids are bound args.
+	// Only "?" placeholders are concatenated; ids are bound args.
 	query := `UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE dismissed_at = '' AND id IN (` + placeholders(len(ids)) + `)`
 	res, err := db.Exec(query, intArgs(ids)...)

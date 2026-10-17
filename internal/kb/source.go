@@ -55,15 +55,6 @@ func sourceNames() []string {
 	return out
 }
 
-func sourceByName(name string) Source {
-	for _, s := range allSources() {
-		if s.Name() == name {
-			return s
-		}
-	}
-	return nil
-}
-
 // splitRef splits "<prefix><rest>" and reports whether prefix matched.
 func splitRef(ref, prefix string) (string, bool) {
 	if len(ref) <= len(prefix) || ref[:len(prefix)] != prefix {

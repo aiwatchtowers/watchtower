@@ -367,7 +367,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 	mux.HandleFunc(callbackPath, callback)
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go server.Serve(listener) //nolint:errcheck
+	go server.Serve(listener)
 	defer func() {
 		// Brief grace period to let the browser receive and render the success/error
 		// HTML page before the server is torn down.
