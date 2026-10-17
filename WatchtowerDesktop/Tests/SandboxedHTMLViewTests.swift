@@ -203,13 +203,24 @@ final class SandboxedHTMLViewTests: XCTestCase {
         try manager.createSymbolicLink(atPath: folder.appendingPathComponent("x").path, withDestinationPath: ".git")
         try "<script>parent.postMessage(\"hidden\", \"*\")</script>"
             .write(to: folder.appendingPathComponent(".hidden.html"), atomically: true, encoding: .utf8)
-        try "<script>parent.postMessage(\"ok\", \"*\")</script>"
-            .write(to: folder.appendingPathComponent("ok.html"), atomically: true, encoding: .utf8)
+        // A framed own page renders with its folder's style sheet, in an
+        // opaque origin (#563).
+        try """
+        <html><head><link rel="stylesheet" href="style.css"></head><body><script>
+        window.onload = () => parent.postMessage("ok:" + getComputedStyle(document.body).color, "*");
+        </script></body></html>
+        """.write(to: folder.appendingPathComponent("ok.html"), atomically: true, encoding: .utf8)
+        try "TOPSECRET".write(to: folder.appendingPathComponent("secret.txt"), atomically: true, encoding: .utf8)
         let index = """
         <html><head><link rel="stylesheet" href="style.css"><script src=".secrets/config.js"></script>
         <script src="notes.js"></script><script src="x/hook.js"></script></head><body>
-        <img src="https://\(counter.hostPort)/net.png"><iframe src=".hidden.html"></iframe><iframe src="ok.html"></iframe>
+        <img src="https://\(counter.hostPort)/net.png"><iframe src=".hidden.html"></iframe><iframe id="ok" src="ok.html"></iframe>
+        <iframe id="secret" src="secret.txt"></iframe>
         <script>
+        const readable = (id) => {
+          try { const doc = document.getElementById(id).contentDocument; return doc ? "read:" + doc.body.innerText : "opaque" }
+          catch (e) { return "opaque" }
+        };
         const framed = [];
         let fetched = "pending";
         let evaluated = "off";
@@ -218,17 +229,17 @@ final class SandboxedHTMLViewTests: XCTestCase {
         fetch("style.css").then(r => r.text()).then(() => { fetched = "read" }).catch(() => { fetched = "blocked" });
         window.onload = () => setTimeout(() => {
           document.title = [getComputedStyle(document.body).color, window.leaked || 0, window.gitLeaked || 0,
-                            framed.sort().join("+"), fetched, evaluated].join("|");
-        }, 300);
+                            framed.sort().join("+"), fetched, evaluated, readable("secret"), readable("ok")].join("|");
+        }, 500);
         </script></body></html>
         """
         let file = folder.appendingPathComponent("index.html")
         try index.write(to: file, atomically: true, encoding: .utf8)
         let webView = try host(.file(file, folder: folder))
         let title = try await waitForTitle(webView) { $0.contains("|") }
-        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok|blocked|42",
-                       "visible siblings load and frame; no dotfile does, directly or by a link; no script reads a file as text; "
-                           + "new Function runs")
+        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok:rgb(1, 2, 3)|blocked|42|opaque|opaque",
+                       "visible siblings load and frame (with their own style sheet); no dotfile does, directly or by a link; "
+                           + "no script reads a file as text, by fetch or through a frame; new Function runs")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(counter.hits, 0, "an https image off the allowlist never connects")
     }

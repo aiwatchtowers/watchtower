@@ -20,7 +20,8 @@ import WebKit
 final class SandboxedHTMLSchemeHandler: NSObject, WKURLSchemeHandler {
     static let chunkBytes = 256 * 1024
 
-    private var folders: [String: URL] = [:]
+    /// Per token: the folder served and the path of its top-level page.
+    private var sites: [String: (folder: URL, page: String?)] = [:]
     private var running = Set<ObjectIdentifier>()
     private let queue = DispatchQueue(label: "watchtower.html-preview.files", qos: .userInitiated)
 
@@ -29,20 +30,33 @@ final class SandboxedHTMLSchemeHandler: NSObject, WKURLSchemeHandler {
     @discardableResult
     func serve(_ folder: URL?) -> String {
         let token = (0..<8).map { _ in String(format: "%02x", UInt8.random(in: .min ... .max)) }.joined()
-        folders = folder.map { [token: $0] } ?? [:]
+        sites = folder.map { [token: ($0, nil)] } ?? [:]
         return token
     }
 
+    /// Marks `page` (a URL under a token `serve` returned) as the top-level
+    /// page: only its replies go out without `sandbox` (#563), so a framed
+    /// sibling is an opaque origin the page cannot read.
+    func setPage(_ page: URL) {
+        guard let token = page.host?.lowercased(), sites[token] != nil else { return }
+        sites[token]?.page = Self.path(of: page)
+    }
+
+    private static func path(of url: URL) -> String? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath
+    }
+
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
-        guard let url = task.request.url, let token = url.host?.lowercased(), let folder = folders[token] else {
+        guard let url = task.request.url, let token = url.host?.lowercased(), let site = sites[token] else {
             task.didFailWithError(URLError(.fileDoesNotExist))
             return
         }
         let id = ObjectIdentifier(task)
         running.insert(id)
         let range = task.request.value(forHTTPHeaderField: "Range")
+        let isPage = site.page != nil && Self.path(of: url) == site.page
         queue.async { [weak self] in
-            let reply = HTMLPreviewReply.reply(for: url, folder: folder, range: range)
+            let reply = HTMLPreviewReply.reply(for: url, folder: site.folder, range: range, isPage: isPage)
             self?.answer(task, id: id, url: url, reply: reply)
         }
     }

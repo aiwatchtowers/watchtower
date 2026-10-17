@@ -17,13 +17,24 @@ final class HTMLPreviewReplyTests: XCTestCase {
         try? FileManager.default.removeItem(at: folder)
     }
 
-    private func reply(_ path: String, range: String? = nil) -> HTMLPreviewReply {
+    private func reply(_ path: String, range: String? = nil, isPage: Bool = false) -> HTMLPreviewReply {
         // swiftlint:disable:next force_unwrapping
-        HTMLPreviewReply.reply(for: URL(string: "wtpreview://0a1b/" + path)!, folder: folder, range: range)
+        HTMLPreviewReply.reply(for: URL(string: "wtpreview://0a1b/" + path)!, folder: folder, range: range, isPage: isPage)
+    }
+
+    /// Only the top-level page goes out unsandboxed; anything else — a
+    /// framed sibling above all — is an opaque origin the page cannot read.
+    func testOnlyTheTopLevelPageIsUnsandboxed() {
+        XCTAssertEqual(reply("index.html").headers["Content-Security-Policy"], HTMLPreviewPolicy.framedContentSecurityPolicy)
+        XCTAssertEqual(reply("missing.html").headers["Content-Security-Policy"], HTMLPreviewPolicy.framedContentSecurityPolicy)
+        XCTAssertTrue(HTMLPreviewPolicy.framedContentSecurityPolicy.hasPrefix("sandbox allow-scripts; "))
+        XCTAssertFalse(HTMLPreviewPolicy.framedContentSecurityPolicy.contains("allow-same-origin"))
+        XCTAssertTrue(HTMLPreviewPolicy.framedContentSecurityPolicy.hasSuffix(HTMLPreviewPolicy.inAppContentSecurityPolicy))
+        XCTAssertFalse(HTMLPreviewPolicy.inAppContentSecurityPolicy.contains("sandbox"))
     }
 
     func testAFileGetsTheInAppPolicyAndATextCharset() {
-        let page = reply("index.html")
+        let page = reply("index.html", isPage: true)
         XCTAssertEqual(page.status, 200)
         guard case let .file(file, _, headers, range) = page else { return XCTFail("\(page)") }
         XCTAssertEqual(file.lastPathComponent, "index.html")
@@ -74,6 +85,6 @@ final class HTMLPreviewReplyTests: XCTestCase {
         XCTAssertEqual(refused.status, 413)
         guard case let .refusal(_, headers, body) = refused else { return XCTFail("\(refused)") }
         XCTAssertEqual(String(bytes: body, encoding: .utf8), "413 Content Too Large\n")
-        XCTAssertEqual(headers["Content-Security-Policy"], HTMLPreviewPolicy.inAppContentSecurityPolicy)
+        XCTAssertEqual(headers["Content-Security-Policy"], HTMLPreviewPolicy.framedContentSecurityPolicy)
     }
 }

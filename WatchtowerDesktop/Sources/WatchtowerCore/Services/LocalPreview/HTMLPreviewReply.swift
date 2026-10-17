@@ -25,9 +25,13 @@ package enum HTMLPreviewReply: Equatable, Sendable {
     /// The reply to a preview request for `url` served from `folder`, with
     /// the request's `Range` header: the file `HTMLPreviewPolicy.previewFile`
     /// resolves, stat'ed before it is read; over `LocalPreviewHTTP.maxFileBytes`
-    /// is 413, a range starting past the end 416, a range 206.
+    /// is 413, a range starting past the end 416, a range 206. Only the
+    /// top-level page (`isPage`) gets the plain in-app CSP; every other reply
+    /// — a framed file above all — is also `sandbox allow-scripts`, an opaque
+    /// origin the page cannot read (`contentDocument` is null), so a page
+    /// cannot frame a sibling file and read it.
     package static func reply(
-        for url: URL, folder: URL, range rangeHeader: String?, fileManager: FileManager = .default
+        for url: URL, folder: URL, range rangeHeader: String?, isPage: Bool = false, fileManager: FileManager = .default
     ) -> Self {
         guard let file = HTMLPreviewPolicy.previewFile(for: url, folder: folder, fileManager: fileManager),
               let size = (try? fileManager.attributesOfItem(atPath: file.path))?[.size] as? Int else {
@@ -35,6 +39,8 @@ package enum HTMLPreviewReply: Equatable, Sendable {
         }
         guard size <= LocalPreviewHTTP.maxFileBytes else { return refusal(413) }
         var headers = common
+        headers["Content-Security-Policy"] = isPage
+            ? HTMLPreviewPolicy.inAppContentSecurityPolicy : HTMLPreviewPolicy.framedContentSecurityPolicy
         headers["Content-Type"] = contentType(forExtension: file.pathExtension)
         switch HTMLPreviewPolicy.byteRange(rangeHeader, length: size) {
         case .whole:
@@ -58,11 +64,11 @@ package enum HTMLPreviewReply: Equatable, Sendable {
         return mime
     }
 
-    /// On every reply: the in-app CSP (no fetch/XHR, sockets or workers;
-    /// subresources from the folder and the CDN allowlist only), never
-    /// sniffed, never cached.
+    /// On every reply: a sandboxed in-app CSP (no fetch/XHR, sockets or
+    /// workers; subresources from the folder and the CDN allowlist only;
+    /// the top-level page alone unsandboxed), never sniffed, never cached.
     private static let common = [
-        "Content-Security-Policy": HTMLPreviewPolicy.inAppContentSecurityPolicy,
+        "Content-Security-Policy": HTMLPreviewPolicy.framedContentSecurityPolicy,
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
         "Accept-Ranges": "bytes"
@@ -97,4 +103,8 @@ extension HTMLPreviewPolicy {
     /// channel: `connect-src`/`worker-src` stay `'none'` and loads stay on the
     /// folder and the CDN allowlist. The browser keeps it off.
     package static let inAppContentSecurityPolicy = sourcePolicy(frames: "'self'", allowEval: true)
+
+    /// Every preview reply but the top-level page: the same, sandboxed. A
+    /// framed file runs in an opaque origin, so the page cannot read it.
+    package static let framedContentSecurityPolicy = "sandbox allow-scripts; " + inAppContentSecurityPolicy
 }

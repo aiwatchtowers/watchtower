@@ -1,3 +1,4 @@
+import WatchtowerCore
 import WebKit
 import XCTest
 @testable import WatchtowerDesktop
@@ -58,6 +59,23 @@ final class SandboxedHTMLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue(late.failed, "a late request of the earlier page")
         let hidden = try await run(handler, "wtpreview://\(handler.serve(folder))/.env")
         XCTAssertEqual(hidden.status, 404)
+    }
+
+    /// Only the page set with `setPage` goes out unsandboxed; the same file
+    /// under another token, or any other file, is `sandbox allow-scripts`.
+    func testOnlyTheTopLevelPageIsUnsandboxed() async throws {
+        try "<p>a</p>".write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        try "<p>b</p>".write(to: folder.appendingPathComponent("other.html"), atomically: true, encoding: .utf8)
+        let handler = SandboxedHTMLSchemeHandler()
+        let token = handler.serve(folder)
+        let before = try await run(handler, "wtpreview://\(token)/index.html")
+        XCTAssertTrue(before.headers["Content-Security-Policy"]?.hasPrefix("sandbox allow-scripts;") == true, "no page set yet")
+        // swiftlint:disable:next force_unwrapping
+        handler.setPage(URL(string: "wtpreview://\(token)/index.html")!)
+        let page = try await run(handler, "wtpreview://\(token)/index.html#/2")
+        XCTAssertEqual(page.headers["Content-Security-Policy"], HTMLPreviewPolicy.inAppContentSecurityPolicy)
+        let other = try await run(handler, "wtpreview://\(token)/other.html")
+        XCTAssertEqual(other.headers["Content-Security-Policy"], HTMLPreviewPolicy.framedContentSecurityPolicy)
     }
 
     func testAStoppedTaskGetsNothingMore() async throws {

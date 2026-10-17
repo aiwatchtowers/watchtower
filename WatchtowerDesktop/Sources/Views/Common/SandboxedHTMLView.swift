@@ -162,6 +162,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
                     guard let page = self.page else {
                         return self.showMessage("The preview could not be prepared: the file is not in its folder.")
                     }
+                    self.files.setPage(page)
                     webView.load(URLRequest(url: page))
                 }
             }
