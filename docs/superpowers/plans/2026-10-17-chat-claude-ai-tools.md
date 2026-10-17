@@ -127,9 +127,10 @@ All lanes branch off and merge into `feature/737-chat-claude-ai-tools`; only tha
 - Create: `internal/chat/testdata/events_v2_tool_wait.jsonl` (pinned lines the Swift parser test reads)
 
 **Interfaces — Produces:**
-- `type permissionRequest struct { RequestID, ToolName, ToolUseID, MCPServer, Title, Description string; Input json.RawMessage }`
+- `type permissionRequest struct { RequestID, ToolName, ToolUseID, DisplayName, Description, DecisionReason, MCPServer, MCPServerSource, Malformed string; Input json.RawMessage }` (as built — Task 2 probe: `mcp_server` is an object `{name, source}`, there is no `title`; `Input` is the request's input byte for byte; `policyCall()` → `connectorpolicy.Call`, see spec §3.1)
 - `func parseControlRequest(line []byte) (permissionRequest, bool)` — true only for `control_request` with subtype `can_use_tool`.
-- `func permissionAllowLine(requestID string, updatedInput json.RawMessage) []byte`, `func permissionDenyLine(requestID, message string) []byte` (newline-terminated).
+- `func permissionAllowLine(requestID string, input json.RawMessage) ([]byte, error)` (as built: error unless input is a JSON object — no bare allow; a policy Allow echoes `permissionRequest.Input`, an approved call sends the approved input), `func permissionDenyLine(requestID, message string) []byte` (newline-terminated).
+- As built, also: `parseControlCancel(line) (requestID string, ok bool)`, `parsePermissionDenied(line) (permissionDenied, bool)`, `toolWaitEvent(turnID, toolUseID, actionID)`, `ToolWaitMessage`, `publishedSource(url, title)`; `MCPServerStatus` also carries `Source`, `ConfigType`.
 - `func mcpStatusRequestLine(requestID string) []byte`; `func parseMCPStatusResponse(line []byte, requestID string) ([]MCPServerStatus, bool, error)`.
 - `type MCPServerStatus struct { Name, Status string; Tools []MCPToolInfo }`, `type MCPToolInfo struct { Name string; ReadOnly, Destructive *bool }` (nil = no annotation).
 - `const EventToolWait = "tool_wait"`; `Event.ActionID int64 \`json:"action_id,omitempty"\``; a `tool_wait` carries `turn_id`, `id` (the tool_use id), `action_id`, `message`.
@@ -238,7 +239,7 @@ Rules, first match wins (spec D3, decision Q1):
 
 **Interfaces — Consumes:** Task 3 codec; Task 4 `Policy.Decide`; Task 5 `PublishDir`. **Produces:**
 - `type ActionSink interface { ProposeConnectorCall(ctx context.Context, c ConnectorCall) (int64, error); ActionStatus(ctx context.Context, id int64) (string, error); ClaimApproved(ctx context.Context, id int64) (json.RawMessage, bool, error); FinishCall(ctx context.Context, id int64, result, callErr string) error; CancelCall(ctx context.Context, id int64, reason string) (bool, error); ExpireOrphans(ctx context.Context) error }`
-- `type ConnectorCall struct { TurnID, Server, Tool, Reason string; Input json.RawMessage }` (Reason = request title, else description, else `claude.ai connector write`).
+- `type ConnectorCall struct { TurnID, Server, Tool, Reason string; Input json.RawMessage }` (Reason = the request's display_name, else description, else `claude.ai connector write` — the protocol has no title, Task 3).
 - `ClaudeOptions.Gate *GateOptions`, `type GateOptions struct { Sink ActionSink; Publish *PublishDir; Policy connectorpolicy.Policy; ApprovalTimeout, PollInterval time.Duration; Now func() time.Time }` (defaults 15 min, 1 s, `time.Now`).
 - `const GateApprovalTimeout = 15 * time.Minute`.
 

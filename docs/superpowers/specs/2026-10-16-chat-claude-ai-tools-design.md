@@ -125,6 +125,58 @@ Claude provider and to keep the in-app artifact.
 in `TestChatBuiltins_OnlyApprovedNamesExposed`; `Artifact` leaves the session's
 deny list but stays on the one-shot deny list.
 
+### 3.1 Wire contracts (implemented by Task 3, `internal/chat/controlproto.go`)
+
+Recorded with Claude Code 2.1.302 (`internal/chat/testdata/claude_ai_probe.md`,
+`claude_ai_*.jsonl`); where this differs from F7 above, the recording wins. Golden
+tests (`TestControlProto_*`) fail when a CLI upgrade changes a shape.
+
+**Host ↔ CLI (stdin/stdout of the claude child).**
+
+| Direction | Line | Codec |
+|---|---|---|
+| CLI → host | `{"type":"control_request","request_id":R,"request":{"subtype":"can_use_tool","tool_name","display_name","input","tool_use_id",…}}`; a connector call adds `"mcp_server":{"name":"claude.ai <Name>","source":"claudeai"}` (an object). Built-ins add `description`, `decision_reason`, `decision_reason_type`. There is no `title`. | `parseControlRequest` → `permissionRequest{RequestID, ToolName, ToolUseID, DisplayName, Description, DecisionReason, MCPServer, MCPServerSource, Input, Malformed}`. `Input` is `request.input` byte for byte. A request with a `request_id` but no `tool_name`/`tool_use_id` or a non-object `input` is still returned, with `Malformed` set: the gate denies it with that reason (never leaves the CLI waiting). |
+| host → CLI | `{"type":"control_response","response":{"subtype":"success","request_id":R,"response":{"behavior":"allow","updatedInput":{…}}}}` | `permissionAllowLine(R, input)`: `input` **replaces** the call's input and must be a JSON object (nil or anything else → error, nothing is written). There is deliberately no bare allow ("run as sent", which the CLI also accepts): a policy Allow echoes `permissionRequest.Input` — the bytes the policy checked; an `Artifact` publish input carries CLI-internal `__artifact*` keys (a sha256 pin of the source) that a rebuilt input would lose —, an approved call sends the approved input, and a lost input can never run the model's own bytes. No HTML escaping. |
+| host → CLI | same envelope, `{"behavior":"deny","message":M}` | `permissionDenyLine(R, M)`; `message` is always sent; the model gets `M` verbatim as an error `tool_result`. |
+| host → CLI | `{"type":"control_request","request_id":S,"request":{"subtype":"mcp_status"}}` | `mcpStatusRequestLine(S)` |
+| CLI → host | `{"type":"control_response","response":{"subtype":"success","request_id":S,"response":{"mcpServers":[{"name","status","source","config":{"type"},"tools":[{"name","annotations":{"readOnly"?,"destructive"?}}]}]}}}` | `parseMCPStatusResponse(line, S)` → `[]MCPServerStatus{Name, Status, Source, ConfigType, Tools []MCPToolInfo{Name, ReadOnly, Destructive *bool}}`; a missing, `null` or non-bool hint is `nil`; `Tools` is kept only for a `connected` server (dropped otherwise, so a catalog never classifies a tool of a server that cannot run it); statuses `connected`/`needs-auth`/`pending`; an empty list right after spawn is a non-nil empty slice (not settled yet); `subtype:"error"`, a missing `mcpServers` or an undecodable answer to `S` → error. |
+| CLI → host | `{"type":"control_cancel_request","request_id":R}` (an interrupt withdrew a waiting `can_use_tool`; the tool never runs) | `parseControlCancel` → R |
+| CLI → host | `{"type":"system","subtype":"permission_denied","tool_name","tool_use_id","decision_reason_type","decision_reason","message"}` (the CLI refused a call itself, no `can_use_tool`; an error `tool_result` with `message` follows) | `parsePermissionDenied` |
+
+Every key is read exactly (the CLI reads exact keys; a Go struct would also bind
+`Tool_Name` or `Destructive`), envelope and `mcp_status` answer included. The
+translator (`ClaudeTranslator.Feed`) ignores every control line, `system/permission_denied`
+included (its `message` is a string); Task 8's reader routes them. Not handled yet: a
+`control_request` of another subtype from the CLI (none was recorded) — Task 8 decides
+whether to answer it with an error response.
+
+**Codec → connector policy.** `permissionRequest.policyCall()` builds
+`connectorpolicy.Call{Tool: tool_name, Server, Input}`. `Server` is
+`mcp_server.name` only when `mcp_server.source == "claudeai"`; no `mcp_server` → `""`
+(a built-in); any other `mcp_server` (another source, no source or name, a bare
+string, a non-object) → a name without the `claude.ai ` prefix, which the policy
+denies (D1: a stray server fails closed) and never treats as a built-in
+(`TestControlProto_PolicyCallMatchesConnectorPolicy`).
+
+**Protocol v2 additions (Go → Swift, Tasks 12/13).** Pinned byte for byte in
+`internal/chat/testdata/events_v2_tool_wait.jsonl` and
+`events_v2_published_source.jsonl`; the Swift parser tests read those files.
+
+- `tool_wait` — `{"type":"tool_wait","turn_id":T,"id":<tool_use id>,"message":"Waiting for your approval","action_id":N}`.
+  All four fields always present — the gate emits it only with a non-empty
+  `turn_id`/`id` and a positive `action_id`, and the Desktop ignores a `tool_wait`
+  missing any of them; `id` is the `id` of the step's earlier
+  `tool_start`; `action_id` (int64, > 0) is the `agent_actions` row the owner
+  approves (`claude_ai_connector_call`). Order: `tool_start` → `tool_wait` →
+  `tool_end` for the same `id` (ok=false with the gate's reason when rejected,
+  timed out or stopped). Live only: the row is the durable state, nothing new is
+  written to `chat_turn_steps`; a step that ends clears its waiting state. An older
+  Desktop ignores the unknown type.
+- `Event.action_id` (`omitempty`) is set only on `tool_wait`.
+- Published link — a `tool_end` source `{"kind":"claude_ai_published","title":<page title>,"url":<https://claude.ai/… URL>,"ref":<the same URL>}`
+  (`SourceKindPublished`). The Desktop renders a link card only for scheme
+  `https`, host exactly `claude.ai`.
+
 ## 4. Proposed contract amendments (owner approved 2026-10-13, ask #236)
 
 **CHAT-05 — artifacts never send; claude.ai publishing is the one private
