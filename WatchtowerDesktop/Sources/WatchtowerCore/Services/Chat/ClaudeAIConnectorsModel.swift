@@ -60,14 +60,17 @@ package final class ClaudeAIConnectorsModel {
         do {
             file = try filePath().flatMap { try ClaudeAIConnectorsFile.read(at: $0) }
         } catch {
-            errors.append(Self.logged("Couldn't read the claude.ai connector list: \(error.localizedDescription)"))
+            errors.append("Couldn't read the claude.ai connector list: \(error.localizedDescription)")
         }
         do {
             switches = try ClaudeAIConnectorSwitches.read(configPath: configPath)
         } catch {
-            errors.append(Self.logged("Couldn't read the claude.ai switches: \(error.localizedDescription)"))
+            errors.append("Couldn't read the claude.ai switches: \(error.localizedDescription)")
         }
-        readError = errors.isEmpty ? nil : errors.joined(separator: "\n")
+        let error = errors.isEmpty ? nil : errors.joined(separator: "\n")
+        // The section re-reads every few seconds: log a failure once, not per read.
+        if let error, error != readError { _ = Self.logged(error) }
+        readError = error
     }
 
     /// `ai.claude_ai.connectors`: every connector on or off at once.
@@ -117,7 +120,7 @@ package final class ClaudeAIConnectorsModel {
         do {
             return try ClaudeAIConnectorSwitches.read(configPath: configPath)
         } catch {
-            writeError = Self.logged("Couldn't read the claude.ai switches: \(error.localizedDescription)")
+            writeError = Self.logged("The switch was not saved: couldn't read config.yaml: \(error.localizedDescription)")
             return nil
         }
     }

@@ -105,11 +105,13 @@ final class ClaudeAIConnectorsFileTests: XCTestCase {
         XCTAssertThrowsError(try ClaudeAIConnectorSwitches.read(configPath: path))
     }
 
-    /// Absent keys are the defaults; a key present with a type Go can't load
-    /// is an error naming it, never "everything on".
+    /// Absent keys are the defaults, values are read as viper's weak
+    /// decoding reads them, and one Go can't load is an error naming the
+    /// key, never "everything on".
     func testSwitchesOfTheWrongTypeAreAnError() throws {
         let path = dir.appendingPathComponent("config.yaml").path
-        for yaml in ["ai: claude\n", "ai:\n  claude_ai: false\n", "ai:\n  claude_ai:\n    disabled_connectors: 42\n",
+        for yaml in ["ai: claude\n", "ai:\n  claude_ai: false\n", "ai:\n  claude_ai:\n    connectors: \"yes\"\n",
+                     "ai:\n  claude_ai:\n    disabled_connectors: {a: 1}\n",
                      "ai:\n  claude_ai:\n    disabled_connectors:\n      - {a: 1}\n", "- a\n", "ai: [\n"] {
             try yaml.write(toFile: path, atomically: true, encoding: .utf8)
             XCTAssertThrowsError(try ClaudeAIConnectorSwitches.read(configPath: path), yaml) { error in
@@ -119,6 +121,17 @@ final class ClaudeAIConnectorsFileTests: XCTestCase {
         for yaml in ["", "# nothing\n", "ai:\n", "ai:\n  claude_ai:\n"] {
             try yaml.write(toFile: path, atomically: true, encoding: .utf8)
             XCTAssertEqual(try ClaudeAIConnectorSwitches.read(configPath: path), ClaudeAIConnectorSwitches(), yaml)
+        }
+        // What viper's weak decoding loads, Swift reads the same way.
+        let weak: [String: ClaudeAIConnectorSwitches] = [
+            "ai:\n  claude_ai:\n    connectors: \"false\"\n": .init(connectors: false),
+            "ai:\n  claude_ai:\n    connectors: 0\n": .init(connectors: false),
+            "ai:\n  claude_ai:\n    connectors: \"T\"\n": .init(connectors: true),
+            "ai:\n  claude_ai:\n    disabled_connectors: 42\n": .init(disabled: ["42"])
+        ]
+        for (yaml, want) in weak {
+            try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+            XCTAssertEqual(try ClaudeAIConnectorSwitches.read(configPath: path), want, yaml)
         }
     }
 

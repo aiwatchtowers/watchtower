@@ -24,8 +24,8 @@ struct ClaudeAIConnectorsSection: View {
                 set: { on in Task { await model.setAllEnabled(on) } }
             ))
             .disabled(model.isWriting)
-            if model.file == nil {
-                Text("No connectors listed yet. They appear after a chat turn on the Claude provider.")
+            if model.file == nil, model.readError == nil {
+                Text("No connectors listed yet. They appear once a main chat on the Claude provider has started.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

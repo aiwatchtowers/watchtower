@@ -48,8 +48,8 @@ package struct ClaudeAIConnectorSwitches: Equatable, Sendable {
     }
 
     /// The switches in the config file at `path`; the defaults when the file
-    /// or the keys are missing. A key present with a type Go can't load
-    /// throws, naming it. Go's loader reads `disabled_connectors` as a list or
+    /// or the keys are missing. Values are read as Go's weak decoding reads
+    /// them; one it can't load throws, naming the key. Go's loader reads `disabled_connectors` as a list or
     /// as one comma-separated string — both are read here too.
     package static func read(configPath path: String) throws -> Self {
         guard let data = FileManager.default.contents(atPath: path) else {
@@ -70,8 +70,7 @@ package struct ClaudeAIConnectorSwitches: Equatable, Sendable {
             .flatMap({ try mapping($0["claude_ai"], key: "ai.claude_ai") }) else { return Self() }
         var switches = Self()
         if let raw = claudeAI["connectors"], !(raw is NSNull) {
-            guard let on = raw as? Bool else { throw failure("ai.claude_ai.connectors in config.yaml is not true or false") }
-            switches.connectors = on
+            switches.connectors = try weakBool(raw)
         }
         switch claudeAI["disabled_connectors"] {
         case nil, is NSNull:
@@ -80,15 +79,39 @@ package struct ClaudeAIConnectorSwitches: Equatable, Sendable {
             switches.disabled = normalized(csv.components(separatedBy: ","))
         case let list as [Any]:
             switches.disabled = normalized(try list.map { item in
-                guard item is String || item is Int || item is Double || item is Bool else {
+                guard let name = scalarText(item) else {
                     throw failure("ai.claude_ai.disabled_connectors in config.yaml holds a non-name entry")
                 }
-                return String(describing: item)
+                return name
             })
-        default:
-            throw failure("ai.claude_ai.disabled_connectors in config.yaml is not a list of names")
+        case let scalar?:
+            // Go's weak decoding reads a lone scalar as a one-name list.
+            guard let name = scalarText(scalar) else {
+                throw failure("ai.claude_ai.disabled_connectors in config.yaml is not a list of names")
+            }
+            switches.disabled = normalized([name])
         }
         return switches
+    }
+
+    /// viper decodes weakly (`WeaklyTypedInput`): a number is true unless
+    /// 0, a string is read by Go's `strconv.ParseBool`; anything else fails Go's load.
+    private static func weakBool(_ value: Any) throws -> Bool {
+        switch value {
+        case let bool as Bool: return bool
+        case let int as Int: return int != 0
+        case let double as Double: return double != 0
+        case let text as String where ["1", "t", "T", "TRUE", "true", "True"].contains(text): return true
+        case let text as String where ["0", "f", "F", "FALSE", "false", "False"].contains(text): return false
+        default: throw failure("ai.claude_ai.connectors in config.yaml is not true or false")
+        }
+    }
+
+    private static func scalarText(_ value: Any) -> String? {
+        switch value {
+        case is String, is Int, is Double, is Bool: return String(describing: value)
+        default: return nil
+        }
     }
 
     /// nil when absent; a present non-mapping throws.
