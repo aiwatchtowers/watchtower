@@ -26,11 +26,11 @@ One package owns validation and rendering, so the brief, `update_target` and Pre
 - `MaxRunes` = 1000 per text (global/workbench × session/procedure), surrounding space not counted; `Validate` returns `ErrTooLong`. `AppendLine` (used by Add) refuses a result over the limit.
 - `BriefSlot(Texts)`: `Owner's instructions (follow in every turn):`, the global text, then `For this workbench:` and the workbench text (the second header only when that text is non-empty). When any procedure text exists it adds one pointer line (`Target procedure: update_target returns it when a target goes in_progress.`). Empty when there is nothing.
 - `Procedure(Texts, targetID)`: `Owner's target procedure — follow it for #<id>:` plus the same two parts; empty when both procedure texts are empty.
-- `SlotMaxRunes` is the slot's size for maximal texts.
+- `SlotMaxRunes` is the slot's size for maximal texts (the most the brief cap grows by).
 
 ## The brief — `cmd/workbench_brief.go`
 
-`renderSessionBrief` and the Codex path (`runCodexBrief`) both place the slot after the board rules and the folder rules. `briefMaxChars` = 4000 + `SlotMaxRunes`, so the board, comments and asks keep the room they had; the slot is inline in full, never cut to a pointer. Texts are read when the brief is built: an edit applies from the next new session. They are the owner's words, injected as instructions on purpose, not fenced as data.
+`renderSessionBrief` and the Codex path (`runCodexBrief`) both place the slot after the board rules and the folder rules. The cap is `briefMaxCharsFor(slot)` = 4000 + the rendered slot's size (plus its joining newline; 4000 with no slot), so the board, comments and asks keep exactly the room they had; the slot is inline in full, never cut to a pointer. Texts are read when the brief is built: an edit applies from the next new session. They are the owner's words, injected as instructions on purpose, not fenced as data.
 
 ## Taking a target — `internal/tools/workbench_targets.go`
 

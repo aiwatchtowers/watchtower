@@ -29,9 +29,10 @@ import (
 )
 
 const (
-	// briefMaxChars caps the SessionStart hook body (runes): Claude Code adds
-	// it to every session's context, whatever the board holds.
-	briefMaxChars  = 4000 + instructions.SlotMaxRunes
+	// briefMaxChars caps the SessionStart hook body (runes) without the
+	// owner's instructions slot: Claude Code adds it to every session's
+	// context, whatever the board holds. briefMaxCharsFor adds the slot.
+	briefMaxChars  = 4000
 	briefLineChars = 240
 	// briefDriftBudget bounds the brief's offline board drift check (git
 	// only, PROJ-07), so a slow repository never stalls a session start.
@@ -332,6 +333,17 @@ func readBriefRecent(ctx context.Context, database *db.DB, workbenchID int64, no
 }
 
 // briefUnavailable is the one-line brief for every failure.
+// briefMaxCharsFor is the brief's cap with the owner's instructions slot
+// owner as rendered: the cap grows by the slot and its joining newline, so
+// the board, comments and asks keep exactly the room they have without it
+// (PROJ-22).
+func briefMaxCharsFor(owner string) int {
+	if owner == "" {
+		return briefMaxChars
+	}
+	return briefMaxChars + utf8.RuneCountInString(owner) + 1
+}
+
 func briefUnavailable(id int64, reason string) string {
 	return briefClip(fmt.Sprintf("Watchtower: workbench %d %s.", id, reason), briefLineChars)
 }
@@ -340,7 +352,8 @@ func briefUnavailable(id int64, reason string) string {
 // the open tree, the comments new for the agent, the answered asks (left out
 // when there are none; one row is reserved before the board is cut), recent
 // documents of the workbench's sources (recent nil = the workbench has none,
-// the section is left out), the rules — at most briefMaxChars runes. A
+// the section is left out), the rules — at most briefMaxChars runes (plus
+// the owner's slot, briefMaxCharsFor, on the session path). A
 // drift check cut short says so, so a partial check never reads as a clean
 // board. board is the full board: archived targets (PROJ-15) leave the
 // counts and the tree, and are only counted in the header; comments on them
@@ -367,7 +380,7 @@ func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.Wor
 	if cleanup != "" {
 		rules += "\n" + cleanup
 	}
-	budget := briefMaxChars - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
+	budget := briefMaxCharsFor(owner) - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
 	if section := briefDriftSection(drift, budget/4); section != "" {
 		head += "\n" + section
 		budget -= utf8.RuneCountInString(section) + 1

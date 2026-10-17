@@ -64,8 +64,27 @@ func TestProj22_FullBoardKeepsWholeSlot(t *testing.T) {
 		"", "Cleanup: /usr/local/bin/watchtower workbench cleanup --session 3", slot)
 
 	assert.Contains(t, out, slot, "the board gives way, never the slot")
-	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
+	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxCharsFor(slot))
 	assert.Contains(t, out, "more targets (workbench_board)")
+}
+
+// Without instructions the brief keeps today's 4000-rune cap: the cap grows by
+// the rendered slot only, never by its maximum.
+func TestProj22_NoInstructionsKeepsTodaysBudget(t *testing.T) {
+	assert.Equal(t, 4000, briefMaxCharsFor(""))
+	assert.Equal(t, 4000+len("x")+1, briefMaxCharsFor("x"), "the slot and its joining newline")
+
+	var board []db.BoardNode
+	for i := 1; i <= 300; i++ {
+		board = append(board, briefNode(i, "todo", strings.Repeat("Implement the next part of the plan ", 8)))
+	}
+	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), briefRules, "", "", "")
+	assert.LessOrEqual(t, utf8.RuneCountInString(out), 4000)
+	assert.Greater(t, utf8.RuneCountInString(out), 3900, "a full board uses today's room")
+
+	slot := instructions.BriefSlot(instructions.Texts{Global: db.OwnerInstructions{Session: "Answer briefly."}})
+	withSlot := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), briefRules, "", "", slot)
+	assert.Equal(t, out+"\n"+slot, withSlot, "the board keeps exactly the same room")
 }
 
 func TestProj22_CodexBriefCarriesSlot(t *testing.T) {

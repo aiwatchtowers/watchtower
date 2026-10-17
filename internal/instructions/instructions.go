@@ -27,7 +27,7 @@ const (
 )
 
 // SlotMaxRunes bounds BriefSlot's output for maximal texts (all ASCII
-// constants, so bytes equal runes); the brief reserves exactly this room.
+// constants, so bytes equal runes): the most the brief's cap can grow by.
 const SlotMaxRunes = len(sessionHeader) + 1 + MaxRunes + 1 +
 	len(workbenchHeader) + 1 + MaxRunes + 1 + len(procedurePtr)
 

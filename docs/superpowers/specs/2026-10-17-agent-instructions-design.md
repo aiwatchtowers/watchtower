@@ -78,7 +78,7 @@ For this workbench:
 
 The "For this workbench:" line appears only when the workbench text is non-empty; the whole slot is absent when both are empty. When a target procedure is set (global or workbench), the brief adds one line: `Target procedure: update_target returns it when a target goes in_progress.`
 
-The slot is inline in full — the field limits (below) guarantee it fits; it is never cut to a pointer. The brief's existing `briefMaxChars` budget grows by the slot's maximum so the board, comments and asks keep the room they have today.
+The slot is inline in full — the field limits (below) guarantee it fits; it is never cut to a pointer. The brief's existing `briefMaxChars` budget grows by the rendered slot's size so the board, comments and asks keep the room they have today.
 
 Instructions reach a session when its brief is built: an edit takes effect from the next new session (a resumed or running session keeps the text it started with).
 
@@ -98,7 +98,7 @@ When `update_target` changes a target's status to `in_progress` (from any other 
 
 ## Limits
 
-- Each of the four texts (global/workbench × session/procedure): **1000 runes**. The session slot is therefore at most ~2050 runes with its headers; `briefMaxChars` grows by that amount. *(My call: the existing brief cap is `briefMaxChars` = 4000 in `cmd/workbench_brief.go` and the methodology slot `briefMethodChars` = 1400 in `cmd/workbench_brief_method.go`; the builder confirms the combined brief stays inside the SessionStart context limits of Claude Code and Codex and, if they don't fit, lowers the per-field limit — never cuts the slot to a pointer and never takes room from the board.)*
+- Each of the four texts (global/workbench × session/procedure): **1000 runes**. The session slot is therefore at most ~2050 runes with its headers; `briefMaxChars` grows by the rendered slot's size, at most that amount. *(My call: the existing brief cap is `briefMaxChars` = 4000 in `cmd/workbench_brief.go` and the methodology slot `briefMethodChars` = 1400 in `cmd/workbench_brief_method.go`; the builder confirms the combined brief stays inside the SessionStart context limits of Claude Code and Codex and, if they don't fit, lowers the per-field limit — never cuts the slot to a pointer and never takes room from the board.)*
 - The text is the owner's, injected as instructions on purpose; it is not fenced as untrusted data. Suggestion candidates (model output derived from transcripts) are data until the owner presses Add.
 
 ## Storage
