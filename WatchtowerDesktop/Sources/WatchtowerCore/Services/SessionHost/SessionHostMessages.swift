@@ -13,8 +13,16 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
     package let cols: Int
     package let rows: Int
 
-    package init(row: Int64, run: String, executable: String, args: [String], env: [String],
-                 cwd: String, cols: Int, rows: Int) {
+    package init(
+        row: Int64,
+        run: String,
+        executable: String,
+        args: [String],
+        env: [String],
+        cwd: String,
+        cols: Int,
+        rows: Int
+    ) {
         self.row = row
         self.run = run
         self.executable = executable
