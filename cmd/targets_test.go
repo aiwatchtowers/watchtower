@@ -838,3 +838,14 @@ func TestRunTargets_ParentOnAnotherBoardIsRefused(t *testing.T) {
 	targetsLinkCmd.SetOut(new(bytes.Buffer))
 	assert.ErrorIs(t, targetsLinkCmd.RunE(targetsLinkCmd, []string{strconv.FormatInt(personal, 10)}), db.ErrParentOtherBoard)
 }
+
+// TestLoadSourceContext_UnknownDigestIsEmpty guards the nil digest
+// GetDigestByID returns for an unknown id: the source context is empty (as on
+// the error path), not a nil dereference.
+func TestLoadSourceContext_UnknownDigestIsEmpty(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	assert.Empty(t, loadSourceContext(database, "digest", "999"))
+}
