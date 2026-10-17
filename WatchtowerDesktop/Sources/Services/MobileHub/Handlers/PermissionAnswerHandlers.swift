@@ -163,11 +163,26 @@ final class PermissionAnswerHandlers {
             ) else { return nil }
             let raw: String = row["summary"]
             let clipped = PermissionRequestSlice.wireSummary(raw, clippedByGo: row["summary_clipped"]).clipped
+            let toolName: String = row["tool_name"]
             return StoredRequest(
                 status: row["status"],
-                allowBlock: PermissionAllowBlock.check(toolName: row["tool_name"], summary: raw, clipped: clipped)
+                allowBlock: PermissionAllowBlock.check(toolName: toolName, summary: raw, clipped: clipped)
+                    ?? Self.resolvedSettingsPath(toolName: toolName, path: raw)
             )
         }
+    }
+
+    /// The Mac also checks the path with its symlinks resolved: a folder
+    /// linked to `.claude` must not read as an ordinary one. The phone
+    /// cannot resolve it, so only the hub refuses such an allow.
+    nonisolated static func resolvedSettingsPath(toolName: String, path: String) -> PermissionAllowBlock? {
+        guard PermissionAllowBlock.pathTools.contains(toolName), path.hasPrefix("/") else { return nil }
+        // The file a Write creates does not exist yet, and Foundation then
+        // resolves nothing: resolve the folder, keep the name.
+        let url = URL(fileURLWithPath: path)
+        let folder = url.deletingLastPathComponent().resolvingSymlinksInPath()
+        let resolved = folder.appendingPathComponent(url.lastPathComponent).path
+        return PermissionAllowBlock.check(toolName: toolName, summary: resolved, clipped: false)
     }
 
     /// `not_pending` with a message the phone shows as it is.

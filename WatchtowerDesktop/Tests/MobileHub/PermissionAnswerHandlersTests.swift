@@ -313,6 +313,23 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         XCTAssertEqual(try row(id)?["status"], "pending")
     }
 
+    /// A folder linked to `.claude` is a settings path on the Mac too.
+    func testASettingsPathBehindASymlinkCannotBeAllowed() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let real = root.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let link = root.appendingPathComponent("cfg")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let session = try await liveSession()
+        let id = try await request(session, tool: "Write", summary: link.appendingPathComponent("settings.json").path)
+
+        let outcome = try await makeHandlers().handle(answer(session, request: id))
+
+        XCTAssertEqual(outcome.reason, .answerOnMac)
+        XCTAssertEqual(try row(id)?["status"], "pending")
+    }
+
     /// Owner decision (ask #268): an Edit/Write/NotebookEdit of a settings
     /// path is Deny only; every other path keeps Allow once.
     func testProj21_ASettingsPathEditCannotBeAllowed() async throws {
