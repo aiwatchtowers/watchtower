@@ -87,7 +87,7 @@ func TestWorkbenchMethodology_SetsDropsAndClears(t *testing.T) {
 
 // Board #558's one-time carry-over through the owner's CLI: a workbench
 // made on this install (a fresh install, or after the upgrade) is never
-// carried; one marked carry-pending (it existed at migration 00131) gets its
+// carried; one marked carry-pending (it existed at migration 00133) gets its
 // file's off as the owner's setting, shown with its carry date, once — a
 // later edit of the file is never copied.
 func TestWorkbenchMethodology_CarriesFileChecksOverOnce(t *testing.T) {

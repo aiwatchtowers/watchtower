@@ -44,7 +44,7 @@ const methodologyFileValue = "file"
 
 // carryOverWorkflowChecks runs board #558's one-time carry-over
 // (workbenchmethod.CarryOverFileChecks) for the workbenches still marked
-// carry-pending by migration 00131: an owner process runs it — the daemon at
+// carry-pending by migration 00133: an owner process runs it — the daemon at
 // start, `workbench methodology` (Agent Settings) and the session brief — and
 // a workbench is processed once, whichever comes first. A failure is one line
 // on w; the rest is picked up by the next run.

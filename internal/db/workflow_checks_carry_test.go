@@ -16,17 +16,17 @@ func carryPending(t *testing.T, d *DB, id int64) bool {
 	return n == 1
 }
 
-// Board #558, migration 00131: only the workbenches that exist at the
+// Board #558, migration 00133: only the workbenches that exist at the
 // upgrade are carry-pending; one created afterwards, or on a fresh install,
 // never is. The Down drops the columns.
-func TestMigration00131_MarksOnlyExistingWorkbenchesCarryPending(t *testing.T) {
+func TestMigration00133_MarksOnlyExistingWorkbenchesCarryPending(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "carry.db"))
 	require.NoError(t, err)
 	defer d.Close()
 	fresh := newTestWorkbench(t, d)
 	assert.False(t, carryPending(t, d, fresh), "a fresh install marks nothing")
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 130))
+	require.NoError(t, goose.DownTo(d.DB, "migrations", 132))
 	assert.False(t, columnNames(t, d.DB, "projects")["methodology_carry_pending"])
 	require.NoError(t, goose.Up(d.DB, "migrations"))
 

@@ -255,7 +255,7 @@ type WorkbenchMethodology struct {
 }
 
 // WorkbenchChecksCarried is when each check was carried over from the folder
-// file by the board #558 upgrade (migration 00131); "" = the owner's own
+// file by the board #558 upgrade (migration 00133); "" = the owner's own
 // pick, or never carried.
 type WorkbenchChecksCarried struct {
 	AskGuard    string
@@ -275,14 +275,14 @@ func (db *DB) GetWorkbenchChecksCarried(id int64) (WorkbenchChecksCarried, error
 	return WorkbenchChecksCarried{AskGuard: guard.String, FinishCheck: finish.String}, nil
 }
 
-// WorkbenchCarryPending is a workbench still marked carry-pending by migration 00131.
+// WorkbenchCarryPending is a workbench still marked carry-pending by migration 00133.
 type WorkbenchCarryPending struct {
 	ID         int64
 	FolderPath string
 }
 
 // ListWorkbenchesCarryPending returns the workbenches that existed at the
-// 00131 upgrade and have not been through the carry-over yet.
+// 00133 upgrade and have not been through the carry-over yet.
 func (db *DB) ListWorkbenchesCarryPending() ([]WorkbenchCarryPending, error) {
 	rows, err := db.Query(`SELECT id, folder_path FROM projects WHERE methodology_carry_pending = 1 ORDER BY id`)
 	if err != nil {
@@ -342,7 +342,7 @@ func (db *DB) GetWorkbenchMethodology(id int64) (WorkbenchMethodology, error) {
 // SetWorkbenchMethodology writes all three overrides of workbench id ("" stores
 // NULL). The only production writer is `watchtower workbench methodology`,
 // which the Desktop runs; the column CHECKs are the value rules. A check whose
-// value changes loses its carry-over moment (00131): it is now the owner's pick.
+// value changes loses its carry-over moment (00133): it is now the owner's pick.
 func (db *DB) SetWorkbenchMethodology(id int64, m WorkbenchMethodology) error {
 	res, err := db.Exec(`UPDATE projects SET methodology_preset = ?1,
 		ask_guard_carried_at = CASE WHEN ask_guard_mode IS ?2 THEN ask_guard_carried_at ELSE NULL END,

@@ -115,7 +115,7 @@ func (e Effective) FileIgnored() []string {
 }
 
 // CarryOverFileChecks is the one-time upgrade step of board #558: for each
-// workbench that existed at migration 00131 and is still carry-pending, a
+// workbench that existed at migration 00133 and is still carry-pending, a
 // check its folder's workflow.md sets weaker than the default becomes the
 // owner's personal setting where none is set, so a setup that worked before
 // the file stopped counting keeps working, and the mark is cleared

@@ -103,7 +103,7 @@ func TestCombine_FileNeverWeakensTheChecks(t *testing.T) {
 }
 
 // Board #558's one-time carry-over: a carry-pending workbench (one that
-// existed at migration 00131) gets its file's weaker checks as the owner's
+// existed at migration 00133) gets its file's weaker checks as the owner's
 // personal values where none is set, once; a set value, a strict or refused
 // file and a workbench that is not pending (created later, or a fresh
 // install) are left alone, and a second run changes nothing.
@@ -122,7 +122,7 @@ func TestCarryOverFileChecks(t *testing.T) {
 	writeWorkflow(t, broken, "---\nask_guard: off\nmode: x\n---\n")
 	writeWorkflow(t, fresh, "---\nask_guard: off\nfinish_check: off\n---\n")
 	require.NoError(t, d.SetWorkbenchMethodology(ids["mine"], db.WorkbenchMethodology{AskGuard: AskGuardSoft}))
-	// What migration 00131 does to the rows that exist at the upgrade.
+	// What migration 00133 does to the rows that exist at the upgrade.
 	_, err := d.Exec(`UPDATE projects SET methodology_carry_pending = 1 WHERE id IN (?, ?, ?, ?)`,
 		ids["off"], ids["mine"], ids["strict"], ids["broken"])
 	require.NoError(t, err)
