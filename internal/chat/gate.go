@@ -104,7 +104,8 @@ type GateOptions struct {
 }
 
 // Row reasons the Desktop's connector-call card matches exactly
-// (ConnectorCallProposal): the two CancelCall reasons and the two texts a
+// (ConnectorCallProposal): the two CancelCall reasons — reasonStopped also
+// fails an approved call Stop ended before it was sent — and the two texts a
 // call of a gone session lands with (the registry's ExpireSessionCalls
 // texts). Pinned by TestGate_RowReasonTextsMatchTheCard.
 const (
@@ -418,9 +419,10 @@ func (g *gate) await(p *claudeProc, req permissionRequest, w *gateWait, id int64
 			lastErr = err.Error()
 		}
 		switch {
-		case rowGone(err):
+		case errors.Is(err, tools.ErrNotFound), errors.Is(err, tools.ErrNotThisSession):
 			// Permanent: polling on would only deny "not approved in time"
 			// 15 minutes later.
+			fmt.Fprintf(g.warn, "chat gate: action #%d can never be approved by this session; denied\n", id)
 			g.answer(p, permissionDenyLine(req.RequestID, denyRowGone))
 			return
 		case err != nil, status == "pending":
@@ -461,13 +463,9 @@ func (g *gate) settledByStopOrExit(p *claudeProc, req permissionRequest, w *gate
 }
 
 // denyRowGone answers a call whose row is missing or bound to another
-// session process: no Approve this session could act on can ever arrive.
+// session token — only if the database was replaced or the row removed
+// under a live session: no Approve this session could act on can arrive.
 const denyRowGone = "This call's approval record is gone or belongs to another chat session. It was not sent."
-
-// rowGone reports a permanent ActionStatus error.
-func rowGone(err error) bool {
-	return errors.Is(err, tools.ErrNotFound) || errors.Is(err, tools.ErrNotThisSession)
-}
 
 // closedRowMessage is the deny text for a row the owner or another path
 // settled.
@@ -503,7 +501,7 @@ func (g *gate) claim(p *claudeProc, req permissionRequest, w *gateWait, id int64
 	g.claimed[req.ToolUseID] = claimedCall{id: id, proc: p}
 	g.mu.Unlock()
 	if stop, why := g.stopRequested(w); stop || childGone(p) {
-		g.finish(req.ToolUseID, "", "stopped before the approved call was sent")
+		g.finish(req.ToolUseID, "", reasonStopped)
 		if stop && why == stopByOwner {
 			g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
 		}
@@ -560,7 +558,7 @@ func (g *gate) stopped(p *claudeProc, req permissionRequest, why stopReason, id 
 		fmt.Fprintf(g.warn, "chat gate: cancelling action #%d: %v\n", id, err)
 	}
 	if !cancelled {
-		g.expire(id, "stopped before the approved call ran")
+		g.expire(id, reasonStopped)
 	}
 	if why == stopByOwner {
 		g.answer(p, permissionDenyLine(req.RequestID, denyStopped))

@@ -198,8 +198,8 @@ sources (relative ones joined with `root`) and `read`'s `out_dir` (and the final
 path the read saves to) are confined to the conversation's publish dir;
 `Artifact` `pin`/`unpin`/`delete`, a publish to a URL this session did not
 publish, and a Claude Docs call that shares, deletes, mentions someone other
-than the owner, comments or touches a doc this session did not create — one such member makes a whole
-`batch` wait — go to Approve.
+than the owner, or comments on or otherwise touches anything outside a doc this
+session created — one such member makes a whole `batch` wait — go to Approve.
 
 **Guard:** `testChat05ArtifactActionsOnlyOpenOrCopy`
 (`WatchtowerDesktop/Tests/Core/ArtifactActionsTests.swift`);

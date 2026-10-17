@@ -656,7 +656,7 @@ func TestGate_StopDeniesWaitingCall(t *testing.T) {
 
 		row := fx.sink.row(1)
 		assert.Equal(t, "failed", row.status)
-		assert.Equal(t, "stopped before the approved call ran", row.reason)
+		assert.Equal(t, reasonStopped, row.reason, "the card reads it as Chat stopped — not sent")
 		answers := fx.controlAnswers(t)["r1"]
 		require.Len(t, answers, 1)
 		assert.Equal(t, "deny", behavior(t, answers[0]))
@@ -877,7 +877,7 @@ func TestGate_StopDuringAStatusReadNeverClaims(t *testing.T) {
 
 	row := fx.sink.row(1)
 	assert.Equal(t, "failed", row.status, "approved but stopped: expired, never claimed")
-	assert.Equal(t, "stopped before the approved call ran", row.reason)
+	assert.Equal(t, reasonStopped, row.reason, "the card reads it as Chat stopped — not sent")
 	answers := fx.controlAnswers(t)["r1"]
 	require.Len(t, answers, 1)
 	assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
@@ -997,7 +997,7 @@ func TestGate_StopRightAfterTheClaimSendsNothing(t *testing.T) {
 
 	row := sink.row(1)
 	assert.Equal(t, "failed", row.status)
-	assert.Equal(t, "stopped before the approved call was sent", row.callErr)
+	assert.Equal(t, reasonStopped, row.callErr, "the card reads it as Chat stopped — not sent")
 	require.NoError(t, p.stdin.Close())
 	rest, _ := io.ReadAll(r)
 	assert.NotContains(t, string(rest), `"allow"`, "no allow after the stop")
