@@ -195,6 +195,14 @@ package enum AutomationCardPresentation {
             ?? permission
     }
 
+    /// Shown in the confirm sheet when the recipe has `shell:` entries (board #560, ask #304): the
+    /// confirmation covers the command text only, not the files the command runs. nil without `shell:`.
+    package static func shellWarning(permissions: [String]) -> String? {
+        guard permissions.contains(where: { $0.hasPrefix("shell:") }) else { return nil }
+        return "Confirming approves the command text only. The scripts or Makefile it runs can change "
+            + "later (for example when the repository is updated) and will then run unattended without asking again."
+    }
+
     /// `tool:`, `mcp:` and `shell:` entries.
     private static func prefixedLine(_ permission: String) -> String? {
         if permission.hasPrefix("tool:") {

@@ -22,6 +22,14 @@ package struct IdeaMention: FetchableRecord, Identifiable, Equatable {
         case gmail
         case jira
         case owner
+        /// An IMAP/Outlook mailbox (`email_accounts`), mined like Gmail.
+        case imap
+
+        /// The user-facing name of the source ("Email" for an IMAP/Outlook
+        /// mailbox, the capitalized raw value otherwise).
+        package var label: String {
+            self == .imap ? "Email" : rawValue.capitalized
+        }
     }
 
     /// Typed source derived from the `source` column.

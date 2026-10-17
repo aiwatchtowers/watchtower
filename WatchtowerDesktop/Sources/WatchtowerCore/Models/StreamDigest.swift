@@ -37,6 +37,16 @@ package struct StreamDigest: FetchableRecord, Decodable, Identifiable, Equatable
 
     package var isRead: Bool { readAt != nil }
 
+    /// The user-facing name of the stream (`stream_digests.source`): "Jira",
+    /// "Email" for an IMAP/Outlook mailbox, "Gmail" otherwise.
+    package var sourceLabel: String {
+        switch source {
+        case "jira": "Jira"
+        case "imap": "Email"
+        default: "Gmail"
+        }
+    }
+
     private static let decoder = JSONDecoder()
 
     package var parsedTopics: [StreamTopic] {

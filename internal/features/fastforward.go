@@ -157,6 +157,10 @@ func fastForwardStreamFloors(database *db.DB, now time.Time) error {
 		}
 	}
 
+	if err := fastForwardImapFloors(database); err != nil {
+		return err
+	}
+
 	jiraAccounts, err := database.ListEnabledJiraAccounts()
 	if err != nil {
 		return fmt.Errorf("fast-forwarding stream floors: listing jira accounts: %w", err)
@@ -165,6 +169,30 @@ func fastForwardStreamFloors(database *db.DB, now time.Time) error {
 	for _, acct := range jiraAccounts {
 		if err := database.SetIdeasJiraFloor(acct.ID, nowJira); err != nil {
 			return fmt.Errorf("fast-forwarding jira floor for account %d: %w", acct.ID, err)
+		}
+	}
+	return nil
+}
+
+// fastForwardImapFloors is fastForwardStreamFloors' IMAP/Outlook step, which
+// mirrors the mailbox self-init the way the Gmail step does: the floor
+// (email_accounts.ideas_email_floor) becomes the newest stored message's
+// date; a mailbox with no dated mail yet is left untouched.
+func fastForwardImapFloors(database *db.DB) error {
+	mailboxes, err := database.ListEmailAccounts()
+	if err != nil {
+		return fmt.Errorf("fast-forwarding stream floors: listing email accounts: %w", err)
+	}
+	for _, acct := range mailboxes {
+		newest, err := database.ImapNewestMessageTS(acct.ID)
+		if err != nil {
+			return fmt.Errorf("fast-forwarding stream floors: %w", err)
+		}
+		if newest == 0 {
+			continue
+		}
+		if err := database.SetIdeasImapFloor(acct.ID, newest); err != nil {
+			return fmt.Errorf("fast-forwarding imap floor for account %d: %w", acct.ID, err)
 		}
 	}
 	return nil

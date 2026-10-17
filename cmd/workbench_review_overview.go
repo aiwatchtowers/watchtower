@@ -43,7 +43,12 @@ var reviewAIGeneratorFactory = func(cfg *config.Config) digest.Generator { retur
 
 var workbenchReviewOverviewCmd = &cobra.Command{Use: "overview", Short: "AI overview of a round: intent coverage, risk, chapters", RunE: runWorkbenchReviewOverview}
 
+// reviewFlagCachedOnly answers only a cached overview and never calls the
+// model: a miss is `ok` with no overview (Quick mode asks this way, board #585).
+var reviewFlagCachedOnly bool
+
 func init() {
+	workbenchReviewOverviewCmd.Flags().BoolVar(&reviewFlagCachedOnly, "cached-only", false, "answer only a cached overview; never call the model")
 	workbenchReviewOverviewCmd.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 	workbenchReviewOverviewCmd.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 	workbenchReviewOverviewCmd.Flags().Int64Var(&reviewFlagRound, "round", 0, "review round id")
@@ -88,6 +93,8 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 		return failReview(cmd, err)
 	} else if ok {
 		return writeReview(cmd, reviewEnvelope{OK: true, Overview: json.RawMessage(js), OverviewCached: true})
+	} else if reviewFlagCachedOnly {
+		return writeReview(cmd, reviewEnvelope{OK: true})
 	}
 	if in.Diff, err = repo.Diff(ctx, r.BaseSHA, r.TreeSHA); err != nil {
 		return failReview(cmd, err)
