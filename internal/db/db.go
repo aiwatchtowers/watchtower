@@ -380,8 +380,11 @@ func (db *DB) setupSchema(dbPath string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), migrateLockWait)
 		defer cancel()
 		unlock, err := fsutil.LockFile(ctx, dbPath+".migrate.lock")
-		if err != nil {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			return fmt.Errorf("%w: %w", ErrMigrationInProgress, err)
+		case err != nil:
+			return fmt.Errorf("taking the migration lock: %w: %w", ErrSchemaSetup, err)
 		}
 		defer unlock()
 	}

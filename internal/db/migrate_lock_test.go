@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -144,6 +145,23 @@ func TestOpenMigrationLockTimeoutIsRetryable(t *testing.T) {
 	}
 	require.ErrorIs(t, err, ErrMigrationInProgress)
 	require.False(t, errors.Is(err, ErrSchemaSetup), "a lock timeout is not a schema failure: %v", err)
+}
+
+// TestOpenMigrationLockFailureIsSchemaSetup: a lock file that cannot be
+// opened (here a directory in its place) is a real failure, ErrSchemaSetup
+// with the cause — never the retryable ErrMigrationInProgress.
+func TestOpenMigrationLockFailureIsSchemaSetup(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "watchtower.db")
+	openOnePending(t, dbPath)
+	require.NoError(t, os.Remove(dbPath+".migrate.lock")) // left by the seeding open
+	require.NoError(t, os.Mkdir(dbPath+".migrate.lock", 0o700))
+
+	d, err := Open(dbPath)
+	if d != nil {
+		_ = d.Close()
+	}
+	require.ErrorIs(t, err, ErrSchemaSetup)
+	require.False(t, errors.Is(err, ErrMigrationInProgress), "a broken lock file is not a migration in progress: %v", err)
 }
 
 // TestConcurrentOpensApplyPendingMigrationOnce: right after an update, ten
