@@ -83,7 +83,10 @@ struct BoardTargetDetailView: View {
             if !detail.asks.isEmpty {
                 Section {
                     ForEach(detail.asks) { card in
-                        NavigationLink(value: AskRoute(id: card.id)) { AskRow(ask: card, insets: EdgeInsets()) }
+                        // A target's open asks: no permission request here.
+                        if case let .ask(id) = card.destination {
+                            NavigationLink(value: AskRoute(id: id)) { AskRow(ask: card, insets: EdgeInsets()) }
+                        }
                     }
                 } header: {
                     Text("Waiting for you")

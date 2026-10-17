@@ -272,6 +272,17 @@ final class TerminalCenter {
         Set(states.compactMap { $0.value == .running ? $0.key : nil })
     }
 
+    /// The launch's reattach of the session host's runs is done (or there
+    /// was nothing to reattach): from then on `liveIDs` holds every run
+    /// that survived the restart. Set once by
+    /// `WorkbenchesViewModel.startHostReattach`; the phone's permission
+    /// expiry waits for it (#517).
+    @ObservationIgnored private(set) var hostRunsSettled = false
+
+    func markHostRunsSettled() {
+        hostRunsSettled = true
+    }
+
     /// The live agent sessions (`claude` or `codex`) — the ones whose
     /// workbench hooks report a state.
     var liveAgentIDs: Set<Int64> {
@@ -447,6 +458,15 @@ final class TerminalCenter {
             clipboardHints.insert(sessionID)
             return .copied
         }
+    }
+
+    /// One Esc (`0x1B`) into a running session, through the app's input
+    /// path (never counted as the owner's): the phone's Interrupt (#517).
+    /// False without a running process; the caller checks the agent works.
+    func sendInterrupt(sessionID: Int64) -> Bool {
+        guard states[sessionID] == .running, let process = processes[sessionID] else { return false }
+        process.sendInput([0x1B])
+        return true
     }
 
     /// The pause between a hand-off's paste and its Return in a Claude Code

@@ -10,17 +10,20 @@ import WatchtowerSync
 /// sends at least 2 s apart; every other kind rides the 30 s full tick, so
 /// nothing here nudges it. Two sources:
 /// - GRDB `ValueObservation` over `owner_asks`, nudging `owner_ask` and
-///   `ask_alert`. It sees only the Desktop's own writes: Go writes through
-///   another connection, and those reach the phone on the 10 s urgent tick;
+///   `ask_alert`, and over `permission_requests`, nudging
+///   `permission_request` (#517). It sees only the Desktop's own writes: Go
+///   writes through another connection, and those reach the phone on the
+///   10 s urgent tick;
 /// - `SessionAgentStateCenter.onChange` and `onRead`, chained onto the
 ///   closures `initWorkbenches` set (the PROJ-12 held-answer wiring), never
 ///   replacing them. A change asks the changed sessions' workbenches for a
 ///   git and a report-summary refresh and tells the session report runner
 ///   (which resolves the state milestones and the per-session report
 ///   runs); a liveness change seen on an unchanged read tells it too. It
-///   also nudges `owner_ask` and `ask_alert` (`stateChangeKinds`): an agent
-///   asking usually flips its session's state, so an ask Go wrote reaches
-///   the phone in 1–2 s instead of the 10 s urgent tick. The published
+///   also nudges `owner_ask`, `ask_alert` and `permission_request`
+///   (`stateChangeKinds`): an agent asking or waiting on a permission
+///   prompt flips its session's state, so what Go wrote reaches the phone
+///   in 1–2 s instead of the 10 s urgent tick. The published
 ///   session states themselves follow on the next full tick.
 ///
 /// It also copies `TerminalCenter`'s liveness and the center's
@@ -38,11 +41,13 @@ final class FastLane: HubCompanion {
     /// Each observed table and the urgent kinds its writes nudge. Other
     /// tables' writes publish on the full tick, which needs no trigger.
     nonisolated static let observedTables: [(table: String, kinds: Set<SliceKind>)] = [
-        ("owner_asks", [.ownerAsk, .askAlert])
+        ("owner_asks", [.ownerAsk, .askAlert]),
+        ("permission_requests", [.permissionRequest])
     ]
-    /// What a session state change nudges: the ask kinds, since Go's ask
-    /// writes are invisible to the observation above.
-    nonisolated static let stateChangeKinds: Set<SliceKind> = [.ownerAsk, .askAlert]
+    /// What a session state change nudges: the ask kinds and the permission
+    /// requests, since Go's writes are invisible to the observation above
+    /// (the permission hook records `approval` with each request it opens).
+    nonisolated static let stateChangeKinds: Set<SliceKind> = [.ownerAsk, .askAlert, .permissionRequest]
 
     private let dbPool: DatabasePool
     private weak var agentStates: SessionAgentStateCenter?
@@ -165,7 +170,8 @@ final class FastLane: HubCompanion {
         return liveness.update(SessionLiveness(
             liveIDs: terminalCenter.liveIDs,
             startedAt: terminalCenter.startedAt,
-            displayOver: agentStates?.displayOver ?? [:]
+            displayOver: agentStates?.displayOver ?? [:],
+            settled: terminalCenter.hostRunsSettled
         ))
     }
 

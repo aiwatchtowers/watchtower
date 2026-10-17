@@ -2,6 +2,7 @@ import GRDB
 import SwiftUI
 import UIKit
 import WatchtowerE2ETesting
+import WatchtowerKit
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -256,6 +257,68 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(settings.lastError)
     }
 
+    /// "Answer permission prompts from this phone" (#517): its own request,
+    /// off by default, never implied by typing nor implying it.
+    func testThePermissionsToggleWritesPermissionsRequested() async throws {
+        let transport = SpyTransport()
+        let defaults = try makeDefaults()
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
+        XCTAssertFalse(settings.permissionsRequested, "off by default")
+        settings.linkedDevice = device
+
+        await settings.setPermissionsRequested(true)
+
+        let payloads = try await deviceWrites(transport)
+        let written = try XCTUnwrap(payloads.first)
+        XCTAssertTrue(written.permissionsRequested)
+        XCTAssertFalse(written.typingRequested)
+        XCTAssertTrue(settings.permissionsRequested)
+        XCTAssertNil(settings.lastError)
+        XCTAssertTrue(
+            DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).permissionsRequested,
+            "the choice must survive a relaunch"
+        )
+        let allowed = DeviceGrant(
+            deviceID: device.deviceID, hubID: "hub", name: device.name, scope: .private, linked: true,
+            typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true
+        )
+        XCTAssertEqual(SettingsView.permissionsCaption(grant: allowed), "Allowed")
+        XCTAssertEqual(SettingsView.permissionsCaption(grant: nil), "Waiting for your Mac to confirm")
+    }
+
+    /// The permission card's Turn On (#517) runs the phone's permissions
+    /// toggle: it writes `permissions_requested`, and the card moves from
+    /// "Turn on" to waiting for the Mac, then to Allow once and Deny once
+    /// the Mac allowed. (The suite drives no SwiftUI taps: this covers the
+    /// action the button runs and what the card does with it.)
+    func testTheCardsTurnOnWritesTheRequestAndTheCardFollows() async throws {
+        let transport = SpyTransport()
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+        let now = Date()
+        var snapshot = try demoSnapshot(now: now)
+        snapshot.permissionRequests = [try mirror(PermissionRequest.self, permissionRequestJSON(7, session: 12))]
+        func card(_ grant: DeviceGrant?) throws -> PermissionCardModel {
+            try XCTUnwrap(SessionDetailModel(
+                sessionID: 12, snapshot: snapshot, report: nil, timeline: nil, now: now,
+                permissions: PermissionAccess(grant: grant, requested: settings.permissionsRequested)
+            )?.permission)
+        }
+        XCTAssertEqual(try card(nil).hint, .turnOn)
+
+        await settings.setPermissionsRequested(true)
+
+        let written = try await deviceWrites(transport)
+        XCTAssertEqual(written.first?.permissionsRequested, true)
+        XCTAssertEqual(try card(nil).hint, .waitingForMac)
+        let allowed = DeviceGrant(
+            deviceID: device.deviceID, hubID: "hub", name: device.name, scope: .private, linked: true,
+            typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true
+        )
+        XCTAssertNil(try card(allowed).hint)
+        XCTAssertTrue(try card(allowed).canAnswer)
+    }
+
     func testStartSessionsToggleWritesTheDeviceRecord() async throws {
         let transport = SpyTransport()
         let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
@@ -361,6 +424,25 @@ final class SettingsWiringTests: XCTestCase {
 
         XCTAssertNotNil(settings.lastError)
         XCTAssertNil(settings.typingError)
+    }
+
+    /// #517: a failed permission-prompt write is the card's error alone,
+    /// never the typing one, and the reverse.
+    func testAPermissionsFailureIsItsOwnError() async throws {
+        let transport = SpyTransport(failingSaves: [0, 1])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+
+        await settings.setPermissionsRequested(true)
+
+        XCTAssertFalse(settings.permissionsRequested, "the toggle went back")
+        XCTAssertNotNil(settings.permissionsError)
+        XCTAssertEqual(settings.permissionsError, settings.lastError)
+        XCTAssertNil(settings.typingError)
+
+        await settings.setTypingRequested(true)
+        XCTAssertNotNil(settings.typingError)
+        XCTAssertNil(settings.permissionsError)
     }
 
     /// Two quick toggles: the writes never overlap, run in toggle order, and

@@ -48,8 +48,9 @@ struct StreamingTranscriber {
         var promptState = ContextPromptState(speechGate: config.speechGate)
         var lastEngineError: Error?
         var chunkIndex = 0
-        var gate = WindowSpeechGate(detector: speechDetector, config: config)
-        defer { gate.logSummary(engineDrops: engine.takeDropCounts()) }
+        var gate = WindowSpeechGate(detector: speechDetector, config: config,
+                                    modelWait: WindowSpeechGate.liveModelWait)
+        defer { gate.logSummary() }
 
         func process(window: [Float], windowStart: Int) async {
             let decoded = await decodeGatedWindow(window, gate: &gate, previousLanguage: prevLang,

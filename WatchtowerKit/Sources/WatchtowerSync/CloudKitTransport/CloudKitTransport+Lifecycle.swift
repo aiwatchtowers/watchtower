@@ -53,6 +53,9 @@ extension CloudKitTransport {
         let engine = engineFactory(stateSerialization, box)
         self.engine = engine
         delegateBox = box
+        // The new engine resumes from the stored state, which is from
+        // before any batch a previous engine failed to buffer.
+        engineBatchUnbuffered = false
 
         if managesZones {
             engine.add(pendingDatabaseChanges: CloudZoneID.allCases.map {
@@ -176,7 +179,13 @@ extension CloudKitTransport {
     /// records sat unread until an engine restart). Skipped once unlinked,
     /// stopped or throttled, and when the engine was replaced meanwhile (an
     /// account reset wiped the store this page would land in).
+    ///
+    /// A pass that buffers every zone up to date also covers an engine
+    /// batch that failed to buffer before it started, so it lets the
+    /// engine state be saved again (`saveEngineState`).
     private func pollZones(engine: any SyncEngineDriving) async throws {
+        let failuresBefore = engineBufferFailures
+        var allZonesUpToDate = true
         for zone in CloudZoneID.allCases {
             var moreComing = true
             while moreComing {
@@ -188,14 +197,24 @@ extension CloudKitTransport {
                 do {
                     page = try await engine.fetchZoneChanges(zoneID, since: try store.pollToken(zone: zone))
                 } catch let error as CKError {
+                    allZonesUpToDate = false
                     try await handlePollError(error, zone: zone, zoneID: zoneID, engine: engine)
                     break
                 }
                 guard self.engine === engine, !isStopped else { return }
-                bufferPolledChanges(page)
+                // A page that did not reach the buffer keeps the zone's
+                // token (the next pull reads it again); the other zones
+                // are still polled.
+                guard bufferPolledChanges(page) else {
+                    allZonesUpToDate = false
+                    break
+                }
                 try store.setPollToken(page.changeToken, zone: zone)
                 moreComing = page.moreComing
             }
+        }
+        if allZonesUpToDate, engineBufferFailures == failuresBefore {
+            engineBatchUnbuffered = false
         }
     }
 
@@ -222,7 +241,7 @@ extension CloudKitTransport {
     /// whose change tag matches its archived system fields (fetched by the
     /// engine, or sent from here), and a deletion of a record it has no
     /// system fields for (never seen, or its deletion already buffered).
-    private func bufferPolledChanges(_ page: PolledZoneChanges) {
+    private func bufferPolledChanges(_ page: PolledZoneChanges) -> Bool {
         let modifications = page.modifications.filter { record in
             guard let zone = zones.cloudZone(for: record.recordID.zoneID),
                   let tag = record.recordChangeTag else { return true }
@@ -232,7 +251,7 @@ extension CloudKitTransport {
             guard let zone = zones.cloudZone(for: id.zoneID) else { return false }
             return (try? store.systemFields(recordName: id.recordName, zone: zone)) != nil
         }
-        bufferFetched(modifications: modifications, deletions: deletions)
+        return bufferFetched(modifications: modifications, deletions: deletions)
     }
 
     /// The change tag in a record's archived system fields, if any.

@@ -381,6 +381,9 @@ CREATE INDEX idx_people_cards_user ON people_cards(user_id)
 index	idx_period_summaries_period
 CREATE INDEX idx_period_summaries_period ON period_summaries(period_from, period_to)
 
+index	idx_permission_requests_session
+CREATE INDEX idx_permission_requests_session ON permission_requests(terminal_session_id, status)
+
 index	idx_pipeline_runs_pipeline
 CREATE INDEX idx_pipeline_runs_pipeline ON pipeline_runs(pipeline)
 
@@ -2191,6 +2194,20 @@ output_tokens INTEGER NOT NULL DEFAULT 0,
 cost_usd REAL NOT NULL DEFAULT 0,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 UNIQUE(period_from, period_to)
+)
+
+table	permission_requests
+CREATE TABLE permission_requests (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+workbench_id INTEGER NOT NULL,
+tool_name TEXT NOT NULL DEFAULT '',
+summary TEXT NOT NULL DEFAULT '',
+summary_clipped INTEGER NOT NULL DEFAULT 0,
+status TEXT NOT NULL CHECK (status IN ('pending','allowed','denied','answered_on_mac','expired')),
+created_at TEXT NOT NULL,
+decided_at TEXT,
+decided_by TEXT
 )
 
 table	pipeline_runs
@@ -4918,6 +4935,18 @@ GROUP BY up.ancestor
 7	output_tokens	INTEGER	notnull=1	dflt=0	pk=0
 8	cost_usd	REAL	notnull=1	dflt=0	pk=0
 9	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## permission_requests
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	terminal_session_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	workbench_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	tool_name	TEXT	notnull=1	dflt=''	pk=0
+4	summary	TEXT	notnull=1	dflt=''	pk=0
+5	summary_clipped	INTEGER	notnull=1	dflt=0	pk=0
+6	status	TEXT	notnull=1	dflt=NULL	pk=0
+7	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+8	decided_at	TEXT	notnull=0	dflt=NULL	pk=0
+9	decided_by	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## pipeline_runs
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

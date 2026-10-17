@@ -192,8 +192,9 @@ func TestInstallStateHooksAddsSubagentStopAndStart(t *testing.T) {
 	}
 	cmd := WorkbenchSessionStateHookCommand("/usr/local/bin/watchtower", 7)
 	m := decodeSettings(t, dir)
-	if hooks := m["hooks"].(map[string]any); len(hooks) != 6 {
-		t.Fatalf("expected six state events, got %#v", hooks)
+	// Six state events plus the permission-wait hook (#517).
+	if hooks := m["hooks"].(map[string]any); len(hooks) != 7 {
+		t.Fatalf("expected six state events and PermissionRequest, got %#v", hooks)
 	}
 	for _, event := range stateEvents {
 		assertOneAsyncStateEntry(t, event, eventGroups(t, m, event), cmd)
@@ -266,5 +267,36 @@ func TestLooksLikeOurHook_StateHookHasNoLegacyForm(t *testing.T) {
 	}
 	if looksLikeOurHook("/usr/local/bin/watchtower workbench session-state --workbench 8", spec, 7) {
 		t.Fatal("another workbench's entry is not ours")
+	}
+}
+
+// The permission-wait hook (#517) is installed next to the state hooks but is
+// not one of them: a synchronous PermissionRequest hook with matcher "*".
+func TestInstallWorkbenchInstallsThePermissionWaitHook(t *testing.T) {
+	folder := fakeRepo(t)
+	o := workbenchOpts(folder, newFakeClaude())
+	for range 2 {
+		if _, err := InstallWorkbench(context.Background(), o); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+	}
+	groups := eventGroups(t, decodeSettings(t, folder), "PermissionRequest")
+	cmd := shellQuote(o.Bin) + " workbench permission-wait --workbench 7"
+	if len(groups) != 1 || countCommand(groups, cmd) != 1 {
+		t.Fatalf("expected one PermissionRequest group running %q, got %#v", cmd, groups)
+	}
+	g := groups[0].(map[string]any)
+	h := g["hooks"].([]any)[0].(map[string]any)
+	if g["matcher"] != "*" || h["timeout"] != float64(86400) || h["type"] != "command" {
+		t.Fatalf("group %#v, want matcher * and timeout 86400", g)
+	}
+	if _, ok := h["async"]; ok {
+		t.Fatalf("the permission-wait hook must be synchronous: %#v", h)
+	}
+	if changed, err := RemoveStateHooks(folder, 7); err != nil || !changed {
+		t.Fatalf("remove: changed=%v err=%v", changed, err)
+	}
+	if hooks, _ := decodeSettings(t, folder)["hooks"].(map[string]any); hooks["PermissionRequest"] != nil {
+		t.Fatalf("PermissionRequest must be gone after remove: %#v", hooks)
 	}
 }

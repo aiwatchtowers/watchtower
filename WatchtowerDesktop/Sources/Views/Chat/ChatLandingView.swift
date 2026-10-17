@@ -19,8 +19,7 @@ struct ChatLandingView: View {
                 ChatComposerView(
                     chatVM: chatVM,
                     modelSuggestions: modelSuggestions,
-                    maxHeight: maxComposerHeight,
-                    clearsRecordingIndicator: false
+                    maxHeight: maxComposerHeight
                 )
                 if let error = chatVM.errorMessage {
                     Text(error)
@@ -34,8 +33,6 @@ struct ChatLandingView: View {
             .frame(maxWidth: 760)
             .frame(maxWidth: .infinity)
             .padding(.bottom, 24)
-            // The recent list is the landing's bottom-most content.
-            .clearsRecordingIndicator()
         }
     }
 
