@@ -110,8 +110,9 @@ package enum WarmEnginePolicy {
         guard event.eventType.isEmpty || event.eventType == "default" else { return false }
         let people = event.attendeesIncludingOrganizer
         // Guests that do not decode are unknown, not absent: warm, as before.
+        // No guests is "", "[]" or "null" (Go marshals a nil slice so).
         let raw = event.attendees.trimmingCharacters(in: .whitespacesAndNewlines)
-        if event.parsedAttendees.isEmpty, !raw.isEmpty, raw != "[]" { return true }
+        if event.parsedAttendees.isEmpty, !["", "[]", "null"].contains(raw) { return true }
         let owner = event.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !owner.isEmpty, people.contains(where: {
             $0.email.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(owner) == .orderedSame
