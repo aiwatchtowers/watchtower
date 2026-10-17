@@ -89,7 +89,7 @@ func TestLiveSlackMessageKeys_Scope(t *testing.T) {
 	for _, m := range []Message{
 		{ChannelID: "1:C001", TS: "1758528000.000100", UserID: "1:U001", Text: "in"},
 		{ChannelID: "1:C002", TS: "1758531600.000100", UserID: "1:U001", Text: "in too"},
-		{ChannelID: "1:C002", TS: "1758531700.000100", UserID: "1:U009", Text: "no users row: human"},
+		{ChannelID: "1:C002", TS: "1758531700.000100", UserID: "1:U009", Text: "no users row: unknown author"},
 		{ChannelID: "1:C002", TS: "1758531800.000100", UserID: "1:B002", Text: "override says human"},
 		{ChannelID: "1:C001", TS: "1758528050.000100", UserID: "1:B001", Text: "bot"},
 		{ChannelID: "1:C001", TS: "1758528060.000100", UserID: "1:U002", Text: "override says bot"},
@@ -108,7 +108,6 @@ func TestLiveSlackMessageKeys_Scope(t *testing.T) {
 	assert.ElementsMatch(t, []SlackMessageKey{
 		{ChannelID: "1:C001", TS: "1758528000.000100"},
 		{ChannelID: "1:C002", TS: "1758531600.000100"},
-		{ChannelID: "1:C002", TS: "1758531700.000100"},
 		{ChannelID: "1:C002", TS: "1758531800.000100"},
 	}, keys)
 }

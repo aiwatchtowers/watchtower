@@ -13,15 +13,15 @@ type SlackMessageKey struct{ ChannelID, TS string }
 // and not deleted) by a known human author with from <= ts_unix < to. These
 // are the rows search.messages is expected to return: it never returns
 // join/leave events, and app/bot posts (no user, or a bot user, honouring
-// is_bot_override) may never reach it, so those are left out too. An author
-// with no users row counts as human, as elsewhere in the package.
+// is_bot_override) may never reach it, so those are left out too, as is an
+// author with no users row (most likely an app, bot or external user).
 func (db *DB) LiveSlackMessageKeys(accountID int64, from, to float64) ([]SlackMessageKey, error) {
 	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts FROM messages m
-		LEFT JOIN users u ON u.id = m.user_id
+		JOIN users u ON u.id = m.user_id
 		WHERE m.channel_id >= ? AND m.channel_id < ? AND m.subtype = '' AND m.is_deleted = 0
 		  AND m.ts_unix >= ? AND m.ts_unix < ?
-		  AND m.user_id != '' AND COALESCE(u.is_bot_override, u.is_bot, 0) = 0`, prefix+":", prefix+";", from, to)
+		  AND COALESCE(u.is_bot_override, u.is_bot) = 0`, prefix+":", prefix+";", from, to)
 	if err != nil {
 		return nil, fmt.Errorf("listing live slack messages of account %d: %w", accountID, err)
 	}
