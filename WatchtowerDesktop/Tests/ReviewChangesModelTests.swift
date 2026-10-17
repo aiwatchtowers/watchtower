@@ -1152,6 +1152,58 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(overview.summary, "Of round 8.")
     }
 
+    /// Board #585: Quick mode only reads a cached overview; without one the
+    /// chapters stay mechanical until the owner presses Make overview.
+    func testQuickModeMakesTheOverviewOnlyOnRequest() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script("overview", [#"{"ok":true}"#, overviewJSON()])
+        await h.model.open()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .onRequest)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertEqual(h.cli.calls("overview"),
+                       [["workbench", "review", "overview", "--workbench", String(h.projectID), "--round", "7", "--cached-only", "--json"]])
+
+        await h.model.refresh()
+        await awaitOverview(h)
+        XCTAssertEqual(h.cli.calls("overview").count, 1, "the same tree asks nothing again")
+
+        h.model.makeOverview()
+        XCTAssertEqual(h.model.overview, .loading)
+        await awaitOverview(h)
+        guard case .ready(let overview) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(overview.summary, "Adds y.")
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertEqual(h.cli.calls("overview").last?.contains("--cached-only"), false)
+    }
+
+    /// A cached overview shows in Quick mode without a click.
+    func testQuickModeShowsACachedOverview() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script(["overview": overviewJSON()])
+        await h.model.open()
+        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true])
+    }
+
+    /// Switching to Deep makes the overview Quick left on request.
+    func testSwitchingToDeepMakesTheOverview() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script("overview", [#"{"ok":true}"#, overviewJSON()])
+        await h.model.open()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .onRequest)
+        try h.model.setMode(.deep)
+        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false])
+    }
+
     func testNotesArePlacedOnTheSelectedFile() async throws {
         let h = try harness()
         let same = try await insertNote(h, kind: "note", path: "a.go", start: 1, end: 1, quote: "one", text: "entry")

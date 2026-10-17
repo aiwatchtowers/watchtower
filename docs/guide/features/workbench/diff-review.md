@@ -14,6 +14,15 @@ The pane has a file list, a diff, and a list of comments. Files show added, modi
 
 A round moves through three states: you collect drafts, **Send review** stores the round, and the agent reads it with its `get_review` tool, which marks it delivered. Watchtower then puts one line into the session, `Review round #N sent (n comments) — read it with get_review N using the watchtower-workbench skill.`. The agent sees your comment text, the quoted lines and where each sits.
 
+### The AI overview
+
+The AI overview is a short summary of the round: whether the changes cover the linked targets, which files fall outside them, a risk mark per file and a reading order. Each overview is one call to the strong model, saved per snapshot, so reopening the same snapshot costs nothing. The **Quick** / **Deep** switch in the header decides when it runs:
+
+- **Deep** makes it by itself when the round opens and whenever **Refresh** finds new changes.
+- **Quick** shows a saved overview at once, and otherwise offers **Make overview**. Until you press it, files are grouped by the agent's chapters or by folder.
+
+If it fails, the reason shows with **Retry**, and the review works without it.
+
 ### Next rounds
 
 After a send, **Refresh** opens the next round. The view switch then offers **All** and **Since round N**. Comments not yet resolved are carried to the new round and follow their quoted lines when the code moved. A comment whose lines are gone stays, marked outdated. A file keeps its **Viewed** mark while its content and mode are unchanged.

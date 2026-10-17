@@ -29,7 +29,9 @@ final class ReviewChangesModel {
     enum Load: Equatable { case idle, loading, failed(String), ready }
     enum View: Equatable { case all, sinceLastRound }
     enum Mode: String { case quick, deep }
-    enum OverviewState: Equatable { case idle, loading, ready(ReviewOverview), failed(String) }
+    /// `onRequest`: Quick mode found no cached overview for this tree, so the
+    /// strong model runs only when the owner presses Make overview (board #585).
+    enum OverviewState: Equatable { case idle, loading, onRequest, ready(ReviewOverview), failed(String) }
 
     enum ModelError: Error, Equatable, LocalizedError {
         case noRound
@@ -449,6 +451,9 @@ final class ReviewChangesModel {
             try saveState(mode: m, phase: phase, chapterKey: persistedChapterKey)
             mode = m
         }
+        // Deep makes its overview by itself: switching to it asks for one
+        // when none is shown or coming.
+        if m == .deep, load == .ready, overview == .idle || overview == .onRequest { startOverview() }
     }
 
     func setPhase(_ p: ReviewPhase) throws {
@@ -559,15 +564,23 @@ final class ReviewChangesModel {
 
     /// Loads the AI overview of the open round; an answer for a round or tree
     /// no longer shown is dropped. A failure keeps the chapters as they are.
-    func loadOverview() async {
+    /// Without `generate` only a cached overview is read (no model call): a
+    /// miss leaves Make overview on screen.
+    func loadOverview(generate: Bool = true) async {
         guard let info = round else { return }
-        overview = .loading
+        // A cache lookup keeps what is shown until it answers; no spinner flashes.
+        if generate { overview = .loading }
         aiChaptersPending = false
         let state: OverviewState
         do {
-            let env = try Self.checked(await cli.reviewOverview(projectID: projectID, roundID: info.id))
-            guard let ready = env.overview else { throw Failure(message: "The overview is missing from the answer.") }
-            state = .ready(ready)
+            let env = try Self.checked(await cli.reviewOverview(projectID: projectID, roundID: info.id, cachedOnly: !generate))
+            if let ready = env.overview {
+                state = .ready(ready)
+            } else if generate {
+                throw Failure(message: "The overview is missing from the answer.")
+            } else {
+                state = .onRequest
+            }
         } catch {
             state = .failed(Self.message(error))
         }
@@ -580,7 +593,12 @@ final class ReviewChangesModel {
     }
 
     func retryOverview() {
-        startOverview()
+        startOverview(owner: true)
+    }
+
+    /// Quick mode's Make overview: one strong-model call for this tree.
+    func makeOverview() {
+        startOverview(owner: true)
     }
 
     /// Switches to the AI chapters held back by `aiChaptersPending`.
@@ -767,11 +785,15 @@ final class ReviewChangesModel {
         overview.chapters.map { ReviewChapterSpec(title: $0.title, paths: $0.paths, core: $0.core, lenses: $0.lenses) }
     }
 
-    /// Starts the overview's load, dropping the one running.
-    private func startOverview() {
+    /// Starts the overview's load, dropping the one running. Deep makes the
+    /// overview by itself; Quick only reads a cached one unless the owner
+    /// asked (`owner`: Make overview or Retry).
+    private func startOverview(owner: Bool = false) {
         overviewTask?.cancel()
         overviewTreeSHA = round?.treeSha
-        overviewTask = Task { [weak self] in await self?.loadOverview() }
+        let make = owner || mode == .deep
+        if make { overview = .loading }
+        overviewTask = Task { [weak self] in await self?.loadOverview(generate: make) }
     }
 
     /// Switches to the overview's chapters, unless they would replace

@@ -185,9 +185,16 @@ working" — the session dot is working or Agents working —, "Undo is off whil
 action runs"), refuses before calling the CLI, shows Go's refusal text, then reloads the
 reverts and refreshes the round; undone hunks are listed in an **Undone** group.
 
-**AI overview (`internal/reviewai`, `workbench review overview`).** On round open (and on a
-refresh that changed the tree) the Desktop runs `review overview --round R` (330 s
-timeout; the CLI bounds the whole command — git, the model call, the db — at 5 minutes,
+**AI overview (`internal/reviewai`, `workbench review overview`).** When it runs depends on
+the mode (board #585, owner ask #309): in **Deep** mode, on round open (and on a refresh
+that changed the tree) the Desktop runs `review overview --round R`; in **Quick** mode it
+runs `review overview --round R --cached-only` instead, which answers a cached overview
+(shown at once, no click) or `ok` with no overview and never loads the config or calls the
+model — the pane then shows **Make overview** (`OverviewState.onRequest`), and only that
+button (or **Retry**) runs the model call. Without a click, Quick's chapters come from the
+agent or the mechanical split. Switching to Deep while **Make overview** is shown makes the
+overview. The model call has a 330 s
+timeout (the cached-only read uses the CLI's default one; the CLI bounds the whole command — git, the model call, the db — at 5 minutes,
 `reviewAIBudget`, and a cancelled parent or a SIGINT/SIGTERM cancels the model call, which
 kills its claude/codex child). The refresh after an owner **Undo** does not ask for a new
 overview (ask #249): after an owner Undo, the overview is kept until the next Refresh, which
@@ -283,7 +290,8 @@ an explicit `"lessons": []` is an empty answer. **Dismiss** marks it `dismissed`
 disables Accept and Dismiss (and Find Repeats) while a decision runs. The new rule shows up in the
 `house_rules` (or its lens's) checklist on the next context read.
 
-**Quick mode** also shows the agent's notes, the risk badges, per-hunk Undo and the
+**Quick mode** also shows the agent's notes, the risk badges (once an overview exists:
+cached, or made with **Make overview**), per-hunk Undo and the
 Resolved by the agent / Undone groups (controller ruling). Active review time stays scoped
 to the key window (owner ruling, ask #221).
 
