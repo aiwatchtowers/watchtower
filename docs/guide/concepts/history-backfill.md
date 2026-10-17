@@ -8,7 +8,7 @@ The first sync is short on purpose: 3 days of Slack (setup's depth), 7 days of G
 
 A last step of every sync cycle then walks each new source back toward 30 days (`sync.backfill_days`), newest first, one 2-day chunk per source per cycle. At the default 15-minute cycle a month takes a few hours, longer for a big workspace.
 
-The step has a 5-minute budget per cycle. A chunk that does not finish is resumed next cycle. While you are offline, or a source's server or the AI connection is down or rate-limiting, the chunk waits and is tried again next cycle; the status bar shows "Loading history waits" (or "N sources waiting" next to the day count) and `watchtower backfill status` shows the row as `waiting: held` with the reason. A source waits at most 7 days in a row; after that its remaining chunks are skipped a few cycles each, so the backfill ends and memory can start. A chunk that fails three times (for example, an AI reply that cannot be read) is skipped. A source that has to wait does not hold up the others. Memory waits while history is still loading, so it starts later when a backfill waits.
+The step has a 5-minute budget per cycle. A chunk that does not finish is resumed next cycle. While you are offline, or a source's server or the AI connection is down or rate-limiting, the chunk waits and is tried again next cycle; the status bar shows "Loading history waits" (or "N sources waiting" next to the day count) and `watchtower backfill status` shows the row as `waiting: held` with the reason. A source waits at most 7 days in a row; after that its remaining chunks are skipped a few cycles each, so the backfill ends. A chunk that fails three times (for example, an AI reply that cannot be read) is skipped. A source that has to wait does not hold up the others. Before its first run, Memory waits while history is still loading, but no more than a day after the backfill started.
 
 ## What each source loads
 
@@ -26,7 +26,7 @@ Muted channels and one-to-one messages are not digested during backfill.
 
 - Briefings, day plans, next steps and Catch Up describe today and are never backfilled.
 - Backfilled mail never reaches Attention detection, so old mail does not turn into inbox items.
-- Memory waits. While any backfill is loading or paused, Memory extracts nothing, then starts from the oldest message.
+- Before Memory's first run, it waits, at most a day. While a backfill is loading, Memory extracts nothing and its tab says "Waiting for history to load"; when the loading ends it starts from the oldest message. A day after a backfill started, Memory stops waiting for it, and a paused backfill (a revoked account) never holds Memory. Once Memory has run, it never waits again: a source you connect later loads its history for the other features, but that older history is not added to Memory.
 - When all Slack days are in, a one-time step also looks for old mentions (with Attention detection on) and builds People cards over the window (with People Cards and Slack Digests on). Old mentions land in the inbox pipeline and its normal rules close the old ones.
 - A source connected before this feature existed, or one whose first sync was started from the command line, gets no backfill. A source that is removed or turned off ends its backfill for good, and turning it back on does not resume it.
 
@@ -35,7 +35,7 @@ Muted channels and one-to-one messages are not digested during backfill.
 The menu bar and the status bar show "Loading history: N of M days". Two other lines mean it is waiting:
 
 - "Loading history paused — Claude plan limit": a Claude 5-hour or weekly limit is projected to be hit, so backfill waits. This gate only works with the Claude provider; see [AI providers, models and cost](ai-providers-and-cost.md).
-- "Loading history paused — reconnect the account": the account's sign-in was revoked. Reconnect it, or remove the account to release Memory.
+- "Loading history paused — reconnect the account": the account's sign-in was revoked. Reconnect it to load the rest; Memory does not wait for it meanwhile, so it has no older history from that account.
 
 `watchtower backfill status` prints the same per source.
 

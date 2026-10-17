@@ -11,6 +11,8 @@ final class ConfigService {
     var syncWorkers: Int?
     var syncThreads: Bool = true
     var initialHistoryDays: Int?
+    /// `sync.backfill_days`, read only (readiness's kill-switch check); nil = unset.
+    var backfillDays: Int?
     /// Display-only, like `dayPlanEnabled` and `ideasEnabled`: `reload()`
     /// parses it and other views read it, but `save()` never writes
     /// `digest.enabled` back. The Feature Manager CLI (`watchtower features
@@ -127,6 +129,7 @@ final class ConfigService {
                 syncWorkers = sync["workers"] as? Int
                 syncThreads = (sync["sync_threads"] as? Bool) ?? true
                 initialHistoryDays = sync["initial_history_days"] as? Int
+                backfillDays = sync["backfill_days"] as? Int
             }
 
             if let digest = yaml["digest"] as? [String: Any] {

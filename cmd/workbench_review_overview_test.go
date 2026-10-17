@@ -279,3 +279,24 @@ func TestWorkbenchReviewOverview_CacheWriteFailureKeepsTheOverview(t *testing.T)
 	assert.Equal(t, "Edits the readme.", out["overview"].(map[string]any)["summary"])
 	assert.NotEqual(t, true, out["overview_cached"])
 }
+
+// Board #585: Quick mode asks with --cached-only — a miss answers ok with no
+// overview and never calls the model; a cached overview comes back as usual.
+func TestWorkbenchReviewOverview_CachedOnlyNeverCallsTheModel(t *testing.T) {
+	database, wb, _, round := overviewRound(t)
+	g := &fakeReviewGen{out: overviewReply}
+	useReviewGen(t, g)
+	miss := reviewJSON(t, wb, "overview", "--round", round, "--cached-only")
+	assert.Equal(t, true, miss["ok"], miss)
+	assert.Nil(t, miss["overview"])
+	assert.Zero(t, g.calls)
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM review_overviews`).Scan(&n))
+	assert.Zero(t, n)
+
+	require.Equal(t, true, reviewJSON(t, wb, "overview", "--round", round)["ok"])
+	hit := reviewJSON(t, wb, "overview", "--round", round, "--cached-only")
+	assert.Equal(t, true, hit["overview_cached"], hit)
+	assert.Equal(t, "Edits the readme.", hit["overview"].(map[string]any)["summary"])
+	assert.Equal(t, 1, g.calls)
+}

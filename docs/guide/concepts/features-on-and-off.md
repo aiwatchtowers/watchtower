@@ -46,6 +46,7 @@ An empty tab shows an icon, a title ("No briefings yet"), one sentence on what w
 | **Preparing now** | Its job is running; the sync's progress follows. | Wait. |
 | **Didn't work yet — retries automatically** | Its last run failed; the first line of the reason follows. | Nothing: the next cycle retries. |
 | **Starts after the first sync** | Slack is connected and its first sync has not finished. | Wait; a first sync usually takes 3 to 5 minutes. |
+| **Waiting for history to load** (Memory only) | Memory has not run yet and a source is still loading its first month of history; Memory waits for it, at most a day. See [History backfill](history-backfill.md). | Wait. |
 | A time: "Within ~15 min", "After this sync", "Today at 08:00", "Tomorrow at 08:00", "In about a day", "In about 6 h" | When it runs next. | Wait. |
 
 Once the tab has content, the empty state goes away, even if a newer run is still going.

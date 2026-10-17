@@ -72,10 +72,36 @@ func TestHistoryBackfill_FailuresCountAndActive(t *testing.T) {
 	assert.True(t, active)
 	require.NoError(t, d.SetHistoryBackfillStatus(id, "paused", now))
 	active, _ = d.HasActiveHistoryBackfill()
-	assert.True(t, active, "paused still holds memory back")
+	assert.True(t, active, "paused is still active: the phase resumes it")
 	require.NoError(t, d.SetHistoryBackfillStatus(id, "off", now))
 	active, _ = d.HasActiveHistoryBackfill()
 	assert.False(t, active)
+}
+
+// #578: memory's gate counts only running rows (held ones included) that
+// started after the cutoff; paused, done and off rows never count.
+func TestHistoryBackfill_RunningSince(t *testing.T) {
+	d := OpenTestDB(t)
+	started := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	_, _ = d.StartHistoryBackfill("slack", 1, 100, 200, started)
+	rows, _ := d.ListHistoryBackfills()
+	id := rows[0].ID
+
+	running, err := d.HasRunningHistoryBackfillSince(started.Add(-time.Hour))
+	require.NoError(t, err)
+	assert.True(t, running)
+	running, _ = d.HasRunningHistoryBackfillSince(started)
+	assert.False(t, running, "a row started at or before the cutoff no longer counts")
+
+	require.NoError(t, d.HoldHistoryBackfill(id, "held: offline", started))
+	running, _ = d.HasRunningHistoryBackfillSince(started.Add(-time.Hour))
+	assert.True(t, running, "a held row is still running")
+
+	for _, status := range []string{"paused", "done", "off"} {
+		require.NoError(t, d.SetHistoryBackfillStatus(id, status, started))
+		running, _ = d.HasRunningHistoryBackfillSince(started.Add(-time.Hour))
+		assert.False(t, running, status)
+	}
 }
 
 // R23: a skipped chunk leaves a trace in last_error after the advance
