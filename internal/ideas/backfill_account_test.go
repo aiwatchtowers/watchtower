@@ -39,6 +39,72 @@ func (g *stage1Gen) saw(s string) bool {
 	return false
 }
 
+// floorWatchGen answers stage-1 calls like stage1Gen and, at each call,
+// records what the account's stored floors read — what a process killed at
+// that moment would leave behind for the forward run.
+type floorWatchGen struct {
+	stage1Gen
+	d         *db.DB
+	acct      int64
+	emailSeen []float64
+	jiraSeen  []string
+}
+
+func (g *floorWatchGen) Generate(ctx context.Context, sys, user, model string) (string, *digest.Usage, string, error) {
+	if f, err := g.d.IdeasEmailFloor(g.acct); err == nil {
+		g.emailSeen = append(g.emailSeen, f)
+	}
+	if f, err := g.d.IdeasJiraFloor(g.acct); err == nil {
+		g.jiraSeen = append(g.jiraSeen, f)
+	}
+	return g.stage1Gen.Generate(ctx, sys, user, model)
+}
+
+// C6: the drain never lowers the stored forward floor, so a process killed
+// mid-drain does not leave the forward run weeks back to re-mine everything.
+func TestBackfillEmail_NeverLowersTheStoredFloor(t *testing.T) {
+	d := newTestDB(t)
+	now := time.Now()
+	from, to := now.Add(-72*time.Hour), now.Add(-24*time.Hour)
+	a := seedGoogleAccount(t, d, float64(now.Unix()))
+	saved := float64(now.Add(-time.Hour).Unix())
+	setIdeasEmailFloorRaw(t, d, a, saved)
+	seedGmailMessageIdeas(t, d, a, "m1", "thr-1", "x@example.com", "Ann", "Subj", "in window",
+		from.Add(time.Hour).UTC().Format(time.RFC3339))
+
+	gen := &floorWatchGen{d: d, acct: a}
+	_, complete, err := New(d, backfillCfg(), gen, testLogger()).BackfillEmail(context.Background(), a, from, to)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.True(t, gen.saw("in window"), "the window is mined")
+	require.NotEmpty(t, gen.emailSeen)
+	for _, f := range gen.emailSeen {
+		assert.Equal(t, saved, f, "the stored floor stays put during the drain")
+	}
+}
+
+// C6: BackfillJira's counterpart.
+func TestBackfillJira_NeverLowersTheStoredFloor(t *testing.T) {
+	d := newTestDB(t)
+	now := time.Now()
+	from, to := now.Add(-72*time.Hour), now.Add(-24*time.Hour)
+	a := seedJiraAccount(t, d)
+	saved := db.FormatJiraTime(now.Add(-time.Hour))
+	setIdeasJiraFloorRaw(t, d, a, saved)
+	seedJiraIssueIdeas(t, d, a, "AA-1", "AA", "Alpha", "Open", "new", "alpha issue",
+		db.FormatJiraTime(from.Add(2*time.Hour)))
+
+	gen := &floorWatchGen{d: d, acct: a}
+	_, complete, err := New(d, backfillCfg(), gen, testLogger()).BackfillJira(context.Background(), a, from, to)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.True(t, gen.saw("AA-1"), "the window is mined")
+	require.NotEmpty(t, gen.jiraSeen)
+	for _, f := range gen.jiraSeen {
+		assert.Equal(t, saved, f, "the stored floor stays put during the drain")
+	}
+}
+
 // R28: only the given account's mail is digested, the other account's floor
 // is untouched, and the account's floor is restored to max(saved, reached).
 func TestBackfillEmail_ScopedToOneAccount(t *testing.T) {

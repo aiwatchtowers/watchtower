@@ -555,17 +555,33 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 	if floor == 0 {
 		return p.initEmailFloor(acct)
 	}
+	reached, err := p.emailDigestPass(ctx, acct, floor, bound)
+	if err != nil || reached == floor {
+		return err
+	}
+	if err := p.db.SetIdeasEmailFloor(acct.ID, reached); err != nil {
+		return fmt.Errorf("advancing ideas email floor: %w", err)
+	}
+	return nil
+}
 
+// emailDigestPass mines one window of the account's mail above floor
+// (bounded by bound when non-zero) and returns the floor the pass reached —
+// floor itself when there was nothing to mine. It reads and writes no
+// stored floor: runEmailDigestAccount persists the result, and the history
+// backfill's drain keeps its own lowered floor in memory, so a process killed
+// mid-drain never leaves the live floor weeks back.
+func (p *Pipeline) emailDigestPass(ctx context.Context, acct db.GoogleAccount, floor float64, bound time.Time) (float64, error) {
 	var beforeTS float64
 	if !bound.IsZero() {
 		beforeTS = float64(bound.Unix())
 	}
 	msgs, err := p.db.ListGmailThreadsForExtract(acct.ID, floor, beforeTS, 500)
 	if err != nil {
-		return fmt.Errorf("listing gmail threads: %w", err)
+		return floor, fmt.Errorf("listing gmail threads: %w", err)
 	}
 	if len(msgs) == 0 {
-		return nil
+		return floor, nil
 	}
 
 	budget := p.maxPromptChars()
@@ -575,14 +591,14 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 		// timestamp rendered, so a non-empty msgs always yields a window. Fail
 		// loudly rather than claim a floor from a zero value if that contract
 		// is ever broken.
-		return fmt.Errorf("no thread rendered from %d gmail messages", len(msgs))
+		return floor, fmt.Errorf("no thread rendered from %d gmail messages", len(msgs))
 	}
 	minTS, maxTS := win.minTS, win.maxTS
 
 	what := fmt.Sprintf("email account %d", acct.ID)
 	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", what, block, tags)
 	if err != nil {
-		return err
+		return floor, err
 	}
 
 	if err := p.insertStreamTopics(db.StreamDigest{
@@ -592,15 +608,12 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 		PeriodFrom: time.Unix(int64(minTS), 0).UTC().Format(time.RFC3339),
 		PeriodTo:   time.Unix(int64(maxTS), 0).UTC().Format(time.RFC3339),
 	}, topics, what); err != nil {
-		return err
+		return floor, err
 	}
 
 	// maxTS is the newest RENDERED message, never the newest loaded one: a
 	// thread the budget dropped stays above the floor and is mined next run.
-	if err := p.db.SetIdeasEmailFloor(acct.ID, maxTS); err != nil {
-		return fmt.Errorf("advancing ideas email floor: %w", err)
-	}
-	return nil
+	return maxTS, nil
 }
 
 // oneLine collapses a body of text to a single line for a compact excerpt.
