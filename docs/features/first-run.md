@@ -166,7 +166,7 @@ disconnect's `auth logout` runner) is not bounded here. An item never enqueues
 onto the queue and awaits it. Outside it:
 the launch-time CLI-store stop and the quit stop. The Google reconnect alert
 no longer restarts on its own (a successful connect already does). The
-Calendar tab has no message of its own while the daemon is down: the app-wide
+Calendar tab has no message of its own while the daemon is down or after a failed restart (its restart goes through `restartOnChain`): the app-wide
 banner says it.
 
 ### Fresh-install rule — Go ↔ Swift dual path

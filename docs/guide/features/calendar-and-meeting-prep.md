@@ -64,7 +64,7 @@ No recording? In the same pane, **Recap from text** under **Meeting Notes** writ
 - **"Calendar sync is off":** Google Calendar is connected but sync is switched off. Click **Turn On Calendar Sync**.
 - **"Watchtower isn't running"** (the banner at the top of the window): click **Start**.
 - **"Google Calendar for … can't sync":** the reason follows. Click **Reconnect** if it keeps failing.
-- **"The sync didn't restart":** click **Restart Sync**.
+- **"The background sync did not restart"** (the banner at the top of the window): click **Retry**.
 - **No Record button:** it shows from 10 minutes before the start until the end of the event, and stays while that event is recording.
 - **No Join button:** the event has no conference link (Meet, Zoom, Teams or Webex) in its fields, location or description.
 - **Thin prep:** attendees without a Slack match, or little recent activity, give a thin prep. The **Missing Context** box names the gaps.
