@@ -56,7 +56,7 @@ func TestActionsContract_ListsEveryWriteToolOfTheSurface(t *testing.T) {
 func TestActionsContract_AutomationEditorNamesOnlyDraftAndSave(t *testing.T) {
 	block := ActionsContract("automation_editor")
 	var named []string
-	for _, line := range strings.Split(block, "\n") {
+	for line := range strings.SplitSeq(block, "\n") {
 		if name, _, ok := strings.Cut(strings.TrimPrefix(line, "- "), " — "); ok && strings.HasPrefix(line, "- ") {
 			named = append(named, name)
 		}

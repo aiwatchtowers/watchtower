@@ -318,10 +318,7 @@ func (p *Pipeline) gatherBackfillActivity(ctx context.Context, t db.Track, since
 		if ctx.Err() != nil {
 			return db.ScanActivity{}, ctx.Err()
 		}
-		end := start + shortlistChunk
-		if end > len(titles) {
-			end = len(titles)
-		}
+		end := min(start+shortlistChunk, len(titles))
 		user := buildShortlistPrompt(t, titles[start:end], maxCandidates)
 		ctx2 := digest.WithSource(ctx, "customtrack.shortlist")
 		raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")

@@ -38,11 +38,11 @@ func TestModels_MainVsSub(t *testing.T) {
 
 func TestCommands_Aggregates(t *testing.T) {
 	f := &fixture{}
-	f.tool(0, "Bash", "go test", d(4*sec))
-	e := f.tool(10*sec, "Bash", "go test", d(2*sec))
+	f.tool(0, "Bash", "go test", new(4*sec))
+	e := f.tool(10*sec, "Bash", "go test", new(2*sec))
 	e.Outcome = "error"
 	f.tool(20*sec, "Bash", "go test", nil) // pending: a run with no time
-	f.tool(30*sec, "Read", "/tmp/x/a.go", d(1*sec))
+	f.tool(30*sec, "Read", "/tmp/x/a.go", new(1*sec))
 	f.api(40 * sec)
 	rows := Commands(f.evs)
 	require.Len(t, rows, 2)

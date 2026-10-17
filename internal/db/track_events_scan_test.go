@@ -135,7 +135,7 @@ func TestGetScanActivity_CapDrainsBoundaryTies(t *testing.T) {
 
 	first := seedScanInbox(t, d, "first", scanTS(base, 1))
 	var tied []int
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		tied = append(tied, seedScanInbox(t, d, fmt.Sprintf("tied-%d", i), scanTS(base, 2)))
 	}
 	later := seedScanInbox(t, d, "later", scanTS(base, 3))

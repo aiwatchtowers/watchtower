@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"sort"
 	"strconv"
@@ -127,9 +128,7 @@ func (f *fakeFetcher) counts() (map[ItemKind]int, [][]string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	all := map[ItemKind]int{}
-	for k, n := range f.allCalls {
-		all[k] = n
-	}
+	maps.Copy(all, f.allCalls)
 	return all, append([][]string(nil), f.userCalls...)
 }
 

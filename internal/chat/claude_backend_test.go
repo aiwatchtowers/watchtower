@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,7 +89,7 @@ func argvRuns(t *testing.T, path string) [][]string {
 	require.NoError(t, err)
 	var runs [][]string
 	var cur []string
-	for _, l := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+	for l := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 		if l == "--" {
 			runs = append(runs, cur)
 			cur = nil
@@ -113,12 +114,7 @@ func waitRuns(t *testing.T, path string, n int) {
 }
 
 func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, s)
 }
 
 func readPIDFile(t *testing.T, path string) int {

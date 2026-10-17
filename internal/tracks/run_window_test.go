@@ -385,7 +385,7 @@ func TestRunForWindow_FullyFailedRunsKeepRetryDigests(t *testing.T) {
 
 	outage := &failingGenerator{failFirst: 1 << 30}
 	pipe := New(database, cfg, outage, log.Default())
-	for i := 0; i < maxBatchRetryAttempts+2; i++ {
+	for range maxBatchRetryAttempts + 2 {
 		_, err = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
 		require.Error(t, err, "every batch failed")
 	}

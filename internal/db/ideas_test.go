@@ -792,7 +792,7 @@ func TestIdeas01_JiraWindowBoundaryDrainKeepsSameTimestampIssues(t *testing.T) {
 
 	seen := map[string]bool{}
 	floor := "2026-08-01T00:00:00.000+0000"
-	for run := 0; run < 4; run++ {
+	for run := range 4 {
 		issues, err := d.ListJiraIssuesUpdatedSince(acctID, floor, "", limit)
 		if err != nil {
 			t.Fatalf("run %d: ListJiraIssuesUpdatedSince: %v", run, err)
@@ -1375,7 +1375,7 @@ func TestIdeas_ListIdeasByMentionRef(t *testing.T) {
 		t.Fatalf("seeding decoy mention: %v", err)
 	}
 
-	for i := 0; i < 205; i++ {
+	for i := range 205 {
 		mustCreateIdea(t, d, Idea{Kind: "idea", Title: fmt.Sprintf("Filler %d", i), Essence: "e", Status: "proposed"})
 	}
 

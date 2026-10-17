@@ -623,7 +623,7 @@ func normalizeHooksDoc(doc map[string]any) map[string]any {
 // onlyEmptyHooksTable: nothing is left but blank lines and a bare [hooks]
 // header, so the file held only our hooks.
 func onlyEmptyHooksTable(text string) bool {
-	for _, l := range strings.Split(text, "\n") {
+	for l := range strings.SplitSeq(text, "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" && l != "[hooks]" {
 			return false

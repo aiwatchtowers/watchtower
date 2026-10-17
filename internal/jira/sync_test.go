@@ -101,23 +101,23 @@ func TestExtractDescriptionText(t *testing.T) {
 	assert.Equal(t, "hello world", extractDescriptionText("hello world"))
 
 	// ADF description.
-	adf := map[string]interface{}{
+	adf := map[string]any{
 		"type":    "doc",
 		"version": float64(1),
-		"content": []interface{}{
-			map[string]interface{}{
+		"content": []any{
+			map[string]any{
 				"type": "paragraph",
-				"content": []interface{}{
-					map[string]interface{}{
+				"content": []any{
+					map[string]any{
 						"type": "text",
 						"text": "First paragraph",
 					},
 				},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"type": "paragraph",
-				"content": []interface{}{
-					map[string]interface{}{
+				"content": []any{
+					map[string]any{
 						"type": "text",
 						"text": "Second paragraph",
 					},

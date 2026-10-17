@@ -162,9 +162,7 @@ func (s *Session) startTurn(ctx context.Context, c Command) {
 	s.cur = st
 	s.mu.Unlock()
 
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		defer func() {
 			close(st.done)
 			s.mu.Lock()
@@ -177,7 +175,7 @@ func (s *Session) startTurn(ctx context.Context, c Command) {
 			<-prev.done // the previous turn already ended; let its Turn return
 		}
 		s.runTurn(ctx, c, st)
-	}()
+	})
 }
 
 // runTurn publishes the turn id, emits turn_start, runs the backend and makes

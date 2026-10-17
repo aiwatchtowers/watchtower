@@ -871,7 +871,7 @@ func TestBuildArgs_ExternalToolsAllowedPerTool(t *testing.T) {
 	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello__list_boards,mcp__trello__get_card_Bash")
 	assertFlagValue(t, args, "--disallowedTools", DisallowedTools+",mcp__trello__create_card")
 
-	for _, a := range strings.Split(flagValue(t, args, "--allowedTools"), ",") {
+	for a := range strings.SplitSeq(flagValue(t, args, "--allowedTools"), ",") {
 		assert.NotEqual(t, "mcp__trello", a, "the whole server must never be granted")
 	}
 }

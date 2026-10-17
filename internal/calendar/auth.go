@@ -255,10 +255,8 @@ func (t *OAuthToken) GrantsScope(scope string) bool {
 // having granted nothing, which would otherwise surface only as 403s during
 // sync. A partial grant passes: the caller decides which services to enable.
 func validateGrantedScopes(token *OAuthToken, requested []string) error {
-	for _, s := range requested {
-		if token.GrantsScope(s) {
-			return nil
-		}
+	if slices.ContainsFunc(requested, token.GrantsScope) {
+		return nil
 	}
 	return fmt.Errorf("google did not grant any of the requested access (granted: %q) — run login again and approve access on the consent screen", token.Scope)
 }

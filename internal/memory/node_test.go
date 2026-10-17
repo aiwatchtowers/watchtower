@@ -363,7 +363,7 @@ func TestNewIDUnknownKindPanics(t *testing.T) {
 func TestULIDSortable(t *testing.T) {
 	t1 := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
 	t2 := t1.Add(time.Millisecond)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		a, b := newULID(t1), newULID(t2)
 		require.Less(t, a, b, "ULID at earlier ms must sort before later ms")
 	}
@@ -371,7 +371,7 @@ func TestULIDSortable(t *testing.T) {
 
 func TestULIDUnique(t *testing.T) {
 	seen := make(map[string]bool)
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		id := NewID("entity")
 		require.False(t, seen[id], "duplicate ID %q", id)
 		seen[id] = true

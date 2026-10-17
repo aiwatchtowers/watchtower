@@ -134,11 +134,11 @@ func readPlainFile(folder, path string) (string, bool) {
 // taskSection: from "### Task N:" to the next "### " heading.
 func taskSection(body string, n int) string {
 	head := "### Task " + strconv.Itoa(n) + ":"
-	start := strings.Index(body, head)
-	if start < 0 {
+	_, after, ok := strings.Cut(body, head)
+	if !ok {
 		return ""
 	}
-	rest := body[start+len(head):]
+	rest := after
 	if end := strings.Index(rest, "\n### "); end >= 0 {
 		rest = rest[:end]
 	}
