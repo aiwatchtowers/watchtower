@@ -523,33 +523,6 @@ func TestExecutor_AbandonedRunDisablesAutomation(t *testing.T) {
 	}
 }
 
-// A script that hits a sandbox size or depth limit — here the nesting that
-// used to overflow the Go stack and kill the daemon — fails with a clear,
-// uncatchable RangeError and its automation is disabled, so the next tick
-// does not run it again.
-func TestExecutor_LimitHitDisablesAutomation(t *testing.T) {
-	f := newExFixture(t, exOpts{})
-	a := f.seed(t, "digest", `try { JSON.parse("[".repeat(16e6)) } catch (e) { return "caught" }`, false)
-	id := f.enqueue(t, a, db.TriggerManual)
-	f.step(t, 1)
-	r := f.wantRun(t, id, db.RunFailed, db.ErrKindScript)
-	mustContain(t, "run error", r.Error, "RangeError: JSON.parse: the text is nested deeper than 1000 levels")
-	mustContain(t, "run error", r.Error, "the automation was disabled: runaway script — check and re-enable")
-	mustContain(t, "log", f.logs.String(), "automation disabled")
-	got, err := f.d.GetAutomation(a.ID)
-	if err != nil || got.Enabled {
-		t.Fatalf("automation enabled=%v, %v; want disabled", got.Enabled, err)
-	}
-	// The script's own RangeError is an ordinary failure.
-	own := f.seed(t, "own", `throw new RangeError("mine")`, false)
-	ownRun := f.enqueue(t, own, db.TriggerManual)
-	f.step(t, 1)
-	f.wantRun(t, ownRun, db.RunFailed, db.ErrKindScript)
-	if got, err := f.d.GetAutomation(own.ID); err != nil || !got.Enabled {
-		t.Fatalf("own RangeError: automation enabled=%v, %v; want enabled", got.Enabled, err)
-	}
-}
-
 func TestExecutor_NoClaimsWhileTwoRunsAbandoned(t *testing.T) {
 	f := newExFixture(t, exOpts{})
 	id := f.enqueue(t, f.seed(t, "digest", `return 1`, false), db.TriggerManual)

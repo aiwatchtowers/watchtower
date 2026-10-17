@@ -2,7 +2,9 @@ package automations
 
 import (
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/dlclark/regexp2/v2"
 	"github.com/dop251/goja"
@@ -40,7 +42,9 @@ const MaxDefaultSortLength = 1000000
 // the replacer, on the values stringify actually serialises (after toJSON
 // and getters); the parse depth by scanning the text (jsonNestsDeeper)
 // before goja parses it; the reviver walk runs as JS, and flat as one
-// native flatMap pass per level.
+// native flatMap pass per level. Function.prototype.bind chains are capped
+// at the same depth (each bind prefixes "bound " to the name, so a long
+// chain grows quadratically).
 const MaxJSONDepth = 1000
 
 func init() {
@@ -55,18 +59,16 @@ func init() {
 //   - Code from strings: eval, Function and Promise are deleted; every
 //     function prototype's constructor throws EvalError.
 //   - Size and depth limits: the allocation caps (MaxBuiltinAlloc) on the
-//     builtins listed there, and nesting deeper than maxDepth in
-//     JSON.stringify, JSON.parse and flat. A script that hits one ends at
-//     once (limitHit: a RangeError the script cannot catch) and its
-//     automation is disabled — such a script would otherwise crash or
-//     exhaust the daemon on its next run too.
-//   - No default sort of more than MaxDefaultSortLength elements, and
-//     RegExp methods throw a RangeError when a call ran for timeoutMs (a
-//     regexp2 match that timed out): both catchable, they bound time, which
-//     the deadline also bounds.
+//     builtins listed there, nesting deeper than maxDepth in
+//     JSON.stringify, JSON.parse and flat, and bind chains deeper than
+//     maxDepth, all checked before (or while counting) what goja builds, so
+//     the native work stays bounded. Each throws a catchable RangeError.
+//   - No default sort of more than MaxDefaultSortLength elements.
+//   - RegExp methods throw a RangeError when a call ran for timeoutMs (a
+//     regexp2 match that timed out).
 //
 // It returns the function that neutralises one more function prototype.
-const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitHit, jsonNestsDeeper, isStringObject) {
+const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, jsonNestsDeeper, quotedLength, classOf) {
 	"use strict";
 	var FunctionProto = Function.prototype;
 	var uncurry = FunctionProto.bind.bind(FunctionProto.call);
@@ -82,6 +84,7 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 	var strIndexOf = uncurry(String.prototype.indexOf), strSlice = uncurry(String.prototype.slice);
 	var strCharAt = uncurry(String.prototype.charAt), strCharCodeAt = uncurry(String.prototype.charCodeAt);
 	var SymbolIterator = Symbol.iterator, SymbolSpreadable = Symbol.isConcatSpreadable, TypeErrorCtor = TypeError;
+	var SymbolMatch = Symbol.match, SymbolReplace = Symbol.replace;
 	var origJoin = Array.prototype.join;
 
 	function refuse() { throw new EvalErrorCtor("code generation from strings is not available to automation scripts"); }
@@ -106,12 +109,7 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 		if (n < 0) { return len + n < 0 ? 0 : len + n; }
 		return n > len ? len : n;
 	}
-	// limit ends the run: limitHit throws a RangeError and interrupts the
-	// runtime, so the script's catch never runs.
-	function limit(msg) {
-		limitHit(msg);
-		throw new RangeErrorCtor(msg); // not reached
-	}
+	function limit(msg) { throw new RangeErrorCtor(msg); }
 	function cap(what, n) {
 		if (n > maxAlloc) { limit(what + ": the result would exceed " + maxAlloc + " characters or elements"); }
 	}
@@ -180,31 +178,47 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 		} });
 
 	// toLocaleString as goja runs it (an array already being converted reads
-	// as ""), checking the running result length.
+	// as ""), checking the running result length; locales and options reach
+	// each element's toLocaleString. Typed arrays share it (their elements'
+	// toLocaleString can be replaced too), after their own receiver check.
 	var localeStack = [];
+	function localeJoin(o, len, args) {
+		if (arrayIncludes(localeStack, o)) { return ""; }
+		arrayPush(localeStack, o);
+		try {
+			var parts = [], total = 0;
+			for (var i = 0; i < len; i++) {
+				var e = o[i], str = "";
+				if (e !== undefined && e !== null) {
+					var f = e.toLocaleString;
+					if (typeof f !== "function") { throw new TypeErrorCtor("Property 'toLocaleString' of object " + StringCtor(e) + " is not a function"); }
+					str = StringCtor(apply(f, e, args));
+				}
+				total += str.length + (i > 0 ? 1 : 0);
+				cap("toLocaleString", total);
+				arrayPush(parts, str);
+			}
+			return apply(origJoin, parts, [","]);
+		} finally {
+			arrayPop(localeStack);
+		}
+	}
 	defineProperty(AP, "toLocaleString", { writable: true, configurable: true, enumerable: false,
 		value: function toLocaleString() {
 			if (this === null || this === undefined) { throw new TypeErrorCtor("Array.prototype.toLocaleString called on null or undefined"); }
 			var o = ObjectCtor(this);
-			if (arrayIncludes(localeStack, o)) { return ""; }
-			arrayPush(localeStack, o);
-			try {
-				var len = toLen(o.length), parts = [], total = 0;
-				for (var i = 0; i < len; i++) {
-					var e = o[i], str = "";
-					if (e !== undefined && e !== null) {
-						var f = e.toLocaleString;
-						if (typeof f !== "function") { throw new TypeErrorCtor("Property 'toLocaleString' of object " + StringCtor(e) + " is not a function"); }
-						str = StringCtor(apply(f, e, []));
-					}
-					total += str.length + (i > 0 ? 1 : 0);
-					cap("toLocaleString", total);
-					arrayPush(parts, str);
-				}
-				return apply(origJoin, parts, [","]);
-			} finally {
-				arrayPop(localeStack);
-			}
+			return localeJoin(o, toLen(o.length), arguments);
+		} });
+
+	// bind chains: each bound name is "bound " + the target's name.
+	var bindDepth = new WeakMapCtor(), origBind = FunctionProto.bind;
+	defineProperty(FunctionProto, "bind", { writable: true, configurable: true, enumerable: false,
+		value: function bind(thisArg) {
+			var d = (typeof this === "function" ? wmGet(bindDepth, this) : undefined) || 0;
+			if (d >= maxDepth) { limit("bind: a chain of more than " + maxDepth + " bound functions"); }
+			var f = apply(origBind, this, arguments);
+			wmSet(bindDepth, f, d + 1);
+			return f;
 		} });
 
 	// flat flattens one level per native flatMap pass (goja's own flat
@@ -246,16 +260,17 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 			return apply(origFlatMap, this, [counted, arguments[1]]);
 		} });
 
-	// replaceArg is the replace value handed to goja's replace, replaceAll
-	// or @@replace. A replacement with no $ pattern, for a string subject and
-	// a primitive search (at most length + 1 matches), whose result cannot
-	// pass maxAlloc goes as it is; anything else becomes a function that
-	// returns the same text goja would insert for each match (substitute
-	// mirrors goja's writeSubstitution: $$, $&, the $-backtick prefix, $',
-	// $n/$nn, $<name>) and ends the run once the inserted text passes
-	// maxAlloc (the prefix pattern for every match, or a 16 Mi replacement
-	// for every match, is quadratic).
-	function replaceArg(what, subject, searchValue, replaceValue) {
+	// replaceArg is the replace value handed to goja's built-in string or
+	// RegExp replace (a user @@replace gets the script's own value). A
+	// replacement with no $ pattern goes as it is when the matches are
+	// bounded (a string search: at most length + 1) and the result cannot
+	// pass maxAlloc; anything else becomes a function that returns the same
+	// text goja would insert for each match (substitute mirrors goja's
+	// writeSubstitution: $$, $&, the $-backtick prefix, $', $n/$nn,
+	// $<name>) and throws once the inserted text passes maxAlloc (the prefix
+	// pattern for every match, or a 16 Mi replacement for every match, is
+	// quadratic).
+	function replaceArg(what, subject, replaceValue, boundedMatches) {
 		var total = 0;
 		function add(n) {
 			total += n;
@@ -270,11 +285,7 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 		}
 		var template = StringCtor(replaceValue), tl = template.length;
 		if (strIndexOf(template, "$") < 0) {
-			var st = typeof searchValue;
-			if (typeof subject === "string" && st !== "object" && st !== "function" &&
-				subject.length + (subject.length + 1) * tl <= maxAlloc) {
-				return template;
-			}
+			if (boundedMatches && subject.length + (subject.length + 1) * tl <= maxAlloc) { return template; }
 			return function () { add(tl); return template; };
 		}
 		return function () {
@@ -288,6 +299,31 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 			}
 			return substitute(template, str, position, arguments, n, groups, add);
 		};
+	}
+	// stringReplace is String.prototype.replace/replaceAll in goja's order:
+	// an object search with an @@replace method gets the call with the
+	// script's own replace value (RegExp's built-in @@replace counts for
+	// itself); otherwise the subject, the search and then the replace value
+	// are converted, and goja's string path runs with the counted value.
+	function stringReplace(what, orig, all, o, searchValue, replaceValue) {
+		if (o === null || o === undefined) { throw new TypeErrorCtor("String.prototype." + what + " called on null or undefined"); }
+		if (searchValue !== null && (typeof searchValue === "object" || typeof searchValue === "function")) {
+			if (all) {
+				var m = searchValue[SymbolMatch];
+				if (m !== undefined ? !!m : classOf(searchValue) === "RegExp") {
+					var flags = searchValue.flags;
+					if (flags === null || flags === undefined) { throw new TypeErrorCtor("String.prototype.replaceAll called with a RegExp without flags"); }
+					if (strIndexOf(StringCtor(flags), "g") < 0) { throw new TypeErrorCtor("String.prototype.replaceAll called with a non-global RegExp argument"); }
+				}
+			}
+			var replacer = searchValue[SymbolReplace];
+			if (replacer !== undefined && replacer !== null) {
+				if (typeof replacer !== "function") { throw new TypeErrorCtor("Symbol.replace is not a function"); }
+				return apply(replacer, searchValue, [o, replaceValue]);
+			}
+		}
+		var str = StringCtor(o), search = StringCtor(searchValue);
+		return apply(orig, str, [search, replaceArg(what, str, replaceValue, true)]);
 	}
 	function substitute(template, subject, position, caps, numCaps, groups, add) {
 		var out = [], tl = template.length, i = 0, matched = caps[0];
@@ -357,11 +393,11 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 		} });
 	defineProperty(SP, "replace", { writable: true, configurable: true, enumerable: false,
 		value: function replace(searchValue, replaceValue) {
-			return apply(origReplace, this, [searchValue, replaceArg("replace", this, searchValue, replaceValue)]);
+			return stringReplace("replace", origReplace, false, this, searchValue, replaceValue);
 		} });
 	defineProperty(SP, "replaceAll", { writable: true, configurable: true, enumerable: false,
 		value: function replaceAll(searchValue, replaceValue) {
-			return apply(origReplaceAll, this, [searchValue, replaceArg("replaceAll", this, searchValue, replaceValue)]);
+			return stringReplace("replaceAll", origReplaceAll, true, this, searchValue, replaceValue);
 		} });
 
 	// Array, ArrayBuffer and the typed arrays: functions (not Proxies, which
@@ -404,6 +440,9 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 		}
 	});
 	for (var t = 0; t < typed.length; t++) { capConstructor(typed[t], true, lengthArg(typed[t], 1)); }
+	var typedLength = uncurry(Object.getOwnPropertyDescriptor(TypedProto, "length").get); // throws for a non-typed array
+	defineProperty(TypedProto, "toLocaleString", { writable: true, configurable: true, enumerable: false,
+		value: function toLocaleString() { return localeJoin(this, typedLength(this), arguments); } });
 
 	var stringify = JSON.stringify;
 	// propertyList is JSON.stringify's array replacer as the spec builds it:
@@ -430,11 +469,14 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 		}
 		return o;
 	}
-	// gapLength is the indent JSON.stringify uses for space (at most 10).
+	// gapLength bounds the indent JSON.stringify uses for space: a number or
+	// string (at most 10), a Number or String object (counted as 10: reading
+	// its value would run its valueOf twice); any other value means none.
 	function gapLength(space) {
 		if (typeof space === "number") { var n = floor(space); return n > 10 ? 10 : (n > 0 ? n : 0); }
 		if (typeof space === "string") { return min(space.length, 10); }
-		return space !== null && typeof space === "object" ? 10 : 0;
+		var c = space !== null && typeof space === "object" ? classOf(space) : "";
+		return c === "Number" || c === "String" ? 10 : 0;
 	}
 	defineProperty(JSON, "stringify", { writable: true, configurable: true, enumerable: false,
 		value: function stringify_(value, replacer, space) {
@@ -450,7 +492,7 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 				// value (an object or array: its brackets), the key in an
 				// object, a separator and the indent.
 				var t = typeof val, n = 0;
-				if (t === "string") { n = val.length + 2; }
+				if (t === "string") { n = quotedLength(val); }
 				else if (t === "number") { n = StringCtor(val).length; }
 				else if (t === "boolean") { n = 5; }
 				else if (val === null) { n = 4; }
@@ -458,9 +500,10 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 					if (d + 1 > maxDepth) { limit("JSON.stringify: nesting deeper than " + maxDepth); }
 					if (list !== null && !isArray(val)) { val = pick(val, list); }
 					wmSet(depths, val, d + 1);
-					n = isStringObject(val) ? val.length + 2 : 2; // a String object's own fixed length
+					// a String object: its own fixed length, each unit escaped at worst
+					n = classOf(val) === "String" ? val.length * 6 + 2 : 2;
 				}
-				if (d > 0 && !isArray(this)) { n += key.length + 3; }
+				if (d > 0 && !isArray(this)) { n += quotedLength(key) + 1; }
 				size += n + 1 + gap * d;
 				if (size > maxAlloc) { cap("JSON.stringify", size); }
 				return val;
@@ -504,7 +547,11 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, limitH
 		// @@replace also counts what it inserts (replaceArg).
 		defineProperty(RP, key, { writable: false, configurable: false, enumerable: false,
 			value: function () {
-				var args = counts ? [arguments[0], replaceArg("replace", arguments[0], this, arguments[1])] : arguments;
+				var args = arguments;
+				if (counts) {
+					var str = StringCtor(arguments[0]);
+					args = [str, replaceArg("replace", str, arguments[1], false)];
+				}
 				var t0 = now();
 				var out = apply(orig, this, args);
 				if (now() - t0 >= timeoutMs) { throw new RangeErrorCtor("regular expression took too long (" + timeoutMs + " ms or more)"); }
@@ -553,14 +600,21 @@ func (s *Sandbox) lockdown() error {
 	nestsDeeper := func(call goja.FunctionCall) goja.Value {
 		return s.rt.ToValue(jsonNestsDeeper(call.Argument(0).String(), MaxJSONDepth))
 	}
-	// isStringObject: a String wrapper object (no script code runs to tell).
-	isStringObject := func(call goja.FunctionCall) goja.Value {
-		obj, ok := call.Argument(0).(*goja.Object)
-		return s.rt.ToValue(ok && obj.ClassName() == "String")
+	quoted := func(call goja.FunctionCall) goja.Value {
+		str, _ := call.Argument(0).(goja.String)
+		return s.rt.ToValue(jsonQuotedLength(str))
+	}
+	// classOf: an object's class ("String", "Number", "RegExp", …), "" for
+	// anything else; no script code runs to tell.
+	classOf := func(call goja.FunctionCall) goja.Value {
+		if obj, ok := call.Argument(0).(*goja.Object); ok {
+			return s.rt.ToValue(obj.ClassName())
+		}
+		return s.rt.ToValue("")
 	}
 	nv, err := lock(goja.Undefined(), s.rt.GlobalObject(), s.rt.ToValue(MaxBuiltinAlloc), s.rt.ToValue(MaxJSONDepth),
 		s.rt.ToValue(RegexpMatchTimeout.Milliseconds()), s.rt.ToValue(MaxDefaultSortLength),
-		s.rt.ToValue(s.limitHit), s.rt.ToValue(nestsDeeper), s.rt.ToValue(isStringObject))
+		s.rt.ToValue(nestsDeeper), s.rt.ToValue(quoted), s.rt.ToValue(classOf))
 	if err != nil {
 		return fmt.Errorf("automation sandbox: locking down the runtime: %w", err)
 	}
@@ -580,60 +634,168 @@ func (s *Sandbox) lockdown() error {
 	return nil
 }
 
-// limitHit ends the run on a size or depth limit (lockdownJS's limit): the
-// run fails with a RangeError the script cannot catch, marked Limit so the
-// executor disables the automation — the same data would hit the limit
-// again on the next run.
-func (s *Sandbox) limitHit(call goja.FunctionCall) goja.Value {
-	msg := call.Argument(0).String()
-	s.abort(&ScriptError{Name: "RangeError", Message: msg, Line: s.scriptCallerLine(), Limit: true})
-	panic(s.newJSError("RangeError", msg, ""))
-}
-
-// scriptCallerLine is the recipe file line of the innermost script frame.
-func (s *Sandbox) scriptCallerLine() int {
-	for _, f := range s.rt.CaptureCallStack(0, nil) {
-		if f.SrcName() == scriptSrcName {
-			return s.fileLine(f.Position().Line)
+// jsonQuotedLength is the length, in UTF-16 units, of str as JSON.stringify
+// writes it: quotes, `\"` and `\\`, the short escapes, `\u00XX` for other
+// control characters and `\uXXXX` for a lone surrogate (a nil str is 2).
+func jsonQuotedLength(str goja.String) int {
+	if str == nil {
+		return 2
+	}
+	n, l := 2, str.Length()
+	for i := 0; i < l; i++ {
+		c := str.CharAt(i)
+		switch {
+		case c == '"' || c == '\\' || c == '\b' || c == '\t' || c == '\n' || c == '\f' || c == '\r':
+			n += 2
+		case c < 0x20:
+			n += 6
+		case utf16.IsSurrogate(rune(c)):
+			if c < 0xDC00 && i+1 < l && str.CharAt(i+1) >= 0xDC00 && str.CharAt(i+1) <= 0xDFFF {
+				n += 2 // a pair, written as is
+				i++
+			} else {
+				n += 6
+			}
+		default:
+			n++
 		}
 	}
-	return 0
+	return n
 }
+
+// scanState is what jsonNestsDeeper expects next.
+type scanState int
+
+const (
+	scanValue        scanState = iota // any value
+	scanValueOrClose                  // a value or "]" (just after "[")
+	scanKey                           // a key string
+	scanKeyOrClose                    // a key or "}" (just after "{")
+	scanColon                         // ":" after a key
+	scanCommaOrClose                  // "," or the closing bracket
+	scanDone                          // the top-level value ended
+)
 
 // jsonNestsDeeper reports whether JSON text opens more than limit arrays or
-// objects inside each other. It follows the text as a JSON parser does up
-// to the first error (brackets inside strings do not count), so goja's
-// parser never recurses deeper than this count.
+// objects inside each other before its first syntax error. goja's parser
+// recurses once per "[" or "{" it accepts and stops at the first error, so it
+// never recurses deeper than this count. The scan is never stricter than
+// goja (numbers and string escapes are only skimmed), so it cannot stop
+// before goja does; text that is not JSON from its first character (a note
+// followed by brackets) counts nothing and gets goja's SyntaxError.
 func jsonNestsDeeper(text string, limit int) bool {
-	depth := 0
-	inString, escaped := false, false
-	for i := 0; i < len(text); i++ {
-		c := text[i]
-		if inString {
-			switch {
-			case escaped:
-				escaped = false
-			case c == '\\':
-				escaped = true
-			case c == '"':
-				inString = false
-			}
-			continue
+	var stack []byte
+	state := scanValue
+	for i := 0; ; {
+		for i < len(text) && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r') {
+			i++
 		}
-		switch c {
-		case '"':
-			inString = true
-		case '[', '{':
-			depth++
-			if depth > limit {
-				return true
+		if i >= len(text) {
+			return false
+		}
+		c := text[i]
+		switch state {
+		case scanValue, scanValueOrClose:
+			if c == ']' && state == scanValueOrClose {
+				stack = stack[:len(stack)-1]
+				i++
+				state = jsonAfterValue(stack)
+				continue
 			}
-		case ']', '}':
-			depth--
-			if depth < 0 {
-				return false // the parser fails here
+			if c == '[' || c == '{' {
+				if stack = append(stack, c); len(stack) > limit {
+					return true
+				}
+				i++
+				state = scanValueOrClose
+				if c == '{' {
+					state = scanKeyOrClose
+				}
+				continue
 			}
+			if i = jsonScalarEnd(text, i); i < 0 {
+				return false
+			}
+			state = jsonAfterValue(stack)
+		case scanKey, scanKeyOrClose:
+			if c == '}' && state == scanKeyOrClose {
+				stack = stack[:len(stack)-1]
+				i++
+				state = jsonAfterValue(stack)
+				continue
+			}
+			if c != '"' {
+				return false
+			}
+			if i = jsonStringEnd(text, i); i < 0 {
+				return false
+			}
+			state = scanColon
+		case scanColon:
+			if c != ':' {
+				return false
+			}
+			i++
+			state = scanValue
+		case scanCommaOrClose:
+			top := stack[len(stack)-1]
+			switch {
+			case c == ',' && top == '[':
+				state = scanValue
+			case c == ',':
+				state = scanKey
+			case c == ']' && top == '[', c == '}' && top == '{':
+				stack = stack[:len(stack)-1]
+				state = jsonAfterValue(stack)
+			default:
+				return false
+			}
+			i++
+		default: // scanDone: goja reads one more token and fails, without recursing
+			return false
 		}
 	}
-	return false
+}
+
+func jsonAfterValue(stack []byte) scanState {
+	if len(stack) == 0 {
+		return scanDone
+	}
+	return scanCommaOrClose
+}
+
+// jsonScalarEnd returns the index after the string, number or literal at i,
+// or -1 when there is none.
+func jsonScalarEnd(text string, i int) int {
+	c := text[i]
+	switch {
+	case c == '"':
+		return jsonStringEnd(text, i)
+	case c == '-' || (c >= '0' && c <= '9'):
+		j := i + 1
+		for j < len(text) && strings.IndexByte("0123456789.eE+-", text[j]) >= 0 {
+			j++
+		}
+		return j
+	}
+	for _, lit := range []string{"true", "false", "null"} {
+		if strings.HasPrefix(text[i:], lit) {
+			return i + len(lit)
+		}
+	}
+	return -1
+}
+
+// jsonStringEnd returns the index after the string that opens at i, or -1
+// when it never closes.
+func jsonStringEnd(text string, i int) int {
+	for j := i + 1; j < len(text); j++ {
+		switch text[j] {
+		case '\\':
+			j++
+		case '"':
+			return j + 1
+		}
+	}
+	return -1
 }

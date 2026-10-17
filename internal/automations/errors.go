@@ -68,12 +68,9 @@ var ErrSDKPanic = errors.New("automation sandbox panic")
 // ScriptError is an exception the script did not catch, or a syntax error.
 // Line is the recipe file line (0 when unknown); Name is the JS error's name
 // (an SDK name such as PermissionDenied, or TypeError, SyntaxError, …).
-// Limit marks the uncatchable RangeError of a sandbox size or depth limit
-// (MaxBuiltinAlloc, MaxJSONDepth): the executor disables the automation.
 type ScriptError struct {
 	Name, Message, Stack string
 	Line                 int
-	Limit                bool
 }
 
 func (e *ScriptError) Error() string {

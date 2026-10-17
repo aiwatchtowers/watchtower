@@ -18,8 +18,7 @@ import (
 const maxAbandonedRuns = 2
 
 // runawayDisabledReason is what the executor writes on a run whose script
-// goroutine it had to abandon, or whose script hit a sandbox size or depth
-// limit, after disabling the automation.
+// goroutine it had to abandon, after disabling the automation.
 const runawayDisabledReason = "runaway script — check and re-enable"
 
 // ErrRunNotClaimed is what ExecuteInline returns when its run could not be
