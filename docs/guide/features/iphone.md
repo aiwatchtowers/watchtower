@@ -63,7 +63,7 @@ A Claude Code session at a permission prompt shows a card with the tool and what
 Two kinds of prompt offer only **Deny** on the phone, so you answer them on the Mac to allow:
 
 - one too long to show in full, which says **Shortened — answer on the Mac to allow**;
-- a file edit that changes Claude Code's, an agent's, git hook or shell settings (a `.claude`, `.codex` or `.agents` folder, `.git/hooks`, or a file such as `.zshrc` or `.bash_profile`), which says **Changes Watchtower or shell settings — answer on the Mac to allow**.
+- a file edit that changes Claude Code's, an agent's, git or shell settings (a `.claude`, `.codex` or `.agents` folder, `.git/hooks`, `.git/config`, `.watchtower/workflow.md`, or a file such as `.zshrc`, `.bash_profile`, `.mcp.json`, `.envrc` or `.gitconfig`), which says **Changes Watchtower or shell settings — answer on the Mac to allow**.
 
 The prompt stays open on the Mac too, and the first answer wins. If you already answered on the Mac, the phone's answer usually comes back **Answered on the Mac**. Once the Mac takes a phone answer, the card says **Sent to the session**.
 

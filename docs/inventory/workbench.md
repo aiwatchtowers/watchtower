@@ -1980,9 +1980,10 @@ card): a `behavior: allow` is refused `answer_on_mac`, the row left
 `summary_clipped`, or longer than the wire's 2000-grapheme cap: the owner
 never saw all of it; message "Shortened — answer on the Mac to allow"),
 and (b) for an Edit, Write or NotebookEdit whose path has a `.claude`,
-`.codex` or `.agents` component, lies under `.git/hooks`, or whose file
-name is `.zshrc`, `.zshenv`, `.zprofile`, `.zlogin`, `.bashrc`,
-`.bash_profile`, `.bash_login` or `.profile` (compared case-insensitively;
+`.codex` or `.agents` component, lies under `.git/hooks`, is `.git/config`
+or `.watchtower/workflow.md`, or whose file name is `.zshrc`, `.zshenv`,
+`.zprofile`, `.zlogin`, `.bashrc`, `.bash_profile`, `.bash_login`,
+`.profile`, `.mcp.json`, `.envrc` or `.gitconfig` (compared case-insensitively;
 message "Changes Watchtower or shell settings — answer on the Mac to
 allow"); a deny always passes, and every other path keeps Allow once → the
 session is live (else `session_not_running`) → one compare-and-set `UPDATE
@@ -2335,6 +2336,7 @@ owner never saw.
 ## Changelog
 
 - 2026-10-17 (board #517, answer a permission prompt and interrupt from the iPhone; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`; **owner approved, ask #263 / #265**): **PROJ-21 added** — a permission prompt is answered from the phone only by an explicit Allow once or Deny through the `PermissionRequest` hook (`workbench permission-wait`, migration `00130` `permission_requests`), from a device with its own `permissions_allowed` grant; the answer types nothing, allows one call and loses to a Mac answer; `session_interrupt` sends one Esc under the typing grant while Working only. **PROJ-16 amended** — the heading's last clause reads "nothing typed from the phone ever answers a permission prompt", the Observable points to PROJ-21; no PROJ-16 guard changed. The Swift guards were written as `testProjNN_*` and renamed `testProj21_*`; the Go hook's key exit-path tests renamed `TestPermissionWait_*` → `TestProj21_PermissionWait*`.
+- 2026-10-17 (board #517; **owner approved, ask #312**): **PROJ-21 strengthened — no guard relaxed.** The Deny-only settings paths gain `.git/config`, `.mcp.json`, `.envrc`, `.gitconfig` and `.watchtower/workflow.md`; `testProj21_ASettingsPathEditCannotBeAllowed` lists them (`.git/config` moved there from the allowed list).
 - 2026-10-17 (board #517, final review fix wave; **owner approved, ask #268**): **PROJ-21 strengthened — no guard relaxed.** Two Deny-only rules, enforced by the hub (`answer_on_mac`, the row left pending) and mirrored on the phone's card through one `PermissionAllowBlock`: a shortened summary (migration `00130` gains `summary_clipped`, edited in place before release) and an Edit/Write/NotebookEdit of a `.claude`/`.codex`/`.agents`/`.git/hooks` path or a shell rc/profile file. A stopped hook (SIGTERM, three failed reads in a row) closes its row `expired`; `TestPermissionWait_CancelExitsSilently` now asserts `expired` instead of `pending` (strictly stronger). The Desktop's expiry waits for the launch's reattach before judging liveness. The Bash description joins as `\n# `; the interrupt's prompt refusal reads "A permission prompt may be open — answer it on the Mac or with Deny". New guards listed under PROJ-21; wording of steps (2) and the DB-failure guard corrected.
 
 - 2026-10-17 (board #496, final review): **PROJ-20 text corrected — no guard changed or relaxed.** Every build shares one host (the "another bundle id lives in its own host" limit was false); a takeover tells the losing pane, which neither reattaches nor reports an exit; an exited-while-away run is attached for its last output before its one exit report; the local fallback applies only when the host is unreachable at app launch; an update and a log-out never ask about sessions (a recording or unsent ask answers still prompt); the idle exit ignores the app's control connection.

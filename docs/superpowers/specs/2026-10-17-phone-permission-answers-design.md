@@ -214,8 +214,10 @@ the session shows Working.
 - Deny only from the phone, enforced by the hub (`answer_on_mac`) and
   mirrored on the card (`PermissionAllowBlock` in WatchtowerSync): a
   clipped request ("Shortened — answer on the Mac to allow"), and an
-  Edit/Write/NotebookEdit of a Watchtower, agent or shell settings path
-  ("Changes Watchtower or shell settings — answer on the Mac to allow").
+  Edit/Write/NotebookEdit of a Watchtower, agent, git or shell settings
+  path ("Changes Watchtower or shell settings — answer on the Mac to
+  allow"); ask #312 added `.git/config`, `.mcp.json`, `.envrc`,
+  `.gitconfig` and `.watchtower/workflow.md`.
 - A hook that stops (signal, timeout, repeated read errors) closes its row
   `expired`; the Desktop expires not-live rows only once session liveness
   has settled after a PROJ-20 reattach.

@@ -21,6 +21,9 @@ final class PermissionAllowRuleTests: XCTestCase {
             "/tmp/home/acme/.git/hooks/pre-commit",
             "/tmp/home/.zshrc", "/tmp/home/.zshenv", "/tmp/home/.zprofile", "/tmp/home/.zlogin",
             "/tmp/home/.bashrc", "/tmp/home/.bash_profile", "/tmp/home/.bash_login", "/tmp/home/.profile",
+            // Owner decision, ask #312: files that run code or steer an agent.
+            "/tmp/home/acme/.git/config", "/tmp/home/acme/.mcp.json", "/tmp/home/acme/.envrc",
+            "/tmp/home/.gitconfig", "/tmp/home/acme/.watchtower/workflow.md",
             "/tmp/home/acme/.CLAUDE/settings.json", // the Mac's file system ignores case
             ".claude/settings.json"
         ]
@@ -40,7 +43,9 @@ final class PermissionAllowRuleTests: XCTestCase {
             "/tmp/home/acme/main.go",
             "/tmp/home/acme/docs/claude.md",
             "/tmp/home/acme/.github/workflows/ci.yml",
-            "/tmp/home/acme/.git/config",
+            "/tmp/home/acme/.git/info/exclude",
+            "/tmp/home/acme/.watchtower/review.md",
+            "/tmp/home/acme/config",
             "/tmp/home/acme/hooks/pre-commit",
             "/tmp/home/acme/zshrc.md",
             "/tmp/home/acme/.claude-notes/x.md"

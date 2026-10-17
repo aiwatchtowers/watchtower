@@ -23,10 +23,14 @@ public enum PermissionAllowBlock: String, Equatable, Sendable {
     public static let pathTools: Set<String> = ["Edit", "Write", "NotebookEdit"]
     /// A path with one of these components is a settings path.
     static let settingsDirs: Set<String> = [".claude", ".codex", ".agents"]
-    /// A file with one of these names is a settings path.
-    static let shellFiles: Set<String> = [
-        ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".bash_login", ".profile"
+    /// A file with one of these names is a settings path: shell rc and
+    /// profile files, then the ones that run code or steer an agent (ask #312).
+    static let settingsFiles: Set<String> = [
+        ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".bash_login", ".profile",
+        ".mcp.json", ".envrc", ".gitconfig"
     ]
+    /// A path with one of these folder/name pairs is a settings path.
+    static let settingsPairs: Set<[String]> = [[".git", "hooks"], [".git", "config"], [".watchtower", "workflow.md"]]
 
     /// nil when the phone may allow the request once.
     public static func check(toolName: String, summary: String, clipped: Bool) -> Self? {
@@ -36,12 +40,13 @@ public enum PermissionAllowBlock: String, Equatable, Sendable {
     }
 
     /// The path has a `.claude`, `.codex` or `.agents` component, lies
-    /// under `.git/hooks`, or names a shell rc or profile file. Compared
-    /// case-insensitively: the Mac's default file system is.
+    /// under `.git/hooks`, is `.git/config` or `.watchtower/workflow.md`, or
+    /// names a file of `settingsFiles`. Compared case-insensitively: the
+    /// Mac's default file system is.
     static func isSettingsPath(_ path: String) -> Bool {
         let parts = path.lowercased().split(separator: "/").map(String.init)
         if parts.contains(where: settingsDirs.contains) { return true }
-        if zip(parts, parts.dropFirst()).contains(where: { $0 == ".git" && $1 == "hooks" }) { return true }
-        return parts.last.map(shellFiles.contains) ?? false
+        if zip(parts, parts.dropFirst()).contains(where: { settingsPairs.contains([$0, $1]) }) { return true }
+        return parts.last.map(settingsFiles.contains) ?? false
     }
 }
