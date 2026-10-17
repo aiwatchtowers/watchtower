@@ -113,8 +113,9 @@ func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *d
 	deadline time.Time, now func() time.Time, res *Result) (map[string]bool, error) {
 	owned := map[string]bool{} // session uuid → owned by this workbench
 	sessions := map[string]bool{}
+	stop := func() bool { return ctx.Err() != nil || (!deadline.IsZero() && now().After(deadline)) }
 	for _, tf := range files {
-		if ctx.Err() != nil || (!deadline.IsZero() && now().After(deadline)) {
+		if res.Incomplete || stop() {
 			res.Incomplete = true
 			break
 		}
@@ -126,7 +127,7 @@ func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *d
 			continue
 		}
 		sessions[tf.SessionUUID] = true
-		if err := scanFile(d, tf, wb, res); err != nil {
+		if err := scanFile(d, tf, wb, stop, res); err != nil {
 			res.FailedFiles++
 			if res.FirstFailure == nil {
 				res.FirstFailure = err
@@ -215,7 +216,16 @@ func ownsSession(d *db.DB, tf TranscriptFile, owned map[string]bool, folders []s
 	return owned[tf.SessionUUID], nil
 }
 
-func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error {
+// batchRows bounds one write transaction: a transcript is stored in slices of
+// at most this many events plus tool results, each committed with its own
+// offset compare-and-set, so the session hooks (0.5–1 s lock budgets) never
+// wait behind a whole transcript.
+var batchRows = 1000
+
+// scanFile reads tf from its stored offset in slices of batchRows, commits
+// each slice, and stops between slices when stop says the scan is out of
+// time (res.Incomplete; the next scan resumes from the last committed slice).
+func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, stop func() bool, res *Result) error {
 	stored, err := d.GetAgentLogFile(tf.Path)
 	if err != nil {
 		return err
@@ -230,37 +240,51 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error 
 		return nil // vanished between listing and open: the missing sweep catches it
 	}
 	defer fh.Close()
-	var known []string
-	if start > 0 {
-		if known, err = listedSkills(fh, start); err != nil {
-			return fmt.Errorf("reading %s: %w", tf.Path, err)
+	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent, AgentID: tf.AgentID, MaxRows: batchRows}
+	if prefix := start; prefix > 0 {
+		o.PriorSkills = func() ([]string, error) { return listedSkills(io.NewSectionReader(fh, 0, prefix), prefix) }
+	}
+	for first := true; ; first = false {
+		if _, err := fh.Seek(start, io.SeekStart); err != nil {
+			return err
+		}
+		pr, err := ParseClaude(fh, start, o)
+		if err != nil {
+			return err
+		}
+		o.KnownSkills, o.PriorSkills = pr.Skills, nil // the next slice starts where this one ended
+		f := db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
+			ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
+		if pr.More {
+			// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
+			f.Size, f.MTime = f.ReadOffset, ""
+		}
+		b := db.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events, ToolResults: pr.ToolResults,
+			Sessions: ownedSessions(pr.Sessions, tf, wb)}
+		applied, err := d.ApplyAgentLogBatch(b)
+		if err != nil {
+			return fmt.Errorf("storing %s: %w", tf.Path, err)
+		}
+		if first {
+			res.FilesScanned++
+		}
+		for k, v := range pr.Unknown {
+			res.UnknownRecords[k] += v
+		}
+		res.LongLines += pr.LongLines
+		if !applied {
+			return nil // another writer moved the offset: it reads the rest
+		}
+		res.EventsWritten += len(pr.Events)
+		if !pr.More {
+			return nil
+		}
+		start, expect = f.ReadOffset, f.ReadOffset
+		if stop() {
+			res.Incomplete = true
+			return nil
 		}
 	}
-	if _, err := fh.Seek(start, io.SeekStart); err != nil {
-		return err
-	}
-	pr, err := ParseClaude(fh, start, ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent,
-		AgentID: tf.AgentID, KnownSkills: known})
-	if err != nil {
-		return err
-	}
-	b := db.AgentLogBatch{File: db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
-		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}, ExpectOffset: expect,
-		Events: pr.Events, ToolResults: pr.ToolResults}
-	b.Sessions = ownedSessions(pr.Sessions, tf, wb)
-	applied, err := d.ApplyAgentLogBatch(b)
-	if err != nil {
-		return fmt.Errorf("storing %s: %w", tf.Path, err)
-	}
-	res.FilesScanned++
-	if applied {
-		res.EventsWritten += len(pr.Events)
-	}
-	for k, v := range pr.Unknown {
-		res.UnknownRecords[k] += v
-	}
-	res.LongLines += pr.LongLines
-	return nil
 }
 
 // resumePoint decides where to read a transcript from: the stored offset
