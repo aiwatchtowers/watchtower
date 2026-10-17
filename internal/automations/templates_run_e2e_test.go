@@ -37,7 +37,7 @@ func TestTemplates_RunE2E(t *testing.T) {
 	t.Run("new-mail-summary cursor under the address", testRunNewMailLegacyCursor)
 
 	t.Run("jira-state-report", testRunJiraStateReport)
-	t.Run("jira-state-report every project", testRunJiraStateReportAllProjects)
+	t.Run("jira-state-report two projects", testRunJiraStateReportTwoProjects)
 
 	t.Run("team-performance-report", testRunTeamPerformanceReport)
 }
@@ -334,26 +334,39 @@ func testRunJiraStateReport(t *testing.T) {
 	mustContain(t, "briefing input", calls[1].UserMessage, "PAY-5 is blocked.")
 }
 
-// #582: installed with PROJECT=* (no single active project), the report reads
-// every synced project and names none in its titles.
-func testRunJiraStateReportAllProjects(t *testing.T) {
+// opsIssueSeed adds one open OPS issue next to the fixtures' PAY ones.
+const opsIssueSeed = `INSERT INTO jira_issues (account_id, key, id, project_key, board_id, sprint_id, summary, issue_type, status, status_category,
+    created_at, updated_at, synced_at)
+VALUES (1, 'OPS-7', 'o7', 'OPS', 0, 0, 'Rotate the on-call pager', 'Task', 'To Do', 'new',
+    '2026-09-01T09:00:00Z', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`
+
+// #582: installed for two projects, the report reads each project through
+// its own grant and names both in its titles.
+func testRunJiraStateReportTwoProjects(t *testing.T) {
 	gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nAll calm.", "- all calm"}}
 	f := newTplFixture(t, gen)
-	a := f.installTemplate(t, "jira-state-report", map[string]string{"PROJECT": "*"})
+	if _, err := f.d.Exec(opsIssueSeed); err != nil {
+		t.Fatal(err)
+	}
+	a := f.installTemplate(t, "jira-state-report", map[string]string{"PROJECT": "PAY,OPS"})
 	id := f.enqueue(t, a, db.TriggerSchedule)
 	f.step(t, 1)
 	f.wantRun(t, id, db.RunSucceeded, "")
 
+	if got := len(f.toolSteps(t, id, "list_jira_issues")); got != 2 {
+		t.Fatalf("list_jira_issues steps = %d; want one per project", got)
+	}
 	outs := f.outputs(t)
-	if len(outs) != 2 || outs[0].Title != "Jira projects state" || outs[1].Title != "Jira projects this week" {
-		t.Fatalf("outputs = %+v; want the all-projects report and its briefing", outs)
+	if len(outs) != 2 || outs[0].Title != "Jira PAY, OPS state" || outs[1].Title != "Jira PAY, OPS this week" {
+		t.Fatalf("outputs = %+v; want the two-project report and its briefing", outs)
 	}
 	calls := gen.Snapshot()
 	if len(calls) != 2 {
 		t.Fatalf("llm() calls = %+v; want two", calls)
 	}
-	mustContain(t, "report prompt", calls[0].SystemPrompt+calls[0].UserMessage, "the synced Jira projects")
+	mustContain(t, "report prompt", calls[0].SystemPrompt+calls[0].UserMessage, "projects PAY, OPS")
 	mustContain(t, "report input", calls[0].UserMessage, "PAY-5")
+	mustContain(t, "report input", calls[0].UserMessage, "OPS-7")
 }
 
 func testRunTeamPerformanceReport(t *testing.T) {
@@ -490,6 +503,19 @@ SELECT '1:C0REL', (1760500000 + i * 100 + j) || '.000100', '1:U9' || printf('%07
 FROM p, m;
 `
 
+// productionSizeOpsSeed adds a second production-size project: 200 OPS issues
+// shaped like productionSizeSeed's PAY ones.
+const productionSizeOpsSeed = `
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+INSERT INTO jira_issues (account_id, key, id, project_key, board_id, sprint_id, summary, description_text, issue_type, status,
+    status_category, assignee_display_name, priority, created_at, updated_at, synced_at, raw_json, custom_fields_json)
+SELECT 1, 'OPS-' || (100 + i), '3' || i, 'OPS', 2, 0, 'Operations work item ' || i || ' ' || hex(randomblob(40)),
+    hex(randomblob(4096)), 'Task', 'In Progress', 'indeterminate', 'colleague B', 'Medium',
+    '2026-09-01T09:00:00Z', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+    '{"fields":{"blob":"' || hex(randomblob(10240)) || '"}}', '{"customfield_10010":"' || hex(randomblob(10240)) || '"}'
+FROM n;
+`
+
 // TestTemplates_ProductionSizeReports runs jira-state-report and
 // team-performance-report over production-size data through the executor:
 // every tool result passes the 256 KiB cap, every llm() input the 200 KiB
@@ -497,11 +523,15 @@ FROM p, m;
 // reports no usage, so llm() estimates bytes/4).
 func TestTemplates_ProductionSizeReports(t *testing.T) {
 	for _, c := range []struct {
-		name   string
-		params map[string]string
+		name, template string
+		params         map[string]string
+		want           []string
 	}{
-		{"jira-state-report", map[string]string{"PROJECT": "PAY"}},
-		{"team-performance-report", nil},
+		{"jira-state-report", "jira-state-report", map[string]string{"PROJECT": "PAY"}, []string{"PAY-300"}},
+		// #582: two production-size projects still fit one llm() input.
+		{"jira-state-report two projects", "jira-state-report", map[string]string{"PROJECT": "PAY,OPS"},
+			[]string{`"key":"PAY-`, `"key":"OPS-`}},
+		{"team-performance-report", "team-performance-report", nil, []string{"PAY-300"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nA busy week."}}
@@ -509,7 +539,12 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 			if _, err := f.d.Exec(productionSizeSeed); err != nil {
 				t.Fatalf("seeding production-size rows: %v", err)
 			}
-			a := f.installTemplate(t, c.name, c.params)
+			if strings.Contains(c.params["PROJECT"], "OPS") {
+				if _, err := f.d.Exec(productionSizeOpsSeed); err != nil {
+					t.Fatalf("seeding production-size OPS rows: %v", err)
+				}
+			}
+			a := f.installTemplate(t, c.template, c.params)
 			id := f.enqueue(t, a, db.TriggerSchedule)
 			f.step(t, 1)
 			f.wantRun(t, id, db.RunSucceeded, "")
@@ -521,7 +556,9 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 					t.Fatalf("llm() input = %d bytes; want at most %d", n, automations.MaxLLMInputBytes)
 				}
 			}
-			mustContain(t, "report input", gen.Snapshot()[0].UserMessage, "PAY-300")
+			for _, want := range c.want {
+				mustContain(t, "report input", gen.Snapshot()[0].UserMessage, want)
+			}
 		})
 	}
 }

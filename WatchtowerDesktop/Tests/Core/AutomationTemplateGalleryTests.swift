@@ -158,6 +158,17 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         XCTAssertEqual(Gallery.installChoice(workbench, workbenches: [acme, docs]), .pickWorkbench([acme, docs]))
     }
 
+    /// #582: the projects the CLI chose come back in `params`; the edit form
+    /// says what the copy covers.
+    func testInstallKeepsTheCoverage() async throws {
+        runner.answer("install-template",
+                      Self.ok(#"{"automation_id":4,"path":"/x/a.md","params":{"PROJECT":["PAY","OPS"]}}"#))
+        let vm = makeViewModel()
+        await vm.installTemplate(try template("jira-state-report"))
+        XCTAssertEqual(vm.installCoverage[4], "Covers: PAY, OPS")
+        XCTAssertNil(AutomationTemplateGallery.coverageLine([:]))
+    }
+
     func testInstallSelectsAndOpensForm() async throws {
         let id = try await pool.write { db in
             try TestDatabase.insertAutomation(db, slug: "new-mail-summary", approvalHash: "h1", confirmedHash: "")

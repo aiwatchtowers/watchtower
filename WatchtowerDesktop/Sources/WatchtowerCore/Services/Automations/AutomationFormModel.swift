@@ -76,6 +76,7 @@ package final class AutomationFormModel {
 
     package init(detail: AutomationDetail) {
         self.detail = detail
+        currentParseError = detail.parseError
         fields = RecipeFrontmatter(detail: detail)
         buffer = RecipeBufferModel(automationID: detail.id, text: detail.recipeText, contentHash: detail.contentHash)
         formBlock = RecipeFrontmatter.block(in: detail.recipeText).map(String.init)
@@ -117,6 +118,12 @@ package final class AutomationFormModel {
     /// do not describe it and must never be spliced over it (#582). The
     /// owner fixes it in the recipe editor.
     package var recipeUnparsed: Bool { !detail.parseError.isEmpty }
+
+    /// Why the text as it is now does not parse ("" once it does): starts as
+    /// the loaded `parse_error`, re-checked by
+    /// `AutomationEditorCenter.recheckParse` as the owner fixes the recipe.
+    /// The form stays paused either way: its fields never described the file.
+    package var currentParseError: String
 
     /// The form neither writes nor checks its fields: the recipe does not
     /// parse, or its settings were edited in the Monaco pane.

@@ -21,7 +21,7 @@
   {
     "name": "jira-state-report",
     "title": "Jira state report",
-    "description": "Every Monday, a report on your active Jira project (or on every synced project when you have several): in progress, stuck, done and needing a decision, with a short version in your briefing.",
+    "description": "Every Monday, a report on your active Jira projects (synced, with an open issue assigned to you or reported by you): in progress, stuck, done and needing a decision, with a short version in your briefing.",
     "scope": "personal",
     "trigger_text": "Mondays 09:00",
     "files": ["jira-state-report"],

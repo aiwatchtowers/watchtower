@@ -26,6 +26,7 @@ type installJSONOut struct {
 		Path         string `json:"path"`
 		ParseError   string `json:"parse_error"`
 	} `json:"installed"`
+	Params map[string][]string `json:"params"`
 }
 
 func installTemplate(t *testing.T, args ...string) installJSONOut {
@@ -49,30 +50,28 @@ func templateWorkbench(t *testing.T, c *autoCLI) (int64, string) {
 
 func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
 	// #582: without --param (the Desktop gallery) <PROJECT> is chosen from
-	// the owner's data; with no active project it is "*", and the copy parses.
+	// the owner's data; with no active project the install is refused and
+	// writes nothing.
 	c := newAutoCLI(t)
-	got := installTemplate(t, "jira-state-report")
-	require.Len(t, got.Installed, 1)
-	assert.Empty(t, got.Installed[0].ParseError)
-	a, err := c.d.GetAutomation(got.AutomationID)
-	require.NoError(t, err)
-	assert.False(t, a.Runnable(), "installed unconfirmed")
-	text, err := os.ReadFile(got.Path)
-	require.NoError(t, err)
-	assert.NotContains(t, string(text), "<PROJECT>")
-	assert.Contains(t, string(text), "jira:read@*")
-	assert.Contains(t, string(text), `const project = "*";`)
+	out, err := runAutomations(t, "install-template", "jira-state-report", "--json")
+	require.Error(t, err, out)
+	assert.Contains(t, err.Error(), "assignee or reporter")
+	assert.NoFileExists(t, filepath.Join(c.personal, "jira-state-report.md"))
 
 	c2 := newAutoCLI(t)
-	got = installTemplate(t, "jira-state-report", "--param", "PROJECT=PAY")
+	got := installTemplate(t, "jira-state-report", "--param", "PROJECT=PAY,OPS")
 	require.Len(t, got.Installed, 1)
 	assert.Empty(t, got.Installed[0].ParseError)
-	a, err = c2.d.GetAutomation(got.AutomationID)
+	assert.Equal(t, map[string][]string{"PROJECT": {"PAY", "OPS"}}, got.Params)
+	a, err := c2.d.GetAutomation(got.AutomationID)
 	require.NoError(t, err)
+	assert.False(t, a.Runnable(), "installed unconfirmed")
 	assert.Contains(t, a.PermissionsJSON, "jira:read@PAY")
+	assert.Contains(t, a.PermissionsJSON, "jira:read@OPS")
 
 	c3 := newAutoCLI(t)
-	for _, param := range []string{"PROJECT=a b", "X=1", "PROJECT", "PROJECT=PAY:", `PROJECT=PAY\`, "PROJECT=PA*"} {
+	for _, param := range []string{"PROJECT=a b", "X=1", "PROJECT", "PROJECT=PAY:", `PROJECT=PAY\`, "PROJECT=PA*", "PROJECT=*",
+		"PROJECT=PAY,"} {
 		out, err := runAutomations(t, "install-template", "jira-state-report", "--param", param)
 		require.Error(t, err, "--param %s: %s", param, out)
 	}
@@ -82,8 +81,8 @@ func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
 	assert.Empty(t, rows)
 }
 
-// #582: the owner's one active Jira project becomes <PROJECT>; a second one
-// makes the install report across every synced project ("*").
+// #582: the owner's active Jira projects become <PROJECT>: one grant and one
+// script entry per project, reported in --json params.
 func TestInstallTemplate_JiraProjectFromOwnerData(t *testing.T) {
 	c := newAutoCLI(t)
 	acct := db.SeedTestJiraAccount(t, c.d)
@@ -99,18 +98,22 @@ func TestInstallTemplate_JiraProjectFromOwnerData(t *testing.T) {
 	open("PAY-1", "PAY")
 	got := installTemplate(t, "jira-state-report")
 	require.Empty(t, got.Installed[0].ParseError)
+	assert.Equal(t, map[string][]string{"PROJECT": {"PAY"}}, got.Params)
 	a, err := c.d.GetAutomation(got.AutomationID)
 	require.NoError(t, err)
 	assert.Contains(t, a.PermissionsJSON, "jira:read@PAY")
+	assert.NotContains(t, a.PermissionsJSON, "OPS")
 
 	require.NoError(t, os.Remove(got.Path))
 	require.NoError(t, c.d.DeleteAutomation(got.AutomationID))
 	open("OPS-1", "OPS")
 	got = installTemplate(t, "jira-state-report")
 	require.Empty(t, got.Installed[0].ParseError)
-	a, err = c.d.GetAutomation(got.AutomationID)
+	assert.Equal(t, map[string][]string{"PROJECT": {"OPS", "PAY"}}, got.Params)
+	text, err := os.ReadFile(got.Path)
 	require.NoError(t, err)
-	assert.Contains(t, a.PermissionsJSON, "jira:read@*")
+	assert.Contains(t, string(text), "  - jira:read@OPS\n  - jira:read@PAY\n")
+	assert.Contains(t, string(text), `const projects = ["OPS", "PAY"];`)
 }
 
 func TestInstallTemplate_FailedWriteRollsBack(t *testing.T) {

@@ -74,6 +74,13 @@ package enum AutomationTemplateGallery {
         case needsWorkbench
     }
 
+    /// "Covers: PAY, OPS" from `install-template --json` `params`, values in
+    /// install order, keys sorted; nil when the template had no param.
+    package static func coverageLine(_ params: [String: [String]]) -> String? {
+        let values = params.keys.sorted().flatMap { params[$0] ?? [] }
+        return values.isEmpty ? nil : "Covers: " + values.joined(separator: ", ")
+    }
+
     package static func installChoice(_ template: AutomationTemplate, workbenches: [Workbench]) -> InstallChoice {
         guard template.scope == "workbench" else { return .install(workbenchID: nil) }
         switch workbenches.count {

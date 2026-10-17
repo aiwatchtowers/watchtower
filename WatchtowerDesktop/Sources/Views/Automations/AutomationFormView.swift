@@ -155,6 +155,13 @@ private struct AutomationFormContent: View {
         }
         .frame(width: 760, height: 820)
         .onAppear(perform: syncSchedule)
+        .task(id: form.recipeUnparsed ? form.buffer.text : "") {
+            // A paused, unreadable recipe: re-check it once typing pauses.
+            guard form.recipeUnparsed else { return }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            await editor.recheckParse(id)
+        }
         .onChange(of: schedule) { old, new in
             // Only the owner's picks write: the picker reading the recipe's
             // cron (on appear) must not rewrite it.
@@ -188,19 +195,16 @@ private struct AutomationFormContent: View {
     }
 
     @ViewBuilder private func notes(_ proxy: ScrollViewProxy) -> some View {
+        if let coverage = vm.installCoverage[id] {
+            Label(coverage, systemImage: "checklist")
+                .foregroundStyle(.secondary)
+        }
         if form.recipeUnparsed {
             // #582: the fields are column defaults, not the file's settings;
             // the form stays off so it never writes them over the recipe.
-            VStack(alignment: .leading, spacing: 6) {
-                Label("The recipe can't be read, so the form is off: \(form.detail.parseError)",
-                      systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-                Button("Open in editor") {
-                    withAnimation { proxy.scrollTo(Self.recipeEditorID, anchor: .top) }
-                }
-            }
-        } else if form.lostFormEdit {
+            unparsedNote(proxy)
+        }
+        if form.lostFormEdit {
             Label("Your last change in the form did not land: the recipe below was edited at the same moment. The "
                 + "form is paused; save, or discard to use the form again.", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
@@ -208,6 +212,26 @@ private struct AutomationFormContent: View {
             Label("The settings were changed in the recipe below, so the form is paused. Save, or discard to use "
                 + "the form again.", systemImage: "info.circle")
                 .foregroundStyle(.orange)
+        }
+    }
+
+    /// The loaded recipe does not parse: its error as re-checked now, or that
+    /// the fixed text reads (the form stays off until it is saved).
+    @ViewBuilder private func unparsedNote(_ proxy: ScrollViewProxy) -> some View {
+        if form.currentParseError.isEmpty {
+            Label("The recipe reads now. Save it; the form's controls stay off until then.",
+                  systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("The recipe can't be read, so the form is off: \(form.currentParseError)",
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                Button("Open in editor") {
+                    withAnimation { proxy.scrollTo(Self.recipeEditorID, anchor: .top) }
+                }
+            }
         }
     }
 

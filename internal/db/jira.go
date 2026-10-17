@@ -660,20 +660,20 @@ func (db *DB) OldestFailingJiraProjectSync(accountID int64) (string, error) {
 }
 
 // OwnerActiveJiraProjects returns, sorted and distinct, the keys of the
-// synced Jira projects (a full-sync watermark or a selected board) holding an
-// open (not done, not deleted) issue the Atlassian account ownerAccountID is
-// assigned to or reported. An empty ownerAccountID matches nothing.
-func (db *DB) OwnerActiveJiraProjects(ownerAccountID string) ([]string, error) {
-	if ownerAccountID == "" {
-		return nil, nil
-	}
+// synced Jira projects (a full-sync watermark or a selected board) of every
+// enabled, not removed Jira account holding an open (not done, not deleted)
+// issue that account's own connecting person (owner_account_id) is assigned
+// to or reported.
+func (db *DB) OwnerActiveJiraProjects() ([]string, error) {
 	rows, err := db.Query(`SELECT DISTINCT i.project_key FROM jira_issues i
-		WHERE i.is_deleted = 0 AND i.status_category != 'done' AND i.project_key != ''
-		  AND (i.assignee_account_id = ? OR i.reporter_account_id = ?)
+		JOIN jira_accounts a ON a.id = i.account_id
+		WHERE a.enabled = 1 AND a.status != 'removed' AND a.owner_account_id != ''
+		  AND i.is_deleted = 0 AND i.status_category != 'done' AND i.project_key != ''
+		  AND (i.assignee_account_id = a.owner_account_id OR i.reporter_account_id = a.owner_account_id)
 		  AND (EXISTS (SELECT 1 FROM jira_sync_state s WHERE s.account_id = i.account_id AND s.project_key = i.project_key)
 		    OR EXISTS (SELECT 1 FROM jira_boards b
 		      WHERE b.account_id = i.account_id AND b.project_key = i.project_key AND b.is_selected = 1))
-		ORDER BY i.project_key`, ownerAccountID, ownerAccountID)
+		ORDER BY i.project_key`)
 	if err != nil {
 		return nil, fmt.Errorf("querying the owner's active jira projects: %w", err)
 	}

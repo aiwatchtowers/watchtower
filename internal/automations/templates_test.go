@@ -207,6 +207,28 @@ func triggersEqual(a, b automations.Trigger) bool {
 	return a.Event == nil || a.Event.Type == b.Event.Type && len(a.Event.Where) == 0 && len(b.Event.Where) == 0
 }
 
+// #582: a list value repeats the permission line per project and fills the
+// script's array; the copy parses with one grant per project.
+func TestRenderTemplate_ListParam(t *testing.T) {
+	files, err := automations.RenderTemplate("jira-state-report", map[string]string{"PROJECT": "PAY,OPS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(files["jira-state-report"])
+	for _, want := range []string{"  - jira:read@PAY\n  - jira:read@OPS\n", `const projects = ["PAY", "OPS"];`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("rendered copy lacks %q:\n%s", want, text)
+		}
+	}
+	r, err := automations.ParseRecipe("jira-state-report", files["jira-state-report"], automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Permissions; !slices.Equal(got, []string{"jira:read@PAY", "jira:read@OPS", "llm:strong"}) {
+		t.Errorf("permissions = %v", got)
+	}
+}
+
 func TestRenderTemplate_Params(t *testing.T) {
 	files, err := automations.RenderTemplate("jira-state-report", map[string]string{"PROJECT": "PAY"})
 	if err != nil {
@@ -229,6 +251,8 @@ func TestRenderTemplate_Params(t *testing.T) {
 		{"quote", map[string]string{"PROJECT": `A"`}, "PROJECT"},
 		{"at", map[string]string{"PROJECT": "A@B"}, "PROJECT"},
 		{"angle", map[string]string{"PROJECT": "<A>"}, "PROJECT"},
+		{"star", map[string]string{"PROJECT": "*"}, "PROJECT"},
+		{"empty list item", map[string]string{"PROJECT": "PAY,,OPS"}, "PROJECT"},
 	}
 	for _, tc := range refused {
 		name := "jira-state-report"

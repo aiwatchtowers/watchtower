@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -64,7 +65,7 @@ func runAutomationsTemplates(cmd *cobra.Command, _ []string) error {
 		for _, p := range t.Params {
 			optional := ""
 			if p.HasDefault() {
-				optional = " (optional: chosen from your data when left out)"
+				optional = " (optional: chosen from your data when left out; several values separated by commas)"
 			}
 			fmt.Fprintf(w, "  --param %s=…  %s, e.g. %s%s\n", p.Key, p.Label, p.Example, optional)
 		}
@@ -77,12 +78,14 @@ func runAutomationsTemplates(cmd *cobra.Command, _ []string) error {
 
 // installJSON is `install-template --json`: automation_id and path are the
 // first installed recipe (the one P3's form opens), installed every file,
-// notes the template's notes ([] when none).
+// notes the template's notes ([] when none), params each param's values as
+// installed, given or chosen (#582; {} when none).
 type installJSON struct {
 	AutomationID int64                 `json:"automation_id"`
 	Path         string                `json:"path"`
 	Installed    []installedRecipeJSON `json:"installed"`
 	Notes        []string              `json:"notes"`
+	Params       map[string][]string   `json:"params"`
 }
 
 type installedRecipeJSON struct {
@@ -131,6 +134,10 @@ func runAutomationsInstallTemplate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	out.Notes = tpl.Notes
+	out.Params = make(map[string][]string, len(params))
+	for key, value := range params {
+		out.Params[key] = automations.TemplateParamValues(value)
+	}
 	return printInstalledTemplate(cmd.OutOrStdout(), out)
 }
 
@@ -166,6 +173,10 @@ func printInstalledTemplate(w io.Writer, out installJSON) error {
 		if r.ParseError != "" {
 			fmt.Fprintf(w, "  fix before confirming: %s\n", r.ParseError)
 		}
+	}
+	keys := slices.Sorted(maps.Keys(out.Params))
+	for _, key := range keys {
+		fmt.Fprintf(w, "%s: %s\n", key, strings.Join(out.Params[key], ", "))
 	}
 	for _, n := range out.Notes {
 		fmt.Fprintf(w, "Note: %s\n", n)

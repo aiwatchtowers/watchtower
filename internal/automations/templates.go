@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -118,16 +119,16 @@ func templateByName(name string) (Template, bool) {
 	return all[i], true
 }
 
-// templateParamValue is what a --param value may hold: it lands in YAML and
-// in JS strings, so anything else could break a copy. A lone `*` is the
-// "every one" scope (jira:read@*), which a template's script reads as such.
-var templateParamValue = regexp.MustCompile(`^(\*|[A-Za-z0-9_.-]+)$`)
+// templateParamValue is what one --param value may hold: it lands in YAML and
+// in JS strings, so anything else could break a copy. A param's value is a
+// comma-separated list of such values (templateParamValues).
+var templateParamValue = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 // templateParamDefaults resolve a param the owner left out at install, so a
 // one-click install (the Desktop gallery passes no --param) gives a copy
 // that parses (#582).
 var templateParamDefaults = map[string]func(*db.DB) (string, error){
-	"PROJECT": ownerJiraProject,
+	"PROJECT": ownerJiraProjects,
 }
 
 // HasDefault reports whether install-template fills the param by itself
@@ -137,23 +138,28 @@ func (p TemplateParam) HasDefault() bool {
 	return ok
 }
 
-// ownerJiraProject is <PROJECT>'s default: the owner's one active Jira
-// project (db.OwnerActiveJiraProjects), else "*" — a report across every
-// synced project, which the owner narrows later in the editor.
-func ownerJiraProject(d *db.DB) (string, error) {
-	owner, err := d.ResolveOwner()
+// ErrNoActiveJiraProject is <PROJECT>'s default finding nothing: the install
+// is refused rather than writing a report on no project.
+var ErrNoActiveJiraProject = errors.New("needs a Jira project where you are assignee or reporter of an open issue; " +
+	"connect Jira and sync it, or pass --param PROJECT=<KEY>")
+
+// ownerJiraProjects is <PROJECT>'s default: every active Jira project of the
+// owner (db.OwnerActiveJiraProjects), comma-separated; none is
+// ErrNoActiveJiraProject. A key outside the value allowlist is left out.
+func ownerJiraProjects(d *db.DB) (string, error) {
+	keys, err := d.OwnerActiveJiraProjects()
 	if err != nil {
 		return "", err
 	}
-	keys, err := d.OwnerActiveJiraProjects(owner.JiraAccountID)
-	if err != nil {
-		return "", err
+	keys = slices.DeleteFunc(keys, func(k string) bool { return !templateParamValue.MatchString(k) })
+	if len(keys) == 0 {
+		return "", ErrNoActiveJiraProject
 	}
-	if len(keys) == 1 && templateParamValue.MatchString(keys[0]) {
-		return keys[0], nil
-	}
-	return "*", nil
+	return strings.Join(keys, ","), nil
 }
+
+// TemplateParamValues splits a param value into its comma-separated values.
+func TemplateParamValues(value string) []string { return strings.Split(value, ",") }
 
 // FillTemplateParams returns params plus a default for every declared param
 // of template name that params leaves out and that has one
@@ -183,11 +189,14 @@ func FillTemplateParams(d *db.DB, name string, params map[string]string) (map[st
 }
 
 // RenderTemplate returns the recipe files of template name (slug → bytes)
-// with each given param's "<KEY>" placeholder replaced. A param the template
-// does not declare, or a value outside letters, digits, `_`, `.` and `-`
-// (or a lone `*`), is an error naming it; a declared param left out keeps its
-// placeholder, so the copy does not parse — install-template fills the
-// params that have a default first (FillTemplateParams).
+// with each given param filled. A param's value is a comma-separated list
+// (PROJECT=PAY,OPS): every line holding "<KEY>" is repeated once per value
+// with it in place (one value: a plain replace), and "<KEY[]>" becomes the
+// values as a JSON array. A param the template does not declare, or a value
+// outside letters, digits, `_`, `.` and `-`, is an error naming it; a
+// declared param left out keeps its placeholder, so the copy does not parse —
+// install-template fills the params that have a default first
+// (FillTemplateParams).
 func RenderTemplate(name string, params map[string]string) (map[string][]byte, error) {
 	t, ok := templateByName(name)
 	if !ok {
@@ -197,8 +206,11 @@ func RenderTemplate(name string, params map[string]string) (map[string][]byte, e
 		if !slices.ContainsFunc(t.Params, func(p TemplateParam) bool { return p.Key == key }) {
 			return nil, fmt.Errorf("template %s has no param %s", name, key)
 		}
-		if !templateParamValue.MatchString(value) {
-			return nil, fmt.Errorf("param %s: %q is not a valid value (allowed: letters, digits, _ . and -, or * alone)", key, value)
+		for _, v := range TemplateParamValues(value) {
+			if !templateParamValue.MatchString(v) {
+				return nil, fmt.Errorf("param %s: %q is not a valid value (allowed: letters, digits, _ . and -; "+
+					"several values separated by commas)", key, value)
+			}
 		}
 	}
 	out := make(map[string][]byte, len(t.Files))
@@ -208,9 +220,31 @@ func RenderTemplate(name string, params map[string]string) (map[string][]byte, e
 			return nil, fmt.Errorf("template %s: %w", name, err)
 		}
 		for key, value := range params {
-			data = bytes.ReplaceAll(data, []byte("<"+key+">"), []byte(value))
+			data = fillTemplateParam(data, key, TemplateParamValues(value))
 		}
 		out[slug] = data
 	}
 	return out, nil
+}
+
+// fillTemplateParam fills one param's placeholders (see RenderTemplate).
+func fillTemplateParam(data []byte, key string, values []string) []byte {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = `"` + v + `"` // the allowlist needs no escaping
+	}
+	data = bytes.ReplaceAll(data, []byte("<"+key+"[]>"), []byte("["+strings.Join(quoted, ", ")+"]"))
+	placeholder := []byte("<" + key + ">")
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	var out bytes.Buffer
+	for _, line := range lines {
+		if !bytes.Contains(line, placeholder) {
+			out.Write(line)
+			continue
+		}
+		for _, v := range values {
+			out.Write(bytes.ReplaceAll(line, placeholder, []byte(v)))
+		}
+	}
+	return out.Bytes()
 }
