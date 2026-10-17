@@ -205,3 +205,4 @@ the session shows Working.
 - One hook process per open prompt sleeps in a 1 s read loop. A workbench
   has a handful of live sessions, so this is cheap; the plan measures it
   with `db lockstats` (reads are untimed, only the two writes count).
+- Probe result (Claude Code 2.1.302, 2026-10-17): a `PermissionRequest` hook with `"timeout": 86400` ran 700 s unanswered, outlived the 600 s default, and its allow decision applied; 86400 held, no cap found below 700 s.
