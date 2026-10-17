@@ -102,7 +102,6 @@ func TestGetTaskContext_ConfluenceCapAndStaleLink(t *testing.T) {
 // A long page is excerpted around the key.
 func TestConfluenceSnippet(t *testing.T) {
 	var long strings.Builder
-	long.WriteString(string(make([]rune, 0)))
 	for range 50 {
 		long.WriteString("filler words here. ")
 	}

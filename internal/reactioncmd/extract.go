@@ -11,11 +11,11 @@ package reactioncmd
 
 import (
 	"slices"
-	watchtowerslack "watchtower/internal/slack"
 
 	"github.com/slack-go/slack"
 
 	"watchtower/internal/db"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // candidate is one owner reaction that matched the dictionary, carrying the

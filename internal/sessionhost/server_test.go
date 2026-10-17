@@ -567,7 +567,7 @@ func TestServer_HostedChildKeepsDefaultSighup(t *testing.T) {
 		if ft != Output {
 			t.Fatalf("got frame %#x", ft)
 		}
-		out.WriteString(string(p))
+		out.Write(p)
 	}
 	if strings.Contains(out.String(), "survived") {
 		t.Fatalf("child survived SIGHUP: %q", out.String())

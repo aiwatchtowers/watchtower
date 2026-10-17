@@ -47,8 +47,6 @@ func (f *fixture) sub(agentID string, at time.Duration) {
 	f.add(db.AgentReportEvent{Kind: "api_call", Name: "claude-opus-5-5", AgentID: agentID}, at)
 }
 
-func d(v time.Duration) *time.Duration { return new(v) }
-
 func sum(ts TimeSplit) int64 {
 	t := ts.Tools
 	return ts.ModelMS + t.BuildTest + t.Git + t.ReadSearch + t.Edit + t.MCP + t.SubagentsFG + t.Other +
@@ -242,7 +240,7 @@ func TestTimeModel_TiesAndOrder(t *testing.T) {
 	var f fixture
 	f.owner(0)
 	f.add(db.AgentReportEvent{Kind: "api_call", SrcPath: "/tmp/x/b.jsonl"}, 10*sec)
-	tool := f.tool(10*sec, "Bash", "ls", d(time.Second))
+	tool := f.tool(10*sec, "Bash", "ls", new(time.Second))
 	tool.SrcPath = "/tmp/x/a.jsonl"
 	tool.TS = "2026-10-01T10:00:10Z" // a stored ts without milliseconds
 	f.api(10*sec + 500*time.Millisecond)
@@ -265,7 +263,7 @@ func TestSubagents_Parallelism(t *testing.T) {
 	f.owner(0)
 	fg := f.tool(0, "Agent", "Explore", new(10*mn))
 	fg.SpawnedAgentID = "a1"
-	bg := f.tool(0, "Task", "general-purpose", d(time.Second))
+	bg := f.tool(0, "Task", "general-purpose", new(time.Second))
 	bg.SpawnedAgentID, bg.Background = "a2", true
 	f.api(10 * mn)
 	f.sub("a1", 0)

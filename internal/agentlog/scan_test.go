@@ -176,7 +176,7 @@ func TestScan_ConcurrentWritersCountOnce(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Go(func() { ; _, _ = Scan(context.Background(), f.d, f.wb, Options{ClaudeDir: f.claude}) })
+		wg.Go(func() { _, _ = Scan(context.Background(), f.d, f.wb, Options{ClaudeDir: f.claude}) })
 	}
 	wg.Wait()
 	calls, out := f.totals()
