@@ -196,6 +196,58 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(try launch.decoded(SessionHostLaunchRequest.self).row, s.id)
     }
 
+    /// Closed before the host reported the pid: the center drops the
+    /// session, yet the run keeps it alive — it hangs the group up once the
+    /// pid arrives and forgets the exit in the host.
+    func testClosingBeforeLaunchedHangsUpAndForgets() async throws {
+        var transports: [FakeSessionHostTransport] = []
+        var hostSignals: [(pid_t, Int32)] = []
+        let client = SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in
+            let transport = FakeSessionHostTransport()
+            transports.append(transport)
+            return transport
+        })
+        client.signalGroup = { hostSignals.append(($0, $1)) }
+        let running = await client.ensureRunning()
+        XCTAssertTrue(running)
+        let center = TerminalCenter(makeLocalProcess: { FakeTerminalSession() }, signaller: Self.inertSignaller)
+        center.shell = { "/bin/zsh" }
+        center.sessionHost = client
+        let s = try row(kind: .shell)
+        center.start(s, fresh: true)
+        weak let hosted = center.process(for: s.id) as? HostedTerminalSession
+        await hosted?.connecting?.value
+        await center.close(sessionID: s.id)
+        XCTAssertNil(center.process(for: s.id))
+        XCTAssertNotNil(hosted, "a live run keeps its session")
+
+        let transport = try XCTUnwrap(transports.last)
+        let request = try XCTUnwrap(transport.sent(.launch).first).decoded(SessionHostLaunchRequest.self)
+        transport.push(.json(.launched, SessionHostSessionInfo(
+            row: request.row, run: request.run, pid: 4321, startedAtMs: 1, exited: false, code: nil
+        )))
+        XCTAssertEqual(hostSignals.map(\.0), [4321])
+        XCTAssertEqual(hostSignals.map(\.1), [SIGHUP])
+        transport.push(.json(.exit, SessionHostExit(code: nil)))
+        for _ in 0..<200 where transports[0].sent(.forget).isEmpty { await Task.yield() }
+        XCTAssertEqual(try transports[0].sent(.forget).first?.decoded(SessionHostAttachRequest.self),
+                       SessionHostAttachRequest(row: request.row, run: request.run))
+        XCTAssertNil(hosted, "the ended run lets its session go")
+    }
+
+    func testConnectSessionHostMakesOneClient() async {
+        let center = TerminalCenter(makeLocalProcess: { FakeTerminalSession() }, signaller: Self.inertSignaller)
+        var made = 0
+        let make = {
+            made += 1
+            return SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in FakeSessionHostTransport() })
+        }
+        await center.connectSessionHost(make)
+        await center.connectSessionHost(make)
+        XCTAssertEqual(made, 1)
+        XCTAssertNotNil(center.sessionHost)
+    }
+
     func testNonFreshStartResumesTheStoredSession() throws {
         let center = makeCenter()
         let s = try row()

@@ -49,12 +49,14 @@ final class HostedTerminalSessionTests: XCTestCase {
     /// Failures for the next opens, in order.
     private var openErrors: [(any Error)?] = []
     private var spawned: [(String, String)] = []
+    private var signals: [(pid_t, Int32)] = []
 
     override func setUp() {
         super.setUp()
         transports = []
         openErrors = []
         spawned = []
+        signals = []
     }
 
     private func makeClient(cli: String? = "/opt/watchtower") -> SessionHostClient {
@@ -66,6 +68,7 @@ final class HostedTerminalSessionTests: XCTestCase {
         })
         client.spawnHost = { [weak self] cli, socket in self?.spawned.append((cli, socket)) }
         client.sleep = { _ in }
+        client.signalGroup = { [weak self] pid, sig in self?.signals.append((pid, sig)) }
         return client
     }
 
@@ -198,16 +201,115 @@ final class HostedTerminalSessionTests: XCTestCase {
         XCTAssertEqual(exits, [nil])
     }
 
+    func testAConnectionLostBeforeLaunchedReportsNilExit() async throws {
+        let (session, transport) = try await startedSession()
+        var exits: [Int32?] = []
+        session.onExit = { exits.append($0) }
+        transport.hangUp()
+        transport.hangUp()
+        XCTAssertEqual(exits, [nil])
+        XCTAssertNil(session.recovering, "an unbound run is not looked up")
+        XCTAssertTrue(transports[0].sent(.list).isEmpty)
+    }
+
+    /// The host no longer lists the run: it is gone, nothing to forget.
     func testTransportCloseReportsNilExit() async throws {
         let (session, transport) = try await startedSession()
         var exits: [Int32?] = []
         session.onExit = { exits.append($0) }
         try launched(transport, session: session)
         transport.hangUp()
-        transport.hangUp()
+        await session.recovering?.value
         XCTAssertEqual(exits, [nil])
-        await waitUntil { false }
+        XCTAssertEqual(transports[0].sent(.list).count, 1)
         XCTAssertTrue(transports[0].sent(.forget).isEmpty, "a lost connection forgets nothing")
+    }
+
+    /// A dropped connection (a slow reader, a takeover) of a run still
+    /// going reattaches it on a fresh connection; nothing is reported.
+    func testADroppedRunStillRunningIsReattached() async throws {
+        let (session, transport) = try await startedSession()
+        var exits: [Int32?] = []
+        session.onExit = { exits.append($0) }
+        try launched(transport, session: session)
+        let key = try XCTUnwrap(session.key)
+        let info = SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil)
+        transports[0].listed = [info]
+        transport.hangUp()
+        await session.recovering?.value
+        await session.connecting?.value
+        XCTAssertTrue(exits.isEmpty)
+        let fresh = try XCTUnwrap(transports.last)
+        XCTAssertFalse(fresh === transport)
+        XCTAssertEqual(fresh.sent.map(\.type), [.hello, .attach])
+        XCTAssertEqual(try fresh.sent[1].decoded(SessionHostAttachRequest.self), key)
+        fresh.push(.json(.attached, info))
+        fresh.push(SessionHostFrame(type: .output, payload: Array("y".utf8)))
+        XCTAssertEqual(try terminalView(session).getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "y")
+
+        // Attached restored the retry: the next drop is looked up again.
+        fresh.hangUp()
+        await session.recovering?.value
+        await session.connecting?.value
+        XCTAssertEqual(transports[0].sent(.list).count, 2)
+        XCTAssertTrue(exits.isEmpty)
+    }
+
+    /// A second drop before the reattach was answered is the run's end.
+    func testASecondDropOfOneBindingReportsNilExit() async throws {
+        let (session, transport) = try await startedSession()
+        var exits: [Int32?] = []
+        session.onExit = { exits.append($0) }
+        try launched(transport, session: session)
+        let key = try XCTUnwrap(session.key)
+        transports[0].listed = [SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil)]
+        transport.hangUp()
+        await session.recovering?.value
+        await session.connecting?.value
+        let fresh = try XCTUnwrap(transports.last)
+        fresh.hangUp()
+        XCTAssertEqual(exits, [nil])
+        XCTAssertEqual(transports[0].sent(.list).count, 1)
+    }
+
+    func testADroppedRunThatExitedReportsItsCodeAndForgets() async throws {
+        let (session, transport) = try await startedSession()
+        var exits: [Int32?] = []
+        session.onExit = { exits.append($0) }
+        try launched(transport, session: session)
+        let key = try XCTUnwrap(session.key)
+        transports[0].listed = [SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: true, code: 2)]
+        transport.hangUp()
+        await session.recovering?.value
+        XCTAssertEqual(exits, [2])
+        let control = transports[0]
+        await waitUntil { !control.sent(.forget).isEmpty }
+        XCTAssertEqual(try control.sent(.forget).first?.decoded(SessionHostAttachRequest.self), key)
+    }
+
+    /// The replay re-runs a device-attributes query: its answer must not
+    /// reach the program; once the replay is in, the terminal answers again.
+    func testTerminalRepliesDuringTheReplayAreDropped() async throws {
+        let client = await connectedClient()
+        let session = HostedTerminalSession(client: client)
+        var release: (() -> Void)?
+        session.sleep = { _ in await withCheckedContinuation { release = $0.resume } }
+        let info = SessionHostSessionInfo(row: 4, run: "run-a", pid: 777, startedAtMs: 1, exited: false, code: nil)
+        session.attach(info)
+        await session.connecting?.value
+        let transport = try XCTUnwrap(transports.last)
+        transport.push(.json(.attached, info))
+        transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[c".utf8)))
+        XCTAssertTrue(transport.sent(.input).isEmpty, "a replayed query is not answered")
+        session.sendInput([0x61])
+        XCTAssertEqual(transport.sent(.input).map(\.payload), [[0x61]], "the app's own input still goes")
+
+        await waitUntil { release != nil }
+        release?()
+        let view = try terminalView(session)
+        await waitUntil { !view.dropsTerminalReplies }
+        transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[c".utf8)))
+        XCTAssertEqual(transport.sent(.input).count, 2, "a live query is answered")
     }
 
     func testALaunchRefusedByTheHostEndsTheRun() async throws {
@@ -282,8 +384,6 @@ final class HostedTerminalSessionTests: XCTestCase {
     /// group up, so the session does once the pid arrives.
     func testDetachBeforeLaunchedHangsUpOnceThePidArrives() async throws {
         let (session, transport) = try await startedSession()
-        var signals: [(pid_t, Int32)] = []
-        session.signalGroup = { signals.append(($0, $1)) }
         session.detach()
         try launched(transport, session: session, pid: 4321)
         XCTAssertEqual(signals.map(\.0), [4321])

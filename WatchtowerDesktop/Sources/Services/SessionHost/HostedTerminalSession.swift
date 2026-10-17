@@ -9,7 +9,10 @@ import WatchtowerCore
 /// paste, links, owner input and focus behave as before — but its input and
 /// size go to the host, and the host's output is fed into it. One host
 /// connection per process run; a relaunch (`start` after an exit) opens a
-/// new one with a new run token.
+/// new one with a new run token. A run keeps its session alive until it
+/// ends (`keepAlive`): `TerminalCenter.close` drops the session before the
+/// host reports the exit, and that exit must still be forgotten in the
+/// host (or a hang-up still sent, `hangUpOnBind`).
 @MainActor
 final class HostedTerminalSession: TerminalSessionProcess {
     private static let logger = Logger(subsystem: Constants.bundleID, category: "SessionHost")
@@ -29,10 +32,22 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// `detach` came before the host reported the run's pid, so the app
     /// could not hang it up: it is hung up once the pid arrives.
     private var hangUpOnBind = false
+    /// Holds this session while a run is live; released when it ends or
+    /// the app lets go of it (`detachFromHost`).
+    private var keepAlive: HostedTerminalSession?
+    /// Reattaches left after a bound connection drops while the run may
+    /// still be going; one per binding.
+    private var reattachesLeft = 1
     /// The connect of the current run (tests await it).
     private(set) var connecting: Task<Void, Never>?
-    /// Signals a process group (`killpg`). A seam for tests.
-    var signalGroup: (pid_t, Int32) -> Void = { _ = killpg($0, $1) }
+    /// The look-up after a dropped connection (tests await it).
+    private(set) var recovering: Task<Void, Never>?
+    /// After Attached, how long the terminal's own replies stay unsent: the
+    /// replay re-runs old queries (device attributes, cursor reports) whose
+    /// answers would reach the program as stray input.
+    static let replayQuietPeriod: Duration = .milliseconds(250)
+    /// A seam for tests.
+    var sleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     private(set) var pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
@@ -69,6 +84,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         }
         let key = SessionHostAttachRequest(row: row, run: UUID().uuidString.lowercased())
         pid = 0
+        terminal.dropsTerminalReplies = false
         connect(key) { [terminal] in
             .json(.launch, SessionHostLaunchRequest(
                 row: key.row, run: key.run, executable: launch.executable, args: launch.args,
@@ -80,19 +96,23 @@ final class HostedTerminalSession: TerminalSessionProcess {
 
     /// Attaches to a run the host already holds: the view is reset, the
     /// host replays the run's recent output, then streams it live; the
-    /// pane's size goes to the host once it answers.
+    /// pane's size goes to the host once it answers. The terminal's own
+    /// replies are dropped until `replayQuietPeriod` after Attached.
     func attach(_ info: SessionHostSessionInfo) {
         terminal.getTerminal().resetToInitialState()
+        terminal.dropsTerminalReplies = true
         pid = pid_t(info.pid)
         let key = SessionHostAttachRequest(row: info.row, run: info.run)
         connect(key) { .json(.attach, key) }
     }
 
     /// Drops the view from its host. A run still going keeps its connection
-    /// so its exit is still forgotten in the host.
+    /// so its exit is still forgotten in the host; one whose pid the host
+    /// has not reported yet (so `TerminalCenter.close` could not signal it)
+    /// is hung up once it does.
     func detach() {
         terminal.removeFromSuperview()
-        if !exited, !bound { hangUpOnBind = true }
+        if !exited, pid == 0 { hangUpOnBind = true }
     }
 
     /// Lets go of the run without stopping it (an update's quit): the
@@ -102,6 +122,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         onExit = nil
         exited = true
         closeTransport()
+        keepAlive = nil
     }
 
     func sendInput(_ bytes: [UInt8]) {
@@ -123,6 +144,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         self.key = key
         exited = false
         hangUpOnBind = false
+        keepAlive = self
         let transport = client.makeSessionTransport()
         self.transport = transport
         connecting = Task { [weak self, client] in
@@ -161,12 +183,16 @@ final class HostedTerminalSession: TerminalSessionProcess {
             guard let info = try? frame.decoded(SessionHostSessionInfo.self) else { return }
             pid = pid_t(info.pid)
             bound = true
+            reattachesLeft = 1
             if hangUpOnBind, pid > 0 {
                 hangUpOnBind = false
-                signalGroup(pid, SIGHUP)
+                client.signalGroup(pid, SIGHUP)
             }
-            // The host nudges the child to redraw at the pane's size.
-            if frame.type == .attached, !info.exited { terminal.reportHostSize() }
+            if frame.type == .attached {
+                // The host nudges the child to redraw at the pane's size.
+                if !info.exited { terminal.reportHostSize() }
+                endReplayQuiet(after: transport)
+            }
         case .output:
             terminal.feed(byteArray: frame.payload[...])
         case .exit:
@@ -186,20 +212,55 @@ final class HostedTerminalSession: TerminalSessionProcess {
         }
     }
 
-    /// The connection ended without an Exit: the run is reported as gone.
+    /// Lets the terminal answer again once the replay is in.
+    private func endReplayQuiet(after transport: any SessionHostTransport) {
+        Task { [weak self, sleep] in
+            await sleep(Self.replayQuietPeriod)
+            guard let self, self.transport === transport else { return }
+            terminal.dropsTerminalReplies = false
+        }
+    }
+
+    /// The connection ended without an Exit. Before the host took the run
+    /// it is gone. A bound run may still be going (the host dropped a slow
+    /// reader, or another attach took it over), so the host is asked once:
+    /// a running run is reattached, an exited one reports its code, and an
+    /// unknown one — or a second drop of the same binding — is gone.
     private func runLost(_ transport: any SessionHostTransport, reason: String) {
         guard self.transport === transport, !exited else { return }
         Self.logger.error("hosted session lost: \(reason, privacy: .public)")
-        finishRun(code: nil, forget: false)
+        let wasBound = bound
+        closeTransport()
+        guard wasBound, reattachesLeft > 0, let key else {
+            finishRun(code: nil, forget: false)
+            return
+        }
+        reattachesLeft -= 1
+        recovering = Task { [weak self, client] in
+            let sessions = try? await client.list()
+            guard let self, !exited, self.transport == nil, self.key == key else { return }
+            guard let info = sessions?.first(where: { $0.row == key.row && $0.run == key.run }) else {
+                finishRun(code: nil, forget: false)
+                return
+            }
+            if info.exited {
+                finishRun(code: info.code.map { Int32(clamping: $0) }, forget: true)
+            } else {
+                attach(info)
+            }
+        }
     }
 
+    /// Ends the run; the session may be released by the last line.
     private func finishRun(code: Int32?, forget: Bool) {
         exited = true
         closeTransport()
+        terminal.dropsTerminalReplies = false
         onExit?(code)
         if forget, let key {
             Task { [client] in await client.forget(row: key.row, run: key.run) }
         }
+        keepAlive = nil
     }
 
     private func closeTransport() {

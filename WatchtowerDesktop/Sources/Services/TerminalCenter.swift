@@ -168,6 +168,8 @@ final class TerminalCenter {
     /// The session host new sessions launch in (board #496); nil while no
     /// host is available — they then run locally and stop with the app.
     @ObservationIgnored var sessionHost: SessionHostClient?
+    /// The one client `connectSessionHost` made, answering or not.
+    @ObservationIgnored private var sessionHostClient: SessionHostClient?
     /// Sessions whose current process runs locally, not in the session
     /// host: the pane says they stop when Watchtower quits.
     private(set) var unprotected: Set<Int64> = []
@@ -222,12 +224,23 @@ final class TerminalCenter {
         signaller: ProcessGroupSignaller = .live
     ) {
         self.makeLocalProcess = makeLocalProcess ?? { SwiftTermSession() }
+        // A placeholder: the default factory below captures `self`, which
+        // needs every stored property initialised first.
         self.makeProcess = { SwiftTermSession() }
         self.signaller = signaller
         self.makeProcess = makeProcess ?? { [weak self] in
             guard let self else { return SwiftTermSession() }
             return sessionHost.map { HostedTerminalSession(client: $0) } ?? self.makeLocalProcess()
         }
+    }
+
+    /// Connects to the session host once per app run: a second call (the
+    /// database wired again) reuses the first client and its connection.
+    func connectSessionHost(_ makeClient: () -> SessionHostClient) async {
+        guard sessionHostClient == nil else { return }
+        let client = makeClient()
+        sessionHostClient = client
+        sessionHost = await client.ensureRunning() ? client : nil
     }
 
     var liveIDs: Set<Int64> {
@@ -1099,6 +1112,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// reports — so an owner's click in a mouse-reporting program is
     /// deliberately not counted as input; only keystrokes and pastes are.
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        if dropsTerminalReplies { return }
         forwardingAppInput = true
         defer { forwardingAppInput = false }
         super.send(source: source, data: data)
@@ -1122,6 +1136,9 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     var hostInput: (([UInt8]) -> Void)?
     /// Set for a hosted session: the terminal's new columns and rows.
     var hostResize: ((_ cols: Int, _ rows: Int) -> Void)?
+    /// While set, the terminal's own replies (`send(source: Terminal, …)`)
+    /// are dropped: a hosted session's replay re-runs old queries.
+    var dropsTerminalReplies = false
     /// The size last reported through `hostResize`.
     private var hostSize: (cols: Int, rows: Int)?
 

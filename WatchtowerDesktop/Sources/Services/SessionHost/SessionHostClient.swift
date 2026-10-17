@@ -70,6 +70,8 @@ final class SessionHostClient {
     var spawnHost: (_ cli: String, _ socket: String) throws -> Void = { try SessionHostClient.spawnDetached(cli: $0, socket: $1) }
     /// The pause between connection attempts after a spawn. A seam for tests.
     var sleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// Signals a hosted session's process group (`killpg`). A seam for tests.
+    var signalGroup: (pid_t, Int32) -> Void = { _ = killpg($0, $1) }
 
     private var control: (any SessionHostTransport)?
     private var waiters: [Waiter] = []
@@ -145,8 +147,11 @@ final class SessionHostClient {
             Self.logger.error("could not start the session host: \(error.localizedDescription, privacy: .public)")
             return false
         }
+        // Steps and the clock both bound the wait: a connect attempt itself
+        // takes time (up to `UnixSocketTransport.openTimeout`).
+        let deadline = ContinuousClock.now + Self.spawnWait
         var waited: Duration = .zero
-        while waited < Self.spawnWait {
+        while waited < Self.spawnWait, ContinuousClock.now < deadline {
             await sleep(Self.spawnRetryStep)
             waited += Self.spawnRetryStep
             if await connectOnce() { return true }
@@ -246,6 +251,9 @@ final class SessionHostClient {
 
     // MARK: Starting the host
 
+    /// The size over which a spawn empties the host's log first.
+    nonisolated static let logCap: UInt64 = 1 << 20
+
     /// `~/Library/Application Support/Watchtower/session-host.log`, the
     /// host's stdout and stderr.
     nonisolated static func logFileURL() -> URL {
@@ -266,7 +274,8 @@ final class SessionHostClient {
         }
         let log = try FileHandle(forWritingTo: logURL)
         defer { try? log.close() }
-        try log.seekToEnd()
+        // Kept small without rotation: over the cap it starts afresh.
+        if try log.seekToEnd() > logCap { try log.truncate(atOffset: 0) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cli)
         process.arguments = ["session-host", "--socket", socket]
@@ -289,6 +298,9 @@ final class UnixSocketTransport: SessionHostTransport {
 
     /// `sun_path` holds 104 bytes on macOS, the terminating NUL included.
     static let maxPathBytes = 103
+    /// How long `open` waits for the connection to become ready: one stuck
+    /// preparing must not hold a caller (`ensureRunning`'s 3 s budget).
+    static let openTimeout: Duration = .seconds(1)
 
     private let path: String
     private var connection: NWConnection?
@@ -299,6 +311,13 @@ final class UnixSocketTransport: SessionHostTransport {
 
     init(path: String) {
         self.path = path
+    }
+
+    /// A transport dropped without `close()` (its owner went away) still
+    /// ends its connection, so the host stops queueing to a dead reader.
+    deinit {
+        connection?.stateUpdateHandler = nil
+        connection?.cancel()
     }
 
     func open(onFrame: @escaping (SessionHostFrame) -> Void, onClose: @escaping () -> Void) async throws {
@@ -314,6 +333,13 @@ final class UnixSocketTransport: SessionHostTransport {
                 MainActor.assumeIsolated { self?.stateChanged(state, of: connection) }
             }
             connection.start(queue: .main)
+            Task { [weak self] in
+                try? await Task.sleep(for: Self.openTimeout)
+                guard let self, self.connection === connection, let opening else { return }
+                self.opening = nil
+                close()
+                opening.resume(throwing: TransportError.unreachable("timed out connecting"))
+            }
         }
         receive(on: connection)
     }

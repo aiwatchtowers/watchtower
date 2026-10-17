@@ -1868,9 +1868,8 @@ final class AppState {
     /// none serves the socket. Until it answers, or when it cannot, sessions run locally.
     private func startSessionHost() {
         let socket = SessionHostPaths.socketPath(bundleID: Constants.bundleID, tempDir: NSTemporaryDirectory())
-        let client = SessionHostClient(socketPath: socket) { Constants.findCLIPath() }
         Task { [terminalCenter] in
-            terminalCenter.sessionHost = await client.ensureRunning() ? client : nil
+            await terminalCenter.connectSessionHost { SessionHostClient(socketPath: socket) { Constants.findCLIPath() } }
         }
     }
 
