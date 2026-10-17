@@ -18,17 +18,19 @@ of these entries; decisions §20, §20.1).
 `internal/db/migrations/00117_automation_tool_grants.sql`,
 `cmd/automations*.go` (incl. `cmd/automations_auto.go`), `cmd/automations_registry.go`,
 `internal/briefing/automations.go` (the FROM YOUR AUTOMATIONS block),
-`internal/daemon/automation_wake.go`, `internal/tools/emails.go`,
+`internal/daemon/automation_wake.go`, `internal/automations/bus.go`,
+`internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`,
+`internal/db/automation_event_sources.go` (P4 event bus and sources),
+`internal/tools/emails.go`,
 `internal/tools/automation_reads.go`, `internal/automations/authoring/` (`draft_automation`,
 `save_automation`, P3), the Desktop's automation views and Core services
 (`WatchtowerDesktop/Sources/Views/Automations/`,
 `WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/`, P3)
 **Last full audit:** 2026-10-16 (Automations P3)
 
-Phases: P1 (core) and P2 (writes) are in code. P3 (authoring + Desktop), P4
-(events), P5 (workbench) and P6 (mcp, agent, templates) each flip their
-**Planned** part in the same commit as its code; exactly one plan flips each
-part. Guard tests are named `TestAutoNN_…` (Go) and `testAutoNN_…` (Swift);
+Phases: P1 (core), P2 (writes), P3 (authoring + Desktop), P4 (events), P5
+(workbench) and P6 (mcp, agent, templates) are all in code; each flipped its
+**Planned** part in the same commit as its code, exactly one plan per part. Guard tests are named `TestAutoNN_…` (Go) and `testAutoNN_…` (Swift);
 the other guards listed are pinned by name too.
 
 ## AUTO-01 — The manifest is the only source of permissions
@@ -312,7 +314,7 @@ the script outside it.
 **Test guards:**
 - `internal/automations/sandbox_test.go` — `TestAuto07_NoRequireFsNetTimers`, `TestRecipe_AsyncScriptRefused`, `TestSandbox_PreParseRefusesAsync`
 - `internal/automations/sandbox_hardening_test.go` — `TestAuto07_NoCodeFromStrings`, `TestSandbox_WrapperBreakoutRefused`, `TestSandbox_SDKResultsArePlainJSValues`
-- P6: `cmd/automations_agent_test.go` — `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` (an `agent()` CLI child gets only PATH, HOME, LANG, USER, the run marker and, when the daemon has them set, the proxy variables (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`ALL_PROXY` and lowercase forms), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `TMPDIR` (ask #185), plus a scrubbed `CODEX_HOME` on codex; no API key, token, secret or Quick Connection reaches it); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_RefusesWithoutMatchingMarkerOrRunningRun`
+- P6: `cmd/automations_agent_test.go` — `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` (an `agent()` CLI child gets only PATH, HOME, LANG, USER, the run marker and, when the daemon has them set, the proxy variables (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`ALL_PROXY` and lowercase forms), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `TMPDIR` (ask #185), plus a scrubbed `CODEX_HOME` on codex; no API key, token, secret or Quick Connection reaches it); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_RefusesWithoutMatchingMarkerOrRunningRun`, `TestAgentMCPServer_RefusedInsideATerminalSession` (refused with `WATCHTOWER_TERMINAL_SESSION_ID` set)
 
 **Locked since:** 2026-10-14
 
@@ -350,9 +352,9 @@ model quota.
 
 ## AUTO-09 — Triggers only queue
 
-**Status:** Enforced (P1: scheduler and CLI `run`) · Planned (P4: the event
-bus). The Desktop buttons (P3's Run now, P5's header buttons) add guards
-without a status change.
+**Status:** Enforced (P1: scheduler and CLI `run`; P4: the event bus). The
+Desktop buttons (P3's Run now, P5's header buttons) add guards without a
+status change.
 
 **Observable:** The scheduler, the event bus, CLI `run` and the Desktop
 buttons only insert `queued` rows (`db.EnqueueAutomationRun`, the only way to
@@ -361,7 +363,9 @@ coalesced onto it); only the daemon's executor runs them. The one exception
 is `automations dry-run`, which executes its own `trigger='dry_run'` row in
 the CLI process and writes nothing outside its journal; the daemon never
 picks up a dry-run row. The automation wake is `SIGUSR2`; it never starts a
-sync cycle.
+sync cycle. The event bus's `Flush` only inserts `queued` rows (one per
+automation per cycle) and merges into a still-queued event run; event runs
+carry ids, labels, enums and counts only.
 
 **Why locked:** One executor in one process is what makes concurrency
 (AUTO-05), budgets (AUTO-08) and restarts (AUTO-08) hold; a trigger that ran
@@ -372,7 +376,9 @@ a script inline would escape all three.
 - `cmd/automations_test.go` — `TestAuto09_RunCommandOnlyQueues`
 - `internal/db/automation_runs_test.go` — `TestRun_CoalescesSecondTrigger`, `TestNextQueued_SkipsDryRun`
 - `internal/daemon/automation_wake_test.go` — `TestDaemon_AutomationWakeSignalDoesNotStartSync`
-- P4 adds the bus guard (plan `2026-10-14-automations-p4.md`) and flips that half.
+- `WatchtowerDesktop/Tests/Core/WorkbenchHeaderAutomationButtonsTests.swift` — `testAuto09_HeaderButtonOnlyQueues` (a workbench header button's click is exactly `automations run <id> --json`; Swift writes no run)
+- `internal/automations/bus_test.go` — `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (P4)
+- `internal/automations/events_test.go` — `TestBus_EventsCarryNoContent` (P4)
 
 **Locked since:** 2026-10-14
 
@@ -510,12 +516,15 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-17 (Automations P4, board #753; spec §8): **the event half of AUTO-09 flips from Planned to Enforced** — the one P4 status flip. Observable gains the event bus: `Flush` (once per sync cycle, cycle id = `syncStart` in RFC 3339 UTC, called right after `phaseExternalSync`) only inserts `queued` rows, one per automation per cycle, and merges into a still-queued event run; event runs carry ids, labels, enums and counts only. Guards added: `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (`internal/automations/bus_test.go`), `TestBus_EventsCarryNoContent` (`internal/automations/events_test.go`). Module list gains `internal/automations/bus.go`, `internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`, `internal/db/automation_event_sources.go`. No new AUTO number; no AGENT/STRIP/REACT entry touched (reaction commands are not an event source). No guard relaxed.
+- 2026-10-16 (Automations P5 part 2, board #753; spec §12.4, §13.1, §13.3, §13.4, §14.6): P5 part 2 — workbench saves (PROJ-03 amended, ask #272, `docs/inventory/workbench.md`), the Desktop session launch center (`AutomationSessionCenter`), header buttons, automation asks in the Desktop, rescans on page open and on recipe-folder changes. **AUTO-09's Desktop guard for the header buttons is in place** (`testAuto09_HeaderButtonOnlyQueues`, Task 11, listed under AUTO-09); no status flip — the event half stays Planned for P4. Change in words is on for workbench recipes (R-P3-5 lifted for the editor chat too); an automation's closed asks get their own "⚙ Automations" line instead of "Outside the app". No guard relaxed.
 - 2026-10-16 — agent() child env adds proxy, CA and TMPDIR variables (owner, ask #185). AUTO-07's guard `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` is extended, not relaxed: it still proves no API key, token or `CLAUDECODE` reaches the child. `shell()`'s env is unchanged.
 - 2026-10-16 (Automations P3 final review, fix wave 1): AUTO-06 records that the `save_automation` card shows every hashed field and the whole text of a new recipe (J1). Strengthening only; no guard touched.
 - 2026-10-16 (Automations P3, board #753 group #353; spec §11, §12, §14.3–§14.5): **the `draft_automation` half of AUTO-06 flips from Planned to Enforced (ask #271)** — the one P3 status flip; every other AUTO entry P3 touches was already Enforced. Strengthening, no guard relaxed. AUTO-06 records `draft_automation`'s refusal (compared within the draft's scope), `save_automation` as the third `ConfirmAutomation` caller (AlwaysAsk, pinned hash and content hash), the Desktop's hash binding (`--confirm-hash` from `validate`, `--expect-content-hash`, the confirmation sheet's shown hash and **Changed** block, D26) and the quick-run pins (a dimmed row never runs; `confirm: true` runs only after **Run**); AUTO-03 records that the Desktop's Save sheet keeps every "Keep auto" box unchecked and that `save_automation` carries no grant over; AUTO-12 records that a draft writes nothing (`TestDraftAutomation_WritesNothing`, also in AGENT-06's chat-mode guard) and does not execute `agent()` (Ruling K). Guards added as listed under AUTO-03, AUTO-06 and AUTO-12. Related: AGENT-04 amended for the `automation_editor` surface (D11) and AGENT-06 extended (`agent-actions.md`); STRIP-01 amended for automation outputs (D10, `reaction-commands.md`). A P1 journal bug was fixed on the way: a generic step's `result_summary` is now its JSON, no longer the base64 of it (`TestDryRunInMemory_StepResultIsJSON`; AUTO-11 unchanged).
 - 2026-10-16 (Automations P6 part 2 final-review fixes, board #753): strengthening and one narrowing, no guard relaxed. **AUTO-01 narrowing:** a manifest `@scope` holding `<` or `>` is refused (`checkScopePresence`: an installed template placeholder such as `jira:read@<PROJECT>` must be replaced before the recipe parses; no real account, project or space name carries those characters). **AUTO-12:** `TestTemplates_DryRunE2E` now pins every workbench recipe's dry-run journal too (it formerly checked only the step statuses, so an empty journal passed). Tool contracts: `list_jira_issues` returns lean rows on every surface (no `RawJSON`/`CustomFieldsJSON`, description clipped at 512 bytes — `TestListJiraIssues_LeanRows`; `get_jira_issue` unchanged) and `list_emails` gains an exclusive `before` (`TestListEmails_BeforePagesOlder`). `install-template` rolls back on any failure after its first write and, with `save`, refuses a workbench recipe folder behind a symlink; `templates`/`install-template` carry template `notes`.
 - 2026-10-16 (Automations P6 part 2, board #753; spec §10, §12.3, §15): P6 part 2 — template gallery, `install-template`; the four P5 workbench fixtures moved from `internal/automations/testdata/workbench/` into `internal/automations/templates/`. Guards added: AUTO-12 `TestTemplates_DryRunE2E`, AUTO-06 `TestInstallTemplate_InstalledUnconfirmedAndDisabled`. No guard relaxed.
 - 2026-10-16 (Automations P5 part 1 final-review fixes, board #753): strengthening, no guard relaxed. A workbench folder path whose folder or any ancestor is a symlink is never followed: the daemon's rescan skips it and `shell()` refuses it with `NotAvailable` before any stat or process (`fsutil.NoSymlinkComponents`; guards `TestScheduler_NeverFollowsAnAncestorLink`, `TestShell_RefusedWhenTheFolderPathHasALink`). `shell()`'s PATH is the daemon's resolved rich PATH (`claude.RichPATH`), not launchd's minimal one; the env keys are unchanged. `automations session-launched`/`session-ended` are refused under AGENT-07's markers. Guards renamed to say what they pin, assertions unchanged: `TestWorkbenchAutomation_WritesNotAvailable` → `TestWorkbenchAutomation_WritesAreProposals` (and the three `internal/tools` ones listed in agent-actions.md).
+- 2026-10-16 (Automations P5 Task 11, board #753; spec §12.4): the Desktop half of AUTO-09 for the workbench header buttons — guard `testAuto09_HeaderButtonOnlyQueues` added (a runnable button's click issues exactly `automations run <id> --json` through `AutomationsViewModel.runNow`, no other CLI call and no row written from Swift). No status flip, no guard relaxed.
 - 2026-10-16 (Automations P5 part 1, board #753; spec §6.1, §13, §15): P5 part 1 — workbench recipes indexed by the daemon, shell(), session(), ask(), workbench writes. **AUTO-12 and AUTO-13 are Enforced** with the guards listed on them (Tasks 4 and 7); the Desktop half of AUTO-09 (header buttons) and the Swift launch guards follow in part 2. Fail-closed fix: a stored `automation_run` row whose context id does not parse (or is 0) is refused with `ErrAutomationRunGone` at Propose, Approve and Apply instead of applying with no workbench check (`internal/tools/registry_automation_test.go::TestWorkbenchAutomation_UnparsableRunContextFailsClosed`). The workbench fixtures' failure path no longer files an `output.report` before its `throw` (a failed run commits no outputs, AUTO-04); the failure is the run's error, which carries the stderr tail. No guard relaxed.
 - 2026-10-16 (Automations P5 Task 7, board #753; spec §6.1, §13, §15 #2/#5): **AUTO-12 is Enforced in full** — its session half joins with `TestAuto12_DryRunStartsNoSessionOrShell` over the four workbench recipes (`internal/automations/testdata/workbench/`, since moved into `internal/automations/templates/`), `TestSession_DryRunWaitsForNothing` and `TestAsk_DryRunCreatesNoRow`. **AUTO-02:** the P2 workbench write gate is lifted (spec §13): a workbench automation's run writes through `Registry.Propose` like a personal one, and the registry resolves its workbench from the run at Propose, Approve and Apply (AGENT-01 amended in `agent-actions.md`); `TestWorkbenchAutomation_WritesNotAvailable` keeps its name and now pins that a live run's writes are proposals, a dry run records none, and Apply after the workbench was deleted fails. No other guard relaxed.
 - 2026-10-16 (Automations P5 Task 4, board #753; spec §5, §13.2, §20.1 D19): **AUTO-13 flips from Planned to Enforced** with the `shell()` guards listed there; **AUTO-12's `shell()` half is Enforced** (`TestShell_DryRunStartsNoProcess`), its session half stays Planned. `NewProcessShellRunner` is wired as `Backends.Shell`. Oversized `shell()` output is cut to fit, never `ResultTooLarge` (owner decision ask #272, replacing R-P5-1). No guard relaxed.

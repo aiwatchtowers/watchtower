@@ -73,6 +73,10 @@ public struct WorkbenchTarget: SliceMirror, Identifiable {
     public let pr: String
     public let prClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
     public let archived: Bool
+    /// The target's board column title (board #267): its stored column, else
+    /// its status's first column. nil when the workbench defines no columns,
+    /// for a parent, and from a Mac that predates columns.
+    public let column: String?
     public let childrenCount: Int
     public let openComments: Int
     public let unreadForOwner: Int
@@ -98,7 +102,7 @@ public struct WorkbenchTarget: SliceMirror, Identifiable {
         case workbenchID = "workbenchId"
         case parentID = "parentId"
         case text, textClipped, intent, intentClipped, status, priority, progress
-        case branch, branchClipped, pr, prClipped, archived, childrenCount, openComments, unreadForOwner, openAsks
+        case branch, branchClipped, pr, prClipped, archived, column, childrenCount, openComments, unreadForOwner, openAsks
         case sessionIDs = "sessionIds"
         case sessionIDsMore = "sessionIdsMore"
         case lastStatusAt, lastStatusActor, workOnPrompt, workOnPromptClipped, createdAt, updatedAt

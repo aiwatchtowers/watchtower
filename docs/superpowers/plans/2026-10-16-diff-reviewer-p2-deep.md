@@ -4,7 +4,7 @@
 
 **Goal:** A round can be switched from Quick to **Deep**: the owner goes through three phases — **Meaning** (intent card, design comments), **Chapters** (the diff in chapters of at most ~400 changed lines, each with role checklists built from built-in lenses plus the folder's `.watchtower/review.md`), **Wrap-up** (each intent item marked done / partial / not done, a summary of the round's comments by chapter, Send). Progress and active time are shown, a break hint appears after ~60 active minutes, and a review picks up where it stopped.
 
-**Architecture:** Go owns the lenses: the built-in ones are embedded (`internal/reviewdiff/lenses.md`) and merged with the workbench folder's `.watchtower/review.md` (lstat-only, no symlinks, 64 KB); `workbench review context` returns them with the intent card. One new table, `review_checks` (migration 00123), written by Swift. The chapter split, pace and wrap-up grouping are pure WatchtowerCore code; `ReviewChangesModel` gains the Deep state and persists mode, phase, chapter and active seconds on the open round. The views add a phase strip, a chapter list, a checklist panel and a wrap-up view to the existing Changes pane.
+**Architecture:** Go owns the lenses: the built-in ones are embedded (`internal/reviewdiff/lenses.md`) and merged with the workbench folder's `.watchtower/review.md` (lstat-only, no symlinks, 64 KB); `workbench review context` returns them with the intent card. One new table, `review_checks` (migration 00124), written by Swift. The chapter split, pace and wrap-up grouping are pure WatchtowerCore code; `ReviewChangesModel` gains the Deep state and persists mode, phase, chapter and active seconds on the open round. The views add a phase strip, a chapter list, a checklist panel and a wrap-up view to the existing Changes pane.
 
 **Tech Stack:** Go 1.26 (cobra, `database/sql` + modernc sqlite, goose, `embed`), SwiftUI + GRDB (WatchtowerCore).
 
@@ -69,7 +69,7 @@ Each lane in its own worktree off `feature/328-diff-reviewer-p2`; the controller
 
 **Go**
 - Create `internal/reviewdiff/lenses.md` (built-ins), `internal/reviewdiff/lenses.go` (`ParseLenses`, `LoadLenses`, `ItemKey`, `LensID`), `internal/reviewdiff/lenses_test.go`.
-- Create `internal/db/migrations/00123_review_checks.sql`; modify `internal/db/schema.sql`, `internal/db/db_test.go` (`TestAllTablesExist`), golden snapshot + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (regenerated).
+- Create `internal/db/migrations/00124_review_checks.sql`; modify `internal/db/schema.sql`, `internal/db/db_test.go` (`TestAllTablesExist`), golden snapshot + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (regenerated).
 - Modify `cmd/workbench_review.go` (round JSON fields, mode inherit), `cmd/workbench_review_context.go` (lenses), `cmd/workbench_review_test.go`.
 - Modify `internal/tools/workbench_review.go` (lens in the text) + its test.
 
@@ -152,7 +152,7 @@ Each lane in its own worktree off `feature/328-diff-reviewer-p2`; the controller
 **Depends on:** Task 1
 
 **Files:**
-- Create: `internal/db/migrations/00123_review_checks.sql`
+- Create: `internal/db/migrations/00124_review_checks.sql`
 - Modify: `internal/db/schema.sql`, `internal/db/db_test.go`, schema golden + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (regenerated), `cmd/workbench_review.go`, `cmd/workbench_review_context.go`, `cmd/workbench_review_test.go`, `internal/tools/workbench_review.go` (+ its test)
 
 **Interfaces:**
@@ -317,7 +317,7 @@ Each lane in its own worktree off `feature/328-diff-reviewer-p2`; the controller
 **Files:** Modify `docs/features/diff-reviewer.md`, `CLAUDE.md`, the spec's status line.
 
 - [ ] **Step 1:** Feature note: title `(2026-10-16, Plans 1–2 of 3)`; a "What Plan 2 ships" section — lenses (built-ins, the folder file, its grammar and read rules, notes), `review_checks` and its states, the context envelope's `lenses`/`lens_notes`, the round's `phase`/`chapter_key`/`active_seconds` and mode inheritance, mechanical chapters (directory groups, test pairing, 400-line parts, collapsed last), pace (active time rule, 30 s persistence, break hint), Wrap-up intent items (one per linked target) and the `intent` lens, `get_review`'s `[lens]` tag; v1 limits updated (Deep mode uses mechanical chapters and all lenses until Plan 3's overview; intent items are linked targets only).
-- [ ] **Step 2:** `CLAUDE.md` feature line: `(2026-10-16, Plans 1–2 of 3)`, add `Deep mode (phases, mechanical chapters, lenses + .watchtower/review.md, migration 00123 review_checks, pace)`.
+- [ ] **Step 2:** `CLAUDE.md` feature line: `(2026-10-16, Plans 1–2 of 3)`, add `Deep mode (phases, mechanical chapters, lenses + .watchtower/review.md, migration 00124 review_checks, pace)`.
 - [ ] **Step 3:** Commit `docs(review): deep mode feature note (board #328)`.
 
 ---

@@ -67,6 +67,8 @@ Download from [Releases](https://github.com/aiwatchtowers/watchtower/releases) (
 
 ## Getting Started
 
+The user guide is in [docs/guide/README.md](docs/guide/README.md): setup, every feature, troubleshooting and reference.
+
 1. Open **Watchtower.app**. Setup takes two steps; everything in them can be skipped except the AI check in the first:
    - **Goals** — pick what you want Watchtower for (work communication, tasks & Jira, meetings, development in Workbench). Continue unlocks once the AI check passes.
    - **Connect** — connect Slack, Google (Gmail + Calendar) and Jira, or skip and do it later from Settings → Connections.

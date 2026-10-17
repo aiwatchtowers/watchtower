@@ -376,8 +376,10 @@ if (res.exit_code !== 0) {
    dry run's summary into `dry_run_summary`. Never call `save_automation` with
    text you did not draft: the owner approves the bytes you send. `slug` is
    required (lowercase letters, digits and hyphens, at most 64 characters; for
-   an edit, the existing automation's slug) and `reason` says why. Pass
-   `workbench_id` for a workbench recipe once workbench saves are available.
+   an edit, the existing automation's slug) and `reason` says why. For a
+   workbench recipe pass `workbench_id`: on Approve the recipe is written to
+   that workbench folder's `.watchtower/automations/<slug>.md` (it travels
+   with the repository) and nowhere else in the folder.
 5. If `draft_automation` answers `dry_run.status: "refused"`, say so: a recipe
    that is not confirmed yet can only be dry-run by the owner, from its card.
    Point the owner to **Dry run** on the card.

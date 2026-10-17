@@ -44,6 +44,9 @@ final class DeviceSettings {
     /// Why a toggle went back: its write failed. Cleared once that
     /// setting saves; another setting's save leaves it.
     private(set) var lastError: String?
+    /// `lastError` when it explains the typing toggle; the session screen's
+    /// Turn On shows only its own failure (board #515).
+    var typingError: String? { errorSetting == .typingRequested ? lastError : nil }
 
     /// Set by the environment when the phone links or unlinks.
     var linkedDevice: LinkedDevice?

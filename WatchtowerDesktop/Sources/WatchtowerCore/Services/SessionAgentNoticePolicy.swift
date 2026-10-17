@@ -7,7 +7,7 @@ import Foundation
 /// approval, failed, stopped or finished — one `(session, kind,
 /// agent_state_at)` — is announced at most once; a transition seen while
 /// notices may not be posted (the app is active, notifications are off,
-/// quiet hours) is consumed, never replayed. Waiting on an ask, ready to
+/// notifications are paused) is consumed, never replayed. Waiting on an ask, ready to
 /// check (#534), or working with asks, gets no state notice:
 /// `WorkbenchNotificationPolicy.askOpened` already announced the ask.
 package struct SessionAgentNoticePolicy: Sendable {
@@ -54,7 +54,7 @@ package struct SessionAgentNoticePolicy: Sendable {
 
     /// `statuses` is the whole map of one read, live or not; `canPost` is
     /// false while the app is active, the workbench notifications toggle is
-    /// off or quiet hours are on.
+    /// off or notifications are paused.
     package mutating func update(_ statuses: [Int64: SessionAgentStatus], canPost: Bool) -> [Action] {
         var actions: [Action] = []
         for id in seen.keys.sorted() where Self.transition(statuses[id]) == nil {

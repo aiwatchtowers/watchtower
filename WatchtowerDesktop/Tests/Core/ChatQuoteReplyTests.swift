@@ -2,19 +2,11 @@ import XCTest
 @testable import WatchtowerCore
 
 final class ChatQuoteReplyTests: XCTestCase {
-    func testArtifactFencesBecomeOneBracketedLine() {
-        let text = """
-        Intro text.
-
-        :::artifact key="plan" kind="document" title="Plan"
-        Body of the plan.
-        :::
-
-        Outro.
-        """
-        XCTAssertEqual(ChatQuoteReply.quotableMarkdown(text), "Intro text.\n\n[Artifact: Plan]\n\nOutro.")
-        XCTAssertEqual(ChatQuoteReply.quotableMarkdown(":::artifact key=\"k1\" kind=\"code\" title=\"\"\nx\n:::"),
-                       "[Artifact: k1]")
+    /// `NSTextView` reports UTF-16 offsets: an emoji is two of them.
+    func testASelectionAcrossAnEmojiKeepsWholeCharacters() {
+        let block = "Ship it \u{1F680} on Friday"
+        let range = (block as NSString).range(of: "\u{1F680} on")
+        XCTAssertEqual(ChatQuoteReply.selectedText(block, selection: range), "\u{1F680} on")
     }
 
     func testSelectedTextIsTheRangeOrNilWhenEmpty() {

@@ -179,6 +179,7 @@ func pinProjectSurface(t *testing.T, reg *tools.Registry, main, target, reaction
 		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "list_comments", "add_comment", "resolve_comment",
 		"ask_owner", "get_ask", "get_review", "list_asks", "withdraw_ask", "finish_session",
+		"annotate_changes", "reply_review_comment",
 	}
 	project := surfaceToolNames(reg, "project")
 	for _, p := range workbenchTools {
@@ -279,7 +280,27 @@ func pinAutomationWriteTools(t *testing.T, reg *tools.Registry, automation map[s
 		}
 	}
 	for _, name := range []string{"connect_jira_board", "dismiss_tracks", "edit_confluence_page", "brief_context",
-		"create_targets", "update_target", "add_comment", "ask_owner", "finish_session", "update_workbench"} {
+		"create_targets", "update_target", "add_comment", "ask_owner", "finish_session", "update_workbench",
+		"annotate_changes", "reply_review_comment"} {
 		assert.False(t, automation[name], "%s is never offered to automations", name)
+	}
+}
+
+// TestSearchGuideToolMainOnly pins the guide tools to the main chat and out of
+// the dev-mode read mount (DEV-01).
+func TestSearchGuideToolMainOnly(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	reg := buildToolRegistry(&config.Config{ActiveWorkspace: "test-ws"}, database)
+	for _, name := range []string{"search_guide", "get_guide_page"} {
+		assert.True(t, surfaceToolNames(reg, "main")[name], "%s on main", name)
+		for _, s := range []string{"target", "automation_editor", "project"} {
+			assert.False(t, surfaceToolNames(reg, s)[name], "%s must not be on %s", name, s)
+		}
+		for _, rt := range tools.ReadTools() {
+			assert.NotEqual(t, name, rt.Name, "%s must not be in ReadTools (DEV-01)", name)
+		}
 	}
 }

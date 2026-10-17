@@ -1,7 +1,8 @@
 import Foundation
 
-/// The Board pane's kanban mode: the board's leaf targets in one column per
-/// status. Pure; no I/O.
+/// The Board pane's kanban mode: the board's leaf targets in the columns of
+/// the workbench's board column definition (`BoardColumnLayout`, board
+/// #267) — one column per status with an empty definition. Pure; no I/O.
 ///
 /// Only leaves are cards — a parent's status is derived from its children by
 /// the PROJ-05 rollup triggers, so moving a parent would be undone by its next
@@ -28,15 +29,24 @@ package struct WorkbenchBoardKanban {
     }
 
     package struct Column: Identifiable {
+        /// The slot key (`BoardColumnSlot.key`): the status for an implicit
+        /// column, "c<id>" for a defined one, `otherStatus` for Other.
+        package let key: String
         package let status: String
+        /// The defined column a drop here writes; nil for an implicit one.
+        package let columnID: Int64?
         package let title: String
+        /// The defined column's description (the header's tooltip).
+        package let description: String
+        /// The status's label under a title that differs from it.
+        package let categoryLabel: String?
         package let cards: [Card]
         /// Cards left out of `cards` (the Done cap), shown as "N more".
         package let hiddenCount: Int
-        /// Dropping a card here sets its status to `status`; the Other column
-        /// has no single status to set.
+        /// Dropping a card here sets its status to `status` and its column
+        /// to `columnID`; the Other column has no single status to set.
         package var acceptsDrops: Bool { status != WorkbenchBoardKanban.otherStatus }
-        package var id: String { status }
+        package var id: String { key }
     }
 
     /// One lane of the "Lanes: By group" layout (spec 2026-10-06 Part 2): a
@@ -74,7 +84,7 @@ package struct WorkbenchBoardKanban {
         package var id: Int { root?.target.id ?? 0 }
 
         /// What `column` shows: with the Done fold closed, its live done
-        /// cards are left out.
+        /// cards are left out — in every done column.
         package func cards(_ column: Column, unfolded: Bool) -> [Card] {
             guard column.status == "done", doneFolded, !unfolded else { return column.cards }
             return column.cards.filter(\.node.archived)
@@ -100,7 +110,7 @@ package struct WorkbenchBoardKanban {
     /// nothing to show is left out, except one whose root is open while the
     /// search is empty (the view says "No open tasks").
     package let lanes: [Lane]
-    /// Per column status, the cards in that column over `lanes`: the totals
+    /// Per column key, the cards in that column over `lanes`: the totals
     /// row above the lanes.
     package let totals: [String: Int]
     /// The scope actually applied (`WorkbenchBoardScope`): nil (the board
@@ -120,12 +130,16 @@ package struct WorkbenchBoardKanban {
     /// A `scopeID` (spec 2026-10-06 Part 4, `WorkbenchBoardScope`) keeps the
     /// scope's leaves only, breadcrumbs starting below it; a search inside
     /// it keeps what the same search on the whole board keeps there.
+    ///
+    /// `columns` is the workbench's board column definition: a hidden
+    /// status gets a column only while a shown card is in it.
     package init(
         _ roots: [WorkbenchBoardNode],
         scopeID: Int?,
         showDone: Bool,
         showArchived: Bool = false,
-        query: String = ""
+        query: String = "",
+        columns def: WorkbenchBoardColumns = .empty
     ) {
         let search = WorkbenchBoardSearch(query)
         let archiveToggle = showArchived
@@ -139,24 +153,25 @@ package struct WorkbenchBoardKanban {
         Self.collectLeaves(nodes, chain: [], search: search, ancestorMatched: pathMatched, into: &collected)
         let leaves = collected.filter { Self.isShown($0, showDone: showDone, showArchived: showArchived) }
 
-        var statuses = ["todo", "in_progress", "in_review", "blocked", "done"]
-        if showDone || showArchived { statuses.append("dismissed") }
+        var slots = BoardColumnLayout.slots(
+            def, occupiedStatuses: Set(leaves.map(\.node.target.status)), showDismissed: showDone || showArchived
+        )
         if leaves.contains(where: { !Self.knownStatuses.contains($0.node.target.status) }) {
-            statuses.append(Self.otherStatus)
+            slots.append(Self.otherSlot)
         }
-        let columns = statuses.map { status in
-            Self.column(status, cards: Self.cards(leaves, inColumn: status), showDone: showDone)
+        let columns = slots.map { slot in
+            Self.column(slot, cards: Self.cards(leaves, inColumn: slot, def), showDone: showDone)
         }
 
         self.columns = columns
         let lanes = Self.lanes(scope.node, roots: roots, pathMatched: pathMatched, LaneRules(
-            statuses: statuses, search: search, showDone: showDone, showArchived: showArchived,
+            slots: slots, def: def, search: search, showDone: showDone, showArchived: showArchived,
             archiveToggle: archiveToggle
         ))
         self.lanes = lanes
         self.totals = Dictionary(uniqueKeysWithValues: columns.map { column in
-            (column.status, lanes.reduce(0) { sum, lane in
-                sum + (lane.columns.first { $0.status == column.status }?.cards.count ?? 0)
+            (column.key, lanes.reduce(0) { sum, lane in
+                sum + (lane.columns.first { $0.key == column.key }?.cards.count ?? 0)
             })
         })
         self.scopeID = scope.node?.target.id
@@ -189,22 +204,30 @@ package struct WorkbenchBoardKanban {
 
     private static let knownStatuses = Set(WorkbenchBoardCard.editableStatuses)
 
-    /// The cards of `cards` that belong in the `status` column: the Other
-    /// column takes every status this build does not know.
-    private static func cards(_ cards: [Card], inColumn status: String) -> [Card] {
-        status == otherStatus
-            ? cards.filter { !knownStatuses.contains($0.node.target.status) }
-            : cards.filter { $0.node.target.status == status }
+    private static let otherSlot = BoardColumnSlot(
+        key: otherStatus, status: otherStatus, columnID: nil, title: "Other", description: "", categoryLabel: nil
+    )
+
+    /// The cards of `cards` that belong in `slot`: those its key is the
+    /// `BoardColumnLayout.slotKey` of; the Other column takes every status
+    /// this build does not know.
+    private static func cards(_ cards: [Card], inColumn slot: BoardColumnSlot, _ def: WorkbenchBoardColumns) -> [Card] {
+        guard slot.key != otherStatus else { return cards.filter { !knownStatuses.contains($0.node.target.status) } }
+        return cards.filter {
+            $0.node.target.status == slot.status
+                && BoardColumnLayout.slotKey(status: slot.status, columnID: $0.node.boardColumnID, def: def) == slot.key
+        }
     }
 
     private static func isShown(_ card: Card, showDone: Bool, showArchived: Bool) -> Bool {
         card.node.archived ? showArchived : (showDone || card.node.target.status != "dismissed")
     }
 
-    /// The board's filters as every lane applies them. `statuses` are the
+    /// The board's filters as every lane applies them. `slots` are the
     /// board's columns, so every lane lines up under the totals row.
     private struct LaneRules {
-        let statuses: [String]
+        let slots: [BoardColumnSlot]
+        let def: WorkbenchBoardColumns
         let search: WorkbenchBoardSearch?
         let showDone: Bool
         let showArchived: Bool
@@ -258,7 +281,7 @@ package struct WorkbenchBoardKanban {
         collectLeaves(nodes, chain: [], search: rules.search, ancestorMatched: ancestorMatched, into: &collected)
         let cards = collected.filter { isShown($0, showDone: rules.showDone, showArchived: rules.showArchived) }
         // Uncapped: the per-lane fold replaces the board-wide `doneCap`.
-        let columns = rules.statuses.map { column($0, cards: Self.cards(cards, inColumn: $0), showDone: true) }
+        let columns = rules.slots.map { column($0, cards: Self.cards(cards, inColumn: $0, rules.def), showDone: true) }
         let summary = WorkbenchGroupSummary(over: nodes, showArchived: rules.archiveToggle)
         return Lane(
             root: root,
@@ -270,15 +293,19 @@ package struct WorkbenchBoardKanban {
         )
     }
 
-    private static func column(_ status: String, cards: [Card], showDone: Bool) -> Column {
-        let title = status == otherStatus ? "Other" : WorkbenchBoardCard.statusLabel(status)
-        guard status == "done" else {
-            return Column(status: status, title: title, cards: cards.sorted(by: byPriorityThenID), hiddenCount: 0)
+    /// `slot` filled with `cards`; each done column keeps its own `doneCap`.
+    private static func column(_ slot: BoardColumnSlot, cards: [Card], showDone: Bool) -> Column {
+        func make(_ shown: [Card], hiddenCount: Int) -> Column {
+            Column(
+                key: slot.key, status: slot.status, columnID: slot.columnID, title: slot.title,
+                description: slot.description, categoryLabel: slot.categoryLabel, cards: shown, hiddenCount: hiddenCount
+            )
         }
+        guard slot.status == "done" else { return make(cards.sorted(by: byPriorityThenID), hiddenCount: 0) }
         let recent = cards.filter { !$0.node.archived }.sorted(by: byRecency)
         let kept = showDone ? recent : Array(recent.prefix(doneCap))
         let shown = (kept + cards.filter(\.node.archived)).sorted(by: byRecency)
-        return Column(status: status, title: title, cards: shown, hiddenCount: recent.count - kept.count)
+        return make(shown, hiddenCount: recent.count - kept.count)
     }
 
     private static func archivedLeafCount(_ nodes: [WorkbenchBoardNode]) -> Int {

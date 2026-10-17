@@ -272,14 +272,37 @@ func TestRecipe_TriggerExactlyOne(t *testing.T) {
 		{"80-rune multibyte name", "name: " + strings.Repeat("я", 80) + "\ntrigger:\n  manual: true\n", strings.Repeat("я", 80), Trigger{Kind: TriggerManual}},
 	}
 	for _, typ := range EventTypes {
-		good = append(good, acceptedTrigger{"event " + typ, "name: T\ntrigger:\n  event:\n    type: " + typ + "\n    where: {channel: \"rel*\"}\n", "T",
-			Trigger{Kind: TriggerEvent, Event: &EventTrigger{Type: typ, Where: map[string]string{"channel": "rel*"}}}})
+		key := EventFields[typ][len(EventFields[typ])-1]
+		good = append(good, acceptedTrigger{"event " + typ, "name: T\ntrigger:\n  event:\n    type: " + typ + "\n    where: {" + key + ": \"rel*\"}\n", "T",
+			Trigger{Kind: TriggerEvent, Event: &EventTrigger{Type: typ, Where: map[string]string{key: "rel*"}}}})
 	}
 	for _, c := range good {
 		r := mustParse(t, recipeWith(c.frontmatter, "x\n"), Scope{Kind: ScopePersonal})
 		if r.Name != c.name || !reflect.DeepEqual(r.Trigger, c.trigger) {
 			t.Errorf("%s: name %q trigger %+v, want %q %+v", c.label, r.Name, r.Trigger, c.name, c.trigger)
 		}
+	}
+}
+
+func TestRecipe_EventWhereUnknownKeyRefused(t *testing.T) {
+	// name is line 2, trigger line 3, event line 4, where line 6.
+	ev := func(typ, where string) string {
+		return "name: T\ntrigger:\n  event:\n    type: " + typ + "\n    where: " + where + "\n"
+	}
+	assertBadCases(t, []badCase{
+		{"count not matchable", ev("gmail.new_messages", "{count: \"3\"}"), `"count"`, 6},
+		{"content field", ev("gmail.new_messages", "{subject: x}"), `"subject"`, 6},
+		{"field of another type", ev("gmail.new_messages", "{channel: releases}"), `"channel"`, 6},
+		{"malformed glob", ev("slack.new_messages", "{channel: \"[bad\"}"), `"channel"`, 6},
+		{"malformed glob later", ev("slack.new_messages", "{account: work, channel: \"rel[\"}"), "glob", 6},
+		// An alias is checked as the mapping it names (the anchor's line 3).
+		{"alias", "name: T\nbudget: &w {tokens: 1000}\ntrigger:\n  event:\n    type: gmail.new_messages\n    where: *w\n",
+			`"tokens"`, 3},
+	})
+	r := mustParse(t, recipeWith(ev("slack.new_messages", "{account: Work, channel: \"rel*\", channel_id: C1}"), "x\n"), Scope{Kind: ScopePersonal})
+	want := map[string]string{"account": "Work", "channel": "rel*", "channel_id": "C1"}
+	if !reflect.DeepEqual(r.Trigger.Event.Where, want) {
+		t.Errorf("where = %v, want %v", r.Trigger.Event.Where, want)
 	}
 }
 

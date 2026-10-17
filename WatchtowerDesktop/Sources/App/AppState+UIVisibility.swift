@@ -1,4 +1,10 @@
 extension AppState {
+    /// From launch on, every visibility change reaches the pollers.
+    func startUIVisibility() {
+        uiVisibility.onChange = { [weak self] in self?.applyUIVisibility($0) }
+        uiVisibility.start()
+    }
+
     /// A window of the app went on or off screen (board #731): the pollers
     /// that only feed what a window shows skip their refreshes off screen
     /// and refresh once on the way back. What must run in the background is

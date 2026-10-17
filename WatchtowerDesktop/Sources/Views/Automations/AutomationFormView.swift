@@ -122,7 +122,7 @@ private struct AutomationFormContent: View {
     private var saveState: AutomationEditorCenter.SaveState? { editor.saving[id] }
     private var isBusy: Bool { saveState == .saving || saveState == .validating }
     /// The controls write the frontmatter only while the form describes it.
-    private var controlsEnabled: Bool { form.isEditable && !form.frontmatterEditedInRecipe }
+    private var controlsEnabled: Bool { !form.frontmatterEditedInRecipe }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -183,11 +183,7 @@ private struct AutomationFormContent: View {
     }
 
     @ViewBuilder private var notes: some View {
-        if !form.isEditable {
-            Label("Workbench automations are edited in their folder for now; this form only shows it.",
-                  systemImage: "info.circle")
-                .foregroundStyle(.secondary)
-        } else if form.lostFormEdit {
+        if form.lostFormEdit {
             Label("Your last change in the form did not land: the recipe below was edited at the same moment. The "
                 + "form is paused; save, or discard to use the form again.", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
@@ -215,7 +211,7 @@ private struct AutomationFormContent: View {
             case .schedule: "On a schedule"
             case .button: "When I press a button"
             case .manual: "Only when I run it"
-            case .event: "On new mail / message (soon)"
+            case .event: "On an event"
             }
         }
     }
@@ -235,7 +231,7 @@ private struct AutomationFormContent: View {
         case .schedule: form.fields.trigger = .schedule(schedule.cron)
         case .button: form.fields.trigger = .button(label: "Run", confirm: false)
         case .manual: form.fields.trigger = .manual
-        case .event: break
+        case .event: form.fields.trigger = AutomationFormModel.defaultEventTrigger
         }
     }
 
@@ -249,7 +245,6 @@ private struct AutomationFormContent: View {
                     } else {
                         Button(choice.title) { choose(choice) }
                             .buttonStyle(.bordered)
-                            .disabled(choice == .event)
                     }
                 }
             }
@@ -334,7 +329,7 @@ private struct AutomationFormContent: View {
         VStack(alignment: .leading, spacing: 6) {
             Picker("Event", selection: Binding(
                 get: { type },
-                set: { form.fields.trigger = .event(type: $0, where: filter) }
+                set: { form.fields.trigger = AutomationFormModel.eventTrigger(type: $0, keeping: filter) }
             )) {
                 ForEach(AutomationFormModel.eventTypes, id: \.self) { Text($0).tag($0) }
             }
@@ -362,7 +357,8 @@ private struct AutomationFormContent: View {
                     .accessibilityLabel("Remove filter \(key)")
                 }
             }
-            Text("Event triggers start working in a later version.")
+            Text("Runs after a sync brings something new, at most once per sync cycle. "
+                + "Narrow it with a where filter in the recipe text.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -518,7 +514,7 @@ private struct AutomationFormContent: View {
                 Text("Script")
                     .font(.headline)
                 Spacer()
-                if let onChangeInWords, form.isEditable {
+                if let onChangeInWords {
                     Button("Change it in words instead") { onChangeInWords(id) }
                         .buttonStyle(.link)
                 }
@@ -528,7 +524,7 @@ private struct AutomationFormContent: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-            RecipeEditorView(buffer: form.buffer, readOnly: !form.isEditable, slug: form.detail.slug)
+            RecipeEditorView(buffer: form.buffer, readOnly: false, slug: form.detail.slug)
                 .frame(height: 300)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         }
@@ -601,7 +597,7 @@ private struct AutomationFormContent: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 // A new recipe saves as it is too: there is no file yet.
-                .disabled(!form.isEditable || !(form.buffer.isDirty || form.detail.isNewRecipe)
+                .disabled(!(form.buffer.isDirty || form.detail.isNewRecipe)
                     || !form.problems.isEmpty || isBusy)
         }
     }

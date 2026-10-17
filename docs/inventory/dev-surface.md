@@ -196,7 +196,7 @@ follows the same rules, and so does the removal of the pre-rename
 `watchtower-project` skill when a workbench folder is resynced
 (`removeSkill`: only a marked, un-edited copy is deleted).
 
-Since 2026-10-15 (board #266) the workbench install ships two skills under these rules — the v10 core and the watchtower-flow preset; the upgrade fixtures cover v1..v9 → v10 core + preset (an edited pre-v10 copy is kept as a single file, with no preset).
+Since 2026-10-15 (board #266) the workbench install ships two skills under these rules — the v12 core and the watchtower-flow preset; the upgrade fixtures cover v1..v11 → v12 core + preset (an edited pre-v10 copy is kept as a single file, with no preset).
 
 **Test guards:**
 - `internal/devpack/install_test.go::TestInstallWritesThePackAndIsIdempotent`
@@ -204,7 +204,7 @@ Since 2026-10-15 (board #266) the workbench install ships two skills under these
 - `internal/devpack/install_test.go::TestRemoveDeletesOnlyMarkedFiles`
 - `internal/devpack/install_test.go::TestStatusReportsMissingWithoutWriting`
 - supporting (the workbench skill): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne` — each shipped earlier text (`internal/devpack/testdata/watchtower-workbench-v1.md` … `-v5.md`; v4 and v5 added 2026-10-11 with pack v6) is replaced when un-edited and kept byte-identical when edited
-- supporting (2026-10-15, v1..v9 → v10 core + preset): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne`
+- supporting (2026-10-15, v1..v11 → v12 core + preset): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne`
 
 **Why locked:** `watchtower integrate` writes into a directory
 (`~/.claude/skills` by default) the user may also hand-edit or fill with
@@ -283,15 +283,17 @@ does not exist or together with `--chat`, keeps the connection writable, and
 mounts the registry (`buildToolRegistry`) on the `project` surface (the
 stored surface value keeps its pre-rename spelling) with
 `tools.Binding{Surface: "project", WorkbenchID: N, DirectApply: true}`: the
-sixteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
+eighteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
 `workbench_docs.go`, since 2026-10-03 the owner-ask tools `ask_owner`,
-`get_ask`, `list_asks` and `withdraw_ask` in `workbench_asks.go`, `finish_session` in `workbench_finish.go`, and since 2026-10-16 `get_review` in
-`workbench_review.go`) plus every
+`get_ask`, `list_asks` and `withdraw_ask` in `workbench_asks.go`, `finish_session` in `workbench_finish.go`, since 2026-10-16 `get_review` in
+`workbench_review.go`, and the diff reviewer's two writes `annotate_changes`
+(`workbench_review_annotate.go`) and `reply_review_comment`
+(`workbench_review_reply.go`)) plus every
 surface-less read tool and `get_action`; no other write tool is visible
 there. The legacy spelling `--project N` (a
 folder registered as `watchtower-project` before the 2026-10-02 rename and
 not yet resynced) is the same mode with `Binding.LegacyNames` set: the same
-sixteen tools (the four ask tools and `finish_session` under the same names in both), the five renamed ones listed under their old names
+eighteen tools (the four ask tools, `finish_session`, `get_review`, `annotate_changes` and `reply_review_comment` under the same names in both), the five renamed ones listed under their old names
 (`project_info`, `project_board`, `update_project`, `add_project_source`,
 `remove_project_source`; `tools.LegacyWorkbenchToolNames`), the audit row
 recording the canonical new name, and `Registry.Get` resolving both
@@ -316,7 +318,11 @@ spellings. Three rules keep it narrow:
    `WATCHTOWER_TERMINAL_SESSION_ID` names a `terminal_sessions` row of
    workbench N, else it is filed session-less; the same resolution picks the
    session `finish_session` marks (none resolves → refused, nothing written)
-   and the session a write tool links its targets to (PROJ-14).
+   and the session a write tool links its targets to (PROJ-14);
+   `annotate_changes` needs that session too ("annotate_changes needs a
+   Watchtower terminal session") and replaces only that session's notes, and
+   `reply_review_comment` answers only a sent comment of a sent or delivered
+   round of workbench N.
    `get_ask`/`list_asks`/
    `withdraw_ask` see only workbench N's asks (another workbench's reads
    `no ask with id N`).
@@ -396,6 +402,7 @@ unreviewed write path into the owner's whole app — or off the machine.
 - 2026-10-14 (security review board #146/#152, owner decision in ask #106): note only, no contract semantics changed. DEV-06 now names the full read set on the workbench surface (DMs, transcripts, memory, writing style next to an agent with Bash/WebFetch) as an accepted risk rather than leaving it implicit.
 - 2026-10-12 (board #399, Codex as a Workbench agent, spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-design.md`, owner approved in ask #189): note only, no contract semantics changed. DEV-05's hook amendment covers a Codex session's hooks, which arrive as launch flags of the owner-started session and are trusted by `integrate codex`. DEV-06 gains the `--agent claude|codex` flag (comment labels only; tools, scope and apply unchanged) and notes that a Codex session approves Watchtower's tools without a per-call prompt (D3). The workbench skill is pack **v7** (names both tool spellings and Codex's `request_user_input`).
 - 2026-10-11 (owner asks v2, board #395, spec `docs/superpowers/specs/2026-10-10-owner-asks-v2-design.md` Part 7): the workbench skill is pack **v6** (`x-watchtower-pack: v6`; `origin/main` already shipped v5 with board #499, so the spec's "v5" became the next free version) — "Asking the owner" teaches the Chat / Quick / Full levels, a do-not-ask list, one ask with up to 4 questions, re-filing a withdrawn ask only as a revision with `changes`, and asks raised from chat (`origin: chat`); the `ask_owner` line names `level`. The shipped v4 and v5 texts join the DEV-04 re-install fixtures (`watchtower-workbench-v4.md`, `-v5.md`), so an un-edited v1–v5 copy is updated by resync/Repair and an edited one is kept. No DEV-04 wording change; no guard relaxed. DEV-06's `ask_owner` gains the optional `level` argument and the `level`/`level_note`/`hint` result keys, `get_ask`/`list_asks` add `level`, `origin` and `chat_asked_at`; the tool set is unchanged.
+- 2026-10-16 (diff reviewer Plan 3, board #328, **owner approved in ask #214**): DEV-06's workbench tool set grows from sixteen to **eighteen** — `annotate_changes` (`internal/tools/workbench_review_annotate.go`: the agent's line notes and reading-order chapters for the reviewer, checked against a fresh snapshot of the session's folder and stored in `review_notes`, replacing the session's earlier ones; needs a `terminal_sessions` row of workbench N named by `WATCHTOWER_TERMINAL_SESSION_ID`) and `reply_review_comment` (`workbench_review_reply.go`: a reply to one sent comment of workbench N, optionally resolving it and its open copy). Both are `AccessWrite` tools on the workbench surface, applied directly and audited like `finish_session`; rule 1 names their scoping. Same names in both vocabularies. The cited guard `TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames` keeps its historical name; it now asserts eighteen, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` names both tools. No guard relaxed. The workbench skill is pack **v12** (PROJ-04 in `workbench.md`; v11 went to board #267 on main first).
 - 2026-10-16 (diff reviewer, board #328, spec review ask #179): DEV-06's workbench tool set grows from fifteen to **sixteen** — `get_review` (`internal/tools/workbench_review.go`, a read of the session workbench's sent rounds whose only write is the unaudited `sent → delivered` mark, like `get_ask`: an AGENT-06 scope exception). The cited guard `TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames` keeps its historical name; it now asserts sixteen.
 - 2026-10-03 (workbench session report, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`; owner-approved via asks #2 and #4): DEV-06's workbench tool set grows from fourteen to **fifteen** — `finish_session` (a workbench write, applied directly and audited like the others; `summary` 1–600 runes in at most 4 lines, optional `target_id` of workbench N) marks the calling terminal session finished. Rule 1 names its session resolution: only a `terminal_sessions` row of workbench N named by `WATCHTOWER_TERMINAL_SESSION_ID`, else it is refused with `finish_session needs a Watchtower terminal session` before any row or audit row (PROJ-14 in `workbench.md`). `update_target`, `create_targets`, `add_comment` and `ask_owner` now also link their targets to that session, best-effort after their own write (PROJ-14). `TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames` was renamed in place to `…FifteenTools…` (count only); no guard relaxed.
 - 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`). **Approved by the owner (spec Parts 4 and 9):** DEV-06's workbench tool set changes from eleven to **fourteen** — `attach_document` is removed (documents were replaced by asks; `list_comments`' `document_id` is refused with "documents were replaced by asks — use ask_owner (kind review)") and `ask_owner`, `get_ask`, `list_asks`, `withdraw_ask` are added under the same names in both vocabularies (no legacy spelling). Rule 1 now names asks instead of documents and restates the document-path rule for `ask_owner`'s `doc_path` (the check `TestDev06_AttachDocumentStaysInsideTheFolder` pinned for `attach_document`, now pinned on `ResolveWorkbenchDocumentPath` itself as `TestDev06_DocumentPathStaysInsideTheFolder`, which also accepts `.markdown`; the old guard's "a refused attach writes no audit row" assertion went with the tool, and `TestAskOwner_RefusesBadInputWithoutWriting` pins the same for asks). `TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames` was renamed in place to `…FourteenTools…` (count only). No guard relaxed beyond the removed tool. **Implementation rulings, pending owner confirmation:** rule 2's exception for `get_ask`'s unaudited `delivered` write (with the matching AGENT-06 scope note in `agent-actions.md`), and rule 1's ask session binding (bound only when `WATCHTOWER_TERMINAL_SESSION_ID` names a row of workbench N, else session-less).

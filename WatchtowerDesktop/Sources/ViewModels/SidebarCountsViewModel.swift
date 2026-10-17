@@ -67,6 +67,18 @@ final class SidebarCountsViewModel {
         self.pause = pause
     }
 
+    /// A view model with its counts loaded and its observation started;
+    /// nil when the calling task is cancelled meanwhile (a test's database
+    /// going away, board #526).
+    static func started(dbPool: DatabasePool) async -> SidebarCountsViewModel? {
+        guard !Task.isCancelled else { return nil }
+        let countsVM = SidebarCountsViewModel(dbPool: dbPool)
+        await countsVM.loadInitial()
+        guard !Task.isCancelled else { return nil }
+        countsVM.startObserving()
+        return countsVM
+    }
+
     /// Loads the counts once and updates the published properties.
     /// Awaiting this guarantees the sidebar badges reflect real DB state before the splash screen hides.
     func loadInitial() async {

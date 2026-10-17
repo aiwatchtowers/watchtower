@@ -521,8 +521,29 @@ func parseEvent(n *yaml.Node) (*EventTrigger, error) {
 		if err := decodeField(v, "trigger.event.where", "a map of field: string", &e.Where); err != nil {
 			return nil, err
 		}
+		if err := validateWhere(v, e); err != nil {
+			return nil, err
+		}
 	}
 	return e, nil
+}
+
+// validateWhere refuses a where key the event type cannot match and a
+// malformed glob, walking the map in file order so the first bad key is named.
+func validateWhere(n *yaml.Node, e *EventTrigger) error {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias // where: *anchor — check the mapping it names
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := n.Content[i].Value
+		if !slices.Contains(EventFields[e.Type], key) {
+			return &ParseError{Line: fileLine(n.Content[i]), Msg: fmt.Sprintf("trigger.event.where key %q is not a matchable %s field (%s)", key, e.Type, strings.Join(EventFields[e.Type], ", "))}
+		}
+		if !validGlob(e.Where[key]) {
+			return &ParseError{Line: fileLine(n.Content[i]), Msg: fmt.Sprintf("trigger.event.where key %q has a malformed glob %q", key, e.Where[key])}
+		}
+	}
+	return nil
 }
 
 func parseManual(n *yaml.Node) error {

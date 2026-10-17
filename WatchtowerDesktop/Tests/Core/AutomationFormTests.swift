@@ -127,12 +127,12 @@ final class AutomationFormTests: XCTestCase {
         XCTAssertFalse(plan.needsSheet)
     }
 
-    func testWorkbenchScopeNotEditableInP3() throws {
+    /// R-P3-5 lifted in P5 part 2 (PROJ-03 amendment, ask #272): the form
+    /// edits a workbench recipe like a personal one.
+    func testWorkbenchScopeIsEditable() throws {
         let form = AutomationFormModel(detail: try Fixtures.detail(scope: "workbench"))
-        XCTAssertFalse(form.isEditable)
         form.fields.name = "Changed"
-        XCTAssertEqual(form.renderedText(), Fixtures.recipe, "a workbench recipe's text is never rewritten by the form")
-        XCTAssertTrue(AutomationFormModel(detail: try Fixtures.detail()).isEditable)
+        XCTAssertTrue(form.renderedText().contains("name: \"Changed\"\n"), "the form writes a workbench recipe's fields")
     }
 
     // MARK: - Form and buffer
@@ -201,6 +201,32 @@ final class AutomationFormTests: XCTestCase {
         form.fields = RecipeFrontmatter(detail: form.detail)
         form.fields.trigger = .button(label: String(repeating: "x", count: 25), confirm: false)
         XCTAssertEqual(form.problems, ["The button label must be 1–24 characters."])
+    }
+
+    // MARK: - Event trigger
+
+    func testEventTriggerChoiceIsValidAndRenders() throws {
+        let form = AutomationFormModel(detail: try Fixtures.detail())
+        form.fields.trigger = AutomationFormModel.defaultEventTrigger
+        XCTAssertEqual(form.fields.trigger, .event(type: "slack.new_messages", where: [:]))
+        XCTAssertEqual(form.problems, [])
+        XCTAssertTrue(form.renderedText().contains("trigger:\n  event:\n    type: \"slack.new_messages\"\n"))
+    }
+
+    func testEventTypesMirrorGo() {
+        // internal/automations: EventTypes and EventFields.
+        XCTAssertEqual(AutomationFormModel.eventTypes, [
+            "slack.new_messages", "gmail.new_messages", "jira.issue_changed", "calendar.event_changed",
+            "confluence.page_changed"
+        ])
+        XCTAssertEqual(Set(AutomationFormModel.eventFields.keys), Set(AutomationFormModel.eventTypes))
+    }
+
+    func testChangingEventTypeDropsFieldsTheNewTypeLacks() {
+        let next = AutomationFormModel.eventTrigger(
+            type: "jira.issue_changed", keeping: ["account": "work", "channel": "releases"]
+        )
+        XCTAssertEqual(next, .event(type: "jira.issue_changed", where: ["account": "work"]))
     }
 
     // MARK: - Schedule picker

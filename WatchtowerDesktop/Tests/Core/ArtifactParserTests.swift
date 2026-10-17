@@ -143,6 +143,12 @@ final class ArtifactParserTests: XCTestCase {
                        [draft("c", "code", "C", meta: ["language": "swift"], content: "let a = 1\n```")])
     }
 
+    func testHTMLKindIsKnownAndDoesNotTrackInnerFences() {
+        let text = ":::artifact key=\"deck\" kind=\"HTML\" title=\"Deck\"\n<pre>\n```\n</pre>\n:::"
+        XCTAssertEqual(ArtifactParser.parse(text, final: true).artifacts,
+                       [draft("deck", "html", "Deck", content: "<pre>\n```\n</pre>")])
+    }
+
     func testTwoArtifactsAndSameKeyTwiceBothSurface() {
         let text = ":::artifact key=\"a\" kind=\"table\" title=\"A\"\nx,y\n:::\nmid\n:::artifact key=\"a\" kind=\"table\" title=\"A\"\nx,z\n:::"
         XCTAssertEqual(ArtifactParser.parse(text, final: true).segments, [

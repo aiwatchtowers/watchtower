@@ -46,6 +46,9 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// the conversation's new id after `/clear` or a resume (Go
     /// `terminalSessionEnv`, a dual path).
     package static let sessionRowEnv = "WATCHTOWER_TERMINAL_SESSION_ID"
+    /// Names the automation run that started the session (AGENT-07): the
+    /// CLI refuses owner-only writes under it (Go `RunEnvMarker`).
+    package static let automationRunEnv = "WATCHTOWER_AUTOMATION_RUN_ID"
     /// The first prompt of a new `claude` session.
     package static let firstPromptEnv = "WATCHTOWER_FIRST_PROMPT"
 
@@ -62,19 +65,39 @@ package struct TerminalLaunch: Equatable, Sendable {
     package let currentDirectory: String
     /// `NAME=value` entries added to the terminal's environment.
     package var environment: [String] = []
+    /// The `terminal_sessions` row the launch belongs to; the session host
+    /// keys its sessions by it. Nil for a launch with no row.
+    package let rowID: Int64?
+
+    package init(
+        executable: String,
+        args: [String],
+        currentDirectory: String,
+        environment: [String] = [],
+        rowID: Int64? = nil
+    ) {
+        self.executable = executable
+        self.args = args
+        self.currentDirectory = currentDirectory
+        self.environment = environment
+        self.rowID = rowID
+    }
 
     /// Does not validate a session id: callers check `isValidSessionID`
     /// first. `rowID` reaches an agent launch's environment as
     /// `sessionRowEnv`. A Codex mode runs `codex` as `launch-args` resolved
     /// it (`codex`), its script in `codexCommandEnv`; without one there is
     /// no binary to run, and the launch exits 127 ("Codex was not found").
+    /// `automationRunID` reaches every agent launch, a resume included, as
+    /// `automationRunEnv`; a shell never carries it.
     package static func make(
         shell: String?,
         folder: String,
         mode: Mode,
         rowID: Int64? = nil,
         codex: CodexLaunchArgs? = nil,
-        setup: String? = nil
+        setup: String? = nil,
+        automationRunID: Int64? = nil
     ) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell
         var args: [String]
@@ -106,7 +129,7 @@ package struct TerminalLaunch: Equatable, Sendable {
             args[args.count - 1] = setupPrefix + args[args.count - 1]
             setupText = setup
         }
-        var launch = Self(executable: executable, args: args, currentDirectory: folder)
+        var launch = Self(executable: executable, args: args, currentDirectory: folder, rowID: rowID)
         if let rowID, mode != .shell {
             launch.environment = ["\(sessionRowEnv)=\(rowID)"]
         }
@@ -117,6 +140,9 @@ package struct TerminalLaunch: Equatable, Sendable {
             launch.environment.append("\(firstPromptEnv)=\(mode.agent == .codex ? prompt : positionalPrompt(prompt))")
         }
         if let setupText { launch.environment.append("\(setupCommandEnv)=\(setupText)") }
+        if let automationRunID, mode != .shell {
+            launch.environment.append("\(automationRunEnv)=\(automationRunID)")
+        }
         return launch
     }
 
