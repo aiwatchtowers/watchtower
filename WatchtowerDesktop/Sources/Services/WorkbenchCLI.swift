@@ -776,7 +776,7 @@ struct WorkbenchCLI {
             if let stdin { return try await runner.run(args: args, stdin: stdin) }
             return try await runner.run(args: args)
         } catch CLIRunnerError.nonZeroExit(_, let stderr) where !stderr.isEmpty {
-            throw OwnerInstructionsError(message: stderr.replacingOccurrences(of: "Error: ", with: "", options: .anchored))
+            throw OwnerInstructionsError(message: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 

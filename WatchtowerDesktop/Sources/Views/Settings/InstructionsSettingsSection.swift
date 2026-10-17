@@ -124,8 +124,7 @@ struct InstructionsSettingsSection: View {
         defer { busy = false }
         do {
             state = try await cli.decideSuggestion(id: row.id, add: add)
-            // A workbench-scope Add changes that workbench's text, a global one the global text.
-            if row.workbenchID == nil { drafts[row.field] = nil }
+            // An unsaved draft stays: only a field with no draft follows the new stored text.
             errors[field] = nil
         } catch {
             errors[field] = error.localizedDescription
