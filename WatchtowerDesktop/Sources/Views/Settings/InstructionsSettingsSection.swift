@@ -6,8 +6,7 @@ import WatchtowerCore
 /// goes through `watchtower instructions … --json`; the texts are not part of
 /// config.yaml, so each field has its own Save button.
 struct InstructionsSettingsSection: View {
-    /// Workbench id → name, for the "only <workbench>" suggestion label.
-    let workbenchNames: [Int64: String]
+    @Environment(AppState.self) private var appState
 
     @State private var state: OwnerInstructionsState?
     @State private var drafts: [InstructionField: String] = [:]
@@ -15,6 +14,11 @@ struct InstructionsSettingsSection: View {
     @State private var loadError: String?
     @State private var busy = false
     @State private var showPreview = false
+
+    /// Workbench id → name, for the "only <workbench>" suggestion label.
+    private var workbenchNames: [Int64: String] {
+        Dictionary(uniqueKeysWithValues: (appState.workbenchesViewModel?.summaries ?? []).map { ($0.project.id, $0.project.name) })
+    }
 
     private var cli: WorkbenchCLI? { ProcessCLIRunner.makeDefault().map { WorkbenchCLI(runner: $0) } }
 

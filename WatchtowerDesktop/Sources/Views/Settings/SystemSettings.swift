@@ -50,12 +50,8 @@ struct SystemSettings: View {
             if config.workbenchDefaultAgent == .codex, selectedProviderID != "codex" {
                 codexCLIPathRow
             }
-            InstructionsSettingsSection(workbenchNames: workbenchNames)
+            InstructionsSettingsSection()
         }
-    }
-
-    private var workbenchNames: [Int64: String] {
-        Dictionary(uniqueKeysWithValues: (appState.workbenchesViewModel?.summaries ?? []).map { ($0.project.id, $0.project.name) })
     }
 
     private var syncSection: some View {
