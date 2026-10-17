@@ -26,6 +26,15 @@ until the next morning's hour.
      (`ReadinessSource.isConnected`, `Readiness.swift:77`);
   3. `ready` — the feature's content table has any row; content wins even while
      a new run is going;
+  3a. `needsSource(.jiraBoards)` — Jira's features only (`source == .jira`):
+     a site is connected but no board is selected on a non-removed site
+     (`ReadinessQueries.jiraBoardsSelected`, `jira_boards` is in the observed
+     region). The daemon's Jira sync skips an account with no selected board
+     (`internal/jira/sync.go`), so an ETA would never come true (#572). The
+     line is "Choose Jira boards to get this" (`ReadinessSource.actionTitle`),
+     and the action (`performEmptyStateAction(.connect(.jiraBoards))`, Home's
+     source row too) opens the **Boards** tab, not Settings. Stream Digests
+     (`jiraOrMail`) does not wait on boards;
   4. `preparing(detail)` — the newest `pipeline_runs` row is `running`, the
      daemon is running and `started_at` is under `preparingMaxAge` (2 h,
      `FeatureReadiness.swift:9`). An older `running` row is a dead process's

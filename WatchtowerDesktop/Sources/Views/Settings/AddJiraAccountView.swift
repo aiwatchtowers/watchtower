@@ -31,8 +31,24 @@ struct AddJiraAccountView: View {
     /// with a cleared error after the SIGTERM) does NOT auto-dismiss — Cancel
     /// means "let me adjust the form", matching AddSlackAccountView's behavior.
     @State private var cancelled = false
+    /// After a successful connect the sheet turns into the board step (#572):
+    /// a new site syncs nothing until boards are selected.
+    @State private var choosingBoards = false
 
     var body: some View {
+        if choosingBoards {
+            JiraBoardChoiceView { changed in
+                if changed { vm?.boardsChosen(daemonPolicy: daemonPolicy) }
+                dismiss()
+            }
+            .padding(20)
+            .frame(width: 420, height: 420)
+        } else {
+            connectForm
+        }
+    }
+
+    private var connectForm: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Add Jira Site")
@@ -48,7 +64,7 @@ struct AddJiraAccountView: View {
 
             Text("""
                 Opens Atlassian's authorization page in your browser. After you approve, \
-                the site is added under its address (acme for acme.atlassian.net) and syncing starts. Leave Site \
+                the site is added under its address (acme for acme.atlassian.net) and you choose the boards to sync. Leave Site \
                 empty unless your Atlassian account reaches several sites.
                 """)
                 .font(.caption)
@@ -94,11 +110,11 @@ struct AddJiraAccountView: View {
         Task {
             await vm.addAccount(site: trimmedSite, daemonPolicy: daemonPolicy)
             // addAccount is awaited: on success `error` is nil. A user Cancel
-            // also clears error (SIGTERM/SIGKILL branch), so gate the dismiss
-            // on `cancelled` to keep the sheet open when the flow was
+            // also clears error (SIGTERM/SIGKILL branch), so gate the board
+            // step on `cancelled` to keep the form open when the flow was
             // cancelled.
             if !cancelled && vm.error == nil {
-                dismiss()
+                choosingBoards = true
             }
         }
     }

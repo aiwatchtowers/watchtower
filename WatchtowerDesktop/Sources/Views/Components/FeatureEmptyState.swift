@@ -122,7 +122,7 @@ struct FeatureEmptyState<Extra: View>: View {
     static func label(for action: EmptyStateAction, retry: Bool = false) -> String {
         switch action {
         case .turnOn: retry ? "Try again" : "Turn on"
-        case .connect(let source): "Connect \(source.displayName)"
+        case .connect(let source): source.actionTitle
         case .openSettings(_, let label): label
         case .tabAction(let label): label
         }

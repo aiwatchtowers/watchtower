@@ -52,6 +52,7 @@ final class ReadinessCenter {
         /// writes it), so the tick's re-read picks its changes up.
         var runningBackfillStarts: [Date]
         var memoryHasRun: Bool
+        var jiraBoardsSelected: Bool
     }
 
     @ObservationIgnored private let environment: any ReadinessEnvironment
@@ -111,7 +112,8 @@ final class ReadinessCenter {
         DBSnapshot(contentPresent: try ReadinessQueries.contentPresent(db),
                    latestRuns: try ReadinessQueries.latestRuns(db),
                    runningBackfillStarts: try ReadinessQueries.runningBackfillStarts(db),
-                   memoryHasRun: try ReadinessQueries.memoryHasRun(db))
+                   memoryHasRun: try ReadinessQueries.memoryHasRun(db),
+                   jiraBoardsSelected: try ReadinessQueries.jiraBoardsSelected(db))
     }
 
     /// The tick's one-shot read: picks up the daemon's writes, and a table a
@@ -183,7 +185,8 @@ final class ReadinessCenter {
             pollIntervalMinutes: FeatureReadiness.parsePollInterval(environment.pollInterval),
             runningBackfillStarts: snapshot.runningBackfillStarts,
             memoryHasRun: snapshot.memoryHasRun,
-            backfillOff: environment.backfillDays.map { $0 <= 0 } ?? false
+            backfillOff: environment.backfillDays.map { $0 <= 0 } ?? false,
+            jiraBoardsSelected: snapshot.jiraBoardsSelected
         )
     }
 }

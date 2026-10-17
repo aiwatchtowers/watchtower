@@ -93,6 +93,13 @@ final class JiraAccountsViewModel {
         await runAuthFlow(args: Self.addArgs(site: site), failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
+    /// The add sheet's board step changed which boards sync: re-wire the
+    /// daemon so its next cycle syncs them now (unless onboarding defers it —
+    /// the daemon starts at the finish then).
+    func boardsChosen(daemonPolicy: DaemonRestartPolicy) {
+        daemonRestartTask = daemonPolicy.apply(using: daemon)
+    }
+
     // MARK: - Re-login
 
     /// Builds the `jira login` args for re-consenting an existing account.

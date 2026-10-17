@@ -65,7 +65,16 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
 
 **Connect step cards** (`OnboardingConnectPlan`, WatchtowerCore). Slack for
 Work communication, one Google card for Work communication or Meetings,
-Jira for Tasks & Jira. The Google card carries no scopes: connecting a
+Jira for Tasks & Jira. The Jira sheet (`AddJiraAccountView`, shared with
+Settings) turns into a board step after a successful connect (#572):
+`JiraBoardChoiceView` fetches every enabled site's boards (`jira --account N
+boards`), lists them with the current selection ticked, and Done writes only
+the changes (`JiraBoardPicker.invocations` → `jira boards select|deselect`)
+then re-wires the daemon under `.restart` (`JiraAccountsViewModel.boardsChosen`;
+under onboarding's `.deferred` the daemon starts at the finish). No
+foreground sync: the daemon path syncs and starts the backfill. Skip leaves
+Jira with no board, which readiness reports as `needsSource(.jiraBoards)`
+(first-run.md). Nothing is preselected. The Google card carries no scopes: connecting a
 Google account means mail and calendar both, whatever the goals (owner
 decision 2026-10-14, #740), so its sheet opens with Calendar and Gmail
 checked like Settings' Add Google sheet, and either can be unchecked there.

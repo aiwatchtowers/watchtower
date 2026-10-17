@@ -28,7 +28,8 @@ package enum ReadinessQueries {
 
     /// Tables `contentPresent` and `latestRuns` read, for the
     /// ReadinessCenter's ValueObservation region.
-    package static let observedTables: [String] = ReadinessFeature.allCases.map(contentTable) + ["pipeline_runs"]
+    package static let observedTables: [String] =
+        ReadinessFeature.allCases.map(contentTable) + ["pipeline_runs", "jira_boards"]
 
     /// One SELECT of EXISTS subselects; a table missing from this DB (an
     /// install mid-migration) reads as absent.
@@ -98,6 +99,21 @@ package enum ReadinessQueries {
         return try Bool.fetchOne(
             db, sql: "SELECT EXISTS(SELECT 1 FROM pipeline_runs WHERE pipeline = 'memory' AND status = 'done')"
         ) ?? false
+    }
+
+    /// Whether a site that is still connected (not removed) has a selected
+    /// board — the daemon's Jira sync skips an account without one
+    /// (`internal/jira/sync.go`). A database without the tables reads true:
+    /// nothing to ask the owner to pick.
+    package static func jiraBoardsSelected(_ db: Database) throws -> Bool {
+        let tables = try existingTables(db, among: ["jira_boards", "jira_accounts"])
+        guard tables.count == 2 else { return true }
+        return try Bool.fetchOne(db, sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM jira_boards b JOIN jira_accounts a ON a.id = b.account_id
+                WHERE b.is_selected = 1 AND a.status != 'removed'
+            )
+            """) ?? false
     }
 
     private static func existingTables(_ db: Database, among names: [String]) throws -> Set<String> {

@@ -307,4 +307,35 @@ final class FeatureReadinessTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Jira boards (#572)
+
+    func testJiraWithoutSelectedBoardsAsksToChooseThem() {
+        var input = inputs(now: today(10))
+        input.connected = ConnectedSources(jira: true)
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.jiraBoards)), "Choose Jira boards to get this")
+        // Jira-or-mail features don't wait on boards.
+        XCTAssertNotEqual(evaluate(.streamDigests, input), .needsSource(.jiraBoards))
+
+        input.jiraBoardsSelected = true
+        XCTAssertEqual(evaluate(.jira, input), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    func testJiraBoardsGapKeepsNotConnectedAndContentFirst() {
+        var input = inputs(now: today(10))
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jira))
+        input.connected = ConnectedSources(jira: true)
+        input.contentPresent = [.jira]
+        XCTAssertEqual(evaluate(.jira, input), .ready)
+    }
+
+    func testSourceActionTitles() {
+        XCTAssertEqual(ReadinessSource.jira.actionTitle, "Connect Jira")
+        XCTAssertEqual(ReadinessSource.jiraBoards.actionTitle, "Choose Jira boards")
+        XCTAssertTrue(ReadinessSource.jiraBoards.isConnected(in: ConnectedSources(jira: true)))
+        XCTAssertFalse(ReadinessSource.jiraBoards.isOwnerIdentity)
+    }
 }

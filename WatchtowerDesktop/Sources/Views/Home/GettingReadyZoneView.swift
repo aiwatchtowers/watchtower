@@ -71,7 +71,7 @@ struct GettingReadyZoneView: View {
                 titles.append(tab.title)
             }
         }
-        return "Connect \(row.source.displayName) to get \(joinedNames(titles))"
+        return "\(row.source.actionTitle) to get \(joinedNames(titles))"
     }
 
     /// Jira fills five tabs; every other feature its Open's tab.
@@ -184,7 +184,7 @@ private struct GettingReadySourceRowView: View {
             Text(text)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Connect \(source.displayName)") { onLink(.connect(source)) }
+            Button(source.actionTitle) { onLink(.connect(source)) }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
