@@ -7,6 +7,8 @@
 # Trimmed on the way in: the localized message packs (nls/) and the
 # TypeScript language-service worker (7 MB) — a view-and-quick-fix editor
 # keeps TS/JS syntax highlighting, not IntelliSense.
+#
+# Runs scripts/fetch-textmate.sh first (the TextMate grammars, next to vs/).
 set -euo pipefail
 
 VERSION="0.57.0"
@@ -15,6 +17,9 @@ SHA256="3ea1712fbacd3290cf4751007e3a5b57cc279767607812d4c3e57925fb0b05c2"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="$(dirname "$SCRIPT_DIR")/WatchtowerDesktop/Sources/CodeEditorWeb/vs"
 STAMP="$DEST/.monaco-version"
+
+# The TextMate tokenizer and grammars the page highlights with (board #738).
+"$SCRIPT_DIR/fetch-textmate.sh"
 
 if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$VERSION" ]; then
     exit 0

@@ -130,6 +130,8 @@ final class AutomationsCLITests: XCTestCase {
         XCTAssertEqual(detail.changedAt, AutomationDates.parse("2026-10-15T08:30:00Z"))
         XCTAssertEqual(detail.projectID, 3)
         XCTAssertEqual(detail.autoTools, [], "an older CLI without auto_tools decodes as []")
+        XCTAssertEqual(detail.llmAutoWrites, [], "an older CLI without llm_auto_writes decodes as []")
+        XCTAssertFalse(detail.feedsSourcesToLLM)
     }
 
     func testDecodesShowAutoTools() async throws {
@@ -139,6 +141,20 @@ final class AutomationsCLITests: XCTestCase {
         let detail = try await cli(show).0.show(2)
         XCTAssertEqual(detail.autoTools, [AutomationAutoTool(tool: "create_idea", alwaysAsks: false),
                                           AutomationAutoTool(tool: "bulk_dismiss", alwaysAsks: true)])
+    }
+
+    func testDecodesShowLLMAutoWrites() async throws {
+        let show = #"{"id":2,"slug":"s","scope":"personal","path":"/p","name":"N","enabled":true,"runnable":true,"#
+            + #""needs_confirmation":true,"llm_auto_writes":["send_slack_message"],"feeds_sources_to_llm":true,"#
+            + #""auto_tools":[{"tool":"send_slack_message","always_asks":false,"external":true}]}"#
+        let detail = try await cli(show).0.show(2)
+        XCTAssertEqual(detail.llmAutoWrites, ["send_slack_message"])
+        XCTAssertTrue(detail.feedsSourcesToLLM)
+        XCTAssertEqual(detail.autoTools, [AutomationAutoTool(tool: "send_slack_message", alwaysAsks: false, external: true)])
+
+        let validate = #"{"ok":true,"feeds_sources_to_llm":true}"#
+        let v = try await cli(validate).0.validate(file: URL(fileURLWithPath: "/tmp/x.md"), against: nil)
+        XCTAssertTrue(v.feedsSourcesToLLM)
     }
 
     func testIgnoresUnknownKeys() async throws {

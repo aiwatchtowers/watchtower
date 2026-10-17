@@ -23,9 +23,9 @@ func seedMessagesDB(t *testing.T) *db.DB {
 	d := openDB(t)
 	require.NoError(t, d.UpsertUser(db.User{ID: "1:U001", Name: "ipetrenko", DisplayName: "Іра Петренко"}))
 	require.NoError(t, d.UpsertUser(db.User{ID: "1:U002", Name: "taras", DisplayName: "Тарас"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000001.0001", UserID: "1:U001", Text: "open questions for Cloudflare: latency and billing", Permalink: "https://slack/1", RawJSON: "{}"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000002.0001", UserID: "1:U002", Text: "unrelated chatter", RawJSON: "{}"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000003.0001", UserID: "1:U001", Text: "Cloudflare follow-up still open", Permalink: "https://slack/3", RawJSON: "{}"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000001.0001", UserID: "1:U001", Text: "open questions for Cloudflare: latency and billing", Permalink: "https://slack/1"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000002.0001", UserID: "1:U002", Text: "unrelated chatter"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000003.0001", UserID: "1:U001", Text: "Cloudflare follow-up still open", Permalink: "https://slack/3"}))
 	return d
 }
 

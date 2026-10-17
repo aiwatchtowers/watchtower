@@ -3,7 +3,6 @@ package sync
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -399,11 +398,6 @@ func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Me
 
 	dbMsgs := make([]db.Message, 0, len(messages))
 	for _, msg := range messages {
-		rawJSON, err := json.Marshal(msg)
-		if err != nil {
-			o.logger.Printf("warning: failed to marshal message %s: %v", msg.Timestamp, err)
-			rawJSON = []byte("{}")
-		}
 		threadTS := sql.NullString{}
 		if msg.ThreadTimestamp != "" && msg.ThreadTimestamp != msg.Timestamp {
 			threadTS = sql.NullString{String: msg.ThreadTimestamp, Valid: true}
@@ -418,8 +412,7 @@ func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Me
 			IsEdited:   msg.Edited != nil,
 			IsDeleted:  false,
 			Subtype:    msg.SubType,
-			Permalink:  "", // permalink generated at query time by context builder
-			RawJSON:    string(rawJSON),
+			Permalink:  "", // permalink generated at query time by the renderer
 		})
 	}
 

@@ -101,8 +101,20 @@ final class CatchUpViewModel {
     /// reload to surface the `building` row and its transition to ready/failed.
     private let pollInterval: Duration = .seconds(1)
 
-    init(dbPool: DatabasePool) {
+    /// The clock the stale-`building` projection reads, and the sleep the
+    /// stale recheck waits with (it returns once its task is cancelled);
+    /// tests drive both.
+    @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
+
+    init(
+        dbPool: DatabasePool,
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) {
         self.dbPool = dbPool
+        self.now = now
+        self.sleep = sleep
     }
 
     // MARK: - Loading
@@ -111,9 +123,10 @@ final class CatchUpViewModel {
     func startObserving() {
         guard observationTask == nil else { return }
         let pool = dbPool
+        let now = now
         observationTask = Task { [weak self] in
             do {
-                for try await recaps in CatchUpQueries.observeRecaps().values(in: pool) {
+                for try await recaps in CatchUpQueries.observeRecaps(now: now).values(in: pool) {
                     guard !Task.isCancelled, let self else { break }
                     await self.apply(recaps)
                 }
@@ -128,7 +141,8 @@ final class CatchUpViewModel {
     /// because cross-process writes are invisible to ValueObservation.
     func reload() async {
         do {
-            let recaps = try await dbPool.read { try CatchUpQueries.fetchRecaps($0) }
+            let at = now()
+            let recaps = try await dbPool.read { try CatchUpQueries.fetchRecaps($0, now: at) }
             await apply(recaps)
         } catch {
             self.error = error.localizedDescription
@@ -168,9 +182,10 @@ final class CatchUpViewModel {
         staleRecheckTask = nil
         guard let due = recaps.compactMap(\.staleAt).min() else { return }
         // One second past the threshold: the projection flips strictly after it.
-        let delay = max(due.timeIntervalSinceNow, 0) + 1
+        let delay = max(due.timeIntervalSince(now()), 0) + 1
+        let sleep = sleep
         staleRecheckTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
+            await sleep(.seconds(delay))
             guard !Task.isCancelled, let self else { return }
             await self.reload()
         }
