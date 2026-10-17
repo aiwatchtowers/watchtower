@@ -56,12 +56,14 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 
 ### Why the app asks you to confirm a command
 
-Some commands are yours alone: `actions approve` and `apply`, `actions trust … execute`, `automations confirm`, `enable`, `delete` and `auto … on`, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the exact command; the command waits up to 100 seconds for your **Confirm** and stops on **Deny**. The same click is what stops a coding agent from approving its own proposal.
+Some commands are yours alone: `actions approve` and `apply`, `actions trust … execute`, `automations confirm`, `enable`, `delete` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
 
 - The buttons in the app never ask: the app confirms its own commands.
-- With the app closed, the terminal prints a six-digit code; type it back to go ahead.
-- A coding agent's shell with the app closed is refused outright.
+- With the app closed, the command is refused with **open Watchtower to confirm this**.
+- A coding agent's shell (Claude Code, Codex, a workbench terminal) is refused outright, without a window.
 - One window at a time: a second command is refused with **another confirmation is already open**.
+
+This keeps an agent that was talked into running such a command from going ahead on its own. It does not stop a malicious program running as you, which could change Watchtower's data directly.
 
 ## Workbench and coding agents
 

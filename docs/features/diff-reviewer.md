@@ -166,8 +166,9 @@ strong model's name); `review_reverts` (one row per undone hunk: `round_id`, `hu
 the agent's reply lives in `review_comments.agent_reply`/`agent_reply_at` (Plan 1 columns).
 
 **Undo (`workbench review revert-hunk`, `reviewdiff.Repo.RevertHunk`; REVIEW-01, REVIEW-02).**
-The owner presses Undo on one hunk of the diff page. Needs the owner's confirmation
-(AGENT-07, `requireOwnerConfirmation`: the Desktop's own Undo press is confirmed at once), refused on a round that is not open ("the round is not open"), while the
+The owner presses Undo on one hunk of the diff page. Refused under an agent marker
+(`refuseUnderAgent`), without the owner's Confirm in the running Desktop (AGENT-07,
+`confirmWithOwner`; the Desktop's own Undo press is confirmed at once), on a round that is not open ("the round is not open"), while the
 session's `agent_state` is `working` ("the agent is working in this session — undo when it
 stops"), for a hunk already undone ("this hunk was already undone in this round"), for a
 hunk not in the round's diff (`--since` takes it from the since view), and for a renamed,

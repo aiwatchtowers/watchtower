@@ -29,7 +29,7 @@ var automationsDryRunGenerator = func(cfg *config.Config) digest.Generator {
 var automationsBeforeDryRunClaim = func() {}
 
 // dryRunUnconfirmedHint ends the refusal of a dry run of an unconfirmed
-// recipe without the owner's confirmation (spec §20.1 D16, ask #271).
+// recipe under an AI agent's markers (spec §20.1 D16, ask #271).
 const dryRunUnconfirmedHint = "only the owner can dry-run a recipe that is not confirmed yet; use Dry run on its card in Automations"
 
 // runJSON is `run --json` — the pinned key set of plan Task 12.
@@ -166,7 +166,10 @@ func runAutomationsDryRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if !automationConfirmed(a) {
-		if err := requireOwnerConfirmation("dry-run a recipe that is not confirmed yet", ""); err != nil {
+		if err := refuseUnderAgent("dry-run a recipe that is not confirmed yet"); err != nil {
+			return fmt.Errorf("%w; %s", err, dryRunUnconfirmedHint)
+		}
+		if err := confirmWithOwner("dry-run a recipe that is not confirmed yet", recipeConfirmDetail(a)); err != nil {
 			return fmt.Errorf("%w; %s", err, dryRunUnconfirmedHint)
 		}
 	}

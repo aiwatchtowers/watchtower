@@ -2,12 +2,13 @@ import Foundation
 import XCTest
 @testable import WatchtowerCore
 
-/// AGENT-07 (board #568): the Desktop's side of the owner's confirmation.
+/// AGENT-07 (board #568, ask #357): the Desktop's side of the owner's confirmation.
 @MainActor
 final class OwnerConfirmServerTests: XCTestCase {
     private var dir: String = ""
     private var server: OwnerConfirmServer?
     private var prompts: [OwnerConfirmPrompt] = []
+    private var socketPath: String { dir + "/s.sock" }
 
     override func setUp() async throws {
         // sun_path is 104 bytes: NSTemporaryDirectory() is too long on macOS.
@@ -21,19 +22,20 @@ final class OwnerConfirmServerTests: XCTestCase {
     }
 
     private func start(grants: OwnerConfirmGrants = OwnerConfirmGrants(), timeout: Duration = .seconds(30)) throws {
-        let server = OwnerConfirmServer(path: dir + "/s.sock", grants: grants, timeout: timeout) { [weak self] in
+        let server = OwnerConfirmServer(path: socketPath, grants: grants, timeout: timeout) { [weak self] in
             self?.prompts.append($0)
         }
         try server.start()
         self.server = server
     }
 
-    /// One CLI round trip on a background thread; the reply line, or nil
-    /// when the connection closed without one.
+    /// One CLI round trip on a background thread; the reply, or nil when the
+    /// connection closed without one.
     private func ask(_ request: OwnerConfirmRequest, hangUpAfter: TimeInterval? = nil) -> Task<OwnerConfirmReply?, Never> {
-        let path = dir + "/s.sock"
+        let path = socketPath
+        let line = try? JSONEncoder().encode(request)
         return Task.detached {
-            UnixLineClient.roundTrip(path: path, line: try? JSONEncoder().encode(request), hangUpAfter: hangUpAfter)
+            UnixLineClient.roundTrip(path: path, line: line, hangUpAfter: hangUpAfter)
                 .flatMap { try? JSONDecoder().decode(OwnerConfirmReply.self, from: $0) }
         }
     }
@@ -47,18 +49,32 @@ final class OwnerConfirmServerTests: XCTestCase {
 
     func testTheDesktopsOwnLaunchIsConfirmedWithoutAWindow() async throws {
         let grants = OwnerConfirmGrants()
-        grants.register(["actions", "approve", "5", "--json"])
+        grants.register(["actions", "approve", "5", "--json"], pid: getpid())
         try start(grants: grants)
         let reply = await ask(OwnerConfirmRequest(verb: "approve an action", args: ["actions", "approve", "5", "--json"])).value
         XCTAssertEqual(reply?.decision, OwnerConfirmReply.confirmed)
         XCTAssertTrue(prompts.isEmpty)
     }
 
+    /// F12: a grant is the Desktop's child's, by pid — the same argv from
+    /// another process still gets the window.
+    func testAGrantForAnotherPidDoesNotConfirm() async throws {
+        let grants = OwnerConfirmGrants()
+        grants.register(["actions", "approve", "5"], pid: getpid() + 1)
+        try start(grants: grants)
+        let pending = ask(OwnerConfirmRequest(verb: "approve an action", args: ["actions", "approve", "5"]))
+        try await waitForPrompt()
+        prompts[0].answer(false)
+        let reply = await pending.value
+        XCTAssertEqual(reply?.decision, OwnerConfirmReply.denied)
+    }
+
     func testAnotherCommandOpensAWindowAndTheClickAnswers() async throws {
         try start()
-        let confirmed = ask(OwnerConfirmRequest(verb: "approve an action", args: ["actions", "approve", "5"], agent: "CLAUDECODE"))
+        let confirmed = ask(OwnerConfirmRequest(verb: "approve an action", detail: "Args: {\"text\":\"hi\"}",
+                                                args: ["actions", "approve", "5"]))
         try await waitForPrompt()
-        XCTAssertEqual(prompts[0].request.agent, "CLAUDECODE")
+        XCTAssertEqual(prompts[0].request.detail, "Args: {\"text\":\"hi\"}")
         prompts[0].answer(true)
         let reply = await confirmed.value
         XCTAssertEqual(reply?.decision, OwnerConfirmReply.confirmed)
@@ -84,7 +100,7 @@ final class OwnerConfirmServerTests: XCTestCase {
 
     func testAHangUpWithdrawsTheWindow() async throws {
         try start()
-        let gone = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]), hangUpAfter: 0.3)
+        let gone = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]), hangUpAfter: 0.6)
         try await waitForPrompt()
         var withdrawn = false
         prompts[0].onWithdraw = { withdrawn = true }
@@ -104,23 +120,70 @@ final class OwnerConfirmServerTests: XCTestCase {
         XCTAssertEqual(reply?.decision, OwnerConfirmReply.denied)
     }
 
+    /// F11: a connection that sends no line is closed after the read timeout.
+    func testASilentConnectionIsClosed() async throws {
+        try start()
+        let path = socketPath
+        let closed = await Task.detached { UnixLineClient.closedWithoutAnswer(path: path, within: 8) }.value
+        XCTAssertTrue(closed)
+        XCTAssertTrue(prompts.isEmpty)
+    }
+
+    /// F10: past the cap, a connection is closed unread.
+    func testConnectionsAreCapped() async throws {
+        try start()
+        let path = socketPath
+        let fds = (0..<OwnerConfirmServer.maxConnections).compactMap { _ in UnixLineClient.connect(path: path) }
+        defer { fds.forEach { close($0) } }
+        XCTAssertEqual(fds.count, OwnerConfirmServer.maxConnections)
+        try await Task.sleep(for: .milliseconds(200))
+        let reply = await ask(OwnerConfirmRequest(verb: "a", args: ["x"])).value
+        XCTAssertNil(reply, "the extra connection was closed")
+        XCTAssertTrue(prompts.isEmpty)
+    }
+
+    func testStopRemovesTheSocketFile() throws {
+        try start()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+        server?.stop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+    }
+
+    func testALiveServerOnThePathIsAnotherServer() throws {
+        try start()
+        let second = OwnerConfirmServer(path: socketPath) { _ in }
+        XCTAssertThrowsError(try second.start()) { error in
+            XCTAssertEqual(error as? OwnerConfirmServer.ServerError, .anotherServer)
+        }
+    }
+
     func testGrantsAreSingleUseAndExpire() {
         final class Clock: @unchecked Sendable { var now = Date(timeIntervalSince1970: 0) }
         let clock = Clock()
         let grants = OwnerConfirmGrants { clock.now }
-        grants.register(["a"])
-        XCTAssertFalse(grants.consume(["b"]))
-        XCTAssertTrue(grants.consume(["a"]))
-        XCTAssertFalse(grants.consume(["a"]), "used once")
-        grants.register(["a"])
+        grants.register(["a"], pid: 7)
+        XCTAssertFalse(grants.consume(["b"], pid: 7))
+        XCTAssertFalse(grants.consume(["a"], pid: 8))
+        XCTAssertTrue(grants.consume(["a"], pid: 7))
+        XCTAssertFalse(grants.consume(["a"], pid: 7), "used once")
+        grants.register(["a"], pid: 7)
         clock.now = clock.now.addingTimeInterval(OwnerConfirmGrants.lifetime + 1)
-        XCTAssertFalse(grants.consume(["a"]), "expired")
+        XCTAssertFalse(grants.consume(["a"], pid: 7), "expired")
     }
 
-    func testTheWindowTextCannotBeSpoofed() {
-        let request = OwnerConfirmRequest(verb: "v", detail: "a\u{202E}cba\u{200B}", args: ["actions", "approve", "1 2", "\u{0007}"])
-        XCTAssertEqual(request.commandLine, "watchtower actions approve \"1 2\" \u{FFFD}")
-        XCTAssertEqual(request.displayDetail, "a\u{FFFD}cba\u{FFFD}")
+    func testConfirmArmsAfterOneSecond() {
+        let shown = Date(timeIntervalSince1970: 100)
+        XCTAssertFalse(OwnerConfirmArming.isArmed(shownAt: shown, now: shown))
+        XCTAssertFalse(OwnerConfirmArming.isArmed(shownAt: shown, now: shown.addingTimeInterval(0.9)))
+        XCTAssertTrue(OwnerConfirmArming.isArmed(shownAt: shown, now: shown.addingTimeInterval(1)))
+    }
+
+    func testTheWindowTextIsFullAndCannotBeSpoofed() {
+        let long = String(repeating: "y", count: 5000)
+        let request = OwnerConfirmRequest(verb: "v", detail: "a\u{202E}cba\u{200B}\nline2 " + long,
+                                          args: ["actions", "approve", "1 2", "\u{0007}", long])
+        XCTAssertEqual(request.commandLine, "watchtower actions approve \"1 2\" \u{FFFD} " + long)
+        XCTAssertEqual(request.displayDetail, "a\u{FFFD}cba\u{FFFD}\nline2 " + long)
         XCTAssertEqual(OwnerConfirmServer.socketPath(databasePath: "/w/ws/watchtower.db"), "/w/ws/owner-confirm.sock")
     }
 
@@ -130,14 +193,11 @@ final class OwnerConfirmServerTests: XCTestCase {
     }
 }
 
-/// A blocking unix-socket client: sends `line` + "\n", reads one reply line.
-/// With `hangUpAfter`, closes after that many seconds instead of waiting.
+/// A blocking unix-socket client for the tests.
 private enum UnixLineClient {
-    static func roundTrip(path: String, line: Data?, hangUpAfter: TimeInterval?) -> Data? {
-        guard let line else { return nil }
+    static func connect(path: String) -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
-        defer { close(fd) }
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
@@ -145,21 +205,42 @@ private enum UnixLineClient {
             for (i, b) in bytes.enumerated() where i < raw.count - 1 { raw[i] = b }
         }
         let size = socklen_t(MemoryLayout<sockaddr_un>.size)
-        // The listener binds asynchronously after start().
-        var ok = false
-        for _ in 0..<100 where !ok {
-            ok = withUnsafePointer(to: &addr) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, size) == 0 }
-            }
-            if !ok { Thread.sleep(forTimeInterval: 0.02) }
+        let ok = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, size) == 0 }
         }
-        guard ok else { return nil }
+        guard ok else {
+            close(fd)
+            return nil
+        }
+        return fd
+    }
+
+    /// Sends `line` + "\n" and reads one reply line; with `hangUpAfter`,
+    /// closes after that many seconds instead.
+    static func roundTrip(path: String, line: Data?, hangUpAfter: TimeInterval?) -> Data? {
+        guard let line, let fd = connect(path: path) else { return nil }
+        defer { close(fd) }
         let payload = line + Data([UInt8(ascii: "\n")])
         _ = payload.withUnsafeBytes { write(fd, $0.baseAddress, payload.count) }
         if let hangUpAfter {
             Thread.sleep(forTimeInterval: hangUpAfter)
             return nil
         }
+        return readLine(fd)
+    }
+
+    /// Connects, sends nothing, and reports whether the server closed the
+    /// connection within `within` seconds.
+    static func closedWithoutAnswer(path: String, within: TimeInterval) -> Bool {
+        guard let fd = connect(path: path) else { return false }
+        defer { close(fd) }
+        var tv = timeval(tv_sec: Int(within), tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var byte: UInt8 = 0
+        return read(fd, &byte, 1) == 0
+    }
+
+    private static func readLine(_ fd: Int32) -> Data? {
         var out = Data()
         var buf = [UInt8](repeating: 0, count: 4096)
         while true {

@@ -30,7 +30,7 @@ func init() {
 // refused under an agent, on a round that is not open, while the session's
 // agent is working, and for a hunk already undone; RevertHunk checks the file.
 func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
-	if err := requireOwnerConfirmation("undo a review hunk", ""); err != nil {
+	if err := refuseUnderAgent("undo a review hunk"); err != nil {
 		return err
 	}
 	database, r, repo, ctx, cancel, err := loadRound(cmd)
@@ -65,6 +65,9 @@ func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 	}
 	d, err := repo.Diff(ctx, from, r.TreeSHA)
 	if err != nil {
+		return failReview(cmd, err)
+	}
+	if err := confirmWithOwner("undo a review hunk", hunkConfirmDetail(d, reviewFlagHunk)); err != nil {
 		return failReview(cmd, err)
 	}
 	rev, err := repo.RevertHunk(ctx, d, reviewFlagHunk)

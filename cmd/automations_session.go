@@ -14,7 +14,7 @@ var sessionWake = wakeAutomations
 
 // session-launched / session-ended are how the Desktop reports the session
 // it opened for a session() step (spec §13). Only the Desktop reports: both
-// need the owner's confirmation (AGENT-07, requireOwnerConfirmation), since an agent
+// are refused under AGENT-07's markers (refuseUnderAgent), since an agent
 // could otherwise attach a session of its own to, or end, a step the
 // owner's run waits on.
 func init() {
@@ -34,7 +34,7 @@ func init() {
 }
 
 func runAutomationsSessionLaunched(cmd *cobra.Command, _ []string) error {
-	if err := requireOwnerConfirmation("report a session() step's session", ""); err != nil {
+	if err := requireOwner("report a session() step's session"); err != nil {
 		return err
 	}
 	if autoFlags.Step <= 0 || autoFlags.Session <= 0 {
@@ -48,7 +48,7 @@ func runAutomationsSessionLaunched(cmd *cobra.Command, _ []string) error {
 }
 
 func runAutomationsSessionEnded(cmd *cobra.Command, _ []string) error {
-	if err := requireOwnerConfirmation("end a session() step", ""); err != nil {
+	if err := requireOwner("end a session() step"); err != nil {
 		return err
 	}
 	if autoFlags.Step <= 0 {

@@ -65,7 +65,7 @@ func runAutomationsAuto(cmd *cobra.Command, args []string) error {
 // the automation exists → --hash is its current approval hash → it parses → the tool exists → not AlwaysAsk (D14)
 // → the manifest admits it as a write → the store's hash check.
 func automationsAutoOn(cmd *cobra.Command, arg, toolName string) error {
-	if err := requireOwnerConfirmation("turn on auto for an automation's tool", ""); err != nil {
+	if err := refuseUnderAgent("turn on auto for an automation's tool"); err != nil {
 		return err
 	}
 	if autoFlags.Hash == "" {
@@ -101,6 +101,10 @@ func automationsAutoOn(cmd *cobra.Command, arg, toolName string) error {
 	if !m.AdmitsWrite(t) {
 		return fmt.Errorf("automation #%d's permissions and outputs do not admit %s as a write; "+
 			"add its permission to the recipe, confirm it, then turn auto on", a.ID, t.Name)
+	}
+	if err := confirmWithOwner("turn on auto for an automation's tool",
+		"Tool: "+t.Name+" — applied without your Approve on this automation's runs\n\n"+recipeConfirmDetail(a)); err != nil {
+		return err
 	}
 	if err := database.SetAutomationToolGrant(a.ID, t.Name, autoFlags.Hash, time.Now()); err != nil {
 		if errors.Is(err, db.ErrHashMismatch) {

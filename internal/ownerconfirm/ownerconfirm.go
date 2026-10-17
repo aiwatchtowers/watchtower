@@ -1,13 +1,17 @@
 // Package ownerconfirm asks the running Watchtower Desktop to confirm an
-// owner-only CLI gesture (AGENT-07, board #568, ask #306): the CLI sends one
-// request over the Unix socket the Desktop serves in the workspace directory,
-// the Desktop shows the owner a confirmation window and answers with the
-// owner's click. The Desktop answers its own CLI calls (a button the owner
-// pressed) without a window: it registers the exact argv before it starts the
-// child.
+// owner-only CLI gesture (AGENT-07, board #568, owner decision ask #357): the
+// CLI sends one request over the Unix socket the Desktop serves in the
+// workspace directory, checks that the process answering is the Watchtower
+// app signed by the CLI's own team, and waits for the owner's click in the
+// Desktop's confirmation window. The Desktop answers the commands it started
+// itself without a window.
 //
 // The wire format is one JSON line each way and is a contract shared with
 // WatchtowerDesktop's OwnerConfirmServer (WatchtowerCore).
+//
+// What it protects against: an agent talked into running an owner-only
+// command (a prompt injection). Not against a malicious program running as
+// the owner, which can write the database itself.
 package ownerconfirm
 
 import (
@@ -41,27 +45,28 @@ const (
 	// command itself.
 	Confirmed = "confirmed"
 	// Denied: the owner clicked Deny or closed the window, the wait ran out,
-	// or another confirmation was already open.
+	// or the Desktop refused the request (another window open, too many).
 	Denied = "denied"
 )
 
 // ErrNoDesktop is Ask's error when no Desktop answers on the socket.
 var ErrNoDesktop = errors.New("no Watchtower Desktop is running for this workspace")
 
+// ErrUntrustedPeer is Ask's error when the process serving the socket is not
+// the signed Watchtower app.
+var ErrUntrustedPeer = errors.New("the process answering on the confirmation socket is not the signed Watchtower app")
+
 // Request is what the CLI asks the Desktop to confirm.
 type Request struct {
 	V int `json:"v"`
 	// Verb says what is being confirmed, e.g. "approve an action".
 	Verb string `json:"verb"`
-	// Detail is an optional line about the object, e.g. the action's tool
-	// and args.
+	// Detail is what the window shows about the object, in full: the
+	// action's args, the recipe, the lesson, the hunk.
 	Detail string `json:"detail,omitempty"`
 	// Args is the CLI's argv without the program name: the command the
 	// window shows, and what the Desktop matches its own launches against.
 	Args []string `json:"args"`
-	// Agent names the AI agent marker set in the CLI's environment, "" when
-	// none is (informational: an agent can unset it).
-	Agent string `json:"agent,omitempty"`
 }
 
 // Reply is the Desktop's answer.
@@ -76,8 +81,13 @@ func SocketPath(dbPath string) string {
 	return filepath.Join(filepath.Dir(dbPath), FileName)
 }
 
+// VerifyPeer checks the pid serving the socket; tests replace it.
+var VerifyPeer = VerifyDesktop
+
 // Ask sends req to the Desktop on socketPath and waits for its reply until
-// ctx ends. ErrNoDesktop when nothing listens there.
+// ctx ends. ErrNoDesktop when nothing listens there; ErrUntrustedPeer when
+// the listener fails VerifyPeer — checked before the request is sent, so an
+// impostor never sees it and its answer is never read.
 func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
 	var d net.Dialer
 	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -87,6 +97,13 @@ func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
 		return Reply{}, fmt.Errorf("%w: %v", ErrNoDesktop, err)
 	}
 	defer func() { _ = conn.Close() }()
+	pid, err := peerPID(conn)
+	if err != nil {
+		return Reply{}, fmt.Errorf("%w: %v", ErrUntrustedPeer, err)
+	}
+	if err := VerifyPeer(ctx, pid); err != nil {
+		return Reply{}, fmt.Errorf("%w: %v", ErrUntrustedPeer, err)
+	}
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
@@ -100,8 +117,7 @@ func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
 	if _, err := conn.Write(append(line, '\n')); err != nil {
 		return Reply{}, fmt.Errorf("sending the confirmation request: %w", err)
 	}
-	r := bufio.NewReader(io.LimitReader(conn, 64<<10))
-	raw, err := r.ReadBytes('\n')
+	raw, err := bufio.NewReader(io.LimitReader(conn, 64<<10)).ReadBytes('\n')
 	if err != nil {
 		var ne net.Error
 		if ctx.Err() != nil || (errors.As(err, &ne) && ne.Timeout()) {

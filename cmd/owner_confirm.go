@@ -1,100 +1,64 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
 	"errors"
 	"fmt"
-	"io"
-	"math/big"
 	"os"
 	"strings"
 
-	"golang.org/x/term"
-
-	"watchtower/internal/automations"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/ownerconfirm"
-	"watchtower/internal/tools"
+	"watchtower/internal/reviewdiff"
 )
 
-// agentEnvMarkers are the variables an AI coding agent's shell carries:
-// Claude Code sets CLAUDECODE=1; Codex sets CODEX_THREAD_ID on every command
-// it runs and CODEX_SANDBOX when it runs one sandboxed; a Watchtower
-// workbench terminal hands its agent tools.TerminalSessionEnv (a plain shell
-// terminal does not get it); a child an automation run starts carries
-// automations.RunEnvMarker.
-var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", tools.TerminalSessionEnv,
-	automations.RunEnvMarker}
+// askOwnerDesktop is the Desktop round trip; tests replace it.
+var askOwnerDesktop = ownerconfirm.Ask
 
-// agentMarker is the first AGENT-07 marker set in this process's
-// environment, "" when none is. Any non-empty value counts.
-func agentMarker() string {
-	for _, name := range agentEnvMarkers {
-		if os.Getenv(name) != "" {
-			return name
-		}
-	}
-	return ""
-}
-
-// The owner gate's seams, replaced by tests: the Desktop round trip, the
-// terminal the fallback code is typed on, and the code itself.
-var (
-	askOwnerDesktop = ownerconfirm.Ask
-	ownerTerminal   = func() (io.Reader, io.Writer, bool) {
-		ok := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
-		return os.Stdin, os.Stderr, ok
-	}
-	ownerConfirmCode = randomConfirmCode
-)
-
-// requireOwnerConfirmation keeps the owner's decision the owner's (AGENT-07,
-// board #568, ask #306): an agent that can run `watchtower` could otherwise
-// approve or apply its own proposal (a prompt-injected send_slack_message,
-// then `actions approve` on the id its receipt names), and since an
-// environment marker can be unset (`env -u CLAUDECODE …`), the markers alone
-// do not decide. Every owner-only gesture asks the owner:
+// confirmWithOwner is AGENT-07's second step (board #568, owner decision
+// ask #357, variant A): after refuseUnderAgent let a process without an
+// agent marker through, an owner-only gesture still runs only when the owner
+// confirms it in the running Watchtower Desktop. The CLI sends the request
+// over the workspace's socket, checks that the process answering is the
+// Watchtower app signed by this CLI's own team (ownerconfirm.Ask), and waits
+// for the owner's click. No Desktop, a peer that fails the check, or any
+// other error is a refusal — there is no fallback. The Desktop answers the
+// commands it started itself without a window. detail is shown in the window
+// in full (the args, the recipe, the lesson, the hunk).
 //
-//  1. The running Watchtower Desktop of this workspace (ownerconfirm): it
-//     shows a confirmation window and answers with the owner's click. A
-//     command the Desktop started itself (a button the owner pressed) is
-//     answered at once, without a window.
-//  2. With no Desktop running: under an agent marker, refused; otherwise only
-//     on an interactive terminal (stdin and stderr), where the owner types
-//     back a one-time code. Without a terminal, refused.
-//
-// The gestures: `actions approve`/`apply` and an execute trust grant;
-// `automations confirm`, `save --confirm-hash`, `dry-run` of a recipe not
-// confirmed yet, `enable`, `delete`, `auto … on`, `session-launched`,
-// `session-ended`; `workbench methodology` check writes; review lessons and
-// `review revert-hunk`. Reject and the read verbs stay open. detail, when not
-// empty, is one line about the object shown with the request.
-func requireOwnerConfirmation(verb, detail string) error {
-	marker := agentMarker()
+// It protects against an agent talked into running the command (a prompt
+// injection), not against a malicious program running as the owner, which
+// can write the database itself.
+func confirmWithOwner(verb, detail string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), ownerconfirm.Wait)
 	defer cancel()
 	rep, err := askOwnerDesktop(ctx, ownerConfirmSocket(), ownerconfirm.Request{
-		Verb: verb, Detail: detail, Args: os.Args[1:], Agent: marker,
+		Verb: verb, Detail: detail, Args: os.Args[1:],
 	})
 	switch {
-	case err == nil && rep.Decision == ownerconfirm.Confirmed:
-		return nil
-	case err == nil:
-		why := "the owner did not confirm it"
+	case errors.Is(err, ownerconfirm.ErrNoDesktop):
+		return fmt.Errorf("refusing to %s: open Watchtower to confirm this — the owner confirms it in Watchtower Desktop, "+
+			"which is not running for this workspace", verb)
+	case err != nil:
+		return fmt.Errorf("refusing to %s: %w", verb, err)
+	case rep.Decision != ownerconfirm.Confirmed:
+		why := "the owner did not confirm it in Watchtower Desktop"
 		if rep.Reason != "" {
 			why = rep.Reason
 		}
-		return fmt.Errorf("refusing to %s: %s in Watchtower Desktop", verb, why)
-	case !errors.Is(err, ownerconfirm.ErrNoDesktop):
-		return fmt.Errorf("refusing to %s: %w", verb, err)
-	case marker != "":
-		return fmt.Errorf("refusing to %s under an AI agent (%s is set): the owner confirms it in Watchtower "+
-			"Desktop, which is not running", verb, marker)
+		return fmt.Errorf("refusing to %s: %s", verb, why)
 	}
-	return confirmOnTerminal(verb, detail)
+	return nil
+}
+
+// requireOwner is refuseUnderAgent then confirmWithOwner, for a gesture whose
+// window needs no detail read from the database.
+func requireOwner(verb string) error {
+	if err := refuseUnderAgent(verb); err != nil {
+		return err
+	}
+	return confirmWithOwner(verb, "")
 }
 
 // ownerConfirmSocket is the Desktop's socket for the workspace this command
@@ -113,37 +77,77 @@ func ownerConfirmSocket() string {
 	return ownerconfirm.SocketPath(cfg.DBPath())
 }
 
-// confirmOnTerminal is the fallback without a Desktop: the owner types back
-// a one-time code on an interactive terminal.
-func confirmOnTerminal(verb, detail string) error {
-	in, out, ok := ownerTerminal()
-	if !ok {
-		return fmt.Errorf("refusing to %s without the owner's confirmation: open Watchtower Desktop and run this "+
-			"again to confirm it there, or run it from a Terminal", verb)
+// actionConfirmDetail is what the window shows for the action idArg names:
+// its tool, its stored args and the --patch edits, unclipped; "" when the row
+// cannot be read (the command reports that itself).
+func actionConfirmDetail(idArg string) string {
+	id, err := parseActionID(idArg)
+	if err != nil {
+		return ""
 	}
-	code := ownerConfirmCode()
-	if code == "" {
-		return fmt.Errorf("refusing to %s: no confirmation code could be made", verb)
+	database, err := openDBFromConfig()
+	if err != nil {
+		return ""
 	}
-	if detail != "" {
-		fmt.Fprintf(out, "%s\n", detail)
+	defer database.Close()
+	row, err := database.GetAgentAction(id)
+	if err != nil || row == nil {
+		return ""
 	}
-	fmt.Fprintf(out, "Watchtower Desktop is not running. To %s, type %s and press Return: ", verb, code)
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && line == "" {
-		return fmt.Errorf("refusing to %s: no confirmation code was typed", verb)
+	detail := fmt.Sprintf("Action #%d — %s\nArgs: %s", id, row.Tool, row.ArgsJSON)
+	if actionsFlagPatch != "" {
+		detail += "\nWith your edits: " + actionsFlagPatch
 	}
-	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(line)), []byte(code)) != 1 {
-		return fmt.Errorf("refusing to %s: the confirmation code did not match", verb)
-	}
-	return nil
+	return detail
 }
 
-// randomConfirmCode is six random digits.
-func randomConfirmCode() string {
-	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
-	if err != nil {
-		return "" // confirmOnTerminal refuses without a code
+// recipeConfirmDetail is the window's text for an automation: where its
+// recipe lives and the whole recipe — frontmatter (trigger, budgets,
+// permissions, outputs) and script.
+func recipeConfirmDetail(a *db.Automation) string {
+	if a == nil {
+		return ""
 	}
-	return fmt.Sprintf("%06d", n.Int64())
+	return fmt.Sprintf("Automation #%d %q (%s)\nTrigger: %s %s\nPermissions: %s\nOutputs: %s\n\n%s",
+		a.ID, a.Name, a.Path, a.TriggerKind, a.TriggerSpec, a.PermissionsJSON, a.OutputsJSON, a.RecipeText)
+}
+
+// automationConfirmDetail reads the automation arg names for the window; ""
+// when it cannot be read (the command reports that itself).
+func automationConfirmDetail(arg string) string {
+	id, err := parseAutomationID("automation id", arg)
+	if err != nil {
+		return ""
+	}
+	database, err := openDBFromConfig()
+	if err != nil {
+		return ""
+	}
+	defer database.Close()
+	a, err := database.GetAutomation(id)
+	if err != nil {
+		return ""
+	}
+	return recipeConfirmDetail(a)
+}
+
+// lessonConfirmDetail is the window's text for the --lesson of a workbench.
+func lessonConfirmDetail(database *db.DB, workbenchID int64) string {
+	l, err := database.GetReviewLesson(workbenchID, reviewFlagLesson)
+	if err != nil || l == nil {
+		return ""
+	}
+	return "Lesson (" + l.Lens + "):\n\n" + l.Text
+}
+
+// hunkConfirmDetail is the window's text for an Undo: the file and the hunk.
+func hunkConfirmDetail(d reviewdiff.Diff, hunkID string) string {
+	for _, f := range d.Files {
+		for _, h := range f.Hunks {
+			if h.ID == hunkID {
+				return f.Path + "\n" + h.Header + "\n" + strings.Join(h.Lines, "\n")
+			}
+		}
+	}
+	return ""
 }

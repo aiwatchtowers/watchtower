@@ -327,7 +327,7 @@ package enum Constants {
     }
 
     /// The variables an AI coding agent's shell carries — keep in sync with
-    /// `agentEnvMarkers` in cmd/owner_confirm.go. The CLI refuses an approve or an
+    /// `agentEnvMarkers` in cmd/actions.go. The CLI refuses an approve or an
     /// apply while any is set (AGENT-07), so the app, when launched from such
     /// a shell, must not hand them to the `watchtower` it runs for the owner.
     /// WATCHTOWER_AUTOMATION_RUN_ID marks a child an automation run started.

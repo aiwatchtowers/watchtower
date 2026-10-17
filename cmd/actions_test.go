@@ -547,13 +547,12 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			approved, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
 				ArgsJSON: `{"text":"y","reason":"r"}`, Reason: "r", Surface: "main", Status: "approved"})
 			require.NoError(t, err)
-			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 
 			_, err = runActions(t, "approve", strconv.FormatInt(pending, 10), "--json")
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), marker)
-			assert.Contains(t, err.Error(), "the owner confirms it in Watchtower Desktop",
+			assert.Contains(t, err.Error(), "the owner decides in Watchtower Desktop (or runs this from a plain Terminal)",
 				"the refusal says where the decision can be made")
 			_, err = runActions(t, "apply", strconv.FormatInt(approved, 10), "--json")
 			require.Error(t, err)

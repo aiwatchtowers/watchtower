@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -55,23 +56,58 @@ func serveOnce(t *testing.T, path, reply string, got chan<- Request) {
 	}()
 }
 
+// trustPeer stands in for the signature check, recording the pid it saw.
+func trustPeer(t *testing.T, verdict error) *int {
+	t.Helper()
+	orig := VerifyPeer
+	t.Cleanup(func() { VerifyPeer = orig })
+	seen := new(int)
+	VerifyPeer = func(_ context.Context, pid int) error {
+		*seen = pid
+		return verdict
+	}
+	return seen
+}
+
 func TestSocketPathSitsNextToTheDatabase(t *testing.T) {
 	assert.Equal(t, filepath.Join("/w", "ws", FileName), SocketPath(filepath.Join("/w", "ws", "watchtower.db")))
 }
 
 func TestAskSendsTheRequestAndReadsTheDecision(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the peer pid is read on macOS only")
+	}
 	path := shortSocket(t)
 	got := make(chan Request, 1)
 	serveOnce(t, path, `{"decision":"confirmed"}`, got)
+	seen := trustPeer(t, nil)
 
 	rep, err := Ask(context.Background(), path,
-		Request{Verb: "approve an action", Args: []string{"actions", "approve", "5"}, Agent: "CLAUDECODE"})
+		Request{Verb: "approve an action", Args: []string{"actions", "approve", "5"}})
 	require.NoError(t, err)
 	assert.Equal(t, Confirmed, rep.Decision)
 	req := <-got
 	assert.Equal(t, Version, req.V)
 	assert.Equal(t, []string{"actions", "approve", "5"}, req.Args)
-	assert.Equal(t, "CLAUDECODE", req.Agent)
+	assert.Equal(t, os.Getpid(), *seen, "the peer is the listening process")
+}
+
+// A listener that is not the signed Watchtower app never sees the request,
+// and its "confirmed" is never read.
+func TestAskRefusesAPeerThatFailsTheSignatureCheck(t *testing.T) {
+	path := shortSocket(t)
+	got := make(chan Request, 1)
+	serveOnce(t, path, `{"decision":"confirmed"}`, got)
+	trustPeer(t, errors.New("not signed"))
+
+	_, err := Ask(context.Background(), path, Request{Verb: "x", Args: []string{"actions", "approve", "5"}})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrUntrustedPeer), "%v", err)
+	select {
+	case <-got:
+		t.Fatal("the request reached an untrusted listener")
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func TestAskWithoutADesktopIsErrNoDesktop(t *testing.T) {
@@ -80,12 +116,36 @@ func TestAskWithoutADesktopIsErrNoDesktop(t *testing.T) {
 }
 
 func TestAskGivesUpAtTheDeadline(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the peer pid is read on macOS only")
+	}
 	path := shortSocket(t)
 	serveOnce(t, path, "", make(chan Request, 1))
+	trustPeer(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_, err := Ask(ctx, path, Request{Verb: "x"})
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, ErrNoDesktop))
 	assert.Contains(t, err.Error(), "in time")
+}
+
+// A development CLI (go test's binary is ad-hoc signed, no Team ID) refuses
+// every Desktop unless the development override is set.
+func TestVerifyDesktopRefusesFromADevelopmentBuild(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("codesign is macOS only")
+	}
+	t.Setenv(DevTrustUnsignedEnv, "")
+	err := VerifyDesktop(context.Background(), os.Getpid())
+	require.ErrorIs(t, err, ErrDevBuild)
+	t.Setenv(DevTrustUnsignedEnv, "1")
+	assert.NoError(t, VerifyDesktop(context.Background(), os.Getpid()))
+}
+
+func TestVerifyDesktopFailsClosedWithoutCodesign(t *testing.T) {
+	orig := codesignPath
+	t.Cleanup(func() { codesignPath = orig })
+	codesignPath = "/nonexistent/codesign"
+	assert.Error(t, VerifyDesktop(context.Background(), os.Getpid()))
 }

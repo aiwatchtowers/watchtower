@@ -48,11 +48,11 @@ const methodologyFileValue = "file"
 // start, and `workbench methodology` or the brief when no agent marker is set
 // (the Desktop's Agent Settings, a plain Terminal). Under an agent — a
 // session's brief hook, an agent running the CLI — it does nothing
-// (agentMarker), so an agent never decides when a file is read for it.
+// (refuseUnderAgent), so an agent never decides when a file is read for it.
 // A workbench is processed once, whichever runner comes first. A failure is
 // one line on w; the rest is picked up by the next run.
 func carryOverWorkflowChecks(database *db.DB, w io.Writer) {
-	if agentMarker() != "" {
+	if refuseUnderAgent("carry workflow.md checks over") != nil {
 		return
 	}
 	if _, err := workbenchmethod.CarryOverFileChecks(database, time.Now()); err != nil {
@@ -141,7 +141,7 @@ func runWorkbenchMethodology(cmd *cobra.Command, args []string) error {
 	}
 	if hasKey(changes, "ask_guard") || hasKey(changes, "finish_check") {
 		// The checks are the owner's alone (board #558, AGENT-07's refusal).
-		if err := requireOwnerConfirmation("change the ask guard or the finish check", ""); err != nil {
+		if err := requireOwner("change the ask guard or the finish check"); err != nil {
 			return err
 		}
 	}

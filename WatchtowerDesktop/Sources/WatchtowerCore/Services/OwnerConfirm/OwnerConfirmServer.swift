@@ -1,5 +1,4 @@
 import Foundation
-import Network
 
 /// One request from the CLI — Go `ownerconfirm.Request`, one JSON line.
 package struct OwnerConfirmRequest: Codable, Equatable, Sendable {
@@ -7,35 +6,36 @@ package struct OwnerConfirmRequest: Codable, Equatable, Sendable {
     package let verb: String
     package let detail: String?
     package let args: [String]
-    package let agent: String?
 
-    package init(v: Int = 1, verb: String, detail: String? = nil, args: [String], agent: String? = nil) {
+    package init(v: Int = 1, verb: String, detail: String? = nil, args: [String]) {
         self.v = v
         self.verb = verb
         self.detail = detail
         self.args = args
-        self.agent = agent
     }
 
-    /// Longest text the window shows for the command or the detail.
-    package static let displayLimit = 600
-
-    /// The command as the window shows it: `watchtower` and the args, an
-    /// arg with spaces quoted, control and format characters (bidi
-    /// overrides, zero-width marks) replaced so the text reads as it runs.
+    /// The command as the window shows it, in full: `watchtower` and the
+    /// args, an arg with spaces quoted, control and format characters (bidi
+    /// overrides, zero-width marks, line breaks) replaced so it reads as it runs.
     package var commandLine: String {
         let words = ["watchtower"] + args.map { $0.contains(" ") || $0.isEmpty ? "\"\($0)\"" : $0 }
         return Self.displayable(words.joined(separator: " "))
     }
 
+    /// The detail in full, line breaks kept, other control and format
+    /// characters replaced.
     package var displayDetail: String? {
         guard let detail, !detail.isEmpty else { return nil }
-        return Self.displayable(detail)
+        return Self.displayable(detail, keepingLineBreaks: true)
     }
 
-    package static func displayable(_ text: String) -> String {
+    package static func displayable(_ text: String, keepingLineBreaks: Bool = false) -> String {
         var out = String.UnicodeScalarView()
         for scalar in text.unicodeScalars {
+            if keepingLineBreaks, scalar == "\n" || scalar == "\t" {
+                out.append(scalar)
+                continue
+            }
             switch scalar.properties.generalCategory {
             case .control, .format, .lineSeparator, .paragraphSeparator, .privateUse, .unassigned, .surrogate:
                 out.append("\u{FFFD}")
@@ -43,8 +43,7 @@ package struct OwnerConfirmRequest: Codable, Equatable, Sendable {
                 out.append(scalar)
             }
         }
-        let clean = String(out)
-        return clean.count <= displayLimit ? clean : String(clean.prefix(displayLimit)) + "…"
+        return String(out)
     }
 }
 
@@ -84,27 +83,38 @@ package final class OwnerConfirmPrompt {
     }
 }
 
-/// Serves `<workspace>/owner-confirm.sock` (AGENT-07, board #568, ask #306;
-/// Go `internal/ownerconfirm`): the CLI asks before an owner-only gesture.
-/// A command this Desktop started (`OwnerConfirmGrants`) is confirmed at
-/// once; any other request opens one confirmation window (`present`) and is
-/// answered with the owner's click. One window at a time: a second request
-/// while one is open is denied. There is no CLI, MCP or file path to answer —
-/// only `OwnerConfirmPrompt.answer`, which the window's buttons call.
+/// Serves `<workspace>/owner-confirm.sock` (AGENT-07, board #568, owner
+/// decision ask #357; Go `internal/ownerconfirm`): a CLI without an agent
+/// marker asks before an owner-only gesture, after checking this process's
+/// code signature. A command this Desktop started — the same argv from the
+/// same pid (`OwnerConfirmGrants`) — is confirmed at once; any other request
+/// opens one confirmation window (`present`) and is answered with the
+/// owner's click. One window at a time, at most `maxConnections` open
+/// connections, a request line must arrive within `readTimeout`. There is no
+/// CLI, MCP or file path to answer — only `OwnerConfirmPrompt.answer`, which
+/// the window's buttons call.
 @MainActor
 package final class OwnerConfirmServer {
     /// How long a window may wait for the owner — past the CLI's own wait
     /// (Go `ownerconfirm.Wait`, 100 s), which ends the request first.
-    package static let promptTimeout: Duration = .seconds(110)
+    package nonisolated static let promptTimeout: Duration = .seconds(110)
     /// Longest request line read.
-    package static let maxRequestBytes = 64 * 1024
+    package nonisolated static let maxRequestBytes = 64 * 1024
+    /// Open connections at once; more are closed unread.
+    package nonisolated static let maxConnections = 8
+    /// Seconds a connection has to send its request line.
+    package nonisolated static let readTimeout: TimeInterval = 5
+    /// How long a request that matches no grant waits for the Desktop's own
+    /// just-started child to be registered before it gets a window.
+    package nonisolated static let grantGrace: Duration = .milliseconds(300)
     /// `sun_path` holds 104 bytes on macOS, the terminating NUL included.
-    package static let maxPathBytes = 103
-    package static let fileName = "owner-confirm.sock"
+    package nonisolated static let maxPathBytes = 103
+    package nonisolated static let fileName = "owner-confirm.sock"
 
-    package enum ServerError: Error {
+    package enum ServerError: Error, Equatable {
         case pathTooLong
         case anotherServer
+        case socket(Int32)
     }
 
     /// The socket next to the workspace database (Go `ownerconfirm.SocketPath`).
@@ -116,8 +126,8 @@ package final class OwnerConfirmServer {
     private let grants: OwnerConfirmGrants
     private let present: (OwnerConfirmPrompt) -> Void
     private let timeout: Duration
-    private var listener: NWListener?
-    private var open: OwnerConfirmPrompt?
+    private let io = OwnerConfirmIO()
+    private var open: (prompt: OwnerConfirmPrompt, box: OwnerConfirmReplyBox)?
 
     package init(
         path: String,
@@ -131,123 +141,127 @@ package final class OwnerConfirmServer {
         self.present = present
     }
 
-    /// Binds the socket. A stale socket file is replaced; one another live
-    /// Desktop serves is left alone (`anotherServer`).
+    /// Binds the socket (mode 0600). A stale socket file is replaced; one a
+    /// live process serves is left alone (`anotherServer`).
     package func start() throws {
         guard path.utf8.count <= Self.maxPathBytes else { throw ServerError.pathTooLong }
         if FileManager.default.fileExists(atPath: path) {
-            if Self.answers(path) { throw ServerError.anotherServer }
-            try? FileManager.default.removeItem(atPath: path)
+            if OwnerConfirmIO.answers(path) { throw ServerError.anotherServer }
+            unlink(path)
         }
-        let params = NWParameters.tcp
-        params.requiredLocalEndpoint = .unix(path: path)
-        let listener = try NWListener(using: params)
-        listener.newConnectionHandler = { [weak self] conn in
-            MainActor.assumeIsolated { self?.accept(conn) }
+        try io.listen(path: path) { [weak self] fd in
+            self?.serve(fd)
         }
-        listener.stateUpdateHandler = { [path] state in
-            // Owner-only, beside the 0700 workspace directory's own fence.
-            if case .ready = state { chmod(path, 0o600) }
-        }
-        listener.start(queue: .main)
-        self.listener = listener
     }
 
+    /// Closes the socket and removes its file; an open window is withdrawn.
     package func stop() {
-        listener?.cancel()
-        listener = nil
-        open?.onWithdraw?()
-        open?.answer(false)
-        try? FileManager.default.removeItem(atPath: path)
+        io.stop()
+        unlink(path)
+        if let open { withdraw(open.box) }
     }
 
-    /// Whether something accepts connections on `path` (a live server).
-    private static func answers(_ path: String) -> Bool {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8)
-        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-            for (i, b) in bytes.enumerated() where i < raw.count - 1 { raw[i] = b }
+    /// One connection, on the IO queue: read the line, ask the main actor,
+    /// watch for a hang-up while the owner decides, write the answer.
+    nonisolated private func serve(_ fd: Int32) {
+        guard let line = OwnerConfirmIO.readLine(fd, limit: Self.maxRequestBytes, within: Self.readTimeout) else {
+            return
         }
-        let size = socklen_t(MemoryLayout<sockaddr_un>.size)
-        return withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, size) == 0 }
+        let pid = OwnerConfirmIO.peerPID(fd)
+        let box = OwnerConfirmReplyBox()
+        guard let request = try? JSONDecoder().decode(OwnerConfirmRequest.self, from: line) else {
+            return OwnerConfirmIO.write(fd, OwnerConfirmReply(decision: OwnerConfirmReply.denied,
+                                                              reason: "the request was not readable"))
         }
-    }
-
-    private func accept(_ conn: NWConnection) {
-        conn.start(queue: .main)
-        readLine(conn, buffer: Data())
-    }
-
-    private func readLine(_ conn: NWConnection, buffer: Data) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: Self.maxRequestBytes) { [weak self] data, _, done, error in
+        DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
-                guard let self else { return conn.cancel() }
-                var buffer = buffer
-                if let data { buffer.append(data) }
-                if let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-                    self.handle(conn, line: buffer[..<newline])
-                } else if done || error != nil || buffer.count > Self.maxRequestBytes {
-                    conn.cancel()
-                } else {
-                    self.readLine(conn, buffer: buffer)
+                guard let self else { return box.set(OwnerConfirmReply(decision: OwnerConfirmReply.denied)) }
+                self.route(request, pid: pid, box: box)
+            }
+        }
+        var withdrawn = false
+        while true {
+            if let reply = box.wait(seconds: 0.2) {
+                return OwnerConfirmIO.write(fd, reply)
+            }
+            if !withdrawn, OwnerConfirmIO.hungUp(fd) {
+                withdrawn = true
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.withdraw(box) }
                 }
             }
         }
     }
 
-    private func handle(_ conn: NWConnection, line: Data) {
-        guard let request = try? JSONDecoder().decode(OwnerConfirmRequest.self, from: line) else {
-            return send(conn, OwnerConfirmReply(decision: OwnerConfirmReply.denied, reason: "the request was not readable"))
+    private func route(_ request: OwnerConfirmRequest, pid: Int32?, box: OwnerConfirmReplyBox) {
+        Task { [weak self, grants] in
+            // The child may ask before ProcessCLIRunner registered its pid.
+            let deadline = ContinuousClock.now + Self.grantGrace
+            repeat {
+                if let pid, grants.consume(request.args, pid: pid) {
+                    return box.set(OwnerConfirmReply(decision: OwnerConfirmReply.confirmed))
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            } while ContinuousClock.now < deadline && !box.isSet
+            self?.openWindow(request, box: box)
         }
-        if grants.consume(request.args) {
-            return send(conn, OwnerConfirmReply(decision: OwnerConfirmReply.confirmed))
-        }
+    }
+
+    private func openWindow(_ request: OwnerConfirmRequest, box: OwnerConfirmReplyBox) {
+        guard !box.isSet else { return } // hung up meanwhile
         guard open == nil else {
-            return send(conn, OwnerConfirmReply(decision: OwnerConfirmReply.denied,
-                                                reason: "another confirmation is already open"))
+            return box.set(OwnerConfirmReply(decision: OwnerConfirmReply.denied,
+                                             reason: "another confirmation is already open"))
         }
         let prompt = OwnerConfirmPrompt(request: request)
-        open = prompt
+        open = (prompt, box)
         let deadline = Task { [weak self, timeout] in
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled else { return }
-            self?.withdraw(prompt)
+            self?.withdraw(box)
         }
         prompt.reply = { [weak self] confirmed in
             deadline.cancel()
-            self?.finish(prompt)
-            self?.send(conn, OwnerConfirmReply(decision: confirmed ? OwnerConfirmReply.confirmed : OwnerConfirmReply.denied))
+            if self?.open?.box === box { self?.open = nil }
+            box.set(OwnerConfirmReply(decision: confirmed ? OwnerConfirmReply.confirmed : OwnerConfirmReply.denied))
         }
-        watchHangUp(conn, prompt: prompt)
         present(prompt)
     }
 
-    /// The CLI sends nothing after its line: any read completing means it
-    /// hung up (or the connection broke), and the request is withdrawn.
-    private func watchHangUp(_ conn: NWConnection, prompt: OwnerConfirmPrompt) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] _, _, _, _ in
-            MainActor.assumeIsolated { self?.withdraw(prompt) }
+    /// The request ends without a click: its window closes and it is denied.
+    private func withdraw(_ box: OwnerConfirmReplyBox) {
+        if let open, open.box === box {
+            open.prompt.onWithdraw?()
+            open.prompt.answer(false)
+        } else {
+            box.set(OwnerConfirmReply(decision: OwnerConfirmReply.denied))
         }
     }
+}
 
-    private func withdraw(_ prompt: OwnerConfirmPrompt) {
-        guard prompt.reply != nil else { return }
-        prompt.onWithdraw?()
-        prompt.answer(false)
+/// One request's answer, handed from the main actor to its connection.
+final class OwnerConfirmReplyBox: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var reply: OwnerConfirmReply?
+
+    var isSet: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return reply != nil
     }
 
-    private func finish(_ prompt: OwnerConfirmPrompt) {
-        if open === prompt { open = nil }
+    /// The first answer wins.
+    func set(_ value: OwnerConfirmReply) {
+        condition.lock()
+        if reply == nil { reply = value }
+        condition.broadcast()
+        condition.unlock()
     }
 
-    private func send(_ conn: NWConnection, _ reply: OwnerConfirmReply) {
-        guard var data = try? JSONEncoder().encode(reply) else { return conn.cancel() }
-        data.append(UInt8(ascii: "\n"))
-        conn.send(content: data, completion: .contentProcessed { _ in conn.cancel() })
+    func wait(seconds: TimeInterval) -> OwnerConfirmReply? {
+        condition.lock()
+        defer { condition.unlock() }
+        if reply == nil { _ = condition.wait(until: Date().addingTimeInterval(seconds)) }
+        return reply
     }
 }

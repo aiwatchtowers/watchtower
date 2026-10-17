@@ -53,10 +53,13 @@ struct CLIRunnerTests {
     /// owner-only gesture is confirmed without a window.
     @Test("ProcessCLIRunner registers the child's argv as the owner's launch")
     func processRunnerRegistersOwnerLaunch() async throws {
-        let args = ["owner-launch", UUID().uuidString]
-        _ = try await ProcessCLIRunner(binaryPath: "/bin/echo").run(args: args)
-        #expect(OwnerConfirmGrants.shared.consume(args))
-        #expect(!OwnerConfirmGrants.shared.consume(args))
+        // The child prints its own pid, so the grant's pid can be checked.
+        let args = ["-c", "echo $$", UUID().uuidString]
+        let out = try await ProcessCLIRunner(binaryPath: "/bin/sh").run(args: args)
+        let pid = try #require(Int32((String(bytes: out, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(!OwnerConfirmGrants.shared.consume(args, pid: pid + 1))
+        #expect(OwnerConfirmGrants.shared.consume(args, pid: pid))
+        #expect(!OwnerConfirmGrants.shared.consume(args, pid: pid))
     }
 
     @Test("ProcessCLIRunner writes stdin to the child and closes it")

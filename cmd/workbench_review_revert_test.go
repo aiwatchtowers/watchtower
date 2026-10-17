@@ -109,7 +109,6 @@ func TestWorkbenchReviewRevertHunk_RefusedUnderAgentMarkers(t *testing.T) {
 			database, wb, s, repo := reviewFixture(t)
 			require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
 			round, hunk := undoRound(t, wb, s, false)
-			withoutOwnerDesktop(t)
 			t.Setenv(marker, "1")
 			_, _, err := runWorkbench(t, "review", "revert-hunk", "--workbench", itoa(wb), "--json",
 				"--round", itoa(round), "--hunk", hunk)
