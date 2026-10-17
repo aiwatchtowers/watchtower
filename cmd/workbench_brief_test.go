@@ -36,17 +36,17 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 	long := strings.Repeat("Implement the next part of the plan ", 8)
 	var board []db.BoardNode
 	id := 1
-	for r := 0; r < 40; r++ {
+	for range 40 {
 		root := briefNode(id, "in_progress", long)
 		id++
-		for c := 0; c < 15; c++ {
+		for range 15 {
 			root.Children = append(root.Children, briefNode(id, "todo", "Ünïcödé "+long))
 			id++
 		}
 		board = append(board, root)
 	}
 	var comments []db.WorkbenchComment
-	for i := 0; i < 150; i++ {
+	for i := range 150 {
 		comments = append(comments, db.WorkbenchComment{ID: int64(1000 + i), TargetID: sql.NullInt64{Int64: 1, Valid: true},
 			Author: "owner", Body: strings.Repeat("Please revise this. ", 25)})
 	}
@@ -270,7 +270,7 @@ func TestProjectBrief_RendersBoardFromDB(t *testing.T) {
 func TestRenderProjectBrief_ManyDriftFindingsStayWithinBudget(t *testing.T) {
 	board := []db.BoardNode{{Target: db.Target{ID: 1, Text: "Active work", Status: "in_progress", Priority: "high"}}}
 	var drift []workbenchcheck.Finding
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		drift = append(drift, workbenchcheck.Finding{TargetID: 100 + i, Title: strings.Repeat("long title ", 10), Status: "in_progress",
 			Kind: workbenchcheck.KindMergedOpen, Detail: "branch x is merged into main", Fix: "set it done"})
 	}
@@ -486,7 +486,7 @@ func TestProj12_AnsweredAskSurvivesAFullBoard(t *testing.T) {
 		big = append(big, briefNode(id, "in_progress", long))
 	}
 	var comments []db.WorkbenchComment
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		comments = append(comments, db.WorkbenchComment{ID: int64(1000 + i), TargetID: sql.NullInt64{Int64: 1, Valid: true},
 			Author: "owner", Body: strings.Repeat("Please revise this. ", 10)})
 	}

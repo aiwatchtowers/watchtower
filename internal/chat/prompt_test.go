@@ -235,7 +235,7 @@ func TestBuildSystemPrompt_EmptyInstall(t *testing.T) {
 // stays under 40k chars even with a large memory map and many skills.
 func TestBuildSystemPrompt_Budget(t *testing.T) {
 	d, cfg, o := promptFixture(t)
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		name := filepath.Join(o.SkillsDir, "skill-"+string(rune('a'+i%26))+strings.Repeat("x", i/26)+".md")
 		require.NoError(t, os.WriteFile(name, []byte("---\ndescription: "+strings.Repeat("d", 180)+"\n---\n"), 0o600))
 	}

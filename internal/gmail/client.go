@@ -357,7 +357,7 @@ func parseAddress(v string) (name, email string) {
 // parseAddressList parses a comma-separated address header into emails.
 func parseAddressList(v string) []string {
 	var out []string
-	for _, part := range strings.Split(v, ",") {
+	for part := range strings.SplitSeq(v, ",") {
 		if _, email := parseAddress(part); email != "" {
 			out = append(out, email)
 		}

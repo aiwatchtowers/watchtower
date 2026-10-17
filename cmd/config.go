@@ -313,7 +313,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	// Type-aware parsing: booleans (exact "true"/"false" only), then
 	// durations (so "15m" or "900s" are stored correctly), then integers,
 	// then fall back to string.
-	var typedValue interface{} = value
+	var typedValue any = value
 	if value == "true" {
 		typedValue = true
 	} else if value == "false" {

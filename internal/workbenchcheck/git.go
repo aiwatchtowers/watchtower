@@ -323,7 +323,7 @@ func (g *gitState) reflogOf(ctx context.Context, branch, sha string) branchReflo
 	if err != nil {
 		return r
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		id, subject, _ := strings.Cut(line, " ")
 		if strings.HasPrefix(subject, "commit") || strings.HasPrefix(subject, "cherry-pick") {
 			r.ownCommit = true

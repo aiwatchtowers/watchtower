@@ -105,8 +105,8 @@ func parseRemindWhen(at, in string, now time.Time) (string, error) {
 // parseRemindDuration accepts the same syntax as time.ParseDuration plus a
 // trailing `d` for days.
 func parseRemindDuration(s string) (time.Duration, error) {
-	if strings.HasSuffix(s, "d") {
-		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+	if before, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(before)
 		if err != nil || n < 0 {
 			return 0, fmt.Errorf("parse %q as N-days", s)
 		}

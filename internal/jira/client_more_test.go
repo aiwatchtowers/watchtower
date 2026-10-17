@@ -438,11 +438,9 @@ func TestClient_GetAccessToken_CrossProcessRefreshOnce(t *testing.T) {
 	tokens := make([]string, len(clients))
 	errs := make([]error, len(clients))
 	for i, c := range clients {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			tokens[i], errs[i] = c.getAccessToken(context.Background())
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -491,11 +489,9 @@ func TestClient_RefreshIfCurrent_CrossProcessRefreshOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, len(clients))
 	for i, c := range clients {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs[i] = c.refreshIfCurrent(context.Background(), "stale")
-		}()
+		})
 	}
 	wg.Wait()
 

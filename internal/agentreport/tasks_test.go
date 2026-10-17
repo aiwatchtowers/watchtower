@@ -39,10 +39,10 @@ func run(f *fixture, targets []db.AgentReportTarget, now time.Time) map[int64]Ta
 func TestTasks_WindowedAttribution(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(0, 1)
-	f.tool(1*mn, "mcp__wt__update_target", "#1", d(sec)) // before the window
-	f.tool(3*mn, "mcp__wt__update_target", "#1", d(sec)) // inside
+	f.tool(1*mn, "mcp__wt__update_target", "#1", new(sec)) // before the window
+	f.tool(3*mn, "mcp__wt__update_target", "#1", new(sec)) // inside
 	f.apiCost(5*mn, 2)
-	f.tool(12*mn, "mcp__wt__update_target", "#1", d(sec)) // after
+	f.tool(12*mn, "mcp__wt__update_target", "#1", new(sec)) // after
 	f.apiCost(20*mn, 4)
 	rows := run(f, []db.AgentReportTarget{
 		target(1, nil, sc("todo", -time.Hour), sc("in_progress", 2*mn), sc("done", 10*mn)),
@@ -61,8 +61,8 @@ func TestTasks_WindowedAttribution(t *testing.T) {
 func TestTasks_EqualSplitMarksShared(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(0, 1)
-	f.tool(1*mn, "mcp__wt__update_target", "#1", d(sec))
-	f.tool(2*mn, "mcp__wt__update_target", "#2", d(sec))
+	f.tool(1*mn, "mcp__wt__update_target", "#1", new(sec))
+	f.tool(2*mn, "mcp__wt__update_target", "#2", new(sec))
 	f.apiCost(5*mn, 2)
 	f.apiCost(20*mn, 4)
 	rows := run(f, []db.AgentReportTarget{
@@ -82,9 +82,9 @@ func TestTasks_EqualSplitMarksShared(t *testing.T) {
 func TestTasks_NoWindowFallsBackToCallSpan(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(0, 1)
-	f.tool(3*mn, "mcp__wt__update_target", "#1", d(sec))
+	f.tool(3*mn, "mcp__wt__update_target", "#1", new(sec))
 	f.apiCost(5*mn, 2)
-	f.tool(9*mn, "mcp__wt__update_target", "#1", d(sec))
+	f.tool(9*mn, "mcp__wt__update_target", "#1", new(sec))
 	f.apiCost(20*mn, 4)
 	// moved straight to done long before the session: no window at all.
 	rows := run(f, []db.AgentReportTarget{
@@ -105,11 +105,11 @@ func TestTasks_NoWindowFallsBackToCallSpan(t *testing.T) {
 func TestTasks_ReopenedTarget(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(0, 1)
-	f.tool(2*mn, "mcp__wt__update_target", "#1", d(sec))
+	f.tool(2*mn, "mcp__wt__update_target", "#1", new(sec))
 	f.apiCost(3*mn, 2)
 	f.apiCost(7*mn, 4)
 	f.apiCost(12*mn, 8)
-	f.tool(13*mn, "mcp__wt__update_target", "#1", d(sec))
+	f.tool(13*mn, "mcp__wt__update_target", "#1", new(sec))
 	f.apiCost(20*mn, 16)
 	rows := run(f, []db.AgentReportTarget{
 		target(1, nil, sc("todo", -time.Hour), sc("in_progress", 1*mn), sc("done", 4*mn),
@@ -138,9 +138,9 @@ func TestTasks_PhasesAndOpenTarget(t *testing.T) {
 func TestTasks_GroupSumsLeaves(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(0, 1)
-	f.tool(1*mn, "mcp__wt__update_target", "#11", d(sec))
+	f.tool(1*mn, "mcp__wt__update_target", "#11", new(sec))
 	f.apiCost(2*mn, 2)
-	f.tool(6*mn, "mcp__wt__update_target", "#12", d(sec))
+	f.tool(6*mn, "mcp__wt__update_target", "#12", new(sec))
 	f.apiCost(7*mn, 4)
 	f.apiCost(20*mn, 8)
 	p := int64(10)
@@ -162,8 +162,8 @@ func TestTasks_GroupSumsLeaves(t *testing.T) {
 func TestTasks_OddMSSplitRemainderToLowestID(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(time.Millisecond, 0)
-	f.tool(1*mn, "mcp__wt__update_target", "#1", d(sec))
-	f.tool(2*mn, "mcp__wt__update_target", "#2", d(sec))
+	f.tool(1*mn, "mcp__wt__update_target", "#1", new(sec))
+	f.tool(2*mn, "mcp__wt__update_target", "#2", new(sec))
 	f.apiCost(20*mn, 0)
 	rows := run(f, []db.AgentReportTarget{
 		target(2, nil, sc("in_progress", 0), sc("done", 10*mn)),
@@ -177,7 +177,7 @@ func TestTasks_OddMSSplitRemainderToLowestID(t *testing.T) {
 func TestTasks_GroupCallLinksSessionOnly(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(0, 1)
-	f.tool(3*mn, "mcp__wt__update_target", "#10", d(sec))
+	f.tool(3*mn, "mcp__wt__update_target", "#10", new(sec))
 	f.apiCost(20*mn, 2)
 	p := int64(10)
 	rows := run(f, []db.AgentReportTarget{
@@ -193,7 +193,7 @@ func TestTasks_GroupCallLinksSessionOnly(t *testing.T) {
 func TestTasks_GrandchildCallLinksAncestors(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(0, 1)
-	f.tool(3*mn, "mcp__wt__update_target", "#12", d(sec))
+	f.tool(3*mn, "mcp__wt__update_target", "#12", new(sec))
 	f.apiCost(20*mn, 2)
 	g, c := int64(10), int64(11)
 	rows := run(f, []db.AgentReportTarget{
@@ -210,7 +210,7 @@ func TestTasks_GrandchildCallLinksAncestors(t *testing.T) {
 func TestTasks_SingleCallFallbackIsZero(t *testing.T) {
 	f := &fixture{}
 	f.apiCost(0, 1)
-	f.tool(3*mn, "mcp__wt__update_target", "#1", d(sec))
+	f.tool(3*mn, "mcp__wt__update_target", "#1", new(sec))
 	f.apiCost(20*mn, 2)
 	rows := run(f, []db.AgentReportTarget{target(1, nil, sc("done", -time.Hour))}, t0.Add(time.Hour))
 	assert.Equal(t, []string{"s1"}, rows[1].Sessions)

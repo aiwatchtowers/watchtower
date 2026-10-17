@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -347,9 +348,7 @@ func (m *materialAssembler) include(id, unit string, refs map[string]string) boo
 	m.b.WriteString(unit)
 	m.budget -= len(unit)
 	m.in.included++
-	for ref, src := range refs {
-		m.in.validRefs[ref] = src
-	}
+	maps.Copy(m.in.validRefs, refs)
 	return true
 }
 

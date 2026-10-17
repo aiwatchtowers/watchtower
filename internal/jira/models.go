@@ -69,7 +69,7 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 // IssueFields holds the fields of a Jira issue.
 type IssueFields struct {
 	Summary     string       `json:"summary"`
-	Description interface{}  `json:"description"`
+	Description any          `json:"description"`
 	IssueType   IssueType    `json:"issuetype"`
 	Status      Status       `json:"status"`
 	Assignee    *User        `json:"assignee"`
@@ -219,9 +219,9 @@ type IssueComment struct {
 		DisplayName string `json:"displayName"`
 		AccountID   string `json:"accountId"`
 	} `json:"author"`
-	Body    interface{} `json:"body"`
-	Created string      `json:"created"`
-	Updated string      `json:"updated"`
+	Body    any    `json:"body"`
+	Created string `json:"created"`
+	Updated string `json:"updated"`
 }
 
 // CommentList is a paginated response from the Jira issue comments API.

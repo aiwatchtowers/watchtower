@@ -560,8 +560,8 @@ func parseRecurringEventID(rawJSON string) string {
 // emailLocalPart returns the part of an email address before the first '@',
 // the display fallback for a sender with no from_name.
 func emailLocalPart(email string) string {
-	if i := strings.IndexByte(email, '@'); i >= 0 {
-		return email[:i]
+	if before, _, ok := strings.Cut(email, "@"); ok {
+		return before
 	}
 	return email
 }

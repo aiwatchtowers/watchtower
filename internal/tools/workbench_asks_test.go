@@ -133,7 +133,7 @@ func TestAskOwner_RefusesBadInputWithoutWriting(t *testing.T) {
 func TestAskOwner_TheOpenCapIsTheAgentFacingText(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := askRegistry(t, fx.d, "")
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		mustApply(t, reg, fx.a, "ask_owner", questionAsk)
 	}
 	var actions int

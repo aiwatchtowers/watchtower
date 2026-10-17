@@ -197,7 +197,7 @@ func TestSummarizeToolResult_HugeResultIsBounded(t *testing.T) {
 		Permalink string `json:"permalink"`
 	}
 	var msgs []msg
-	for i := 0; i < 600; i++ {
+	for i := range 600 {
 		msgs = append(msgs, msg{TS: fmt.Sprintf("%d.1", i), Channel: "general", Sender: "Ann",
 			Text: strings.Repeat("платёж ", 40), Permalink: fmt.Sprintf("https://acme.slack.com/p%d", i)})
 	}

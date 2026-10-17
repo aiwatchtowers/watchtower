@@ -272,7 +272,7 @@ func TestConfluence_UserRenameBeyondPageDrains(t *testing.T) {
 	ctx := context.Background()
 	d := db.OpenTestDB(t)
 	seedConfluence(t, d)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		exec(t, d, `INSERT INTO ext_documents (source_id, ext_id, kind, title, url, author_id, modified_at, sections_json, synced_at)
 			VALUES (1, ?, 'page', 'Note', '', 'u9', '2026-09-10T10:00:00Z', '[{"text":"by @[~u9]"}]', '2026-09-10T11:00:00Z')`,
 			fmt.Sprintf("9%d", i))
@@ -288,7 +288,7 @@ func TestConfluence_UserRenameBeyondPageDrains(t *testing.T) {
 	_, err = r.run(ctx, d, Options{Now: testNow()})
 	require.NoError(t, err)
 	assert.Equal(t, 5, builds, "each of the five documents re-renders exactly once")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		assert.Contains(t, chunkBodies(t, d, fmt.Sprintf("confluence:1:9%d", i)), "@Zelda")
 	}
 	builds = 0

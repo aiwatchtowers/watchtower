@@ -108,7 +108,7 @@ func TestRotatingFile_RotationFailureIsNotedOncePerCap(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = w.Close() }()
 
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		n, err := w.Write([]byte(strings.Repeat("x", 19) + "\n"))
 		require.NoError(t, err, "a failed rotation must never fail the write")
 		require.Equal(t, 20, n)

@@ -189,7 +189,7 @@ func forbiddenParentIDs(targetID int64, snapshot []db.Target, parentOf parentLoo
 func chainReaches(start, targetID int64, parent parentLookup) (bool, error) {
 	visited := map[int64]bool{}
 	id := start
-	for depth := 0; depth < maxParentWalkDepth; depth++ {
+	for range maxParentWalkDepth {
 		if visited[id] {
 			return false, nil
 		}

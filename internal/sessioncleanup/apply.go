@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -160,12 +161,7 @@ func (a *applier) selectItems(only []string) {
 }
 
 func containsKey(keys []string, key string) bool {
-	for _, k := range keys {
-		if k == key {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(keys, key)
 }
 
 func kindOfKey(key string) Kind {

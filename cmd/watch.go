@@ -51,8 +51,8 @@ func init() {
 // resolveTarget parses a target string like "#channel-name" or "@username"
 // and resolves it to an entity type, ID, and display name using the database.
 func resolveTarget(database *db.DB, target string) (entityType, entityID, entityName string, err error) {
-	if strings.HasPrefix(target, "#") {
-		name := strings.TrimPrefix(target, "#")
+	if after, ok := strings.CutPrefix(target, "#"); ok {
+		name := after
 		ch, err := database.GetChannelByName(name)
 		if err != nil {
 			return "", "", "", fmt.Errorf("looking up channel: %w", err)
@@ -63,8 +63,8 @@ func resolveTarget(database *db.DB, target string) (entityType, entityID, entity
 		return "channel", ch.ID, ch.Name, nil
 	}
 
-	if strings.HasPrefix(target, "@") {
-		name := strings.TrimPrefix(target, "@")
+	if after, ok := strings.CutPrefix(target, "@"); ok {
+		name := after
 		u, err := database.GetUserByName(name)
 		if err != nil {
 			return "", "", "", fmt.Errorf("looking up user: %w", err)

@@ -567,7 +567,7 @@ func TestRunPeople_MultiWeeksWithAnalysisData(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Insert analyses for two different weeks
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		from := float64(now.AddDate(0, 0, -(i+1)*7).Unix())
 		to := float64(now.AddDate(0, 0, -i*7).Unix())
 		_, err = database.UpsertPeopleCard(db.PeopleCard{

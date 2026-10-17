@@ -526,10 +526,7 @@ func (p *Pipeline) completeRun(runID int64, acc *usageAccumulator, items int, pF
 		p.logf("memory: complete pipeline run: %v", err)
 		return
 	}
-	cacheRead := acc.totalAPI - acc.input
-	if cacheRead < 0 {
-		cacheRead = 0
-	}
+	cacheRead := max(acc.totalAPI-acc.input, 0)
 	model := acc.model
 	if model == "" {
 		model = "auto"
