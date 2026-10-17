@@ -41,6 +41,9 @@ struct ChatFeedView<Content: View>: View {
     let state: ChatAutoScrollPolicy.ThreadState
     let lastRowID: Int64?
     var density: ChatDensity = .regular
+    /// "Ask about this" on a selection in an answer (the main chat); nil =
+    /// selection and copy only.
+    var selectionQuote: ChatFeedSelectionQuote?
     var onScrollTargetConsumed: () -> Void = {}
     @ViewBuilder let content: () -> Content
 
@@ -51,6 +54,7 @@ struct ChatFeedView<Content: View>: View {
     /// `follow.tracker.following`.
     @State private var isFollowing = true
     @State private var follow = ChatFollowTrackerBox()
+    @State private var selectionTracker = ChatSelectionQuoteTracker()
     private static var bottomSentinelID: String { "chat-bottom-sentinel" }
     private static var scrollSpace: String { "chat-thread-scroll" }
 
@@ -62,6 +66,8 @@ struct ChatFeedView<Content: View>: View {
                         content()
                         bottomSentinel
                     }
+                    // Finished answers mark their body as quotable.
+                    .environment(\.chatAnswerRegions, selectionQuote == nil ? nil : selectionTracker)
                     // No bottom padding: the sentinel's own height is it, so
                     // scrolling to the sentinel lands at the content's true
                     // bottom and the measured distance settles at 0.
@@ -95,6 +101,11 @@ struct ChatFeedView<Content: View>: View {
                     guard let last = follow.tracker.lastMetrics else { return }
                     updateFollowState(.init(contentTop: last.contentTop, contentHeight: last.contentHeight,
                                             viewportHeight: height), proxy: proxy)
+                }
+                .overlay {
+                    if let selectionQuote {
+                        ChatSelectionQuoteOverlay(tracker: selectionTracker, quote: selectionQuote)
+                    }
                 }
                 .overlay(alignment: .bottom) { jumpToLatestButton(proxy: proxy) }
                 // One handler for switch/jump/turn start/new row, so a ⌘K hit

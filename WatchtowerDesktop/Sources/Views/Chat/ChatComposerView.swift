@@ -59,7 +59,8 @@ struct ChatComposerView: View {
                     chatVM.composer.update(text: text, cursor: cursor)
                 },
                 onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) },
-                hasPendingContent: !chatVM.pendingQuotes.isEmpty
+                hasPendingContent: !chatVM.pendingQuotes.isEmpty,
+                focusRequest: chatVM.composerFocusRequest
             )) {
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
             }
