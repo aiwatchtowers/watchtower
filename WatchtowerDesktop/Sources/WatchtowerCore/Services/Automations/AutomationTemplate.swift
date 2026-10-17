@@ -3,8 +3,8 @@ import Foundation
 /// One entry of `automations templates --json` (P6 part 2's
 /// `cmd/automations_templates.go` `templateJSON`; `files` is ignored).
 package struct AutomationTemplate: Decodable, Identifiable, Equatable, Sendable {
-    /// A `<KEY>` placeholder the copy keeps until the owner fills it in (the
-    /// gallery installs without `--param`, so the copy does not parse yet).
+    /// A `<KEY>` placeholder; `install-template` chooses its value when the
+    /// gallery installs without `--param` (#582).
     package struct Param: Decodable, Equatable, Sendable {
         package let key: String
         package let label: String
@@ -52,9 +52,34 @@ package enum AutomationTemplateGallery {
             .joined(separator: " · ")
     }
 
-    /// What the owner fills in after installing, one line per param; the
-    /// copy's edit form shows the parse error until then.
-    package static func paramLines(_ template: AutomationTemplate) -> [String] {
-        template.params.map { "After installing, replace <\($0.key)> (\($0.label), e.g. \($0.example)) in the recipe." }
+    /// A workbench a workbench template can go into.
+    package struct Workbench: Equatable, Sendable, Identifiable {
+        package let id: Int64
+        package let name: String
+
+        package init(id: Int64, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
+    /// What **Use template** does (#582). The gallery passes no `--param`:
+    /// `install-template` chooses a param's value itself.
+    package enum InstallChoice: Equatable, Sendable {
+        /// Install at once (a personal template, or the only workbench).
+        case install(workbenchID: Int64?)
+        /// A workbench template with several workbenches: the button is a menu of them.
+        case pickWorkbench([Workbench])
+        /// A workbench template and no workbench yet: the button is off.
+        case needsWorkbench
+    }
+
+    package static func installChoice(_ template: AutomationTemplate, workbenches: [Workbench]) -> InstallChoice {
+        guard template.scope == "workbench" else { return .install(workbenchID: nil) }
+        switch workbenches.count {
+        case 0: return .needsWorkbench
+        case 1: return .install(workbenchID: workbenches[0].id)
+        default: return .pickWorkbench(workbenches)
+        }
     }
 }

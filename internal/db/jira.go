@@ -659,6 +659,36 @@ func (db *DB) OldestFailingJiraProjectSync(accountID int64) (string, error) {
 	return oldest.String, nil
 }
 
+// OwnerActiveJiraProjects returns, sorted and distinct, the keys of the
+// synced Jira projects (a full-sync watermark or a selected board) holding an
+// open (not done, not deleted) issue the Atlassian account ownerAccountID is
+// assigned to or reported. An empty ownerAccountID matches nothing.
+func (db *DB) OwnerActiveJiraProjects(ownerAccountID string) ([]string, error) {
+	if ownerAccountID == "" {
+		return nil, nil
+	}
+	rows, err := db.Query(`SELECT DISTINCT i.project_key FROM jira_issues i
+		WHERE i.is_deleted = 0 AND i.status_category != 'done' AND i.project_key != ''
+		  AND (i.assignee_account_id = ? OR i.reporter_account_id = ?)
+		  AND (EXISTS (SELECT 1 FROM jira_sync_state s WHERE s.account_id = i.account_id AND s.project_key = i.project_key)
+		    OR EXISTS (SELECT 1 FROM jira_boards b
+		      WHERE b.account_id = i.account_id AND b.project_key = i.project_key AND b.is_selected = 1))
+		ORDER BY i.project_key`, ownerAccountID, ownerAccountID)
+	if err != nil {
+		return nil, fmt.Errorf("querying the owner's active jira projects: %w", err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scanning jira project key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 // GetJiraSyncStates returns all Jira sync states across every account.
 func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
 	rows, err := db.Query(`SELECT account_id, project_key, last_synced_at, issues_synced, last_error, last_error_at FROM jira_sync_state ORDER BY account_id, project_key`)

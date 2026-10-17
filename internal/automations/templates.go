@@ -5,12 +5,15 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
+
+	"watchtower/internal/db"
 )
 
 // templateFS holds the gallery (spec §15): index.json and one recipe file per
@@ -116,14 +119,75 @@ func templateByName(name string) (Template, bool) {
 }
 
 // templateParamValue is what a --param value may hold: it lands in YAML and
-// in JS strings, so anything else could break a copy.
-var templateParamValue = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+// in JS strings, so anything else could break a copy. A lone `*` is the
+// "every one" scope (jira:read@*), which a template's script reads as such.
+var templateParamValue = regexp.MustCompile(`^(\*|[A-Za-z0-9_.-]+)$`)
+
+// templateParamDefaults resolve a param the owner left out at install, so a
+// one-click install (the Desktop gallery passes no --param) gives a copy
+// that parses (#582).
+var templateParamDefaults = map[string]func(*db.DB) (string, error){
+	"PROJECT": ownerJiraProject,
+}
+
+// HasDefault reports whether install-template fills the param by itself
+// when --param leaves it out.
+func (p TemplateParam) HasDefault() bool {
+	_, ok := templateParamDefaults[p.Key]
+	return ok
+}
+
+// ownerJiraProject is <PROJECT>'s default: the owner's one active Jira
+// project (db.OwnerActiveJiraProjects), else "*" — a report across every
+// synced project, which the owner narrows later in the editor.
+func ownerJiraProject(d *db.DB) (string, error) {
+	owner, err := d.ResolveOwner()
+	if err != nil {
+		return "", err
+	}
+	keys, err := d.OwnerActiveJiraProjects(owner.JiraAccountID)
+	if err != nil {
+		return "", err
+	}
+	if len(keys) == 1 && templateParamValue.MatchString(keys[0]) {
+		return keys[0], nil
+	}
+	return "*", nil
+}
+
+// FillTemplateParams returns params plus a default for every declared param
+// of template name that params leaves out and that has one
+// (templateParamDefaults). Given values are kept as they are; RenderTemplate
+// checks them.
+func FillTemplateParams(d *db.DB, name string, params map[string]string) (map[string]string, error) {
+	t, ok := templateByName(name)
+	if !ok {
+		return nil, fmt.Errorf("no template %q", name)
+	}
+	out := maps.Clone(params)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for _, p := range t.Params {
+		resolve, ok := templateParamDefaults[p.Key]
+		if _, given := out[p.Key]; given || !ok {
+			continue
+		}
+		value, err := resolve(d)
+		if err != nil {
+			return nil, fmt.Errorf("choosing <%s> for %s: %w", p.Key, name, err)
+		}
+		out[p.Key] = value
+	}
+	return out, nil
+}
 
 // RenderTemplate returns the recipe files of template name (slug → bytes)
 // with each given param's "<KEY>" placeholder replaced. A param the template
-// does not declare, or a value outside letters, digits, `_`, `.` and `-`, is
-// an error naming it; a declared param left out keeps its
-// placeholder, so the installed copy does not parse until the owner fills it.
+// does not declare, or a value outside letters, digits, `_`, `.` and `-`
+// (or a lone `*`), is an error naming it; a declared param left out keeps its
+// placeholder, so the copy does not parse — install-template fills the
+// params that have a default first (FillTemplateParams).
 func RenderTemplate(name string, params map[string]string) (map[string][]byte, error) {
 	t, ok := templateByName(name)
 	if !ok {
@@ -134,7 +198,7 @@ func RenderTemplate(name string, params map[string]string) (map[string][]byte, e
 			return nil, fmt.Errorf("template %s has no param %s", name, key)
 		}
 		if !templateParamValue.MatchString(value) {
-			return nil, fmt.Errorf("param %s: %q is not a valid value (allowed: letters, digits, _ . and -)", key, value)
+			return nil, fmt.Errorf("param %s: %q is not a valid value (allowed: letters, digits, _ . and -, or * alone)", key, value)
 		}
 	}
 	out := make(map[string][]byte, len(t.Files))

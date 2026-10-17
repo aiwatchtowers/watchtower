@@ -37,6 +37,7 @@ func TestTemplates_RunE2E(t *testing.T) {
 	t.Run("new-mail-summary cursor under the address", testRunNewMailLegacyCursor)
 
 	t.Run("jira-state-report", testRunJiraStateReport)
+	t.Run("jira-state-report every project", testRunJiraStateReportAllProjects)
 
 	t.Run("team-performance-report", testRunTeamPerformanceReport)
 }
@@ -331,6 +332,28 @@ func testRunJiraStateReport(t *testing.T) {
 	}
 	mustContain(t, "report input", calls[0].UserMessage, "PAY-5")
 	mustContain(t, "briefing input", calls[1].UserMessage, "PAY-5 is blocked.")
+}
+
+// #582: installed with PROJECT=* (no single active project), the report reads
+// every synced project and names none in its titles.
+func testRunJiraStateReportAllProjects(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nAll calm.", "- all calm"}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "jira-state-report", map[string]string{"PROJECT": "*"})
+	id := f.enqueue(t, a, db.TriggerSchedule)
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunSucceeded, "")
+
+	outs := f.outputs(t)
+	if len(outs) != 2 || outs[0].Title != "Jira projects state" || outs[1].Title != "Jira projects this week" {
+		t.Fatalf("outputs = %+v; want the all-projects report and its briefing", outs)
+	}
+	calls := gen.Snapshot()
+	if len(calls) != 2 {
+		t.Fatalf("llm() calls = %+v; want two", calls)
+	}
+	mustContain(t, "report prompt", calls[0].SystemPrompt+calls[0].UserMessage, "the synced Jira projects")
+	mustContain(t, "report input", calls[0].UserMessage, "PAY-5")
 }
 
 func testRunTeamPerformanceReport(t *testing.T) {

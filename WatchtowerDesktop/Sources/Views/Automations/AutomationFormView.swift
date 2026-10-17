@@ -122,27 +122,32 @@ private struct AutomationFormContent: View {
     private var saveState: AutomationEditorCenter.SaveState? { editor.saving[id] }
     private var isBusy: Bool { saveState == .saving || saveState == .validating }
     /// The controls write the frontmatter only while the form describes it.
-    private var controlsEnabled: Bool { !form.frontmatterEditedInRecipe }
+    private var controlsEnabled: Bool { !form.paused }
+    /// The script section's scroll id: "Open in editor" scrolls there.
+    private static let recipeEditorID = "recipe-editor"
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    notes
-                    Group {
-                        nameField
-                        runsSection
-                        spendSection
-                        mayDoSection
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        header
+                        notes(proxy)
+                        Group {
+                            nameField
+                            runsSection
+                            spendSection
+                            mayDoSection
+                        }
+                        .disabled(!controlsEnabled || isBusy)
+                        if !form.detail.isNewRecipe { stateSection }
+                        scriptSection
+                            .id(Self.recipeEditorID)
+                        messages
                     }
-                    .disabled(!controlsEnabled || isBusy)
-                    if !form.detail.isNewRecipe { stateSection }
-                    scriptSection
-                    messages
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
             footer
@@ -182,8 +187,20 @@ private struct AutomationFormContent: View {
         }
     }
 
-    @ViewBuilder private var notes: some View {
-        if form.lostFormEdit {
+    @ViewBuilder private func notes(_ proxy: ScrollViewProxy) -> some View {
+        if form.recipeUnparsed {
+            // #582: the fields are column defaults, not the file's settings;
+            // the form stays off so it never writes them over the recipe.
+            VStack(alignment: .leading, spacing: 6) {
+                Label("The recipe can't be read, so the form is off: \(form.detail.parseError)",
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                Button("Open in editor") {
+                    withAnimation { proxy.scrollTo(Self.recipeEditorID, anchor: .top) }
+                }
+            }
+        } else if form.lostFormEdit {
             Label("Your last change in the form did not land: the recipe below was edited at the same moment. The "
                 + "form is paused; save, or discard to use the form again.", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)

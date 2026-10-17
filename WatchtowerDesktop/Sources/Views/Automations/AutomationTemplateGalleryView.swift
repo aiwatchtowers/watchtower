@@ -5,10 +5,11 @@ import WatchtowerCore
 /// template and a last card that hands over to "Describe in words". **Use
 /// template** installs through the `AppState`-owned `AutomationsViewModel`
 /// (so the install survives closing the sheet); once it lands the tab opens
-/// the new copy's edit form. Workbench templates wait for workbench
-/// automations (P5), so their button is off.
+/// the new copy's edit form. A workbench template installs into the only
+/// workbench, or into the one picked from the button's menu (#582).
 struct AutomationTemplateGalleryView: View {
     @Bindable var vm: AutomationsViewModel
+    var workbenches: [AutomationTemplateGallery.Workbench] = []
     let onDescribeInWords: () -> Void
     let onClose: () -> Void
 
@@ -84,28 +85,47 @@ struct AutomationTemplateGalleryView: View {
             Text(AutomationTemplateGallery.summaryLine(template))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            ForEach(AutomationTemplateGallery.paramLines(template) + template.notes, id: \.self) { line in
+            ForEach(template.notes, id: \.self) { line in
                 Text(line)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-            if isWorkbench {
-                Button("Coming with workbench automations") {}
-                    .disabled(true)
-            } else {
-                Button(vm.installingTemplate == template.name ? "Installing…" : "Use template") {
-                    Task {
-                        if await vm.installTemplate(template) { onClose() }
-                    }
-                }
-                .disabled(vm.installingTemplate != nil)
-            }
+            useButton(template)
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 170, alignment: .topLeading)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.3)))
+    }
+
+    /// **Use template**: installs at once, or, for a workbench template with
+    /// several workbenches, is a menu of them.
+    @ViewBuilder private func useButton(_ template: AutomationTemplate) -> some View {
+        let title = vm.installingTemplate == template.name ? "Installing…" : "Use template"
+        switch AutomationTemplateGallery.installChoice(template, workbenches: workbenches) {
+        case let .install(workbenchID):
+            Button(title) { install(template, workbenchID: workbenchID) }
+                .disabled(vm.installingTemplate != nil)
+        case let .pickWorkbench(choices):
+            Menu(title) {
+                ForEach(choices) { workbench in
+                    Button(workbench.name) { install(template, workbenchID: workbench.id) }
+                }
+            }
+            .fixedSize()
+            .disabled(vm.installingTemplate != nil)
+        case .needsWorkbench:
+            Button(title) {}
+                .disabled(true)
+                .help("Add a workbench first: this template goes into a workbench folder.")
+        }
+    }
+
+    private func install(_ template: AutomationTemplate, workbenchID: Int64?) {
+        Task {
+            if await vm.installTemplate(template, workbenchID: workbenchID) { onClose() }
+        }
     }
 
     private var describeCard: some View {

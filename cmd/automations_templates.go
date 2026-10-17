@@ -62,7 +62,11 @@ func runAutomationsTemplates(cmd *cobra.Command, _ []string) error {
 	for _, t := range out {
 		fmt.Fprintf(w, "%s — %s (%s, %s)\n  %s\n", t.Name, t.Title, t.Scope, t.TriggerText, t.Description)
 		for _, p := range t.Params {
-			fmt.Fprintf(w, "  --param %s=…  %s, e.g. %s\n", p.Key, p.Label, p.Example)
+			optional := ""
+			if p.HasDefault() {
+				optional = " (optional: chosen from your data when left out)"
+			}
+			fmt.Fprintf(w, "  --param %s=…  %s, e.g. %s%s\n", p.Key, p.Label, p.Example, optional)
 		}
 		for _, n := range t.Notes {
 			fmt.Fprintf(w, "  Note: %s\n", n)
@@ -101,15 +105,18 @@ func runAutomationsInstallTemplate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	files, err := automations.RenderTemplate(tpl.Name, params)
-	if err != nil {
-		return err
-	}
 	cfg, database, err := openAutomationsCmd()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	if params, err = automations.FillTemplateParams(database, tpl.Name, params); err != nil {
+		return err
+	}
+	files, err := automations.RenderTemplate(tpl.Name, params)
+	if err != nil {
+		return err
+	}
 	scope, dir, err := workbenchScope(database, autoFlags.Workbench)
 	if err != nil {
 		return err

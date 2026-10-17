@@ -117,9 +117,6 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         XCTAssertEqual(vm.templates[0].notes, ["Run it by hand until P4."])
         XCTAssertEqual(vm.templates[2].params,
                        [AutomationTemplate.Param(key: "PROJECT", label: "Jira project key", example: "PAY")])
-        XCTAssertEqual(AutomationTemplateGallery.paramLines(vm.templates[2]),
-                       ["After installing, replace <PROJECT> (Jira project key, e.g. PAY) in the recipe."])
-        XCTAssertEqual(AutomationTemplateGallery.paramLines(vm.templates[0]), [])
         XCTAssertEqual(AutomationTemplateGallery.summaryLine(vm.templates[0]), "Weekdays 09:00 · reads mail")
         XCTAssertEqual(AutomationTemplateGallery.summaryLine(vm.templates[1]), "Button")
         XCTAssertEqual(runner.invocations, [["automations", "templates", "--json"]])
@@ -144,6 +141,21 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         await vm.installTemplate(try template("release-buttons", scope: "workbench"), workbenchID: 3)
         XCTAssertEqual(runner.invocations,
                        [["automations", "install-template", "release-buttons", "--workbench", "3", "--json"]])
+    }
+
+    /// #582: every template installs from the gallery — a workbench one into
+    /// the only workbench, or one picked from a menu; never with a param.
+    func testInstallChoice() throws {
+        typealias Gallery = AutomationTemplateGallery
+        let personal = try template()
+        let workbench = try template("release-buttons", scope: "workbench")
+        let acme = Gallery.Workbench(id: 3, name: "acme")
+        let docs = Gallery.Workbench(id: 5, name: "docs")
+        XCTAssertEqual(Gallery.installChoice(personal, workbenches: []), .install(workbenchID: nil))
+        XCTAssertEqual(Gallery.installChoice(personal, workbenches: [acme]), .install(workbenchID: nil))
+        XCTAssertEqual(Gallery.installChoice(workbench, workbenches: []), .needsWorkbench)
+        XCTAssertEqual(Gallery.installChoice(workbench, workbenches: [acme]), .install(workbenchID: 3))
+        XCTAssertEqual(Gallery.installChoice(workbench, workbenches: [acme, docs]), .pickWorkbench([acme, docs]))
     }
 
     func testInstallSelectsAndOpensForm() async throws {

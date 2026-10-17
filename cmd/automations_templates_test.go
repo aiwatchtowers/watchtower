@@ -48,16 +48,20 @@ func templateWorkbench(t *testing.T, c *autoCLI) (int64, string) {
 }
 
 func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
+	// #582: without --param (the Desktop gallery) <PROJECT> is chosen from
+	// the owner's data; with no active project it is "*", and the copy parses.
 	c := newAutoCLI(t)
 	got := installTemplate(t, "jira-state-report")
 	require.Len(t, got.Installed, 1)
-	assert.Contains(t, got.Installed[0].ParseError, "<PROJECT>")
+	assert.Empty(t, got.Installed[0].ParseError)
 	a, err := c.d.GetAutomation(got.AutomationID)
 	require.NoError(t, err)
-	assert.False(t, a.Runnable())
+	assert.False(t, a.Runnable(), "installed unconfirmed")
 	text, err := os.ReadFile(got.Path)
 	require.NoError(t, err)
-	assert.Contains(t, string(text), "jira:read@<PROJECT>", "the placeholder is installed as written")
+	assert.NotContains(t, string(text), "<PROJECT>")
+	assert.Contains(t, string(text), "jira:read@*")
+	assert.Contains(t, string(text), `const project = "*";`)
 
 	c2 := newAutoCLI(t)
 	got = installTemplate(t, "jira-state-report", "--param", "PROJECT=PAY")
@@ -68,7 +72,7 @@ func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
 	assert.Contains(t, a.PermissionsJSON, "jira:read@PAY")
 
 	c3 := newAutoCLI(t)
-	for _, param := range []string{"PROJECT=a b", "X=1", "PROJECT", "PROJECT=PAY:", `PROJECT=PAY\`} {
+	for _, param := range []string{"PROJECT=a b", "X=1", "PROJECT", "PROJECT=PAY:", `PROJECT=PAY\`, "PROJECT=PA*"} {
 		out, err := runAutomations(t, "install-template", "jira-state-report", "--param", param)
 		require.Error(t, err, "--param %s: %s", param, out)
 	}
@@ -76,6 +80,37 @@ func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
 	rows, err := c3.d.ListAutomations(db.AutomationFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, rows)
+}
+
+// #582: the owner's one active Jira project becomes <PROJECT>; a second one
+// makes the install report across every synced project ("*").
+func TestInstallTemplate_JiraProjectFromOwnerData(t *testing.T) {
+	c := newAutoCLI(t)
+	acct := db.SeedTestJiraAccount(t, c.d)
+	_, err := c.d.Exec(`UPDATE jira_accounts SET owner_account_id = 'me' WHERE id = ?`, acct)
+	require.NoError(t, err)
+	for _, p := range []string{"PAY", "OPS"} {
+		require.NoError(t, c.d.UpdateJiraSyncState(acct, p, "now", 1))
+	}
+	open := func(key, project string) {
+		require.NoError(t, c.d.UpsertJiraIssue(db.JiraIssue{AccountID: acct, Key: key, ProjectKey: project, Summary: "S",
+			Status: "Open", StatusCategory: "new", AssigneeAccountID: "me", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	}
+	open("PAY-1", "PAY")
+	got := installTemplate(t, "jira-state-report")
+	require.Empty(t, got.Installed[0].ParseError)
+	a, err := c.d.GetAutomation(got.AutomationID)
+	require.NoError(t, err)
+	assert.Contains(t, a.PermissionsJSON, "jira:read@PAY")
+
+	require.NoError(t, os.Remove(got.Path))
+	require.NoError(t, c.d.DeleteAutomation(got.AutomationID))
+	open("OPS-1", "OPS")
+	got = installTemplate(t, "jira-state-report")
+	require.Empty(t, got.Installed[0].ParseError)
+	a, err = c.d.GetAutomation(got.AutomationID)
+	require.NoError(t, err)
+	assert.Contains(t, a.PermissionsJSON, "jira:read@*")
 }
 
 func TestInstallTemplate_FailedWriteRollsBack(t *testing.T) {

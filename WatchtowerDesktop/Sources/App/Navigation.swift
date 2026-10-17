@@ -311,6 +311,9 @@ struct MainNavigationView: View {
                     workbenchName: { id in
                         appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
                     },
+                    workbenches: (appState.workbenchesViewModel?.summaries ?? []).map {
+                        AutomationTemplateGallery.Workbench(id: $0.project.id, name: $0.project.name)
+                    },
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,
                     chats: automationEditorChatHooks

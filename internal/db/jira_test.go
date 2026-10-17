@@ -1323,3 +1323,37 @@ func TestGetJiraIssues(t *testing.T) {
 	require.NoError(t, err, "GetJiraIssues status")
 	assert.Len(t, byStatus, 2)
 }
+
+// The owner's active projects: synced (watermark or selected board), with an
+// open issue the owner is assigned to or reported; done, deleted and
+// unsynced projects do not count.
+func TestOwnerActiveJiraProjects(t *testing.T) {
+	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "B", ProjectKey: "BRD", IsSelected: true, SyncedAt: "now"}))
+	require.NoError(t, db.UpdateJiraSyncState(1, "PAY", "now", 1))
+	require.NoError(t, db.UpdateJiraSyncState(1, "OLD", "now", 1))
+	issue := func(key, project, category, assignee, reporter string) {
+		require.NoError(t, db.UpsertJiraIssue(JiraIssue{AccountID: 1, Key: key, ProjectKey: project, Summary: "S", Status: "S",
+			StatusCategory: category, AssigneeAccountID: assignee, ReporterAccountID: reporter,
+			CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	}
+	issue("PAY-1", "PAY", "indeterminate", "me", "")
+	issue("PAY-2", "PAY", "new", "", "me")
+	issue("OLD-1", "OLD", "done", "me", "")
+	issue("BRD-1", "BRD", "new", "other", "")
+	issue("MIR-1", "MIR", "new", "me", "") // not a synced project
+
+	got, err := db.OwnerActiveJiraProjects("me")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"PAY"}, got)
+
+	issue("BRD-2", "BRD", "new", "", "me")
+	got, err = db.OwnerActiveJiraProjects("me")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"BRD", "PAY"}, got)
+
+	got, err = db.OwnerActiveJiraProjects("")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
