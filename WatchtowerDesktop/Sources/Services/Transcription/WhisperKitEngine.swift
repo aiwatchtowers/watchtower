@@ -131,20 +131,15 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         try await transcribeWindow(samples, language: language, prompt: prompt, dropDoubtful: false).segments
     }
 
-    /// The drops of every decode pass the prompt fallback runs, added up.
     func transcribeWindow(
         _ samples: [Float],
         language: String,
         prompt: String?,
         dropDoubtful: Bool
     ) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) {
-        var drops = WindowDropCounts()
-        let segments = try await decodeWithPromptFallback(promptTokens: promptTokens(for: prompt)) { tokens in
-            let decoded = try await decode(samples, language: language, promptTokens: tokens, dropDoubtful: dropDoubtful)
-            drops.add(decoded.drops)
-            return decoded.segments
+        try await decodeWithPromptFallback(promptTokens: promptTokens(for: prompt)) { tokens in
+            try await decode(samples, language: language, promptTokens: tokens, dropDoubtful: dropDoubtful)
         }
-        return (segments, drops)
     }
 
     private func decode(

@@ -365,6 +365,22 @@ func decodeWithPromptFallback(
     }
 }
 
+/// `decodeWithPromptFallback` over a decode that also reports what the
+/// engine dropped (`WhisperKitEngine`): the drops of every pass it runs are
+/// added up, the discarded prompted pass's included (board #564).
+func decodeWithPromptFallback(
+    promptTokens: [Int]?,
+    countingDrops decode: ([Int]?) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts)
+) async throws -> (segments: [TranscribedSegment], drops: WindowDropCounts) {
+    var drops = WindowDropCounts()
+    let segments = try await decodeWithPromptFallback(promptTokens: promptTokens) { tokens in
+        let decoded = try await decode(tokens)
+        drops.add(decoded.drops)
+        return decoded.segments
+    }
+    return (segments, drops)
+}
+
 /// Whether a decode produced anything usable, under the same trimming rule
 /// `liftWindowSegments` applies downstream.
 private func containsSpeech(_ segments: [TranscribedSegment]) -> Bool {
