@@ -2,7 +2,10 @@ package automations
 
 import (
 	"errors"
+	"fmt"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +48,11 @@ var sandboxBombs = map[string]string{
 	"Object.keys of an array":    `var a = []; a.length = 1e6; Object.keys(new Array(5e5).fill(0))`,
 	"JSON.parse many containers": `JSON.parse("[" + "[],".repeat(5e5) + "[]]")`,
 	"JSON.parse many objects":    `JSON.parse("[" + "{},".repeat(5e5) + "{}]")`,
+	"split per character":        `"x".repeat(16e6).split("")`,
+	"split by a separator":       `"x,".repeat(4e5).split(",")`,
+	"Array.from a string":        `Array.from("x".repeat(16e6))`,
+	"Object.assign a string":     `Object.assign({}, "x".repeat(16e6))`,
+	"global match count":         `"x".repeat(16e6).match(/x/g)`,
 	"typed join separator":       `new Uint8Array(1e5).join("x".repeat(1e4))`,
 	"typed join Float64":         `new Float64Array(16e6).fill(-1.2345678901234567e-300).join()`,
 	"typed toString":             `String(new Float64Array(1e6).fill(-1.2345678901234567e-300))`,
@@ -174,6 +182,9 @@ func TestSandbox_WrappedBuiltinsMatchGoja(t *testing.T) {
 		`"abc".replace(/b/, undefined)`,
 		`"abc".replace(/b/, 42)`,
 		`"a1".replace(1, "$&$&")`,
+		`(function () { var re = /\d/g; re.lastIndex = 5; var r = ("x".repeat(3e5) + "1a2").match(re); return r.join() + "|" + re.lastIndex })()`,
+		`("y".repeat(3e5)).match(/x*/).length + "|" + "a,,b".split(",").length + "|" + "abc".split("").join("-") + "|" + "a-b-c".split("-", 2).join()`,
+		`[Array.from("ab").join(), JSON.stringify(Object.assign({}, "ab")), "a1b2".match(/\d/g).join()].join("|")`,
 		`/b/g[Symbol.replace]("abcb", "[$&$'$\x60]")`,
 		`(function () { try { "a".replaceAll(/a/, "b") } catch (e) { return e.name } })()`,
 		`(function () { try { String.prototype.replace.call(null, "a", "b") } catch (e) { return e.name } })()`,
@@ -310,12 +321,11 @@ func TestSandbox_BigIntNotAvailable(t *testing.T) {
 // step, where no single call is over a cap (lowered here to keep the test
 // light). The run fails with a RangeError; the process lives on.
 func TestSandbox_HeapBudgetStopsTheRun(t *testing.T) {
-	old := RunHeapBudget
-	RunHeapBudget = 64 << 20
-	t.Cleanup(func() { RunHeapBudget = old })
+	lowHeapBudget(t, 64<<20)
 	for name, script := range map[string]string{
 		"string doubling": `var s = "x"; try { for (;;) { s = s + s } } catch (e) { return "caught" }`,
 		"many arrays":     `var keep = []; try { for (;;) { keep.push(new Array(1000).fill(1)) } } catch (e) { return "caught" }`,
+		"string spread":   `var keep = []; try { for (;;) { keep.push([..."x".repeat(1e5)]) } } catch (e) { return "caught" }`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := runScript(t, script, sbOpts{})
@@ -329,4 +339,141 @@ func TestSandbox_HeapBudgetStopsTheRun(t *testing.T) {
 	if got := mustRun(t, `var a = []; for (var i = 0; i < 1e5; i++) { a.push(i) } return a.length`, sbOpts{}); got != float64(1e5) {
 		t.Fatalf("got %v", got)
 	}
+}
+
+// lowHeapBudget lowers RunHeapBudget for one test (the tests in this
+// package do not run in parallel).
+func lowHeapBudget(t *testing.T, budget uint64) {
+	old := RunHeapBudget
+	RunHeapBudget = budget
+	t.Cleanup(func() { RunHeapBudget = old })
+	runtime.GC() // a fresh live-heap reading for the run's baseline
+}
+
+// holdScript allocates mib MiB, keeps it and stays busy for ms.
+func holdScript(mib, ms int) string {
+	return fmt.Sprintf(`var keep = []; for (var i = 0; i < %d; i++) { keep.push("x".repeat(10 * 1024 * 1024) + i) }
+		var end = Date.now() + %d; while (Date.now() < end) {} return keep.length`, mib/10, ms)
+}
+
+// Two runs under the budget each, together over it, do not stop each
+// other: a run's baseline moves up when a sibling starts or ends.
+func TestSandbox_HeapBudgetSparesSiblingRuns(t *testing.T) {
+	lowHeapBudget(t, 96<<20)
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range 2 {
+		sb, _ := newTestSandbox(t, holdScript(60, 600), sbOpts{})
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Duration(i) * 200 * time.Millisecond)
+			_, errs[i] = sb.Run()
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("run %d: %v; want both to succeed", i, err)
+		}
+	}
+}
+
+// heldWhileWaiting keeps what the waiting module allocated alive.
+var heldWhileWaiting []byte
+
+// A waiting run is never stopped for memory: nothing is sampled while its
+// meter is paused, and its baseline moves up when it resumes.
+func TestSandbox_HeapBudgetSparesAWaitingRun(t *testing.T) {
+	lowHeapBudget(t, 32<<20)
+	t.Cleanup(func() { heldWhileWaiting = nil })
+	wait := funcModule{name: "wait", fns: map[string]SDKFunc{
+		"wait": func(env *Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
+			env.Meter.PauseActive()
+			defer env.Meter.ResumeActive()
+			heldWhileWaiting = make([]byte, 128<<20) // someone else's memory, grown while this run waits
+			for i := range heldWhileWaiting {
+				heldWhileWaiting[i] = 1
+			}
+			runtime.GC()
+			time.Sleep(100 * time.Millisecond)
+			return nil, nil
+		},
+	}}
+	_, err := runScript(t, `wait(); var end = Date.now() + 200; while (Date.now() < end) {} return 1`,
+		sbOpts{modules: []Module{testModule(), wait}})
+	if err != nil {
+		t.Fatalf("Run = %v; want no memory stop for a waiting run", err)
+	}
+}
+
+// Direct exec calls are timed too (the compiler rewrites them), so a
+// catastrophic pattern in an exec loop throws instead of reading as "no
+// match"; the prototype keeps goja's own exec.
+func TestSandbox_ExecCallsAreTimed(t *testing.T) {
+	for _, script := range []string{
+		`var re = /(a+)+b(?=c)/g, s = "a".repeat(33), m, n = 0; while ((m = re.exec(s))) { n++ } return n`,
+		`var re = /(a+)+b(?=c)/; return re["exec"]("a".repeat(33))`,
+	} {
+		start := time.Now()
+		_, err := runScript(t, script, sbOpts{})
+		var se *ScriptError
+		if !errors.As(err, &se) || se.Name != "RangeError" || !strings.Contains(se.Message, "too long") {
+			t.Errorf("%s → %v; want the regex timeout RangeError", script, err)
+		}
+		if took := time.Since(start); took > RegexpMatchTimeout+2*time.Second {
+			t.Errorf("took %v", took)
+		}
+	}
+	got := mustRun(t, `var re = /(\d)/g, out = [], m; while ((m = re.exec("a1b2"))) { out.push(m[1] + m.index) }
+		var o = { exec: function (x) { return "own " + x } };
+		return [out.join(), o.exec("y"), /b/["exec"]("abc")[0], RegExp.prototype.exec === /x/.exec,
+			typeof $__automationExecProbe].join("|")`, sbOpts{})
+	if got != "11,23|own y|b|true|undefined" {
+		t.Fatalf("got %q", got)
+	}
+	if _, err := NewSandbox(&Env{Ctx: t.Context(), Recipe: &Recipe{Script: `var $__automationExec = 1`}, Journal: NewMemoryJournal(),
+		Meter: NewMeter(Budget{Tokens: 1, Minutes: 1}, nil)}, nil); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("a script naming the exec helper = %v; want a refusal", err)
+	}
+}
+
+// Deleting RegExp.prototype.exec gives a catchable TypeError from the RegExp
+// methods, as on main, never a Go panic.
+func TestSandbox_DeletedExecIsATypeError(t *testing.T) {
+	got := mustRun(t, `delete RegExp.prototype.exec; var out = [];
+		[function () { return "a".replace(/a/, "b") }, function () { return /a/.test("a") },
+			function () { return "a".match(/a/g) }, function () { return "a,b".split(/,/) },
+			function () { return /a/.exec("a") }].forEach(function (f) {
+			try { f(); out.push("ran") } catch (e) { out.push(e.name) }
+		});
+		return out.join(",")`, sbOpts{})
+	if got != "TypeError,TypeError,TypeError,TypeError,TypeError" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// A run stopped for memory whose script then stays stuck in a native call
+// is abandoned like any runaway: RunInterrupted{Abandoned: true}.
+func TestSandbox_MemoryStopThenStuckIsAbandoned(t *testing.T) {
+	waitNoAbandonedRuns(t)
+	lowHeapBudget(t, 32<<20)
+	var keep [][]byte
+	stuck := funcModule{name: "stuck", fns: map[string]SDKFunc{
+		"stuck": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) {
+			keep = append(keep, make([]byte, 64<<20))
+			for i := range keep[0] {
+				keep[0][i] = 1
+			}
+			runtime.GC()
+			time.Sleep(AbandonGrace + time.Second)
+			return nil, nil
+		},
+	}}
+	_, err := runScript(t, `stuck(); return 1`, sbOpts{modules: []Module{testModule(), stuck}})
+	var ri *RunInterrupted
+	if !errors.As(err, &ri) || !ri.Abandoned || ri.Reason != InterruptMemory {
+		t.Fatalf("Run = %v; want an abandoned memory interrupt", err)
+	}
+	waitNoAbandonedRuns(t)
 }

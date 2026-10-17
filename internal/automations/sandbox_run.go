@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
-	"runtime"
 	"runtime/metrics"
 	"strings"
 	"sync/atomic"
@@ -119,59 +118,106 @@ func scriptShapeError(script string) error {
 	}
 }
 
+// execHelper is the global the compiler routes direct `x.exec(…)` and
+// `x["exec"](…)` calls through (rewriteExecCalls): goja reports a regexp2
+// match that timed out as "no match", and RegExp.prototype.exec itself is
+// left alone (replacing it takes every RegExp method off goja's fast path),
+// so the helper times the call instead. A script may not use the name.
+const execHelper = "$__automationExec"
+
 // bigIntRefusal refuses a program holding a BigInt literal (BigInt is not
 // available in automations, owner decision ask #331: its ** and <<
-// operators build a result of any size in one native step). It walks the
-// parsed program, so a literal can hide nowhere a lexical scan would miss
-// it. Line is the script's own 1-based line (the wrapper prefix sits on the
-// script's first line).
+// operators build a result of any size in one native step) or naming
+// execHelper. It walks the parsed program, so nothing can hide where a
+// lexical scan would miss it. Line is the script's own 1-based line (the
+// wrapper prefix sits on the script's first line).
 func bigIntRefusal(prog *ast.Program) error {
-	lit := findBigIntLiteral(reflect.ValueOf(prog))
-	if lit == nil {
+	var refusal *PreParseError
+	walkAST(reflect.ValueOf(prog), func(node any) bool {
+		switch n := node.(type) {
+		case *ast.NumberLiteral:
+			if _, isBig := n.Value.(*big.Int); isBig {
+				refusal = &PreParseError{Word: n.Literal, Line: programLine(prog, n.Idx), BigInt: true}
+			}
+		case *ast.Identifier:
+			if n.Name == execHelper {
+				refusal = &PreParseError{Word: execHelper, Line: programLine(prog, n.Idx), Reserved: true}
+			}
+		}
+		return refusal == nil
+	})
+	if refusal == nil {
 		return nil
 	}
-	line := 0
-	if prog.File != nil {
-		line = prog.File.Position(int(lit.Idx) - prog.File.Base()).Line
-	}
-	return &PreParseError{Word: lit.Literal, Line: line, BigInt: true}
+	return refusal
 }
 
-// findBigIntLiteral walks an AST value (pointers, interfaces, structs,
-// slices) for a number literal whose value is a BigInt.
-func findBigIntLiteral(v reflect.Value) *ast.NumberLiteral {
+func programLine(prog *ast.Program, idx file.Idx) int {
+	if prog.File == nil {
+		return 0
+	}
+	return prog.File.Position(int(idx) - prog.File.Base()).Line
+}
+
+// rewriteExecCalls turns `x.exec(a…)` and `x["exec"](a…)` into
+// `$__automationExec(x, a…)`. An aliased exec (`var f = re.exec; f.call(re,
+// s)`) or an optional call (`re.exec?.(s)`) is not rewritten.
+func rewriteExecCalls(prog *ast.Program) {
+	walkAST(reflect.ValueOf(prog), func(node any) bool {
+		call, ok := node.(*ast.CallExpression)
+		if !ok {
+			return true
+		}
+		var target ast.Expression
+		switch c := call.Callee.(type) {
+		case *ast.DotExpression:
+			if c.Identifier.Name == "exec" {
+				target = c.Left
+			}
+		case *ast.BracketExpression:
+			if lit, ok := c.Member.(*ast.StringLiteral); ok && lit.Value == "exec" {
+				target = c.Left
+			}
+		}
+		if target != nil {
+			call.Callee = &ast.Identifier{Name: execHelper, Idx: call.Callee.Idx0()}
+			call.ArgumentList = append([]ast.Expression{target}, call.ArgumentList...)
+		}
+		return true
+	})
+}
+
+// walkAST calls visit on every node of an AST value (pointers, interfaces,
+// structs, slices), parents before children, until visit returns false; it
+// reports whether the walk ran to the end.
+func walkAST(v reflect.Value, visit func(node any) bool) bool {
 	switch v.Kind() {
 	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
-			return nil
-		}
-		if lit, ok := v.Interface().(*ast.NumberLiteral); ok {
-			if _, big := lit.Value.(*big.Int); big {
-				return lit
-			}
-			return nil
+			return true
 		}
 		if _, ok := v.Interface().(*file.File); ok {
-			return nil // source text and line tables, no nodes
+			return true // source text and line tables, no nodes
 		}
-		return findBigIntLiteral(v.Elem())
+		if v.Kind() == reflect.Pointer && !visit(v.Interface()) {
+			return false
+		}
+		return walkAST(v.Elem(), visit)
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).IsExported() {
-				if lit := findBigIntLiteral(v.Field(i)); lit != nil {
-					return lit
-				}
+			if v.Type().Field(i).IsExported() && !walkAST(v.Field(i), visit) {
+				return false
 			}
 		}
 	case reflect.Slice:
 		for i := 0; i < v.Len(); i++ {
-			if lit := findBigIntLiteral(v.Index(i)); lit != nil {
-				return lit
+			if !walkAST(v.Index(i), visit) {
+				return false
 			}
 		}
 	default: // scalars, strings and maps hold no AST nodes
 	}
-	return nil
+	return true
 }
 
 type runResult struct {
@@ -191,6 +237,8 @@ func (s *Sandbox) Run() (any, error) {
 	}
 	s.ran = true
 	s.mu.Unlock()
+	runEvents.Add(1)
+	defer runEvents.Add(1)
 	done, watched, heapWatched := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watched)
@@ -254,7 +302,12 @@ func (s *Sandbox) abandon(results <-chan runResult) (any, error) {
 	s.mu.Lock()
 	fatal, reason := s.fatal, s.reason
 	s.mu.Unlock()
-	if fatal != nil {
+	var se *ScriptError
+	switch {
+	case errors.As(fatal, &se) && se.Message == errTooMuchMemory().Message:
+		// stopped for memory, then stuck in a native call: a runaway
+		return nil, &RunInterrupted{Reason: InterruptMemory, Abandoned: true}
+	case fatal != nil:
 		return nil, fatal
 	}
 	return nil, &RunInterrupted{Reason: reason, Abandoned: true}
@@ -291,17 +344,28 @@ func (s *Sandbox) outcome(_ goja.Value, runErr error) (any, error) {
 	}
 }
 
-// RunHeapBudget is how far the Go heap may grow above where it stood when a
-// run started before the run is stopped ("the automation used too much
+// RunHeapBudget is how far the Go heap's live bytes may grow above a run's
+// baseline before the run is stopped ("the automation used too much
 // memory"). goja has no heap limit and many builtins allocate in proportion
 // to their input; the per-builtin caps stop single huge calls, this stops
-// everything else (a string doubled in a loop, many mid-sized calls). The
-// heap is the whole process's, so other work growing it at the same time
-// counts too; the overshoot is at most one native step past the budget.
-var RunHeapBudget uint64 = 512 << 20
+// everything else (a string doubled in a loop, many mid-sized calls).
+//
+// The heap is the whole daemon's, so the baseline moves up to the current
+// live bytes whenever the run resumes from a wait or another run starts or
+// ends, and nothing is sampled while the run waits: another run's growth is
+// not charged to this one. The reading is the live heap as of the last GC
+// (/gc/heap/live:bytes, garbage never counts), sampled every
+// heapPollInterval, so a run is stopped at the first GC after it passed the
+// budget: the overshoot is what it allocated since that GC (at most about
+// the heap's size then, GOGC=100) plus one native step still running.
+var RunHeapBudget uint64 = 1 << 30
 
 // heapPollInterval is how often watchHeap samples the heap.
 const heapPollInterval = 10 * time.Millisecond
+
+// runEvents counts sandbox runs starting and ending: a change re-baselines
+// every running watchHeap.
+var runEvents atomic.Int64
 
 // errTooMuchMemory ends a run whose heap growth passed RunHeapBudget.
 func errTooMuchMemory() *ScriptError {
@@ -309,17 +373,18 @@ func errTooMuchMemory() *ScriptError {
 		Message: fmt.Sprintf("the automation used too much memory (more than %d MiB)", RunHeapBudget>>20)}
 }
 
+func liveHeap() uint64 {
+	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	metrics.Read(sample)
+	return sample[0].Value.Uint64()
+}
+
 // watchHeap stops the run (uncatchably, like an interrupt: the memory must
-// be released) once the live heap passed its start plus RunHeapBudget. A
-// sample over the budget is confirmed after a forced GC, so garbage the
-// collector has not reached yet does not count.
+// be released) on the first sample whose live heap passed the baseline plus
+// RunHeapBudget (see RunHeapBudget for when the baseline moves).
 func (s *Sandbox) watchHeap(done <-chan struct{}) {
-	sample := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
-	heap := func() uint64 {
-		metrics.Read(sample)
-		return sample[0].Value.Uint64()
-	}
-	limit := heap() + RunHeapBudget
+	m := s.env.Meter
+	base, events, paused := liveHeap(), runEvents.Load(), false
 	tick := time.NewTicker(heapPollInterval)
 	defer tick.Stop()
 	for {
@@ -328,15 +393,18 @@ func (s *Sandbox) watchHeap(done <-chan struct{}) {
 			return
 		case <-tick.C:
 		}
-		if heap() <= limit {
+		if m.Paused() {
+			paused = true
 			continue
 		}
-		runtime.GC()
-		if heap() <= limit {
-			continue
+		live := liveHeap()
+		if e := runEvents.Load(); paused || e != events {
+			paused, events, base = false, e, max(base, live)
 		}
-		s.abort(errTooMuchMemory())
-		return
+		if live > base+RunHeapBudget {
+			s.abort(errTooMuchMemory())
+			return
+		}
 	}
 }
 

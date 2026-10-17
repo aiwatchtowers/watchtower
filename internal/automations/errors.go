@@ -42,6 +42,10 @@ const (
 	// InterruptExpired: a wait outlasted the recipe's pause_timeout_hours
 	// (the executor's Waiter returns it; the run ends expired).
 	InterruptExpired InterruptReason = "expired"
+	// InterruptMemory: the run passed RunHeapBudget (Run reports it as that
+	// RangeError, or, when the script then stayed stuck in a native call,
+	// as an abandoned interrupt; the run ends failed).
+	InterruptMemory InterruptReason = "memory"
 )
 
 // RunInterrupted is what Sandbox.Run returns when an interrupt stopped the
@@ -88,12 +92,16 @@ func (e *ScriptError) Error() string {
 // 1-based line (ParseRecipe adds the block offset). BigInt marks a BigInt
 // literal (Word) rather than an async word.
 type PreParseError struct {
-	Word   string
-	Line   int
-	BigInt bool
+	Word     string
+	Line     int
+	BigInt   bool
+	Reserved bool // a name the sandbox uses (execHelper)
 }
 
 func (e *PreParseError) Error() string {
+	if e.Reserved {
+		return fmt.Sprintf("%q is reserved for the automation sandbox", e.Word)
+	}
 	if e.BigInt {
 		return fmt.Sprintf("BigInt is not available in automations: %q", e.Word)
 	}

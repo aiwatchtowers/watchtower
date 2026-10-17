@@ -18,8 +18,9 @@ import (
 // methods (match, matchAll, replace, search, split) are wrapped to throw a
 // RangeError instead when a call takes this long. exec is not wrapped: a
 // replaced exec takes every String/RegExp method off goja's fast path (and a
-// global replace then keeps an exec result per match), so a timed-out exec
-// called directly still reads as "no match" (v1 limit).
+// global replace then keeps an exec result per match); direct exec calls are
+// timed by the compiler rewriting them (rewriteExecCalls), an aliased exec
+// still reads a timed-out match as "no match" (v1 limit).
 const RegexpMatchTimeout = 2 * time.Second
 
 // MaxBuiltinAlloc caps the cheap amplifiers, in characters, elements or
@@ -88,7 +89,7 @@ func init() {
 //     timeoutMs (a regexp2 match that timed out); exec stays goja's own.
 //
 // It returns the function that neutralises one more function prototype.
-const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxListing, jsonLimits, quotedLength, classOf, expandedLength) {
+const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxListing, jsonLimits, quotedLength, classOf, expandedLength, execHelperName) {
 	"use strict";
 	var FunctionProto = Function.prototype;
 	var uncurry = FunctionProto.bind.bind(FunctionProto.call);
@@ -105,7 +106,7 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxLis
 	var strIndexOf = uncurry(String.prototype.indexOf), strSlice = uncurry(String.prototype.slice);
 	var strCharAt = uncurry(String.prototype.charAt), strCharCodeAt = uncurry(String.prototype.charCodeAt);
 	var SymbolIterator = Symbol.iterator, SymbolSpreadable = Symbol.isConcatSpreadable, TypeErrorCtor = TypeError;
-	var SymbolMatch = Symbol.match, SymbolReplace = Symbol.replace, ProxyCtor = Proxy;
+	var SymbolMatch = Symbol.match, SymbolReplace = Symbol.replace, SymbolSplit = Symbol.split, ProxyCtor = Proxy;
 	var origJoin = Array.prototype.join;
 
 	function refuse() { throw new EvalErrorCtor("code generation from strings is not available to automation scripts"); }
@@ -203,6 +204,9 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxLis
 	var origFrom = Array.from;
 	install(Array, "from", function (src) {
 		var args = arguments;
+		if ((typeof src === "string" || (src !== null && typeof src === "object" && classOf(src) === "String")) && src.length > maxListing) {
+			limit("Array.from: more than " + maxListing + " characters");
+		}
 		if (src !== null && src !== undefined && typeof src[SymbolIterator] !== "function") {
 			var lo = lengthOnce(src);
 			cap("Array.from", lo.len);
@@ -273,6 +277,14 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxLis
 	listingCapped(ObjectCtor, "values");
 	listingCapped(ObjectCtor, "getOwnPropertyNames");
 	listingCapped(g.Reflect, "ownKeys");
+	guarded(ObjectCtor, "assign", function (self, a) {
+		for (var i = 1; i < a.length; i++) {
+			var o = a[i];
+			if ((typeof o === "string" || (o !== null && typeof o === "object" && classOf(o) === "String")) && o.length > maxListing) {
+				limit("assign: more than " + maxListing + " entries");
+			}
+		}
+	});
 
 	// join converts each element once, checking the running result length.
 	install(AP, "join", function join(separator) {
@@ -535,6 +547,33 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxLis
 	encoderCapped("encodeURIComponent");
 	encoderCapped("escape");
 
+	// split in goja's order: an object separator with an @@split method gets
+	// the call (RegExp's is timed, its pieces bounded by the memory budget);
+	// otherwise a string with more than maxListing pieces is refused (each
+	// piece costs goja ~60 bytes) before goja splits it.
+	var origSplit = SP.split;
+	install(SP, "split", function (separator, limitArg) {
+		if (this === null || this === undefined) { throw new TypeErrorCtor("String.prototype.split called on null or undefined"); }
+		if (separator !== null && (typeof separator === "object" || typeof separator === "function")) {
+			var splitter = separator[SymbolSplit];
+			if (splitter !== undefined && splitter !== null) {
+				if (typeof splitter !== "function") { throw new TypeErrorCtor("Symbol.split is not a function"); }
+				return apply(splitter, separator, [this, limitArg]);
+			}
+		}
+		var str = StringCtor(this), lim = limitArg === undefined ? 4294967295 : NumberCtor(limitArg) >>> 0;
+		var sep = separator === undefined ? undefined : StringCtor(separator);
+		if (str.length >= maxListing && lim > maxListing && sep !== undefined) {
+			var pieces = 1;
+			if (sep === "") { pieces = str.length; }
+			else {
+				for (var at = strIndexOf(str, sep); at >= 0 && pieces <= maxListing; at = strIndexOf(str, sep, at + sep.length)) { pieces++; }
+			}
+			if (pieces > maxListing) { limit("split: more than " + maxListing + " pieces"); }
+		}
+		return apply(origSplit, str, [sep, lim]);
+	});
+
 	// concat converts each argument once.
 	var origConcat = SP.concat, origReplace = SP.replace, origReplaceAll = SP.replaceAll;
 	install(SP, "concat", function concat() {
@@ -749,20 +788,66 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxLis
 		var d = getOwnDescriptor(RP, "exec");
 		return d !== undefined && d.value === origExec;
 	}
+	// execMissing reports a RegExp with no exec to call (deleted from the
+	// prototype): goja's own paths would dereference nothing, so the wrappers
+	// throw the TypeError a missing method gives instead.
+	function execMissing(rx) {
+		for (var o = rx; o !== null && (typeof o === "object" || typeof o === "function"); o = getPrototypeOf(o)) {
+			var d = getOwnDescriptor(o, "exec");
+			if (d !== undefined) { return "value" in d && (d.value === undefined || d.value === null); }
+		}
+		return true;
+	}
+	function tooLong(t0) {
+		if (now() - t0 >= timeoutMs) { throw new RangeErrorCtor("regular expression took too long (" + timeoutMs + " ms or more)"); }
+	}
+	// The compiler routes direct x.exec(…) calls here (rewriteExecCalls):
+	// a RegExp's exec is timed like the other RegExp methods.
+	defineProperty(g, execHelperName, { writable: false, configurable: false, enumerable: false,
+		value: { exec(rx) {
+			var f = rx.exec, args = [];
+			for (var i = 1; i < arguments.length; i++) { args[i - 1] = arguments[i]; }
+			if (classOf(rx) !== "RegExp") { return apply(f, rx, args); }
+			var t0 = now();
+			var out = apply(f, rx, args);
+			tooLong(t0);
+			return out;
+		} }.exec });
+	var nativeTest = RP.test, globalOf = uncurry(getOwnDescriptor(RP, "global").get);
+	// globalMatchCapped refuses a global match of a standard RegExp with more
+	// than maxListing matches (each costs goja ~60 bytes in the result),
+	// counted with goja's own test from lastIndex (nothing is collected) when
+	// the subject could hold that many. match itself starts from lastIndex 0
+	// and leaves it 0, as here.
+	function globalMatchCapped(rx, str) {
+		if (str.length < maxListing || !standardExec(rx) || !globalOf(rx)) { return; }
+		var n = 0, from = 0;
+		rx.lastIndex = 0;
+		while (apply(nativeTest, rx, [str])) {
+			if (++n > maxListing) { rx.lastIndex = 0; limit("match: more than " + maxListing + " matches"); }
+			if (rx.lastIndex === from) { rx.lastIndex = from + 1; } // an empty match: step past it (counted twice at most)
+			from = rx.lastIndex;
+		}
+		rx.lastIndex = 0;
+	}
 	// timed: fixed in place, so a script cannot remove the timing. exec is
 	// left alone (see RegexpMatchTimeout). @@replace also counts what it
 	// inserts (replaceArg); its matches are bounded for a standard RegExp.
 	function timed(key) {
-		var orig = RP[key], counts = key === Symbol.replace;
+		var orig = RP[key], counts = key === SymbolReplace, matches = key === SymbolMatch;
 		install(RP, key, function () {
+			if (this !== null && typeof this === "object" && execMissing(this)) {
+				throw new TypeErrorCtor("RegExp exec is not a function");
+			}
 			var args = arguments;
-			if (counts) {
+			if (counts || matches) {
 				var str = StringCtor(arguments[0]);
-				args = [str, replaceArg("replace", str, arguments[1], standardExec(this))];
+				args = counts ? [str, replaceArg("replace", str, arguments[1], standardExec(this))] : [str];
+				if (matches) { globalMatchCapped(this, str); }
 			}
 			var t0 = now();
 			var out = apply(orig, this, args);
-			if (now() - t0 >= timeoutMs) { throw new RangeErrorCtor("regular expression took too long (" + timeoutMs + " ms or more)"); }
+			tooLong(t0);
 			return out;
 		}, true);
 	}
@@ -825,7 +910,7 @@ func (s *Sandbox) lockdown() error {
 	}
 	nv, err := lock(goja.Undefined(), s.rt.GlobalObject(), s.rt.ToValue(MaxBuiltinAlloc), s.rt.ToValue(MaxJSONDepth),
 		s.rt.ToValue(RegexpMatchTimeout.Milliseconds()), s.rt.ToValue(MaxDefaultSortLength), s.rt.ToValue(MaxListing),
-		s.rt.ToValue(jsonLimits), s.rt.ToValue(quoted), s.rt.ToValue(classOf), s.rt.ToValue(expanded))
+		s.rt.ToValue(jsonLimits), s.rt.ToValue(quoted), s.rt.ToValue(classOf), s.rt.ToValue(expanded), s.rt.ToValue(execHelper))
 	if err != nil {
 		return fmt.Errorf("automation sandbox: locking down the runtime: %w", err)
 	}

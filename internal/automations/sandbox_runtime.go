@@ -90,6 +90,7 @@ func (s *Sandbox) compile(script string) (*goja.Program, error) {
 	if err := bigIntRefusal(parsed); err != nil {
 		return nil, err
 	}
+	rewriteExecCalls(parsed)
 	prog, err := goja.CompileAST(parsed, false)
 	if err != nil {
 		return nil, s.syntaxError(err)
