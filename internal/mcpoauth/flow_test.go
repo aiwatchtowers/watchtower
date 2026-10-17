@@ -155,7 +155,7 @@ func (as *fakeAS) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	q.Set("code", code)
 	q.Set("state", state)
 	dest.RawQuery = q.Encode()
-	http.Redirect(w, r, dest.String(), http.StatusFound) //nolint:gosec // G710: a fake authorization server redirects to the redirect_uri it was given — its job, test only
+	http.Redirect(w, r, dest.String(), http.StatusFound) // G710: a fake authorization server redirects to the redirect_uri it was given — its job, test only
 }
 
 func (as *fakeAS) handleToken(t *testing.T) http.HandlerFunc {

@@ -226,7 +226,7 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 		// ourselves. Report and continue rather than failing the command.
 		fmt.Println("\nclaude CLI not found — remove the MCP server yourself with:")
 		fmt.Println("  claude mcp remove watchtower")
-		return nil //nolint:nilerr
+		return nil //nolint:nilerr // a missing claude CLI is reported, not a failure
 	}
 	out, err := exec.Command(claudeBin, "mcp", "remove", "watchtower").CombinedOutput()
 	if err != nil {
@@ -338,7 +338,7 @@ func registerMCPWithClaudeCode() error {
 		// they'd need instead of failing the whole integrate step.
 		fmt.Println("\nclaude CLI not found. Register the MCP server yourself with:")
 		fmt.Printf("  claude mcp add watchtower -- %s mcp\n", bin)
-		return nil //nolint:nilerr
+		return nil //nolint:nilerr // a missing claude CLI is reported, not a failure
 	}
 	out, err := exec.Command(claudeBin, "mcp", "add", "watchtower", "--", bin, "mcp").CombinedOutput()
 	if err != nil {

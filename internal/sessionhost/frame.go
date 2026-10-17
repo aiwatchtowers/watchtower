@@ -112,7 +112,7 @@ func WriteFrame(w io.Writer, t FrameType, payload []byte) error {
 	}
 	buf := make([]byte, 5+len(payload))
 	buf[0] = byte(t)
-	binary.BigEndian.PutUint32(buf[1:5], uint32(len(payload))) //nolint:gosec // bounded by MaxPayload above
+	binary.BigEndian.PutUint32(buf[1:5], uint32(len(payload))) // bounded by MaxPayload above
 	copy(buf[5:], payload)
 	if _, err := w.Write(buf); err != nil {
 		return fmt.Errorf("write frame: %w", err)

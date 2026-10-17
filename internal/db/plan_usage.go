@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -56,7 +57,7 @@ func (db *DB) InsertPlanUsageSamples(samples []PlanUsageSample) error {
 	if err != nil {
 		return fmt.Errorf("plan usage samples: begin: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback() // no-op after Commit
 	for _, s := range samples {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO plan_usage_samples (taken_at, limit_key, percent, resets_at) VALUES (?, ?, ?, ?)`,
 			planTime(s.TakenAt), s.LimitKey, s.Percent, planTime(s.ResetsAt)); err != nil {
@@ -128,7 +129,7 @@ func (db *DB) GetPlanUsageStatus() (*PlanUsageStatus, error) {
 	var updated string
 	err := db.QueryRow(`SELECT state, reason, plan, fetched_at, last_error, last_error_at, limits_json, breakdown_json, updated_at
 		FROM plan_usage_status WHERE id = 1`).Scan(&s.State, &s.Reason, &s.Plan, &fetched, &s.LastError, &lastErrAt, &s.LimitsJSON, &s.BreakdownJSON, &updated)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

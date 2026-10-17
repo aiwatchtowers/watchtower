@@ -146,10 +146,10 @@ func TestHelperVerdictCachedPerFileIdentity(t *testing.T) {
 	assert.Len(t, cs.verifyCalls(), 1, "five runs, one verification")
 
 	path := ocr.(*helperOCR).path
-	body, err := os.ReadFile(path) //nolint:gosec // test-owned path
+	body, err := os.ReadFile(path) // test-owned path
 	require.NoError(t, err)
 	swapped := filepath.Join(filepath.Dir(path), "swapped")
-	require.NoError(t, os.WriteFile(swapped, append(body, '\n'), 0o700)) //nolint:gosec // test script
+	require.NoError(t, os.WriteFile(swapped, append(body, '\n'), 0o700)) // test script
 	require.NoError(t, os.Rename(swapped, path))
 	cs.verifyErr = errors.New("exit status 3")
 	_, err = ocr.Recognize(context.Background(), "/tmp/extract/att-1.png", nil)
@@ -240,9 +240,9 @@ func TestRealBundleHelperSignature(t *testing.T) {
 	assert.True(t, newV().allowed(context.Background(), filepath.Join(dir, "watchtower-ocr")))
 
 	copyPath := filepath.Join(t.TempDir(), "watchtower-ocr")
-	b, err := os.ReadFile(filepath.Join(dir, "watchtower-ocr")) //nolint:gosec // test input
+	b, err := os.ReadFile(filepath.Join(dir, "watchtower-ocr")) // test input
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(copyPath, b, 0o700)) //nolint:gosec // test executable
+	require.NoError(t, os.WriteFile(copyPath, b, 0o700)) // test executable
 	_, err = runCodesign(context.Background(), "--force", "--sign", "-", copyPath)
 	require.NoError(t, err)
 	assert.False(t, newV().allowed(context.Background(), copyPath), "an ad-hoc signed swap is rejected")

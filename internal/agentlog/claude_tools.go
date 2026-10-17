@@ -291,7 +291,7 @@ func stripWrappers(s string) string {
 		if len(fields) == 0 {
 			return ""
 		}
-		drop := 0
+		var drop int
 		switch fields[0] {
 		case "env", "time":
 			drop = 1

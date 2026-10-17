@@ -290,7 +290,7 @@ func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) (sql.
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		err = fmt.Errorf("reading segments file: %v", err)
+		err = fmt.Errorf("reading segments file: %w", err)
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
 		return sql.NullString{}, err
 	}
@@ -331,7 +331,7 @@ func loadTranscriptSpeakers(path string, segmentsJSON sql.NullString, errOut io.
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		err = fmt.Errorf("reading speakers file: %v", err)
+		err = fmt.Errorf("reading speakers file: %w", err)
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
 		return sql.NullString{}, err
 	}

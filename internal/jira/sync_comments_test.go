@@ -28,8 +28,6 @@ func commentsMux(t *testing.T, issues []Issue, commentsByKey map[string]string) 
 		_, _ = w.Write(body)
 	})
 	for key, commentBody := range commentsByKey {
-		key := key
-		commentBody := commentBody
 		mux.HandleFunc("/rest/api/3/issue/"+key+"/comment", func(w http.ResponseWriter, _ *http.Request) {
 			hit = append(hit, key)
 			_, _ = w.Write([]byte(`{"startAt":0,"maxResults":50,"total":1,"comments":[
