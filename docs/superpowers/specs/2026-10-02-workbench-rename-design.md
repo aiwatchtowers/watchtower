@@ -395,6 +395,6 @@ W1 and W2 can run in parallel lanes, in separate worktrees, because they touch d
 ## 10. Out of scope and later
 
 - Renaming DB tables, columns, values or UserDefaults keys (A1).
-- Removing the `project` CLI alias, the `--project` flags, the legacy tool names and `project_scope`. Revisit once `integrate status` reports no legacy folder on the owner's install. A separate, owner-approved PR.
+- Removing the `project` CLI alias, the `--project` flags, the legacy tool names and `project_scope`. Revisit once `integrate status` reports no legacy folder on the owner's install. A separate, owner-approved PR. **Status (2026-10-15): done** — removed by board #376 (owner approved in ask #209, plan `docs/superpowers/plans/2026-10-13-workbench-rename-cleanup.md` Lane C). Kept: the read-only old→new tool name map for stored `agent_actions` rows (`tools.CanonicalToolName`), the devpack cleanup of a pre-rename folder (resync/Repair migrates it, removal takes it away) and the `legacy*` JSON keys; a folder never resynced no longer runs until Repair migrates it.
 - Rewriting historical docs (A11).
 - Renaming the chat-side `ProjectDetailView` / `ProjectDetailViewModel` to `ChatProject…` for symmetry. Optional, and a separate PR.

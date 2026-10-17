@@ -57,7 +57,7 @@ func workbenchRegistry(t *testing.T, d *db.DB) *Registry {
 	return reg
 }
 
-// proposeIn runs a write tool the way `mcp --project` does: DirectApply,
+// proposeIn runs a write tool the way `mcp --workbench` does: DirectApply,
 // bound to workbenchID.
 func proposeIn(t *testing.T, reg *Registry, workbenchID int64, name, args string) (Receipt, error) {
 	t.Helper()

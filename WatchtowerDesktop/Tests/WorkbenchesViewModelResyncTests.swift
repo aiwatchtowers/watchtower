@@ -131,8 +131,9 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
                  + "re-allow the tools under watchtower-workbench when Claude Code asks.")
         ])
 
-        let kept = "Your own copy of the old watchtower-project skill was kept — delete .claude/skills/watchtower-project "
-            + "yourself once you no longer need it; until then Claude Code sees both skills."
+        let kept = "Your own copy of the old watchtower-project skill was kept — it names tools that no longer exist, "
+            + "so delete .claude/skills/watchtower-project once its edits are carried over; "
+            + "until then Claude Code sees both skills."
         for state in ["drifted", "foreign"] {
             let lines = try decode(legacy.replacingOccurrences(of: #""legacy_skill":"removed""#,
                                                                with: #""legacy_skill":"\#(state)""#)).summaryLines
