@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import SwiftUI
 import WatchtowerCore
 import WebKit
@@ -10,9 +11,10 @@ enum SandboxedHTMLContent: Equatable {
     /// A local html file; its css/js/images load from `folder` only.
     case file(URL, folder: URL)
 
-    var allowsFiles: Bool {
-        if case .file = self { return true }
-        return false
+    /// The folder a file preview may load from; nil for an in-memory page.
+    var folder: URL? {
+        if case let .file(_, folder) = self { return folder }
+        return nil
     }
 }
 
@@ -20,12 +22,15 @@ enum SandboxedHTMLContent: Equatable {
 /// injection: JavaScript on (decks need it), a non-persistent data store, no
 /// script message handlers (no bridge to the app), network loads blocked by
 /// a content rule list (`HTMLPreviewPolicy.contentRules`: none at all for a
-/// chat artifact), WebRTC removed by a document-start script in every frame
-/// (best effort: content rules do not cover it), every navigation away from
+/// chat artifact; a file preview gets its folder's visible files and the
+/// CDN allowlist), WebRTC and DNS prefetch turned off in the web view's
+/// preferences — every frame, a fresh iframe included (#563): content rules
+/// cover neither — plus a document-start script removing the WebRTC globals
+/// in every frame, every navigation away from
 /// its own content cancelled — links open nothing — and a UI delegate that
 /// opens no window, grants no camera or microphone and picks no file.
-/// Nothing loads until the rule list is installed; if it cannot be compiled
-/// the page is never shown.
+/// Nothing loads until the rule list is installed; if it cannot be compiled,
+/// or WebRTC cannot be turned off, the page is never shown.
 struct SandboxedHTMLView: NSViewRepresentable {
     let content: SandboxedHTMLContent
     /// Bump to load the content again (Reload, a file changed on disk).
@@ -43,8 +48,28 @@ struct SandboxedHTMLView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    /// Turns WebRTC (and DNS prefetch, best effort) off for every frame of
+    /// a web view made with `preferences`. These WebKit preferences have no
+    /// public API (`_setPeerConnectionEnabled:`, `_setDNSPrefetchingEnabled:`);
+    /// false when WebRTC could not be turned off, and the view then shows
+    /// nothing (fail closed).
+    static func lockDown(_ preferences: WKPreferences) -> Bool {
+        _ = setPrivateFlag(preferences, "_setDNSPrefetchingEnabled:", false)
+        return setPrivateFlag(preferences, "_setPeerConnectionEnabled:", false)
+            && (preferences.value(forKey: "peerConnectionEnabled") as? Bool) == false
+    }
+
+    private static func setPrivateFlag(_ preferences: WKPreferences, _ name: String, _ value: Bool) -> Bool {
+        let selector = NSSelectorFromString(name)
+        guard preferences.responds(to: selector) else { return false }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(preferences.method(for: selector), to: Setter.self)(preferences, selector, value)
+        return true
+    }
+
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        let lockedDown = Self.lockDown(config.preferences)
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.preferences.isElementFullscreenEnabled = true
@@ -56,6 +81,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         context.coordinator.webView = webView
+        context.coordinator.lockedDown = lockedDown
         context.coordinator.focusOnLoad = focusOnLoad
         context.coordinator.show(content, token: reloadToken)
         return webView
@@ -76,6 +102,8 @@ struct SandboxedHTMLView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         weak var webView: WKWebView?
         var focusOnLoad = false
+        /// WebRTC is off in the view's preferences (`lockDown`).
+        var lockedDown = false
         private var shown: SandboxedHTMLContent?
         private var shownToken = 0
         private var focused = false
@@ -90,10 +118,11 @@ struct SandboxedHTMLView: NSViewRepresentable {
             shownToken = token
             load?.cancel()
             load = Task { [weak self] in
-                let rules = await SandboxedHTMLRules.list(allowFiles: content.allowsFiles)
+                let rules = await SandboxedHTMLRules.list(folder: content.folder)
                 guard let self, !Task.isCancelled, let webView = self.webView else { return }
-                guard let rules else {
-                    // Fail closed: without the network block nothing is shown.
+                guard let rules, self.lockedDown else {
+                    // Fail closed: without the network block, or with
+                    // WebRTC still on, nothing is shown.
                     webView.loadHTMLString("<p style=\"font:13px -apple-system\">The preview could not be prepared.</p>", baseURL: nil)
                     return
                 }
@@ -172,20 +201,26 @@ struct SandboxedHTMLView: NSViewRepresentable {
     }
 }
 
-/// The compiled content rule lists, one per mode, compiled once per launch.
+/// The compiled content rule lists: one for in-memory pages and one per
+/// previewed folder (its visible files, #563), each compiled once per launch
+/// into a store in the temporary folder.
 @MainActor
 private enum SandboxedHTMLRules {
-    private static var compiled: [Bool: WKContentRuleList] = [:]
+    private static var compiled: [String: WKContentRuleList] = [:]
 
-    static func list(allowFiles: Bool) async -> WKContentRuleList? {
-        if let list = compiled[allowFiles] { return list }
-        let identifier = "watchtower.html-preview.\(allowFiles ? "file" : "page").v2"
-        let rules = HTMLPreviewPolicy.contentRules(allowFiles: allowFiles)
-        guard let store = WKContentRuleListStore.default(),
-              let list = try? await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: rules) else {
+    static func list(folder: URL?) async -> WKContentRuleList? {
+        let rules = HTMLPreviewPolicy.contentRules(folder: folder)
+        let key = SHA256.hash(data: Data(rules.utf8)).map { String(format: "%02x", $0) }.joined()
+        if let list = compiled[key] { return list }
+        let storeURL = FileManager.default.temporaryDirectory.appendingPathComponent("watchtower-html-preview-rules")
+        try? FileManager.default.createDirectory(at: storeURL, withIntermediateDirectories: true)
+        guard let store = WKContentRuleListStore(url: storeURL),
+              let list = try? await store.compileContentRuleList(
+                  forIdentifier: "watchtower.html-preview.v3.\(key)", encodedContentRuleList: rules
+              ) else {
             return nil
         }
-        compiled[allowFiles] = list
+        compiled[key] = list
         return list
     }
 }

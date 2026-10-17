@@ -125,6 +125,58 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(webView.url?.lastPathComponent, "index.html", "a link to another file opens nothing")
     }
 
+    /// WebRTC is off in the preferences themselves (#563), not only by the
+    /// page script: a plain view with just these preferences has no WebRTC
+    /// in its page or in a fresh iframe.
+    func testWebRTCIsOffInThePreferencesForEveryFrame() async throws {
+        let config = WKWebViewConfiguration()
+        XCTAssertTrue(SandboxedHTMLView.lockDown(config.preferences), "this WebKit can turn WebRTC off")
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
+        webView.loadHTMLString("<html><head><title>p</title></head><body></body></html>", baseURL: nil)
+        _ = try await waitForTitle(webView) { $0 == "p" }
+        let types = try await webView.evaluateJavaScript("""
+        (() => {
+          const frame = document.createElement("iframe");
+          document.body.appendChild(frame);
+          return [typeof RTCPeerConnection, typeof webkitRTCPeerConnection,
+                  typeof frame.contentWindow.RTCPeerConnection, typeof frame.contentWindow.webkitRTCPeerConnection].join();
+        })()
+        """) as? String
+        XCTAssertEqual(types, "undefined,undefined,undefined,undefined")
+    }
+
+    /// A file preview (#563) loads its folder's visible files only — no
+    /// dotfile as a script or in a frame — and nothing from a host off the
+    /// CDN allowlist, even over https; its folder may sit in a hidden one.
+    func testAFilePreviewLoadsNoDotfileAndNoHostOffTheAllowlist() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("sandbox-\(UUID().uuidString)")
+        let folder = base.appendingPathComponent(".claude/worktrees/deck")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".secrets"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try "body { color: rgb(1, 2, 3); }".write(to: folder.appendingPathComponent("style.css"), atomically: true, encoding: .utf8)
+        try "window.leaked = 1;".write(to: folder.appendingPathComponent(".secrets/config.js"), atomically: true, encoding: .utf8)
+        try "<script>parent.postMessage(\"framed\", \"*\")</script>"
+            .write(to: folder.appendingPathComponent(".hidden.html"), atomically: true, encoding: .utf8)
+        let index = """
+        <html><head><link rel="stylesheet" href="style.css"><script src=".secrets/config.js"></script></head><body>
+        <img src="https://\(counter.hostPort)/net.png"><iframe src=".hidden.html"></iframe>
+        <script>
+        let framed = 0;
+        window.addEventListener("message", () => { framed = 1 });
+        window.onload = () => setTimeout(() => {
+          document.title = getComputedStyle(document.body).color + "|" + (window.leaked || 0) + "|" + framed;
+        }, 300);
+        </script></body></html>
+        """
+        let file = folder.appendingPathComponent("index.html")
+        try index.write(to: file, atomically: true, encoding: .utf8)
+        let webView = try host(.file(file, folder: folder))
+        let title = try await waitForTitle(webView) { $0.contains("|") }
+        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0", "the visible sibling loads; the dotfile script and frame do not")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(counter.hits, 0, "an https image off the allowlist never connects")
+    }
+
     // MARK: helpers
 
     private func host(_ content: SandboxedHTMLContent) throws -> WKWebView {

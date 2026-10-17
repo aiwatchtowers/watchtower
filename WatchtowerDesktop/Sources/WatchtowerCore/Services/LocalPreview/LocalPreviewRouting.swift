@@ -56,10 +56,21 @@ package enum LocalPreviewParse: Equatable, Sendable {
 package struct LocalPreviewResponse: Equatable, Sendable {
     package let status: Int
     package let headers: [(name: String, value: String)]
+    /// A short in-memory body (an error page); empty when `file` is set.
     package let body: Data
+    /// The file a 200 serves, streamed from disk after the head by the
+    /// server (#563): `respond` never reads it.
+    package let file: URL?
+
+    package init(status: Int, headers: [(name: String, value: String)], body: Data, file: URL? = nil) {
+        self.status = status
+        self.headers = headers
+        self.body = body
+        self.file = file
+    }
 
     package static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.status == rhs.status && lhs.body == rhs.body
+        lhs.status == rhs.status && lhs.body == rhs.body && lhs.file == rhs.file
             && lhs.headers.map { "\($0.name): \($0.value)" } == rhs.headers.map { "\($0.name): \($0.value)" }
     }
 
@@ -67,8 +78,9 @@ package struct LocalPreviewResponse: Equatable, Sendable {
         headers.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
     }
 
-    /// The bytes on the wire; a HEAD response keeps its headers (with the
-    /// GET's Content-Length) and drops the body.
+    /// The bytes on the wire, but for a `file` body (the server streams it
+    /// after these); a HEAD response keeps its headers (with the GET's
+    /// Content-Length) and drops the body.
     package func serialized(includeBody: Bool) -> Data {
         var head = "HTTP/1.1 \(status) \(LocalPreviewHTTP.reason(status))\r\n"
         for (name, value) in headers { head += "\(name): \(value)\r\n" }
@@ -85,8 +97,7 @@ package struct LocalPreviewResponse: Equatable, Sendable {
 package enum LocalPreviewHTTP {
     /// A request whose header block is bigger is refused.
     package static let maxHeaderBytes = 16 * 1024
-    /// A bigger file is refused (413) without being read: a reply is built
-    /// in memory.
+    /// A bigger file is refused (413) without being read.
     package static let maxFileBytes = 100 * 1024 * 1024
 
     /// On every response. `sandbox` without `allow-same-origin` gives the
@@ -94,13 +105,16 @@ package enum LocalPreviewHTTP {
     /// else on 127.0.0.1, no popups, no forms. `connect-src`/`frame-src`
     /// `'none'`: a script cannot read the folder's other files as text (no
     /// fetch, XHR, WebSocket, frame or worker). Scripts, styles, fonts and
-    /// images may still come from the folder or an https CDN (reveal.js
-    /// decks); the page can still navigate itself to another site.
-    package static let contentSecurityPolicy =
-        "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline' https:; "
-        + "style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; "
-        + "media-src 'self' blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; "
-        + "object-src 'none'; form-action 'none'; base-uri 'none'"
+    /// images may still come from the folder or a CDN on the allowlist
+    /// (`HTMLPreviewPolicy.cdnHosts`, https only, #563), never another host;
+    /// the page can still navigate itself to another site.
+    package static let contentSecurityPolicy: String = {
+        let cdns = HTMLPreviewPolicy.cdnHosts.map { "https://\($0)" }.joined(separator: " ")
+        return "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline' \(cdns); "
+            + "style-src 'self' 'unsafe-inline' \(cdns); img-src 'self' data: blob: \(cdns); font-src 'self' data: \(cdns); "
+            + "media-src 'self' blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; "
+            + "object-src 'none'; form-action 'none'; base-uri 'none'"
+    }()
 
     package static func parse(_ data: Data) -> LocalPreviewParse {
         guard let end = data.range(of: Data("\r\n\r\n".utf8)) else {
@@ -153,8 +167,9 @@ package enum LocalPreviewHTTP {
         // Sized before it is read: nothing over the cap is ever loaded.
         guard let size = (try? fileManager.attributesOfItem(atPath: file.path))?[.size] as? Int else { return error(404) }
         guard size <= maxFileBytes else { return error(413) }
-        guard let data = try? Data(contentsOf: file) else { return error(404) }
-        return ok(data, type: contentType(forExtension: file.pathExtension))
+        // Streamed by the server, never read here (#563).
+        let headers = [("Content-Type", contentType(forExtension: file.pathExtension)), ("Content-Length", String(size))] + common
+        return LocalPreviewResponse(status: 200, headers: headers.map { (name: $0.0, value: $0.1) }, body: Data(), file: file)
     }
 
     /// The folder a workbench html file may be served from: `folder`
@@ -242,11 +257,6 @@ package enum LocalPreviewHTTP {
         ("Referrer-Policy", "no-referrer"),
         ("Connection", "close")
     ]
-
-    private static func ok(_ body: Data, type: String) -> LocalPreviewResponse {
-        let headers = [("Content-Type", type), ("Content-Length", String(body.count))] + common
-        return LocalPreviewResponse(status: 200, headers: headers.map { (name: $0.0, value: $0.1) }, body: body)
-    }
 
     package static func error(_ status: Int, extra: [(String, String)] = []) -> LocalPreviewResponse {
         let body = Data("\(status) \(reason(status))\n".utf8)

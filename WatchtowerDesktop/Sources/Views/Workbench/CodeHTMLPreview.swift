@@ -16,6 +16,13 @@ struct CodeHTMLPreviewBar: View {
     @State private var notice: String?
 
     var body: some View {
+        VStack(spacing: 0) {
+            row
+            CodeHTMLBlockedBanner(html: buffer.diskText)
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 8) {
             Picker("View", selection: $isOn) {
                 Text("Source").tag(false)
@@ -54,6 +61,28 @@ struct CodeHTMLPreviewBar: View {
     }
 }
 
+/// "Blocked N external resources: host1, host2…" under the bar (#563): what
+/// the file's markup names outside the CDN allowlist, which neither the
+/// preview nor the browser loads. Nothing when everything is local or on
+/// the allowlist.
+private struct CodeHTMLBlockedBanner: View {
+    let html: String
+
+    var body: some View {
+        if let banner = HTMLPreviewPolicy.blockedResources(in: html).banner() {
+            Label(banner, systemImage: "shield.lefthalf.filled")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help("\(banner). Only \(HTMLPreviewPolicy.cdnHosts.joined(separator: ", ")) are allowed.")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 3)
+        }
+    }
+}
+
 /// The preview itself, over the editor while Preview is on. It loads again
 /// whenever the file's text on disk changes (an autosave, or another
 /// program — an agent — writing it) and on Reload.
@@ -69,8 +98,11 @@ struct CodeHTMLPreviewPane: View {
 }
 
 enum CodeHTMLPreview {
+    /// Standardized, so the page's own URL starts with the folder URL the
+    /// content rules allow (`HTMLPreviewPolicy.visibleFilesFilter`).
     static func content(_ file: URL) -> SandboxedHTMLContent {
-        .file(file, folder: file.deletingLastPathComponent())
+        let file = file.standardizedFileURL
+        return .file(file, folder: file.deletingLastPathComponent())
     }
 }
 
