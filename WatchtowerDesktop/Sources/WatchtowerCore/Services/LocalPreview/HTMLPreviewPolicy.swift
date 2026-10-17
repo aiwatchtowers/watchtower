@@ -21,41 +21,46 @@ package enum HTMLPreviewPolicy {
     package static let cdnResourceTypes = ["script", "style-sheet", "font", "image"]
 
     /// The URL scheme a workbench file preview is served under in the app
-    /// (#563): `wtpreview://preview/<path below the folder>`. Its handler
-    /// serves only what `previewFile` resolves — the folder's own files, no
-    /// hidden one, none through a symlink out or into a hidden one — the same
-    /// rules the browser's loopback server applies.
+    /// (#563): `wtpreview://<token>/<path below the folder>`, the token one
+    /// load's own (a late request of an earlier page is never answered from
+    /// a later folder). Its handler serves only what `previewFile` resolves —
+    /// the folder's own files, no hidden one, none through a symlink out or
+    /// into a hidden one — the same rules the browser's loopback server
+    /// applies, under `contentSecurityPolicy`.
     package static let scheme = "wtpreview"
-    package static let host = "preview"
+
+    /// What the preview's own files may be loaded as: never fetch/XHR, so a
+    /// page's script cannot read its siblings as text (the CSP says the same).
+    package static let fileResourceTypes = ["document", "image", "style-sheet", "script", "font", "media", "svg-document"]
 
     /// WebKit content rules: block every load, then let back in only what
     /// stays on the machine — `about:`/`data:`/`blob:` always. A chat
     /// artifact gets nothing else: no network of any scheme. A workbench file
     /// preview also gets its own `scheme` (whose handler refuses hidden files)
-    /// and https subresources of type script, style sheet, font and image
+    /// for `fileResourceTypes` and https subresources of type script, style sheet, font and image
     /// from the `cdnHosts` only. Fetch/XHR, WebSocket, media, raw loads,
     /// documents over the network and every other host stay blocked, and
     /// http/ws and `file:` never load. (Content-rule regexes have no `|`,
     /// hence one rule per scheme and per host.)
     package static func contentRules(allowFiles: Bool) -> String {
-        var allowed = ["^about:", "^data:", "^blob:"]
-        if allowFiles { allowed.append("^\(scheme):") }
         var rules = [#"{"trigger":{"url-filter":".*"},"action":{"type":"block"}}"#]
-        rules += allowed.map { #"{"trigger":{"url-filter":"\#($0)"},"action":{"type":"ignore-previous-rules"}}"# }
+        rules += ["^about:", "^data:", "^blob:"].map { allow($0, types: nil) }
         if allowFiles {
-            let types = cdnResourceTypes.map { "\"\($0)\"" }.joined(separator: ",")
-            rules += cdnHosts.map { host in
-                let filter = jsonEscaped("^https://" + regexEscaped(host) + "/")
-                return #"{"trigger":{"url-filter":"\#(filter)","resource-type":[\#(types)]},"action":{"type":"ignore-previous-rules"}}"#
-            }
+            rules.append(allow("^\(scheme):", types: fileResourceTypes))
+            rules += cdnHosts.map { allow(jsonEscaped("^https://" + regexEscaped($0) + "/"), types: cdnResourceTypes) }
         }
         return "[" + rules.joined(separator: ",") + "]"
     }
 
-    /// The preview URL of `file` (under `folder`): each path component below
-    /// the folder percent-encoded, `%` included. Nil when `file` is not
-    /// under `folder`.
-    package static func pageURL(file: URL, folder: URL) -> URL? {
+    private static func allow(_ filter: String, types: [String]?) -> String {
+        let typeList = types.map { #","resource-type":["# + $0.map { "\"\($0)\"" }.joined(separator: ",") + "]" } ?? ""
+        return #"{"trigger":{"url-filter":"\#(filter)"\#(typeList)},"action":{"type":"ignore-previous-rules"}}"#
+    }
+
+    /// The preview URL of `file` (under `folder`) for the load `token`
+    /// (lowercase letters and digits): each path component below the folder
+    /// percent-encoded, `%` included. Nil when `file` is not under `folder`.
+    package static func pageURL(file: URL, folder: URL, token: String) -> URL? {
         let base = folder.standardizedFileURL.path
         let prefix = base.hasSuffix("/") ? base : base + "/"
         let path = file.standardizedFileURL.path
@@ -65,17 +70,18 @@ package enum HTMLPreviewPolicy {
             String($0).addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
         }
         guard !segments.isEmpty, !segments.contains("") else { return nil }
-        return URL(string: "\(scheme)://\(host)/" + segments.joined(separator: "/"))
+        return URL(string: "\(scheme)://\(token)/" + segments.joined(separator: "/"))
     }
 
     /// The real file a preview request for `url` may be served from, or nil:
-    /// the `scheme`/`host` only, each path segment percent-decoded, then
+    /// the `scheme` only (the handler picks `folder` by the URL's token),
+    /// each path segment percent-decoded, then
     /// `LocalPreviewHTTP.resolve` — no `..` or hidden segment, and once every
     /// symlink is resolved the file still lies under the folder with no
     /// hidden component below it (a `notes.js` linking to `.secrets/…` or a
     /// folder link to `.git` is refused).
     package static func previewFile(for url: URL, folder: URL, fileManager: FileManager = .default) -> URL? {
-        guard url.scheme?.lowercased() == scheme, url.host?.lowercased() == host,
+        guard url.scheme?.lowercased() == scheme,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         var segments: [String] = []
         for raw in components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).dropFirst() {
@@ -85,36 +91,45 @@ package enum HTMLPreviewPolicy {
         return LocalPreviewHTTP.resolve(segments, under: folder, fileManager: fileManager)
     }
 
+    package enum ByteRange: Equatable, Sendable {
+        /// No header, or one this server ignores (malformed, several ranges):
+        /// the whole body.
+        case whole
+        case partial(Range<Int>)
+        /// Starts at or past the end: 416.
+        case unsatisfiable
+    }
+
     /// The byte range a `Range: bytes=a-b` header asks of a body of
-    /// `length` bytes (media seek), clamped to it; nil for no header, a
-    /// malformed or multi-range one, or one past the end (the whole body
-    /// is sent then).
-    package static func byteRange(_ header: String?, length: Int) -> Range<Int>? {
-        guard let header, header.lowercased().hasPrefix("bytes="), length > 0 else { return nil }
+    /// `length` bytes (media seek), clamped to it.
+    package static func byteRange(_ header: String?, length: Int) -> ByteRange {
+        guard let header, header.lowercased().hasPrefix("bytes=") else { return .whole }
         let spec = header.dropFirst("bytes=".count).trimmingCharacters(in: .whitespaces)
-        guard !spec.contains(","), let dash = spec.firstIndex(of: "-") else { return nil }
+        guard !spec.contains(","), let dash = spec.firstIndex(of: "-") else { return .whole }
         let first = spec[..<dash], last = spec[spec.index(after: dash)...]
         if first.isEmpty {
-            guard let suffix = Int(last), suffix > 0 else { return nil }
-            return max(0, length - suffix)..<length
+            guard let suffix = Int(last) else { return .whole }
+            return suffix > 0 && length > 0 ? .partial(max(0, length - suffix)..<length) : .unsatisfiable
         }
-        guard let start = Int(first), start < length else { return nil }
-        if last.isEmpty { return start..<length }
-        guard let end = Int(last), end >= start else { return nil }
-        return start..<min(end + 1, length)
+        guard let start = Int(first) else { return .whole }
+        guard start < length else { return .unsatisfiable }
+        if last.isEmpty { return .partial(start..<length) }
+        guard let end = Int(last), end >= start else { return .whole }
+        return .partial(start..<min(end + 1, length))
     }
 
     /// Whether the view may navigate to `url`. An in-memory page (`page`
     /// nil) stays on `about:` documents (it is `about:blank`, an iframe's
     /// `srcdoc` is `about:srcdoc`). A file preview stays on its own `page`
     /// (any fragment), and a frame inside it may show another file of the
-    /// preview `scheme` with no hidden (dot) segment (#563; the handler
-    /// resolves symlinks). Every other navigation — a clicked link,
+    /// same load (scheme and token) with no hidden (dot) segment (#563; the
+    /// handler resolves symlinks). Every other navigation — a clicked link,
     /// `location = …`, a form — is cancelled: links open nothing.
     package static func allowsNavigation(to url: URL?, isMainFrame: Bool, page: URL?) -> Bool {
         guard let url, let urlScheme = url.scheme?.lowercased() else { return false }
         if urlScheme == "about" { return true }
-        guard let page, urlScheme == scheme, url.host?.lowercased() == host else { return false }
+        guard let page, urlScheme == scheme, let token = page.host?.lowercased(),
+              url.host?.lowercased() == token else { return false }
         if withoutFragment(url) == withoutFragment(page) { return true }
         guard !isMainFrame, let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath else {
             return false

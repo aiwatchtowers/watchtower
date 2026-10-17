@@ -1,0 +1,97 @@
+import Foundation
+import UniformTypeIdentifiers
+
+/// The answers of the in-app preview's scheme handler (#563), pure: which
+/// file and byte range a request gets, or why not, and the headers — the
+/// browser server's rules (`LocalPreviewHTTP`) for the app.
+package enum HTMLPreviewReply: Equatable, Sendable {
+    /// Stream `range` of `file` after a response with `status` and `headers`.
+    case file(URL, status: Int, headers: [String: String], range: Range<Int>)
+    /// A short refusal (404, 413, 416).
+    case refusal(status: Int, headers: [String: String], body: Data)
+
+    package var status: Int {
+        switch self {
+        case let .file(_, status, _, _), let .refusal(status, _, _): status
+        }
+    }
+
+    package var headers: [String: String] {
+        switch self {
+        case let .file(_, _, headers, _), let .refusal(_, headers, _): headers
+        }
+    }
+
+    /// The reply to a preview request for `url` served from `folder`, with
+    /// the request's `Range` header: the file `HTMLPreviewPolicy.previewFile`
+    /// resolves, stat'ed before it is read; over `LocalPreviewHTTP.maxFileBytes`
+    /// is 413, a range starting past the end 416, a range 206.
+    package static func reply(
+        for url: URL, folder: URL, range rangeHeader: String?, fileManager: FileManager = .default
+    ) -> Self {
+        guard let file = HTMLPreviewPolicy.previewFile(for: url, folder: folder, fileManager: fileManager),
+              let size = (try? fileManager.attributesOfItem(atPath: file.path))?[.size] as? Int else {
+            return refusal(404)
+        }
+        guard size <= LocalPreviewHTTP.maxFileBytes else { return refusal(413) }
+        var headers = common
+        headers["Content-Type"] = contentType(forExtension: file.pathExtension)
+        switch HTMLPreviewPolicy.byteRange(rangeHeader, length: size) {
+        case .whole:
+            headers["Content-Length"] = String(size)
+            return .file(file, status: 200, headers: headers, range: 0..<size)
+        case let .partial(range):
+            headers["Content-Length"] = String(range.count)
+            headers["Content-Range"] = "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(size)"
+            return .file(file, status: 206, headers: headers, range: range)
+        case .unsatisfiable:
+            return refusal(416, extra: ["Content-Range": "bytes */\(size)"])
+        }
+    }
+
+    /// The server's table (text types in UTF-8), plus audio and video by
+    /// their system type: the handler answers ranges, so media can seek.
+    package static func contentType(forExtension ext: String) -> String {
+        let type = LocalPreviewHTTP.contentType(forExtension: ext)
+        guard type == "application/octet-stream", let media = UTType(filenameExtension: ext.lowercased()),
+              media.conforms(to: .audiovisualContent), let mime = media.preferredMIMEType else { return type }
+        return mime
+    }
+
+    /// On every reply: the in-app CSP (no fetch/XHR, sockets or workers;
+    /// subresources from the folder and the CDN allowlist only), never
+    /// sniffed, never cached.
+    private static let common = [
+        "Content-Security-Policy": HTMLPreviewPolicy.inAppContentSecurityPolicy,
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+        "Accept-Ranges": "bytes"
+    ]
+
+    private static func refusal(_ status: Int, extra: [String: String] = [:]) -> Self {
+        let body = Data("\(status) \(LocalPreviewHTTP.reason(status))\n".utf8)
+        var headers = common.merging(extra) { $1 }
+        headers["Content-Type"] = "text/plain; charset=utf-8"
+        headers["Content-Length"] = String(body.count)
+        return .refusal(status: status, headers: headers, body: body)
+    }
+}
+
+extension HTMLPreviewPolicy {
+    /// The source directives the app and the browser share (#563): scripts,
+    /// styles, images and fonts from the page's own origin or the CDN
+    /// allowlist; no fetch/XHR, WebSocket or worker (a script cannot read
+    /// the folder's files as text); `frames` for frame/child sources.
+    package static func sourcePolicy(frames: String) -> String {
+        let cdns = cdnHosts.map { "https://\($0)" }.joined(separator: " ")
+        return "default-src 'self'; script-src 'self' 'unsafe-inline' \(cdns); "
+            + "style-src 'self' 'unsafe-inline' \(cdns); img-src 'self' data: blob: \(cdns); font-src 'self' data: \(cdns); "
+            + "media-src 'self' blob:; connect-src 'none'; frame-src \(frames); child-src \(frames); worker-src 'none'; "
+            + "object-src 'none'; form-action 'none'; base-uri 'none'"
+    }
+
+    /// The in-app preview's CSP: the browser's, but frames of the page's own
+    /// files show (the in-app view has no other origin to protect, so no
+    /// `sandbox`).
+    package static let inAppContentSecurityPolicy = sourcePolicy(frames: "'self'")
+}

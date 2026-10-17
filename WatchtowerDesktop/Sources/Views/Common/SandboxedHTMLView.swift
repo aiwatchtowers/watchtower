@@ -154,11 +154,11 @@ struct SandboxedHTMLView: NSViewRepresentable {
                 switch content {
                 case let .page(html):
                     self.page = nil
-                    self.files.folder = nil
+                    self.files.serve(nil)
                     webView.loadHTMLString(html, baseURL: nil)
                 case let .file(url, folder):
-                    self.files.folder = folder
-                    self.page = HTMLPreviewPolicy.pageURL(file: url, folder: folder)
+                    let token = self.files.serve(folder)
+                    self.page = HTMLPreviewPolicy.pageURL(file: url, folder: folder, token: token)
                     guard let page = self.page else {
                         return self.showMessage("The preview could not be prepared: the file is not in its folder.")
                     }
@@ -170,7 +170,7 @@ struct SandboxedHTMLView: NSViewRepresentable {
         /// A fixed message in place of the page; never the content.
         private func showMessage(_ text: String) {
             page = nil
-            files.folder = nil
+            files.serve(nil)
             let escaped = text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
             webView?.loadHTMLString("<p style=\"font:13px -apple-system\">\(escaped)</p>", baseURL: nil)
         }

@@ -53,7 +53,7 @@ struct CodeHTMLPreviewBar: View {
                     .accessibilityLabel("Reload")
             }
             Button {
-                HTMLPreviewWindow.show(CodeHTMLPreview.content(buffer.url), title: buffer.url.lastPathComponent, fullScreen: true)
+                HTMLPreviewWindow.show(CodeHTMLPreview.content(buffer.url, root: root), title: buffer.url.lastPathComponent, fullScreen: true)
             } label: { Image(systemName: "play.rectangle") }
                 .buttonStyle(.borderless)
                 .help("Present full screen; the arrow keys page through a deck, Esc leaves")
@@ -100,21 +100,27 @@ private struct CodeHTMLBlockedBanner: View {
 /// program — an agent — writing it) and on Reload.
 struct CodeHTMLPreviewPane: View {
     let buffer: CodeFileBuffer
+    /// The code root the file is in: no hidden folder below it is previewed.
+    let root: URL
     let reload: Int
     @State private var diskChanges = 0
 
     var body: some View {
-        SandboxedHTMLView(content: CodeHTMLPreview.content(buffer.url), reloadToken: diskChanges &+ reload, focusOnLoad: true)
+        SandboxedHTMLView(content: CodeHTMLPreview.content(buffer.url, root: root), reloadToken: diskChanges &+ reload, focusOnLoad: true)
             .onChange(of: buffer.diskText) { diskChanges &+= 1 }
     }
 }
 
 enum CodeHTMLPreview {
-    /// Standardized, so the file lies under its folder for the preview URL
-    /// (`HTMLPreviewPolicy.pageURL`).
-    static func content(_ file: URL) -> SandboxedHTMLContent {
-        let file = file.standardizedFileURL
-        return .file(file, folder: file.deletingLastPathComponent())
+    /// The file served from its folder (symlinks resolved), when the browser
+    /// would serve that folder too (`LocalPreviewHTTP.servableFolder`, #563):
+    /// inside the code root `root`, no hidden folder below it. Otherwise a
+    /// page saying so.
+    static func content(_ file: URL, root: URL) -> SandboxedHTMLContent {
+        guard let folder = LocalPreviewHTTP.servableFolder(file.deletingLastPathComponent(), within: root) else {
+            return .page("<p style=\"font:13px -apple-system\">Files in a hidden folder are not previewed.</p>")
+        }
+        return .file(folder.appendingPathComponent(file.lastPathComponent), folder: folder)
     }
 }
 

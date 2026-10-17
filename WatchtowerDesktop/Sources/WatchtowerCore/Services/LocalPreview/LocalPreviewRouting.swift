@@ -108,13 +108,7 @@ package enum LocalPreviewHTTP {
     /// images may still come from the folder or a CDN on the allowlist
     /// (`HTMLPreviewPolicy.cdnHosts`, https only, #563), never another host;
     /// the page can still navigate itself to another site.
-    package static let contentSecurityPolicy: String = {
-        let cdns = HTMLPreviewPolicy.cdnHosts.map { "https://\($0)" }.joined(separator: " ")
-        return "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline' \(cdns); "
-            + "style-src 'self' 'unsafe-inline' \(cdns); img-src 'self' data: blob: \(cdns); font-src 'self' data: \(cdns); "
-            + "media-src 'self' blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; "
-            + "object-src 'none'; form-action 'none'; base-uri 'none'"
-    }()
+    package static let contentSecurityPolicy = "sandbox allow-scripts; " + HTMLPreviewPolicy.sourcePolicy(frames: "'none'")
 
     package static func parse(_ data: Data) -> LocalPreviewParse {
         guard let end = data.range(of: Data("\r\n\r\n".utf8)) else {
@@ -244,6 +238,7 @@ package enum LocalPreviewHTTP {
         case 404: "Not Found"
         case 405: "Method Not Allowed"
         case 413: "Content Too Large"
+        case 416: "Range Not Satisfiable"
         default: "Error"
         }
     }
