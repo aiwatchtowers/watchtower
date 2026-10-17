@@ -386,8 +386,8 @@ final class FoundationChatSessionProcess: ChatSessionProcess, @unchecked Sendabl
         process.arguments = arguments
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         // Built on the main actor (`ChatSessionPool.ProcessFactory`): never wait
-        // for the login-shell probe here. The app's pool admits no session
-        // before the resolve is done (`holdAdmissionUntil`).
+        // for the login-shell probe here. The app's pool holds admission until
+        // the resolve is done (`holdAdmissionUntil` in `ensureChatSessionPool`).
         process.environment = Constants.resolvedEnvironmentIfReady()
         let input = Pipe()
         let output = Pipe()

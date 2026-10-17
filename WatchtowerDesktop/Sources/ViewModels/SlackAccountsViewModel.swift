@@ -26,6 +26,10 @@ final class SlackAccountsViewModel {
     /// Resolves the CLI binary; injectable so tests can run a stand-in.
     private let cliPath: () -> String?
     private var authProcess: Process?
+    /// The sign-in child's environment; injectable so tests can hold it.
+    @ObservationIgnored var loginEnvironment: @Sendable () async -> [String: String] = {
+        await Constants.resolvedEnvironmentAsync()
+    }
 
     init(
         dbPool: DatabasePool,
@@ -159,9 +163,6 @@ final class SlackAccountsViewModel {
     /// Browser-consent flow (`add`/`login`) — holds the detached Process in
     /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
     private func runAuthFlow(args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy) async {
-        // Awaited before any state changes: no suspension is left between
-        // the guards and the launch, so a Cancel cannot fall in between.
-        let environment = await Constants.resolvedEnvironmentAsync()
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
@@ -177,9 +178,14 @@ final class SlackAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = environment
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
+
+        // The login environment is awaited with the flow already shown as
+        // running (Cancel visible); a Cancel or a newer attempt meanwhile
+        // drops this launch.
+        process.environment = await loginEnvironment()
+        guard authProcess === process else { return }
 
         let result = await Self.runProcess(process)
         authProcess = nil

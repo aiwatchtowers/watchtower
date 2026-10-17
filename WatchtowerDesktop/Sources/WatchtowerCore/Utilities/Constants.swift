@@ -174,8 +174,9 @@ package enum Constants {
             "\(home)/Documents", "\(home)/Downloads", "\(home)/Desktop",
             "\(home)/Music", "\(home)/Movies", "\(home)/Pictures"
         ]
-        let env = resolvedEnvironment()
-        guard let pathValue = env["PATH"] else { return nil }
+        // Reached from view bodies: the resolved PATH once the launch-time
+        // resolve is done, never a wait for it.
+        guard let pathValue = resolvedEnvironmentIfReady()["PATH"] else { return nil }
         for dir in pathValue.split(separator: ":") {
             let dirStr = String(dir)
             if tccProtected.contains(where: { dirStr.hasPrefix($0) }) { continue }
@@ -202,12 +203,18 @@ package enum Constants {
         return nil
     }
 
-    /// Resolves `resolvedEnvironment()` once on a thread of its own, at launch:
-    /// the first call runs the login shell (up to 5 s) and every caller waits
-    /// on it, which must not happen on a Swift-concurrency pool thread (see
-    /// `ProcessPipes`) or on the main thread.
+    /// Starts the one shared resolve at launch: the first
+    /// `resolvedEnvironment()` call runs the login shell (up to 5 s) and every
+    /// caller waits on it, which must not happen on a Swift-concurrency pool
+    /// thread (see `ProcessPipes`) or on the main thread.
     package nonisolated static func prewarmResolvedEnvironment() {
-        Thread.detachNewThread { _ = resolvedEnvironment() }
+        _ = sharedResolve
+    }
+
+    /// The one resolve every async caller awaits (`resolvedEnvironmentAsync`),
+    /// run on a thread of its own; started by the prewarm or the first caller.
+    nonisolated private static let sharedResolve = Task.detached {
+        await ProcessPipes.offPool { resolvedEnvironment() }
     }
 
     /// The login-shell probe `resolvedEnvironment` runs: each value on a
@@ -240,13 +247,13 @@ package enum Constants {
     }
 
     /// `resolvedEnvironment()` without blocking the caller: the resolved
-    /// value at once when the launch-time prewarm is done, else awaited on a
-    /// thread of its own (never a pool or main thread, see
-    /// `prewarmResolvedEnvironment`). For async callers that want the login
-    /// shell's PATH and CODEX_HOME, not the app's own fallback.
+    /// value at once when the launch-time resolve is done, else that one
+    /// shared resolve awaited (no pool or main thread waits on it). For async
+    /// callers that want the login shell's PATH and CODEX_HOME, not the app's
+    /// own fallback.
     package nonisolated static func resolvedEnvironmentAsync() async -> [String: String] {
         if let env = resolvedEnvironmentBox.get() { return env }
-        return await onOwnThread { resolvedEnvironment() }
+        return await sharedResolve.value
     }
 
     nonisolated private static let resolvedEnvironmentBox = ResolvedEnvironmentBox()
@@ -435,17 +442,8 @@ package final class LoginEnvironmentResolver: @unchecked Sendable {
 
     package func resolve() async -> [String: String]? {
         if let env = lock.withLock({ env }) { return env }
-        let probed = await onOwnThread(probe)
+        let probed = await ProcessPipes.offPool(probe)
         if let probed { lock.withLock { if env == nil { env = probed } } }
         return probed
-    }
-}
-
-/// `body` run on a thread of its own and awaited: a blocking wait (the
-/// login-shell probe) never holds a Swift-concurrency pool thread or the
-/// main thread.
-private func onOwnThread<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
-    await withCheckedContinuation { continuation in
-        Thread.detachNewThread { continuation.resume(returning: body()) }
     }
 }

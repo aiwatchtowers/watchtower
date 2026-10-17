@@ -1,4 +1,6 @@
 import XCTest
+@testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// Board #592: no Desktop code waits on the login-shell probe
 /// (`Constants.resolvedEnvironment()`, up to 5 s) synchronously — not on the
@@ -6,12 +8,19 @@ import XCTest
 /// `resolvedEnvironmentAsync()` (async code) or `resolvedEnvironmentIfReady()`
 /// (sync main-actor code that needs no login PATH).
 final class LoginEnvironmentCallSiteTests: XCTestCase {
-    /// Files allowed the blocking call, with why.
-    private static let allowed: Set<String> = [
-        // The definition and the launch-time prewarm.
-        "WatchtowerCore/Utilities/Constants.swift",
-        // Runs on its own off-pool thread (`offPool`), never main or the pool.
-        "Database/DatabaseManager.swift"
+    /// The only lines allowed the blocking call, per file, with why.
+    private static let allowed: [String: Set<String>] = [
+        // The definition, the one shared off-pool resolve, and the CODEX_HOME
+        // resolver (which `resolve()` runs off the pool).
+        "WatchtowerCore/Utilities/Constants.swift": [
+            "package nonisolated static func resolvedEnvironment() -> [String: String] {",
+            "await ProcessPipes.offPool { resolvedEnvironment() }",
+            "_ = resolvedEnvironment() // the launch-time resolve, cached"
+        ],
+        // `migrateAndOpen` runs off the main actor and off the pool (`offPool`).
+        "Database/DatabaseManager.swift": [
+            "process.environment = Constants.resolvedEnvironment()"
+        ]
     ]
 
     func testNoBlockingLoginEnvironmentCall() throws {
@@ -26,10 +35,11 @@ final class LoginEnvironmentCallSiteTests: XCTestCase {
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             scanned += 1
             let relative = String(url.standardizedFileURL.path.dropFirst(sources.standardizedFileURL.path.count + 1))
-            guard !Self.allowed.contains(relative) else { continue }
+            let allowedLines = Self.allowed[relative] ?? []
             let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
             for (index, line) in lines.enumerated() {
-                guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") else { continue }
+                let code = line.trimmingCharacters(in: .whitespaces)
+                guard !code.hasPrefix("//"), !allowedLines.contains(code) else { continue }
                 let range = NSRange(line.startIndex..., in: line)
                 XCTAssertNil(blocking.firstMatch(in: line, range: range),
                              "\(relative):\(index + 1) waits on the login-shell probe; "
@@ -37,5 +47,21 @@ final class LoginEnvironmentCallSiteTests: XCTestCase {
             }
         }
         XCTAssertGreaterThan(scanned, 100, "the scan found too few sources: wrong path?")
+    }
+}
+
+/// Board #592: the app's chat pool holds admission until the login
+/// environment resolves, so no chat spawns without the owner's CODEX_HOME.
+@MainActor
+final class ChatSessionPoolWiringTests: XCTestCase {
+    func testAppPoolHoldsAdmissionUntilTheLoginEnvironment() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = AppState().ensureChatSessionPool(manager)
+        XCTAssertFalse(pool.admissionOpen, "held from the start")
+        let opened = await waitForCondition(timeout: .seconds(10)) { pool.admissionOpen }
+        XCTAssertTrue(opened, "opens once the login environment resolves")
+        pool.stopPolicy()
+        await pool.closeAll()
     }
 }
