@@ -34,12 +34,19 @@ final class ExternalConnectionsViewModel {
 
     private let dbPool: DatabasePool
     private let makeRunner: () -> (any CLIRunnerProtocol)?
+    /// The OAuth sign-in an import runs for a server that needs one; nil =
+    /// `signIn` (tests replace it: the real flow opens a browser).
+    private let importSignIn: ((ExternalConnection) async -> Void)?
+    /// Set by `cancelImport()`: the import stops before its next sign-in.
+    private var importCancelled = false
     private var authProcess: Process?
 
     init(dbPool: DatabasePool,
-         makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }) {
+         makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() },
+         importSignIn: ((ExternalConnection) async -> Void)? = nil) {
         self.dbPool = dbPool
         self.makeRunner = makeRunner
+        self.importSignIn = importSignIn
     }
 
     // MARK: - Refresh
@@ -332,10 +339,12 @@ final class ExternalConnectionsViewModel {
     }
 
     /// Imports `names` (`connections import --json -- <name>…`): each becomes
-    /// an enabled connection whose tools are listed. An imported http server
-    /// that could not list its tools without headers then gets the OAuth
-    /// sign-in the Add sheet runs, one at a time. True when every name was
-    /// imported; otherwise `importError` names the ones that were not.
+    /// a connection, enabled (its tools listed) unless its config turned it
+    /// off. An imported http server that could not list its tools without
+    /// headers then gets the OAuth sign-in the Add sheet runs, one at a time;
+    /// a failed sign-in is reported here, not in the Settings pane. True when
+    /// every name was imported and signed in; otherwise `importError` says
+    /// which were not. `cancelImport()` stops it.
     func importConnections(_ names: [String]) async -> Bool {
         guard !names.isEmpty, !isImporting else { return false }
         guard let runner = makeRunner() else {
@@ -343,6 +352,7 @@ final class ExternalConnectionsViewModel {
             return false
         }
         isImporting = true
+        importCancelled = false
         importError = nil
         defer { isImporting = false }
         let results: [ExternalConnectionImportResult]
@@ -355,13 +365,26 @@ final class ExternalConnectionsViewModel {
             return false
         }
         await refreshAsync()
+        var failures = results.compactMap(\.failure)
         for result in results where result.signIn {
+            guard !importCancelled else { break }
             guard let id = result.id, let row = connections.first(where: { Int64($0.id) == id }) else { continue }
-            await signIn(row)
+            error = nil
+            await (importSignIn ?? signIn)(row)
+            if let signInError = error {
+                failures.append("\(result.name): sign-in failed: \(signInError)")
+                error = nil
+            }
         }
-        let failures = results.compactMap(\.failure)
         importError = failures.isEmpty ? nil : failures.joined(separator: "\n")
-        return failures.isEmpty
+        return failures.isEmpty && !importCancelled
+    }
+
+    /// Stops a running import: the sign-in in progress is terminated and no
+    /// further one starts. Connections already added stay.
+    func cancelImport() {
+        importCancelled = true
+        cancelSignIn()
     }
 
     // MARK: - Flow helpers

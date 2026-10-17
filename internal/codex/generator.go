@@ -122,10 +122,11 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 // gates unified exec; view_image reads local files; computer_use and the
 // browser_use pair drive the screen and a browser (their own TCC prompts);
 // apps/plugins would expose the owner's ChatGPT connectors — an
-// exfiltration channel for an injected prompt. MCP servers and web search
-// configured in the owner's own ~/.codex/config.toml are shut out of a run
-// that mounts the watchtower server by its own CODEX_HOME (Client.workDir,
-// newRunHome), and of a no-tools run by -c overrides (Client.execArgs). An
+// exfiltration channel for an injected prompt. MCP servers configured in
+// the owner's own codex config are disabled by a -c override in a run that
+// mounts the watchtower server or runs tool-less (Client.mount); web search
+// follows the owner's codex setting except where Client.execArgs turns it
+// off; the generators here keep the owner's codex setup. An
 // unknown features.* key is ignored by older codex builds.
 func execArgs(model string) []string {
 	return []string{

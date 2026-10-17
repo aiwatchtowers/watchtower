@@ -19,6 +19,23 @@ final class ExternalConnectionImportTests: XCTestCase {
         XCTAssertEqual(list.servers[1].command, nil)
     }
 
+    /// A server its config turned off is listed but not ticked; a rename
+    /// carries its reason.
+    func testDisabledAndRenamedServers() throws {
+        let json = """
+            {"servers":[
+              {"name":"paused","source":"codex","kind":"stdio","command":"srv","enabled":false,"has_secret":false},
+              {"name":"notes-2","source":"claude","kind":"http","url":"https://notes.example.com/mcp","enabled":true,
+               "has_secret":false,"note":"named notes-2: notes is taken by another server"}
+            ],"warnings":[]}
+            """
+        let list = try JSONDecoder().decode(ExternalConnectionImportList.self, from: Data(json.utf8))
+        XCTAssertTrue(list.servers[0].canImport)
+        XCTAssertFalse(list.servers[0].pickedByDefault)
+        XCTAssertTrue(list.servers[1].pickedByDefault)
+        XCTAssertEqual(list.servers[1].note, "named notes-2: notes is taken by another server")
+    }
+
     /// Go initialises both slices, so the empty state decodes.
     func testDecodesEmptyList() throws {
         let list = try JSONDecoder().decode(

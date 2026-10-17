@@ -143,8 +143,8 @@ func tierModel(cfg *config.Config, provider, tier string) string {
 // cliAgentRunner runs agent() as one headless claude/codex query whose only
 // tools are the `mcp --chat --surface automation --automation-run N` server's
 // (the effective set plus get_action; never a Quick Connection). The child
-// gets only PATH, HOME, LANG, USER and the run marker (codex also CODEX_HOME,
-// a scrubbed per-run home: codex.Client's own CODEX_HOME), runs in its own
+// gets only PATH, HOME, LANG, USER and the run marker (and CODEX_HOME when
+// set; codex disables the owner's own MCP servers for the run), runs in its own
 // process group (killed as a group on cancel or deadline), and is metered
 // once: BeforeModelCall before it starts, its usage — or an estimate — after.
 // Its server runs under this process's config and workspace (--config,
@@ -172,14 +172,14 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	env := automationAgentEnv(req.RunID)
 	var client ai.Provider
 	if r.provider == "codex" {
-		// The client runs the child with its own scrubbed CODEX_HOME (web
-		// search off, only the watchtower server, the owner's sign-in
-		// linked), never ~/.codex: the owner's MCP servers and web search
-		// are outside the effective tool set and GateAgentCall, and an
-		// exfiltration channel for injected text.
+		// The owner's own codex MCP servers are disabled for the run and
+		// web search is off: both are outside the effective tool set and
+		// GateAgentCall, and an exfiltration channel for injected text.
+		// CODEX_HOME (passed through when set) keeps the owner's sign-in.
 		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
 		c.SetMCPArgs(mcpArgs)
 		c.SetMCPEnvVars(codexAgentServerEnv)
+		c.SetNoWebSearch()
 		c.SetChildEnv(env)
 		c.SetProcessGroup(true)
 		client = c
@@ -243,7 +243,7 @@ var codexAgentServerEnv = []string{automations.RunEnvMarker}
 // process when set: identity plus network plumbing (proxy, CA bundle, TMPDIR;
 // owner ask #185). Never an API key or token.
 var automationAgentPassthrough = []string{
-	"HOME", "LANG", "USER",
+	"HOME", "LANG", "USER", "CODEX_HOME",
 	"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
 	"ALL_PROXY", "all_proxy",
 	"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "TMPDIR",

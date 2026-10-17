@@ -5,9 +5,10 @@ import WatchtowerCore
 /// (~/.codex/config.toml) and Claude Code (~/.claude.json) configs as Quick
 /// Connections (board #594): the codex chat no longer reads ~/.codex, so this
 /// one click brings those servers back. Every importable server starts
-/// ticked; one that cannot be imported shows Go's reason instead of a
-/// checkbox. Import enables each picked server (its tools are listed, QC-02)
-/// and runs the OAuth sign-in for an http server that needs one.
+/// ticked unless its config turned it off; one that cannot be imported shows
+/// Go's reason instead of a checkbox. Import enables each picked server (its
+/// tools are listed, QC-02) and runs the OAuth sign-in for an http server
+/// that needs one; Close or Cancel stops a running sign-in.
 struct ImportExternalConnectionsView: View {
     let vm: ExternalConnectionsViewModel
     @Environment(\.dismiss) private var dismiss
@@ -20,9 +21,8 @@ struct ImportExternalConnectionsView: View {
                     .font(.title2)
                     .fontWeight(.bold)
                 Spacer()
-                Button("Close") { dismiss() }
+                Button("Close") { stop() }
                     .buttonStyle(.plain)
-                    .disabled(vm.isImporting)
             }
             Text(
                 "Servers from ~/.codex/config.toml and ~/.claude.json. Each one you pick becomes a "
@@ -46,8 +46,7 @@ struct ImportExternalConnectionsView: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .disabled(vm.isImporting)
+                Button("Cancel") { stop() }
                 Button("Import") {
                     Task {
                         let names = vm.importList?.servers.map(\.name).filter(picked.contains) ?? []
@@ -62,8 +61,14 @@ struct ImportExternalConnectionsView: View {
         .frame(width: 480)
         .task {
             await vm.loadImportCandidates()
-            picked = Set(vm.importList?.servers.filter(\.canImport).map(\.name) ?? [])
+            picked = Set(vm.importList?.servers.filter(\.pickedByDefault).map(\.name) ?? [])
         }
+    }
+
+    /// Close or Cancel: a running import (its OAuth sign-in) stops first.
+    private func stop() {
+        if vm.isImporting { vm.cancelImport() }
+        dismiss()
     }
 
     @ViewBuilder
@@ -108,6 +113,17 @@ struct ImportExternalConnectionsView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    if !server.enabled {
+                        Text("Off in its config: imported turned off")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let note = server.note, !note.isEmpty {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let skip = server.skip, !server.canImport {
                         Text("Can't import: \(skip)")
                             .font(.caption)

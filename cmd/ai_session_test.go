@@ -175,6 +175,40 @@ func TestNewSessionBackend_EveryProviderHasABackend(t *testing.T) {
 	}
 }
 
+// The codex chat session (board #594) mounts the enabled Quick Connections
+// next to the watchtower server, limited to their allowed tools (QC-02),
+// and re-reads them on every launch (QC-04) — a connection enabled after
+// the session started is there on the next turn.
+func TestCodexSessionClient_MountsConnectionsPerLaunch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}}
+	dbPath := cfg.DBPath()
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	c := codexSessionClient(sessionWiring{cfg: cfg, dbPath: dbPath, model: "m",
+		mcpArgs: []string{"--chat", "--surface", "main"}})
+	override := func() string {
+		for _, a := range c.ArgsForTest("sys", "msg") {
+			if strings.HasPrefix(a, "mcp_servers=") {
+				return a
+			}
+		}
+		return ""
+	}
+	assert.NotContains(t, override(), `"trello"`)
+
+	id, err := database.InsertExternalConnection(db.ExternalConnection{Name: "trello", Kind: "stdio", Command: "npx", Enabled: true})
+	require.NoError(t, err)
+	require.NoError(t, database.SetExternalConnectionTools(id,
+		[]db.ExternalTool{{Name: "list_boards"}, {Name: "create_card"}}, time.Now().UTC().Format(time.RFC3339)))
+	got := override()
+	assert.Contains(t, got, `"trello"={command="npx"`)
+	assert.Contains(t, got, `enabled_tools=["list_boards"]`)
+	assert.Contains(t, got, `"--surface","main"`)
+}
+
 // Ollama has no default model; an unset one refuses the session up front
 // (mapped to provider_unavailable by the caller) instead of failing every
 // turn as a retryable internal error.

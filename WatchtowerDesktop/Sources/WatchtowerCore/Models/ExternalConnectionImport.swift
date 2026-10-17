@@ -18,24 +18,54 @@ package struct ExternalConnectionImportList: Decodable, Equatable {
         package let url: String?
         /// Why it cannot be imported; nil when it can.
         package let skip: String?
+        /// Why its name differs from the one in its config.
+        package let note: String?
+        /// False when its config turned it off: it is imported disabled,
+        /// and the sheet leaves it unticked.
+        package let enabled: Bool
 
         package var id: String { name }
         package var canImport: Bool { (skip ?? "").isEmpty }
+        /// Ticked when the sheet opens.
+        package var pickedByDefault: Bool { canImport && enabled }
 
         /// What the row shows under the name: the command or the URL.
         package var target: String { (kind == "http" ? url : command) ?? "" }
 
         enum CodingKeys: String, CodingKey {
-            case name, source, kind, command, url, skip
+            case name, source, kind, command, url, skip, note, enabled
         }
 
-        package init(name: String, source: String, kind: String, command: String?, url: String?, skip: String?) {
+        package init(
+            name: String,
+            source: String,
+            kind: String,
+            command: String?,
+            url: String?,
+            skip: String?,
+            note: String? = nil,
+            enabled: Bool = true
+        ) {
             self.name = name
             self.source = source
             self.kind = kind
             self.command = command
             self.url = url
             self.skip = skip
+            self.note = note
+            self.enabled = enabled
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decode(String.self, forKey: .name)
+            source = try c.decode(String.self, forKey: .source)
+            kind = try c.decode(String.self, forKey: .kind)
+            command = try c.decodeIfPresent(String.self, forKey: .command)
+            url = try c.decodeIfPresent(String.self, forKey: .url)
+            skip = try c.decodeIfPresent(String.self, forKey: .skip)
+            note = try c.decodeIfPresent(String.self, forKey: .note)
+            enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         }
     }
 

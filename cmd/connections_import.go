@@ -1,12 +1,18 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -18,18 +24,21 @@ import (
 
 // connectionsImportCmd turns the MCP servers of the owner's own codex and
 // Claude Code configs into Quick Connections (board #594): the codex chat
-// no longer reads ~/.codex/config.toml, so this is how those servers come
+// no longer loads ~/.codex/config.toml's servers, so this is how they come
 // back — mounted with the QC-02 read-only tool policy.
 var connectionsImportCmd = &cobra.Command{
 	Use:   "import [name...]",
 	Short: "Import MCP servers from ~/.codex/config.toml and ~/.claude.json",
 	Long: "Without names, lists the MCP servers found in your codex config\n" +
 		"(CODEX_HOME/config.toml, else ~/.codex/config.toml) and your Claude Code\n" +
-		"config (~/.claude.json, user scope), and why any of them cannot be imported.\n" +
+		"config (CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json; user scope),\n" +
+		"and why any of them cannot be imported. A variable a server names is read\n" +
+		"from this environment, else from your login shell's.\n" +
 		"With names, adds each as a Quick Connection — its env vars or headers go to\n" +
-		"the connection's private secret file — and enables it, which lists its tools.\n" +
-		"An http server with no headers that cannot list its tools needs an OAuth\n" +
-		"sign-in: 'watchtower connections oauth <id>'.",
+		"the connection's private secret file — and enables it, which lists its tools\n" +
+		"(a server its config turned off is added disabled). An http server with no\n" +
+		"headers that cannot list its tools needs an OAuth sign-in:\n" +
+		"'watchtower connections oauth <id>'.",
 	RunE: runConnectionsImport,
 }
 
@@ -67,16 +76,66 @@ func claudeConfigPath() string {
 	return filepath.Join(home, ".claude.json")
 }
 
-// importCandidates is what the owner's configs offer, with a server whose
-// name is already a Quick Connection marked as such.
+// loginShellEnv is the owner's login shell environment ($SHELL -lic, so the
+// interactive startup file that usually exports tokens runs too), read once
+// when a variable is missing here: the Desktop starts the CLI with a
+// reduced environment. A shell that fails or takes over 5 s yields none.
+// A var for tests.
+var loginShellEnv = func() map[string]string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/zsh"
+	}
+	const marker = "__WATCHTOWER_ENV__"
+	cmd := exec.CommandContext(ctx, shell, "-lic", "printf '\\n"+marker+"\\n'; env -0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	out, _ := cmd.Output()
+	_, after, ok := bytes.Cut(out, []byte("\n"+marker+"\n"))
+	if !ok {
+		return nil
+	}
+	env := map[string]string{}
+	for _, kv := range bytes.Split(after, []byte{0}) {
+		if k, v, ok := strings.Cut(string(kv), "="); ok && k != "" {
+			env[k] = v
+		}
+	}
+	return env
+}
+
+// importGetenv is os.Getenv, falling back to the login shell's environment.
+func importGetenv() func(string) string {
+	var once sync.Once
+	var shellEnv map[string]string
+	return func(k string) string {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+		once.Do(func() { shellEnv = loginShellEnv() })
+		return shellEnv[k]
+	}
+}
+
+// importCandidates is what the owner's configs offer, each checked as
+// `connections add` checks its flags and secret, with a server whose name
+// is already a Quick Connection marked as such.
 func importCandidates(database *db.DB) ([]externalmcp.ImportCandidate, []string, error) {
-	cands, warnings := externalmcp.DiscoverImports(filepath.Join(codex.OwnerHome(), "config.toml"), claudeConfigPath(), os.Getenv)
+	cands, warnings := externalmcp.DiscoverImports(filepath.Join(codex.OwnerHome(), "config.toml"), claudeConfigPath(), importGetenv())
 	existing, err := database.ListExternalConnections()
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing connections: %w", err)
 	}
 	for i, c := range cands {
-		if c.Skip == "" && slices.ContainsFunc(existing, func(e db.ExternalConnection) bool { return strings.EqualFold(e.Name, c.Name) }) {
+		if c.Skip != "" {
+			continue
+		}
+		if err := validateImportCandidate(c); err != nil {
+			cands[i].Skip = err.Error()
+		} else if slices.ContainsFunc(existing, func(e db.ExternalConnection) bool { return strings.EqualFold(e.Name, c.Name) }) {
 			cands[i].Skip = "a Quick Connection with this name already exists"
 		}
 	}
@@ -87,6 +146,13 @@ func importCandidates(database *db.DB) ([]externalmcp.ImportCandidate, []string,
 		cands = []externalmcp.ImportCandidate{}
 	}
 	return cands, warnings, nil
+}
+
+func validateImportCandidate(c externalmcp.ImportCandidate) error {
+	if err := validateConnectionAddFlags(c.Name, c.Kind, c.Command, c.URL); err != nil {
+		return err
+	}
+	return requireSecretTransport(c.Kind, c.URL, c.Secret)
 }
 
 func runConnectionsImport(cmd *cobra.Command, names []string) error {
@@ -107,9 +173,17 @@ func runConnectionsImport(cmd *cobra.Command, names []string) error {
 		printImportCandidates(out, errOut, cands, warnings)
 		return nil
 	}
+	results := importNames(out, errOut, cfg, database, cands, names)
+	if connectionsImportFlagJSON {
+		return writeJSON(out, results)
+	}
+	warnIfProviderIgnoresConnections(errOut, cfg, strings.Join(names, ", "))
+	return nil
+}
 
-	// In JSON mode the per-connection tool summaries are dropped: stdout
-	// carries only the result array.
+// importNames imports each name; in JSON mode the per-connection tool
+// summaries are dropped, so stdout carries only the result array.
+func importNames(out, errOut io.Writer, cfg *config.Config, database *db.DB, cands []externalmcp.ImportCandidate, names []string) []connectionImportResultJSON {
 	toolsOut := out
 	if connectionsImportFlagJSON {
 		toolsOut = io.Discard
@@ -120,7 +194,7 @@ func runConnectionsImport(cmd *cobra.Command, names []string) error {
 		var res connectionImportResultJSON
 		switch {
 		case i < 0:
-			res = connectionImportResultJSON{Name: name, Error: "not found in ~/.codex/config.toml or ~/.claude.json"}
+			res = connectionImportResultJSON{Name: name, Error: "not found in the codex or Claude Code config"}
 		case cands[i].Skip != "":
 			res = connectionImportResultJSON{Name: name, Error: "cannot import: " + cands[i].Skip}
 		default:
@@ -131,16 +205,13 @@ func runConnectionsImport(cmd *cobra.Command, names []string) error {
 			printImportResult(out, res)
 		}
 	}
-	if connectionsImportFlagJSON {
-		return writeJSON(out, results)
-	}
-	warnIfProviderIgnoresConnections(errOut, cfg, strings.Join(names, ", "))
-	return nil
+	return results
 }
 
 // importConnection adds c as a connection with its secret in the 0600 file
 // (the file needs the row's id, so the row is removed again when the secret
-// cannot be saved), then enables it, which lists its tools.
+// cannot be saved), then enables it, which lists its tools — unless its
+// source config turned it off.
 func importConnection(out, errOut io.Writer, cfg *config.Config, database *db.DB, c externalmcp.ImportCandidate) connectionImportResultJSON {
 	res := connectionImportResultJSON{Name: c.Name}
 	id, err := database.InsertExternalConnection(db.ExternalConnection{
@@ -156,6 +227,10 @@ func importConnection(out, errOut io.Writer, cfg *config.Config, database *db.DB
 			_ = database.RemoveExternalConnection(id)
 			return connectionImportResultJSON{Name: c.Name, Error: fmt.Sprintf("saving secret: %v", err)}
 		}
+	}
+	if !c.Enabled {
+		res.Status = "disabled"
+		return res
 	}
 	if err := database.SetExternalConnectionEnabled(id, true); err != nil {
 		res.Error = fmt.Sprintf("enabling connection: %v", err)
@@ -174,21 +249,31 @@ func printImportCandidates(out, errOut io.Writer, cands []externalmcp.ImportCand
 		fmt.Fprintf(errOut, "warning: %s\n", w)
 	}
 	if len(cands) == 0 {
-		fmt.Fprintln(out, "No MCP servers found in ~/.codex/config.toml or ~/.claude.json.")
+		fmt.Fprintln(out, "No MCP servers found in the codex or Claude Code config.")
 		return
 	}
 	for _, c := range cands {
-		target := c.Command
-		if c.Kind == "http" {
-			target = c.URL
-		}
-		line := fmt.Sprintf("%s [%s, from %s] %s", c.Name, c.Kind, c.Source, target)
-		if c.Skip != "" {
-			line += " — cannot import: " + c.Skip
-		}
-		fmt.Fprintln(out, line)
+		fmt.Fprintln(out, importCandidateLine(c))
 	}
 	fmt.Fprintln(out, "Run 'watchtower connections import <name>...' to import.")
+}
+
+func importCandidateLine(c externalmcp.ImportCandidate) string {
+	target := c.Command
+	if c.Kind == "http" {
+		target = c.URL
+	}
+	line := fmt.Sprintf("%s [%s, from %s] %s", c.Name, c.Kind, c.Source, target)
+	if !c.Enabled {
+		line += " (off in its config)"
+	}
+	if c.Note != "" {
+		line += " — " + c.Note
+	}
+	if c.Skip != "" {
+		line += " — cannot import: " + c.Skip
+	}
+	return line
 }
 
 func printImportResult(out io.Writer, r connectionImportResultJSON) {
@@ -197,6 +282,8 @@ func printImportResult(out io.Writer, r connectionImportResultJSON) {
 		fmt.Fprintf(out, "%s: %s\n", r.Name, r.Error)
 	case r.SignIn:
 		fmt.Fprintf(out, "Imported %s as connection #%d; sign in with 'watchtower connections oauth %d'.\n", r.Name, r.ID, r.ID)
+	case r.Status == "disabled":
+		fmt.Fprintf(out, "Imported %s as connection #%d, disabled as in its config.\n", r.Name, r.ID)
 	case r.Status != "ok":
 		fmt.Fprintf(out, "Imported %s as connection #%d (%s).\n", r.Name, r.ID, r.Error)
 	default:

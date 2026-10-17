@@ -255,36 +255,30 @@ func assertNotContains(t *testing.T, args []string, unwanted string) {
 	}
 }
 
-func TestRunHome_WritesExtraArgs(t *testing.T) {
-	t.Setenv("CODEX_HOME", t.TempDir())
-	dir, err := newRunHome("/tmp/w.db", []string{"--chat", "--surface", "target"}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	b, err := os.ReadFile(filepath.Join(dir, "config.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), `args = ["mcp", "--db-path", "/tmp/w.db", "--chat", "--surface", "target"]`) {
-		t.Fatalf("config.toml = %s", b)
+func TestMCPOverride_WritesExtraArgs(t *testing.T) {
+	got, _ := mcpOverride("/tmp/w.db", []string{"--chat", "--surface", "target"}, nil, nil, nil, nil)
+	if !strings.Contains(got, `args=["mcp","--db-path","/tmp/w.db","--chat","--surface","target"]`) {
+		t.Fatalf("override = %s", got)
 	}
 }
 
 // A no-tools run (`ai query --no-tools`, the ⌘/ help chat) mounts no MCP
-// server even with a database path and turns web search off.
+// server even with a database path, disables the owner's own codex servers
+// (an empty `mcp_servers={}` override does not clear them) and turns web
+// search off.
 func TestClient_NoToolsMountsNothing(t *testing.T) {
+	owner := t.TempDir()
+	t.Setenv("CODEX_HOME", owner)
+	if err := os.WriteFile(filepath.Join(owner, "config.toml"), []byte("[mcp_servers.personal]\ncommand = \"/bin/false\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	c := NewClient("gpt-5.4", "/tmp/test.db", "codex")
 	c.SetNoTools()
-	dir, home, cleanup, err := c.workDir()
-	defer cleanup()
-	if err != nil || dir != "" || home != "" {
-		t.Fatalf("workDir() = %q, %v; want no MCP dir", dir, err)
-	}
 	args := c.ArgsForTest("sys", "msg")
-	assertContains(t, args, "mcp_servers={}")
+	const want = `mcp_servers={"personal"={enabled=false}}`
+	assertContains(t, args, want)
 	for _, a := range args {
-		if (strings.Contains(a, "mcp_servers") && a != "mcp_servers={}") || strings.Contains(a, "/tmp/test.db") {
+		if (strings.Contains(a, "mcp_servers") && a != want) || strings.Contains(a, "/tmp/test.db") {
 			t.Errorf("no-tools args mount an MCP server: %q in %v", a, args)
 		}
 	}

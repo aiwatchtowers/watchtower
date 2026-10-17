@@ -365,6 +365,74 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isImporting)
     }
 
+    /// A created row flagged `sign_in` gets the OAuth sign-in; its failure is
+    /// reported in the import sheet (not left in the Settings pane's error),
+    /// and a row without the flag gets none.
+    func testImportRunsSignInAndReportsItsFailure() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO external_connections (id, name, kind, url) VALUES (1, 'notes', 'http', 'https://notes.example.com/mcp')")
+            try db.execute(sql: "INSERT INTO external_connections (id, name, kind, command) VALUES (2, 'tracker', 'stdio', 'npx')")
+        }
+        let runner = ScriptedToolsRunner { _ in
+            Data((#"[{"name":"notes","id":1,"status":"error","error":"listing failed","sign_in":true},"#
+                + #"{"name":"tracker","id":2,"status":"ok","sign_in":false}]"#).utf8)
+        }
+        var signedIn: [String] = []
+        var vm: ExternalConnectionsViewModel!
+        vm = ExternalConnectionsViewModel(dbPool: pool, makeRunner: { runner }, importSignIn: { row in
+            signedIn.append(row.name)
+            vm.error = "Sign in failed (exit 1)"
+        })
+
+        let done = await vm.importConnections(["notes", "tracker"])
+
+        XCTAssertFalse(done)
+        XCTAssertEqual(signedIn, ["notes"])
+        XCTAssertEqual(vm.importError, "notes: sign-in failed: Sign in failed (exit 1)")
+        XCTAssertNil(vm.error, "the failure belongs to the sheet")
+    }
+
+    func testImportWithSuccessfulSignIn() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO external_connections (id, name, kind, url) VALUES (1, 'notes', 'http', 'https://notes.example.com/mcp')")
+        }
+        let runner = ScriptedToolsRunner { _ in Data(#"[{"name":"notes","id":1,"status":"error","sign_in":true}]"#.utf8) }
+        var signedIn = 0
+        let vm = ExternalConnectionsViewModel(dbPool: pool, makeRunner: { runner }, importSignIn: { _ in signedIn += 1 })
+
+        let done = await vm.importConnections(["notes"])
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(signedIn, 1)
+        XCTAssertNil(vm.importError)
+    }
+
+    /// Cancel stops before the next sign-in.
+    func testCancelImportStopsFurtherSignIns() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO external_connections (id, name, kind, url) VALUES (1, 'a', 'http', 'https://a.example.com/mcp')")
+            try db.execute(sql: "INSERT INTO external_connections (id, name, kind, url) VALUES (2, 'b', 'http', 'https://b.example.com/mcp')")
+        }
+        let runner = ScriptedToolsRunner { _ in
+            Data(#"[{"name":"a","id":1,"status":"error","sign_in":true},{"name":"b","id":2,"status":"error","sign_in":true}]"#.utf8)
+        }
+        var signedIn: [String] = []
+        var vm: ExternalConnectionsViewModel!
+        vm = ExternalConnectionsViewModel(dbPool: pool, makeRunner: { runner }, importSignIn: { row in
+            signedIn.append(row.name)
+            vm.cancelImport()
+        })
+
+        let done = await vm.importConnections(["a", "b"])
+
+        XCTAssertFalse(done)
+        XCTAssertEqual(signedIn, ["a"])
+        XCTAssertFalse(vm.isImporting)
+    }
+
     func testImportConnectionsAllImported() async throws {
         let runner = ScriptedToolsRunner { _ in Data(#"[{"name":"tracker","id":1,"status":"ok","sign_in":false}]"#.utf8) }
         let vm = ExternalConnectionsViewModel(dbPool: try makePool()) { runner }

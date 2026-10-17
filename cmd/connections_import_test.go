@@ -21,27 +21,40 @@ import (
 var _ externalMCPConfigurable = (*codex.Client)(nil)
 
 // writeImportSources gives the test HOME a codex config and a Claude Code
-// config with the given content.
-func writeImportSources(t *testing.T, codexTOML, claudeJSON string) {
+// config (under CLAUDE_CONFIG_DIR) with the given content, and a login
+// shell environment holding shellEnv.
+func writeImportSources(t *testing.T, codexTOML, claudeJSON string, shellEnv map[string]string) {
 	t.Helper()
 	home := os.Getenv("HOME")
+	claudeDir := t.TempDir()
 	t.Setenv("CODEX_HOME", "")
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
 	require.NoError(t, os.MkdirAll(filepath.Join(home, ".codex"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(codexTOML), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"), []byte(claudeJSON), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(claudeDir, ".claude.json"), []byte(claudeJSON), 0o600))
+	orig := loginShellEnv
+	loginShellEnv = func() map[string]string { return shellEnv }
+	t.Cleanup(func() { loginShellEnv = orig })
 }
 
 // `connections import --json` lists what the owner's codex and Claude Code
-// configs offer; importing names adds each as an enabled connection with its
-// secret only in the 0600 secret file, lists its tools, and flags an http
-// server with no headers whose listing failed for an OAuth sign-in. A name
-// that is already a connection is offered no more.
+// configs offer; importing names adds each as a connection with its secret
+// only in the 0600 secret file, enables it (lists its tools) unless its
+// config turned it off, and flags an http server with no headers whose
+// listing failed for an OAuth sign-in. A variable missing here is read from
+// the login shell; headers to a remote plain-http URL and a non-http URL
+// are refused as `connections add` refuses them; a name that is already a
+// connection is offered no more.
 func TestConnectionsImport_ListAndImport(t *testing.T) {
 	cfg := writeConnectionsConfig(t)
 	writeImportSources(t,
-		"[mcp_servers.tracker]\ncommand = \"npx\"\nargs = [\"-y\", \"tracker-mcp\"]\nenv = { TRACKER_TOKEN = \"tok-1\" }\n",
-		`{"mcpServers":{"notes":{"type":"http","url":"https://notes.example.com/mcp"},"legacy":{"type":"sse","url":"https://legacy.example.com/sse"}}}`)
+		"[mcp_servers.tracker]\ncommand = \"npx\"\nargs = [\"-y\", \"tracker-mcp\"]\nenv_vars = [\"TRACKER_TOKEN\"]\n"+
+			"[mcp_servers.paused]\ncommand = \"srv\"\nenabled = false\n",
+		`{"mcpServers":{"notes":{"type":"http","url":"https://notes.example.com/mcp"},`+
+			`"legacy":{"type":"sse","url":"https://legacy.example.com/sse"},`+
+			`"plain":{"type":"http","url":"http://mcp.example.com/mcp","headers":{"X-Key":"k"}},`+
+			`"weird":{"type":"http","url":"ftp://files.example.com/mcp"}}}`,
+		map[string]string{"TRACKER_TOKEN": "tok-1"})
 	orig := listServerTools
 	listServerTools = func(_ context.Context, spec externalmcp.ServerSpec) ([]db.ExternalTool, error) {
 		if spec.Kind == "http" {
@@ -55,17 +68,24 @@ func TestConnectionsImport_ListAndImport(t *testing.T) {
 	require.NoError(t, err, stderr)
 	var list connectionImportListJSON
 	require.NoError(t, json.Unmarshal([]byte(stdout), &list), stdout)
-	require.Len(t, list.Servers, 3)
-	assert.Equal(t, "tracker", list.Servers[0].Name)
-	assert.True(t, list.Servers[0].HasSecret)
+	byName := map[string]externalmcp.ImportCandidate{}
+	for _, s := range list.Servers {
+		byName[s.Name] = s
+	}
+	require.Len(t, byName, 6)
+	assert.True(t, byName["tracker"].HasSecret)
+	assert.Empty(t, byName["tracker"].Skip, "the login shell's variable resolves the server")
 	assert.NotContains(t, stdout, "tok-1", "the list never prints a secret")
-	assert.Contains(t, list.Servers[1].Skip, "sse")
+	assert.False(t, byName["paused"].Enabled)
+	assert.Contains(t, byName["legacy"].Skip, "sse")
+	assert.Contains(t, byName["plain"].Skip, "https")
+	assert.Contains(t, byName["weird"].Skip, "not an http(s) URL")
 
-	stdout, stderr, err = runConnectionsSplit(t, "", "import", "--json", "tracker", "notes", "legacy", "nope")
+	stdout, stderr, err = runConnectionsSplit(t, "", "import", "--json", "--", "tracker", "notes", "legacy", "paused", "nope")
 	require.NoError(t, err, stderr)
 	var results []connectionImportResultJSON
 	require.NoError(t, json.Unmarshal([]byte(stdout), &results), stdout)
-	require.Len(t, results, 4)
+	require.Len(t, results, 5)
 
 	tr := results[0]
 	assert.Equal(t, "ok", tr.Status, tr.Error)
@@ -85,10 +105,18 @@ func TestConnectionsImport_ListAndImport(t *testing.T) {
 	assert.True(t, results[1].SignIn, "an http server with no headers that cannot list needs a sign-in")
 	assert.Zero(t, results[2].ID)
 	assert.Contains(t, results[2].Error, "sse")
-	assert.Contains(t, results[3].Error, "not found")
+	paused, err := d.GetExternalConnection(results[3].ID)
+	require.NoError(t, err)
+	assert.False(t, paused.Enabled, "a server its config turned off is imported disabled")
+	assert.Equal(t, "disabled", results[3].Status)
+	assert.Contains(t, results[4].Error, "not found")
 
 	stdout, _, err = runConnectionsSplit(t, "", "import", "--json")
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal([]byte(stdout), &list), stdout)
-	assert.Contains(t, list.Servers[0].Skip, "already exists")
+	for _, s := range list.Servers {
+		if s.Name == "tracker" {
+			assert.Contains(t, s.Skip, "already exists")
+		}
+	}
 }

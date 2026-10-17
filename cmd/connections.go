@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	neturl "net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -237,8 +238,18 @@ func validateConnectionAddFlags(name, kind, command, url string) error {
 		if url == "" {
 			return fmt.Errorf(`--url is required for --kind "http"`)
 		}
+		return validateHTTPURL(url)
 	default:
 		return fmt.Errorf(`--kind must be "stdio" or "http" (got %q)`, kind)
+	}
+	return nil
+}
+
+// validateHTTPURL refuses an --url that is not an absolute http(s) URL.
+func validateHTTPURL(url string) error {
+	u, err := neturl.Parse(url)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("--url %q is not an http(s) URL", url)
 	}
 	return nil
 }
@@ -258,12 +269,21 @@ func readConnectionAddSecret(cmd *cobra.Command, secretStdin bool, kind, url str
 	if err := json.Unmarshal(data, &sec); err != nil {
 		return nil, fmt.Errorf("parsing secret JSON from stdin: %w", err)
 	}
-	if kind == "http" && len(sec.Headers) > 0 {
-		if err := netsec.RequireSecureURL(url, "a connection with headers"); err != nil {
-			return nil, fmt.Errorf("--url: %w", err)
-		}
+	if err := requireSecretTransport(kind, url, &sec); err != nil {
+		return nil, err
 	}
 	return &sec, nil
+}
+
+// requireSecretTransport refuses headers bound for a plain-http URL that is
+// not loopback (netsec) — `connections add` and `connections import`.
+func requireSecretTransport(kind, url string, sec *externalmcp.Secret) error {
+	if kind == "http" && sec != nil && len(sec.Headers) > 0 {
+		if err := netsec.RequireSecureURL(url, "a connection with headers"); err != nil {
+			return fmt.Errorf("--url: %w", err)
+		}
+	}
+	return nil
 }
 
 func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
