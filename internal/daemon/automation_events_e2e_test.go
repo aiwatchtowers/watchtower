@@ -50,14 +50,15 @@ func TestEventAutomation_EndToEnd(t *testing.T) {
 	_, err := database.CreateSlackAccount(db.SlackAccount{TeamDomain: "acme", Label: "work", CurrentUserID: "1:UOWNER"})
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "1:C1", Name: "releases", Type: "public"}))
-	require.NoError(t, database.UpdateSyncState("1:C1", db.SyncState{LastSyncedTS: "1700000100.000000", IsInitialSyncComplete: true}))
+	// One stored message: #releases is not a first sync. No sync_state row —
+	// search sync, the default path, never writes one.
+	require.NoError(t, database.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000100.000000", UserID: "1:UA", Text: "earlier"}))
 
 	// Cycle 1: two new messages in #releases → one queued event run.
 	e2eSlackCycle(d, time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC), func() {
 		for _, ts := range []string{"1700000101.000000", "1700000102.000000"} {
 			require.NoError(t, database.UpsertMessage(db.Message{ChannelID: "1:C1", TS: ts, UserID: "1:UA", Text: "shipped"}))
 		}
-		require.NoError(t, database.UpdateSyncState("1:C1", db.SyncState{LastSyncedTS: "1700000102.000000", IsInitialSyncComplete: true}))
 	})
 	runs, err := database.ListAutomationRuns(a.ID, 0)
 	require.NoError(t, err)

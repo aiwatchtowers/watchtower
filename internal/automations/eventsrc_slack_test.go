@@ -28,7 +28,9 @@ func must(t *testing.T, err error) {
 }
 
 // slackFixture seeds Slack account 1 ("work", owner 1:UOWNER) with two
-// synced channels, releases (1:C1) and general (1:C2), both marked at ts 100.
+// channels, releases (1:C1) and general (1:C2), each already holding one
+// stored message at ts 100. No sync_state row is written: the default search
+// sync never writes one.
 func slackFixture(t *testing.T) *db.DB {
 	t.Helper()
 	d := openEventDB(t)
@@ -36,25 +38,18 @@ func slackFixture(t *testing.T) *db.DB {
 	must(t, err)
 	for id, name := range map[string]string{"1:C1": "releases", "1:C2": "general"} {
 		must(t, d.UpsertChannel(db.Channel{ID: id, Name: name, Type: "public", Topic: contentMarker}))
-		must(t, d.UpdateSyncState(id, db.SyncState{LastSyncedTS: "1700000100.000000", IsInitialSyncComplete: true}))
+		must(t, d.UpsertMessage(db.Message{ChannelID: id, TS: "1700000100.000000", UserID: "1:UA", Text: contentMarker}))
 	}
 	return d
 }
 
-// slackPhase simulates phaseSlackSync: it stores msgs (text = contentMarker)
-// and advances each touched channel's mark to its newest message.
+// slackPhase simulates phaseSlackSync the way search sync writes: it stores
+// msgs (text = contentMarker) in the messages table and nothing else.
 func slackPhase(t *testing.T, d *db.DB, msgs ...db.Message) {
 	t.Helper()
-	newest := map[string]string{}
 	for _, m := range msgs {
 		m.Text = contentMarker
 		must(t, d.UpsertMessage(m))
-		if m.TS > newest[m.ChannelID] {
-			newest[m.ChannelID] = m.TS
-		}
-	}
-	for id, ts := range newest {
-		must(t, d.UpdateSyncState(id, db.SyncState{LastSyncedTS: ts, IsInitialSyncComplete: true}))
 	}
 }
 
@@ -97,23 +92,60 @@ func TestSlackEvents_NewMessagesPerChannel(t *testing.T) {
 	}
 }
 
+// Regression: search sync, the daemon's default path, stores messages but
+// never writes sync_state — the source must still see them.
+func TestSlackEvents_SearchSyncWithoutSyncStatePublishes(t *testing.T) {
+	d := slackFixture(t)
+	got := slackEvents(t, d, func() {
+		slackPhase(t, d, msg("1:C1", "1700000101.000000", "1:UA"))
+	})
+	var marks int
+	must(t, d.QueryRow(`SELECT COUNT(*) FROM sync_state`).Scan(&marks))
+	if marks != 0 {
+		t.Fatalf("fixture wrote %d sync_state rows; the search path writes none", marks)
+	}
+	want := []Event{{Type: "slack.new_messages", Fields: map[string]any{
+		"account": "work", "channel": "releases", "channel_id": "1:C1", "count": 1}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("events = %+v\nwant %+v", got, want)
+	}
+}
+
 func TestSlackEvents_FirstSyncOfChannelPublishesNothing(t *testing.T) {
 	d := slackFixture(t)
+	// A channel with no stored message before the phase is a first sync.
 	must(t, d.UpsertChannel(db.Channel{ID: "1:C3", Name: "fresh", Type: "public"}))
-	must(t, d.UpdateSyncState("1:C3", db.SyncState{}))
 	got := slackEvents(t, d, func() {
-		slackPhase(t, d, msg("1:C3", "1700000101.000000", "1:UA"))
+		slackPhase(t, d, msg("1:C3", "1700000101.000000", "1:UA"), msg("1:C3", "1700000102.000000", "1:UB"))
 	})
 	if len(got) != 0 {
 		t.Errorf("first sync published %+v", got)
 	}
-	// A channel with no sync_state row at all before the phase is a first sync too.
-	must(t, d.UpsertChannel(db.Channel{ID: "1:C4", Name: "brand-new", Type: "public"}))
-	got = slackEvents(t, d, func() {
-		slackPhase(t, d, msg("1:C4", "1700000101.000000", "1:UA"))
+}
+
+func TestSlackEvents_OlderMessagesNotCounted(t *testing.T) {
+	d := slackFixture(t)
+	got := slackEvents(t, d, func() {
+		// A history backfill or thread fill below the newest stored ts.
+		slackPhase(t, d, msg("1:C1", "1700000050.000000", "1:UA"), msg("1:C2", "1700000099.000000", "1:UA"))
+		slackPhase(t, d, msg("1:C1", "1700000101.000000", "1:UA"))
 	})
-	if len(got) != 0 {
-		t.Errorf("unseen channel published %+v", got)
+	if len(got) != 1 || got[0].Fields["channel_id"] != "1:C1" || got[0].Fields["count"] != 1 {
+		t.Errorf("events = %+v, want one releases event with count 1", got)
+	}
+}
+
+func TestSlackEvents_MissingChannelRowKeepsEmptyName(t *testing.T) {
+	d := slackFixture(t)
+	// Messages stored for a channel the channels table does not hold.
+	must(t, d.UpsertMessage(db.Message{ChannelID: "1:C9", TS: "1700000100.000000", UserID: "1:UA"}))
+	got := slackEvents(t, d, func() {
+		slackPhase(t, d, msg("1:C9", "1700000101.000000", "1:UA"))
+	})
+	want := []Event{{Type: "slack.new_messages", Fields: map[string]any{
+		"account": "work", "channel": "", "channel_id": "1:C9", "count": 1}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("events = %+v\nwant %+v", got, want)
 	}
 }
 
@@ -147,14 +179,14 @@ func TestSlackEvents_DeletedMessagesNotCounted(t *testing.T) {
 	}
 }
 
-func TestSlackEvents_UnchangedWatermarkNoEvent(t *testing.T) {
+func TestSlackEvents_UnchangedNoEvent(t *testing.T) {
 	d := slackFixture(t)
 	got := slackEvents(t, d, func() {
-		// A message lands but the mark does not move: not this phase's news.
-		must(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000101.000000", UserID: "1:UA", Text: contentMarker}))
+		// A re-sync rewrites the stored message: nothing newer, no news.
+		slackPhase(t, d, msg("1:C1", "1700000100.000000", "1:UA"))
 	})
 	if len(got) != 0 {
-		t.Errorf("unchanged watermark published %+v", got)
+		t.Errorf("unchanged channel published %+v", got)
 	}
 }
 

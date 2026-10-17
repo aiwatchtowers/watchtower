@@ -5,8 +5,8 @@ import (
 )
 
 // seedSlackEventSources stores one labelled Slack account (id 1, owner
-// 1:UOWNER) with a synced channel 1:C1 holding five messages around its mark
-// and an unsynced channel 1:C2.
+// 1:UOWNER) with a channel 1:C1 holding five messages and a channel 1:C2
+// holding none.
 func seedSlackEventSources(t *testing.T) (*DB, int64) {
 	t.Helper()
 	d := openTestDB(t)
@@ -20,14 +20,11 @@ func seedSlackEventSources(t *testing.T) (*DB, int64) {
 	if err := d.UpsertChannel(Channel{ID: "1:C1", Name: "releases", Type: "public"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.UpdateSyncState("1:C1", SyncState{LastSyncedTS: "1700000000.000100", IsInitialSyncComplete: true}); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.UpdateSyncState("1:C2", SyncState{LastSyncedTS: ""}); err != nil {
+	if err := d.UpsertChannel(Channel{ID: "1:C2", Name: "general", Type: "public"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, m := range []Message{
-		{ChannelID: "1:C1", TS: "1700000000.000100", UserID: "1:UA"},     // at the mark: not after
+		{ChannelID: "1:C1", TS: "1700000000.000100", UserID: "1:UA"},     // at the old newest: not after
 		{ChannelID: "1:C1", TS: "1700000001.000100", UserID: "1:UA"},     // counted
 		{ChannelID: "1:C1", TS: "1700000002.000100", UserID: "1:UOWNER"}, // owner: excluded
 		{ChannelID: "1:C1", TS: "1700000003.000100", UserID: "1:UA", IsDeleted: true},
@@ -43,15 +40,13 @@ func seedSlackEventSources(t *testing.T) (*DB, int64) {
 func TestAutomationEventSources_SlackReads(t *testing.T) {
 	d, _ := seedSlackEventSources(t)
 
-	marks, err := d.SlackChannelSyncMarks()
+	newest, err := d.SlackChannelNewestTS()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := marks["1:C1"]; got != (SlackSyncMark{LastSyncedTS: "1700000000.000100", InitialSyncComplete: true}) {
-		t.Errorf("C1 mark = %+v", got)
-	}
-	if got, ok := marks["1:C2"]; !ok || got.InitialSyncComplete || got.LastSyncedTS != "" {
-		t.Errorf("C2 mark = %+v, %v", got, ok)
+	// A channel with no stored message is absent.
+	if len(newest) != 1 || newest["1:C1"] != "1700000004.000100" {
+		t.Errorf("newest = %v, want only 1:C1 at 1700000004.000100", newest)
 	}
 
 	n, err := d.CountSlackMessagesAfter("1:C1", "1700000000.000100", "1:UOWNER")

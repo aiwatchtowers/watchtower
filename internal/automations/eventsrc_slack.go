@@ -14,10 +14,13 @@ import (
 const slackNewMessages = "slack.new_messages"
 
 // SlackSource is phaseSlackSync's event source: one slack.new_messages per
-// channel whose sync mark advanced during the phase, counting the new,
-// non-deleted messages not written by the owner. A channel whose initial sync
-// was not complete before the phase publishes nothing (its history is a
-// backfill, not news).
+// channel whose newest stored message moved forward during the phase,
+// counting the non-deleted messages newer than the channel's newest before
+// the phase that the owner did not write. It diffs the messages table itself
+// — the default search sync writes no sync_state. A channel with no stored
+// message before the phase publishes nothing (its history is a backfill, not
+// news), and a message older than the channel's newest before the phase
+// (a history backfill, a thread fill) is never counted.
 func SlackSource(d *db.DB) EventSource { return slackSource{d: d} }
 
 type slackSource struct{ d *db.DB }
@@ -26,35 +29,35 @@ func (slackSource) Type() string { return slackNewMessages }
 
 func (s slackSource) Before(ctx context.Context) (EventDiff, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("snapshotting slack sync marks: %w", err)
+		return nil, fmt.Errorf("snapshotting slack messages: %w", err)
 	}
-	marks, err := s.d.SlackChannelSyncMarks()
+	newest, err := s.d.SlackChannelNewestTS()
 	if err != nil {
-		return nil, fmt.Errorf("snapshotting slack sync marks: %w", err)
+		return nil, fmt.Errorf("snapshotting slack messages: %w", err)
 	}
-	return slackDiff{d: s.d, before: marks}, nil
+	return slackDiff{d: s.d, before: newest}, nil
 }
 
 type slackDiff struct {
 	d      *db.DB
-	before map[string]db.SlackSyncMark
+	before map[string]string // channel id → newest stored ts
 }
 
 // slackAccountLabels is one account's event label and owner user id.
 type slackAccountLabels struct{ account, owner string }
 
 func (s slackDiff) After(ctx context.Context) ([]Event, error) {
-	after, err := s.d.SlackChannelSyncMarks()
+	after, err := s.d.SlackChannelNewestTS()
 	if err != nil {
-		return nil, fmt.Errorf("reading slack sync marks: %w", err)
+		return nil, fmt.Errorf("reading slack messages: %w", err)
 	}
 	labels := map[int64]slackAccountLabels{}
 	var events []Event
 	for _, id := range advancedChannels(s.before, after) {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("diffing slack sync marks: %w", err)
+			return nil, fmt.Errorf("diffing slack messages: %w", err)
 		}
-		e, ok, err := s.channelEvent(id, s.before[id].LastSyncedTS, labels)
+		e, ok, err := s.channelEvent(id, s.before[id], labels)
 		if err != nil {
 			return nil, err
 		}
@@ -65,13 +68,12 @@ func (s slackDiff) After(ctx context.Context) ([]Event, error) {
 	return events, nil
 }
 
-// advancedChannels returns, sorted, the channels whose mark moved forward
-// and whose initial sync was complete before the phase.
-func advancedChannels(before, after map[string]db.SlackSyncMark) []string {
+// advancedChannels returns, sorted, the channels that held messages before
+// the phase and whose newest message moved forward.
+func advancedChannels(before, after map[string]string) []string {
 	var ids []string
 	for id, a := range after {
-		b, ok := before[id]
-		if ok && b.InitialSyncComplete && a.LastSyncedTS > b.LastSyncedTS {
+		if b, ok := before[id]; ok && a > b {
 			ids = append(ids, id)
 		}
 	}

@@ -8,34 +8,30 @@ import (
 	"strings"
 )
 
-// SlackSyncMark is one channel's sync watermark as an automation event
-// source snapshots it before phaseSlackSync and diffs it after.
-type SlackSyncMark struct {
-	LastSyncedTS        string
-	InitialSyncComplete bool
-}
-
-// SlackChannelSyncMarks returns every channel's sync mark keyed by its
-// namespaced channel id. Read-only.
-func (db *DB) SlackChannelSyncMarks() (map[string]SlackSyncMark, error) {
-	rows, err := db.Query(`SELECT channel_id, last_synced_ts, is_initial_sync_complete FROM sync_state`)
+// SlackChannelNewestTS returns, per channel holding stored messages, the ts
+// of its newest one (deleted included) keyed by the namespaced channel id —
+// the watermark an automation event source snapshots before phaseSlackSync
+// and diffs after. Read from the messages table itself: the default search
+// sync never writes sync_state. One scan of the (channel_id, ts) primary-key
+// index. Read-only.
+func (db *DB) SlackChannelNewestTS() (map[string]string, error) {
+	rows, err := db.Query(`SELECT channel_id, MAX(ts) FROM messages GROUP BY channel_id`)
 	if err != nil {
-		return nil, fmt.Errorf("querying slack sync marks: %w", err)
+		return nil, fmt.Errorf("querying newest slack messages: %w", err)
 	}
 	defer rows.Close()
-	marks := make(map[string]SlackSyncMark)
+	newest := make(map[string]string)
 	for rows.Next() {
-		var id string
-		var m SlackSyncMark
-		if err := rows.Scan(&id, &m.LastSyncedTS, &m.InitialSyncComplete); err != nil {
-			return nil, fmt.Errorf("scanning slack sync mark: %w", err)
+		var id, ts string
+		if err := rows.Scan(&id, &ts); err != nil {
+			return nil, fmt.Errorf("scanning newest slack message: %w", err)
 		}
-		marks[id] = m
+		newest[id] = ts
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading slack sync marks: %w", err)
+		return nil, fmt.Errorf("reading newest slack messages: %w", err)
 	}
-	return marks, nil
+	return newest, nil
 }
 
 // CountSlackMessagesAfter counts channelID's non-deleted messages with a ts
