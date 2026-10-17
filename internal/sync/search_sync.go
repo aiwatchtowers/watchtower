@@ -236,7 +236,9 @@ func (o *Orchestrator) FirstSyncFrom() (time.Time, bool) {
 // backfill) touches neither, and a page-1 rate limit just returns
 // completed=false with a nil error. Neither mode writes the search watermark.
 // A non-nil listing collects every match's key, the matches received and
-// page 1's reported total, for a deletion diff (nil collects nothing).
+// page 1's reported total, for a deletion diff (nil collects nothing). A
+// listing with maxPages set whose page 1 reports more pages is marked
+// tooLarge and the search stops after saving page 1, with completed=false.
 func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live bool, listing *searchListing) (completed bool, totalMessages int, seenChannels map[string]bool, err error) {
 	seenChannels = make(map[string]bool)
 	seenUsers := make(map[string]bool)
@@ -294,6 +296,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 		if listing != nil {
 			if page == 1 {
 				listing.total = result.Total
+				listing.tooLarge = listing.maxPages > 0 && result.Pages > listing.maxPages
 			}
 			listing.matched += len(result.Messages)
 		}
@@ -383,6 +386,11 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 		o.logger.Printf("search sync: page %d/%d, %d channels, %d users, %d messages",
 			page, result.Pages, len(seenChannels), len(seenUsers), totalMessages)
 
+		// A capped listing over its page cap stops after page 1 (saved above),
+		// incomplete, so it is never diffed.
+		if listing != nil && listing.tooLarge {
+			break
+		}
 		if page >= result.Pages {
 			completed = true
 			break

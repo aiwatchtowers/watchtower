@@ -1,11 +1,18 @@
 package sync
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"watchtower/internal/db"
 	"watchtower/internal/sourcediff"
 )
+
+// sweepMaxPages caps the search pages the rolling sweep spends on one day:
+// about 30 s of the shared ~20 req/min Tier-2 budget per cycle
+// (internal/slack/ratelimit.go). A day needing more is skipped, not split.
+const sweepMaxPages = 10
 
 // liveDiffLag keeps the newest hours out of the live diff: search indexes
 // new messages with a lag, so a message missing from them may not be gone.
@@ -15,9 +22,10 @@ const liveDiffLag = 2 * time.Hour
 // completed run can be diffed against the stored rows it covered.
 type searchListing struct {
 	seen     map[db.SlackMessageKey]struct{}
-	matched  int // matches received across pages
-	total    int // result.Total from page 1
-	maxPages int // 0 = no cap (the rolling sweep sets one and adds tooLarge)
+	matched  int  // matches received across pages
+	total    int  // result.Total from page 1
+	maxPages int  // 0 = no cap; the rolling sweep sets sweepMaxPages
+	tooLarge bool // page 1 reported more than maxPages pages; only page 1 was fetched
 }
 
 func newSearchListing(maxPages int) *searchListing {
@@ -111,4 +119,70 @@ func (o *Orchestrator) diffLiveWindow(l *searchListing) {
 	if _, err := o.tombstoneMissing(l, from, to); err != nil {
 		o.logger.Printf("slack deletions: account %d: live diff failed: %v", o.accountID, err)
 	}
+}
+
+// sweepDeletionDay diffs one stored past day (before the live window)
+// against search.messages per cycle, walking from the newest stored day back
+// to the oldest and then wrapping, so deletions and retention purges older
+// than the live window are caught and edited text is refreshed. The cursor
+// (deletion_sweep_day) advances after a finished day, a guard refusal or a
+// day over sweepMaxPages pages; a rate limit or partial pages leave it, so
+// the day is retried next cycle.
+func (o *Orchestrator) sweepDeletionDay(ctx context.Context) error {
+	now := o.clock().UTC().Add(-liveDiffLag)
+	ceiling := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	cursor, err := o.db.SlackDeletionSweepDay(o.accountID)
+	if err != nil {
+		return err
+	}
+	before := ceiling
+	cursorSet := false
+	if cursor != "" {
+		if at, perr := time.Parse(searchDateFormat, cursor); perr == nil {
+			cursorSet = true
+			if at.Before(ceiling) {
+				before = at
+			}
+		} else {
+			o.logger.Printf("slack deletion sweep: account %d: invalid cursor %q, starting from the newest day", o.accountID, cursor)
+		}
+	}
+	day, ok, err := o.db.NextSlackSweepDay(o.accountID, float64(before.Unix()))
+	if err != nil {
+		return err
+	}
+	if !ok && cursorSet {
+		day, ok, err = o.db.NextSlackSweepDay(o.accountID, float64(ceiling.Unix()))
+		if err != nil {
+			return err
+		}
+	}
+	if !ok {
+		return nil
+	}
+	from, err := time.Parse(searchDateFormat, day)
+	if err != nil {
+		return fmt.Errorf("slack deletion sweep: parsing day %q: %w", day, err)
+	}
+	to := from.AddDate(0, 0, 1)
+
+	after, beforeDate := slackSearchRange(from, to)
+	listing := newSearchListing(sweepMaxPages)
+	completed, _, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, beforeDate), false, listing)
+	if err != nil {
+		return err
+	}
+	switch {
+	case listing.tooLarge:
+		o.logger.Printf("slack deletion sweep: %s has more than %d pages, skipped", day, sweepMaxPages)
+	case !completed || !listing.complete():
+		o.logger.Printf("slack deletion sweep: account %d day %s: incomplete listing (received %d of %d matches), retrying next cycle",
+			o.accountID, day, listing.matched, listing.total)
+		return nil
+	default:
+		if _, err := o.tombstoneMissing(listing, from, to); err != nil {
+			return err
+		}
+	}
+	return o.db.SetSlackDeletionSweepDay(o.accountID, day)
 }

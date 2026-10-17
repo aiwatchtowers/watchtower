@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -127,4 +128,52 @@ func TestTombstoneSlackMessages_BatchesOverTwoHundredKeys(t *testing.T) {
 	var deleted int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM messages WHERE is_deleted = 1`).Scan(&deleted))
 	assert.Equal(t, n, deleted)
+}
+
+func TestNextSlackSweepDay(t *testing.T) {
+	d := openTestDB(t)
+	acct, err := d.CreateSlackAccount(SlackAccount{})
+	require.NoError(t, err)
+	ch := fmt.Sprintf("%d:C001", acct)
+	at := func(day, hour int) string { // 2026-09-<day> <hour>:00Z
+		return fmt.Sprintf("%d.000100", time.Date(2026, 9, day, hour, 0, 0, 0, time.UTC).Unix())
+	}
+	for _, m := range []Message{
+		{ChannelID: ch, TS: at(10, 9), UserID: "U001", Text: "plain"},
+		{ChannelID: ch, TS: at(5, 9), UserID: "U001", Text: "plain"},
+		{ChannelID: ch, TS: at(8, 9), UserID: "U001", Text: "joined", Subtype: "channel_join"},
+		{ChannelID: ch, TS: at(7, 9), UserID: "U001", Text: "", IsDeleted: true},
+		{ChannelID: fmt.Sprintf("%d:C001", acct+1), TS: at(9, 9), UserID: "U001", Text: "other account"},
+	} {
+		require.NoError(t, d.UpsertMessage(m))
+	}
+	midnight := func(day int) float64 { return float64(time.Date(2026, 9, day, 0, 0, 0, 0, time.UTC).Unix()) }
+
+	day, ok, err := d.NextSlackSweepDay(acct, midnight(22))
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "2026-09-10", day)
+
+	day, ok, err = d.NextSlackSweepDay(acct, midnight(10)) // strictly before
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "2026-09-05", day, "tombstone-only, subtype-only and other-account days are skipped")
+
+	_, ok, err = d.NextSlackSweepDay(acct, midnight(5))
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestSlackDeletionSweepDay_RoundTrip(t *testing.T) {
+	d := openTestDB(t)
+	acct, err := d.CreateSlackAccount(SlackAccount{})
+	require.NoError(t, err)
+	day, err := d.SlackDeletionSweepDay(acct)
+	require.NoError(t, err)
+	assert.Empty(t, day)
+	require.NoError(t, d.SetSlackDeletionSweepDay(acct, "2026-09-10"))
+	day, err = d.SlackDeletionSweepDay(acct)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-09-10", day)
+	assert.Error(t, d.SetSlackDeletionSweepDay(acct+99, "2026-09-10"))
 }

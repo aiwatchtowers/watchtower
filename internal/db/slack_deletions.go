@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 )
@@ -107,4 +109,44 @@ func (db *DB) tombstoneSlackBatch(keys []SlackMessageKey) (int, error) {
 		return 0, fmt.Errorf("commit slack tombstones: %w", err)
 	}
 	return n, nil
+}
+
+// SlackDeletionSweepDay returns the last UTC day ("YYYY-MM-DD") the Slack
+// deletion sweep finished for the account; "" means it never ran.
+func (db *DB) SlackDeletionSweepDay(accountID int64) (string, error) {
+	var day string
+	if err := db.QueryRow(`SELECT deletion_sweep_day FROM slack_accounts WHERE id = ?`, accountID).Scan(&day); err != nil {
+		return "", fmt.Errorf("reading deletion sweep day of slack account %d: %w", accountID, err)
+	}
+	return day, nil
+}
+
+// SetSlackDeletionSweepDay stores day ("YYYY-MM-DD", UTC) as the last day the
+// Slack deletion sweep finished for the account.
+func (db *DB) SetSlackDeletionSweepDay(accountID int64, day string) error {
+	res, err := db.Exec(`UPDATE slack_accounts SET deletion_sweep_day = ? WHERE id = ?`, day, accountID)
+	if err != nil {
+		return fmt.Errorf("setting deletion sweep day of slack account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting deletion sweep day: no slack_accounts row %d", accountID)
+	}
+	return nil
+}
+
+// NextSlackSweepDay returns the newest UTC day holding a live plain message
+// (empty subtype, not deleted) of the account with ts_unix < before; ok is
+// false when there is none.
+func (db *DB) NextSlackSweepDay(accountID int64, before float64) (day string, ok bool, err error) {
+	prefix := strconv.FormatInt(accountID, 10)
+	err = db.QueryRow(`SELECT date(ts_unix, 'unixepoch') FROM messages
+		WHERE channel_id >= ? AND channel_id < ? AND subtype = '' AND is_deleted = 0 AND ts_unix < ?
+		ORDER BY ts_unix DESC LIMIT 1`, prefix+":", prefix+";", before).Scan(&day)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("finding next sweep day of slack account %d: %w", accountID, err)
+	}
+	return day, true, nil
 }

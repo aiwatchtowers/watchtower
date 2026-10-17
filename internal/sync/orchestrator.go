@@ -409,6 +409,15 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 		return nil
 	}
 
+	// The rolling deletion sweep (one stored past day per cycle) runs only
+	// after a completed live search: an incomplete one means Slack is
+	// already short of budget for this token. Best-effort: never fails the sync.
+	if !o.searchIncomplete {
+		if err := o.sweepDeletionDay(ctx); err != nil {
+			o.logger.Printf("slack deletion sweep: account %d: %v", o.accountID, err)
+		}
+	}
+
 	// Fallback: if search found 0 channels (e.g. missing search:read scope),
 	// check if DB already has channels from a previous sync; if not, fall back
 	// to full sync so we have something to work with.
