@@ -165,7 +165,7 @@ final class BoardFilterTests: XCTestCase {
         XCTAssertEqual(detail.statusLabel, "In progress")
         XCTAssertEqual(detail.intent, "Archive closed targets on demand from the header menu.")
         XCTAssertEqual(detail.sessions.map(\.id), [11])
-        XCTAssertEqual(detail.asks.map(\.id), [111, 109])
+        XCTAssertEqual(detail.asks.map(\.id), [.ask(111), .ask(109)])
         XCTAssertEqual(detail.comments.map(\.id), [80, 81])
         XCTAssertEqual(detail.comments.map(\.isReply), [false, true])
         XCTAssertNil(BoardTargetDetailModel(targetID: 999, snapshot: snapshot, now: now))

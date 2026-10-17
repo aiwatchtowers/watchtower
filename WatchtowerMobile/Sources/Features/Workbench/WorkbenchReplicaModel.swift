@@ -124,12 +124,10 @@ struct WorkbenchReplicaSnapshot: Equatable {
             .sorted(by: Self.newestFirst)
     }
 
-    /// One pending permission request per session, its newest (the hub
-    /// closes an older one when the next opens), newest first.
+    /// The pending permission requests, newest first (the hub closes a
+    /// session's older one when the next opens: one per session).
     var pendingPermissions: [PermissionRequest] {
-        Dictionary(grouping: permissionRequests, by: \.sessionID)
-            .compactMap { $0.value.max(by: Self.olderRequest) }
-            .sorted { Self.olderRequest($1, $0) }
+        permissionRequests.sorted { Self.olderRequest($1, $0) }
     }
 
     /// The prompt `sessionID` waits on; nil without one.

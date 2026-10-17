@@ -44,7 +44,8 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertEqual(card.requestID, 7)
         XCTAssertEqual(card.tool, "Bash")
         XCTAssertEqual(card.summary, "go test ./...\nRun the tests")
-        XCTAssertNil(card.clippedNote)
+        XCTAssertNil(card.allowBlock)
+        XCTAssertTrue(card.offersAllow)
         XCTAssertTrue(card.canAnswer)
         XCTAssertNil(card.hint)
 
@@ -117,12 +118,39 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertFalse(edit.confirmsAllow)
     }
 
-    func testAClippedSummarySaysSo() throws {
+    /// Owner decision (ask #268): a shortened request is Deny only, with a
+    /// note pointing at the Mac.
+    func testProj21_AClippedRequestOffersDenyOnly() throws {
         let clipped = try XCTUnwrap(try detail(try snapshot([
             permissionRequestJSON(9, session: 12, ["summary": String(repeating: "a", count: 2000), "summary_clipped": true])
         ])).permission)
-        XCTAssertEqual(clipped.clippedNote, "Shortened — the full request is in the session on the Mac.")
+        XCTAssertEqual(clipped.allowBlock, .clipped)
+        XCTAssertFalse(clipped.offersAllow, "Allow once is not on the card")
+        XCTAssertTrue(clipped.canAnswer, "Deny still is")
+        XCTAssertEqual(clipped.allowBlock?.note, "Shortened — answer on the Mac to allow")
         XCTAssertEqual(PermissionHint.turnOn.text, "Turn on \"Answer permission prompts from this phone\" to answer here.")
+    }
+
+    /// Owner decision (ask #268): an Edit/Write/NotebookEdit of a settings
+    /// path is Deny only; another path keeps Allow once.
+    func testProj21_ASettingsPathEditOffersDenyOnly() throws {
+        let settings = try XCTUnwrap(try detail(try snapshot([
+            permissionRequestJSON(9, session: 12, ["tool_name": "Write", "summary": "/tmp/acme/.claude/settings.local.json"])
+        ])).permission)
+        XCTAssertEqual(settings.allowBlock, .settingsPath)
+        XCTAssertFalse(settings.offersAllow)
+        XCTAssertTrue(settings.canAnswer)
+        XCTAssertEqual(settings.allowBlock?.note, "Changes Watchtower or shell settings — answer on the Mac to allow")
+
+        let rc = try XCTUnwrap(try detail(try snapshot([
+            permissionRequestJSON(10, session: 12, ["tool_name": "Edit", "summary": "/tmp/home/.zshrc"])
+        ])).permission)
+        XCTAssertFalse(rc.offersAllow)
+
+        let plain = try XCTUnwrap(try detail(try snapshot([
+            permissionRequestJSON(11, session: 12, ["tool_name": "Edit", "summary": "/tmp/acme/main.go"])
+        ])).permission)
+        XCTAssertTrue(plain.offersAllow)
     }
 
     /// The hub never publishes a Codex request; even a stray one leaves a

@@ -75,7 +75,7 @@ final class WorkbenchWiringTests: XCTestCase {
         XCTAssertNil(menu.sessionsEmptyText)
         XCTAssertEqual(menu.waitingHeader, "Waiting for you · 3")
         // Newest first.
-        XCTAssertEqual(menu.waiting.map(\.id), [111, 109, 110])
+        XCTAssertEqual(menu.waiting.map(\.id), [.ask(111), .ask(109), .ask(110)])
         XCTAssertEqual(menu.waiting.map(\.kindLabel), ["Check", "Question", "Review"], "words, not codes (design pass N4)")
         XCTAssertEqual(menu.waiting.map(\.kindIcon), ["checklist", "questionmark.bubble", "doc.text.magnifyingglass"])
         XCTAssertEqual(menu.waiting.first?.subline, "Archive closed targets · #415 · 5m")

@@ -113,6 +113,19 @@ final class PermissionAnswerWiringTests: XCTestCase {
         XCTAssertTrue(try fixture.store.pendingActions().isEmpty)
     }
 
+    /// The Mac refuses an allow the phone may not give (`answer_on_mac`):
+    /// the row shows why, and the card's Deny is live again.
+    func testAnAnswerOnMacEchoShowsWhyAndFreesDeny() async throws {
+        let fixture = try await makeFixture()
+        try await fixture.inputs.answer(sessionID: 12, requestID: 7, behavior: .allow)
+
+        try await echo(fixture, .failed, reason: .answerOnMac, message: "Shortened — answer on the Mac to allow")
+
+        let detail = try detail(fixture)
+        XCTAssertEqual(detail.answerRows.first?.state, .failed("Shortened — answer on the Mac to allow"))
+        XCTAssertTrue(try XCTUnwrap(detail.permission).canAnswer, "the request is still pending: Deny works")
+    }
+
     /// A refused answer shows even after its request left the slice (the
     /// Mac answered it): the row is the session's, not the card's.
     func testARefusalOutlivesItsRequest() async throws {
@@ -142,13 +155,13 @@ final class PermissionAnswerWiringTests: XCTestCase {
         XCTAssertEqual(row.entityRecordName, "terminal_session-10")
         XCTAssertEqual(row.action.params, [:])
 
-        try await echo(fixture, .failed, reason: .notWorking, message: "Needs approval — use Deny")
+        try await echo(fixture, .failed, reason: .notWorking, message: "A permission prompt may be open — answer it on the Mac or with Deny")
         let replica = try snapshot(fixture.store)
         let actions = SessionActionsModel(
             session: try XCTUnwrap(replica.session(10)), snapshot: replica, inFlight: [], now: now,
             grant: grant(), typingRequested: true
         )
-        XCTAssertEqual(actions.interruptRows.map(\.state), [.failed("Needs approval — use Deny")])
+        XCTAssertEqual(actions.interruptRows.map(\.state), [.failed("A permission prompt may be open — answer it on the Mac or with Deny")])
         XCTAssertTrue(actions.canInterrupt, "a refused interrupt does not hold the next")
     }
 

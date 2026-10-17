@@ -30,10 +30,11 @@ struct PermissionAccess: Equatable {
 /// The card of a live Claude session's pending permission prompt (#517,
 /// spec §5.4), in place of "Needs approval on the Mac": the tool and its
 /// summary, **Allow once** and **Deny** while the phone may answer, read
-/// only with a hint otherwise. Only the hook's JSON decides the prompt;
-/// nothing is typed into the session (PROJ-16).
+/// only with a hint otherwise. A shortened request, or an Edit/Write/
+/// NotebookEdit of a settings path, offers Deny only with a note
+/// (`PermissionAllowBlock`, the rule the hub enforces too). Only the hook's
+/// JSON decides the prompt; nothing is typed into the session (PROJ-16).
 struct PermissionCardModel: Equatable {
-    static let clippedNote = "Shortened — the full request is in the session on the Mac."
     static let allowLabel = "Allow once"
     static let denyLabel = "Deny"
 
@@ -42,7 +43,8 @@ struct PermissionCardModel: Equatable {
     let tool: String
     /// Monospace and scrollable on screen; never clipped silently.
     let summary: String
-    let clippedNote: String?
+    /// Why Allow once is not offered (Deny only); nil when it is.
+    let allowBlock: PermissionAllowBlock?
     /// Allow once and Deny are live.
     let canAnswer: Bool
     /// nil when the phone may answer.
@@ -51,6 +53,8 @@ struct PermissionCardModel: Equatable {
     let confirmsAllow: Bool
 
     var allowConfirmTitle: String { "Allow this command once?" }
+    /// The card shows Allow once.
+    var offersAllow: Bool { allowBlock == nil }
 
     /// The request the session's card shows: a live Claude session's
     /// pending one (Codex keeps "Needs approval on the Mac").
@@ -79,7 +83,9 @@ struct PermissionCardModel: Equatable {
         sessionID = session.id
         tool = request.toolName
         summary = request.summary
-        clippedNote = request.summaryClipped == true ? Self.clippedNote : nil
+        allowBlock = PermissionAllowBlock.check(
+            toolName: request.toolName, summary: request.summary, clipped: request.summaryClipped == true
+        )
         confirmsAllow = request.toolName == "Bash"
         hint = Self.hint(access)
         let answering = access.inFlight.contains(SessionInputSender.answerKey(session.id))

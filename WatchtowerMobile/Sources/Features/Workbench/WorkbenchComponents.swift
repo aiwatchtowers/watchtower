@@ -75,7 +75,7 @@ struct WaitingStack<Header: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            ForEach(Array(asks.enumerated()), id: \.element.destination) { index, ask in
+            ForEach(Array(asks.enumerated()), id: \.element.id) { index, ask in
                 if index > 0 {
                     RowDivider()
                 }

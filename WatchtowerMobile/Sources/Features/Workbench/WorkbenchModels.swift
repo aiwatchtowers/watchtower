@@ -80,8 +80,6 @@ struct WaitingCardModel: Equatable, Identifiable {
         case session(Int64)
     }
 
-    /// The ask's id, or the permission request's.
-    let id: Int64
     let destination: Destination
     let kindLabel: String
     /// The Mac's kind icon (`OwnerAskPresentation.swift:136-142`).
@@ -91,8 +89,9 @@ struct WaitingCardModel: Equatable, Identifiable {
     /// Label, tint and border of the card.
     let tone = PhoneTone.waitingForYou
 
+    var id: Destination { destination }
+
     init(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot, now: Date, showWorkbench: Bool = false) {
-        id = ask.id
         destination = .ask(ask.id)
         kindLabel = AskKindStyle.name(ask.kind)
         kindIcon = AskKindStyle.icon(ask.kind)
@@ -112,7 +111,6 @@ struct WaitingCardModel: Equatable, Identifiable {
     }
 
     init(_ request: PermissionRequest, snapshot: WorkbenchReplicaSnapshot, now: Date, showWorkbench: Bool = false) {
-        id = request.id
         destination = .session(request.sessionID)
         kindLabel = "Needs approval"
         kindIcon = "hand.raised.fill"
@@ -133,8 +131,8 @@ struct WaitingCardModel: Equatable, Identifiable {
 
     var toneUse: ToneUse {
         switch destination {
-        case .ask: ToneUse(element: "ask \(id) card", tone: tone, role: .ask)
-        case .session: ToneUse(element: "permission request \(id) card", tone: tone, role: .waiting)
+        case let .ask(id): ToneUse(element: "ask \(id) card", tone: tone, role: .ask)
+        case let .session(id): ToneUse(element: "session \(id) permission request card", tone: tone, role: .waiting)
         }
     }
 }

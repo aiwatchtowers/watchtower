@@ -112,7 +112,10 @@ final class PermissionAnswerHandlersTests: XCTestCase {
     }
 
     private func request(
-        _ sessionID: Int64, status: String = "pending", tool: String = "Bash", summary: String = "make test",
+        _ sessionID: Int64,
+        status: String = "pending",
+        tool: String = "Bash",
+        summary: String = "make test",
         clipped: Bool = false
     ) async throws -> Int64 {
         let workbench = workbenchID

@@ -406,8 +406,9 @@ private struct ApprovalNoticeView: View {
 }
 
 /// A pending permission prompt (#517): the tool, its summary (monospace,
-/// scrollable), Allow once and Deny while the phone may answer, else the
-/// hint (with Turn On while the phone's own toggle is off).
+/// scrollable), Allow once and Deny while the phone may answer (Deny alone
+/// with the note for a request the phone may not allow), else the hint
+/// (with Turn On while the phone's own toggle is off).
 private struct PermissionCardView: View {
     let card: PermissionCardModel
     let onAllow: () -> Void
@@ -432,8 +433,8 @@ private struct PermissionCardView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 160)
-            if let note = card.clippedNote {
-                Text(note).font(.caption).foregroundStyle(.secondary)
+            if let block = card.allowBlock {
+                Text(block.note).font(.caption).foregroundStyle(.secondary)
             }
             if let hint = card.hint {
                 Text(hint.text).font(.caption).foregroundStyle(.secondary)
@@ -447,10 +448,12 @@ private struct PermissionCardView: View {
                 }
             } else {
                 HStack(spacing: Spacing.regular) {
-                    Button(action: onAllow) {
-                        Text(PermissionCardModel.allowLabel).frame(maxWidth: .infinity, minHeight: 44)
+                    if card.offersAllow {
+                        Button(action: onAllow) {
+                            Text(PermissionCardModel.allowLabel).frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
                     Button(role: .destructive, action: onDeny) {
                         Text(PermissionCardModel.denyLabel).frame(maxWidth: .infinity, minHeight: 44)
                     }
