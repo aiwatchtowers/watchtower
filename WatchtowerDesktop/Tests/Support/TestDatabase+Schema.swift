@@ -1782,7 +1782,7 @@ CREATE TABLE IF NOT EXISTS history_backfill (
     last_error     TEXT    NOT NULL DEFAULT '',
     started_at     TEXT    NOT NULL,
     updated_at     TEXT    NOT NULL,
-    done_at        TEXT,
+    done_at        TEXT, held_since TEXT,
     UNIQUE (source_kind, account_id)
 );
 CREATE TABLE IF NOT EXISTS linear_accounts (

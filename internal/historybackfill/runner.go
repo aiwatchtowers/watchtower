@@ -19,6 +19,8 @@ import (
 // as a Slack rate limit, a network outage or a failed AI call: the runner
 // holds the chunk for a later cycle — no strike, no advance — and moves on
 // to the next row, so one held source never blocks the others (R23, #580).
+// The row shows the hold (held_since, last_error) and a hold older than
+// MaxHold counts as a strike.
 var ErrHold = errors.New("history backfill: hold the chunk")
 
 // Source fetches one account's raw data for a range. Process runs the AI
@@ -47,6 +49,8 @@ type Store interface {
 	SetHistoryBackfillStatus(id int64, status string, now time.Time) error
 	SetHistoryBackfillWaiting(id int64, waiting string, now time.Time) error
 	SetHistoryBackfillLastError(id int64, msg string, now time.Time) error
+	HoldHistoryBackfill(id int64, msg string, now time.Time) error
+	ReleaseHistoryBackfillHold(id int64, now time.Time) error
 	GetPlanUsageStatus() (*db.PlanUsageStatus, error)
 }
 
@@ -59,9 +63,19 @@ type Runner struct {
 	Budget      time.Duration                                    // 5 min
 	Now         func() time.Time
 	Logger      *log.Logger
+	// Cursor, when set, is the id of the last row the previous Step got to;
+	// the Step starts after it and wraps around, so a slow row never keeps
+	// the rows after it from their turn (#580). The caller keeps it between
+	// Steps; Step updates it.
+	Cursor *int64
 }
 
 const waitingPlanLimit = "plan_limit"
+
+// MaxHold is how long a chunk may stay held by transient failures before
+// each further hold counts as a strike, so a failure that never clears ends
+// in a skip instead of blocking the source (and memory) forever (#580).
+const MaxHold = 7 * 24 * time.Hour
 
 // Step runs one cycle: at most one chunk per running source, within Budget.
 // Fetch, Process and the Slack-done hook all run under the Budget deadline.
@@ -79,12 +93,18 @@ func (r *Runner) Step(ctx context.Context) error {
 	return err
 }
 
-// runRows walks the rows in id order, updating each row's in-memory copy as
-// it changes it.
+// runRows walks the rows in id order, starting after Cursor, updating each
+// row's in-memory copy as it changes it.
 func (r *Runner) runRows(ctx, bctx context.Context, rows []db.HistoryBackfill) error {
 	start := r.Now()
-	for i := range rows {
-		row := &rows[i]
+	first := 0
+	if r.Cursor != nil {
+		for first < len(rows) && rows[first].ID <= *r.Cursor {
+			first++
+		}
+	}
+	for k := range rows {
+		row := &rows[(first+k)%len(rows)]
 		if row.Status == "done" || row.Status == "off" {
 			continue
 		}
@@ -93,6 +113,9 @@ func (r *Runner) runRows(ctx, bctx context.Context, rows []db.HistoryBackfill) e
 		}
 		if bctx.Err() != nil || r.Now().Sub(start) >= r.Budget {
 			return nil //nolint:nilerr // the budget is spent: the rest waits for the next Step, not a failure
+		}
+		if r.Cursor != nil {
+			*r.Cursor = row.ID
 		}
 		stop, err := r.runRow(ctx, bctx, row)
 		if err != nil || stop {
@@ -111,7 +134,7 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 	src := r.source(row.SourceKind, row.AccountID)
 	if src == nil {
 		// Feature off or wiring failed: wait for a later cycle.
-		return false, r.clearWaiting(row)
+		return false, r.idle(row)
 	}
 
 	fromTS, toTS, ok := NextChunk(row.ReachedTS, row.FloorTS)
@@ -157,7 +180,7 @@ func (r *Runner) applyAccountState(row *db.HistoryBackfill) (active bool, err er
 				return false, err
 			}
 		}
-		return false, r.clearWaiting(row)
+		return false, r.idle(row)
 	case AccountOK:
 	}
 	if row.Status == "paused" {
@@ -184,8 +207,10 @@ func (r *Runner) markPlanLimitWaiting(row *db.HistoryBackfill) error {
 // fail records a chunk failure; the third failure of a chunk skips it. A
 // canceled context is a shutdown and a passed Budget deadline holds the
 // chunk for the next cycle: neither is a failure, and both stop the Step. A
-// source's ErrHold holds the chunk too, with no strike, and the Step goes on
-// to the next row.
+// source's ErrHold holds the chunk with no strike and the Step goes on to
+// the next row: the first hold writes held_since and its reason to
+// last_error and is logged once; a hold older than MaxHold counts as a
+// strike. Any other error is a strike and ends a hold.
 func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS float64, from, to time.Time, err error) (stop bool, _ error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return true, ctxErr
@@ -196,9 +221,16 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 	default:
 	}
 	if errors.Is(err, ErrHold) {
-		r.logf("history backfill: %s account %d chunk [%s, %s) held for a later cycle: %v",
-			row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), err)
-		return false, nil
+		if row.HeldSince == nil {
+			return false, r.hold(row, from, to, err)
+		}
+		if r.Now().Sub(*row.HeldSince) < MaxHold {
+			return false, nil
+		}
+		r.logf("history backfill: %s account %d chunk held since %s, over %s: counting a strike",
+			row.SourceKind, row.AccountID, row.HeldSince.Format(time.RFC3339), MaxHold)
+	} else if err := r.releaseHold(row); err != nil {
+		return false, err
 	}
 	n, recErr := r.Store.RecordHistoryBackfillFailure(row.ID, err.Error(), r.Now())
 	if recErr != nil {
@@ -226,11 +258,46 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 	return false, nil
 }
 
+// hold starts a hold: held_since = now, last_error = its reason (replacing
+// an older strike's), one log line.
+func (r *Runner) hold(row *db.HistoryBackfill, from, to time.Time, err error) error {
+	now := r.Now()
+	msg := "held: " + err.Error()
+	if hErr := r.Store.HoldHistoryBackfill(row.ID, msg, now); hErr != nil {
+		return hErr
+	}
+	row.HeldSince, row.LastError = &now, msg
+	r.logf("history backfill: %s account %d chunk [%s, %s) held, retried every cycle: %v",
+		row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), err)
+	return nil
+}
+
+// releaseHold ends a hold, if any.
+func (r *Runner) releaseHold(row *db.HistoryBackfill) error {
+	if row.HeldSince == nil {
+		return nil
+	}
+	if err := r.Store.ReleaseHistoryBackfillHold(row.ID, r.Now()); err != nil {
+		return err
+	}
+	row.HeldSince = nil
+	return nil
+}
+
+// idle clears what only holds while the row runs — the plan-gate wait and a
+// hold — for a row that is paused or has no source wired.
+func (r *Runner) idle(row *db.HistoryBackfill) error {
+	if err := r.clearWaiting(row); err != nil {
+		return err
+	}
+	return r.releaseHold(row)
+}
+
 func (r *Runner) advance(row *db.HistoryBackfill, reachedTS float64) error {
 	if err := r.Store.AdvanceHistoryBackfill(row.ID, reachedTS, r.Now()); err != nil {
 		return err
 	}
-	row.ReachedTS, row.ChunkFailures, row.LastError, row.Waiting = reachedTS, 0, "", ""
+	row.ReachedTS, row.ChunkFailures, row.LastError, row.Waiting, row.HeldSince = reachedTS, 0, "", "", nil
 	if reachedTS <= row.FloorTS {
 		row.Status = "done"
 	}

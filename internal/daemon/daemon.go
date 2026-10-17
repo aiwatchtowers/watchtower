@@ -128,6 +128,7 @@ type Daemon struct {
 	// In memory only: a restart re-drains the chunk once. Touched only by
 	// the sequential history-backfill phase.
 	backfillResume      map[backfillResumeKey]time.Time
+	backfillCursor      int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
 	nextStepPipe        *targets.Pipeline
 	customTracksPipe    *customtracks.Pipeline
 	reactionCmdPipe     *reactioncmd.Pipeline

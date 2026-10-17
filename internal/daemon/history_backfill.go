@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"watchtower/internal/db"
@@ -70,6 +72,7 @@ func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 		Budget:      historyBackfillBudget,
 		Now:         time.Now,
 		Logger:      d.logger,
+		Cursor:      &d.backfillCursor,
 	}
 	d.trackedPipelineRun("history-backfill", func() pipelineRunStats {
 		// The digest and ideas pipelines are shared with the forward phases,
@@ -276,28 +279,58 @@ func (s slackSource) Fetch(ctx context.Context, from, to time.Time) error {
 }
 
 // backfillErr maps a source's transient failure to the runner's hold, so the
-// chunk is retried on a later cycle without a strike (R23, #580): an
-// incomplete Slack search (rate limit, partial pages), digest-lock
-// contention, a failed AI call (CLI, provider or its network down, the
-// call's own timeout), a network error or timeout, and a Gmail 429/5xx.
-// Strikes are left for errors about the chunk's data, such as a reply that
-// cannot be parsed. Any other error passes through unchanged.
+// chunk is retried on a later cycle without a strike (R23, #580). Strikes
+// are left for errors about the chunk's data, such as an AI reply that
+// cannot be used. Any other error passes through unchanged.
 func backfillErr(err error) error {
-	if err == nil || errors.Is(err, historybackfill.ErrHold) {
+	if err == nil || errors.Is(err, historybackfill.ErrHold) || !transientErr(err) {
 		return err
 	}
-	var netErr net.Error
-	var gmailErr *gmail.StatusError
-	switch {
-	case errors.Is(err, sync.ErrBackfillIncomplete),
-		errors.Is(err, digest.ErrDigestLocked),
-		errors.Is(err, digest.ErrAICall),
-		errors.Is(err, context.DeadlineExceeded),
-		errors.As(err, &netErr),
-		errors.As(err, &gmailErr) && gmailErr.Transient():
-		return fmt.Errorf("%w: %w", historybackfill.ErrHold, err)
+	return fmt.Errorf("%w: %w", historybackfill.ErrHold, err)
+}
+
+// transientErr reports a failure that says nothing about the chunk's data:
+// an incomplete Slack search (rate limit, partial pages), digest-lock
+// contention, a transport-level AI failure (digest.ErrAICall), a timeout,
+// the network (dial, DNS, reset, a cut body), a busy database, and a Gmail
+// or token-endpoint 429/5xx or quota 403. A chunk failure made of several
+// errors (digest.ChunkErrors) is transient only when every one of them is:
+// one data error makes it a strike (F8).
+func transientErr(err error) bool {
+	var chunk *digest.ChunkErrors
+	if errors.As(err, &chunk) && len(chunk.Errs) > 0 {
+		for _, e := range chunk.Errs {
+			if !transientErr(e) {
+				return false
+			}
+		}
+		return true
 	}
-	return err
+	var gmailErr *gmail.StatusError
+	return errors.Is(err, sync.ErrBackfillIncomplete) ||
+		errors.Is(err, digest.ErrDigestLocked) ||
+		errors.Is(err, digest.ErrAICall) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		networkErr(err) ||
+		db.IsBusy(err) ||
+		(errors.As(err, &gmailErr) && gmailErr.Transient())
+}
+
+// networkErr reports a connection-level failure: a timeout, a dial/read/
+// write error, a DNS failure or a reset connection. A *url.Error alone is
+// not enough: a bad certificate, a malformed URL or a refused redirect is
+// a configuration problem that will not clear by waiting.
+func networkErr(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	return errors.As(err, &opErr) || errors.As(err, &dnsErr) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, error) {

@@ -21,6 +21,7 @@ type HistoryBackfill struct {
 	StartedAt     time.Time
 	UpdatedAt     time.Time
 	DoneAt        *time.Time
+	HeldSince     *time.Time // when a transient failure began holding the chunk; nil = not held (#580)
 }
 
 // StartHistoryBackfill creates the source's row; a second call is a no-op so
@@ -45,7 +46,7 @@ func (db *DB) StartHistoryBackfill(kind string, accountID int64, floorTS, upperT
 // ListHistoryBackfills returns every row, by id.
 func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 	rows, err := db.Query(`SELECT id, source_kind, account_id, floor_ts, upper_ts, reached_ts,
-		status, waiting, chunk_failures, last_error, started_at, updated_at, done_at
+		status, waiting, chunk_failures, last_error, started_at, updated_at, done_at, held_since
 		FROM history_backfill ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("history backfill: list: %w", err)
@@ -55,9 +56,9 @@ func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 	for rows.Next() {
 		var b HistoryBackfill
 		var started, updated string
-		var done sql.NullString
+		var done, held sql.NullString
 		if err := rows.Scan(&b.ID, &b.SourceKind, &b.AccountID, &b.FloorTS, &b.UpperTS, &b.ReachedTS,
-			&b.Status, &b.Waiting, &b.ChunkFailures, &b.LastError, &started, &updated, &done); err != nil {
+			&b.Status, &b.Waiting, &b.ChunkFailures, &b.LastError, &started, &updated, &done, &held); err != nil {
 			return nil, fmt.Errorf("history backfill: scan: %w", err)
 		}
 		if b.StartedAt, err = parsePlanTime(started); err != nil {
@@ -73,6 +74,13 @@ func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 			}
 			b.DoneAt = &t
 		}
+		if held.Valid && held.String != "" {
+			t, err := parsePlanTime(held.String)
+			if err != nil {
+				return nil, fmt.Errorf("history backfill: held_since: %w", err)
+			}
+			b.HeldSince = &t
+		}
 		out = append(out, b)
 	}
 	if err := rows.Err(); err != nil {
@@ -86,7 +94,7 @@ func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 func (db *DB) AdvanceHistoryBackfill(id int64, reachedTS float64, now time.Time) error {
 	ts := planTime(now)
 	_, err := db.Exec(`UPDATE history_backfill SET
-		reached_ts = ?, chunk_failures = 0, last_error = '', waiting = '', updated_at = ?,
+		reached_ts = ?, chunk_failures = 0, last_error = '', waiting = '', held_since = NULL, updated_at = ?,
 		status  = CASE WHEN ? <= floor_ts THEN 'done' ELSE status END,
 		done_at = CASE WHEN ? <= floor_ts THEN ? ELSE done_at END
 		WHERE id = ?`, reachedTS, ts, reachedTS, reachedTS, ts, id)
@@ -133,6 +141,26 @@ func (db *DB) SetHistoryBackfillLastError(id int64, msg string, now time.Time) e
 	if _, err := db.Exec(`UPDATE history_backfill SET last_error = ?, updated_at = ? WHERE id = ?`,
 		msg, planTime(now), id); err != nil {
 		return fmt.Errorf("history backfill: set last error: %w", err)
+	}
+	return nil
+}
+
+// HoldHistoryBackfill marks the row held by a transient failure since now,
+// with msg as last_error (replacing an older strike's reason).
+func (db *DB) HoldHistoryBackfill(id int64, msg string, now time.Time) error {
+	ts := planTime(now)
+	if _, err := db.Exec(`UPDATE history_backfill SET held_since = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+		ts, msg, ts, id); err != nil {
+		return fmt.Errorf("history backfill: hold: %w", err)
+	}
+	return nil
+}
+
+// ReleaseHistoryBackfillHold clears held_since; last_error is left as is.
+func (db *DB) ReleaseHistoryBackfillHold(id int64, now time.Time) error {
+	if _, err := db.Exec(`UPDATE history_backfill SET held_since = NULL, updated_at = ? WHERE id = ?`,
+		planTime(now), id); err != nil {
+		return fmt.Errorf("history backfill: release hold: %w", err)
 	}
 	return nil
 }

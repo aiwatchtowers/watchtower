@@ -79,3 +79,21 @@ func TestBackfillStatusText(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, runBackfillCmd(t), "jira #2  running  0/30 days\n")
 }
+
+// #580: a row held by a transient failure reads waiting = held, with the
+// reason in last_error.
+func TestBackfillStatus_HeldRow(t *testing.T) {
+	database := writeActionsConfig(t)
+	now := time.Date(2026, 10, 15, 8, 0, 0, 0, time.UTC)
+	upper := float64(now.Unix())
+	_, err := database.StartHistoryBackfill("imap", 1, upper-30*86400, upper, now)
+	require.NoError(t, err)
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.NoError(t, database.HoldHistoryBackfill(rows[0].ID, "held: fetch: offline", now))
+	assert.Equal(t, "imap #1  running  0/30 days  (waiting: held)  — held: fetch: offline\n", runBackfillCmd(t))
+
+	var top map[string][]map[string]any
+	require.NoError(t, json.Unmarshal([]byte(runBackfillCmd(t, "--json")), &top))
+	assert.Equal(t, "held", top["backfills"][0]["waiting"])
+}

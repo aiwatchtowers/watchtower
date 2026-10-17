@@ -8,7 +8,7 @@ The first sync is short on purpose: 3 days of Slack (setup's depth), 7 days of G
 
 A last step of every sync cycle then walks each new source back toward 30 days (`sync.backfill_days`), newest first, one 2-day chunk per source per cycle. At the default 15-minute cycle a month takes a few hours, longer for a big workspace.
 
-The step has a 5-minute budget per cycle. A chunk that does not finish is resumed next cycle. While you are offline, or the AI provider or a source's server is down or rate-limiting, the chunk waits and is tried again next cycle; the history just loads later. Only a chunk whose data itself fails three times (for example, an AI reply that cannot be read) is skipped. A source that has to wait does not hold up the others.
+The step has a 5-minute budget per cycle. A chunk that does not finish is resumed next cycle. While you are offline, or a source's server or the AI connection is down or rate-limiting, the chunk waits and is tried again next cycle; the status bar shows "Loading history waits" and `watchtower backfill status` shows the row as `waiting: held` with the reason. A wait lasts at most 7 days; after that the chunk counts as failed. A chunk that fails three times (for example, an AI reply that cannot be read) is skipped. A source that has to wait does not hold up the others. Memory waits while history is still loading, so it starts later when a backfill waits.
 
 ## What each source loads
 

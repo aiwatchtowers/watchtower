@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"net"
+	"os/exec"
 	"time"
 )
 
@@ -54,9 +57,10 @@ func CallTimeout(g Generator) (time.Duration, bool) {
 // context.DeadlineExceeded so errors.Is works at every caller — with the
 // inner generator's own message kept in the text (a killed subprocess reports
 // "signal: killed", which is the useful part). A call that died because the
-// CALLER's context expired (daemon shutdown, a shorter caller deadline) is
-// passed through untouched: it is not our cap that fired, and saying so would
-// send the reader looking for a 10-minute hang that never happened.
+// CALLER's context expired (daemon shutdown, a shorter caller deadline) keeps
+// its message: it is not our cap that fired, and saying so would send the
+// reader looking for a 10-minute hang that never happened. A transport-level
+// failure (see ErrAICall) also matches ErrAICall; its message is unchanged.
 func (g *timeoutGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
 	parent := ctx
 	ctx, cancel := context.WithTimeout(parent, g.timeout)
@@ -64,25 +68,42 @@ func (g *timeoutGenerator) Generate(ctx context.Context, systemPrompt, userMessa
 
 	result, usage, newSessionID, err := g.inner.Generate(ctx, systemPrompt, userMessage, sessionID)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil {
-		return "", nil, "", aiCallError{fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded)}
+		return "", nil, "", WithCause(fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded), ErrAICall)
 	}
-	if err != nil {
-		return result, usage, newSessionID, aiCallError{err}
+	if err != nil && aiTransportFailure(err) {
+		return result, usage, newSessionID, WithCause(err, ErrAICall)
 	}
-	return result, usage, newSessionID, nil
+	return result, usage, newSessionID, err
 }
 
-// ErrAICall marks an error of the AI call itself — the CLI, the provider or
-// the network behind them failed, or the call ran out of time — as opposed to
-// a reply that came back and could not be used. Every daemon AI call goes
-// through WithCallTimeout, so errors.Is(err, ErrAICall) holds for every such
-// failure; the history backfill retries those instead of counting a strike
-// against the chunk (docs/features/history-backfill.md).
+// ErrAICall marks a transport-level failure of an AI call: the call timed
+// out, its process could not start or was killed, or the network to the
+// provider failed. The history backfill retries those instead of counting a
+// strike against the chunk (docs/features/history-backfill.md). A reply that
+// came back — an error envelope (any subtype, error_max_turns included), an
+// empty result, output the parser cannot read, a non-zero exit with a message
+// — is about the request, not the transport, and does not match.
 var ErrAICall = errors.New("ai call failed")
 
-// aiCallError wraps an AI call failure so errors.Is sees ErrAICall without
-// changing the message callers log.
-type aiCallError struct{ err error }
+// aiTransportFailure reports the failures ErrAICall stands for.
+func aiTransportFailure(err error) bool {
+	var execErr *exec.Error
+	var pathErr *fs.PathError
+	var exitErr *exec.ExitError
+	var netErr net.Error
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, exec.ErrNotFound) ||
+		errors.As(err, &execErr) || errors.As(err, &pathErr) ||
+		(errors.As(err, &exitErr) && !exitErr.Exited()) || // killed by a signal
+		errors.As(err, &netErr)
+}
 
-func (e aiCallError) Error() string   { return e.err.Error() }
-func (e aiCallError) Unwrap() []error { return []error{ErrAICall, e.err} }
+// WithCause returns an error with err's message that also matches cause in
+// errors.Is and errors.As, so a generator can keep its readable message and
+// still expose the exec error behind it.
+func WithCause(err, cause error) error { return causeError{err, cause} }
+
+type causeError struct{ err, cause error }
+
+func (e causeError) Error() string   { return e.err.Error() }
+func (e causeError) Unwrap() []error { return []error{e.err, e.cause} }

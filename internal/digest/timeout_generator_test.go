@@ -3,6 +3,9 @@ package digest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -24,19 +27,46 @@ func (g errGenerator) Generate(context.Context, string, string, string) (string,
 	return "", nil, "", g.err
 }
 
-// #580: every failed call is marked ErrAICall, so the history backfill can
-// retry an AI outage instead of skipping the chunk; the message and the
-// inner error stay as they were. A successful call carries no error.
-func TestWithCallTimeout_FailureIsAnAICallError(t *testing.T) {
-	inner := errors.New("claude CLI failed (exit 1): API Error: Connection error")
-	_, _, _, err := WithCallTimeout(errGenerator{inner}, time.Minute).Generate(context.Background(), "s", "u", "")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrAICall)
-	assert.ErrorIs(t, err, inner)
-	assert.Equal(t, inner.Error(), err.Error())
+// #580: a transport-level failure (the process could not start or was
+// killed, the network, a timeout) matches ErrAICall so the history backfill
+// retries it; a reply the call did get back does not. The message and the
+// inner error stay as they were.
+func TestWithCallTimeout_TransportFailureIsAnAICallError(t *testing.T) {
+	gen := func(err error) error {
+		_, _, _, got := WithCallTimeout(errGenerator{err}, time.Minute).Generate(context.Background(), "s", "u", "")
+		require.Error(t, got)
+		assert.Equal(t, err.Error(), got.Error(), "message unchanged")
+		assert.ErrorIs(t, got, err)
+		return got
+	}
+	killed := exec.Command("sh", "-c", "kill -9 $$").Run()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, killed, &exitErr)
+	exited := exec.Command("sh", "-c", "exit 1").Run()
+	require.ErrorAs(t, exited, &exitErr)
 
-	_, _, _, err = WithCallTimeout(blockingGenerator{}, 10*time.Millisecond).Generate(context.Background(), "s", "u", "")
-	assert.ErrorIs(t, err, ErrAICall, "the call's own timeout is an AI call failure too")
+	transport := map[string]error{
+		"not found": WithCause(errors.New("claude CLI not found at \"claude\""), exec.ErrNotFound),
+		"start":     fmt.Errorf("claude CLI error: %w", &exec.Error{Name: "claude", Err: errors.New("permission denied")}),
+		"killed":    WithCause(errors.New("claude CLI failed (exit -1): signal: killed"), killed),
+		"network":   fmt.Errorf("ollama request failed: %w", &net.OpError{Op: "dial", Err: errors.New("refused")}),
+		"deadline":  fmt.Errorf("x: %w", context.DeadlineExceeded),
+	}
+	for name, err := range transport {
+		assert.ErrorIs(t, gen(err), ErrAICall, name)
+	}
+	reply := map[string]error{
+		"envelope": errors.New("claude returned error (subtype=error_max_turns): too many turns"),
+		"empty":    errors.New("claude returned empty result (turns=1, tokens=1+0)"),
+		"format":   errors.New("unexpected claude CLI output format: 12 bytes"),
+		"exit 1":   WithCause(errors.New("claude CLI failed (exit 1): API Error"), exited),
+	}
+	for name, err := range reply {
+		assert.NotErrorIs(t, gen(err), ErrAICall, name)
+	}
+
+	_, _, _, err := WithCallTimeout(blockingGenerator{}, 10*time.Millisecond).Generate(context.Background(), "s", "u", "")
+	assert.ErrorIs(t, err, ErrAICall, "the call's own timeout is a transport failure")
 
 	_, _, _, err = WithCallTimeout(&fastGenerator{}, time.Minute).Generate(context.Background(), "s", "u", "")
 	assert.NoError(t, err)

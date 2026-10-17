@@ -4,7 +4,7 @@ import GRDB
 /// One daemon-written `history_backfill` row, as the progress line needs it.
 package struct BackfillRow: Equatable {
     package let status: String      // running | paused | done | off
-    package let waiting: String     // "" | plan_limit
+    package let waiting: String     // "" | plan_limit | held (held_since set, #580)
     package let floorTS: Double
     package let upperTS: Double
     package let reachedTS: Double
@@ -12,9 +12,14 @@ package struct BackfillRow: Equatable {
 
 /// Reads of the daemon-written `history_backfill` (first-run month backfill).
 package enum BackfillQueries {
+    /// `waiting` reads "held" while a transient failure holds the row's chunk
+    /// (held_since set and no plan-limit wait), as `watchtower backfill status` does.
     package static func rows(_ db: Database) throws -> [BackfillRow] {
         let rows = try Row.fetchAll(db, sql: """
-            SELECT status, waiting, floor_ts, upper_ts, reached_ts FROM history_backfill ORDER BY id
+            SELECT status,
+                   CASE WHEN waiting = '' AND held_since IS NOT NULL THEN 'held' ELSE waiting END AS waiting,
+                   floor_ts, upper_ts, reached_ts
+            FROM history_backfill ORDER BY id
             """)
         return rows.map { row in
             BackfillRow(status: row["status"], waiting: row["waiting"], floorTS: row["floor_ts"],

@@ -54,6 +54,15 @@ final class BackfillProgressTests: XCTestCase {
         XCTAssertEqual(BackfillProgress.line(rows), "Loading history paused — Claude plan limit")
     }
 
+    /// #580: every running row held by a transient failure says it retries;
+    /// one row still loading keeps the day count.
+    func testAllHeldSaysItRetries() {
+        XCTAssertEqual(BackfillProgress.line([row("running", loaded: 2, of: 30, waiting: "held")]),
+                       "Loading history waits — offline or a service is down, retrying")
+        let mixed = [row("running", loaded: 2, of: 30, waiting: "held"), row("running", loaded: 4, of: 10)]
+        XCTAssertEqual(BackfillProgress.line(mixed), "Loading history: 6 of 40 days")
+    }
+
     /// A finished row's stale wait never counts.
     func testPlanLimitOnADoneRowIsIgnored() {
         let rows = [row("running", loaded: 1, of: 30), row("done", loaded: 30, of: 30, waiting: "plan_limit")]

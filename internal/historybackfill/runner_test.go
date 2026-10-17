@@ -25,6 +25,7 @@ type fakeStore struct {
 	rows     []db.HistoryBackfill
 	plan     *db.PlanUsageStatus
 	failures int // RecordHistoryBackfillFailure calls
+	holds    int // HoldHistoryBackfill calls
 }
 
 func (s *fakeStore) row(id int64) *db.HistoryBackfill {
@@ -42,7 +43,7 @@ func (s *fakeStore) ListHistoryBackfills() ([]db.HistoryBackfill, error) {
 
 func (s *fakeStore) AdvanceHistoryBackfill(id int64, reachedTS float64, _ time.Time) error {
 	r := s.row(id)
-	r.ReachedTS, r.ChunkFailures, r.LastError, r.Waiting = reachedTS, 0, "", ""
+	r.ReachedTS, r.ChunkFailures, r.LastError, r.Waiting, r.HeldSince = reachedTS, 0, "", "", nil
 	if reachedTS <= r.FloorTS {
 		r.Status = "done"
 	}
@@ -69,6 +70,18 @@ func (s *fakeStore) SetHistoryBackfillWaiting(id int64, waiting string, _ time.T
 
 func (s *fakeStore) SetHistoryBackfillLastError(id int64, msg string, _ time.Time) error {
 	s.row(id).LastError = msg
+	return nil
+}
+
+func (s *fakeStore) HoldHistoryBackfill(id int64, msg string, now time.Time) error {
+	s.holds++
+	r := s.row(id)
+	r.HeldSince, r.LastError = &now, msg
+	return nil
+}
+
+func (s *fakeStore) ReleaseHistoryBackfillHold(id int64, _ time.Time) error {
+	s.row(id).HeldSince = nil
 	return nil
 }
 
@@ -210,7 +223,8 @@ func TestRunner_FetchHoldIsNotAFailure(t *testing.T) {
 	assert.Equal(t, 0, a.count("process"))
 	assert.Equal(t, 0, st.failures)
 	assert.Equal(t, 0, st.rows[0].ChunkFailures)
-	assert.Empty(t, st.rows[0].LastError)
+	assert.Equal(t, "held: fetch: search: "+ErrHold.Error(), st.rows[0].LastError, "the hold shows why")
+	require.NotNil(t, st.rows[0].HeldSince)
 	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
 	assert.Equal(t, 1, b.count("process"), "the hold does not block the next row")
 	assert.Equal(t, 28*day, st.rows[1].ReachedTS)
@@ -222,9 +236,12 @@ func TestRunner_FetchHoldIsNotAFailure(t *testing.T) {
 	}
 	assert.Equal(t, 0, st.failures, "held cycles never add up to a skip")
 	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+	assert.Equal(t, 1, st.holds, "a continuing hold is written once")
+	assert.Equal(t, 1, strings.Count(buf.String(), "held"), "and logged once")
 }
 
-// #580: a held Process (an AI outage) is retried, never skipped.
+// #580: a held Process (an AI outage) is retried, never skipped, and the
+// hold ends when the chunk loads.
 func TestRunner_ProcessHoldIsNotAFailure(t *testing.T) {
 	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 1, 30*day, 0)}}
 	src := &fakeSource{kind: "gmail", id: 1, processErr: fmt.Errorf("drain: %w", ErrHold)}
@@ -234,10 +251,71 @@ func TestRunner_ProcessHoldIsNotAFailure(t *testing.T) {
 	}
 	assert.Equal(t, 0, st.failures)
 	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+	assert.NotNil(t, st.rows[0].HeldSince)
 
 	src.processErr = nil
 	require.NoError(t, r.Step(context.Background()))
 	assert.Equal(t, 28*day, st.rows[0].ReachedTS, "the chunk loads once the outage ends")
+	assert.Nil(t, st.rows[0].HeldSince)
+	assert.Empty(t, st.rows[0].LastError)
+}
+
+// #580: a data error ends a hold and is a strike; its reason replaces the
+// hold's.
+func TestRunner_DataErrorEndsHold(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 1, 30*day, 0)}}
+	src := &fakeSource{kind: "gmail", id: 1, processErr: fmt.Errorf("drain: %w", ErrHold)}
+	r := newRunner(st, src)
+	require.NoError(t, r.Step(context.Background()))
+	require.NotNil(t, st.rows[0].HeldSince)
+
+	src.processErr = errors.New("parsing reply")
+	require.NoError(t, r.Step(context.Background()))
+	assert.Nil(t, st.rows[0].HeldSince)
+	assert.Equal(t, 1, st.rows[0].ChunkFailures)
+	assert.Equal(t, "process: parsing reply", st.rows[0].LastError)
+}
+
+// #580: a chunk held for more than MaxHold takes a strike on every further
+// hold, so a failure that never clears ends in a skip.
+func TestRunner_LongHoldCountsAsStrike(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "imap", 1, 30*day, 0)}}
+	src := &fakeSource{kind: "imap", id: 1, fetchErr: fmt.Errorf("dial: %w", ErrHold)}
+	r := newRunner(st, src)
+	now := time.Unix(1_000_000_000, 0)
+	r.Now = func() time.Time { return now }
+	require.NoError(t, r.Step(context.Background()))
+	now = now.Add(MaxHold - time.Minute)
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, 0, st.failures, "within MaxHold: no strike")
+
+	now = now.Add(2 * time.Minute)
+	for range MaxChunkFailures {
+		require.NoError(t, r.Step(context.Background()))
+	}
+	assert.Equal(t, MaxChunkFailures, st.failures)
+	assert.Equal(t, 28*day, st.rows[0].ReachedTS, "the chunk is skipped")
+	assert.Nil(t, st.rows[0].HeldSince, "the next chunk starts a fresh hold")
+}
+
+// #580: each Step starts after the row the previous one got to, so a slow
+// row never keeps the later rows from their turn.
+func TestRunner_CursorRotatesStartRow(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{
+		running(1, "slack", 1, 30*day, 0), running(2, "gmail", 1, 30*day, 0), running(3, "imap", 1, 30*day, 0),
+	}}
+	var order []int64
+	srcs := []*fakeSource{{kind: "slack", id: 1}, {kind: "gmail", id: 1}, {kind: "imap", id: 1}}
+	for i, s := range srcs {
+		id := int64(i + 1)
+		s.onProcess = func() { order = append(order, id) }
+	}
+	r := newRunner(st, srcs[0], srcs[1], srcs[2])
+	cursor := int64(2)
+	r.Cursor = &cursor
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, []int64{3, 1, 2}, order)
+	assert.Equal(t, int64(2), cursor, "the cursor is the last row the Step got to")
 }
 
 func TestRunner_FetchFailureRecorded(t *testing.T) {
