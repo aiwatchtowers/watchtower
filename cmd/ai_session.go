@@ -237,13 +237,16 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 // codexSessionClient is the codex chat session's client: only the
 // watchtower server and the enabled Quick Connections — the owner's own
 // codex MCP servers are disabled per launch (board #594). Connections load
-// per turn: each turn is a new codex launch, so OAuth tokens are refreshed
-// as for claude (QC-04). The session's surfaces are main and target only,
+// per turn on the session's open database: each turn is a new codex
+// launch, so OAuth tokens are refreshed as for claude (QC-04); tools are
+// re-listed only when the cache needs it (mountConnection). A connection a
+// launch cannot mount says so on its row (markCodexSkipped). The session's surfaces are main and target only,
 // never automation_editor (D11).
 func codexSessionClient(w sessionWiring) *codex.Client {
 	c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
 	c.SetMCPArgs(w.mcpArgs)
-	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer { return loadExternalMCPServers(w.cfg, w.dbPath) })
+	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer { return loadExternalMCPServersFrom(w.cfg, w.database) })
+	c.SetExternalMCPSkipped(func(skipped map[int64]string) { markCodexSkipped(w.database, skipped) })
 	// CHAT-04 (spec §9): the chat session's system prompt and replayed
 	// history must never sit on this process's argv — route the whole
 	// turn through stdin instead of -c developer_instructions=... and a

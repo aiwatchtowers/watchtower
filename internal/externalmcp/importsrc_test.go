@@ -51,6 +51,7 @@ const importClaudeJSON = `{
     "legacy": {"type": "sse", "url": "https://legacy.example.com/sse"},
     "plain": {"type": "http", "url": "http://mcp.example.com/mcp", "headers": {"X-Key": "${MISSING:-k1}"}},
     "home": {"command": "${HOME_BIN}/srv"},
+    "argvar": {"command": "srv", "args": ["--token", "${WIKI_TOKEN}"]},
     "broken": {"command": 7}
   },
   "projects": {"/x": {"mcpServers": {"project-only": {"command": "p"}}}}
@@ -84,7 +85,7 @@ func TestDiscoverImports(t *testing.T) {
 	// offered twice, a different "notes" gets a suffix, project scopes are
 	// ignored.
 	assert.Equal(t, []string{"in-folder", "needs-var", "notes", "odd", "paused", "tracker", "watchtower",
-		"broken", "home", "legacy", "notes-2", "plain", "wiki-docs"}, names)
+		"argvar", "broken", "home", "legacy", "notes-2", "plain", "wiki-docs"}, names)
 
 	tr := byName["tracker"]
 	assert.Equal(t, "codex", tr.Source)
@@ -101,7 +102,8 @@ func TestDiscoverImports(t *testing.T) {
 
 	assert.Contains(t, byName["needs-var"].Skip, "$UNSET_VAR")
 	assert.Contains(t, byName["in-folder"].Skip, "cwd")
-	assert.Contains(t, byName["watchtower"].Skip, "Watchtower's own server")
+	// The reserved name is the cmd layer's check (`connections add`).
+	assert.Empty(t, byName["watchtower"].Skip)
 	assert.Contains(t, byName["odd"].Skip, "could not be read", "one odd server does not drop the file")
 	assert.Contains(t, byName["broken"].Skip, "could not be read")
 	assert.False(t, byName["paused"].Enabled, "a server the owner turned off imports disabled")
@@ -120,7 +122,11 @@ func TestDiscoverImports(t *testing.T) {
 	assert.Nil(t, nc.Secret)
 
 	assert.Contains(t, byName["legacy"].Skip, "sse")
-	assert.Contains(t, byName["home"].Skip, "$HOME_BIN")
+	// A variable in the command (stored in plain text) is refused, never
+	// expanded into a plain column.
+	assert.Contains(t, byName["home"].Skip, "plain text")
+	assert.Equal(t, "${HOME_BIN}/srv", byName["home"].Command)
+	assert.Contains(t, byName["argvar"].Skip, "plain text")
 	// A default fills the header; the transport rule is the cmd layer's.
 	assert.Equal(t, map[string]string{"X-Key": "k1"}, byName["plain"].Secret.Headers)
 }

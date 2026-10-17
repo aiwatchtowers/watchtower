@@ -39,6 +39,8 @@ final class ExternalConnectionsViewModel {
     private let importSignIn: ((ExternalConnection) async -> Void)?
     /// Set by `cancelImport()`: the import stops before its next sign-in.
     private var importCancelled = false
+    /// The running `connections import` command (`cancelImport()` cancels it).
+    private var importTask: Task<Data, Error>?
     private var authProcess: Process?
 
     init(dbPool: DatabasePool,
@@ -355,35 +357,52 @@ final class ExternalConnectionsViewModel {
         importCancelled = false
         importError = nil
         defer { isImporting = false }
-        let results: [ExternalConnectionImportResult]
-        do {
-            let data = try await runner.run(args: ExternalConnectionImportList.importArgs(names: names))
-            results = try JSONDecoder().decode([ExternalConnectionImportResult].self, from: data)
-        } catch {
-            importError = Self.toolsErrorText(error)
-            await refreshAsync()
-            return false
-        }
+        let results = await runImportCommand(runner, names: names)
         await refreshAsync()
-        var failures = results.compactMap(\.failure)
-        for result in results where result.signIn {
-            guard !importCancelled else { break }
-            guard let id = result.id, let row = connections.first(where: { Int64($0.id) == id }) else { continue }
-            error = nil
-            await (importSignIn ?? signIn)(row)
-            if let signInError = error {
-                failures.append("\(result.name): sign-in failed: \(signInError)")
-                error = nil
-            }
-        }
+        guard let results else { return false }
+        let failures = results.compactMap(\.failure) + (await signInImported(results))
         importError = failures.isEmpty ? nil : failures.joined(separator: "\n")
         return failures.isEmpty && !importCancelled
     }
 
-    /// Stops a running import: the sign-in in progress is terminated and no
-    /// further one starts. Connections already added stay.
+    /// The `connections import` run, cancellable by `cancelImport()` (the
+    /// child is terminated); nil after a failure (`importError`) or a cancel.
+    private func runImportCommand(
+        _ runner: any CLIRunnerProtocol, names: [String]
+    ) async -> [ExternalConnectionImportResult]? {
+        let task = Task { try await runner.run(args: ExternalConnectionImportList.importArgs(names: names)) }
+        importTask = task
+        defer { importTask = nil }
+        do {
+            return try JSONDecoder().decode([ExternalConnectionImportResult].self, from: try await task.value)
+        } catch {
+            if !importCancelled { importError = Self.toolsErrorText(error) }
+            return nil
+        }
+    }
+
+    /// Runs the OAuth sign-in of each imported row that needs one, in turn,
+    /// until `cancelImport()`; the failures, by name. The Settings pane's own
+    /// error is left as it was.
+    private func signInImported(_ results: [ExternalConnectionImportResult]) async -> [String] {
+        var failures: [String] = []
+        let paneError = error
+        for result in results where result.signIn && !importCancelled {
+            guard let id = result.id, let row = connections.first(where: { Int64($0.id) == id }) else { continue }
+            error = nil
+            await (importSignIn ?? signIn)(row)
+            if let signInError = error { failures.append("\(result.name): sign-in failed: \(signInError)") }
+        }
+        error = paneError
+        return failures
+    }
+
+    /// Stops a running import: the `connections import` child or the
+    /// sign-in in progress is terminated and no further one starts.
+    /// Connections already added stay.
     func cancelImport() {
         importCancelled = true
+        importTask?.cancel()
         cancelSignIn()
     }
 

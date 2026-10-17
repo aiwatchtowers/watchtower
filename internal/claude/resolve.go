@@ -2,12 +2,16 @@
 package claude
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 var (
@@ -198,4 +202,40 @@ func loginShellPATH() string {
 		return ""
 	}
 	return p
+}
+
+var (
+	loginEnvOnce sync.Once
+	loginEnv     map[string]string
+)
+
+// LoginShellEnv is the owner's login shell environment (`$SHELL -l -c env
+// -0`, the loginShellPATH precedent), read once per process and cached: a
+// process the Desktop starts has a reduced environment. A shell that fails
+// or takes over 5 s yields none; its process group is killed.
+func LoginShellEnv() map[string]string {
+	loginEnvOnce.Do(func() { loginEnv = readLoginShellEnv() })
+	return loginEnv
+}
+
+func readLoginShellEnv() map[string]string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	const marker = "__WATCHTOWER_ENV__"
+	cmd := exec.CommandContext(ctx, loginShell(), "-l", "-c", "printf '\\n"+marker+"\\n'; env -0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	out, _ := cmd.Output()
+	_, after, ok := bytes.Cut(out, []byte("\n"+marker+"\n"))
+	if !ok {
+		return nil
+	}
+	env := map[string]string{}
+	for _, kv := range bytes.Split(after, []byte{0}) {
+		if k, v, ok := strings.Cut(string(kv), "="); ok && k != "" {
+			env[k] = v
+		}
+	}
+	return env
 }

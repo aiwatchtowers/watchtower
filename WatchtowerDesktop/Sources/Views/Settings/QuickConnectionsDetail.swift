@@ -16,6 +16,9 @@ struct QuickConnectionsDetail: View {
     @State private var providerID = "claude"
     @State private var showAddConnectionSheet = false
     @State private var showImportSheet = false
+    /// The one-time codex import notice was dismissed (or an import ran).
+    @AppStorage(QuickConnectionsProviderNotice.codexImportNoticeDismissedKey)
+    private var codexImportNoticeDismissed = false
     @State private var connectionPendingRemoval: ExternalConnection?
     /// Connections whose Tools list is open.
     @State private var expandedTools: Set<Int> = []
@@ -36,6 +39,11 @@ struct QuickConnectionsDetail: View {
                 Label(notice, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            if let notice = QuickConnectionsProviderNotice.codexImportNotice(
+                forProvider: providerID, dismissed: codexImportNoticeDismissed
+            ) {
+                codexImportNoticeRow(notice)
             }
             // QC-02: by default the chat gets a connection's read-only tools
             // only; each connection's Tools list below changes that per tool.
@@ -74,6 +82,7 @@ struct QuickConnectionsDetail: View {
                     }
                     Button("Import from ~/.codex and ~/.claude…") {
                         showImportSheet = true
+                        codexImportNoticeDismissed = true
                     }
                     .help("Add the MCP servers you set up for codex or Claude Code as Quick Connections")
                 }
@@ -108,6 +117,23 @@ struct QuickConnectionsDetail: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Removes the connection and its stored secret. The assistant loses access to its tools immediately.")
+        }
+    }
+
+    private func codexImportNoticeRow(_ notice: String) -> some View {
+        HStack(alignment: .top) {
+            Label(notice, systemImage: "info.circle")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Import…") {
+                showImportSheet = true
+                codexImportNoticeDismissed = true
+            }
+            .controlSize(.small)
+            Button("Dismiss") { codexImportNoticeDismissed = true }
+                .buttonStyle(.plain)
+                .font(.caption)
         }
     }
 

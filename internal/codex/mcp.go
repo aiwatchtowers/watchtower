@@ -16,119 +16,208 @@ import (
 
 // OwnerHome is the owner's own codex home: CODEX_HOME, else ~/.codex.
 func OwnerHome() string {
-	if v := os.Getenv("CODEX_HOME"); v != "" {
+	return codexHomeIn(os.Getenv("CODEX_HOME"))
+}
+
+// codexHomeIn is the codex home for a CODEX_HOME value ("" = ~/.codex).
+func codexHomeIn(v string) string {
+	if v != "" {
 		return v
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".codex")
 }
 
-// systemConfigPath is codex's system-wide config layer (a var for tests).
-var systemConfigPath = "/etc/codex/config.toml"
+// systemConfigDir holds codex's system-wide layers, config.toml and
+// managed_config.toml (SetSystemConfigDir for tests).
+var systemConfigDir = "/etc/codex"
 
-// ownerServerNames are the MCP servers the owner's codex config layers
-// declare — CODEX_HOME/config.toml, the system config and the run folder's
-// .codex/config.toml (cwd; empty = none). A run that mounts its own servers
-// disables each of them (mcpOverride): a `-c mcp_servers={…}` override is
-// merged into the file layers, it does not replace them (codex 0.145,
-// verified with a real run), so only `enabled = false` per server keeps
-// them out. A file that cannot be parsed fails the run: codex would refuse
-// it too, and a server it hides must not slip through.
-func ownerServerNames(cwd string) ([]string, error) {
-	paths := []string{filepath.Join(OwnerHome(), "config.toml"), systemConfigPath}
-	if cwd != "" {
-		paths = append(paths, filepath.Join(cwd, ".codex", "config.toml"))
-	}
+// SetSystemConfigDir points the system config layers at dir: tests keep
+// the machine's own /etc/codex out of their runs.
+func SetSystemConfigDir(dir string) { systemConfigDir = dir }
+
+// codexLayer is what a codex config layer says that matters here.
+type codexLayer struct {
+	MCPServers         map[string]any `toml:"mcp_servers"`
+	ProjectRootMarkers []string       `toml:"project_root_markers"`
+}
+
+// ownerServerNames are the MCP servers the codex config layers a run loads
+// declare: home/config.toml (home = the child's CODEX_HOME), the system
+// config.toml and managed_config.toml, and every .codex/config.toml from
+// the project root (the nearest ancestor of cwd holding one of
+// project_root_markers, default .git; cwd itself when none does) down to
+// cwd. A run that mounts its own servers disables each of them
+// (mcpOverride): a `-c mcp_servers={…}` override is merged into the file
+// layers, it does not replace them (codex 0.145, verified with a real run),
+// so only `enabled = false` per server keeps them out. A file that cannot
+// be parsed fails the run: codex would refuse it too, and a server it
+// hides must not slip through.
+func ownerServerNames(home, cwd string) ([]string, error) {
 	var names []string
-	for _, p := range paths {
-		got, err := serverNamesIn(p)
+	markers := []string{".git"}
+	for _, p := range []string{
+		filepath.Join(home, "config.toml"),
+		filepath.Join(systemConfigDir, "config.toml"),
+		filepath.Join(systemConfigDir, "managed_config.toml"),
+	} {
+		layer, err := readLayer(p)
 		if err != nil {
 			return nil, err
 		}
-		names = append(names, got...)
+		names = append(names, sortedKeys(layer.MCPServers)...)
+		if layer.ProjectRootMarkers != nil {
+			markers = layer.ProjectRootMarkers
+		}
+	}
+	for _, dir := range projectDirs(cwd, markers) {
+		layer, err := readLayer(filepath.Join(dir, ".codex", "config.toml"))
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, sortedKeys(layer.MCPServers)...)
 	}
 	slices.Sort(names)
 	return slices.Compact(names), nil
 }
 
-// serverNamesIn is the mcp_servers names one config layer declares; none
-// when the file is missing or unreadable for permissions.
-func serverNamesIn(path string) ([]string, error) {
+// projectDirs are cwd and its ancestors up to the project root: the
+// nearest one holding a marker; only cwd when none does.
+func projectDirs(cwd string, markers []string) []string {
+	if cwd == "" {
+		return nil
+	}
+	var dirs []string
+	for dir := filepath.Clean(cwd); ; dir = filepath.Dir(dir) {
+		dirs = append(dirs, dir)
+		if hasMarker(dir, markers) {
+			return dirs
+		}
+		if filepath.Dir(dir) == dir {
+			return []string{filepath.Clean(cwd)}
+		}
+	}
+}
+
+func hasMarker(dir string, markers []string) bool {
+	for _, m := range markers {
+		if _, err := os.Lstat(filepath.Join(dir, m)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// readLayer is one config layer; empty when the file is missing or
+// unreadable for permissions.
+func readLayer(path string) (codexLayer, error) {
+	var layer codexLayer
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
-		return nil, nil
+		return layer, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading codex config %s: %w", path, err)
+		return layer, fmt.Errorf("reading codex config %s: %w", path, err)
 	}
-	var cfg struct {
-		MCPServers map[string]any `toml:"mcp_servers"`
+	if err := toml.Unmarshal(data, &layer); err != nil {
+		return layer, fmt.Errorf("parsing codex config %s: %w", path, err)
 	}
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing codex config %s: %w", path, err)
+	return layer, nil
+}
+
+// WatchtowerServerTOML is the config.toml table that mounts this binary as
+// codex's watchtower MCP server: `watchtower mcp --db-path <db> <extra…>`.
+// envVars, when given, become the server's env_vars: codex starts MCP
+// servers with a filtered environment, so a variable the server needs (an
+// automation's run marker) must be named to reach it. The automation
+// agent() child's own CODEX_HOME declares it (cmd's codexAgentHome).
+func WatchtowerServerTOML(dbPath string, extra, envVars []string) string {
+	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
+	s := fmt.Sprintf("[mcp_servers.watchtower]\ncommand = %s\nargs = [%s]\n", TOMLString(watchtowerBinary()), quotedList(args))
+	if len(envVars) > 0 {
+		s += fmt.Sprintf("env_vars = [%s]\n", quotedList(envVars))
 	}
-	names := make([]string, 0, len(cfg.MCPServers))
-	for name := range cfg.MCPServers {
-		names = append(names, name)
+	return s
+}
+
+// quotedList is items as the inside of a TOML string array.
+func quotedList(items []string) string {
+	quoted := make([]string, 0, len(items))
+	for _, a := range items {
+		quoted = append(quoted, TOMLString(a))
 	}
-	return names, nil
+	return strings.Join(quoted, ", ")
 }
 
 // mcpOverride is the one `-c mcp_servers={…}` value of a run, plus the
-// environment its servers read secrets from. Every server of the owner's
-// own config layers (owner) gets `enabled = false`; then the watchtower
-// server (`<this binary> mcp --db-path <db> <extra…>`, env_vars = envVars:
-// codex starts MCP servers with a filtered environment) when dbPath is set,
-// and each Quick Connection limited to its QC-02 allowed tools by
-// enabled_tools (codex runs with approvals off, so any other tool stays
-// hidden rather than callable). A connection's secret never sits on argv
-// (QC-03): stdio env values go into the child's environment and are named
-// in env_vars; http headers go into WATCHTOWER_QC_* variables named in
+// environment its servers read secrets from and the connections it could
+// not mount (id → reason). Every server of the owner's own config layers
+// (owner) gets `enabled = false`; then the watchtower server (`<this
+// binary> mcp --db-path <db> <extra…>`, env_vars = envVars: codex starts
+// MCP servers with a filtered environment) when dbPath is set — under a key
+// no owner layer uses, so nothing of theirs merges into it —, and each
+// Quick Connection limited to its QC-02 allowed tools by enabled_tools
+// (codex runs with approvals off, so any other tool stays hidden rather
+// than callable). A connection's secret never sits on argv (QC-03): stdio
+// env values go into the child's environment and are named in env_vars;
+// http headers go into WATCHTOWER_QC_<id>_<i> variables named in
 // env_http_headers. A connection whose env would change a variable codex
-// itself already has, or that another connection sets differently, is not
-// mounted (logged). A connection named like an owner server is mounted as
-// <name>-qc so the two never merge.
-func mcpOverride(dbPath string, extra, envVars []string, external []ai.ExternalMCPServer, owner, baseEnv []string) (string, []string) {
+// itself has, or that another connection sets differently, is not mounted.
+// A connection named like an owner server is mounted as <name>-qc.
+func mcpOverride(dbPath string, extra, envVars []string, external []ai.ExternalMCPServer, owner, baseEnv []string) (string, []string, map[int64]string) {
 	taken := map[string]bool{}
 	var entries []string
 	for _, name := range owner {
 		taken[name] = true
-		if dbPath != "" && name == "watchtower" {
-			continue // ours replaces its command and args below
-		}
 		entries = append(entries, TOMLString(name)+"={enabled=false}")
 	}
 	if dbPath != "" {
-		taken["watchtower"] = true
-		entries = append(entries, watchtowerEntry(dbPath, extra, envVars))
+		key := freeKey("watchtower", "-app", taken)
+		taken[key] = true
+		entries = append(entries, watchtowerEntry(key, dbPath, extra, envVars))
 	}
-	ext, env := externalEntries(external, taken, envMap(baseEnv))
-	return "mcp_servers={" + strings.Join(append(entries, ext...), ",") + "}", env
+	ext, env, skipped := externalEntries(external, taken, envMap(baseEnv))
+	return "mcp_servers={" + strings.Join(append(entries, ext...), ",") + "}", env, skipped
+}
+
+// EnvConflicts are the Quick Connections a codex launch with baseEnv could
+// not mount (id → reason): the same check mcpOverride applies, so the
+// caller can show it on the connection's row.
+func EnvConflicts(external []ai.ExternalMCPServer, baseEnv []string) map[int64]string {
+	_, _, skipped := externalEntries(external, map[string]bool{}, envMap(baseEnv))
+	return skipped
+}
+
+func freeKey(key, suffix string, taken map[string]bool) string {
+	for taken[key] {
+		key += suffix
+	}
+	return key
 }
 
 // watchtowerEntry is the watchtower server's table: `<this binary> mcp
-// --db-path <db> <extra…>`, env_vars = envVars.
-func watchtowerEntry(dbPath string, extra, envVars []string) string {
+// --db-path <db> <extra…>`, env_vars = envVars, enabled.
+func watchtowerEntry(key, dbPath string, extra, envVars []string) string {
 	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
-	fields := []string{"command=" + TOMLString(watchtowerBinary()), "args=" + TOMLStringArray(args)}
+	fields := []string{"command=" + TOMLString(watchtowerBinary()), "args=" + TOMLStringArray(args), "enabled=true"}
 	if len(envVars) > 0 {
 		fields = append(fields, "env_vars="+TOMLStringArray(envVars))
 	}
-	return `"watchtower"={` + strings.Join(fields, ",") + "}"
+	return TOMLString(key) + "={" + strings.Join(fields, ",") + "}"
 }
 
 // externalEntries is one table per mountable Quick Connection (a key not in
-// taken) and the environment carrying their secrets; set is the
-// environment so far.
-func externalEntries(external []ai.ExternalMCPServer, taken map[string]bool, set map[string]string) ([]string, []string) {
+// taken), the environment carrying their secrets, and the ones skipped for
+// an env conflict (id → reason); set is the environment so far.
+func externalEntries(external []ai.ExternalMCPServer, taken map[string]bool, set map[string]string) ([]string, []string, map[int64]string) {
 	var entries, env []string
+	skipped := map[int64]string{}
 	for _, s := range external {
-		key := s.Name
-		for taken[key] {
-			key += "-qc"
-		}
-		fields, sEnv, ok := externalFields(s, key, set)
-		if !ok {
+		key := freeKey(s.Name, "-qc", taken)
+		fields, sEnv, reason := externalFields(s, set)
+		if reason != "" {
+			log.Printf("quick connection %q: not mounted under codex: %s", s.Name, reason)
+			skipped[s.ID] = reason
 			continue
 		}
 		taken[key] = true
@@ -139,40 +228,43 @@ func externalEntries(external []ai.ExternalMCPServer, taken map[string]bool, set
 		env = append(env, sEnv...)
 		entries = append(entries, TOMLString(key)+"={"+strings.Join(fields, ",")+"}")
 	}
-	return entries, env
+	return entries, env, skipped
 }
 
 // externalFields is one Quick Connection's table fields and the env its
-// secret travels in; false when its env conflicts with set (see mcpOverride).
-func externalFields(s ai.ExternalMCPServer, key string, set map[string]string) ([]string, []string, bool) {
+// secret travels in; a reason when that env conflicts with set.
+func externalFields(s ai.ExternalMCPServer, set map[string]string) ([]string, []string, string) {
 	var fields, env []string
 	if s.Kind == "http" {
-		fields, env = httpFields(s, key), httpEnv(s, key)
+		fields, env = httpFields(s), httpEnv(s)
 	} else {
-		var ok bool
-		if fields, env, ok = stdioFields(s, set); !ok {
-			return nil, nil, false
+		fields, env = stdioFields(s), stdioEnv(s)
+	}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if envConflicts(k, v, set) {
+			return nil, nil, fmt.Sprintf("its variable %s would change one codex itself uses", k)
 		}
 	}
 	allow := s.AllowTools
 	if allow == nil {
 		allow = []string{}
 	}
-	return append(fields, "enabled_tools="+TOMLStringArray(allow)), env, true
+	return append(fields, "enabled_tools="+TOMLStringArray(allow)), env, ""
 }
 
-// httpHeaderVar is the variable that carries header i of connection key.
-func httpHeaderVar(key string, i int) string {
-	return fmt.Sprintf("WATCHTOWER_QC_%s_%d", strings.ToUpper(strings.ReplaceAll(key, "-", "_")), i)
+// httpHeaderVar is the variable that carries header i of connection id.
+func httpHeaderVar(id int64, i int) string {
+	return fmt.Sprintf("WATCHTOWER_QC_%d_%d", id, i)
 }
 
 // httpFields is an http connection's url and env_http_headers (header ->
 // the variable httpEnv sets).
-func httpFields(s ai.ExternalMCPServer, key string) []string {
+func httpFields(s ai.ExternalMCPServer) []string {
 	fields := []string{"url=" + TOMLString(s.URL)}
 	var headers []string
 	for i, h := range sortedKeys(s.Headers) {
-		headers = append(headers, TOMLString(h)+"="+TOMLString(httpHeaderVar(key, i)))
+		headers = append(headers, TOMLString(h)+"="+TOMLString(httpHeaderVar(s.ID, i)))
 	}
 	if len(headers) > 0 {
 		fields = append(fields, "env_http_headers={"+strings.Join(headers, ",")+"}")
@@ -181,32 +273,31 @@ func httpFields(s ai.ExternalMCPServer, key string) []string {
 }
 
 // httpEnv is the environment carrying an http connection's header values.
-func httpEnv(s ai.ExternalMCPServer, key string) []string {
+func httpEnv(s ai.ExternalMCPServer) []string {
 	var env []string
 	for i, h := range sortedKeys(s.Headers) {
-		env = append(env, httpHeaderVar(key, i)+"="+s.Headers[h])
+		env = append(env, httpHeaderVar(s.ID, i)+"="+s.Headers[h])
 	}
 	return env
 }
 
-// stdioFields is a stdio connection's command, args and env_vars, and the
-// environment carrying its values; false when a value would change codex's
-// own environment or one another connection set (set).
-func stdioFields(s ai.ExternalMCPServer, set map[string]string) ([]string, []string, bool) {
+// stdioFields is a stdio connection's command, args and env_vars (the
+// names of the variables stdioEnv sets).
+func stdioFields(s ai.ExternalMCPServer) []string {
 	fields := []string{"command=" + TOMLString(s.Command), "args=" + TOMLStringArray(s.Args)}
-	keys := sortedKeys(s.Env)
-	var env []string
-	for _, k := range keys {
-		if envConflicts(k, s.Env[k], set) {
-			log.Printf("quick connection %q: not mounted under codex: its variable %s would change codex's own environment", s.Name, k)
-			return nil, nil, false
-		}
-		env = append(env, k+"="+s.Env[k])
-	}
-	if len(keys) > 0 {
+	if keys := sortedKeys(s.Env); len(keys) > 0 {
 		fields = append(fields, "env_vars="+TOMLStringArray(keys))
 	}
-	return fields, env, true
+	return fields
+}
+
+// stdioEnv is the environment carrying a stdio connection's env values.
+func stdioEnv(s ai.ExternalMCPServer) []string {
+	var env []string
+	for _, k := range sortedKeys(s.Env) {
+		env = append(env, k+"="+s.Env[k])
+	}
+	return env
 }
 
 func envConflicts(k, v string, set map[string]string) bool {
@@ -227,7 +318,7 @@ func envMap(env []string) map[string]string {
 	return m
 }
 
-func sortedKeys(m map[string]string) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

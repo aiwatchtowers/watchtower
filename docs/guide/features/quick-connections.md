@@ -18,7 +18,7 @@ If the server does not say, a tool is allowed when its name starts with get, lis
 
 **Secrets.** An API key or header never goes in the database or on a command line. It lives in a private file on your Mac, readable only by you. For servers that offer sign-in, OAuth is used instead and Watchtower refreshes the token before each chat.
 
-**Your own codex and Claude Code servers.** The chat never loads the MCP servers you set up for codex (`~/.codex/config.toml`) or Claude Code (`~/.claude.json`); your codex sign-in and model settings still apply. Import those servers to use them here: they then follow the same read-only rules.
+**Your own codex and Claude Code servers.** The chat never loads the MCP servers you set up for codex (`~/.codex/config.toml`) or Claude Code (`~/.claude.json`); your codex sign-in and model settings still apply. Import those servers to use them here: they then follow the same read-only rules. Under Codex, the Quick Connections card reminds you once.
 
 **Plain http is refused.** Headers (and OAuth tokens) are sent only over https. Plain http is accepted only for a server on your own Mac (`localhost`, `127.0.0.1`). For a server on your network, use https or an SSH tunnel to localhost.
 
@@ -43,7 +43,8 @@ The status dot shows the state: green is OK, orange is a problem the next chat r
 - **A tool you need is missing.** It is marked as a write, or it was added to the server after the last listing. Press **Refresh list**; a declared write stays off.
 - **The assistant ignores the connection.** Check the provider: Quick Connections need Claude or Codex.
 - **A server from codex or Claude Code is missing from the chat.** The chat does not read those configs. Use **Import from ~/.codex and ~/.claude…**.
-- **Import says "Can't import".** The reason follows: an SSE server, a server that runs in a set working folder, a variable such as `$API_TOKEN` that neither the app nor your login shell sets, or a key sent over plain http. Add that server with **Add Connection** instead.
+- **Import says "Can't import".** The reason follows: an SSE server, a server that runs in a set working folder, a variable such as `$API_TOKEN` that neither the app nor your login shell sets, a `${…}` variable in a command or URL, or a key sent over plain http. Add that server with **Add Connection** instead.
+- **A connection says "not available in the codex chat".** One of its environment variables would change a setting codex itself uses. Rename the variable on the server side, or use the Claude provider for it.
 - **An imported server has a different name.** Names hold only letters, digits, `-` and `_`, and two servers cannot share one; the list says what was renamed.
 
 ## Related

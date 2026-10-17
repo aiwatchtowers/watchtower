@@ -433,6 +433,43 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isImporting)
     }
 
+    /// Cancel while `connections import` runs cancels (terminates) it; the
+    /// sheet shows no error for a cancel.
+    func testCancelDuringTheImportCommandStopsIt() async throws {
+        let runner = FakeCLIRunner()
+        runner.blockUntilCancelled = true
+        let vm = ExternalConnectionsViewModel(dbPool: try makePool()) { runner }
+
+        let task = Task { await vm.importConnections(["tracker"]) }
+        while runner.invocations.isEmpty { await Task.yield() }
+        vm.cancelImport()
+        let done = await task.value
+
+        XCTAssertFalse(done)
+        XCTAssertNil(vm.importError)
+        XCTAssertFalse(vm.isImporting)
+    }
+
+    /// A sign-in failure goes to the sheet; an error the Settings pane was
+    /// already showing stays.
+    func testImportSignInKeepsThePaneError() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO external_connections (id, name, kind, url) VALUES (1, 'notes', 'http', 'https://notes.example.com/mcp')")
+        }
+        let runner = ScriptedToolsRunner { _ in Data(#"[{"name":"notes","id":1,"status":"error","sign_in":true}]"#.utf8) }
+        var vm: ExternalConnectionsViewModel!
+        vm = ExternalConnectionsViewModel(dbPool: pool, makeRunner: { runner }, importSignIn: { _ in
+            vm.error = "Sign in failed (exit 1)"
+        })
+        vm.error = "Remove failed (exit 1)"
+
+        _ = await vm.importConnections(["notes"])
+
+        XCTAssertEqual(vm.importError, "notes: sign-in failed: Sign in failed (exit 1)")
+        XCTAssertEqual(vm.error, "Remove failed (exit 1)")
+    }
+
     func testImportConnectionsAllImported() async throws {
         let runner = ScriptedToolsRunner { _ in Data(#"[{"name":"tracker","id":1,"status":"ok","sign_in":false}]"#.utf8) }
         let vm = ExternalConnectionsViewModel(dbPool: try makePool()) { runner }

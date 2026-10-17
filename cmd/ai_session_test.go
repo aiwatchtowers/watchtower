@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/externalmcp"
 )
 
 const fakeSessionClaude = `#!/bin/sh
@@ -187,7 +188,7 @@ func TestCodexSessionClient_MountsConnectionsPerLaunch(t *testing.T) {
 	database, err := db.Open(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
-	c := codexSessionClient(sessionWiring{cfg: cfg, dbPath: dbPath, model: "m",
+	c := codexSessionClient(sessionWiring{cfg: cfg, database: database, dbPath: dbPath, model: "m",
 		mcpArgs: []string{"--chat", "--surface", "main"}})
 	override := func() string {
 		for _, a := range c.ArgsForTest("sys", "msg") {
@@ -207,6 +208,20 @@ func TestCodexSessionClient_MountsConnectionsPerLaunch(t *testing.T) {
 	assert.Contains(t, got, `"trello"={command="npx"`)
 	assert.Contains(t, got, `enabled_tools=["list_boards"]`)
 	assert.Contains(t, got, `"--surface","main"`)
+
+	// A connection codex cannot mount (its variable would change codex's
+	// own environment) is not mounted and says so on its row, not green.
+	bad, err := database.InsertExternalConnection(db.ExternalConnection{Name: "clash", Kind: "stdio", Command: "srv", Enabled: true})
+	require.NoError(t, err)
+	require.NoError(t, database.SetExternalConnectionTools(bad,
+		[]db.ExternalTool{{Name: "list_items"}}, time.Now().UTC().Format(time.RFC3339)))
+	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), bad).Save(
+		&externalmcp.Secret{Env: map[string]string{"OPENAI_API_KEY": "k"}}))
+	assert.NotContains(t, override(), `"clash"`)
+	row, err := database.GetExternalConnection(bad)
+	require.NoError(t, err)
+	assert.Equal(t, "error", row.Status)
+	assert.Contains(t, row.Error, "not available in the codex chat")
 }
 
 // Ollama has no default model; an unset one refuses the session up front

@@ -166,6 +166,17 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 		if c, ok := client.(externalMCPConfigurable); ok && aiFlagSurface != tools.AutomationEditorSurface {
 			c.SetExternalMCPServers(loadExternalMCPServers(cfg, dbPath))
 		}
+		if c, ok := client.(*codex.Client); ok {
+			c.SetExternalMCPSkipped(func(skipped map[int64]string) {
+				database, err := db.Open(dbPath)
+				if err != nil {
+					log.Printf("external MCP: opening database: %v", err)
+					return
+				}
+				defer func() { _ = database.Close() }()
+				markCodexSkipped(database, skipped)
+			})
+		}
 	}
 	return client, noop, nil
 }
@@ -192,7 +203,12 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 		return nil
 	}
 	defer func() { _ = database.Close() }()
+	return loadExternalMCPServersFrom(cfg, database)
+}
 
+// loadExternalMCPServersFrom is loadExternalMCPServers on an open database
+// (the chat session's, reused on every codex launch).
+func loadExternalMCPServersFrom(cfg *config.Config, database *db.DB) []ai.ExternalMCPServer {
 	conns, err := database.ListEnabledExternalConnections()
 	if err != nil {
 		log.Printf("external MCP: listing enabled connections: %v", err)
@@ -287,6 +303,7 @@ func connectionUnmounted(database *db.DB, c db.ExternalConnection, reason string
 // http to a remote host.
 func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, error) {
 	server := ai.ExternalMCPServer{
+		ID:      c.ID,
 		Name:    c.Name,
 		Kind:    c.Kind,
 		Command: c.Command,
@@ -476,6 +493,20 @@ func refreshFailureStatus(err error) string {
 // markConnectionOK flips a mounted connection's row back to ok — only while
 // the row still holds the status this launch read at its start (c), so a
 // newer "revoked"/"error" a parallel launch recorded meanwhile stands.
+// markCodexSkipped records on each row why a codex launch could not mount
+// that Quick Connection (codex.EnvConflicts), so Settings shows it instead
+// of a green dot.
+func markCodexSkipped(database *db.DB, skipped map[int64]string) {
+	for id, reason := range skipped {
+		conn, err := database.GetExternalConnection(id)
+		if err != nil {
+			log.Printf("external connection %d: reading it to record a codex skip: %v", id, err)
+			continue
+		}
+		connectionUnmounted(database, conn, "not available in the codex chat: "+reason)
+	}
+}
+
 func markConnectionOK(database *db.DB, c db.ExternalConnection) {
 	if c.Status == "ok" {
 		return

@@ -82,7 +82,7 @@ func TestClient_BuildArgs_ReadFolder(t *testing.T) {
 		assert.Contains(t, cfg, off)
 	}
 	// The read-only watchtower server is mounted by the -c override.
-	assert.Contains(t, cfg, `mcp_servers={"watchtower"={command=`+TOMLString(watchtowerBinary())+`,args=["mcp","--db-path","/data/wt.db"]}}`)
+	assert.Contains(t, cfg, `mcp_servers={"watchtower"={command=`+TOMLString(watchtowerBinary())+`,args=["mcp","--db-path","/data/wt.db"],enabled=true}}`)
 	assert.Equal(t, "hello", args[len(args)-1])
 }
 

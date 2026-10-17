@@ -256,7 +256,7 @@ func assertNotContains(t *testing.T, args []string, unwanted string) {
 }
 
 func TestMCPOverride_WritesExtraArgs(t *testing.T) {
-	got, _ := mcpOverride("/tmp/w.db", []string{"--chat", "--surface", "target"}, nil, nil, nil, nil)
+	got, _, _ := mcpOverride("/tmp/w.db", []string{"--chat", "--surface", "target"}, nil, nil, nil, nil)
 	if !strings.Contains(got, `args=["mcp","--db-path","/tmp/w.db","--chat","--surface","target"]`) {
 		t.Fatalf("override = %s", got)
 	}

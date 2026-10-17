@@ -26,7 +26,7 @@ func overrideServers(t *testing.T, override string) map[string]map[string]any {
 
 // The override mounts `watchtower mcp --db-path`.
 func TestMCPOverride_CreatesConfig(t *testing.T) {
-	content, _ := mcpOverride("/tmp/test.db", nil, nil, nil, nil, nil)
+	content, _, _ := mcpOverride("/tmp/test.db", nil, nil, nil, nil, nil)
 	if !strings.Contains(content, `"watchtower"={`) {
 		t.Error("override should contain the watchtower server")
 	}
@@ -43,21 +43,113 @@ func TestMCPOverride_CreatesConfig(t *testing.T) {
 }
 
 // Every server of the owner's config layers is disabled; a Quick
-// Connection named like one is mounted under <name>-qc so the two never
-// merge; the owner's own "watchtower" is replaced, not disabled.
+// Connection named like one is mounted under <name>-qc; an owner server
+// named watchtower is disabled too and ours, enabled, takes a key no owner
+// layer uses, so nothing of theirs (a url, enabled_tools, cwd, env) merges
+// into it.
 func TestMCPOverride_DisablesOwnerServers(t *testing.T) {
-	got, _ := mcpOverride("/tmp/w.db", nil, nil,
-		[]ai.ExternalMCPServer{{Name: "tracker", Kind: "stdio", Command: "npx", AllowTools: []string{"list_items"}}},
+	got, _, _ := mcpOverride("/tmp/w.db", nil, nil,
+		[]ai.ExternalMCPServer{{ID: 1, Name: "tracker", Kind: "stdio", Command: "npx", AllowTools: []string{"list_items"}}},
 		[]string{"personal", "tracker", "watchtower"}, nil)
 	servers := overrideServers(t, got)
-	if servers["personal"]["enabled"] != false || servers["tracker"]["enabled"] != false {
-		t.Errorf("owner servers not disabled: %s", got)
+	for _, name := range []string{"personal", "tracker", "watchtower"} {
+		if len(servers[name]) != 1 || servers[name]["enabled"] != false {
+			t.Errorf("owner server %s = %v, want only enabled=false", name, servers[name])
+		}
 	}
 	if servers["tracker-qc"]["command"] != "npx" {
 		t.Errorf("the connection is not mounted as tracker-qc: %s", got)
 	}
-	if _, off := servers["watchtower"]["enabled"]; off || servers["watchtower"]["command"] == nil {
-		t.Errorf("watchtower = %v", servers["watchtower"])
+	ours := servers["watchtower-app"]
+	if ours["enabled"] != true || ours["command"] == nil || ours["url"] != nil {
+		t.Errorf("watchtower-app = %v", ours)
+	}
+}
+
+// The merged shape codex sees: the owner's [mcp_servers.watchtower] (an
+// http server with its own tool filter) stays as written but off, and the
+// key of ours appears in no owner layer, so the merge leaves it whole.
+func TestMCPOverride_MergedWithAnOwnerWatchtower(t *testing.T) {
+	ownerTOML := "[mcp_servers.watchtower]\nurl = \"https://mcp.example.com/mcp\"\nenabled_tools = [\"only_this\"]\n"
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(ownerTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := ownerServerNames(home, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	override, _, _ := mcpOverride("/tmp/w.db", nil, nil, nil, owner, nil)
+	var file struct {
+		MCPServers map[string]map[string]any `toml:"mcp_servers"`
+	}
+	if err := toml.Unmarshal([]byte(ownerTOML), &file); err != nil {
+		t.Fatal(err)
+	}
+	merged := file.MCPServers
+	for key, fields := range overrideServers(t, override) {
+		if merged[key] == nil {
+			merged[key] = map[string]any{}
+		}
+		for k, v := range fields {
+			merged[key][k] = v
+		}
+	}
+	if merged["watchtower"]["enabled"] != false {
+		t.Errorf("the owner's watchtower = %v, want it off", merged["watchtower"])
+	}
+	ours := merged["watchtower-app"]
+	if ours["url"] != nil || ours["enabled_tools"] != nil || ours["enabled"] != true {
+		t.Errorf("ours took owner fields: %v", ours)
+	}
+}
+
+// Every layer codex 0.145 loads is scanned: CODEX_HOME, the system config
+// and managed config, and each .codex/config.toml from the project root
+// (the nearest project_root_markers ancestor) down to cwd — not above it.
+func TestOwnerServerNames_AllLayers(t *testing.T) {
+	home, sys, repo := t.TempDir(), t.TempDir(), t.TempDir()
+	old := systemConfigDir
+	SetSystemConfigDir(sys)
+	t.Cleanup(func() { SetSystemConfigDir(old) })
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := func(name string) string { return "[mcp_servers." + name + "]\ncommand = \"x\"\n" }
+	write(filepath.Join(home, "config.toml"), "project_root_markers = [\".hg\"]\n"+server("home"))
+	write(filepath.Join(sys, "config.toml"), server("system"))
+	write(filepath.Join(sys, "managed_config.toml"), server("managed"))
+	write(filepath.Join(repo, ".codex", "config.toml"), server("above_root"))
+	root := filepath.Join(repo, "proj")
+	write(filepath.Join(root, ".hg", "keep"), "")
+	write(filepath.Join(root, ".codex", "config.toml"), server("root"))
+	write(filepath.Join(root, "sub", ".codex", "config.toml"), server("sub"))
+	cwd := filepath.Join(root, "sub", "deeper")
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ownerServerNames(home, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "home,managed,root,sub,system" {
+		t.Errorf("names = %v", got)
+	}
+}
+
+func TestWatchtowerServerTOML_EnvVars(t *testing.T) {
+	got := WatchtowerServerTOML("/tmp/w.db", []string{"--chat"}, []string{"WATCHTOWER_AUTOMATION_RUN_ID"})
+	if !strings.HasSuffix(got, "args = [\"mcp\", \"--db-path\", \"/tmp/w.db\", \"--chat\"]\nenv_vars = [\"WATCHTOWER_AUTOMATION_RUN_ID\"]\n") {
+		t.Fatalf("toml = %s", got)
+	}
+	if plain := WatchtowerServerTOML("/tmp/w.db", nil, nil); strings.Contains(plain, "env_vars") {
+		t.Fatalf("toml without env vars = %s", plain)
 	}
 }
 
@@ -65,35 +157,46 @@ func TestMCPOverride_DisablesOwnerServers(t *testing.T) {
 // env_vars: codex starts MCP servers with a filtered environment. Without
 // envVars the table carries no env_vars.
 func TestMCPOverride_EnvVars(t *testing.T) {
-	got, _ := mcpOverride("/tmp/w.db", []string{"--chat"}, []string{"WATCHTOWER_AUTOMATION_RUN_ID"}, nil, nil, nil)
-	if !strings.HasSuffix(got, `args=["mcp","--db-path","/tmp/w.db","--chat"],env_vars=["WATCHTOWER_AUTOMATION_RUN_ID"]}}`) {
+	got, _, _ := mcpOverride("/tmp/w.db", []string{"--chat"}, []string{"WATCHTOWER_AUTOMATION_RUN_ID"}, nil, nil, nil)
+	if !strings.HasSuffix(got, `args=["mcp","--db-path","/tmp/w.db","--chat"],enabled=true,env_vars=["WATCHTOWER_AUTOMATION_RUN_ID"]}}`) {
 		t.Fatalf("override = %s", got)
 	}
-	if plain, _ := mcpOverride("/tmp/w.db", nil, nil, nil, nil, nil); strings.Contains(plain, "env_vars") {
+	if plain, _, _ := mcpOverride("/tmp/w.db", nil, nil, nil, nil, nil); strings.Contains(plain, "env_vars") {
 		t.Fatalf("override without env vars = %s", plain)
 	}
 }
 
 // A connection whose env would change a variable codex already has (or one
-// codex reads itself) is not mounted; two connections setting one variable
-// differently mount only the first.
+// codex reads itself) is not mounted and is reported; two connections
+// setting one variable differently mount only the first. Header variables
+// are named after the connection id, so two http connections never clash.
 func TestMCPOverride_EnvConflictsSkipTheConnection(t *testing.T) {
 	ext := []ai.ExternalMCPServer{
-		{Name: "a", Kind: "stdio", Command: "a", Env: map[string]string{"TOKEN": "1"}},
-		{Name: "b", Kind: "stdio", Command: "b", Env: map[string]string{"TOKEN": "2"}},
-		{Name: "c", Kind: "stdio", Command: "c", Env: map[string]string{"HOME": "/elsewhere"}},
-		{Name: "d", Kind: "stdio", Command: "d", Env: map[string]string{"OPENAI_API_KEY": "k"}},
-		{Name: "e", Kind: "stdio", Command: "e", Env: map[string]string{"HOME": "/home/acme"}},
+		{ID: 1, Name: "a", Kind: "stdio", Command: "a", Env: map[string]string{"TOKEN": "1"}},
+		{ID: 2, Name: "b", Kind: "stdio", Command: "b", Env: map[string]string{"TOKEN": "2"}},
+		{ID: 3, Name: "c", Kind: "stdio", Command: "c", Env: map[string]string{"HOME": "/elsewhere"}},
+		{ID: 4, Name: "d", Kind: "stdio", Command: "d", Env: map[string]string{"OPENAI_API_KEY": "k"}},
+		{ID: 5, Name: "e", Kind: "stdio", Command: "e", Env: map[string]string{"HOME": "/home/acme"}},
+		{ID: 6, Name: "f", Kind: "http", URL: "https://f.example.com", Headers: map[string]string{"X": "1"}},
+		{ID: 7, Name: "g", Kind: "http", URL: "https://g.example.com", Headers: map[string]string{"X": "2"}},
+		{ID: 8, Name: "h", Kind: "http", URL: "https://h.example.com", Headers: map[string]string{"X": "3"}},
 	}
-	got, env := mcpOverride("/tmp/w.db", nil, nil, ext, nil, []string{"HOME=/home/acme"})
+	base := []string{"HOME=/home/acme", "WATCHTOWER_QC_8_0=already-set"}
+	got, env, skipped := mcpOverride("/tmp/w.db", nil, nil, ext, nil, base)
 	servers := overrideServers(t, got)
-	for name, want := range map[string]bool{"a": true, "b": false, "c": false, "d": false, "e": true} {
+	for name, want := range map[string]bool{"a": true, "b": false, "c": false, "d": false, "e": true, "f": true, "g": true, "h": false} {
 		if _, ok := servers[name]; ok != want {
 			t.Errorf("%s mounted = %v, want %v (%s)", name, ok, want, got)
 		}
 	}
-	if strings.Join(env, " ") != "TOKEN=1 HOME=/home/acme" {
+	if strings.Join(env, " ") != "TOKEN=1 HOME=/home/acme WATCHTOWER_QC_6_0=1 WATCHTOWER_QC_7_0=2" {
 		t.Errorf("env = %v", env)
+	}
+	if len(skipped) != 4 || !strings.Contains(skipped[2], "TOKEN") || !strings.Contains(skipped[8], "WATCHTOWER_QC_8_0") {
+		t.Errorf("skipped = %v", skipped)
+	}
+	if again := EnvConflicts(ext, base); len(again) != 4 {
+		t.Errorf("EnvConflicts = %v, want the same four", again)
 	}
 }
 
@@ -147,9 +250,9 @@ func TestChatRun_MountsOnlyWatchtowerAndConnections(t *testing.T) {
 	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
 		loads++
 		return []ai.ExternalMCPServer{
-			{Name: "tracker", Kind: "stdio", Command: "npx", Args: []string{"-y", "tracker-mcp"},
+			{ID: 1, Name: "tracker", Kind: "stdio", Command: "npx", Args: []string{"-y", "tracker-mcp"},
 				Env: map[string]string{"TRACKER_TOKEN": "s3cret-env"}, AllowTools: []string{"list_items"}, DenyTools: []string{"delete_item"}},
-			{Name: "notes", Kind: "http", URL: "https://notes.example.com/mcp",
+			{ID: 2, Name: "notes", Kind: "http", URL: "https://notes.example.com/mcp",
 				Headers: map[string]string{"Authorization": "Bearer s3cret-hdr"}, AllowTools: []string{"get_note", "search_notes"}},
 		}
 	})
@@ -220,7 +323,7 @@ func assertChatRunServers(t *testing.T, servers map[string]map[string]any) {
 	}
 	nt := servers["notes"]
 	hdrs, _ := nt["env_http_headers"].(map[string]any)
-	if nt["url"] != "https://notes.example.com/mcp" || hdrs["Authorization"] != "WATCHTOWER_QC_NOTES_0" ||
+	if nt["url"] != "https://notes.example.com/mcp" || hdrs["Authorization"] != "WATCHTOWER_QC_2_0" ||
 		strings.Join(toStrings(nt["enabled_tools"]), ",") != "get_note,search_notes" {
 		t.Errorf("notes = %v", nt)
 	}
@@ -229,7 +332,7 @@ func assertChatRunServers(t *testing.T, servers map[string]map[string]any) {
 // assertChatRunEnv: the secrets reach codex in its environment.
 func assertChatRunEnv(t *testing.T, env string) {
 	t.Helper()
-	for _, kv := range []string{"TRACKER_TOKEN=s3cret-env", "WATCHTOWER_QC_NOTES_0=Bearer s3cret-hdr"} {
+	for _, kv := range []string{"TRACKER_TOKEN=s3cret-env", "WATCHTOWER_QC_2_0=Bearer s3cret-hdr"} {
 		if !strings.Contains(env, kv) {
 			t.Errorf("child env lacks %s", kv)
 		}

@@ -1,6 +1,7 @@
 package externalmcp
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -252,22 +253,27 @@ func readClaudeServers(path string, getenv func(string) string) ([]ImportCandida
 	return out, nil
 }
 
+// claudeCandidate maps a Claude Code server. A ${VAR} is expanded only in
+// env and headers, which go to the secret file: the command, arguments and
+// URL are stored in plain columns, so a server that puts a variable there
+// is refused rather than writing its value in the clear.
 func claudeCandidate(c ImportCandidate, s claudeServer, getenv func(string) string) ImportCandidate {
 	x := expander{getenv: getenv}
+	c.Command, c.Args, c.URL = s.Command, s.Args, s.URL
+	if plainHasVar(s) {
+		c.Kind = cmp.Or(s.Type, "stdio")
+		c.Skip = "its command, arguments or URL use a ${…} variable, whose value would be stored in plain text; add it with Add Connection and pass the value as an environment variable or header"
+		return c
+	}
 	switch s.Type {
 	case "", "stdio":
 		c.Kind = "stdio"
-		c.Command = x.expand(s.Command)
-		for _, a := range s.Args {
-			c.Args = append(c.Args, x.expand(a))
-		}
 		c.Secret.Env = x.expandMap(s.Env)
 		if c.Command == "" {
 			c.Skip = "it has no command"
 		}
 	case "http":
 		c.Kind = "http"
-		c.URL = x.expand(s.URL)
 		c.Secret.Headers = x.expandMap(s.Headers)
 	default:
 		c.Kind = s.Type
@@ -277,6 +283,11 @@ func claudeCandidate(c ImportCandidate, s claudeServer, getenv func(string) stri
 		c.Skip = fmt.Sprintf("it needs $%s, which is not set", x.missing)
 	}
 	return c
+}
+
+// plainHasVar: a ${VAR} in a field stored in plain columns.
+func plainHasVar(s claudeServer) bool {
+	return slices.ContainsFunc(append([]string{s.Command, s.URL}, s.Args...), claudeVar.MatchString)
 }
 
 // readSource is a source file's content; nil with no error when it does
@@ -292,8 +303,8 @@ func readSource(path string) ([]byte, error) {
 	return data, nil
 }
 
-// finish makes c's name Quick-Connection-safe (noting a change), drops an
-// empty secret, and never offers Watchtower's own server.
+// finish makes c's name Quick-Connection-safe (noting a change) and drops
+// an empty secret.
 func finish(c ImportCandidate) ImportCandidate {
 	if safe := strings.Trim(importNameUnsafe.ReplaceAllString(c.Name, "-"), "-"); safe != c.Name {
 		c.Note = fmt.Sprintf("renamed from %q: names hold only letters, digits, - and _", c.Name)
@@ -308,9 +319,6 @@ func finish(c ImportCandidate) ImportCandidate {
 	c.HasSecret = c.Secret.Env != nil || c.Secret.Headers != nil
 	if !c.HasSecret {
 		c.Secret = nil
-	}
-	if c.Skip == "" && strings.HasPrefix(strings.ToLower(c.Name), "watchtower") {
-		c.Skip = "it is Watchtower's own server"
 	}
 	return c
 }

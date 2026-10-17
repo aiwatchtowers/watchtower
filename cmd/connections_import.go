@@ -1,21 +1,16 @@
 package cmd
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
-	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -76,55 +71,24 @@ func claudeConfigPath() string {
 	return filepath.Join(home, ".claude.json")
 }
 
-// loginShellEnv is the owner's login shell environment ($SHELL -lic, so the
-// interactive startup file that usually exports tokens runs too), read once
-// when a variable is missing here: the Desktop starts the CLI with a
-// reduced environment. A shell that fails or takes over 5 s yields none.
-// A var for tests.
-var loginShellEnv = func() map[string]string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/zsh"
-	}
-	const marker = "__WATCHTOWER_ENV__"
-	cmd := exec.CommandContext(ctx, shell, "-lic", "printf '\\n"+marker+"\\n'; env -0")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
-	out, _ := cmd.Output()
-	_, after, ok := bytes.Cut(out, []byte("\n"+marker+"\n"))
-	if !ok {
-		return nil
-	}
-	env := map[string]string{}
-	for _, kv := range bytes.Split(after, []byte{0}) {
-		if k, v, ok := strings.Cut(string(kv), "="); ok && k != "" {
-			env[k] = v
-		}
-	}
-	return env
-}
+// loginShellEnv is the owner's login shell environment, read once per
+// process (claude.LoginShellEnv): the Desktop starts the CLI with a reduced
+// environment. A var for tests.
+var loginShellEnv = claude.LoginShellEnv
 
 // importGetenv is os.Getenv, falling back to the login shell's environment.
-func importGetenv() func(string) string {
-	var once sync.Once
-	var shellEnv map[string]string
-	return func(k string) string {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-		once.Do(func() { shellEnv = loginShellEnv() })
-		return shellEnv[k]
+func importGetenv(k string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
 	}
+	return loginShellEnv()[k]
 }
 
 // importCandidates is what the owner's configs offer, each checked as
 // `connections add` checks its flags and secret, with a server whose name
 // is already a Quick Connection marked as such.
 func importCandidates(database *db.DB) ([]externalmcp.ImportCandidate, []string, error) {
-	cands, warnings := externalmcp.DiscoverImports(filepath.Join(codex.OwnerHome(), "config.toml"), claudeConfigPath(), importGetenv())
+	cands, warnings := externalmcp.DiscoverImports(filepath.Join(codex.OwnerHome(), "config.toml"), claudeConfigPath(), importGetenv)
 	existing, err := database.ListExternalConnections()
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing connections: %w", err)
@@ -224,8 +188,13 @@ func importConnection(out, errOut io.Writer, cfg *config.Config, database *db.DB
 	res.ID = id
 	if c.Secret != nil {
 		if err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Save(c.Secret); err != nil {
-			_ = database.RemoveExternalConnection(id)
-			return connectionImportResultJSON{Name: c.Name, Error: fmt.Sprintf("saving secret: %v", err)}
+			res.Error = fmt.Sprintf("saving secret: %v", err)
+			if rmErr := database.RemoveExternalConnection(id); rmErr != nil {
+				res.Error += fmt.Sprintf("; connection #%d was left without its secret and could not be removed: %v", id, rmErr)
+				return res
+			}
+			res.ID = 0
+			return res
 		}
 	}
 	if !c.Enabled {

@@ -143,8 +143,8 @@ func tierModel(cfg *config.Config, provider, tier string) string {
 // cliAgentRunner runs agent() as one headless claude/codex query whose only
 // tools are the `mcp --chat --surface automation --automation-run N` server's
 // (the effective set plus get_action; never a Quick Connection). The child
-// gets only PATH, HOME, LANG, USER and the run marker (and CODEX_HOME when
-// set; codex disables the owner's own MCP servers for the run), runs in its own
+// gets only PATH, HOME, LANG, USER and the run marker (codex also CODEX_HOME,
+// a scrubbed per-run home: codexAgentHome), runs in its own
 // process group (killed as a group on cancel or deadline), and is metered
 // once: BeforeModelCall before it starts, its usage — or an estimate — after.
 // Its server runs under this process's config and workspace (--config,
@@ -172,15 +172,18 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	env := automationAgentEnv(req.RunID)
 	var client ai.Provider
 	if r.provider == "codex" {
-		// The owner's own codex MCP servers are disabled for the run and
-		// web search is off: both are outside the effective tool set and
-		// GateAgentCall, and an exfiltration channel for injected text.
-		// CODEX_HOME (passed through when set) keeps the owner's sign-in.
+		home, err := codexAgentHome(r.dbPath, mcpArgs)
+		if err != nil {
+			return automations.AgentResult{}, err
+		}
+		defer func() { _ = os.RemoveAll(home) }()
 		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
 		c.SetMCPArgs(mcpArgs)
 		c.SetMCPEnvVars(codexAgentServerEnv)
-		c.SetNoWebSearch()
-		c.SetChildEnv(env)
+		// codex only: CODEX_HOME joins the env allowlist, pointing at the
+		// scrubbed per-run home (codexAgentHome) instead of ~/.codex.
+		c.SetChildEnv(append(env, "CODEX_HOME="+home))
+		c.SetServersFromHome()
 		c.SetProcessGroup(true)
 		client = c
 	} else {
@@ -239,11 +242,48 @@ func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
 // server refuses to start without the run marker (mcpAutomationOptions).
 var codexAgentServerEnv = []string{automations.RunEnvMarker}
 
+// codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
+// temp folder the caller removes after the run. Its config.toml turns web
+// search off and declares only the watchtower automation-run server, so
+// neither the owner's ~/.codex/config.toml MCP servers nor web search —
+// both outside the effective tool set and GateAgentCall, and an
+// exfiltration channel for injected text — reach the child. The owner's
+// auth.json is linked, never copied, so codex can sign in; removing the
+// folder removes only the link.
+func codexAgentHome(dbPath string, mcpArgs []string) (string, error) {
+	dir, err := os.MkdirTemp("", "wt-agent-codex-home-*")
+	if err != nil {
+		return "", fmt.Errorf("creating the agent's codex home: %w", err)
+	}
+	config := "web_search = \"disabled\"\n\n" + codex.WatchtowerServerTOML(dbPath, mcpArgs, codexAgentServerEnv)
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", fmt.Errorf("writing the agent's codex config: %w", err)
+	}
+	auth := filepath.Join(ownerCodexHome(), "auth.json")
+	if _, err := os.Stat(auth); err == nil {
+		if err := os.Symlink(auth, filepath.Join(dir, "auth.json")); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("linking the codex sign-in: %w", err)
+		}
+	}
+	return dir, nil
+}
+
+// ownerCodexHome is the owner's codex home: CODEX_HOME, else ~/.codex.
+func ownerCodexHome() string {
+	if v := os.Getenv("CODEX_HOME"); v != "" {
+		return v
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex")
+}
+
 // automationAgentPassthrough is the env an agent() child inherits from this
 // process when set: identity plus network plumbing (proxy, CA bundle, TMPDIR;
 // owner ask #185). Never an API key or token.
 var automationAgentPassthrough = []string{
-	"HOME", "LANG", "USER", "CODEX_HOME",
+	"HOME", "LANG", "USER",
 	"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
 	"ALL_PROXY", "all_proxy",
 	"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "TMPDIR",

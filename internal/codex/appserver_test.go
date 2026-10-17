@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 		os.Exit(2)
 	}
 	_ = os.Setenv("CODEX_HOME", home)
-	systemConfigPath = home + "/no-system-config.toml"
+	systemConfigDir = home + "/no-system-config"
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

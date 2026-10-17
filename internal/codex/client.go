@@ -44,9 +44,23 @@ type Client struct {
 	// loadExternal yields the owner's enabled Quick Connections, called once
 	// per launch (SetExternalMCPServers / SetExternalMCPLoader).
 	loadExternal func() []ai.ExternalMCPServer
-	// noWebSearch turns codex's web search off (SetNoWebSearch).
-	noWebSearch bool
+	// onSkipped hears the Quick Connections a launch could not mount
+	// (SetExternalMCPSkipped).
+	onSkipped func(map[int64]string)
+	// serversFromHome: the child's CODEX_HOME declares its servers itself
+	// (SetServersFromHome); no -c override is added.
+	serversFromHome bool
 }
+
+// SetExternalMCPSkipped makes every launch report the Quick Connections it
+// could not mount (id → reason, mcpOverride) to f, so the caller can show
+// it on the connection's row.
+func (c *Client) SetExternalMCPSkipped(f func(map[int64]string)) { c.onSkipped = f }
+
+// SetServersFromHome is for a child whose CODEX_HOME (SetChildEnv) is a
+// scrubbed per-run home that already declares exactly its servers (the
+// automation agent() child): the run adds no mcp_servers override.
+func (c *Client) SetServersFromHome() { c.serversFromHome = true }
 
 // SetExternalMCPServers mounts the owner's enabled Quick Connections next to
 // the watchtower server, each limited to its QC-02 allowed tools
@@ -61,10 +75,6 @@ func (c *Client) SetExternalMCPServers(servers []ai.ExternalMCPServer) {
 // the connection set and each OAuth token are as fresh as a claude launch's
 // (QC-04).
 func (c *Client) SetExternalMCPLoader(load func() []ai.ExternalMCPServer) { c.loadExternal = load }
-
-// SetNoWebSearch turns codex's built-in web search off for every run (the
-// automation agent() child). Unset = the owner's own codex setting.
-func (c *Client) SetNoWebSearch() { c.noWebSearch = true }
 
 // SetChildEnv replaces the inherited environment of the child with env (the
 // rich PATH is still appended last). Unset = os.Environ() as today.
@@ -241,8 +251,7 @@ func (c *Client) buildStdinOnlyArgs(systemPrompt, userMessage, workDir string, m
 }
 
 // execArgs is the `codex exec` prefix: the shared execArgs, plus web search
-// off for a no-tools run (SetNoTools) or SetNoWebSearch, or for a
-// read-folder run the read-only sandbox with the shell on and web search
+// off for a no-tools run (SetNoTools), or for a read-folder run the read-only sandbox with the shell on and web search
 // off (SetReadFolder). The MCP servers come from mount.
 func (c *Client) execArgs() []string {
 	args := slices.Clone(execArgs(c.model))
@@ -254,7 +263,7 @@ func (c *Client) execArgs() []string {
 		}
 		args = append(args, "--sandbox", "read-only")
 	}
-	if c.noTools || c.noWebSearch || c.readFolder != "" {
+	if c.noTools || c.readFolder != "" {
 		args = append(args, "-c", `web_search="disabled"`)
 	}
 	return args
@@ -271,10 +280,11 @@ type runMount struct{ args, env []string }
 // the Quick Connections (mcpOverride). A run with neither (a plain query)
 // is left as codex configures it.
 func (c *Client) mount() (runMount, error) {
-	if c.dbPath == "" && !c.noTools {
+	if c.serversFromHome || (c.dbPath == "" && !c.noTools) {
 		return runMount{}, nil
 	}
-	owner, err := ownerServerNames(c.readFolder)
+	base := c.baseEnv()
+	owner, err := ownerServerNames(codexHomeIn(envMap(base)["CODEX_HOME"]), c.processDir())
 	if err != nil {
 		return runMount{}, err
 	}
@@ -285,7 +295,10 @@ func (c *Client) mount() (runMount, error) {
 	} else if c.loadExternal != nil {
 		external = c.loadExternal()
 	}
-	override, env := mcpOverride(dbPath, c.mcpArgs, c.mcpEnvVars, external, owner, c.baseEnv())
+	override, env, skipped := mcpOverride(dbPath, c.mcpArgs, c.mcpEnvVars, external, owner, base)
+	if len(skipped) > 0 && c.onSkipped != nil {
+		c.onSkipped(skipped)
+	}
 	return runMount{args: []string{"-c", override}, env: env}, nil
 }
 

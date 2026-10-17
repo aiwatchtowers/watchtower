@@ -19,6 +19,12 @@ final class QuickConnectionsProviderNoticeTests: XCTestCase {
         XCTAssertTrue(caption?.contains("codex") == true)
     }
 
+    func testCodexImportNoticeShowsOnceForCodexOnly() {
+        XCTAssertNotNil(QuickConnectionsProviderNotice.codexImportNotice(forProvider: "codex", dismissed: false))
+        XCTAssertNil(QuickConnectionsProviderNotice.codexImportNotice(forProvider: "codex", dismissed: true))
+        XCTAssertNil(QuickConnectionsProviderNotice.codexImportNotice(forProvider: "claude", dismissed: false))
+    }
+
     func testUnknownOrAbsentProviderWarnsByDefault() {
         XCTAssertNotNil(QuickConnectionsProviderNotice.caption(forProvider: nil))
         XCTAssertNotNil(QuickConnectionsProviderNotice.caption(forProvider: ""))
