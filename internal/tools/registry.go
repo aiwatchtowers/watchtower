@@ -178,7 +178,8 @@ type Tool struct {
 	// a tool is never listed (no MCP surface or loop offers it), Propose
 	// refuses it (ProposeSessionCall records it), Apply refuses it before its
 	// claim and Execute is never called; the session drives the row through
-	// ClaimSessionCall / FinishSessionCall / CancelSessionCall, and
+	// ClaimSessionCall / FinishSessionCall / CancelSessionCall /
+	// ExpireSessionCall (each bound to the row's session token), and
 	// ExpireSessionCalls fails what a dead session left behind.
 	AppliedBySession bool
 
