@@ -45,9 +45,9 @@ type ConnectorCall struct {
 	// Server is the connector's display name ("claude.ai Gmail"), or
 	// "claude.ai" for a built-in; Tool the raw CLI tool name.
 	Server, Tool string
-	// Reason is the card's line: the CLI's own description of a built-in
-	// call, else its display name ("Send"), else a fixed text — the
-	// protocol has no title.
+	// Reason is the card's line: the request's display name ("Send"),
+	// else the CLI's description, else a fixed text — the protocol has no
+	// title.
 	Reason string
 	// Input is the request's input byte for byte: what runs unless the
 	// owner edits it.
@@ -131,7 +131,8 @@ const (
 	stopWithdrawn                   // the CLI withdrew the request: no answer is due
 )
 
-// gateWait is one call waiting for the owner.
+// gateWait is one request the gate is answering; registered by dispatch,
+// before its goroutine starts, so a Stop or a withdrawal never misses it.
 type gateWait struct {
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -146,22 +147,30 @@ func (w *gateWait) signal(why stopReason) {
 	})
 }
 
+// claimedCall is a row the gate claimed and let the CLI run; its result is
+// due from proc.
+type claimedCall struct {
+	id   int64
+	proc *claudeProc
+}
+
 // gate answers one session's can_use_tool requests. Safe for concurrent use:
-// the reader dispatches each request to its own goroutine.
+// the reader dispatches each request to its own goroutine. Its lifecycle
+// methods accept a nil gate (no ClaudeOptions.Gate) and do nothing.
 type gate struct {
 	opts   GateOptions
 	policy connectorpolicy.Policy
 	turnID func() string
 	warn   io.Writer
 
-	wg sync.WaitGroup // every request goroutine
+	wg sync.WaitGroup // every request goroutine; Add only while !closed
 
 	mu      sync.Mutex
-	waits   map[string]*gateWait // CLI request id → a call waiting for the owner
-	claimed map[string]int64     // tool_use id → the claimed row whose result is due
-	own     map[string]bool      // ids of the pages and docs this session published
-	halted  bool                 // Stop arrived: asks are denied until the next turn
-	closed  bool                 // Close arrived: asks are denied for good
+	waits   map[string]*gateWait // CLI request id → the request being answered
+	claimed map[string]claimedCall
+	own     map[string]bool // ids of the pages and docs this session published
+	halted  bool            // Stop arrived: asks are denied until the next turn
+	closed  bool            // Close arrived: every request is denied for good
 }
 
 // newGate validates opts and binds the policy to the session.
@@ -182,7 +191,10 @@ func newGate(opts GateOptions, turnID func() string, warn io.Writer) (*gate, err
 		opts.Now = time.Now
 	}
 	g := &gate{opts: opts, turnID: turnID, warn: warn,
-		waits: map[string]*gateWait{}, claimed: map[string]int64{}, own: map[string]bool{}}
+		waits: map[string]*gateWait{}, claimed: map[string]claimedCall{}, own: map[string]bool{}}
+	// The path check and the ownership lookups are the gate's own: whatever
+	// the caller put there is replaced, so no path or link is trusted that
+	// this session did not create.
 	g.policy = opts.Policy
 	g.policy.PathCheck, g.policy.PublishDir = nil, ""
 	if opts.Publish != nil {
@@ -192,17 +204,50 @@ func newGate(opts GateOptions, turnID func() string, warn io.Writer) (*gate, err
 	return g, nil
 }
 
+// expireOrphans fails the rows a dead session left open; Start runs it
+// before the first spawn.
+func (g *gate) expireOrphans(ctx context.Context) error {
+	if g == nil {
+		return nil
+	}
+	return g.opts.Sink.ExpireOrphans(ctx)
+}
+
 // dispatch answers req on its own goroutine: the reader never waits on a
 // decision, a write or the owner.
 func (g *gate) dispatch(p *claudeProc, req permissionRequest) {
-	g.wg.Add(1)
+	w := &gateWait{stop: make(chan struct{}), done: make(chan struct{})}
+	g.mu.Lock()
+	_, dup := g.waits[req.RequestID]
+	refused := g.closed || dup
+	if !refused {
+		g.waits[req.RequestID] = w
+		g.wg.Add(1)
+	}
+	g.mu.Unlock()
+	if refused {
+		msg := denyStopped
+		if dup {
+			msg = "A permission request with this id is already being answered; this one was not run."
+		}
+		go answerControl(p, permissionDenyLine(req.RequestID, msg), g.warn)
+		return
+	}
 	go func() {
 		defer g.wg.Done()
-		g.handle(p, req)
+		defer func() {
+			g.mu.Lock()
+			if g.waits[req.RequestID] == w {
+				delete(g.waits, req.RequestID)
+			}
+			g.mu.Unlock()
+			close(w.done)
+		}()
+		g.handle(p, req, w)
 	}()
 }
 
-func (g *gate) handle(p *claudeProc, req permissionRequest) {
+func (g *gate) handle(p *claudeProc, req permissionRequest, w *gateWait) {
 	if req.Malformed != "" {
 		g.answer(p, permissionDenyLine(req.RequestID, req.Malformed))
 		return
@@ -220,40 +265,59 @@ func (g *gate) handle(p *claudeProc, req permissionRequest) {
 		}
 		g.answer(p, line)
 	case connectorpolicy.Ask:
-		g.ask(p, req)
+		g.ask(p, req, w)
 	default:
-		g.answer(p, permissionDenyLine(req.RequestID, d.Reason))
+		reason := d.Reason
+		if reason == "" {
+			reason = "This call is not allowed in this chat."
+		}
+		g.answer(p, permissionDenyLine(req.RequestID, reason))
 	}
 }
 
-// answer writes one control_response; a child that stopped reading is gone,
-// and its calls with it.
-func (g *gate) answer(p *claudeProc, line []byte) {
+// answerControl writes one control answer; a child that stopped reading is
+// gone, and its calls with it.
+func answerControl(p *claudeProc, line []byte, warn io.Writer) {
 	if err := p.write(line); err != nil {
-		fmt.Fprintf(g.warn, "chat gate: answering the CLI: %v\n", err)
+		fmt.Fprintf(warn, "chat gate: answering the CLI: %v\n", err)
+	}
+}
+
+func (g *gate) answer(p *claudeProc, line []byte) { answerControl(p, line, g.warn) }
+
+// stopRequested reports whether w must not go on — Stop, Close or the CLI's
+// withdrawal — and why.
+func (g *gate) stopRequested(w *gateWait) (bool, stopReason) {
+	select {
+	case <-w.stop:
+		return true, w.why
+	default:
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.halted || g.closed, stopByOwner
+}
+
+// childGone reports whether p exited or was replaced.
+func childGone(p *claudeProc) bool {
+	select {
+	case <-p.exited:
+		return true
+	case <-p.stop:
+		return true
+	default:
+		return false
 	}
 }
 
 // ask proposes the call, shows the waiting step and waits for the owner.
-func (g *gate) ask(p *claudeProc, req permissionRequest) {
-	w := &gateWait{stop: make(chan struct{}), done: make(chan struct{})}
-	defer close(w.done)
-	g.mu.Lock()
-	refused := g.halted || g.closed
-	if !refused {
-		g.waits[req.RequestID] = w
-	}
-	g.mu.Unlock()
-	if refused {
-		g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
+func (g *gate) ask(p *claudeProc, req permissionRequest, w *gateWait) {
+	if stop, why := g.stopRequested(w); stop {
+		if why == stopByOwner {
+			g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
+		}
 		return
 	}
-	defer func() {
-		g.mu.Lock()
-		delete(g.waits, req.RequestID)
-		g.mu.Unlock()
-	}()
-
 	turn := g.turnID()
 	id, err := g.opts.Sink.ProposeConnectorCall(context.Background(), connectorCall(turn, req))
 	if err == nil && id <= 0 {
@@ -266,6 +330,8 @@ func (g *gate) ask(p *claudeProc, req permissionRequest) {
 	}
 	select {
 	case p.events <- toolWaitEvent(turn, req.ToolUseID, id):
+	case <-w.stop:
+	case <-p.exited:
 	case <-p.stop:
 	}
 	g.await(p, req, w, id)
@@ -277,9 +343,9 @@ func connectorCall(turnID string, req permissionRequest) ConnectorCall {
 	if server == "" {
 		server = builtinCallServer
 	}
-	reason := req.Description
+	reason := req.DisplayName
 	if reason == "" {
-		reason = req.DisplayName
+		reason = req.Description
 	}
 	if reason == "" {
 		reason = "claude.ai connector write"
@@ -289,25 +355,28 @@ func connectorCall(turnID string, req permissionRequest) ConnectorCall {
 
 // await polls the row until the owner decides, the timeout, Stop, the CLI
 // withdrawing the request or the child's exit — exactly one of them settles
-// the call, and only a claim of an approved row ever lets it run.
+// the call, and only a claim of an approved row by a live child ever lets it
+// run.
 func (g *gate) await(p *claudeProc, req permissionRequest, w *gateWait, id int64) {
 	ctx := context.Background()
 	deadline := g.opts.Now().Add(g.opts.ApprovalTimeout)
+	var lastErr string
 	for {
-		select {
-		case <-w.stop:
-			g.stopped(p, req, w, id)
+		if g.settledByStopOrExit(p, req, w, id) {
 			return
-		default:
 		}
 		status, err := g.opts.Sink.ActionStatus(ctx, id)
-		if err != nil {
+		if err != nil && err.Error() != lastErr {
 			fmt.Fprintf(g.warn, "chat gate: reading action #%d: %v\n", id, err)
+		}
+		lastErr = ""
+		if err != nil {
+			lastErr = err.Error()
 		}
 		switch {
 		case err != nil, status == "pending":
 		case status == "approved":
-			if g.claim(p, req, id) {
+			if g.claim(p, req, w, id) {
 				return
 			}
 		default:
@@ -315,36 +384,53 @@ func (g *gate) await(p *claudeProc, req permissionRequest, w *gateWait, id int64
 			return
 		}
 		if !g.opts.Now().Before(deadline) {
-			g.timeOut(p, req, id)
+			g.timeOut(p, req, w, id)
 			return
 		}
 		select {
 		case <-w.stop:
-			g.stopped(p, req, w, id)
-			return
 		case <-p.exited:
-			g.expire(id, "session ended before approval")
-			return
 		case <-p.stop:
-			g.expire(id, "session ended before approval")
-			return
 		case <-time.After(g.opts.PollInterval):
 		}
 	}
 }
 
+// settledByStopOrExit settles a waiting call that Stop, Close or the CLI
+// withdrew (rejected or expired, and denied when the owner stopped it) or
+// whose child is gone (expired, nothing written). False when it may go on.
+func (g *gate) settledByStopOrExit(p *claudeProc, req permissionRequest, w *gateWait, id int64) bool {
+	if stop, why := g.stopRequested(w); stop {
+		g.stopped(p, req, why, id)
+		return true
+	}
+	if childGone(p) {
+		g.expire(id, "session ended before approval")
+		return true
+	}
+	return false
+}
+
 // closedRowMessage is the deny text for a row the owner or another path
 // settled.
 func closedRowMessage(status string) string {
-	if status == "rejected" {
+	switch status {
+	case "rejected":
 		return denyRejected
+	case "":
+		status = "unknown"
 	}
 	return fmt.Sprintf("This call can no longer run (its approval is %s). It was not sent.", status)
 }
 
-// claim takes an approved row and lets the CLI run the approved input. False
-// when the row was not claimable after all (the caller polls again).
-func (g *gate) claim(p *claudeProc, req permissionRequest, id int64) bool {
+// claim takes an approved row and lets the CLI run the approved input — only
+// while nothing stopped the call and its child lives, checked right before
+// the claim and again before the answer. False when the row was not
+// claimable after all (the caller polls again).
+func (g *gate) claim(p *claudeProc, req permissionRequest, w *gateWait, id int64) bool {
+	if g.settledByStopOrExit(p, req, w, id) {
+		return true
+	}
 	input, ok, err := g.opts.Sink.ClaimApproved(context.Background(), id)
 	if err != nil {
 		g.expire(id, "the approved call could not be started: "+err.Error())
@@ -356,8 +442,15 @@ func (g *gate) claim(p *claudeProc, req permissionRequest, id int64) bool {
 		return false
 	}
 	g.mu.Lock()
-	g.claimed[req.ToolUseID] = id
+	g.claimed[req.ToolUseID] = claimedCall{id: id, proc: p}
 	g.mu.Unlock()
+	if stop, why := g.stopRequested(w); stop || childGone(p) {
+		g.finish(req.ToolUseID, "", "stopped before the approved call was sent")
+		if stop && why == stopByOwner {
+			g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
+		}
+		return true
+	}
 	line, err := permissionAllowLine(req.RequestID, input)
 	if err != nil {
 		g.finish(req.ToolUseID, "", "the approved input could not be sent: "+err.Error())
@@ -372,40 +465,37 @@ func (g *gate) claim(p *claudeProc, req permissionRequest, id int64) bool {
 }
 
 // timeOut cancels a call the owner did not answer in time. An Approve that
-// landed first wins: the row is then claimed and runs.
-func (g *gate) timeOut(p *claudeProc, req permissionRequest, id int64) {
+// landed first wins: the row is then claimed and runs. Every other outcome
+// that is not a settled row expires it and tells the model.
+func (g *gate) timeOut(p *claudeProc, req permissionRequest, w *gateWait, id int64) {
 	ctx := context.Background()
 	window := approvalWindow(g.opts.ApprovalTimeout)
 	cancelled, err := g.opts.Sink.CancelCall(ctx, id, "not approved within "+window)
-	if err != nil {
-		fmt.Fprintf(g.warn, "chat gate: cancelling action #%d: %v\n", id, err)
-		g.expire(id, "not approved within "+window)
+	if err == nil && cancelled {
 		g.answer(p, permissionDenyLine(req.RequestID, denyTimedOut(window)))
 		return
 	}
-	if cancelled {
-		g.answer(p, permissionDenyLine(req.RequestID, denyTimedOut(window)))
-		return
-	}
-	status, err := g.opts.Sink.ActionStatus(ctx, id)
-	switch {
-	case err == nil && status == "approved":
-		if g.claim(p, req, id) {
+	if err == nil {
+		var status string
+		status, err = g.opts.Sink.ActionStatus(ctx, id)
+		if err == nil && status == "approved" && g.claim(p, req, w, id) {
 			return
 		}
-		g.expire(id, "not approved within "+window)
-		g.answer(p, permissionDenyLine(req.RequestID, denyTimedOut(window)))
-	case err != nil:
-		g.expire(id, "not approved within "+window)
-		g.answer(p, permissionDenyLine(req.RequestID, denyTimedOut(window)))
-	default:
-		g.answer(p, permissionDenyLine(req.RequestID, closedRowMessage(status)))
+		if err == nil && status != "approved" {
+			g.answer(p, permissionDenyLine(req.RequestID, closedRowMessage(status)))
+			return
+		}
 	}
+	if err != nil {
+		fmt.Fprintf(g.warn, "chat gate: cancelling action #%d: %v\n", id, err)
+	}
+	g.expire(id, "not approved within "+window)
+	g.answer(p, permissionDenyLine(req.RequestID, denyTimedOut(window)))
 }
 
 // stopped settles a call Stop, Close or the CLI's withdrawal ended: a pending
 // row is rejected, an approved one the session will not run is expired.
-func (g *gate) stopped(p *claudeProc, req permissionRequest, w *gateWait, id int64) {
+func (g *gate) stopped(p *claudeProc, req permissionRequest, why stopReason, id int64) {
 	cancelled, err := g.opts.Sink.CancelCall(context.Background(), id, "stopped")
 	if err != nil {
 		fmt.Fprintf(g.warn, "chat gate: cancelling action #%d: %v\n", id, err)
@@ -413,7 +503,7 @@ func (g *gate) stopped(p *claudeProc, req permissionRequest, w *gateWait, id int
 	if !cancelled {
 		g.expire(id, "stopped before the approved call ran")
 	}
-	if w.why == stopByOwner {
+	if why == stopByOwner {
 		g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
 	}
 }
@@ -425,33 +515,66 @@ func (g *gate) expire(id int64, reason string) {
 	}
 }
 
-// finish records the outcome of a claimed call, once.
-func (g *gate) finish(toolUseID, result, callErr string) {
+// finish records the outcome of a claimed call, once; false when toolUseID
+// was not a claimed call.
+func (g *gate) finish(toolUseID, result, callErr string) bool {
 	g.mu.Lock()
-	id, ok := g.claimed[toolUseID]
+	c, ok := g.claimed[toolUseID]
 	delete(g.claimed, toolUseID)
 	g.mu.Unlock()
 	if !ok {
-		return
+		return false
 	}
-	if err := g.opts.Sink.FinishCall(context.Background(), id, result, callErr); err != nil {
-		fmt.Fprintf(g.warn, "chat gate: recording action #%d: %v\n", id, err)
+	if err := g.opts.Sink.FinishCall(context.Background(), c.id, result, callErr); err != nil {
+		fmt.Fprintf(g.warn, "chat gate: recording action #%d: %v\n", c.id, err)
 	}
+	return true
 }
 
-// onResult records the tool result of a call the gate claimed.
+// onResult records the tool result of a call the gate claimed, and takes a
+// fresh page or doc of a call it let run without approval as the session's
+// own — never one an approved call made, so one Approve is never a standing
+// grant.
 func (g *gate) onResult(r toolResult) {
+	if g == nil {
+		return
+	}
 	callErr := ""
 	if r.isError {
 		if callErr = strings.TrimSpace(r.text); callErr == "" {
 			callErr = "the connector call failed"
 		}
 	}
-	g.finish(r.toolUseID, r.text, callErr)
+	if !g.finish(r.toolUseID, r.text, callErr) && r.newLink != "" {
+		g.noteOwn(r.newLink)
+	}
 }
 
-// withdraw stops the call the CLI withdrew (an interrupt reached it first).
+// procGone records every claimed call of p whose result never arrived (the
+// child exited or was replaced) as of unknown outcome.
+func (g *gate) procGone(p *claudeProc) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	var open []string
+	for toolUseID, c := range g.claimed {
+		if c.proc == p {
+			open = append(open, toolUseID)
+		}
+	}
+	g.mu.Unlock()
+	for _, toolUseID := range open {
+		g.finish(toolUseID, "", "session ended while the call ran; outcome unknown")
+	}
+}
+
+// withdraw stops the request the CLI withdrew (an interrupt reached it
+// first): no answer is due.
 func (g *gate) withdraw(requestID string) {
+	if g == nil {
+		return
+	}
 	g.mu.Lock()
 	w := g.waits[requestID]
 	g.mu.Unlock()
@@ -462,25 +585,30 @@ func (g *gate) withdraw(requestID string) {
 
 // halt is Stop (closing=false) or Close (true): every waiting call is denied
 // and its row rejected or expired, and later asks are denied — until the
-// next turn after a Stop, for good after Close. It waits, bounded, for the
-// waiting calls to settle, so their answers precede the interrupt.
+// next turn after a Stop, every request for good after Close. It waits,
+// bounded, for the requests to settle, so their answers precede the
+// interrupt.
 func (g *gate) halt(closing bool) {
+	if g == nil {
+		return
+	}
 	g.mu.Lock()
 	g.halted = true
 	g.closed = g.closed || closing
-	waits := make([]*gateWait, 0, len(g.waits))
-	for _, w := range g.waits {
-		waits = append(waits, w)
+	waits := make(map[string]*gateWait, len(g.waits))
+	for id, w := range g.waits {
+		waits[id] = w
 	}
 	g.mu.Unlock()
-	deadline := time.After(gateStopWait)
 	for _, w := range waits {
 		w.signal(stopByOwner)
 	}
-	for _, w := range waits {
+	deadline := time.After(gateStopWait)
+	for id, w := range waits {
 		select {
 		case <-w.done:
 		case <-deadline:
+			fmt.Fprintf(g.warn, "chat gate: request %s did not settle within %v of the stop\n", id, gateStopWait)
 			return
 		}
 	}
@@ -488,21 +616,30 @@ func (g *gate) halt(closing bool) {
 
 // resume lets a new turn's calls ask again after a Stop.
 func (g *gate) resume() {
+	if g == nil {
+		return
+	}
 	g.mu.Lock()
 	g.halted = g.closed
 	g.mu.Unlock()
 }
 
-// shutdown runs once the child is stopped (Close): it waits, bounded, for
-// the request goroutines, records every claimed call whose result never
-// arrived as of unknown outcome and removes the publish dir.
+// shutdown runs once the child is stopped (Close, after halt): it waits,
+// bounded, for the request goroutines — dispatch adds none once closed —,
+// records every claimed call whose result never arrived as of unknown
+// outcome and removes the publish dir.
 func (g *gate) shutdown() {
+	if g == nil {
+		return
+	}
 	done := make(chan struct{})
 	go func() {
 		g.wg.Wait()
 		close(done)
 	}()
-	waitClosed(done, gateStopWait)
+	if !waitClosed(done, gateStopWait) {
+		fmt.Fprintf(g.warn, "chat gate: permission requests still settling at close\n")
+	}
 	g.mu.Lock()
 	open := make([]string, 0, len(g.claimed))
 	for toolUseID := range g.claimed {
@@ -519,8 +656,8 @@ func (g *gate) shutdown() {
 	}
 }
 
-// noteOwn records a page or doc this session published (the link card of
-// its tool_end), so updating it later needs no approval.
+// noteOwn records a page or doc this session published, so updating it
+// later needs no approval.
 func (g *gate) noteOwn(link string) {
 	if id := artifactID(link); id != "" {
 		g.mu.Lock()

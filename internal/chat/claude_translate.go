@@ -90,12 +90,16 @@ type toolCall struct {
 type toolResult struct {
 	toolUseID, text string
 	isError         bool
+	// newLink is the link of a page or doc this call published fresh (not
+	// an update of a link its input named): the gate counts it as the
+	// session's own unless the call ran only after the owner's Approve.
+	newLink string
 }
 
-// fedLine is what one stdout line translates to.
+// fedLine is what one stdout line translates to: its events, the session id
+// the line itself carries ("" when none) and its tool results.
 type fedLine struct {
-	events []Event
-	// sessionID is the session id the line itself carries ("" when none).
+	events    []Event
 	sessionID string
 	results   []toolResult
 }
@@ -274,20 +278,24 @@ func (t *ClaudeTranslator) toolResults(m *claudeMessage) ([]Event, []toolResult)
 			continue
 		}
 		text := toolResultText(c.Content)
-		results = append(results, toolResult{toolUseID: c.ToolUseID, text: text, isError: c.IsError})
 		call := t.calls[c.ToolUseID]
 		delete(t.calls, c.ToolUseID)
 		ok := !c.IsError
+		res := toolResult{toolUseID: c.ToolUseID, text: text, isError: c.IsError}
 		var summary string
 		var sources []Source
-		switch src, published := publishedLink(call, text); {
+		switch src, fresh, published := publishedLink(call, text); {
 		case ok && published:
 			summary, sources = truncateRunes("Published "+src.Title, SummaryMaxRunes), []Source{src}
+			if fresh {
+				res.newLink = src.URL
+			}
 		case ok:
 			summary, sources = SummarizeToolResult(t.toolNames[c.ToolUseID], text)
 		default:
 			summary = truncateRunes(collapseSpace(text), SummaryMaxRunes)
 		}
+		results = append(results, res)
 		out = append(out, Event{Type: EventToolEnd, TurnID: t.turnID(), ID: c.ToolUseID, OK: &ok,
 			Summary: summary, Sources: sources})
 	}
@@ -333,21 +341,21 @@ const claudeDocsBatchTool = "mcp__claude_ai_Claude_Docs__batch"
 
 // publishedLink returns the link card of a successful Artifact publish or a
 // Claude Docs batch that created a doc: the first claude.ai link in the
-// result whose id the call's own input does not carry — a fresh page's id
+// result whose id the call's input never mentions (fresh) — a new page's id
 // cannot be in it, while a link the model wrote into the page or doc can,
 // and the session must never take such a link for one it published
-// (claudeBackend.noteOwn). An Artifact update of the link its input names
-// keeps that link.
-func publishedLink(call toolCall, result string) (Source, bool) {
+// (gate.noteOwn). An Artifact update of the link its input names keeps that
+// link (not fresh).
+func publishedLink(call toolCall, result string) (src Source, fresh, ok bool) {
 	in, ok := decodeObject(call.args)
 	if !ok {
-		return Source{}, false
+		return Source{}, false, false
 	}
 	var title, update string
 	switch call.raw {
 	case "Artifact":
 		if action := in.str("action"); (action != "" && action != "publish") || string(in["asset"]) == "true" {
-			return Source{}, false
+			return Source{}, false, false
 		}
 		title, update = in.str("title"), in.str("url")
 		if path := in.str("file_path"); title == "" && path != "" {
@@ -360,23 +368,53 @@ func publishedLink(call toolCall, result string) (Source, bool) {
 		container, _ := decodeObject(in["container"])
 		create, ok := decodeObject(container["create"])
 		if !ok {
-			return Source{}, false
+			return Source{}, false, false
 		}
 		if title = create.str("name"); title == "" {
 			title = "claude.ai doc"
 		}
 	default:
-		return Source{}, false
+		return Source{}, false, false
 	}
+	mentioned := inputText(call.args)
 	for _, link := range claudeAIArtifactURL.FindAllString(result, -1) {
-		if id := artifactID(link); id != "" && !bytes.Contains(call.args, []byte(id)) {
-			return publishedSource(link, title), true
+		if id := artifactID(link); id != "" && !strings.Contains(mentioned, strings.ToLower(id)) {
+			return publishedSource(link, title), true, true
 		}
 	}
 	if update != "" && claudeAIArtifactURL.FindString(update) == update && strings.Contains(result, artifactID(update)) {
-		return publishedSource(update, title), true
+		return publishedSource(update, title), false, true
 	}
-	return Source{}, false
+	return Source{}, false, false
+}
+
+// inputText is everything a tool input says, lower-cased: its raw bytes and
+// every key and string value decoded (so a \u escape or another case hides
+// nothing). An id found in it is not a fresh one.
+func inputText(args json.RawMessage) string {
+	var b strings.Builder
+	b.Write(args)
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case string:
+			b.WriteString("\x00" + t)
+		case map[string]any:
+			for k, val := range t {
+				b.WriteString("\x00" + k)
+				walk(val)
+			}
+		case []any:
+			for _, val := range t {
+				walk(val)
+			}
+		}
+	}
+	var v any
+	if json.Unmarshal(args, &v) == nil {
+		walk(v)
+	}
+	return strings.ToLower(b.String())
 }
 
 // uuidSuffix is a UUID at the end of a link segment.

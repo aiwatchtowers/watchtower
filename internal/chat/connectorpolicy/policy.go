@@ -535,17 +535,21 @@ func (p Policy) decideOverride(o override, input json.RawMessage) Decision {
 
 // docsWriteStaysInOwnDoc reports whether a Claude Docs create/update/batch
 // only touches a doc this session created, read by exact key: a batch whose
-// container births a new doc, or a container / doc ref naming an own doc.
-// A call naming no doc (a node ref without a container), a key it reads
-// spelled in another case as well, or any batch member naming another doc
-// fails.
+// container births a new doc, or a container naming an own doc, with every
+// ref inside it (refRule) and every doc ref anywhere in the input
+// (projectRefsAreOwn) proven own. Anything else — a call naming no doc, a key
+// it reads also spelled in another case, a value of the wrong type, a
+// member-level container — fails: an unproven write asks.
 func (p Policy) docsWriteStaysInOwnDoc(tool string, input json.RawMessage) bool {
 	in, err := parseObject(input)
 	if err != nil || in.caseVariant("container", "ref", "batch") {
 		return false
 	}
-	if raw, ok := in["container"]; ok {
-		container, err := parseObject(raw)
+	rawContainer, hasContainer := in["container"]
+	rawRef, hasRef := in["ref"]
+	switch {
+	case hasContainer:
+		container, err := parseObject(rawContainer)
 		if err != nil || container.caseVariant("kind", "id", "create") {
 			return false
 		}
@@ -557,13 +561,24 @@ func (p Policy) docsWriteStaysInOwnDoc(tool string, input json.RawMessage) bool 
 		} else if !p.ownDocRef(container, "kind") {
 			return false
 		}
-	} else {
-		ref, err := parseObject(in["ref"])
+		if hasRef && !p.refRule(rawRef, false) {
+			return false
+		}
+	case hasRef:
+		// No container: the ref itself must be an own doc (a rename, a tabs
+		// patch).
+		ref, err := parseObject(rawRef)
 		if err != nil || !p.ownDocRef(ref, "object") {
 			return false
 		}
+	default:
+		return false
 	}
-	return p.batchMembersStayInOwnDoc(in)
+	if !p.batchMembersStayInOwnDoc(in) {
+		return false
+	}
+	var whole any
+	return json.Unmarshal(input, &whole) == nil && p.projectRefsAreOwn(whole)
 }
 
 // ownDocRef reports whether obj names an own doc: obj[kindKey] is "project"
@@ -580,9 +595,39 @@ func (p Policy) ownDocRef(obj fields, kindKey string) bool {
 	return err == nil && ok && id != "" && p.OwnDoc != nil && p.OwnDoc(id)
 }
 
-// batchMembersStayInOwnDoc refuses a batch member whose ref names a doc
-// ("object":"project") other than an own one or the doc being born
-// ("$lid:…"). Members address tabs and nodes inside the container.
+// refRule judges a ref inside an own (or newborn) container: a node is
+// addressed through the container, a doc must be own — or, in a batch, the
+// doc being born ("$lid:…") — and a tab may be one the batch itself makes.
+// A tab, comment or anything else named by a real id may live in another
+// doc (those ids are global), so it asks.
+func (p Policy) refRule(raw json.RawMessage, inBatch bool) bool {
+	ref, err := parseObject(raw)
+	if err != nil || ref.caseVariant("object", "id") {
+		return false
+	}
+	object, ok, err := ref.str("object")
+	if err != nil || !ok {
+		return false
+	}
+	id, ok, err := ref.str("id")
+	if err != nil || !ok {
+		return false
+	}
+	newborn := inBatch && strings.HasPrefix(id, "$lid:")
+	switch strings.ToLower(object) {
+	case "node":
+		return true
+	case "project":
+		return newborn || p.ownDocRef(ref, "object")
+	case "file":
+		return newborn
+	default:
+		return false
+	}
+}
+
+// batchMembersStayInOwnDoc applies refRule to every batch member's ref; a
+// member carrying its own container asks.
 func (p Policy) batchMembersStayInOwnDoc(in fields) bool {
 	raw, ok := in["batch"]
 	if !ok || isNull(raw) {
@@ -594,22 +639,44 @@ func (p Policy) batchMembersStayInOwnDoc(in fields) bool {
 	}
 	for _, m := range members {
 		member, err := parseObject(m)
-		if err != nil || member.caseVariant("ref") {
+		if err != nil || member.caseVariant("ref", "container") {
 			return false
 		}
-		refRaw, ok := member["ref"]
-		if !ok {
-			continue
-		}
-		ref, err := parseObject(refRaw)
-		if err != nil || ref.caseVariant("object", "id") {
+		if _, ok := member["container"]; ok {
 			return false
 		}
-		if object, _, _ := ref.str("object"); object != "project" {
-			continue
-		}
-		if id, _, _ := ref.str("id"); !strings.HasPrefix(id, "$lid:") && !p.ownDocRef(ref, "object") {
+		if ref, ok := member["ref"]; ok && !p.refRule(ref, true) {
 			return false
+		}
+	}
+	return true
+}
+
+// projectRefsAreOwn walks the whole input: any object whose "object" or
+// "kind" says project, in any case, must carry the id of an own doc or the
+// doc being born — so a doc named anywhere (a comment's parent, a payload
+// field) is never one the gate did not check.
+func (p Policy) projectRefsAreOwn(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			s, _ := val.(string)
+			if (strings.EqualFold(k, "object") || strings.EqualFold(k, "kind")) && strings.EqualFold(s, "project") {
+				id, _ := t["id"].(string)
+				if _, born := t["create"]; !born && !strings.HasPrefix(id, "$lid:") &&
+					(id == "" || p.OwnDoc == nil || !p.OwnDoc(id)) {
+					return false
+				}
+			}
+			if !p.projectRefsAreOwn(val) {
+				return false
+			}
+		}
+	case []any:
+		for _, val := range t {
+			if !p.projectRefsAreOwn(val) {
+				return false
+			}
 		}
 	}
 	return true

@@ -275,12 +275,10 @@ func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	if b.gateErr != nil {
 		return "", b.gateErr
 	}
-	if b.gate != nil {
-		// Before the first spawn: no row a dead session of this conversation
-		// left open may ever be claimed or shown as waiting (AGENT-05).
-		if err := b.gate.opts.Sink.ExpireOrphans(ctx); err != nil {
-			return "", fmt.Errorf("closing the connector calls a previous session left open: %w", err)
-		}
+	// Before the first spawn: no row a dead session of this conversation
+	// left open may ever be claimed or shown as waiting (AGENT-05).
+	if err := b.gate.expireOrphans(ctx); err != nil {
+		return "", fmt.Errorf("closing the connector calls a previous session left open: %w", err)
 	}
 	var err error
 	if b.promptFile, err = fsutil.WritePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
@@ -558,6 +556,9 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	defer close(p.outDone)
 	defer r.Close()
+	// The child is gone or replaced: a claimed call's result can no longer
+	// arrive.
+	defer b.gate.procGone(p)
 	sc := bufio.NewScanner(r)
 	// Tool results arrive as one line each; allow multi-megabyte lines.
 	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
@@ -567,18 +568,20 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 		}
 		f, err := b.tr.feed(sc.Bytes())
 		if err != nil {
-			continue // non-JSON noise on stdout is not a protocol event
+			// Non-JSON noise on stdout is not a protocol event; a JSON line
+			// the translator cannot read is a protocol change worth a note.
+			if json.Valid(sc.Bytes()) {
+				fmt.Fprintf(b.warn(), "chat: unreadable CLI line skipped: %v\n", err)
+			}
+			continue
 		}
 		if f.sessionID != "" {
 			b.noteSessionID(p, f.sessionID)
 		}
-		if b.gate != nil {
-			for _, r := range f.results {
-				b.gate.onResult(r)
-			}
+		for _, r := range f.results {
+			b.gate.onResult(r)
 		}
 		for _, e := range f.events {
-			b.notePublished(e)
 			// lostMsg before gotResult: a reader seen half-way must never
 			// show a result without the rejection it carried.
 			if e.Type == EventError && e.Code == CodeSessionLost {
@@ -613,40 +616,23 @@ func (b *claudeBackend) routeControl(p *claudeProc, line []byte) bool {
 		if tool == "" {
 			tool = "This tool"
 		}
-		go b.writeControl(p, permissionDenyLine(req.RequestID, tool+" is not available in this chat"))
+		go answerControl(p, permissionDenyLine(req.RequestID, tool+" is not available in this chat"), b.warn())
 		return true
 	}
 	if id, ok := parseControlCancel(line); ok {
-		if b.gate != nil {
-			b.gate.withdraw(id)
-		}
+		b.gate.withdraw(id)
 		return true
 	}
 	if id, subtype, ok := parseOtherControlRequest(line); ok {
-		go b.writeControl(p, controlErrorLine(id, fmt.Sprintf("unsupported control request %q", subtype)))
+		go answerControl(p, controlErrorLine(id, fmt.Sprintf("unsupported control request %q", subtype)), b.warn())
+		return true
+	}
+	if env, ok := decodeObject(line); ok && env.str("type") == "control_request" {
+		// No request_id: it cannot be answered, and the CLI may wait on it.
+		fmt.Fprintf(b.warn(), "chat: unanswerable control request without a request_id\n")
 		return true
 	}
 	return false
-}
-
-// writeControl writes a control answer to the child, off the reader.
-func (b *claudeBackend) writeControl(p *claudeProc, line []byte) {
-	if err := p.write(line); err != nil {
-		fmt.Fprintf(b.warn(), "chat: answering a control request: %v\n", err)
-	}
-}
-
-// notePublished tells the gate about a page or doc this session published
-// (the link card of a tool_end), so updating it later needs no approval.
-func (b *claudeBackend) notePublished(e Event) {
-	if b.gate == nil || e.Type != EventToolEnd {
-		return
-	}
-	for _, s := range e.Sources {
-		if s.Kind == SourceKindPublished {
-			b.gate.noteOwn(s.URL)
-		}
-	}
 }
 
 // noteSessionID makes the session id the live child reports (its init line
@@ -703,9 +689,7 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 	}()
 	b.curTurn.Store(c.TurnID)
 	b.tr.clearInterrupted()
-	if b.gate != nil {
-		b.gate.resume()
-	}
+	b.gate.resume()
 	b.active.Store(true)
 	defer b.active.Store(false)
 
@@ -963,11 +947,9 @@ func (b *claudeBackend) replayText(turnID string) (string, error) {
 // Turn has reached the child: the recorded flag then stops the message from
 // being sent at all (see send).
 func (b *claudeBackend) Cancel() error {
-	if b.gate != nil {
-		// A call waiting for the owner is denied and its row rejected (or
-		// expired, when approved but not yet claimed) before the interrupt.
-		b.gate.halt(false)
-	}
+	// A call waiting for the owner is denied and its row rejected (or
+	// expired, when approved but not yet claimed) before the interrupt.
+	b.gate.halt(false)
 	b.mu.Lock()
 	b.cancelled = true
 	p, inFlight := b.proc, b.inFlight
@@ -1163,9 +1145,7 @@ func checkWorkDirEntries(dir string) error {
 // sweeps its process group and removes the temp files. Idempotent.
 func (b *claudeBackend) Close() error {
 	b.closeOnce.Do(func() {
-		if b.gate != nil {
-			b.gate.halt(true)
-		}
+		b.gate.halt(true)
 		b.mu.Lock()
 		b.closed = true
 		p := b.proc
@@ -1179,9 +1159,7 @@ func (b *claudeBackend) Close() error {
 				waitClosed(p.outDone, exitedOutputWait)
 			}
 		}
-		if b.gate != nil {
-			b.gate.shutdown()
-		}
+		b.gate.shutdown()
 		for _, f := range []string{b.promptFile, b.mcpFile} {
 			if f != "" {
 				_ = os.Remove(f)

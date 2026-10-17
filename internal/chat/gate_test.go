@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,10 @@ type fakeSink struct {
 	beforeCancel func(id int64)
 	// onExpireOrphans runs when ExpireOrphans is called.
 	onExpireOrphans func()
+	// beforePropose and beforeStatus run (under no lock) when the call is
+	// entered: a test holds the gate there.
+	beforePropose func()
+	beforeStatus  func(id int64)
 }
 
 type fakeRow struct {
@@ -46,6 +51,9 @@ type fakeRow struct {
 func newFakeSink() *fakeSink { return &fakeSink{rows: map[int64]*fakeRow{}} }
 
 func (s *fakeSink) ProposeConnectorCall(_ context.Context, c ConnectorCall) (int64, error) {
+	if s.beforePropose != nil {
+		s.beforePropose()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.proposeErr != nil {
@@ -57,6 +65,12 @@ func (s *fakeSink) ProposeConnectorCall(_ context.Context, c ConnectorCall) (int
 }
 
 func (s *fakeSink) ActionStatus(_ context.Context, id int64) (string, error) {
+	s.mu.Lock()
+	hook := s.beforeStatus // set while the gate runs: read under the lock
+	s.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.rows[id]
@@ -385,24 +399,27 @@ func TestChat05_PublishOnlyFromThePublishDir(t *testing.T) {
 
 func TestChat05_DeadSessionNeverRunsAnApprovedCall(t *testing.T) {
 	fx := gateFake(t, gmailSend("r1", "tu1"))
+	fx.opts.Gate.PollInterval = time.Hour // the approval is read only when the child's exit wakes the wait
 	b := NewClaudeBackend(fx.opts)
+	t.Cleanup(func() { _ = b.Close() })
 	_, err := b.Start(context.Background())
 	require.NoError(t, err)
 	turnDone := make(chan error, 1)
 	go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
 	fx.sink.waitRows(t, 1)
-	waitUntil(t, "the waiting step", func() bool { return fx.sink.row(1).status == "pending" })
 
-	// The child dies while the call waits; the owner approves afterwards.
+	// The owner approves; the child dies before the session claims it.
+	require.True(t, fx.sink.approve(1, ""))
 	require.NoError(t, syscall.Kill(-readPIDFile(t, fx.files.pid), syscall.SIGKILL))
 	select {
 	case <-turnDone:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the turn did not end after the child died")
 	}
-	fx.sink.approve(1, "")
 	require.NoError(t, b.Close())
-	assert.Equal(t, "failed", fx.sink.row(1).status, "the dead child's call is failed, approved or not")
+	row := fx.sink.row(1)
+	assert.Equal(t, "failed", row.status, "an approved call of a dead child never runs")
+	assert.Equal(t, "session ended before approval", row.reason)
 
 	// A row a whole dead process left behind (no gate alive to expire it),
 	// approved later: the next session start fails it before it spawns.
@@ -413,6 +430,7 @@ func TestChat05_DeadSessionNeverRunsAnApprovedCall(t *testing.T) {
 	fx.sink.onExpireOrphans = func() { spawnedAtExpire = len(argvRuns(t, fx.files.argv)) }
 	fx.setRequests(t)
 	b2 := NewClaudeBackend(fx.opts)
+	t.Cleanup(func() { _ = b2.Close() })
 	_, err = b2.Start(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, b2.Close())
@@ -459,6 +477,7 @@ func TestChat02_GateDecisionsAreSteps(t *testing.T) {
 func TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps(t *testing.T) {
 	fx := gateFake(t, gmailSend("r1", "tu1"))
 	b := NewClaudeBackend(fx.opts)
+	t.Cleanup(func() { _ = b.Close() })
 	_, err := b.Start(context.Background())
 	require.NoError(t, err)
 	pid := readPIDFile(t, fx.files.pid)
@@ -661,6 +680,7 @@ func TestGate_InvalidOptionsRefuseToStart(t *testing.T) {
 			fx := gateFake(t)
 			mutate(fx.opts.Gate)
 			b := NewClaudeBackend(fx.opts)
+			t.Cleanup(func() { _ = b.Close() })
 			_, err := b.Start(context.Background())
 			require.Error(t, err)
 			require.NoError(t, b.Close())
@@ -744,4 +764,100 @@ func TestGate_RouteControlAnswersEveryRequest(t *testing.T) {
 	assert.True(t, b.routeControl(p, []byte(`{"type":"control_cancel_request","request_id":"x"}`)))
 	assert.False(t, b.routeControl(p, []byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"\"control_request\""}}}`)),
 		"a text line mentioning a control type goes to the translator")
+}
+
+func TestGate_StopDuringAStatusReadNeverClaims(t *testing.T) {
+	fx := gateFake(t, gmailSend("r1", "tu1"))
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	b := NewClaudeBackend(fx.opts)
+	t.Cleanup(func() { _ = b.Close() })
+	_, err := b.Start(context.Background())
+	require.NoError(t, err)
+	turnDone := make(chan error, 1)
+	go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
+	fx.sink.waitRows(t, 1)
+
+	// The owner approves; the read that sees it is still in flight when the
+	// owner presses Stop.
+	fx.sink.mu.Lock()
+	fx.sink.beforeStatus = func(int64) {
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+	fx.sink.mu.Unlock()
+	require.True(t, fx.sink.approve(1, ""))
+	<-entered
+	cancelled := make(chan struct{})
+	go func() { _ = b.Cancel(); close(cancelled) }()
+	waitUntil(t, "the stop to reach the gate", func() bool {
+		g := b.(*claudeBackend).gate
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return g.halted
+	})
+	close(release)
+	<-cancelled
+	select {
+	case <-turnDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the turn did not end after Stop")
+	}
+	require.NoError(t, b.Close())
+
+	row := fx.sink.row(1)
+	assert.Equal(t, "failed", row.status, "approved but stopped: expired, never claimed")
+	assert.Equal(t, "stopped before the approved call ran", row.reason)
+	answers := fx.controlAnswers(t)["r1"]
+	require.Len(t, answers, 1)
+	assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
+}
+
+func TestGate_WithdrawnBeforeTheRowExistsNeverWaits(t *testing.T) {
+	sink := newFakeSink()
+	entered, release := make(chan struct{}), make(chan struct{})
+	sink.beforePropose = func() { close(entered); <-release }
+	g, err := newGate(GateOptions{Sink: sink, Policy: connectorpolicy.Policy{Disabled: map[string]bool{}},
+		PollInterval: 10 * time.Millisecond}, func() string { return "t1" }, io.Discard)
+	require.NoError(t, err)
+	p, r := pipeProc(t)
+	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+	require.True(t, ok)
+
+	g.dispatch(p, req)
+	<-entered
+	g.withdraw("r1") // the CLI withdrew it while the row was being written
+	close(release)
+	waitUntil(t, "the row to settle", func() bool { return sink.row(1).status == "rejected" })
+	assert.Equal(t, "stopped", sink.row(1).reason)
+	require.NoError(t, p.stdin.Close())
+	rest, _ := io.ReadAll(r)
+	assert.Empty(t, string(rest), "a withdrawn request gets no answer")
+}
+
+func TestGate_ApprovedForeignUpdateIsNoStandingGrant(t *testing.T) {
+	const foreign = "https://claude.ai/artifact/ForeignQQQQQQQQQQQQQQQ"
+	fx := gateFake(t)
+	update := `{"action":"publish","url":"` + foreign + `","file_path":"` + filepath.Join(fx.pub.Path(), "p.html") + `"}`
+	fx.setRequests(t, canUseTool("r1", "tu1", "Artifact", "", update))
+	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT=Updated "+foreign)
+	h := startSession(t, NewClaudeBackend(fx.opts), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "update it"})
+	wait := h.next(EventToolWait)
+	require.True(t, fx.sink.approve(wait.ActionID, ""))
+	end := h.next(EventToolEnd)
+	require.NotNil(t, end.OK)
+	assert.True(t, *end.OK)
+	h.next(EventTurnDone)
+
+	fx.setRequests(t, canUseTool("r2", "tu2", "Artifact", "", update))
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "update it again"})
+	again := h.next(EventToolWait)
+	assert.Equal(t, "tu2", again.ID, "the second update of a page this chat did not publish asks again")
+	require.True(t, fx.sink.reject(again.ActionID))
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
 }

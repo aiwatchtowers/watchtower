@@ -190,10 +190,15 @@ func parseOtherControlRequest(line []byte) (requestID, subtype string, ok bool) 
 // controlErrorLine answers a control_request with an error, the SDKs' shape
 // for a request the host cannot serve.
 func controlErrorLine(requestID, message string) []byte {
-	b, err := json.Marshal(map[string]any{
-		"type":     "control_response",
-		"response": map[string]string{"subtype": "error", "request_id": requestID, "error": message},
-	})
+	type body struct {
+		Subtype   string `json:"subtype"`
+		RequestID string `json:"request_id"`
+		Error     string `json:"error"`
+	}
+	b, err := json.Marshal(struct {
+		Type     string `json:"type"`
+		Response body   `json:"response"`
+	}{"control_response", body{"error", requestID, message}})
 	if err != nil {
 		panic(fmt.Sprintf("encoding a control error: %v", err)) // only strings: cannot fail
 	}

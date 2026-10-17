@@ -408,6 +408,12 @@ func TestTranslate_PublishedLinkSourceOnlyForClaudeAIURLs(t *testing.T) {
 		{"only the planted link", "mcp__claude_ai_Claude_Docs__batch", birth,
 			"<doc>See https://claude.ai/artifact/PlantedQQQQQQQQQQQQQQQ</doc>", false, nil},
 		{"another tool", "WebSearch", `{"query":"x"}`, link, false, nil},
+		{"planted link in another case", "mcp__claude_ai_Claude_Docs__batch",
+			`{"container":{"kind":"project","create":{"name":"Plan","doc":{"markdown":"https://claude.ai/artifact/3F2A9C1E-5B7D-4E8A-9C21-7D4E5F6A8B90"}}},"batch":[]}`,
+			"<doc>https://claude.ai/artifact/3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90</doc>", false, nil},
+		{"planted link escaped", "mcp__claude_ai_Claude_Docs__batch",
+			`{"container":{"kind":"project","create":{"name":"Plan","doc":{"markdown":"https://claude.ai/artifact/\u0050lantedQQQQQQQQQQQQQQQ"}}},"batch":[]}`,
+			"<doc>https://claude.ai/artifact/PlantedQQQQQQQQQQQQQQQ</doc>", false, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
