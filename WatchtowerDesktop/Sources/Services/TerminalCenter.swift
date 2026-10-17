@@ -1256,11 +1256,17 @@ enum TerminalPalette {
 /// pty. OSC 52 **write** still reaches the view: copying from Claude Code,
 /// vim or tmux keeps working. SwiftTerm's `clipboardRead` is public, not
 /// open, so it cannot be overridden in the subclass.
+///
+/// Forwards all eleven `TerminalViewDelegate` requirements of SwiftTerm
+/// 1.20 (`TerminalClipboardReadGuardTests` pins each one). A requirement a
+/// later SwiftTerm adds with a default implementation compiles without a
+/// forward here — add it on a SwiftTerm bump.
 @MainActor
 final class TerminalClipboardReadGuard: TerminalViewDelegate {
-    private unowned let view: LocalProcessTerminalView
+    /// The view itself in the app; a spy in tests.
+    private unowned let view: any TerminalViewDelegate
 
-    init(view: LocalProcessTerminalView) {
+    init(view: any TerminalViewDelegate) {
         self.view = view
     }
 
