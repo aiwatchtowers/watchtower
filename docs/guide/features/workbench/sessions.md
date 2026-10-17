@@ -10,7 +10,7 @@ With several sessions running, the terminals tell you nothing until you open eac
 
 A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs.
 
-Quitting Watchtower closes every terminal, and nothing starts by itself on the next launch.
+Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](#updates-and-quitting).
 
 ### Session states
 
@@ -33,6 +33,22 @@ A ring instead of a filled dot means the session is not running. A blue ring is 
 Two limits matter. Pressing Esc or Ctrl+C to interrupt the agent reports nothing, so the session keeps saying "Working" until your next prompt. And only sessions started in a workbench's terminal in Watchtower report a state.
 
 When no helper has reported for 30 minutes, Watchtower asks Claude Code whether the session is still at work, then every 30 minutes. It shows **Stopped** once the answer is no, or after the check fails twice in a row.
+
+### Updates and quitting
+
+Sessions run in a small background helper, not inside the Watchtower window. An update leaves them running: the agent keeps working, and its helper agents and background jobs (a dev server, a build) keep going. When Watchtower comes back, each session shows its live terminal again.
+
+An update, log-out or restart never asks about sessions (only about a running recording or unsent ask answers). When you quit yourself with sessions running, Watchtower asks:
+
+- **Keep Sessions and Quit** leaves them running.
+- **Stop Sessions and Quit** stops them.
+- **Cancel** stays in the app.
+
+**Reset All Data** (Settings → System) always stops them. If the helper cannot be reached when Watchtower starts, sessions run in the window instead: each says "This session stops when Watchtower quits." under its terminal, and the quit alert counts it as "unprotected". If the helper stops later, the next session start restarts it; if that fails, the terminal shows **[Watchtower] the session host is not running**.
+
+Sessions do not survive a Mac restart or log-out; use **Resume** after one. While Watchtower is closed, sessions send no notices and your phone sees no updates. A session that exited meanwhile shows its last output and reads as exited when you return.
+
+Every Watchtower build on your Mac shares one helper. Two copies open on the same workspace compete for its sessions: the loser shows **Another Watchtower window took this session over.**, and restarting the session there starts a second agent. The helper quits a minute after its last session ends, and an update's new helper takes over then.
 
 ### Where the agent works
 

@@ -661,6 +661,53 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// Scopes the terminal center's hosted runs to this workspace (its
+    /// database path, `SessionHostPaths.scope`), then reattaches once the
+    /// session host connection (`TerminalCenter.startSessionHost`) is done;
+    /// with none begun it ends at once. `activate` waits for it
+    /// (`hostReattach`), not for the stops of stray runs.
+    func startHostReattach() {
+        terminalCenter?.sessionHostScope = SessionHostPaths.scope(databasePath: dbPool.path)
+        let connection = terminalCenter?.sessionHostConnection
+        hostReattach = Task { [weak self] in
+            await connection?.value
+            await self?.reattachHostedSessions()
+        }
+    }
+
+    /// Adopts the runs the session host still holds (board #496): asks the
+    /// host for its list, reads the rows it names, and lets the terminal
+    /// center adopt, stop or report each (`TerminalCenter.reattach`). Without
+    /// a connected host it does nothing. A list or row read that fails is
+    /// logged and changes nothing — no run is stopped over a failed read;
+    /// the rows read as stopped.
+    func reattachHostedSessions() async {
+        guard let center = terminalCenter, let host = center.sessionHost else { return }
+        let listed: [SessionHostSessionInfo]
+        do {
+            listed = try await host.list()
+        } catch {
+            NSLog("WorkbenchesViewModel: could not list the session host's sessions: %@", String(describing: error))
+            return
+        }
+        guard !listed.isEmpty else { return }
+        let ids = Set(listed.map(\.row))
+        let rows: [Int64: TerminalSession]
+        do {
+            rows = try await dbPool.read { db in
+                var found: [Int64: TerminalSession] = [:]
+                for id in ids {
+                    if let row = try TerminalSessionQueries.fetch(db, id: id) { found[id] = row }
+                }
+                return found
+            }
+        } catch {
+            NSLog("WorkbenchesViewModel: could not read the hosted sessions' rows: %@", error.localizedDescription)
+            return
+        }
+        await center.reattach(listed, rows: rows)
+    }
+
     // MARK: - Private
 
     private static func newClaudeSessionID() -> String {
@@ -817,6 +864,9 @@ extension WorkbenchesViewModel {
     private func activate(
         _ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement, ticket: Int?, setup: String? = nil
     ) async {
+        // A row the host still runs is adopted at launch, never relaunched
+        // beside it; a launch also waits for the host to take it.
+        await hostReattach?.value
         let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
