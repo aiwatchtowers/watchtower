@@ -148,7 +148,7 @@ final class PermissionAnswerHandlersTests: XCTestCase {
 
     // MARK: - Answer
 
-    func testProjNN_AnUngrantedDeviceCannotAnswer() async throws {
+    func testProj21_AnUngrantedDeviceCannotAnswer() async throws {
         let session = try await liveSession()
         let id = try await request(session)
         _ = try sidecar.setDeviceGrant(.permissions, false, deviceID: testPhoneID, at: Date())
@@ -174,7 +174,7 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         XCTAssertEqual(try row(id)?["status"], "pending")
     }
 
-    func testProjNN_AnAllowDecidesThePendingRowOnce() async throws {
+    func testProj21_AnAllowDecidesThePendingRowOnce() async throws {
         let session = try await liveSession()
         let id = try await request(session)
         let handlers = try makeHandlers()
@@ -238,7 +238,7 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         XCTAssertEqual(try row(newer)?["status"], "pending")
     }
 
-    func testProjNN_RevokeBlocksAnswers() async throws {
+    func testProj21_RevokeBlocksAnswers() async throws {
         let session = try await liveSession()
         let first = try await request(session)
         let handlers = try makeHandlers()
@@ -288,7 +288,7 @@ final class PermissionAnswerHandlersTests: XCTestCase {
 
     /// Only the hook's JSON decides a prompt: an answer writes no byte to
     /// the terminal, whatever its state (PROJ-16 holds).
-    func testProjNN_AnAnswerTypesNothing() async throws {
+    func testProj21_AnAnswerTypesNothing() async throws {
         let session = try await liveSession()
         setState(session, .needsApproval)
         let handlers = try makeHandlers()

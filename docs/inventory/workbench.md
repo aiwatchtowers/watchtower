@@ -1614,9 +1614,9 @@ other direction.
 
 **Locked since:** 2026-10-04
 
-## PROJ-16 — a line from the owner's phone reaches a Claude Code session only from a device the owner allowed on the Mac, only while the agent is idle, and only through PROJ-12's delivery; nothing from the phone ever answers a permission prompt
+## PROJ-16 — a line from the owner's phone reaches a Claude Code session only from a device the owner allowed on the Mac, only while the agent is idle, and only through PROJ-12's delivery; nothing typed from the phone ever answers a permission prompt
 
-**Status:** Enforced (Desktop; owner approved 2026-10-07 as decision OD-1 — a new contract rather than an amendment of PROJ-12 — with OD-2, the one-time Allow on the Mac; spec `docs/superpowers/specs/2026-10-07-mobile-poc-design.md` §6.6, §10, §11, plan `docs/superpowers/plans/2026-10-08-mobile-poc-b-workbench-remote.md` Task 18)
+**Status:** Enforced (Desktop; owner approved 2026-10-07 as decision OD-1 — a new contract rather than an amendment of PROJ-12 — with OD-2, the one-time Allow on the Mac; spec `docs/superpowers/specs/2026-10-07-mobile-poc-design.md` §6.6, §10, §11, plan `docs/superpowers/plans/2026-10-08-mobile-poc-b-workbench-remote.md` Task 18; amended 2026-10-17 for the phone's permission answers, PROJ-21, owner approved in ask #263 / #265)
 
 **Observable:** A `session_input` or `session_finish_request` action from
 the phone is typed into a workbench session only when (0) the device is
@@ -1675,6 +1675,21 @@ a device with `typing_allowed`; otherwise the Mac's own work-on prompt goes.
 No phone action writes to a session's terminal while its state is
 `needsApproval`, and the phone shows "Needs approval on the Mac" with no
 send.
+A session's permission prompt is answered from the phone only through
+PROJ-21 (an explicit Allow once or Deny that the `PermissionRequest` hook
+returns as JSON, typing nothing), and an Esc reaches a session only through
+spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md`
+§6's rules (`session_interrupt`, recorded in PROJ-21) — never at Needs
+approval.
+
+**Amended 2026-10-17 (board #517, owner approved, ask #263 / #265; spec
+`docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §7):**
+the heading's last clause reads "nothing *typed* from the phone ever answers
+a permission prompt" (it read "nothing from the phone"), and the Observable
+points to PROJ-21 for the one structured answer channel and for the
+interrupt. Every condition for typed lines and every guard is unchanged;
+`testProj16_NeedsApprovalNeverGetsAPhoneLine` keeps its meaning (no typed
+line at Needs approval).
 
 **Why locked:** Any device signed into the owner's Apple ID can write relay
 records. Without a Mac-side grant, that device could drive a Claude Code
@@ -1870,6 +1885,102 @@ loses uncommitted work for good, so every doubt keeps the item.
 - supporting: `internal/sessionhost/server_test.go` (`TestServer_HostedChildKeepsDefaultSighup`, `TestServer_ScopeRoundTrips`, `TestServer_AttachExitedSession`, `TestServer_AttachTakesOver`, `TestServer_IdleExitIgnoresUnboundConnection`, `TestServer_ExitWhileAttachedIsKeptUntilForget`); `WatchtowerDesktop/Tests/TerminalCenterReattachTests.swift` (`testReattachIgnoresAnotherWorkspacesRuns`, `testReattachStopsSessionWhoseRowIsGone`, `testReattachReportsExitOnceAndForgets`, `testReattachIgnoresListFailure`, `testStartHostReattachWaitsForTheConnection`); `WatchtowerDesktop/Tests/TrayAppDelegateTests.swift` (`testSystemLogoutNeverPrompts`, `testStoppingSessionsQuitNeverOffersKeep`, `testQuitPromptNamesUnprotectedSessionsThatStop`); `WatchtowerDesktop/Tests/TerminalCenterTests.swift::testDetachAllNeverSignals`; `WatchtowerDesktop/Tests/HostedTerminalSessionTests.swift` (incl. `testATakenOverRunIsNeitherReattachedNorReported`)
 
 **Limits (accepted):** no survival across a Mac restart or log-out (the existing `--resume` is the path there); while the app is closed there are no state notices and the phone sees no updates (hooks still write to the database); the screen replay is approximate until the agent redraws; a dev build on the same workspace takes runs from the installed app's windows (last attach wins), the losing window's row keeps reading running, and Restart there starts a second run beside the winner's; sessions launched by an older host carry an empty scope and every workspace treats them as its own.
+
+**Locked since:** 2026-10-17
+
+## PROJ-21 — a permission prompt is answered from the phone only by the owner's explicit Allow once or Deny, from a device allowed for it on the Mac, through the hook; the answer types nothing, allows one call, and never answers a prompt the Mac answered first
+
+**Status:** Enforced (Go and Desktop; board #517, owner decisions in ask #263, spec approved in ask #265; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §4–§7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`)
+
+**Observable:** A Claude Code permission prompt of a board `claude`
+session is answered from the phone only through the synchronous
+`PermissionRequest` command hook `<bin> workbench permission-wait
+--workbench N` (matcher `*`, `timeout: 86400`), which `integrate claude-code
+--workbench N`, `workbench resync` and Repair install with the state hooks
+in Claude folders only (`integrate status --json` reports
+`permission_wait`; a folder without it is offered Repair). The hook:
+(1) without `WATCHTOWER_TERMINAL_SESSION_ID`, for another event, for a
+`session_id` that is not the row's (a nested `claude -p`), for a row that is
+not workbench N's live `claude` session, or with no readable config or
+database, exits 0 at once with no stdout (a failure is one stderr line) —
+the prompt stays on the Mac with no delay; (2) otherwise, in one short
+write under the hooks' 1 s busy budget (`db.OpenPermissionRequest`),
+records the session's agent state `approval` at the prompt's time, closes
+any older `pending` row of the session `answered_on_mac` (one prompt at a
+time per session) and inserts a `pending` row in `permission_requests`
+(migration `00130`: `tool_name`, a `summary` of at most 2000 runes — a Bash
+`command` plus `\n` + `description`, the `file_path` (or `notebook_path`)
+of Edit/Write/NotebookEdit, a WebFetch `url`, otherwise the compact JSON of
+`tool_input`; no full `tool_input` is stored); (3) reads the row back every
+1 s with reads only, and prints a decision only for a phone's answer:
+`allowed` → `{"hookSpecificOutput":{"hookEventName":"PermissionRequest",
+"decision":{"behavior":"allow"}}}`, never with `updatedInput` or
+`updatedPermissions` (the phone allows this one call, never a rule);
+`denied` → `"behavior":"deny"` with the message `Denied from the owner's
+phone.` and no `interrupt`. **A Mac answer wins:** when the session's
+`agent_state_at` moves past the row's `created_at` with a state other than
+`approval` (the allowed tool's PostToolUse `working`, a Mac deny's
+`waiting`), or the session finishes or leaves the board, the hook closes the
+row `answered_on_mac` and prints nothing; a row closed by anything else (a
+newer prompt, the Desktop's expiry), a deleted row and SIGTERM print
+nothing. Every exit is code 0.
+
+On the Desktop hub, a `permission_answer` action (entity: the session;
+`{request_id, behavior: allow|deny}`) decides the row only in this order:
+the device is linked (the relay's device gate, PROJ-16 condition 0) → the
+device's own `permissions_allowed` grant in `hubstate.db` (else
+`device_not_allowed`), which the owner gives with the phone row's own
+**Allow…** in Settings → Mobile after the confirmation "Allow "<name>" to
+approve commands in Claude Code sessions?" and takes back with **Revoke**
+(the phone's "Answer permission prompts from this phone" toggle only stores
+`permissions_requested`; turning it from on to off revokes); the typing
+grant never implies it, and it never implies typing → the row is this
+board `claude` session's (else `not_found`) and `pending` (else
+`not_pending`, whose message says "Answered on the Mac" for
+`answered_on_mac` and "Too late — answer on the Mac" for `expired`) → the
+session is live (else `session_not_running`) → one compare-and-set `UPDATE
+permission_requests SET status, decided_at, decided_by WHERE id = ? AND
+terminal_session_id = ? AND status = 'pending'`, so an answer that lost to
+the Mac, the expiry or a second phone is `not_pending` and a late answer to
+an older prompt never decides a newer one. The relay claims it `begun`
+before the handler (`RelayProcessor.nonIdempotentKinds`): never held, never
+retried, a replay after a hub crash is `outcome_unknown`. **Nothing is typed
+for an answer:** the handler writes only that row; no phone action writes to
+the terminal at Needs approval (PROJ-16).
+
+A `session_interrupt` action (entity: the session) writes exactly one byte,
+`0x1B` (Esc), through `TerminalCenter.sendInterrupt`, only in this order:
+`typing_allowed` (the typing grant, else `device_not_allowed`) → a board
+`claude` session (Codex sessions are never interrupted from the phone, else
+`not_found`) → live (else `session_not_running`) → its resolved state is
+Working or Agents working (never Running, Needs approval or an idle state;
+else `not_working`) → the action is at most 120 s old when the hub handles
+it (else `expired`, so an Esc never lands on a later turn the owner never
+saw) → the session has no `pending` permission request (else `not_working`
+with "Needs approval — use Deny": Claude Code draws the prompt before the
+hook reports it). It is also claimed `begun` before the handler, never held
+and never retried. The phone offers **Interrupt** only on a live Claude
+session that shows Working, with typing requested and allowed and no
+pending request.
+
+**Why locked:** Owner decision (ask #263): away from the Mac, a session at
+a prompt was a dead end, but PROJ-16's reason stands — a typed line or
+Return can answer a prompt that opens meanwhile. This channel answers by the
+hook's JSON alone, so nothing typed can reach a prompt. A phone holding
+workbench write power must not approve commands unless the owner granted
+exactly that on the Mac, must not turn one approval into a standing rule,
+and must not override an answer the owner already gave at the keyboard. An
+Esc at a prompt rejects it, and an Esc on a later turn interrupts work the
+owner never saw.
+
+**Test guards:**
+- `cmd/workbench_permission_wait_test.go` — `TestProj21_PermissionWaitPhoneAllowPrintsAllow`, `TestProj21_PermissionWaitPhoneDenyPrintsDeny` (the exact decision JSON: allow with no `updatedInput`/`updatedPermissions`, the deny message), `TestProj21_PermissionWaitMacAnswerWins`, `TestProj21_PermissionWaitNotABoardSessionExitsSilently` (no output, under 100 ms), `TestProj21_PermissionWaitDBFailureExitsSilently` (the failure path: no decision, one stderr line)
+- `WatchtowerDesktop/Tests/MobileHub/PermissionAnswerHandlersTests.swift` — `testProj21_AnUngrantedDeviceCannotAnswer`, `testProj21_AnAllowDecidesThePendingRowOnce` (the CAS: a second answer is `not_pending`), `testProj21_RevokeBlocksAnswers`, `testProj21_AnAnswerTypesNothing`
+- `WatchtowerMobile/Tests/PermissionCardTests.swift::testWithoutTheGrantTheCardIsReadOnlyWithAHint` (the phone's no-grant card; the typing grant never enables it)
+- supporting: `cmd/workbench_permission_wait_test.go` (`TestPermissionWait_RecordsApprovalAtOnce`, `TestPermissionWait_SessionGoneExitsSilently`, `TestPermissionWait_ForeignSessionExitsSilently`, `TestPermissionWait_CancelExitsSilently`, `TestPermissionSummary`); `internal/db/permission_requests_test.go` (`TestOpenPermissionRequestSetsApprovalAndInserts`, `TestOpenPermissionRequestInsertsWhenTheStateGuardHoldsBack`, `TestInsertPermissionRequestClosesTheOlderPending`, `TestClosePermissionRequestIsCompareAndSet`, `TestPermissionRequestCheckRejectsUnknownStatus`); `internal/devpack/workbench_state_hooks_test.go::TestInstallWorkbenchInstallsThePermissionWaitHook`; `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_PermissionWaitKey`; `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingPermissionWaitNeedsRepair`; `PermissionAnswerHandlersTests` (`testTheTypingGrantAloneCannotAnswer`, `testADenyDecidesThePendingRow`, `testAnAnswerAfterTheMacAnsweredIsNotPending`, `testAnAnswerToAnExpiredRequestIsNotPending`, `testALateAnswerToAnOlderPromptNeverDecidesTheNewerOne`, `testAnAnswerForAnotherSessionsRequestIsNotFound`, `testAnAnswerForASessionNoLongerRunningFails`, `testAnAnswerWithBadParamsIsInvalid`, `testInterruptSendsOneEscWhileWorking`, `testInterruptSendsOneEscWhileAgentsWork`, `testInterruptAtNeedsApprovalFailsNotWorking`, `testInterruptWithAPendingRequestFailsNotWorking`, `testInterruptWhenIdleFailsNotWorking`, `testAStaleInterruptExpires`, `testInterruptNeedsTheTypingGrant`, `testInterruptOfASessionNoLongerRunningFails`, `testBothKindsAreClaimedBeforeTheirHandler`); `WatchtowerDesktop/Tests/MobileHub/PermissionRequestSliceTests.swift` (`testOnlyPendingRowsOfLiveBoardSessionsArePublished`, `testOldOrOrphanPendingRowsExpireOnThePass`, `testTheExpiryAgeIsTheHookTimeout`); `WatchtowerDesktop/Tests/MobileHub/MobileLinkCenterTests+Permissions.swift` (`testAPermissionsRequestIsStoredNotGranted`, `testPermissionsAllowIsSeparateFromTyping`, `testThePhonesPermissionsToggleOffRevokes`, `testAnUnrequestedPermissionsGrantSurvivesARewrite`); `RelayProcessorTests::testASidecarWithoutThePermissionColumnsGainsThem`; phone `PermissionCardTests` (`testAPendingRequestReplacesTheApprovalNotice`, `testCodexSessionKeepsTheNotice`, `testInterruptOnlyWhileWorkingAndAllowedToType`) and `PermissionAnswerWiringTests` (`testANotPendingEchoShowsAnsweredOnTheMac`)
+- PROJ-16's guards run unchanged (`testProj16_NeedsApprovalNeverGetsAPhoneLine` among them).
+
+**Limits (accepted):** a Mac answer is seen only at the allowed tool's PostToolUse (or the turn's `waiting` after a Mac deny), so during a long-running tool the phone may still send an answer to a prompt the Mac already answered; the hook then prints a decision Claude Code ignores (spec §2.3), and the phone says "Sent to the session", never "Allowed" or "Denied" as an outcome; a subagent's tool event during a main-agent prompt closes the row `answered_on_mac` early (fails safe: the phone's answer is refused, the Mac prompt still works); in the few milliseconds between Claude Code drawing a prompt and the hook writing its `pending` row, a session can still read Working with no pending row, so an Esc handled in that window could still reach the prompt; the expiry of `pending` rows (older than 86400 s, or of a session that is not live) runs only on the hub's slice pass, so it does not run while no phone is linked or the hub is off (such a row has no reader); the 86400 s hook timeout held 700 s on Claude Code 2.1.302 and no cap was found, but a lower cap would only expire rows early (the Mac prompt is unaffected); the hook timeout and the Desktop's expiry age (`PermissionRequestSlice.maxAge`) are a Go↔Swift dual path; a phone clock more than 2 minutes behind the Mac makes every interrupt `expired`; Codex sessions keep "Needs approval on the Mac" (out of scope for v1).
 
 **Locked since:** 2026-10-17
 
@@ -2164,6 +2275,8 @@ loses uncommitted work for good, so every doubt keeps the item.
   "~" figure; the sweep never signals processes; the one-time sweep hint plans in the background only after the Workbench page stayed on screen 30 s, one hint plan app-wide at a time, stopped after 5 minutes or when the page is left; when the worktrees take 1 GB or less it is snoozed for 7 days (`projects.cleanupHintCheckedAt.<id>`), and only when every worktree was measured — otherwise it checks again at the next launch; a future stamp counts as due, a failed or timed-out plan waits for the next launch, and once the banner went up or the sweep sheet was opened (`projects.cleanupHintShown.<id>`) it never runs for that workbench again.
 
 ## Changelog
+
+- 2026-10-17 (board #517, answer a permission prompt and interrupt from the iPhone; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`; **owner approved, ask #263 / #265**): **PROJ-21 added** — a permission prompt is answered from the phone only by an explicit Allow once or Deny through the `PermissionRequest` hook (`workbench permission-wait`, migration `00130` `permission_requests`), from a device with its own `permissions_allowed` grant; the answer types nothing, allows one call and loses to a Mac answer; `session_interrupt` sends one Esc under the typing grant while Working only. **PROJ-16 amended** — the heading's last clause reads "nothing typed from the phone ever answers a permission prompt", the Observable points to PROJ-21; no PROJ-16 guard changed. The Swift guards were written as `testProjNN_*` and renamed `testProj21_*`; the Go hook's key exit-path tests renamed `TestPermissionWait_*` → `TestProj21_PermissionWait*`.
 
 - 2026-10-17 (board #496, final review): **PROJ-20 text corrected — no guard changed or relaxed.** Every build shares one host (the "another bundle id lives in its own host" limit was false); a takeover tells the losing pane, which neither reattaches nor reports an exit; an exited-while-away run is attached for its last output before its one exit report; the local fallback applies only when the host is unreachable at app launch; an update and a log-out never ask about sessions (a recording or unsent ask answers still prompt); the idle exit ignores the app's control connection.
 

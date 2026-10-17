@@ -89,7 +89,7 @@ func answerFromPhone(database *db.DB, row int64, status string) <-chan error {
 	return done
 }
 
-func TestPermissionWait_PhoneAllowPrintsAllow(t *testing.T) {
+func TestProj21_PermissionWaitPhoneAllowPrintsAllow(t *testing.T) {
 	database, pid, row := briefSessionFixture(t)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 	stepClock(t)
@@ -109,7 +109,7 @@ func TestPermissionWait_PhoneAllowPrintsAllow(t *testing.T) {
 	assert.Equal(t, "ls -la\nList files", req.summary)
 }
 
-func TestPermissionWait_PhoneDenyPrintsDeny(t *testing.T) {
+func TestProj21_PermissionWaitPhoneDenyPrintsDeny(t *testing.T) {
 	database, pid, row := briefSessionFixture(t)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 	stepClock(t)
@@ -127,7 +127,7 @@ func TestPermissionWait_PhoneDenyPrintsDeny(t *testing.T) {
 
 // The owner answers at the Mac first: the tool's PostToolUse stamps
 // `working` after the request; the hook closes its row and prints nothing.
-func TestPermissionWait_MacAnswerWins(t *testing.T) {
+func TestProj21_PermissionWaitMacAnswerWins(t *testing.T) {
 	database, pid, row := briefSessionFixture(t)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 	stepClock(t)
@@ -217,7 +217,7 @@ func TestPermissionWait_SessionGoneExitsSilently(t *testing.T) {
 	}
 }
 
-func TestPermissionWait_NotABoardSessionExitsSilently(t *testing.T) {
+func TestProj21_PermissionWaitNotABoardSessionExitsSilently(t *testing.T) {
 	database, pid, _ := briefSessionFixture(t)
 	unsetTerminalEnv(t)
 
@@ -242,7 +242,7 @@ func TestPermissionWait_ForeignSessionExitsSilently(t *testing.T) {
 	assert.Equal(t, 0, permissionRequestCount(t, database))
 }
 
-func TestPermissionWait_DBFailureExitsSilently(t *testing.T) {
+func TestProj21_PermissionWaitDBFailureExitsSilently(t *testing.T) {
 	_, pid, row := briefSessionFixture(t)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 	brokenConfig(t)
