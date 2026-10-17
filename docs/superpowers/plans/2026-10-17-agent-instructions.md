@@ -60,10 +60,11 @@ func (d *DB) ListOpenInstructionSuggestions() ([]InstructionSuggestion, error) /
 func (d *DB) ListInstructionSuggestionFingerprints() (map[string]string, error) // fingerprint → status, all statuses
 func (d *DB) GetInstructionSuggestion(id int64) (InstructionSuggestion, error)
 func (d *DB) DecideInstructionSuggestion(id int64, status string, now time.Time) error // "added" | "dismissed"; only from "open"
+func (d *DB) AddInstructionSuggestion(id int64, newBody string, now time.Time) error // one tx: write newBody to the row's field/scope (global or workbench) + mark added; error if not open
 ```
 Schema as in the spec's Storage section (`owner_instructions`, two `projects` columns, `instruction_suggestions` with `fingerprint UNIQUE` and status CHECK). Upsert on conflict(fingerprint): only an `open` row is refreshed (`text`, counts, `last_seen_at`); `added`/`dismissed` rows are untouched.
 
-- [ ] **Step 1: Write failing tests** — `TestOwnerInstructions_RoundTripAndClear`, `TestWorkbenchInstructions_RoundTripNullWhenEmpty`, `TestInstructionSuggestion_UpsertRefreshesOpenOnly` (dismissed row with the same fingerprint keeps `status="dismissed"` and its old counts), `TestInstructionSuggestion_DecideOnlyFromOpen` (deciding an `added` row returns an error).
+- [ ] **Step 1: Write failing tests** — `TestOwnerInstructions_RoundTripAndClear`, `TestWorkbenchInstructions_RoundTripNullWhenEmpty`, `TestInstructionSuggestion_UpsertRefreshesOpenOnly` (dismissed row with the same fingerprint keeps `status="dismissed"` and its old counts), `TestInstructionSuggestion_DecideOnlyFromOpen` (deciding an `added` row returns an error), `TestAddInstructionSuggestion_WritesTextAndMarksAtomically` (global and workbench scope).
 - [ ] **Step 2: Run** `go test ./internal/db -run 'Instruction'` — FAIL (undefined).
 - [ ] **Step 3: Write the migration, schema.sql mirror and accessors.**
 - [ ] **Step 4: Regenerate golden/Swift schema, add tables to `TestAllTablesExist`; run** `go test ./internal/db` — PASS.
@@ -138,7 +139,7 @@ Commands (all accept `--json`; errors as `{"ok":false,"error":"…"}` with a non
 - `instructions show [--workbench N]`
 - `instructions set --field session|procedure [--workbench N] --stdin` (body from stdin; empty clears; `instructions.Validate`)
 - `instructions preview [--workbench N]` → `{"ok":true,"brief_slot":"…","procedure":"…"}` (procedure rendered for target id `0` shown as `#N`: use `instructions.Procedure` then replace `#0` with `#N`)
-- `instructions suggestion add|dismiss <id>` — add: `AppendLine` into the field/scope the suggestion names, then `DecideInstructionSuggestion(id,"added")`, both in one write transaction; over limit → error, suggestion stays open.
+- `instructions suggestion add|dismiss <id>` — add: `AppendLine` onto the current text of the field/scope the suggestion names, then `db.AddInstructionSuggestion(id, newBody, now)` (one transaction); over limit → error, suggestion stays open.
 
 Pinned `show`/`set`/`suggestion` JSON (Swift decodes it; keep keys exactly):
 ```json
@@ -196,7 +197,7 @@ func (m *Miner) Run(ctx context.Context) (written int, usage *digest.Usage, err 
 ```
 Run: sessions of the last 14 days → owner entries only (`KindOwner`), each truncated to 500 runes, entries with a fenced code block or more than 15 lines skipped → if fewer than 3 sessions have lines, return 0 without a model call. User message (stdin) = sessions labelled `s<id>` with their lines, the four current texts, and the open + dismissed suggestion texts; `digest.WithSource(ctx, "instructions.suggest")`. Model JSON: `{"suggestions":[{"text":"…","field":"session|procedure","sessions":["s12","s40","s41"]}]}`. Go validation per spec step 3 (unknown session labels dropped, distinct ≥ 3, text ≤ 200 runes, field valid, scope = the single workbench when all sessions share it else NULL, `workbench_count` = distinct workbenches), then `UpsertInstructionSuggestion` with `Fingerprint`. A model or parse error writes nothing and returns the error.
 
-- [ ] **Step 1: Failing tests** (fake `Gen` and `Read`) — `TestMiner_WritesValidatedSuggestion`, `TestMiner_DropsUnknownSessionsAndUnderThree`, `TestMiner_ScopeOneWorkbenchVsGlobal`, `TestMiner_DismissedFingerprintStaysDismissed`, `TestMiner_NoModelCallUnderThreeSessions`, `TestMiner_ModelErrorWritesNothing`, `TestMiner_OwnerTextOnStdinOnly` (assert the generator is stdin-only / text absent from argv per the `terminalTitleGeneratorFactory` pattern), `TestListWorkbenchTerminalSessionsSince`; `TestTierForSource_EveryGenerateCallIsTagged` stays green.
+- [ ] **Step 1: Failing tests** (fake `Gen` and `Read`) — `TestMiner_WritesValidatedSuggestion`, `TestMiner_DropsUnknownSessionsAndUnderThree`, `TestMiner_ScopeOneWorkbenchVsGlobal`, `TestMiner_DismissedFingerprintStaysDismissed`, `TestMiner_NoModelCallUnderThreeSessions`, `TestMiner_ModelErrorWritesNothing`, `TestListWorkbenchTerminalSessionsSince`; `TestTierForSource_EveryGenerateCallIsTagged` stays green.
 - [ ] **Step 2: Run** `go test ./internal/instructions ./internal/db ./internal/digest -run 'Miner|SessionsSince|TierForSource'` — FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — PASS.
@@ -210,7 +211,7 @@ Run: sessions of the last 14 days → owner entries only (`KindOwner`), each tru
 
 `func (d *Daemon) phaseInstructionSuggestions(ctx context.Context)`: skip when `sameCalendarDay(d.lastInstructionSuggestions, now)`; skip (log) when `planusage.NearLimit(st)` (pattern history_backfill.go:213-221); run inside `d.trackedPipelineRun("instruction-suggestions", …)` with a stdin-only light-tier generator; save the stamp `last_instruction_suggestions.txt` only after a run that returned without error (a failed run retries next cycle-day per spec: stamp written on success and on "nothing to do").
 
-- [ ] **Step 1: Failing tests** — `TestPhaseInstructionSuggestions_OncePerDay`, `TestPhaseInstructionSuggestions_SkipsNearLimit`, `TestPhaseInstructionSuggestions_ErrorDoesNotStamp`.
+- [ ] **Step 1: Failing tests** — `TestPhaseInstructionSuggestions_OncePerDay`, `TestPhaseInstructionSuggestions_SkipsNearLimit`, `TestPhaseInstructionSuggestions_ErrorDoesNotStamp`, `TestPhaseInstructionSuggestions_GeneratorIsStdinOnly` (owner text never on argv, per the `terminalTitleGeneratorFactory` pattern).
 - [ ] **Step 2: Run** `go test ./internal/daemon -run InstructionSuggestions` — FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — PASS.
