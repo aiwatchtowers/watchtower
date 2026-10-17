@@ -30,8 +30,6 @@ struct AgentSettingsSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Divider()
-                instructionsSection
-                Divider()
                 fileRow(state)
             } else if vm.methodologyErrors[project.id] == nil {
                 ProgressView().controlSize(.small)
@@ -42,6 +40,10 @@ struct AgentSettingsSheet: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Outside the methodology state: a failed methodology load must
+            // not hide the owner's instructions, which load on their own.
+            Divider()
+            instructionsSection
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }

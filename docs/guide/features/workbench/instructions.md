@@ -27,7 +27,7 @@ Once a day Watchtower reads what you typed in your recent sessions, from both ag
 2. Type in **Session instructions** or **Target procedure** and press **Save**.
 3. To add to one workbench only, open its **…** menu, choose **Agent Settings…** and use **Your instructions — this workbench**.
 4. Press **Preview what the agent gets…** to see the exact text.
-5. When **You keep saying this** shows suggestions, press **Add** to append a line to the field, or **Dismiss**. Home shows the newest suggestion for a week as a card with the same buttons.
+5. When **You keep saying this** shows suggestions, press **Add** to append a line to the field, or **Dismiss**. While the field has an edit you have not saved, its **Add** is off: save or revert your edit first. Home shows the newest suggestion for a week as a card with the same buttons.
 
 ## When it's empty or wrong
 

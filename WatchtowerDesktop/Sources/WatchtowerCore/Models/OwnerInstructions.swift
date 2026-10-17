@@ -78,6 +78,13 @@ package struct OwnerInstructionsState: Decodable, Equatable, Sendable {
     /// The length the limit applies to: Go counts runes (Unicode scalars),
     /// not bytes and not grapheme clusters.
     package static func runeCount(_ text: String) -> Int { text.unicodeScalars.count }
+
+    /// A field has an unsaved edit when its draft differs from the stored
+    /// text; Add is off then, since Add writes the stored text plus the line
+    /// and the edit would be lost on the reload.
+    package static func hasUnsavedEdit(draft: String?, stored: String) -> Bool {
+        draft.map { $0 != stored } ?? false
+    }
 }
 
 /// `watchtower instructions preview --json`: the exact brief slot and

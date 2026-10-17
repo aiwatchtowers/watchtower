@@ -61,15 +61,24 @@ extension AppState {
     }
 
     /// Add / Dismiss from Home's suggestion card; the CLI's refusal (an
-    /// over-limit Add) comes back as text for the card to show.
-    func decideInstructionSuggestion(id: Int64, add: Bool) async -> String? {
-        guard let cli = workbenchesViewModel?.cli else { return "The command line is not available." }
+    /// over-limit Add) comes back as text for the card to show. A success
+    /// re-reads Home at once: the CLI writes from another process, which the
+    /// GRDB observation never sees. `decide` replaces the CLI call in tests.
+    func decideInstructionSuggestion(
+        id: Int64, add: Bool, decide: ((Int64, Bool) async throws -> Void)? = nil
+    ) async -> String? {
         do {
-            _ = try await cli.decideSuggestion(id: id, add: add)
-            return nil
+            if let decide {
+                try await decide(id, add)
+            } else {
+                guard let cli = workbenchesViewModel?.cli else { return "The command line is not available." }
+                _ = try await cli.decideSuggestion(id: id, add: add)
+            }
         } catch {
             return error.localizedDescription
         }
+        await homeCenter.rereadNow()
+        return nil
     }
 
     /// The tab a Getting ready card's Open lands on.

@@ -43,6 +43,13 @@ final class OwnerInstructionsStateTests: XCTestCase {
         XCTAssertEqual(OwnerInstructionsState.runeCount(""), 0)
     }
 
+    func testAnUnsavedEditIsADraftThatDiffersFromTheStoredText() {
+        XCTAssertFalse(OwnerInstructionsState.hasUnsavedEdit(draft: nil, stored: "Be brief."))
+        XCTAssertFalse(OwnerInstructionsState.hasUnsavedEdit(draft: "Be brief.", stored: "Be brief."))
+        XCTAssertTrue(OwnerInstructionsState.hasUnsavedEdit(draft: "Be brief. Run lint.", stored: "Be brief."))
+        XCTAssertTrue(OwnerInstructionsState.hasUnsavedEdit(draft: "", stored: "Be brief."))
+    }
+
     func testRefusalBecomesAThrownMessage() {
         let json = #"{"ok":false,"error":"session instructions: over the 1000 character limit"}"#
         XCTAssertThrowsError(try OwnerInstructionsState.decode(Data(json.utf8))) { error in

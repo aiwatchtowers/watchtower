@@ -76,6 +76,8 @@ final class HomeCenter {
     @ObservationIgnored private let store: GettingReadyStore
     @ObservationIgnored private let tickInterval: Duration
     @ObservationIgnored private var data: HomeTodayData?
+    /// The pool `beginReading` reads, for `rereadNow`; nil while stopped.
+    @ObservationIgnored private var pool: DatabasePool?
     /// The zone showed unready cards during this launch (`GettingReadyPolicy`).
     @ObservationIgnored private var sawUnready = false
     /// Today reads issued; tests check a rebuild did not read.
@@ -107,6 +109,7 @@ final class HomeCenter {
     /// and starts the tick. A second call restarts both.
     func beginReading(pool: DatabasePool) {
         endReading()
+        self.pool = pool
         let current = generation
         observationTask = Task { [weak self] in
             do {
@@ -163,9 +166,17 @@ final class HomeCenter {
         rebuildSnapshot()
     }
 
+    /// One Today read now, for a write from another process (a CLI call)
+    /// the observation never sees; a no-op while stopped.
+    func rereadNow() async {
+        guard let pool else { return }
+        await reread(pool, generation: generation)
+    }
+
     /// Stops the observation and the tick; the last snapshot stays.
     func endReading() {
         generation += 1
+        pool = nil
         observationTask?.cancel()
         observationTask = nil
         tickTask?.cancel()

@@ -64,9 +64,9 @@ A failure with `--json` prints `{"ok":false,"error":…}` and exits non-zero.
 ## Desktop
 
 - `OwnerInstructions` (WatchtowerCore) — the decoded `show --json` state; `WorkbenchesViewModel` instruction methods call the CLI.
-- Settings -> System -> Workbench: `InstructionsSettingsSection` with a `InstructionFieldBlock` per field (counter `n / limit`, its own **Save**, enabled while the text differs), the yellow **You keep saying this — N suggestions** block with **Add** / **Dismiss**, and **Preview what the agent gets…** (`InstructionsPreviewSheet`, **What the agent gets**).
+- Settings -> System -> Workbench: `InstructionsSettingsSection` with a `InstructionFieldBlock` per field (counter `n / limit`, its own **Save**, enabled while the text differs), the yellow **You keep saying this — N suggestions** block with **Add** / **Dismiss** (Add off while the field has an unsaved edit, `OwnerInstructionsState.hasUnsavedEdit`, hint "Save or revert your edit first"), and **Preview what the agent gets…** (`InstructionsPreviewSheet`, **What the agent gets**).
 - Workbench **…** -> **Agent Settings…**: the section **Your instructions — this workbench**, global text collapsed with **Edit in Settings**, then the workbench's own field. The `workflow.md` row stays and is the team's folder rules.
-- Home: Today shows one card for the newest open suggestion first seen in the last 7 days — **Add**, **Dismiss**, **More…** (opens Settings at the field). It leaves once acted on or at 7 days; older open suggestions stay in Settings only. It follows the Today card conventions (a failed read is not an all-clear).
+- Home: Today shows one card for the newest open suggestion first seen in the last 7 days — **Add**, **Dismiss**, **More…** (opens Settings at the field). A successful Add/Dismiss re-reads Home at once (`HomeCenter.rereadNow`: the CLI writes from another process, which the observation misses). It leaves once acted on or at 7 days; older open suggestions stay in Settings only. It follows the Today card conventions (a failed read is not an all-clear).
 
 ## Limits
 

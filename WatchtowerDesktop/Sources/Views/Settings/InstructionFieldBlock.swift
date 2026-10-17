@@ -22,6 +22,8 @@ struct InstructionFieldBlock: View {
     var globalText: String?
     var onEditGlobal: (() -> Void)?
 
+    private var unsavedEdit: Bool { OwnerInstructionsState.hasUnsavedEdit(draft: draft, stored: stored) }
+
     var body: some View {
         let shown = draft ?? stored
         let count = OwnerInstructionsState.runeCount(shown)
@@ -41,7 +43,7 @@ struct InstructionFieldBlock: View {
                     .foregroundStyle(count > limit ? .red : .secondary)
                 Spacer()
                 Button("Save") { onSave(shown) }
-                    .disabled(shown == stored || busy)
+                    .disabled(!unsavedEdit || busy)
             }
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
@@ -71,6 +73,9 @@ struct InstructionFieldBlock: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("You keep saying this — \(suggestions.count) suggestion\(suggestions.count == 1 ? "" : "s")")
                     .font(.caption.weight(.semibold))
+                if unsavedEdit {
+                    Text("Save or revert your edit first").font(.caption).foregroundStyle(.secondary)
+                }
                 ForEach(suggestions) { row in
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -79,6 +84,7 @@ struct InstructionFieldBlock: View {
                         }
                         Spacer()
                         Button("Add") { onDecide(row, true) }
+                            .disabled(unsavedEdit)
                         Button("Dismiss") { onDecide(row, false) }
                     }
                     .disabled(busy)

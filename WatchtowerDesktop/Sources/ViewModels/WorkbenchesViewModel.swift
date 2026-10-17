@@ -69,11 +69,11 @@ final class WorkbenchesViewModel {
     private(set) var methodologyErrors: [Int64: String] = [:]
     /// Each workbench's latest methodology call: an older call's answer
     /// (a sheet's load still in flight when a picker changed) is dropped.
+    @ObservationIgnored private var methodologyCallSeq: [Int64: Int] = [:]
     /// Agent Settings → "Your instructions": the owner's texts per workbench,
     /// and the last refusal per field (the sheet keeps its draft on one).
     private(set) var instructions: [Int64: OwnerInstructionsState] = [:]
     private(set) var instructionErrors: [Int64: [InstructionField: String]] = [:]
-    @ObservationIgnored private var methodologyCallSeq: [Int64: Int] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// The default agent (Settings → Workbench → Default agent, D1) as last
     /// read: menus label themselves with it. A launch reads it afresh
