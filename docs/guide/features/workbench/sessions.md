@@ -44,7 +44,7 @@ When you quit with sessions running, Watchtower asks:
 - **Stop Sessions and Quit** stops them.
 - **Cancel** stays in the app.
 
-**Reset All Data** (Settings → Data) always stops them. A session that could not start in the helper says "This session stops when Watchtower quits." under its terminal, and the quit alert counts it as "unprotected".
+**Reset All Data** (Settings → System) always stops them. A session that could not start in the helper says "This session stops when Watchtower quits." under its terminal, and the quit alert counts it as "unprotected".
 
 Sessions do not survive a Mac restart or log-out; use **Resume** after one. While Watchtower is closed, sessions send no notices and your phone sees no updates, though the agent's asks still reach the database. A session that exited meanwhile shows as exited when you return.
 
