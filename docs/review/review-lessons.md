@@ -1740,3 +1740,12 @@ Entry format:
 - rule-gap (candidate, review process): *deferrals marked "fix in final wave" in the SDD ledger are applied (or explicitly re-deferred) before the final panel is dispatched, so the panel reviews the branch the controller meant to ship.*
 - rule-gap (candidate, Swift dim 9): *a Swift query that refuses a write on a non-open row throws (inside the caller's write transaction) instead of returning silently, so a multi-statement write rolls back as one; a `guard … else { return }` in a write query is the tell.*
 - outcome: TBD
+
+## 2026-10-16 — feature/session-chat-feed (session chat feed: sessionfeed package, `workbench session-feed`, migration 00126 triggers, Desktop chat pane + subagent sheet; panel: prosecutor + codex, specialists unavailable) — verdict: changes-needed
+
+- contested: prosecutor F2 (earlier conversation's tail lost when a later conversation appears) [ac-correctness]. Dismissed: Build parses the cursor conversation from `after.Offset` (i == afterIdx) before moving on, so the tail is emitted; only the unknown-`after.Conv` re-emit remains, already logged as deferred.
+- false-positive: prosecutor F2 as above (read the loop before trusting a cursor-loss claim) [ac-correctness].
+- miss: codex alone caught the nested subagent marker being a dead button in the subagent sheet (SessionChatRow built without `openSubagent`) [ac-correctness].
+- weak-dimension: 6 (UI reachability of a spec'd "opens the same way" path was untested).
+- rule-gap (candidate): *a recursive UI affordance (sheet inside sheet) needs a test or a manual check that the nested callback is wired.*
+- outcome: TBD

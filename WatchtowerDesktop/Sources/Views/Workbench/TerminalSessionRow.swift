@@ -74,6 +74,9 @@ struct TerminalSessionRow: View {
             if session.projectID != nil, let reviewChanges = actions.reviewChanges {
                 Button("Review Changes") { reviewChanges(session) }
             }
+            if session.projectID != nil, session.kind.isAgent, let showChat = actions.showChat {
+                Button("Show Chat") { showChat(session) }
+            }
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
         }
