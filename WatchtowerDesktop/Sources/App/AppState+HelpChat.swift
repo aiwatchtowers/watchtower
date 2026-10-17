@@ -47,6 +47,7 @@ extension AppState {
         let webView = Self.webViewWithKeyboard()
         switch HelpChatPolicy.action(destination: selectedDestination, editorHasKeyboard: webView != nil) {
         case .focusChatComposer:
+            bringMainWindowForward()
             chatViewModel?.requestComposerFocus()
         case .editorToggleComment:
             // A web view without a focused Monaco text (a diff, a recipe form)

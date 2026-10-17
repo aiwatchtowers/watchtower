@@ -45,7 +45,7 @@ func guideKeys() []string {
 func (guideSource) Build(_ context.Context, _ Queryer, key string) (*Doc, error) {
 	path, ok := splitRef(key, GuideSource+":")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: a missing doc, not an error
 	}
 	for _, p := range guide.Pages() {
 		if p.Path != path {

@@ -40,13 +40,6 @@ func seedOneJiraIssue(t *testing.T, database *db.DB) {
 	require.NoError(t, err)
 }
 
-func countKBDocuments(t *testing.T, database *db.DB) int {
-	t.Helper()
-	var n int
-	require.NoError(t, database.QueryRow(`SELECT count(*) FROM kb_documents`).Scan(&n))
-	return n
-}
-
 func countPipelineRuns(t *testing.T, database *db.DB, pipeline string) int {
 	t.Helper()
 	var n int
