@@ -288,6 +288,8 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	now := e.clock.Now()
 	f.Now = now
 	if abandoned {
+		// Desktop's AutomationFailureWatch.disabledMarker matches this suffix
+		// to post its "<name> was disabled" notice: change both together.
 		f.Error += "; the automation was disabled: " + runawayDisabledReason
 	}
 	err := e.db.FinishAutomationRun(runID, f, commit)

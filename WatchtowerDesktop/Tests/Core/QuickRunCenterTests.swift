@@ -27,6 +27,12 @@ private final class RecordingNotifier: AutomationRunNotifying {
         notices.append(Notice(name: name, status: status, summary: summary, error: error,
                               automationID: automationID, runID: runID))
     }
+
+    private(set) var disabledRunIDs: [Int64] = []
+
+    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64) {
+        disabledRunIDs.append(runID)
+    }
 }
 
 /// Quick run's activation and finish watch (spec §12.7, Review Focus 8).

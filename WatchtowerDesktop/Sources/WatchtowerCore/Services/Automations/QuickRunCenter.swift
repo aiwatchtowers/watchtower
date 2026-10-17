@@ -3,7 +3,8 @@ import GRDB
 import Observation
 
 /// Posts the finish notice of a run started from the "Run Automation…"
-/// palette or the tray (spec §12.7).
+/// palette or the tray (spec §12.7), and the failure notices of
+/// `AutomationFailureWatch` (#584). Both use one identifier per run.
 @MainActor
 package protocol AutomationRunNotifying {
     func runFinished(
@@ -14,6 +15,9 @@ package protocol AutomationRunNotifying {
         automationID: Int64,
         runID: Int64
     )
+
+    /// A run's script was abandoned and the daemon disabled its automation.
+    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64)
 }
 
 /// Quick run (spec §12.7): the rows of the "Run Automation…" palette (⌃⌘R)

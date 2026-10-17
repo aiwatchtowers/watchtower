@@ -360,6 +360,19 @@ final class NotificationService: Sendable {
             UNNotificationRequest(identifier: AutomationRunNotifier.identifier(runID: runID), content: content, trigger: nil))
     }
 
+    /// An automation run's script was abandoned and the daemon disabled the
+    /// automation (#584). Same identifier as the run's finish notice, so it
+    /// replaces a quick-run one rather than adding a second.
+    func sendAutomationDisabled(name: String, reason: String, automationID: Int64, runID: Int64) {
+        let content = UNMutableNotificationContent()
+        content.title = String(AutomationRunNotifier.disabledTitle(name: name).prefix(200))
+        content.body = String(reason.prefix(200))
+        content.sound = .default
+        content.userInfo = AutomationRunNotifier.userInfo(automationID: automationID, runID: runID)
+        post(
+            UNNotificationRequest(identifier: AutomationRunNotifier.identifier(runID: runID), content: content, trigger: nil))
+    }
+
     /// Every delivered session banner goes — on launch and on quit, when
     /// none can name a running session. Reads what was delivered; asks for
     /// no authorization.

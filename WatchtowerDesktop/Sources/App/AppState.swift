@@ -1375,7 +1375,9 @@ final class AppState {
         guard automationsViewModel == nil else { return }
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
         let cli = AutomationsCLI(runner: runner)
-        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli)
+        let notifier = AutomationRunNotifier()
+        let watch = AutomationFailureWatch(defaults: .standard, notifier: notifier)
+        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli, failureWatch: watch)
         // Daemon-written inbox outputs never fire the counts VM's observation.
         // Resolved at call time: the counts VM may be built after this one.
         vm.onInboxOutputCountChanged = { [weak self] in
@@ -1384,7 +1386,7 @@ final class AppState {
         vm.start()
         automationsViewModel = vm
         let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
-                                      notifier: AutomationRunNotifier()) { [weak self] in
+                                      notifier: notifier) { [weak self] in
             self?.isAutomationsFeatureEnabled ?? false
         }
         quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }

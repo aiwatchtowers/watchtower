@@ -104,6 +104,12 @@ private final class CountingNotifier: AutomationRunNotifying {
     ) {
         runIDs.append(runID)
     }
+
+    private(set) var disabledRunIDs: [Int64] = []
+
+    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64) {
+        disabledRunIDs.append(runID)
+    }
 }
 
 @MainActor

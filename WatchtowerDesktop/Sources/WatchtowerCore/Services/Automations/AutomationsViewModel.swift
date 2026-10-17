@@ -30,8 +30,13 @@ package final class AutomationsViewModel {
     nonisolated package static let reportLimit = 5
 
     package private(set) var items: [AutomationListItem] = []
-    /// The sidebar badge: automations needing confirmation + runs waiting on the owner.
+    /// Automations needing confirmation + runs waiting on the owner.
     package private(set) var attentionCount = 0
+    /// Automations whose newest run failed and whose card was not opened
+    /// since (`AutomationFailureWatch`); 0 without a watch.
+    package private(set) var unseenFailureCount = 0
+    /// The sidebar badge.
+    package var badgeCount: Int { attentionCount + unseenFailureCount }
     /// Unread inbox outputs — the Inbox badge's automation share. The daemon
     /// writes them from another process, so this poll is what notices them.
     package private(set) var inboxOutputCount = 0
@@ -99,6 +104,7 @@ package final class AutomationsViewModel {
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: AutomationsCLI
+    @ObservationIgnored private let failureWatch: AutomationFailureWatch?
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: (Duration) async -> Void
     @ObservationIgnored private var pollTask: Task<Void, Never>?
@@ -109,11 +115,13 @@ package final class AutomationsViewModel {
     package init(
         dbPool: DatabasePool,
         cli: AutomationsCLI,
+        failureWatch: AutomationFailureWatch? = nil,
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.dbPool = dbPool
         self.cli = cli
+        self.failureWatch = failureWatch
         self.now = now
         self.sleep = sleep
     }
@@ -248,12 +256,24 @@ package final class AutomationsViewModel {
             onInboxOutputCountChanged?()
         }
         for (runID, runSteps) in snapshot.steps { steps[runID] = runSteps }
+        applyFailures()
         // The selection may have moved while the read ran; keep only what matches it.
         if let card = snapshot.card, card.automationID == selectedID {
             runs[card.automationID] = card.runs
             reports[card.automationID] = card.reports
             grants[card.automationID] = card.grants
         }
+    }
+
+    /// The open card on a visible tab is seen; then new failures notify and
+    /// the badge's failure share is counted.
+    private func applyFailures() {
+        guard let failureWatch else { return }
+        if tabVisible, let selectedID, let item = items.first(where: { $0.id == selectedID }) {
+            failureWatch.markSeen(item)
+        }
+        failureWatch.notifyNewFailures(items, now: now())
+        unseenFailureCount = failureWatch.unseenCount(items)
     }
 
     /// Workbench `projectID`'s header buttons, in slug order.
