@@ -48,89 +48,70 @@ func pragmaInt(t *testing.T, d *DB, name string) int64 {
 	return v
 }
 
-// TestPragmasSurviveInterruptedQuery: a context-cancelled query makes the
+func wantPragma(t *testing.T, d *DB, name string, want int64) {
+	t.Helper()
+	if got := pragmaInt(t, d, name); got != want {
+		t.Errorf("%s = %d, want %d", name, got, want)
+	}
+}
+
+func mustOK(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// openTemp opens a fresh database file through Open.
+func openTemp(t *testing.T) (*DB, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	d, err := Open(path)
+	mustOK(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	return d, path
+}
+
+// TestPragmasSurviveInterruptedQuery*: a context-cancelled query makes the
 // pool drop its connection; the replacement must carry the same pragmas —
 // Open's busy_timeout, foreign_keys and synchronous, and whatever
 // SetBusyTimeout and SetReadOnly set on the handle afterwards.
-func TestPragmasSurviveInterruptedQuery(t *testing.T) {
-	t.Run("Open", func(t *testing.T) {
-		d, err := Open(filepath.Join(t.TempDir(), "watchtower.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = d.Close() })
-		interruptQuery(t, d)
-		if got := pragmaInt(t, d, "busy_timeout"); got != busyTimeoutMS {
-			t.Errorf("busy_timeout = %d, want %d", got, busyTimeoutMS)
-		}
-		if got := pragmaInt(t, d, "foreign_keys"); got != 1 {
-			t.Errorf("foreign_keys = %d, want 1", got)
-		}
-		if got := pragmaInt(t, d, "synchronous"); got != 1 { // NORMAL
-			t.Errorf("synchronous = %d, want 1 (NORMAL)", got)
-		}
-	})
+func TestPragmasSurviveInterruptedQuery_Open(t *testing.T) {
+	d, _ := openTemp(t)
+	interruptQuery(t, d)
+	wantPragma(t, d, "busy_timeout", busyTimeoutMS)
+	wantPragma(t, d, "foreign_keys", 1)
+	wantPragma(t, d, "synchronous", 1) // NORMAL
+}
 
-	t.Run("SetBusyTimeout and SetReadOnly", func(t *testing.T) {
-		d, err := Open(filepath.Join(t.TempDir(), "watchtower.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = d.Close() })
-		if err := d.SetBusyTimeout(1500 * time.Millisecond); err != nil {
-			t.Fatal(err)
-		}
-		if err := d.SetReadOnly(); err != nil {
-			t.Fatal(err)
-		}
-		interruptQuery(t, d)
-		if got := pragmaInt(t, d, "busy_timeout"); got != 1500 {
-			t.Errorf("busy_timeout = %d, want 1500", got)
-		}
-		if got := pragmaInt(t, d, "query_only"); got != 1 {
-			t.Errorf("query_only = %d, want 1", got)
-		}
-		if _, err := d.Exec(`CREATE TABLE fence_probe (x INTEGER)`); err == nil {
-			t.Error("a write went through on a read-only handle after a reconnect")
-		}
-	})
+func TestPragmasSurviveInterruptedQuery_SetBusyTimeoutAndReadOnly(t *testing.T) {
+	d, _ := openTemp(t)
+	mustOK(t, d.SetBusyTimeout(1500*time.Millisecond))
+	mustOK(t, d.SetReadOnly())
+	interruptQuery(t, d)
+	wantPragma(t, d, "busy_timeout", 1500)
+	wantPragma(t, d, "query_only", 1)
+	if _, err := d.Exec(`CREATE TABLE fence_probe (x INTEGER)`); err == nil {
+		t.Error("a write went through on a read-only handle after a reconnect")
+	}
+}
 
-	t.Run("SetBusyTimeout zero", func(t *testing.T) {
-		d, err := Open(filepath.Join(t.TempDir(), "watchtower.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = d.Close() })
-		if err := d.SetBusyTimeout(0); err != nil {
-			t.Fatal(err)
-		}
-		interruptQuery(t, d)
-		if got := pragmaInt(t, d, "busy_timeout"); got != 0 {
-			t.Errorf("busy_timeout = %d, want 0 (the explicit value, not the DSN's)", got)
-		}
-	})
+// An explicit 0 is the handle's value, not "fall back to the DSN's".
+func TestPragmasSurviveInterruptedQuery_SetBusyTimeoutZero(t *testing.T) {
+	d, _ := openTemp(t)
+	mustOK(t, d.SetBusyTimeout(0))
+	interruptQuery(t, d)
+	wantPragma(t, d, "busy_timeout", 0)
+}
 
-	t.Run("OpenExistingRW", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "watchtower.db")
-		seed, err := Open(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = seed.Close()
-		d, err := OpenExistingRW(path, 500*time.Millisecond)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = d.Close() })
-		if err := d.SetBusyTimeout(800 * time.Millisecond); err != nil {
-			t.Fatal(err)
-		}
-		interruptQuery(t, d)
-		if got := pragmaInt(t, d, "busy_timeout"); got != 800 {
-			t.Errorf("busy_timeout = %d, want 800", got)
-		}
-		if got := pragmaInt(t, d, "foreign_keys"); got != 1 {
-			t.Errorf("foreign_keys = %d, want 1", got)
-		}
-	})
+func TestPragmasSurviveInterruptedQuery_OpenExistingRW(t *testing.T) {
+	seed, path := openTemp(t)
+	_ = seed.Close()
+	d, err := OpenExistingRW(path, 500*time.Millisecond)
+	mustOK(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	mustOK(t, d.SetBusyTimeout(800*time.Millisecond))
+	interruptQuery(t, d)
+	wantPragma(t, d, "busy_timeout", 800)
+	wantPragma(t, d, "foreign_keys", 1)
 }
