@@ -385,7 +385,10 @@ final class FoundationChatSessionProcess: ChatSessionProcess, @unchecked Sendabl
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.currentDirectoryURL = Constants.processWorkingDirectory()
-        process.environment = Constants.resolvedEnvironment()
+        // Built on the main actor (`ChatSessionPool.ProcessFactory`): never wait
+        // for the login-shell probe here. Before the launch prewarm is done the
+        // app's own environment goes; the CLI finds claude itself.
+        process.environment = Constants.resolvedEnvironmentIfReady()
         let input = Pipe()
         let output = Pipe()
         let errors = Pipe()

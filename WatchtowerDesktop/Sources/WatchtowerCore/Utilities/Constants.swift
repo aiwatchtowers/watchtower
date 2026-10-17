@@ -239,6 +239,18 @@ package enum Constants {
         resolvedEnvironmentBox.get() ?? ProcessInfo.processInfo.environment
     }
 
+    /// `resolvedEnvironment()` without blocking the caller: the resolved
+    /// value at once when the launch-time prewarm is done, else awaited on a
+    /// thread of its own (never a pool or main thread, see
+    /// `prewarmResolvedEnvironment`). For async callers that want the login
+    /// shell's PATH and CODEX_HOME, not the app's own fallback.
+    package nonisolated static func resolvedEnvironmentAsync() async -> [String: String] {
+        if let env = resolvedEnvironmentBox.get() { return env }
+        return await withCheckedContinuation { continuation in
+            Thread.detachNewThread { continuation.resume(returning: resolvedEnvironment()) }
+        }
+    }
+
     nonisolated private static let resolvedEnvironmentBox = ResolvedEnvironmentBox()
 
     /// Returns a process environment with the user's full PATH — and their
