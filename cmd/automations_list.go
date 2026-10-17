@@ -27,8 +27,11 @@ type automationListItem struct {
 	NeedsConfirmation bool       `json:"needs_confirmation"`
 	ParseError        string     `json:"parse_error"`
 	NextRunAt         *time.Time `json:"next_run_at"`
-	LastStatus        string     `json:"last_status"`
-	Tokens7d          int64      `json:"tokens_7d"`
+	// DisabledReason / DisabledAt: the daemon turned it off by itself (#584).
+	DisabledReason string     `json:"disabled_reason"`
+	DisabledAt     *time.Time `json:"disabled_at"`
+	LastStatus     string     `json:"last_status"`
+	Tokens7d       int64      `json:"tokens_7d"`
 	// Grants are the auto grants (P2); AutoPaused is true when any of them
 	// is inactive because the recipe changed since it was granted.
 	Grants     []automationGrantJSON `json:"grants"`
@@ -74,6 +77,7 @@ func runAutomationsList(cmd *cobra.Command, _ []string) error {
 			ID: a.ID, Slug: a.Slug, Scope: a.Scope, ProjectID: a.ProjectID, Name: a.Name,
 			TriggerKind: a.TriggerKind, TriggerSpec: a.TriggerSpec, Enabled: a.Enabled, Runnable: a.Runnable(),
 			NeedsConfirmation: automationNeedsConfirmation(a), ParseError: a.ParseError, NextRunAt: a.NextRunAt,
+			DisabledReason: a.DisabledReason, DisabledAt: a.DisabledAt,
 			LastStatus: s.LastStatus, Tokens7d: s.TokensSince, Grants: gj, AutoPaused: anyGrantPaused(gj),
 		})
 	}

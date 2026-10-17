@@ -61,7 +61,9 @@ On the card, **Run now** starts a run the same way, without the notice; **Dry ru
 
 ### When a run fails
 
-A failed run you did not start yourself (on a schedule or after an event) brings a notice "<name> failed", at most one per automation a day. A recipe Watchtower disables because its script got stuck always brings "<name> was disabled". The sidebar badge on **Automations** also counts automations whose last run failed. Opening the automation's card clears it, and so does a later run that goes well.
+A failed run you did not start yourself (on a schedule or after an event) brings a notice "<name> failed", at most one per automation a day. When several fail at once you get one notice, "N automations failed". A run cut short by a restart of Watchtower brings no notice. A recipe Watchtower disables because its script got stuck always brings "<name> was disabled".
+
+The sidebar badge on **Automations** also counts automations whose last run failed. Opening the automation's card clears it, and so does a later run that goes well.
 
 ### Change one
 

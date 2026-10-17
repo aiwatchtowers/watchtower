@@ -12,17 +12,21 @@ import WatchtowerCore
 final class AutomationRunNotifier: AutomationRunNotifying {
     typealias Send = (_ name: String, _ status: AutomationRunStatus, _ summary: String, _ error: String,
                       _ automationID: Int64, _ runID: Int64) -> Void
-    typealias SendDisabled = (_ name: String, _ reason: String, _ automationID: Int64, _ runID: Int64) -> Void
+    typealias SendDisabled = (_ name: String, _ reason: String, _ automationID: Int64, _ runID: Int64?) -> Void
+    typealias SendFailures = (_ count: Int) -> Void
 
     private let send: Send
     private let sendDisabled: SendDisabled
+    private let sendFailures: SendFailures
 
     init(
         send: @escaping Send = NotificationService.shared.sendAutomationRunFinished,
-        sendDisabled: @escaping SendDisabled = NotificationService.shared.sendAutomationDisabled
+        sendDisabled: @escaping SendDisabled = NotificationService.shared.sendAutomationDisabled,
+        sendFailures: @escaping SendFailures = NotificationService.shared.sendAutomationsFailed
     ) {
         self.send = send
         self.sendDisabled = sendDisabled
+        self.sendFailures = sendFailures
     }
 
     func runFinished(
@@ -36,8 +40,12 @@ final class AutomationRunNotifier: AutomationRunNotifying {
         send(name, status, summary, error, automationID, runID)
     }
 
-    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64) {
+    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64?) {
         sendDisabled(name, reason, automationID, runID)
+    }
+
+    func automationsFailed(count: Int) {
+        sendFailures(count)
     }
 
     nonisolated static let pushType = "automation_run"
@@ -56,6 +64,17 @@ final class AutomationRunNotifier: AutomationRunNotifying {
         "\(name) was disabled"
     }
 
+    /// "3 automations failed".
+    nonisolated static func failuresTitle(count: Int) -> String {
+        "\(count) automations failed"
+    }
+
+    /// The disabled notice: the run's identifier when it has one (it then
+    /// replaces that run's finish notice), else one per automation.
+    nonisolated static func disabledIdentifier(automationID: Int64, runID: Int64?) -> String {
+        runID.map { identifier(runID: $0) } ?? "automation-disabled-\(automationID)"
+    }
+
     /// The run's summary, else its error, else nothing.
     nonisolated static func body(summary: String, error: String) -> String {
         summary.isEmpty ? error : summary
@@ -72,5 +91,13 @@ final class AutomationRunNotifier: AutomationRunNotifying {
             NotificationForwarding.automationIDKey: automationID,
             NotificationForwarding.runIDKey: runID
         ]
+    }
+
+    /// No run: the click opens the automation's card, or the tab without an
+    /// automation either.
+    nonisolated static func userInfo(automationID: Int64?, runID: Int64?) -> [String: Any] {
+        guard let automationID else { return ["type": pushType] }
+        guard let runID else { return ["type": pushType, NotificationForwarding.automationIDKey: automationID] }
+        return userInfo(automationID: automationID, runID: runID)
     }
 }

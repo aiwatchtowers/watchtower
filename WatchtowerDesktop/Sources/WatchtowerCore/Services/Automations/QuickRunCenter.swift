@@ -16,8 +16,12 @@ package protocol AutomationRunNotifying {
         runID: Int64
     )
 
-    /// A run's script was abandoned and the daemon disabled its automation.
-    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64)
+    /// The daemon turned the automation off by itself; `runID` is its newest
+    /// run (the notice shares that run's identifier), nil when it has none.
+    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64?)
+
+    /// More background failures than `AutomationFailureWatch.coalesceAbove` in one poll.
+    func automationsFailed(count: Int)
 }
 
 /// Quick run (spec §12.7): the rows of the "Run Automation…" palette (⌃⌘R)
@@ -188,13 +192,24 @@ package final class QuickRunCenter {
     /// Reads the watched runs by id (not the list's last run, which may
     /// already be a newer one): an ended run posts its notice once and is
     /// dropped; a run whose row is gone (its automation deleted) is dropped
-    /// without a notice.
+    /// without a notice. A run whose automation the daemon disabled during
+    /// it posts nothing here: `AutomationFailureWatch`'s "was disabled"
+    /// notice is the one banner (#584).
     package func checkWatched() async {
         guard !watched.isEmpty else { return }
         let ids = Array(watched.keys)
+        let automationIDs = Array(Set(watched.values.map(\.automationID)))
         let runs: [AutomationRun]
+        let disabledAt: [Int64: Date]
         do {
-            runs = try await dbPool.read { db in try AutomationQueries.fetchRuns(db, ids: ids) }
+            (runs, disabledAt) = try await dbPool.read { db in
+                let runs = try AutomationQueries.fetchRuns(db, ids: ids)
+                var disabled: [Int64: Date] = [:]
+                for id in automationIDs {
+                    if let at = try AutomationQueries.fetchAutomation(db, id: id)?.disabledAt { disabled[id] = at }
+                }
+                return (runs, disabled)
+            }
         } catch {
             lastError = "Could not read automation runs: \(error.localizedDescription)"
             return
@@ -209,6 +224,7 @@ package final class QuickRunCenter {
             }
             guard !run.status.isActive else { continue }
             watched[id] = nil
+            if let at = disabledAt[entry.automationID], at >= (run.startedAt ?? run.queuedAt ?? .distantPast) { continue }
             notifier.runFinished(name: entry.name, status: run.status, summary: run.summary, error: run.error,
                                  automationID: entry.automationID, runID: id)
         }

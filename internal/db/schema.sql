@@ -2719,6 +2719,8 @@ CREATE TABLE IF NOT EXISTS automations (
     removed_at          TEXT,                                -- the file is gone
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    disabled_reason     TEXT NOT NULL DEFAULT '',            -- the daemon turned it off (runaway script); '' otherwise
+    disabled_at         TEXT,                                -- when; both cleared by any owner enable/disable
     CHECK ((scope = 'workbench') = (project_id IS NOT NULL))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scope, COALESCE(project_id, 0), slug);

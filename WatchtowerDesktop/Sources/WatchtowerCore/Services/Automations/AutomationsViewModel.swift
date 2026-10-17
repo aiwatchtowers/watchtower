@@ -105,6 +105,9 @@ package final class AutomationsViewModel {
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let failureWatch: AutomationFailureWatch?
+    /// The app is active with a visible key window: only then does an open
+    /// card count as seen.
+    @ObservationIgnored private let isOwnerLooking: () -> Bool
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: (Duration) async -> Void
     @ObservationIgnored private var pollTask: Task<Void, Never>?
@@ -116,12 +119,14 @@ package final class AutomationsViewModel {
         dbPool: DatabasePool,
         cli: AutomationsCLI,
         failureWatch: AutomationFailureWatch? = nil,
+        isOwnerLooking: @escaping () -> Bool = { true },
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.dbPool = dbPool
         self.cli = cli
         self.failureWatch = failureWatch
+        self.isOwnerLooking = isOwnerLooking
         self.now = now
         self.sleep = sleep
     }
@@ -192,8 +197,9 @@ package final class AutomationsViewModel {
             let selected = selectedID
             let expanded = expandedRuns
             let date = now()
+            let failures = failureWatch != nil
             let snapshot = try dbPool.read { db in
-                try Snapshot.read(db, now: date, selected: selected, expanded: expanded)
+                try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures)
             }
             apply(snapshot)
             if lastErrorIsRead {
@@ -211,6 +217,8 @@ package final class AutomationsViewModel {
         var attentionCount: Int
         var inboxOutputCount: Int
         var headerButtons: [Int64: [AutomationHeaderButton]]
+        /// `AutomationQueries.newestEndedRuns`, read only with a failure watch.
+        var endedRuns: [Int64: AutomationRun]
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
 
@@ -221,7 +229,7 @@ package final class AutomationsViewModel {
             let grants: [AutomationToolGrant]
         }
 
-        static func read(_ db: Database, now: Date, selected: Int64?, expanded: Set<Int64>) throws -> Self {
+        static func read(_ db: Database, now: Date, selected: Int64?, expanded: Set<Int64>, failures: Bool) throws -> Self {
             var card: Card?
             if let selected {
                 card = Card(
@@ -241,6 +249,7 @@ package final class AutomationsViewModel {
                 attentionCount: try AutomationQueries.attentionCount(db),
                 inboxOutputCount: try AutomationQueries.inboxOutputCount(db),
                 headerButtons: AutomationQueries.headerButtonsByProject(items),
+                endedRuns: failures ? try AutomationQueries.newestEndedRuns(db) : [:],
                 card: card,
                 steps: steps
             )
@@ -256,7 +265,7 @@ package final class AutomationsViewModel {
             onInboxOutputCountChanged?()
         }
         for (runID, runSteps) in snapshot.steps { steps[runID] = runSteps }
-        applyFailures()
+        applyFailures(snapshot.endedRuns)
         // The selection may have moved while the read ran; keep only what matches it.
         if let card = snapshot.card, card.automationID == selectedID {
             runs[card.automationID] = card.runs
@@ -265,15 +274,15 @@ package final class AutomationsViewModel {
         }
     }
 
-    /// The open card on a visible tab is seen; then new failures notify and
-    /// the badge's failure share is counted.
-    private func applyFailures() {
+    /// The open card on a visible tab of an active app is seen; then new
+    /// failures notify and the badge's failure share is counted.
+    private func applyFailures(_ runs: [Int64: AutomationRun]) {
         guard let failureWatch else { return }
-        if tabVisible, let selectedID, let item = items.first(where: { $0.id == selectedID }) {
-            failureWatch.markSeen(item)
+        if tabVisible, let selectedID, isOwnerLooking() {
+            failureWatch.markSeen(selectedID, runs: runs)
         }
-        failureWatch.notifyNewFailures(items, now: now())
-        unseenFailureCount = failureWatch.unseenCount(items)
+        failureWatch.notify(items, runs: runs, now: now())
+        unseenFailureCount = failureWatch.unseenCount(items, runs: runs)
     }
 
     /// Workbench `projectID`'s header buttons, in slug order.

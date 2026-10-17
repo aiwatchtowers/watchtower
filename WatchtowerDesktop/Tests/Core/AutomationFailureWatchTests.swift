@@ -6,7 +6,8 @@ import WatchtowerTestSupport
 @MainActor
 private final class FailureNotifier: AutomationRunNotifying {
     private(set) var failedRunIDs: [Int64] = []
-    private(set) var disabled: [(runID: Int64, reason: String)] = []
+    private(set) var disabled: [(runID: Int64?, reason: String)] = []
+    private(set) var summaries: [Int] = []
 
     func runFinished(
         name: String,
@@ -19,8 +20,12 @@ private final class FailureNotifier: AutomationRunNotifying {
         failedRunIDs.append(runID)
     }
 
-    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64) {
+    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64?) {
         disabled.append((runID, reason))
+    }
+
+    func automationsFailed(count: Int) {
+        summaries.append(count)
     }
 }
 
@@ -44,15 +49,12 @@ final class AutomationFailureWatchTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func item(_ id: Int64, _ run: AutomationRun?) -> AutomationListItem {
+    private func item(_ id: Int64, disabledAt: Date? = nil) -> AutomationListItem {
         let automation = Automation(
-            id: id, slug: "a\(id)", scope: .personal, projectID: nil, path: "/tmp/a\(id).md", name: "A\(id)",
-            triggerKind: "schedule", triggerSpecJSON: "{}", missedPolicy: "run_once", concurrency: 1,
-            budgetTokens: 50000, budgetMinutes: 5, pauseTimeoutHours: 72, permissions: [], outputs: [],
-            recipeText: "", contentHash: "", approvalHash: "h", confirmedHash: "h", parseError: "", enabled: true,
-            lastScheduledFor: nil, nextRunAt: nil, removedAt: nil
+            id: id, slug: "a\(id)", name: "A\(id)", triggerKind: "schedule", enabled: disabledAt == nil,
+            disabledReason: disabledAt == nil ? "" : "runaway script", disabledAt: disabledAt
         )
-        return AutomationListItem(automation: automation, lastRun: run, activeRun: nil, tokens7d: 0, badges: [],
+        return AutomationListItem(automation: automation, lastRun: nil, activeRun: nil, tokens7d: 0, badges: [],
                                   triggerText: "")
     }
 
@@ -61,100 +63,151 @@ final class AutomationFailureWatchTests: XCTestCase {
         automation: Int64,
         trigger: String = "schedule",
         status: AutomationRunStatus = .failed,
-        error: String = "boom",
+        errorKind: String = "script",
         finishedAgo: TimeInterval = 60
     ) -> AutomationRun {
-        AutomationRun(id: id, automationID: automation, trigger: trigger, status: status, error: error,
-                      finishedAt: now.addingTimeInterval(-finishedAgo))
+        AutomationRun(id: id, automationID: automation, trigger: trigger, status: status, error: "boom",
+                      errorKind: errorKind, finishedAt: now.addingTimeInterval(-finishedAgo))
     }
 
-    private func watch() -> AutomationFailureWatch {
-        AutomationFailureWatch(defaults: defaults, notifier: notifier)
+    private func watch(workspace: String = "/ws/a.db") -> AutomationFailureWatch {
+        AutomationFailureWatch(defaults: defaults, workspace: workspace, notifier: notifier)
+    }
+
+    private func runs(_ list: AutomationRun...) -> [Int64: AutomationRun] {
+        Dictionary(uniqueKeysWithValues: list.map { ($0.automationID, $0) })
     }
 
     func testBadgeCountsUnseenFailuresUntilTheCardIsOpened() {
         let w = watch()
-        let failed = item(1, run(10, automation: 1))
-        let cancelled = item(2, run(11, automation: 2, status: .cancelled))
-        let dryRun = item(3, run(12, automation: 3, trigger: "dry_run"))
-        let ok = item(4, run(13, automation: 4, status: .succeeded))
-        let timedOut = item(5, run(14, automation: 5, trigger: "manual", status: .timedOut))
-        let items = [failed, cancelled, dryRun, ok, timedOut, item(6, nil)]
-        XCTAssertEqual(w.unseenCount(items), 2)
+        let items = (1...6).map { item(Int64($0)) }
+        let ended = runs(
+            run(10, automation: 1),
+            run(11, automation: 2, status: .cancelled),
+            run(13, automation: 4, status: .succeeded),
+            run(14, automation: 5, trigger: "manual", status: .timedOut)
+        )
+        XCTAssertEqual(w.unseenCount(items, runs: ended), 2)
 
-        w.markSeen(failed)
-        XCTAssertEqual(w.unseenCount(items), 1)
+        w.markSeen(1, runs: ended)
+        XCTAssertEqual(w.unseenCount(items, runs: ended), 1)
         // A newer failure of the same automation counts again.
-        XCTAssertEqual(w.unseenCount([item(1, run(20, automation: 1))]), 1)
+        XCTAssertEqual(w.unseenCount([item(1)], runs: runs(run(20, automation: 1))), 1)
         // A newer run that did not fail clears it without opening the card.
-        XCTAssertEqual(w.unseenCount([item(5, run(21, automation: 5, status: .succeeded))]), 0)
-        // Seen state survives a new watch (an app restart).
-        XCTAssertEqual(watch().unseenCount(items), 1)
+        XCTAssertEqual(w.unseenCount([item(5)], runs: runs(run(21, automation: 5, status: .succeeded))), 0)
+        // Seen state survives a new watch (an app restart) but is per workspace.
+        XCTAssertEqual(watch().unseenCount(items, runs: ended), 1)
+        XCTAssertEqual(watch(workspace: "/ws/b.db").unseenCount(items, runs: ended), 2)
     }
 
     func testBackgroundFailureNotifiesOncePerAutomationPerDay() {
         let w = watch()
-        w.notifyNewFailures([item(1, run(10, automation: 1)), item(2, run(11, automation: 2, trigger: "event"))],
-                            now: now)
+        w.notify([item(1), item(2)], runs: runs(run(10, automation: 1), run(11, automation: 2, trigger: "event")),
+                 now: now)
         XCTAssertEqual(notifier.failedRunIDs, [10, 11])
 
         // The same run polled again, and a second failure within the day: no notice.
-        w.notifyNewFailures([item(1, run(10, automation: 1))], now: now)
-        w.notifyNewFailures([item(1, run(12, automation: 1, trigger: "catch_up"))], now: now.addingTimeInterval(3600))
+        w.notify([item(1)], runs: runs(run(10, automation: 1)), now: now)
+        w.notify([item(1)], runs: runs(run(12, automation: 1, trigger: "catch_up")), now: now.addingTimeInterval(3600))
         XCTAssertEqual(notifier.failedRunIDs, [10, 11])
         // The suppressed run never notifies late.
-        w.notifyNewFailures([item(1, run(12, automation: 1, trigger: "catch_up", finishedAgo: -3600))],
-                            now: now.addingTimeInterval(AutomationFailureWatch.noticeInterval + 1))
+        w.notify([item(1)], runs: runs(run(12, automation: 1, trigger: "catch_up", finishedAgo: -3600)),
+                 now: now.addingTimeInterval(AutomationFailureWatch.noticeInterval + 1))
         XCTAssertEqual(notifier.failedRunIDs, [10, 11])
 
         // A day later a new failure notifies again.
         let later = now.addingTimeInterval(AutomationFailureWatch.noticeInterval + 60)
-        w.notifyNewFailures([item(1, AutomationRun(id: 13, automationID: 1, trigger: "schedule", status: .expired,
-                                                   finishedAt: later))], now: later)
+        w.notify([item(1)], runs: runs(AutomationRun(id: 13, automationID: 1, trigger: "schedule", status: .expired,
+                                                     finishedAt: later)), now: later)
         XCTAssertEqual(notifier.failedRunIDs, [10, 11, 13])
     }
 
-    func testManualButtonAndOldFailuresDoNotNotify() {
+    func testManualButtonRestartAndOldFailuresDoNotNotify() {
         let w = watch()
-        w.notifyNewFailures([
-            item(1, run(10, automation: 1, trigger: "manual")),
-            item(2, run(11, automation: 2, trigger: "button")),
-            item(3, run(12, automation: 3, trigger: "dry_run")),
-            item(4, run(13, automation: 4, status: .cancelled)),
-            item(5, run(14, automation: 5, finishedAgo: AutomationFailureWatch.noticeInterval + 1))
-        ], now: now)
+        let items = (1...5).map { item(Int64($0)) }
+        w.notify(items, runs: runs(
+            run(10, automation: 1, trigger: "manual"),
+            run(11, automation: 2, trigger: "button"),
+            run(12, automation: 3, errorKind: "interrupted"),
+            run(13, automation: 4, status: .cancelled),
+            run(14, automation: 5, finishedAgo: AutomationFailureWatch.noticeInterval + 1)
+        ), now: now)
         XCTAssertEqual(notifier.failedRunIDs, [])
         XCTAssertTrue(notifier.disabled.isEmpty)
+        // The restart still counts on the badge.
+        XCTAssertEqual(w.unseenCount([item(3)], runs: runs(run(12, automation: 3, errorKind: "interrupted"))), 1)
     }
 
-    func testAutoDisableAlwaysNotifiesWhateverStartedIt() {
+    func testMoreThanTwoFailuresInOnePollPostOneSummary() {
         let w = watch()
-        let error = "timed out" + AutomationFailureWatch.disabledMarker + "runaway script — check and re-enable"
-        // A background failure inside the day's window first, so the cap is spent.
-        w.notifyNewFailures([item(1, run(10, automation: 1))], now: now)
-        w.notifyNewFailures([
-            item(1, run(11, automation: 1, status: .timedOut, error: error)),
-            item(2, run(12, automation: 2, trigger: "manual", status: .timedOut, error: error))
-        ], now: now)
+        w.notify((1...3).map { item(Int64($0)) },
+                 runs: runs(run(10, automation: 1), run(11, automation: 2), run(12, automation: 3)), now: now)
+        XCTAssertEqual(notifier.failedRunIDs, [])
+        XCTAssertEqual(notifier.summaries, [3])
+        // Each counted toward its automation's daily window.
+        w.notify([item(1)], runs: runs(run(20, automation: 1)), now: now.addingTimeInterval(60))
+        XCTAssertEqual(notifier.failedRunIDs, [])
+    }
+
+    func testAutoDisableNotifiesOncePerDisableWhateverStartedIt() {
+        let w = watch()
+        // The day's failure window is spent and the disable is old: it still posts.
+        w.notify([item(1)], runs: runs(run(10, automation: 1)), now: now)
+        let old = now.addingTimeInterval(-3 * AutomationFailureWatch.noticeInterval)
+        let manual = run(12, automation: 2, trigger: "manual", status: .cancelled)
+        w.notify([item(1, disabledAt: now), item(2, disabledAt: old)],
+                 runs: runs(run(11, automation: 1, status: .timedOut), manual), now: now)
         XCTAssertEqual(notifier.failedRunIDs, [10])
         XCTAssertEqual(notifier.disabled.map(\.runID), [11, 12])
-        XCTAssertEqual(notifier.disabled.first?.reason, "runaway script — check and re-enable")
+        XCTAssertEqual(notifier.disabled.first?.reason, "runaway script")
+
+        // Polled again: nothing new; a later disable (after a re-enable) posts again.
+        w.notify([item(1, disabledAt: now)], runs: [:], now: now)
+        w.notify([item(1, disabledAt: now.addingTimeInterval(60))], runs: [:], now: now)
+        XCTAssertEqual(notifier.disabled.map(\.runID), [11, 12, nil])
     }
 
-    /// The view model: a failure feeds the sidebar badge until the owner
-    /// opens the card on the visible tab.
-    func testViewModelBadgeClearsWhenTheCardIsOpened() throws {
+    func testStateOfGoneAutomationsIsPruned() {
+        let w = watch()
+        w.notify([item(1)], runs: runs(run(10, automation: 1)), now: now)
+        w.markSeen(1, runs: runs(run(10, automation: 1)))
+        let other = watch(workspace: "/ws/b.db")
+        other.notify([item(1)], runs: runs(run(10, automation: 1)), now: now)
+
+        w.notify([], runs: [:], now: now)
+        for key in [AutomationFailureWatch.handledKey, AutomationFailureWatch.noticeKey, AutomationFailureWatch.seenKey] {
+            let stored = defaults.dictionary(forKey: key) ?? [:]
+            XCTAssertFalse(stored.keys.contains("/ws/a.db|1"), key)
+        }
+        XCTAssertNotNil((defaults.dictionary(forKey: AutomationFailureWatch.handledKey) ?? [:])["/ws/b.db|1"],
+                        "another workspace keeps its state")
+    }
+
+    // MARK: - View model
+
+    private func makeViewModel(looking: Bool = true) throws -> (AutomationsViewModel, Int64, () -> Void) {
         let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
         let id = try pool.write { db -> Int64 in
             let id = try TestDatabase.insertAutomation(db, slug: "nightly")
             try TestDatabase.insertAutomationRun(db, automationID: id, trigger: "schedule", status: "failed",
                                                  error: "boom", finishedAt: "2026-10-16T11:59:00Z")
+            // A later dry run never hides the failure.
+            try TestDatabase.insertAutomationRun(db, automationID: id, trigger: "dry_run", status: "succeeded",
+                                                 finishedAt: "2026-10-16T11:59:30Z")
             return id
         }
         let fixed = now
         let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: NoopRunner()),
-                                      failureWatch: watch(), now: { fixed }, sleep: { _ in })
+                                      failureWatch: watch(workspace: path), isOwnerLooking: { looking },
+                                      now: { fixed }, sleep: { _ in })
+        return (vm, id, { TestDatabase.cleanup(path: path) })
+    }
+
+    /// A failure feeds the sidebar badge until the owner opens the card on
+    /// the visible tab of an active app.
+    func testViewModelBadgeClearsWhenTheCardIsOpened() throws {
+        let (vm, id, cleanup) = try makeViewModel()
+        defer { cleanup() }
         vm.refresh()
         XCTAssertEqual(vm.unseenFailureCount, 1)
         XCTAssertEqual(vm.badgeCount, vm.attentionCount + 1)
@@ -165,6 +218,14 @@ final class AutomationFailureWatchTests: XCTestCase {
         vm.setTabVisible(true)
         XCTAssertEqual(vm.unseenFailureCount, 0)
         XCTAssertEqual(notifier.failedRunIDs.count, 1)
+    }
+
+    func testViewModelNotSeenWhileTheAppIsInactive() throws {
+        let (vm, id, cleanup) = try makeViewModel(looking: false)
+        defer { cleanup() }
+        vm.select(id)
+        vm.setTabVisible(true)
+        XCTAssertEqual(vm.unseenFailureCount, 1)
     }
 }
 

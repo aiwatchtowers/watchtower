@@ -1376,10 +1376,10 @@ final class AppState {
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
         let cli = AutomationsCLI(runner: runner)
         let notifier = AutomationRunNotifier()
-        let watch = AutomationFailureWatch(defaults: .standard, notifier: notifier)
-        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli, failureWatch: watch)
-        // Daemon-written inbox outputs never fire the counts VM's observation.
-        // Resolved at call time: the counts VM may be built after this one.
+        let watch = AutomationFailureWatch(defaults: .standard, workspace: dbPool.path, notifier: notifier)
+        let looking = { NSApp.isActive && NSApp.keyWindow?.isVisible == true }
+        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli, failureWatch: watch, isOwnerLooking: looking)
+        // Daemon-written inbox outputs never fire the counts VM's observation; resolved at call time.
         vm.onInboxOutputCountChanged = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }

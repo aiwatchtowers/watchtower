@@ -28,10 +28,15 @@ private final class RecordingNotifier: AutomationRunNotifying {
                               automationID: automationID, runID: runID))
     }
 
-    private(set) var disabledRunIDs: [Int64] = []
+    private(set) var disabledRunIDs: [Int64?] = []
+    private(set) var failureCounts: [Int] = []
 
-    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64) {
+    func automationDisabled(name: String, reason: String, automationID: Int64, runID: Int64?) {
         disabledRunIDs.append(runID)
+    }
+
+    func automationsFailed(count: Int) {
+        failureCounts.append(count)
     }
 }
 
@@ -262,6 +267,29 @@ final class QuickRunCenterTests: XCTestCase {
         await center.checkWatched()
         await center.checkWatched()
         XCTAssertEqual(notifier.notices.count, 1)
+        XCTAssertEqual(center.watched, [:])
+    }
+
+    /// #584 F1: the daemon disabled the automation during the watched run;
+    /// the failure watch's "was disabled" notice is the one banner, so the
+    /// quick-run notice never overwrites it.
+    func testNoFinishNoticeWhenTheRunDisabledItsAutomation() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        let runner = FakeCLIRunner(stdout: Self.runJSON(1))
+        let (center, _) = make(runner)
+        let picked = try row(center, id)
+        let runID = try queueRun(id, status: "running")
+        _ = await center.activate(picked, origin: .palette)
+
+        try await pool.write { db in
+            try db.execute(sql: """
+                UPDATE automations SET enabled = 0, disabled_reason = 'runaway script',
+                    disabled_at = '2026-10-01T09:05:00Z' WHERE id = ?
+                """, arguments: [id])
+        }
+        try setStatus(runID, "timed_out")
+        await center.checkWatched()
+        XCTAssertEqual(notifier.notices, [])
         XCTAssertEqual(center.watched, [:])
     }
 

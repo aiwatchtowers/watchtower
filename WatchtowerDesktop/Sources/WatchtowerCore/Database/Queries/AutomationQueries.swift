@@ -59,6 +59,17 @@ package enum AutomationQueries {
         return Dictionary(uniqueKeysWithValues: runs.map { ($0.automationID, $0) })
     }
 
+    /// Each automation's newest ended run that is not a dry run: what
+    /// `AutomationFailureWatch` judges (a dry run never hides a failure).
+    package static func newestEndedRuns(_ db: Database) throws -> [Int64: AutomationRun] {
+        let runs = try AutomationRun.fetchAll(db, sql: """
+            SELECT * FROM automation_runs WHERE id IN (
+                SELECT MAX(id) FROM automation_runs
+                WHERE status NOT IN \(activeStatuses) AND trigger != 'dry_run' GROUP BY automation_id)
+            """)
+        return Dictionary(uniqueKeysWithValues: runs.map { ($0.automationID, $0) })
+    }
+
     // MARK: - Card
 
     package static func fetchRuns(_ db: Database, automationID: Int64, limit: Int) throws -> [AutomationRun] {

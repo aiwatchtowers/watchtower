@@ -288,8 +288,6 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	now := e.clock.Now()
 	f.Now = now
 	if abandoned {
-		// Desktop's AutomationFailureWatch.disabledMarker matches this suffix
-		// to post its "<name> was disabled" notice: change both together.
 		f.Error += "; the automation was disabled: " + runawayDisabledReason
 	}
 	err := e.db.FinishAutomationRun(runID, f, commit)
@@ -311,7 +309,7 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	}
 	e.logger.Printf("automations: run %d of %q: its script did not stop after the interrupt and was abandoned; automation disabled (%s)",
 		runID, a.Slug, runawayDisabledReason)
-	if err := e.db.SetAutomationEnabled(a.ID, false, now); err != nil {
+	if err := e.db.DisableRunawayAutomation(a.ID, runawayDisabledReason, now); err != nil {
 		e.logger.Printf("automations: disabling runaway automation %q: %v", a.Slug, err)
 	}
 }
