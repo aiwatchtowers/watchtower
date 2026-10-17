@@ -50,7 +50,7 @@
 ### Task 2: `permission_requests` table and DB API
 
 **Files:**
-- Create: `internal/db/migrations/00129_permission_requests.sql`, `internal/db/permission_requests.go`, `internal/db/permission_requests_test.go`
+- Create: `internal/db/migrations/00130_permission_requests.sql`, `internal/db/permission_requests.go`, `internal/db/permission_requests_test.go`
 - Modify: `internal/db/schema.sql`, `internal/db/db_test.go` (`TestAllTablesExist` adds `"permission_requests"`), the golden snapshot and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (regenerated with `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`)
 
 Use the `add-migration` skill.

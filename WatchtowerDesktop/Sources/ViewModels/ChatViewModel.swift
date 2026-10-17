@@ -61,10 +61,14 @@ final class ChatViewModel {
     /// delta — the live message is `liveTurn` (render isolation).
     private(set) var thread: [ChatThreadItem] = []
     var draft = ""
-    /// "Quote in reply" batches, per conversation: quotes wait here (with the
+    /// Quote batches ("Ask about this" on a selection in the feed), per
+    /// conversation: quotes wait here (with the
     /// owner's comments) and go out together with the typed text as ONE owner
     /// turn in `sendDraft` — never one by one (owner rule).
     private(set) var quoteBatches: [Int64: [ChatQuoteDraft]] = [:]
+    /// A new value puts the keyboard in the composer (a quote was just
+    /// added: the owner types the follow-up next).
+    private(set) var composerFocusRequest: UUID?
     /// Shown by the thread view only, so an error steps an expanded panel
     /// aside (#786).
     var errorMessage: String? {
@@ -87,7 +91,7 @@ final class ChatViewModel {
     let actionFeed: AgentActionFeed
     let pool: ChatSessionPool
     /// The composer's not-yet-sent attachments (Task 21). nil `store` (no
-    /// active workspace) still renders — `add`/`addPastedImage` just report
+    /// active workspace) still renders — `add`/`addPasted` just report
     /// "Attachments need an active workspace".
     let composerAttachments: ComposerAttachments
     /// The composer's @-picker and the current draft's picked mentions
@@ -609,11 +613,13 @@ final class ChatViewModel {
         conversationID.flatMap { quoteBatches[$0] } ?? []
     }
 
-    /// "Add to reply" in the quote sheet: one more quote in the batch.
-    /// Nothing is sent or stored until the owner sends the draft.
+    /// "Ask about this" on a selected passage: one more quote in the batch,
+    /// and the composer takes the keyboard. Nothing is sent or stored until
+    /// the owner sends the draft.
     func addQuote(_ quote: String, comment: String) {
         guard let id = conversationID, !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         quoteBatches[id, default: []].append(ChatQuoteDraft(quote: quote, comment: comment))
+        composerFocusRequest = UUID()
     }
 
     func updateQuoteComment(id quoteID: UUID, comment: String) {
@@ -632,9 +638,12 @@ final class ChatViewModel {
         composerAttachments.add(urls: urls, conversationID: id)
     }
 
-    func attachPastedImage(_ png: Data) {
-        guard let id = conversationIDCreatingIfNeeded() else { return }
-        composerAttachments.addPastedImage(png, conversationID: id)
+    /// A paste the composer turned into a file (screenshot, PDF data, long
+    /// text — board #534); true once attached.
+    @discardableResult
+    func attachPasted(_ data: Data, name: String) -> Bool {
+        guard let id = conversationIDCreatingIfNeeded() else { return false }
+        return composerAttachments.addPasted(data, name: name, conversationID: id)
     }
 
     /// `mentions` are the composer's picked candidates (Task 25); only those

@@ -65,6 +65,23 @@ package struct TerminalLaunch: Equatable, Sendable {
     package let currentDirectory: String
     /// `NAME=value` entries added to the terminal's environment.
     package var environment: [String] = []
+    /// The `terminal_sessions` row the launch belongs to; the session host
+    /// keys its sessions by it. Nil for a launch with no row.
+    package let rowID: Int64?
+
+    package init(
+        executable: String,
+        args: [String],
+        currentDirectory: String,
+        environment: [String] = [],
+        rowID: Int64? = nil
+    ) {
+        self.executable = executable
+        self.args = args
+        self.currentDirectory = currentDirectory
+        self.environment = environment
+        self.rowID = rowID
+    }
 
     /// Does not validate a session id: callers check `isValidSessionID`
     /// first. `rowID` reaches an agent launch's environment as
@@ -112,7 +129,7 @@ package struct TerminalLaunch: Equatable, Sendable {
             args[args.count - 1] = setupPrefix + args[args.count - 1]
             setupText = setup
         }
-        var launch = Self(executable: executable, args: args, currentDirectory: folder)
+        var launch = Self(executable: executable, args: args, currentDirectory: folder, rowID: rowID)
         if let rowID, mode != .shell {
             launch.environment = ["\(sessionRowEnv)=\(rowID)"]
         }

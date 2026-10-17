@@ -2364,7 +2364,7 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
     message_id      INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
     artifact_key    TEXT NOT NULL,
     version         INTEGER NOT NULL,
-    kind            TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code')),
+    kind            TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code','html')),
     title           TEXT NOT NULL DEFAULT '',
     content         TEXT NOT NULL,
     meta_json       TEXT NOT NULL DEFAULT '{}',
@@ -3067,7 +3067,7 @@ CREATE TABLE IF NOT EXISTS review_lessons (
 );
 
 -- Permission prompts a Claude Code PermissionRequest hook waits on, answered from the phone
--- or the Mac (00129). summary is what the owner approves (clipped to 2000 chars); no tool_input.
+-- or the Mac (00130). summary is what the owner approves (clipped to 2000 chars); no tool_input.
 CREATE TABLE IF NOT EXISTS permission_requests (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,

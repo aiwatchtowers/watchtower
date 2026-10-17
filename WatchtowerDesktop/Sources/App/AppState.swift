@@ -319,6 +319,14 @@ final class AppState {
     private(set) var automationSessionCenter: AutomationSessionCenter?
     /// The "Run Automation…" palette (⌃⌘R) is up.
     var isRunAutomationPaletteShown = false
+    /// The ⌘/ "Ask Watchtower" panel is up.
+    var isAskPanelShown = false
+    /// The panel's guide index and help conversation; the CLI is resolved on the first ⌘/.
+    @ObservationIgnored private(set) lazy var askCenter = makeAskCenter()
+    /// The main window's link gate (`AllowedURLSchemes` + screen links); one instance across re-renders.
+    @ObservationIgnored private(set) lazy var mainWindowOpenURL = AllowedURLSchemes.openURLAction { [weak self] url in
+        self?.openNavLink(url)
+    }
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
@@ -1574,6 +1582,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
+        startSessionHost() // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
@@ -1818,9 +1827,7 @@ final class AppState {
             await center.closeAll { ids.contains($0) }
         }
         let notices = WorkbenchNotificationCenter(dbPool: dbPool, notifier: notifier)
-        vm.onWorkbenchCreated = { [weak notices] project, _ in
-            notices?.seedBaseline(project: project)
-        }
+        vm.onWorkbenchCreated = { [weak notices] project, _ in notices?.seedBaseline(project: project) }
         vm.onOwnerWrite = { [weak notices] projectID, subject in
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)
         }
@@ -1852,6 +1859,7 @@ final class AppState {
         reports.start()
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
+        vm.startHostReattach()
         initMobileHub(dbPool: dbPool)
         // Once: a setup re-run keeps the center and its launches in flight.
         if automationSessionCenter == nil {

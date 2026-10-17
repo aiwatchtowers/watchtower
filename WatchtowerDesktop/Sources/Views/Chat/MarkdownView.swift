@@ -31,10 +31,14 @@ struct MarkdownView: View {
     /// Inline render with disallowed-scheme links stripped (the gate every
     /// markdown link passes). `codeLinks` also keeps `watchtower-code`
     /// links, which only the code question popover opens (render-only:
-    /// `AllowedURLSchemes.permits` never allows them).
-    static func inlineText(_ inlines: [MarkdownInline], codeLinks: Bool = false) -> AttributedString {
+    /// `AllowedURLSchemes.permits` never allows them); `navScreens` keeps
+    /// the screen links (`watchtower-nav`) to those screens only.
+    static func inlineText(
+        _ inlines: [MarkdownInline], codeLinks: Bool = false, navScreens: Set<String> = []
+    ) -> AttributedString {
         AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines),
-                                                   renderOnly: codeLinks ? [CodeLineLinks.scheme] : [])
+                                                   renderOnly: codeLinks ? [CodeLineLinks.scheme] : [],
+                                                   navScreens: navScreens)
     }
 
     /// One line of markdown as a label (a button's, an ask's focus place):
@@ -67,6 +71,7 @@ struct MarkdownBlocksView: View {
 struct MarkdownBlockView: View {
     let block: MarkdownBlock
     @Environment(\.markdownCodeLinks) private var codeLinks
+    @Environment(\.markdownNavScreens) private var navScreens
 
     var body: some View {
         switch block {
@@ -93,7 +98,7 @@ struct MarkdownBlockView: View {
     // fixedSize keeps long lines wrapping inside HStack rows (AppKit-backed
     // Text otherwise truncates to one line).
     private func inline(_ inlines: [MarkdownInline]) -> some View {
-        Text(MarkdownView.inlineText(inlines, codeLinks: codeLinks)).fixedSize(horizontal: false, vertical: true)
+        Text(MarkdownView.inlineText(inlines, codeLinks: codeLinks, navScreens: navScreens)).fixedSize(horizontal: false, vertical: true)
     }
 
     private static func headingFont(_ level: Int) -> Font {
@@ -136,13 +141,14 @@ struct MarkdownListView: View {
 struct MarkdownTableView: View {
     let table: MarkdownTable
     @Environment(\.markdownCodeLinks) private var codeLinks
+    @Environment(\.markdownNavScreens) private var navScreens
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
                 GridRow {
                     ForEach(table.header.indices, id: \.self) { column in
-                        Text(MarkdownView.inlineText(table.header[column], codeLinks: codeLinks))
+                        Text(MarkdownView.inlineText(table.header[column], codeLinks: codeLinks, navScreens: navScreens))
                             .fontWeight(.semibold)
                             .gridColumnAlignment(alignment(column))
                     }
@@ -151,7 +157,7 @@ struct MarkdownTableView: View {
                 ForEach(table.rows.indices, id: \.self) { row in
                     GridRow {
                         ForEach(table.rows[row].indices, id: \.self) { column in
-                            Text(MarkdownView.inlineText(table.rows[row][column], codeLinks: codeLinks))
+                            Text(MarkdownView.inlineText(table.rows[row][column], codeLinks: codeLinks, navScreens: navScreens))
                         }
                     }
                 }
@@ -175,10 +181,21 @@ private struct MarkdownCodeLinksKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct MarkdownNavScreensKey: EnvironmentKey {
+    static let defaultValue: Set<String> = []
+}
+
 extension EnvironmentValues {
     /// Whether `MarkdownView` links `path:line` citations (code answers).
     var markdownCodeLinks: Bool {
         get { self[MarkdownCodeLinksKey.self] }
         set { self[MarkdownCodeLinksKey.self] = newValue }
+    }
+
+    /// The screens a `watchtower-nav://` link may open (the main window's
+    /// visible sidebar screens); every other screen link renders as text.
+    var markdownNavScreens: Set<String> {
+        get { self[MarkdownNavScreensKey.self] }
+        set { self[MarkdownNavScreensKey.self] = newValue }
     }
 }

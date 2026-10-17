@@ -157,6 +157,22 @@ struct SessionInputModel: Equatable {
     static let needsApproval = "Needs approval on the Mac"
     static let footnote = "Delivered when the agent is idle"
 
+    /// Why a live session takes no line from this phone (board #515): the
+    /// bar's place says what to do instead of staying empty.
+    enum TypingHint: Equatable {
+        /// The phone's own toggle is off: one tap asks the Mac.
+        case turnOn
+        /// Asked; the Mac has not allowed it yet.
+        case waitingForMac
+
+        var text: String {
+            switch self {
+            case .turnOn: "Turn on typing to tell this session something from your phone."
+            case .waitingForMac: "Waiting for your Mac to allow typing: Watchtower → Settings → Mobile → Allow…"
+            }
+        }
+    }
+
     /// One line the phone sent, until the Mac applied it.
     struct LineRow: Equatable, Identifiable {
         enum State: Equatable {
@@ -175,6 +191,8 @@ struct SessionInputModel: Equatable {
 
     /// The bar is on screen.
     let showsBar: Bool
+    /// In the bar's place on a live session this phone may not type to.
+    let typingHint: TypingHint?
     /// Finish is in the actions menu.
     let showsFinish: Bool
     /// The session waits on a permission prompt: no send.
@@ -196,6 +214,7 @@ struct SessionInputModel: Equatable {
         let allowed = typingRequested && grant?.typingAllowed == true
         showsBar = allowed && session.live
         showsFinish = showsBar
+        typingHint = !session.live || allowed ? nil : (typingRequested ? .waitingForMac : .turnOn)
         approvalText = session.stateKind == .needsApproval ? Self.needsApproval : nil
         notice = delivered?.text
         let entity = SessionStarter.sessionRecordName(session.id)

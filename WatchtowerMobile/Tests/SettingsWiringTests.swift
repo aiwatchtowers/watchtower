@@ -376,6 +376,20 @@ final class SettingsWiringTests: XCTestCase {
 
         XCTAssertFalse(settings.typingRequested)
         XCTAssertNotNil(settings.lastError)
+        XCTAssertEqual(settings.typingError, settings.lastError)
+    }
+
+    /// Board #515: the session screen's Turn On shows only a typing failure,
+    /// never the start-sessions one.
+    func testAStartSessionsFailureIsNotATypingError() async throws {
+        let transport = SpyTransport(failingSaves: [0])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+
+        await settings.setStartSessions(false)
+
+        XCTAssertNotNil(settings.lastError)
+        XCTAssertNil(settings.typingError)
     }
 
     /// Two quick toggles: the writes never overlap, run in toggle order, and

@@ -6,8 +6,10 @@ import WatchtowerKit
 struct SessionRowModel: Equatable, Identifiable {
     let id: Int64
     let title: String
-    /// The Mac's caption; a session that is not live adds its age
-    /// ("Stopped · 3h").
+    /// The Mac's caption plus an age: a live session's time in its current
+    /// state ("Needs approval · 40m", from `stateAt`; none while unknown), a
+    /// session that is not live its last activity ("Stopped · 3h"). The
+    /// phone computes it, so the record need not change every minute.
     let caption: String
     let tone: PhoneTone
     /// An SF Symbol name; nil when the Mac sent none. Kept in the model; the
@@ -24,9 +26,9 @@ struct SessionRowModel: Equatable, Identifiable {
     private let isWaiting: Bool
 
     init(_ session: TerminalSessionState, now: Date) {
-        let caption = session.live
-            ? session.stateCaption
-            : "\(session.stateCaption) · \(CompactAge.string(from: session.lastActiveAt, now: now))"
+        let since = session.live ? session.stateAt : session.lastActiveAt
+        let caption = since.map { "\(session.stateCaption) · \(CompactAge.string(from: $0, now: now))" }
+            ?? session.stateCaption
         let tone = PhoneTone(session.stateTone)
         let isWaiting = [.waitingOnAsk, .needsApproval].contains(session.stateKind) || session.openAsks > 0
         id = session.id
