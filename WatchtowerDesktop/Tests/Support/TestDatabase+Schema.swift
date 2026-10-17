@@ -2056,6 +2056,17 @@ CREATE TABLE IF NOT EXISTS review_lessons (
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   decided_at         TEXT
 );
+CREATE TABLE IF NOT EXISTS permission_requests (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+  workbench_id        INTEGER NOT NULL,
+  tool_name           TEXT NOT NULL DEFAULT '',
+  summary             TEXT NOT NULL DEFAULT '',
+  status              TEXT NOT NULL CHECK (status IN ('pending','allowed','denied','answered_on_mac','expired')),
+  created_at          TEXT NOT NULL,
+  decided_at          TEXT,
+  decided_by          TEXT
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2379,6 +2390,7 @@ CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id
 CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id);
 CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 CREATE INDEX IF NOT EXISTS review_notes_session ON review_notes(project_id, session_id, kind, ord);
+CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
