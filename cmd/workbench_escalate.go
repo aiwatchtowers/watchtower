@@ -80,7 +80,7 @@ var (
 
 func init() {
 	c := workbenchEscalateCmd
-	addWorkbenchIDFlag(c, &workbenchEscalateFlagWorkbench, "workbench id")
+	c.Flags().Int64Var(&workbenchEscalateFlagWorkbench, workbenchFlag, 0, "workbench id")
 	c.Flags().Int64Var(&workbenchEscalateFlagSession, "session", 0, "terminal session id")
 	c.Flags().StringVar(&workbenchEscalateFlagAt, "at", "", "the chat_question_at the Desktop read, verbatim")
 	c.Flags().StringVar(&workbenchEscalateFlagReason, "reason", "", "timeout, left or away")
@@ -124,9 +124,6 @@ type escalateArgs struct {
 
 func parseEscalateArgs(cmd *cobra.Command, positional []string) (escalateArgs, error) {
 	var a escalateArgs
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return a, err
-	}
 	if len(positional) > 0 {
 		return a, fmt.Errorf("unexpected argument %q", briefClip(positional[0], 40))
 	}

@@ -428,6 +428,7 @@ CREATE TABLE IF NOT EXISTS targets (
                         CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')),
     branch              TEXT NOT NULL DEFAULT '',  -- project targets: the git branch carrying the work (00089)
     pr                  TEXT NOT NULL DEFAULT '',  -- project targets: the pull request, a number or URL (00089)
+    board_column_id     INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL, -- workbench targets: the board column, of the same workbench and status; NULL = the status's first column (00125)
     CHECK(status != 'in_review' OR project_id IS NOT NULL)  -- in_review exists only on a project board (00086)
 );
 CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
@@ -451,6 +452,11 @@ CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
 -- A parent's own update is never rolled up. Full bodies: the migration file.
 -- (00086: an in_review child counts as started like in_progress; a rollup
 -- write sets status_actor = 'system'.)
+-- Triggers targets_board_column_check_{ai,bu} and targets_board_column_clear_au
+-- (00125, PROJ-19): writing a board_column_id that is not a column of the
+-- target's workbench and current status aborts with 'board column does not
+-- match the target'; a status or project_id change that leaves the column's
+-- category sets board_column_id = NULL (no status history row).
 
 -- Status history of project targets (00086, PROJ-06): one row per status
 -- transition and one at creation (from_status NULL), written by the triggers
@@ -2358,7 +2364,7 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
     message_id      INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
     artifact_key    TEXT NOT NULL,
     version         INTEGER NOT NULL,
-    kind            TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code')),
+    kind            TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code','html')),
     title           TEXT NOT NULL DEFAULT '',
     content         TEXT NOT NULL,
     meta_json       TEXT NOT NULL DEFAULT '{}',
@@ -2427,7 +2433,7 @@ END;
 
 -- projects* tables = Workbench (UI/CLI/code name since 2026-10-02; table names kept).
 -- Projects (00081, spec 2026-09-29-project-board-poc-design.md): a folder-bound
--- project worked on by Claude Code through `watchtower mcp --project N`. Its
+-- project worked on by Claude Code through `watchtower mcp --workbench N`. Its
 -- targets carry targets.project_id and appear only on its board. Comments hang
 -- off a target or a thread root (parent_id; replies are flat, parent_id = the
 -- root); attached documents and their comments were replaced by owner_asks (00100).
@@ -2446,8 +2452,24 @@ CREATE TABLE IF NOT EXISTS projects (
     agent_analytics INTEGER NOT NULL DEFAULT 0 CHECK (agent_analytics IN (0, 1)), -- 1 = Agent analytics reads this workbench's Claude Code logs (00116)
     methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00123)
     ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00123)
-    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')) -- the owner's finish check; NULL = the folder file, else on (00123)
+    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), -- the owner's finish check; NULL = the folder file, else on (00123)
+    board_hidden_statuses TEXT NULL -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
 );
+
+-- Workbench board columns (00125, PROJ-19): named columns inside one status
+-- category of one workbench, ordered by position. A status with no rows has
+-- one implicit column, its standard label (To Do, In Progress, In Review,
+-- Blocked, Done, Dismissed). Written only by `watchtower workbench columns`.
+CREATE TABLE IF NOT EXISTS workbench_board_columns (
+    id          INTEGER PRIMARY KEY,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed')),
+    title       TEXT NOT NULL,           -- 1-40 chars, unique per workbench case-insensitively
+    description TEXT NOT NULL DEFAULT '', -- up to 500 chars
+    position    INTEGER NOT NULL,         -- 0..n within (project_id, status)
+    created_at  TEXT NOT NULL             -- UTC ISO-8601
+);
+CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 
 -- Board archive (00103, amended 00105, PROJ-15): one row per workbench target;
 -- archived = 1 iff the target and every descendant on the same board are
@@ -2632,6 +2654,16 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
     first_at   TEXT NOT NULL,             -- agent_state_at format
     PRIMARY KEY (session_id, root, branch)
+);
+
+-- Every agent session id a terminal tab has had (00127); the tab's own
+-- claude_session_id holds only the latest. Filled by AFTER INSERT / AFTER UPDATE
+-- OF claude_session_id triggers on terminal_sessions; ids and times only.
+CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
+    terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    agent_session_id    TEXT NOT NULL,
+    first_seen_at       TEXT NOT NULL, -- UTC ISO-8601 seconds
+    PRIMARY KEY (terminal_session_id, agent_session_id)
 );
 
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
@@ -2865,7 +2897,9 @@ CREATE TABLE IF NOT EXISTS agent_log_events (
   lines_added    INTEGER NOT NULL DEFAULT 0,
   lines_removed  INTEGER NOT NULL DEFAULT 0,
   src_path       TEXT NOT NULL,
-  src_offset     INTEGER NOT NULL
+  src_offset     INTEGER NOT NULL,
+  spawned_agent_id TEXT NOT NULL DEFAULT '',
+  background     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_agent_log_events_session ON agent_log_events(session_uuid, ts);
 CREATE INDEX IF NOT EXISTS idx_agent_log_events_kind ON agent_log_events(kind, name);
@@ -2879,7 +2913,7 @@ SELECT session_uuid,
   SUM(cache_write_1h_tokens) AS cache_write_1h_tokens,
   SUM(cost_usd) AS cost_usd,
   SUM(cost_estimated) AS cost_estimated_calls,
-  SUM(CASE WHEN kind = 'owner_turn' THEN 1 ELSE 0 END) AS owner_turns,
+  SUM(CASE WHEN kind = 'owner_turn' AND trigger NOT IN ('notification','hook') THEN 1 ELSE 0 END) AS owner_turns,
   SUM(CASE WHEN kind = 'tool' THEN 1 ELSE 0 END)       AS tool_calls,
   SUM(CASE WHEN kind = 'tool' AND outcome = 'error' THEN 1 ELSE 0 END)       AS tool_errors,
   SUM(CASE WHEN kind = 'tool' AND outcome = 'denied' THEN 1 ELSE 0 END)      AS tool_denials,
@@ -2968,4 +3002,66 @@ CREATE TABLE IF NOT EXISTS review_viewed (
   path        TEXT NOT NULL,
   content_sha TEXT NOT NULL, -- file content hash when marked Viewed
   PRIMARY KEY (round_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS review_checks (
+  round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  chapter_key TEXT NOT NULL,
+  lens        TEXT NOT NULL,
+  item_key    TEXT NOT NULL, -- first 16 hex of sha256 of the question text
+  state       TEXT NOT NULL CHECK (state IN ('checked','commented','done','partial','not_done')), -- unticking deletes the row
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (round_id, chapter_key, lens, item_key)
+);
+
+CREATE TABLE IF NOT EXISTS review_notes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+  tree_sha   TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('note','chapter')),
+  ord        INTEGER NOT NULL,
+  path       TEXT NOT NULL DEFAULT '',
+  start_line INTEGER NOT NULL DEFAULT 0,
+  end_line   INTEGER NOT NULL DEFAULT 0,
+  quote      TEXT NOT NULL DEFAULT '',
+  text       TEXT NOT NULL,
+  paths_json TEXT NOT NULL DEFAULT '[]',
+  core       INTEGER NOT NULL DEFAULT 0 CHECK (core IN (0,1)),
+  why        TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS review_notes_session ON review_notes(project_id, session_id, kind, ord);
+
+CREATE TABLE IF NOT EXISTS review_overviews (
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  tree_sha    TEXT NOT NULL,
+  base_sha    TEXT NOT NULL,
+  intent_hash TEXT NOT NULL,
+  json        TEXT NOT NULL,
+  model       TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, tree_sha, base_sha, intent_hash)
+);
+
+CREATE TABLE IF NOT EXISTS review_reverts (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  hunk_id  TEXT NOT NULL,
+  path     TEXT NOT NULL,
+  header   TEXT NOT NULL,
+  patch    TEXT NOT NULL,
+  at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  UNIQUE (round_id, hunk_id)
+);
+
+CREATE TABLE IF NOT EXISTS review_lessons (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id         INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  lens               TEXT NOT NULL,
+  text               TEXT NOT NULL,
+  source_comment_ids TEXT NOT NULL DEFAULT '[]',
+  status             TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','accepted','dismissed')),
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  decided_at         TEXT
 );

@@ -17,8 +17,8 @@ final class ArtifactContractFixtureTests: XCTestCase {
 
     func testPromptExamplesParse() throws {
         let artifacts = ArtifactParser.parse(try Self.fixture(), final: true).artifacts
-        XCTAssertEqual(artifacts.map(\.key), ["vendor-followup", "standup-note", "design-review"])
-        XCTAssertEqual(artifacts.map(\.kind), ["email", "slack", "event"])
+        XCTAssertEqual(artifacts.map(\.key), ["vendor-followup", "standup-note", "design-review", "launch-deck"])
+        XCTAssertEqual(artifacts.map(\.kind), ["email", "slack", "event", "html"])
         XCTAssertTrue(artifacts.allSatisfy(\.isComplete))
         XCTAssertEqual(artifacts[0].meta["subject"], #"Contract "v2" — next steps"#)
         XCTAssertEqual(artifacts[1].meta["channel"], "1:C0123ABC")
@@ -26,5 +26,7 @@ final class ArtifactContractFixtureTests: XCTestCase {
         let actions = ArtifactActions.kindActions(for: artifacts[2], gmailConnected: false, slackLinks: nil)
         guard case .open(let url) = actions.first?.action else { return XCTFail("event must open a calendar URL") }
         XCTAssertTrue(url.absoluteString.contains("dates=20260930T070000Z%2F20260930T080000Z"))
+        XCTAssertTrue(artifacts[3].content.hasPrefix("<!doctype html>"))
+        XCTAssertTrue(artifacts[3].content.hasSuffix("</body></html>"))
     }
 }

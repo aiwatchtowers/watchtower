@@ -40,7 +40,7 @@ func reviewSession(t *testing.T, database *db.DB, wbID int64, folder string) int
 
 func reviewJSON(t *testing.T, wb int64, sub string, args ...string) map[string]any {
 	t.Helper()
-	out, _, err := runWorkbenchAs(t, "workbench", append([]string{"review", sub, "--workbench", itoa(wb), "--json"}, args...)...)
+	out, _, err := runWorkbench(t, append([]string{"review", sub, "--workbench", itoa(wb), "--json"}, args...)...)
 	resetSetFlags(workbenchReviewCmd.Commands()...)
 	require.NoError(t, err)
 	var m map[string]any
@@ -228,4 +228,57 @@ func TestWorkbenchReview_CancelledStartPersistsNothing(t *testing.T) {
 	m := reviewJSON(t, wb, "start", "--session", itoa(s))
 	assert.Equal(t, false, m["ok"])
 	assert.Equal(t, 0, reviewRoundCount(t, database))
+}
+
+func TestWorkbenchReviewContext_ReturnsLenses(t *testing.T) {
+	_, wb, s, repo := reviewFixture(t)
+	none := reviewJSON(t, wb, "context", "--session", itoa(s))
+	assert.Len(t, none["lenses"], 5)
+	assert.NotContains(t, none, "lens_notes")
+	for _, l := range none["lenses"].([]any) {
+		if l.(map[string]any)["id"] == "house_rules" {
+			assert.Equal(t, []any{}, l.(map[string]any)["items"])
+		}
+	}
+
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, ".watchtower"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".watchtower", "review.md"), []byte("## Tests\n- Extra?\nbad\n"), 0o644))
+	got := reviewJSON(t, wb, "context", "--session", itoa(s))
+	lenses := got["lenses"].([]any)
+	require.Len(t, lenses, 5)
+	var items []any
+	for _, l := range lenses {
+		if l.(map[string]any)["id"] == "tests" {
+			items = l.(map[string]any)["items"].([]any)
+		}
+	}
+	require.NotEmpty(t, items)
+	assert.Equal(t, "Extra?", items[len(items)-1].(map[string]any)["text"])
+	assert.Equal(t, []any{".watchtower/review.md: line 3: not a \"## lens\" heading or a \"- question\""}, got["lens_notes"])
+}
+
+func TestWorkbenchReviewStart_InheritsModeFromLastSentRound(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("one\n"), 0o644))
+	r1 := reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)
+	assert.Equal(t, "quick", r1["mode"])
+	id1 := int64(r1["id"].(float64))
+	_, err := database.Exec(`UPDATE review_rounds SET mode = 'deep' WHERE id = ?`, id1)
+	require.NoError(t, err)
+	reviewJSON(t, wb, "send", "--round", itoa(id1))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "x.txt"), []byte("new\n"), 0o644))
+	r2 := reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)
+	assert.Equal(t, "deep", r2["mode"])
+}
+
+func TestWorkbenchReviewStart_ReportsDeepState(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("one\n"), 0o644))
+	r := reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)
+	_, err := database.Exec(`UPDATE review_rounds SET phase = 'chapters', chapter_key = 'dir:cmd', active_seconds = 90 WHERE id = ?`, int64(r["id"].(float64)))
+	require.NoError(t, err)
+	got := reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)
+	assert.Equal(t, "chapters", got["phase"])
+	assert.Equal(t, "dir:cmd", got["chapter_key"])
+	assert.Equal(t, float64(90), got["active_seconds"])
 }

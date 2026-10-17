@@ -304,24 +304,16 @@ func TestSessionProbeStaleStampWithoutACountIsNotStale(t *testing.T) {
 	}
 }
 
-// The workbench id flag is registered like its siblings': the legacy
-// --project spelling works, and both together answer ok: false.
+// The workbench id flag is registered like its siblings'.
 func TestSessionProbeWorkbenchFlags(t *testing.T) {
 	database, pid, row := briefSessionFixture(t)
 	countedRow(t, database, pid, row, 2, time.Now().Add(-time.Hour))
 	probeRegistries[3].apply(t) // busy: no write
 	id, session := strconv.FormatInt(pid, 10), strconv.FormatInt(row, 10)
 
-	out, errOut, err := runWorkbench(t, "session-probe", "--project", id, "--session", session)
+	out, errOut, err := runWorkbench(t, "session-probe", "--workbench", id, "--session", session)
 	require.NoError(t, err, "stderr: %s", errOut)
 	assert.Contains(t, out, `"outcome": "busy"`)
-
-	out, errOut, err = runWorkbench(t, "session-probe", "--workbench", id, "--project", id, "--session", session)
-	require.NoError(t, err, "stderr: %s", errOut)
-	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout: %s", out)
-	assert.Equal(t, false, got["ok"])
-	assert.Contains(t, got["error"], "--project is the old name of --workbench")
 }
 
 // Board #411: whatever the outcome, the probe never changes the row's state,

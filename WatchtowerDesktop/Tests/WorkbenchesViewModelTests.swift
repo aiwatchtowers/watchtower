@@ -759,7 +759,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(appState.terminalCenter.focusOrder, [row.id])
         XCTAssertEqual(process.launches.last?.args.last,
                        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
-        XCTAssertEqual(process.launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt(.current))")
+        XCTAssertEqual(process.launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt)")
         XCTAssertEqual(vm.terminalSessions[id]?.map(\.id), [row.id])
     }
 

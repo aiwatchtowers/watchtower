@@ -205,7 +205,7 @@ struct WorkbenchBoardView: View {
                     onSelect: { vm.select($0) },
                     onEnter: { id in enterScopeAndFocus(vm, id) { vm.enterLane($0) } },
                     onOpenGroup: { id in enterScopeAndFocus(vm, id) { vm.enterScope($0) } },
-                    onMove: { vm.setStatus($1, for: $0) }
+                    onMove: { vm.moveCard($0, to: $1) }
                 )
             } else {
                 tree(vm)

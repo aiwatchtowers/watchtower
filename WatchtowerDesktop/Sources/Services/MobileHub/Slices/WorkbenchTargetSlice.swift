@@ -121,6 +121,8 @@ struct WorkbenchTargetSlice: SliceSource {
         let pr: String
         let prClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
         let archived: Bool
+        /// The leaf's column title; nil (no key) without a column definition.
+        let column: String?
         let childrenCount: Int
         let openComments: Int
         let unreadForOwner: Int
@@ -140,7 +142,7 @@ struct WorkbenchTargetSlice: SliceSource {
             case workbenchID = "workbench_id"
             case parentID = "parent_id"
             case text, textClipped, intent, intentClipped, status, priority, progress
-            case branch, branchClipped, pr, prClipped, archived, childrenCount, openComments, unreadForOwner, openAsks
+            case branch, branchClipped, pr, prClipped, archived, column, childrenCount, openComments, unreadForOwner, openAsks
             case sessionIDs = "session_ids"
             case sessionIDsMore = "session_ids_more"
             case lastStatusAt, lastStatusActor, workOnPrompt, workOnPromptClipped, createdAt, updatedAt
@@ -156,12 +158,13 @@ struct WorkbenchTargetSlice: SliceSource {
         let stamp = now()
         var records: [SliceRecord] = []
         for workbench in workbenches {
+            let columns = try WorkbenchQueries.boardColumns(db, projectID: workbench.id)
             var stack = try WorkbenchQueries.board(db, projectID: workbench.id).map { (node: $0, parent: Int64?.none) }
             while let (node, parent) = stack.popLast() {
                 let id = Int64(node.target.id)
                 stack.append(contentsOf: node.children.map { (node: $0, parent: id) })
                 guard let archived = window.published[id] else { continue }
-                let payload = makePayload(node, workbenchID: workbench.id, parentID: parent, archived: archived, facts: facts)
+                let payload = makePayload(node, workbenchID: workbench.id, parentID: parent, archived: archived, columns: columns, facts: facts)
                 records.append(SliceRecord(kind: kind, id: String(id), modifiedAt: stamp, payload: try encoder.encode(payload)))
             }
         }
@@ -173,6 +176,7 @@ struct WorkbenchTargetSlice: SliceSource {
         workbenchID: Int64,
         parentID: Int64?,
         archived: Bool,
+        columns: WorkbenchBoardColumns,
         facts: TargetFacts
     ) -> Payload {
         let target = node.target
@@ -183,7 +187,7 @@ struct WorkbenchTargetSlice: SliceSource {
         let pr = SliceClip.text(target.pr, limit: 120)
         let sessions = SliceClip.list(facts.sessions[id] ?? [], limit: Self.maxSessionIDs)
         let prompt = SliceClip.text(
-            TerminalLaunch.workOnTargetPrompt(targetID: id, vocabulary: .current), limit: 1000
+            TerminalLaunch.workOnTargetPrompt(targetID: id), limit: 1000
         )
         let lastStatus = facts.lastStatus[id]
         let recordName = kind.recordName(id: String(id))
@@ -195,6 +199,9 @@ struct WorkbenchTargetSlice: SliceSource {
             branch: branch.text, branchClipped: branch.clipped,
             pr: pr.text, prClipped: pr.clipped,
             archived: archived,
+            column: node.children.isEmpty ? BoardColumnLayout.effectiveColumn(
+                status: target.status, columnID: node.boardColumnID, def: columns
+            )?.title : nil,
             childrenCount: node.children.count,
             openComments: node.openComments,
             unreadForOwner: node.unreadForOwner,

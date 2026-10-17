@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -227,6 +228,124 @@ func TestEnqueue_EventCycleCheckedBeforeQueuedCoalescing(t *testing.T) {
 	if r := mustGetAutomationRun(t, d, queued); r.EventCycle != "A" {
 		t.Errorf("event_cycle = %q; want A untouched", r.EventCycle)
 	}
+	wantRowCount(t, d, "automation_runs", 1)
+}
+
+// rawEvents returns n event_json elements {"n": from+i}.
+func rawEvents(from, n int) []json.RawMessage {
+	out := make([]json.RawMessage, n)
+	for i := range out {
+		out[i] = json.RawMessage(`{"n":` + strconv.Itoa(from+i) + `}`)
+	}
+	return out
+}
+
+func eventPayload(t *testing.T, cycles []string, events []json.RawMessage, count int, truncated bool) string {
+	t.Helper()
+	b, err := json.Marshal(AutomationEventPayload{Cycles: cycles, Events: events, Count: count, Truncated: truncated})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func mustRunPayload(t *testing.T, d *DB, id int64) AutomationEventPayload {
+	t.Helper()
+	var p AutomationEventPayload
+	if err := json.Unmarshal([]byte(mustGetAutomationRun(t, d, id).EventJSON), &p); err != nil {
+		t.Fatalf("decoding run %d event_json: %v", id, err)
+	}
+	return p
+}
+
+func mustMerge(t *testing.T, d *DB, runID int64, cycle string, events []json.RawMessage, total, maxEvents int) bool {
+	t.Helper()
+	merged, err := d.MergeQueuedAutomationRunEvents(runID, cycle, events, total, maxEvents)
+	if err != nil {
+		t.Fatalf("MergeQueuedAutomationRunEvents(%d, %s): %v", runID, cycle, err)
+	}
+	return merged
+}
+
+func TestMergeQueuedEvents_AppendsCapsAndIsIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "watch", 1)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "A",
+		EventJSON: eventPayload(t, []string{"A"}, rawEvents(0, 3), 3, false)})
+	if !mustMerge(t, d, run, "B", rawEvents(3, 4), 6, 5) {
+		t.Fatal("merge of cycle B refused")
+	}
+	p := mustRunPayload(t, d, run)
+	if !reflect.DeepEqual(p.Cycles, []string{"A", "B"}) || p.Count != 9 || !p.Truncated {
+		t.Errorf("payload = cycles %v count %d truncated %v; want [A B] 9 true", p.Cycles, p.Count, p.Truncated)
+	}
+	if !reflect.DeepEqual(p.Events, rawEvents(0, 5)) {
+		t.Errorf("events = %s; want the five oldest", p.Events)
+	}
+	before := mustGetAutomationRun(t, d, run).EventJSON
+	if !mustMerge(t, d, run, "B", rawEvents(9, 1), 1, 5) {
+		t.Error("repeated merge of cycle B = false; want true (already merged)")
+	}
+	if got := mustGetAutomationRun(t, d, run).EventJSON; got != before {
+		t.Errorf("repeated merge rewrote event_json: %s; want %s", got, before)
+	}
+	if !mustMerge(t, d, run, "A", nil, 1, 5) {
+		t.Error("merge of the run's own cycle A = false; want true")
+	}
+}
+
+func TestMergeQueuedEvents_RefusesNonQueuedAndNonEvent(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "watch", 2)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "A",
+		EventJSON: eventPayload(t, []string{"A"}, rawEvents(0, 1), 1, false)})
+	if !mustClaimAutomationRun(t, d, run) {
+		t.Fatal("claim failed")
+	}
+	before := mustGetAutomationRun(t, d, run).EventJSON
+	if mustMerge(t, d, run, "B", rawEvents(1, 1), 1, 100) {
+		t.Error("merge into a running run = true")
+	}
+	if got := mustGetAutomationRun(t, d, run).EventJSON; got != before {
+		t.Errorf("refused merge wrote event_json: %s", got)
+	}
+	manual, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	if mustMerge(t, d, manual, "B", rawEvents(1, 1), 1, 100) {
+		t.Error("merge into a queued manual run = true")
+	}
+	if got := mustGetAutomationRun(t, d, manual).EventJSON; got != "" {
+		t.Errorf("refused merge wrote the manual run's event_json: %q", got)
+	}
+	_, err := d.MergeQueuedAutomationRunEvents(999, "B", nil, 1, 100)
+	wantErrIs(t, "merge into a missing run", err, ErrAutomationRunNotFound)
+}
+
+func TestMergeQueuedEvents_KeepsQueueInvariants(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "watch", 1)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "A",
+		EventJSON: eventPayload(t, []string{"A"}, rawEvents(0, 1), 1, false)})
+	if !mustMerge(t, d, run, "B", rawEvents(1, 1), 1, 100) {
+		t.Fatal("merge refused")
+	}
+	if r := mustGetAutomationRun(t, d, run); r.EventCycle != "A" || r.Status != RunQueued {
+		t.Errorf("run = event_cycle %q status %s; want A queued", r.EventCycle, r.Status)
+	}
+	var queued int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM automation_runs WHERE automation_id = ? AND status = 'queued'`, a).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Errorf("queued rows = %d; want 1", queued)
+	}
+	id, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "B"})
+	wantCoalesced(t, "cycle B while queued", id, coalesced, run)
+	if !mustClaimAutomationRun(t, d, run) {
+		t.Fatal("claim failed")
+	}
+	mustFinishAutomationRun(t, d, run, RunFinish{Status: RunSucceeded}, nil)
+	id, coalesced = mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "B"})
+	wantCoalesced(t, "cycle B after finish", id, coalesced, run)
 	wantRowCount(t, d, "automation_runs", 1)
 }
 

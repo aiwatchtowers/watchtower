@@ -1,8 +1,8 @@
 import Foundation
 
 /// The app's keyboard shortcuts by area (issue #288): the one list behind
-/// Help › Keyboard Shortcuts, and the source of the guide's "Keyboard
-/// Shortcuts" section (`markdown`, kept identical by a test). Display only:
+/// Help › Keyboard Shortcuts, and the source of the guide's keyboard-shortcuts page ("By
+/// area" section, `markdown`, kept identical by a test). Display only:
 /// each chord stays bound where its action lives, so a new or moved chord
 /// is added here by hand. Pure.
 package enum KeyboardShortcutCatalog {
@@ -36,6 +36,7 @@ package enum KeyboardShortcutCatalog {
     package static let areas: [Area] = [
         Area("Global", [
             Entry("⌘B", "Collapse or expand the menu"),
+            Entry("⌘/", "Ask Watchtower: search the guide or ask how to do something"),
             Entry("⌃⌘R", "Run Automation… (with Automations turned on)"),
             Entry("⌃⌥D", "New Voice Idea, from anywhere in macOS"),
             Entry("⌘,", "Settings"),

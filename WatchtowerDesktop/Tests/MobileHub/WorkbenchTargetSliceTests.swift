@@ -39,6 +39,43 @@ final class WorkbenchTargetSliceTests: XCTestCase {
         Set(try SliceJSON.objects(try records(WorkbenchCommentSlice())).compactMap { ($0["id"] as? NSNumber)?.int64Value })
     }
 
+    // MARK: - Board column (board #267)
+
+    func testColumnOnlyWithDefinition() throws {
+        let (plain, grouped, leaf, stored) = try dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            let plain = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Plain", status: "in_progress")
+            let group = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Group", status: "in_progress")
+            let leaf = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Leaf", status: "in_progress", parentID: group)
+            let stored = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Stored", status: "in_progress")
+            return (plain, group, leaf, stored)
+        }
+        var payloads = try targetPayloads()
+        for id in [plain, grouped, leaf, stored] {
+            XCTAssertNil(try XCTUnwrap(payloads[id])["column"], "no definition: no column key")
+        }
+
+        try dbPool.write { db in
+            let project: Int64 = try Int64.fetchOne(db, sql: "SELECT project_id FROM targets WHERE id = ?", arguments: [plain]) ?? 0
+            for (position, title) in ["Coding", "Testing"].enumerated() {
+                try db.execute(
+                    sql: """
+                        INSERT INTO workbench_board_columns (project_id, status, title, position, created_at)
+                        VALUES (?, 'in_progress', ?, ?, '2026-10-16T00:00:00Z')
+                        """,
+                    arguments: [project, title, position]
+                )
+            }
+            let testing = try Int64.fetchOne(db, sql: "SELECT id FROM workbench_board_columns WHERE title = 'Testing'")
+            try db.execute(sql: "UPDATE targets SET board_column_id = ? WHERE id = ?", arguments: [testing, stored])
+        }
+        payloads = try targetPayloads()
+        XCTAssertEqual(payloads[plain]?["column"] as? String, "Coding", "no stored column: the status's first column")
+        XCTAssertEqual(payloads[stored]?["column"] as? String, "Testing")
+        XCTAssertEqual(payloads[leaf]?["column"] as? String, "Coding")
+        XCTAssertNil(payloads[grouped]?["column"], "a parent is no card")
+    }
+
     // MARK: - Wire shape
 
     func testTargetPayloadMatchesTheKitFixture() throws {
@@ -70,7 +107,7 @@ final class WorkbenchTargetSliceTests: XCTestCase {
         assertWireShape(
             payload, matches: try SliceJSON.kitFixture("workbench/workbench_target.json"),
             optionalKeys: ["parent_id", "text_clipped", "intent_clipped", "branch_clipped", "pr_clipped",
-                           "session_ids_more", "last_status_at", "last_status_actor", "work_on_prompt_clipped"]
+                           "session_ids_more", "last_status_at", "last_status_actor", "work_on_prompt_clipped", "column"]
         )
         XCTAssertEqual((payload["parent_id"] as? NSNumber)?.int64Value, parent)
         XCTAssertEqual(payload["status"] as? String, "in_progress")
@@ -86,7 +123,7 @@ final class WorkbenchTargetSliceTests: XCTestCase {
         XCTAssertEqual(payload["last_status_actor"] as? String, "owner")
         XCTAssertEqual(
             payload["work_on_prompt"] as? String,
-            TerminalLaunch.workOnTargetPrompt(targetID: child, vocabulary: .current)
+            TerminalLaunch.workOnTargetPrompt(targetID: child)
         )
         let group = try XCTUnwrap(payloads[parent])
         XCTAssertEqual(group["children_count"] as? Int, 1)

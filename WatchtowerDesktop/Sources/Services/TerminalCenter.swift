@@ -37,9 +37,14 @@ protocol TerminalSessionProcess: AnyObject {
     /// ask `lookUp` finds for it in the session's workbench, and a click on
     /// it calls `open`. A number `lookUp` finds nothing for is no link.
     func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void)
+    /// Whether the session host runs the process, so it outlives the app
+    /// (board #496); a local process dies when the app quits.
+    var isHosted: Bool { get }
 }
 
 extension TerminalSessionProcess {
+    var isHosted: Bool { false }
+
     var onOwnerFocus: (() -> Void)? {
         get { nil }
         set {} // swiftlint:disable:this unused_setter_value
@@ -155,7 +160,27 @@ final class TerminalCenter {
     /// The row each process was started from, so a project's sessions can be
     /// found (and closed) after the project's rows are gone.
     @ObservationIgnored private var rows: [Int64: TerminalSession] = [:]
+    /// Builds each session's process. By default a `HostedTerminalSession`
+    /// while `sessionHost` is set, else `makeLocalProcess`.
+    /// Sessions an automation run let go of (a refused launch's row): no
+    /// later launch carries the run marker, whatever copy of the row the
+    /// caller holds.
+    @ObservationIgnored private var droppedRunMarkers: Set<Int64> = []
     @ObservationIgnored var makeProcess: () -> any TerminalSessionProcess
+    /// The local fallback process (`SwiftTermSession`). A seam for tests.
+    @ObservationIgnored var makeLocalProcess: () -> any TerminalSessionProcess
+    /// The session host new sessions launch in (board #496); nil while no
+    /// host is available — they then run locally and stop with the app.
+    @ObservationIgnored var sessionHost: SessionHostClient?
+    /// The current workspace's session host scope
+    /// (`SessionHostPaths.scope`): hosted launches carry it, and a reattach
+    /// touches only runs of it ("" from an older host counts as it).
+    @ObservationIgnored var sessionHostScope = ""
+    /// The one client `connectSessionHost` made, answering or not.
+    @ObservationIgnored private var sessionHostClient: SessionHostClient?
+    /// Sessions whose current process runs locally, not in the session
+    /// host: the pane says they stop when Watchtower quits.
+    private(set) var unprotected: Set<Int64> = []
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
     @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
@@ -180,6 +205,9 @@ final class TerminalCenter {
     /// Watchtower caused it by closing the terminal (`close`/`closeAll`,
     /// which drop the process before signalling it). One subscriber.
     @ObservationIgnored var onSessionExit: ((_ id: Int64, _ code: Int32?, _ closedByApp: Bool) -> Void)?
+    /// Every process exit too, by session row id, for a subscriber that
+    /// outlives the workbench view model (`AutomationSessionCenter`).
+    @ObservationIgnored var onRowExit: ((_ id: Int64) -> Void)?
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
     /// inside its folder (`TerminalPathLinks`): workbench id, session id,
     /// location.
@@ -203,10 +231,41 @@ final class TerminalCenter {
     // (MainActor) init body sidesteps that.
     init(
         makeProcess: (() -> any TerminalSessionProcess)? = nil,
+        makeLocalProcess: (() -> any TerminalSessionProcess)? = nil,
         signaller: ProcessGroupSignaller = .live
     ) {
-        self.makeProcess = makeProcess ?? { SwiftTermSession() }
+        self.makeLocalProcess = makeLocalProcess ?? { SwiftTermSession() }
+        // A placeholder: the default factory below captures `self`, which
+        // needs every stored property initialised first.
+        self.makeProcess = { SwiftTermSession() }
         self.signaller = signaller
+        self.makeProcess = makeProcess ?? { [weak self] in
+            guard let self else { return SwiftTermSession() }
+            return sessionHost.map { self.makeHosted($0) } ?? self.makeLocalProcess()
+        }
+    }
+
+    /// The connection `startSessionHost` began; a reattach waits for it.
+    @ObservationIgnored private(set) var sessionHostConnection: Task<Void, Never>?
+
+    /// Begins `connectSessionHost` once per app run, so a caller that comes
+    /// after it can wait for the connection (`sessionHostConnection`).
+    func startSessionHost(_ makeClient: @escaping () -> SessionHostClient) {
+        guard sessionHostConnection == nil else { return }
+        sessionHostConnection = Task { await self.connectSessionHost(makeClient) }
+    }
+
+    private func makeHosted(_ client: SessionHostClient) -> HostedTerminalSession {
+        HostedTerminalSession(client: client) { [weak self] in self?.sessionHostScope ?? "" }
+    }
+
+    /// Connects to the session host once per app run: a second call (the
+    /// database wired again) reuses the first client and its connection.
+    func connectSessionHost(_ makeClient: () -> SessionHostClient) async {
+        guard sessionHostClient == nil else { return }
+        let client = makeClient()
+        sessionHostClient = client
+        sessionHost = await client.ensureRunning() ? client : nil
     }
 
     var liveIDs: Set<Int64> {
@@ -876,19 +935,31 @@ final class TerminalCenter {
     }
 
     private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?, setup: String?) {
+        let process = processes[session.id] ?? makeProcess()
+        wire(process, session: session, startedAt: now())
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: session.id, codex: codex, setup: setup,
+                            automationRunID: droppedRunMarkers.contains(session.id) ? nil : session.automationRunID))
+    }
+
+    /// Registers `process` as the row's current run, `.running` from
+    /// `startedAt`: exit, owner input and focus, links, and a fresh run's
+    /// prompt state. The caller then starts or attaches it.
+    private func wire(_ process: any TerminalSessionProcess, session: TerminalSession, startedAt started: Date) {
         let id = session.id
-        let process = processes[id] ?? makeProcess()
+        rows[id] = session
         process.onExit = { [weak self, weak process] code in
             guard let self else { return }
             let closedByApp = process.map { self.processes[id] !== $0 } ?? true
             states[id] = .exited(code)
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
+            onRowExit?(id)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
         // A click into one terminal of a split makes it the active session.
         process.onOwnerFocus = { [weak self] in self?.focus(id) }
         processes[id] = process
+        if process.isHosted { unprotected.remove(id) } else { unprotected.insert(id) }
         if let workbenchID = session.projectID {
             // ⌘-click on `path:line` in a workbench session opens Files;
             // the path resolves in the session's code root (board #565).
@@ -903,7 +974,7 @@ final class TerminalCenter {
                 open: { [weak self] askID in self?.onAskLink?(workbenchID, askID) }
             )
         }
-        startedAt[id] = now()
+        startedAt[id] = started
         lastRun += 1
         runs[id] = lastRun
         // A new run starts with an empty prompt: no line of the last run
@@ -912,7 +983,122 @@ final class TerminalCenter {
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex, setup: setup))
+    }
+
+    // MARK: Reattach at launch (board #496)
+
+    /// Takes over a run the session host still holds for `session` — one
+    /// started before the app last quit or was updated — as `.running`,
+    /// without launching anything: no `TerminalLaunch`, no `--resume`, no
+    /// new process. `startedAt` is the host's, so a hook state stamped
+    /// during the run stays trusted. An exited run is adopted the same way
+    /// and reports its exit once the replay is in. Nothing happens while the row already
+    /// runs here or no host is connected.
+    func adopt(_ session: TerminalSession, info: SessionHostSessionInfo) {
+        guard let host = sessionHost, states[session.id] != .running else { return }
+        let process: HostedTerminalSession
+        if let hosted = processes[session.id] as? HostedTerminalSession {
+            process = hosted
+        } else {
+            // A local process of an earlier, ended run: its view leaves
+            // the pane for the adopted one.
+            if let local = processes.removeValue(forKey: session.id) {
+                local.onExit = nil
+                local.onOwnerInput = nil
+                local.onOwnerFocus = nil
+                local.detach()
+            }
+            process = makeHosted(host)
+        }
+        wire(process, session: session, startedAt: Date(timeIntervalSince1970: Double(info.startedAtMs) / 1000))
+        process.attach(info)
+    }
+
+    /// Sorts out what the host listed at launch against the rows that still
+    /// exist (`rows`, by id). Only runs of this workspace's scope
+    /// (`sessionHostScope`, or "" from an older host) are touched: row ids
+    /// of another workspace's database mean other rows. A running run of a
+    /// row this center does not run yet is adopted (the newest, when the
+    /// host holds several). The newest exited run of a row nothing runs for
+    /// is adopted too, so the pane shows its last output: its session
+    /// reports the exit once through `onSessionExit` as a natural exit and
+    /// forgets it; every other exited run is forgotten here. A running run
+    /// whose row is gone — or that is not the one the row runs — is
+    /// stopped (hang-up, then kill after `killGrace`) and forgotten in
+    /// `strayStops`, which the caller need not wait for. Runs this center already holds are left to their
+    /// session. Safe to call again: a second call finds its own runs held.
+    func reattach(_ listed: [SessionHostSessionInfo], rows existing: [Int64: TerminalSession]) async {
+        guard let host = sessionHost else { return }
+        let scope = sessionHostScope
+        let unheld = listed.filter { info in
+            (info.scope.isEmpty || info.scope == scope)
+                && (processes[info.row] as? HostedTerminalSession)?.key != SessionHostAttachRequest(row: info.row, run: info.run)
+        }
+        var strays: [SessionHostSessionInfo] = []
+        let running = Dictionary(grouping: unheld.filter { !$0.exited }, by: \.row)
+        for (row, runs) in running {
+            let newestFirst = runs.sorted { $0.startedAtMs > $1.startedAtMs }
+            if let session = existing[row], states[row] != .running, let newest = newestFirst.first {
+                adopt(session, info: newest)
+                strays += newestFirst.dropFirst()
+            } else {
+                strays += newestFirst
+            }
+        }
+        let exited = Dictionary(grouping: unheld.filter(\.exited), by: \.row)
+        var shown: [Int64: String] = [:] // row → the exited run attached
+        for (row, runs) in exited {
+            guard let session = existing[row], running[row] == nil, processes[row] == nil,
+                  let last = runs.max(by: { $0.startedAtMs < $1.startedAtMs }) else { continue }
+            adopt(session, info: last)
+            shown[row] = last.run
+        }
+        for info in unheld where info.exited && shown[info.row] != info.run {
+            await host.forget(row: info.row, run: info.run)
+        }
+        guard !strays.isEmpty else { return }
+        strayStops = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for info in strays {
+                    group.addTask { @MainActor in await self.stopStray(info, host: host) }
+                }
+            }
+        }
+    }
+
+    /// The stops of the last `reattach`'s stray runs (tests await it).
+    @ObservationIgnored private(set) var strayStops: Task<Void, Never>?
+
+    /// After a kill, how many `pollStep`s a stray's stop waits for the host
+    /// to reap the child, so the host accepts its forget.
+    static let reapPolls = 10
+
+    /// Stops a hosted run nothing here shows — its row is gone, or another
+    /// run of the row was adopted — the way `close` stops a session, then
+    /// forgets it in the host.
+    private func stopStray(_ info: SessionHostSessionInfo, host: SessionHostClient) async {
+        let pid = pid_t(info.pid)
+        if pid > 0 {
+            signaller.signal(pid, SIGHUP)
+            var waited: Duration = .zero
+            while waited < Self.killGrace, signaller.isAlive(pid) {
+                await signaller.sleep(Self.pollStep)
+                waited += Self.pollStep
+            }
+            if signaller.isAlive(pid) {
+                signaller.signal(pid, SIGKILL)
+                for _ in 0..<Self.reapPolls where signaller.isAlive(pid) {
+                    await signaller.sleep(Self.pollStep)
+                }
+            }
+        }
+        // The group is gone, but the host may not have reaped the child
+        // yet and refuses to forget a running run: asked again once.
+        let forgot = await host.forget(row: info.row, run: info.run)
+        if !forgot {
+            await signaller.sleep(Self.pollStep)
+            await host.forget(row: info.row, run: info.run)
+        }
     }
 
     func close(sessionID: Int64) async {
@@ -948,6 +1134,39 @@ final class TerminalCenter {
         }
     }
 
+    /// Lets go of every session for a quit that keeps them (an update, a
+    /// logout, the owner's Keep Sessions and Quit; PROJ-20): a hosted
+    /// session's connection closes and the host keeps its process running —
+    /// it is never signalled — for the next launch to reattach; a local
+    /// fallback session is closed as `closeAll` closes it.
+    func detachAll() async {
+        for (id, process) in processes {
+            guard let hosted = process as? HostedTerminalSession else { continue }
+            processes[id] = nil
+            hosted.onOwnerInput = nil
+            hosted.onOwnerFocus = nil
+            hosted.detachFromHost()
+            hosted.detach()
+            forget(id)
+        }
+        await closeAll()
+    }
+
+    /// The live sessions the session host runs — the ones a quit can keep.
+    var liveHostedCount: Int {
+        liveIDs.filter { processes[$0]?.isHosted == true }.count
+    }
+
+    /// The rows' run marker is gone from the database
+    /// (`AutomationQueries.disownUnattachedSessions`): their next launch
+    /// runs without it.
+    func dropAutomationRun(sessionIDs: [Int64]) {
+        for id in sessionIDs {
+            droppedRunMarkers.insert(id)
+            rows[id]?.automationRunID = nil
+        }
+    }
+
     private func forget(_ sessionID: Int64) {
         pendingLaunches[sessionID] = nil
         missingAgent[sessionID] = nil
@@ -960,6 +1179,7 @@ final class TerminalCenter {
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
+        unprotected.remove(sessionID)
         focusOrder.removeAll { $0 == sessionID }
     }
 
@@ -1076,15 +1296,52 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// reports — so an owner's click in a mouse-reporting program is
     /// deliberately not counted as input; only keystrokes and pastes are.
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        if dropsTerminalReplies { return }
         forwardingAppInput = true
         defer { forwardingAppInput = false }
         super.send(source: source, data: data)
     }
 
     /// Every byte for the process: keystrokes and pastes are the owner's.
+    /// A hosted session's bytes go to the session host instead.
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         if !forwardingAppInput { onOwnerInput?(Array(data)) }
+        if let hostInput {
+            hostInput(Array(data))
+            return
+        }
         super.send(source: source, data: data)
+    }
+
+    // MARK: Session host (board #496)
+
+    /// Set for a hosted session: the bytes for the process go here, not
+    /// to the (never started) local process.
+    var hostInput: (([UInt8]) -> Void)?
+    /// Set for a hosted session: the terminal's new columns and rows.
+    var hostResize: ((_ cols: Int, _ rows: Int) -> Void)?
+    /// While set, the terminal's own replies (`send(source: Terminal, …)`)
+    /// are dropped: a hosted session's replay re-runs old queries.
+    var dropsTerminalReplies = false
+    /// The size last reported through `hostResize`.
+    private var hostSize: (cols: Int, rows: Int)?
+
+    /// SwiftTerm's `sizeChanged(source:newCols:newRows:)` is public, not
+    /// open: the grid's new size is read here, after SwiftTerm resized it.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        guard hostResize != nil else { return }
+        let terminal = getTerminal()
+        if let hostSize, hostSize.cols == terminal.cols, hostSize.rows == terminal.rows { return }
+        reportHostSize()
+    }
+
+    /// Reports the current size through `hostResize`, changed or not (an
+    /// attach: the host nudges the child to redraw).
+    func reportHostSize() {
+        let terminal = getTerminal()
+        hostSize = (terminal.cols, terminal.rows)
+        hostResize?(terminal.cols, terminal.rows)
     }
 
     // MARK: path:line links (spec 2026-10-02 §9.5)
@@ -1403,13 +1660,10 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     var pid: pid_t { terminal.process?.shellPid ?? 0 }
 
     func start(_ launch: TerminalLaunch) {
-        var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
-        environment.append("SHELL=\(launch.executable)")
-        environment.append(contentsOf: launch.environment)
         terminal.startProcess(
             executable: launch.executable,
             args: launch.args,
-            environment: environment,
+            environment: launch.processEnvironment,
             execName: nil,
             currentDirectory: launch.currentDirectory
         )
@@ -1442,5 +1696,18 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
         // LocalProcess delivers on the main queue (its default dispatch queue).
         MainActor.assumeIsolated { onExit?(exitCode) }
+    }
+}
+
+extension TerminalLaunch {
+    /// The environment the launch's process starts with, locally or in the
+    /// session host: SwiftTerm's terminal basics (`TERM=xterm-256color`,
+    /// the locale, the owner's `USER`/`HOME`), `SHELL`, then the launch's
+    /// own entries.
+    var processEnvironment: [String] {
+        var processEnvironment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
+        processEnvironment.append("SHELL=\(executable)")
+        processEnvironment.append(contentsOf: environment)
+        return processEnvironment
     }
 }

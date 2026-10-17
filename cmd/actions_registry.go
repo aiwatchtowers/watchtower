@@ -163,6 +163,10 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		// tools.ReadTools() — dev-mode MCP stays local-only (DEV-01).
 		tools.NewGetConfluencePage(confluencePageClientFactory(cfg)),
 		tools.NewEditConfluencePage(confluencePageClientFactory(cfg)),
+		// The embedded user guide (Ask Watchtower, #426): chat-only, never
+		// ReadTools (DEV-01); Version picks the published guide URL.
+		tools.NewSearchGuide(Version),
+		tools.NewGetGuidePage(Version),
 		// Slack send (#166): main chat + workbench sessions; in a workbench
 		// session it is recorded pending for the Desktop's Approve (DEV-06).
 		tools.NewSendSlackMessage(slackSenderFactory(cfg)),
@@ -181,8 +185,8 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	authoringDeps := automationAuthoringDeps(cfg, database)
 	regTools = append(regTools, authoring.NewDraftAutomation(authoringDeps), authoring.NewSaveAutomation(authoringDeps))
 	// The workbench tools (surface "project" only, spec 2026-10-02 A1):
-	// mounted by `mcp --workbench N` (and the legacy `mcp --project N`),
-	// which applies them directly under Binding.DirectApply (DEV-06).
+	// mounted by `mcp --workbench N`, which applies them directly under
+	// Binding.DirectApply (DEV-06).
 	regTools = append(regTools, tools.WorkbenchTools(workbenchfiles.New(cfg.WorkspaceDir()))...)
 	// Every migrated read tool. Chat mode dispatches these through the registry's
 	// read branch; the runtime-B loop calls them in-process. Dev-mode MCP mounts

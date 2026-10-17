@@ -1,4 +1,5 @@
 import AppKit
+import GRDB
 import OSLog
 import WatchtowerCore
 
@@ -33,6 +34,12 @@ extension AppState {
     /// The `automations` feature is on (the Feature Manager's disabled set).
     var isAutomationsFeatureEnabled: Bool {
         !featureVisibility.disabledFeatureIDs.contains("automations")
+    }
+
+    /// On per a Feature Manager load that succeeded — never the fail-open
+    /// empty set before one. Gates the work automations start on their own.
+    var isAutomationsFeatureLoadedOn: Bool {
+        featureVisibility.isLoaded && isAutomationsFeatureEnabled
     }
 
     /// "Run Automation…" (⌃⌘R): the same palette whatever tab is selected.
@@ -74,6 +81,40 @@ extension AppState {
             activate()
             openMainWindow()
         }
+    }
+
+    // MARK: - Automation sessions (spec §13.1)
+
+    /// The center launching the sessions automation runs request; a launch
+    /// goes through the Workbench view model current at the time.
+    func makeAutomationSessionCenter(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) -> AutomationSessionCenter {
+        let terminals = terminalCenter
+        let center = AutomationSessionCenter(
+            dbPool: dbPool, cli: AutomationsCLI(runner: cliRunner ?? UnresolvedCLIRunner()),
+            start: { [weak self] request in
+                guard let vm = self?.workbenchesViewModel else {
+                    throw WorkbenchesViewModel.TargetStartError.failed("The Workbench is not ready.")
+                }
+                return try await vm.startAutomationSession(request)
+            },
+            isLive: { terminals.liveIDs.contains($0) }
+        )
+        center.onDisowned = { terminals.dropAutomationRun(sessionIDs: $0) }
+        terminals.onRowExit = { [weak center] id in
+            Task { await center?.sessionExited(rowID: id) }
+        }
+        return center
+    }
+
+    /// Polls while the `automations` feature is on per a successful load;
+    /// off, or before one (a failed load leaves it so), requests stay
+    /// pending (their run waits, bounded by its pause timeout). On, the
+    /// workbench rescans asked for meanwhile run too.
+    func syncAutomationSessionCenter() {
+        let on = isAutomationsFeatureLoadedOn
+        if on { workbenchesViewModel?.automationsFeatureTurnedOn() }
+        guard let center = automationSessionCenter else { return }
+        if on { center.start() } else { center.stop() }
     }
 
     // MARK: - Tray "Run automation ▸" (spec §12.7)

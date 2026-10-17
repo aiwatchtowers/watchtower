@@ -97,18 +97,7 @@ final class ChatMessageRowTests: XCTestCase {
         XCTAssertNotEqual(a, ChatMessageRow(item: base, isLast: true, isEditing: false, actions: ChatRowActions()))
     }
 
-    func testAFinishedAnswerOffersQuoteInReplyWithItsText() throws {
-        var quoted: (Int64, String)?
-        let base = try item(role: "assistant", status: "complete")
-        var actions = ChatRowActions()
-        actions.quote = { quoted = ($0, $1) }
-        let row = ChatMessageRow(item: base, isLast: true, isEditing: false, actions: actions)
-        try row.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Quote in reply" }.tap()
-        XCTAssertEqual(quoted?.0, base.id)
-        XCTAssertEqual(quoted?.1, "body")
-    }
-
-    func testCopyAndQuoteTakeAQuestionCardAsTextNotJSON() throws {
+    func testCopyTakesAQuestionCardAsTextNotJSON() throws {
         let reply = """
         Which one?
         ```watchtower-question
@@ -116,26 +105,24 @@ final class ChatMessageRowTests: XCTestCase {
         ```
         """
         var copied: String?
-        var quoted: String?
         var actions = ChatRowActions()
         actions.copy = { copied = $0 }
-        actions.quote = { quoted = $1 }
         let row = ChatMessageRow(item: try item(role: "assistant", status: "complete", text: reply),
                                  isLast: true, isEditing: false, actions: actions)
-        for label in ["Copy message", "Quote in reply"] {
-            try row.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == label }.tap()
-        }
-        let expected = "Which one?\n\nPick a release\n- v1\n- v2"
-        XCTAssertEqual(copied, expected)
-        XCTAssertEqual(quoted, expected)
+        try row.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Copy message" }.tap()
+        XCTAssertEqual(copied, "Which one?\n\nPick a release\n- v1\n- v2")
     }
 
-    func testOwnerMessagesHaveNoQuoteButton() throws {
-        let row = ChatMessageRow(item: try item(role: "user", status: "complete"),
-                                 isLast: true, isEditing: false, actions: ChatRowActions())
-        XCTAssertThrowsError(try row.inspect().find(ViewType.Button.self) {
-            try $0.accessibilityLabel().string() == "Quote in reply"
-        })
+    /// Quoting moved to the selection ("Ask about this" in the feed,
+    /// `ChatSelectionQuoteTracker`): no row offers the old whole-answer sheet.
+    func testNoRowOffersQuoteInReply() throws {
+        for role in ["assistant", "user"] {
+            let row = ChatMessageRow(item: try item(role: role, status: "complete"),
+                                     isLast: true, isEditing: false, actions: ChatRowActions())
+            XCTAssertThrowsError(try row.inspect().find(ViewType.Button.self) {
+                try $0.accessibilityLabel().string() == "Quote in reply"
+            }, role)
+        }
     }
 
     // MARK: - Embedded chats (Copy + Retry only)
@@ -147,7 +134,7 @@ final class ChatMessageRowTests: XCTestCase {
         XCTAssertNoThrow(try reply.inspect().find(ViewType.Button.self) {
             try $0.accessibilityLabel().string() == "Copy message"
         })
-        for label in ["Quote in reply", "Regenerate", "Previous version", "Next version"] {
+        for label in ["Regenerate", "Previous version", "Next version"] {
             XCTAssertThrowsError(try reply.inspect().find(ViewType.Button.self) {
                 try $0.accessibilityLabel().string() == label
             }, label)

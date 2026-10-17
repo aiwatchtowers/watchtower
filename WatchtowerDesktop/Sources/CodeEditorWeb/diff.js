@@ -32,12 +32,34 @@
       fontFamily: "SF Mono, Menlo, monospace", fontSize: 12
     });
     var zones = [];
+    var noteZones = [];
+    var hunkZones = [];
     var models = { original: null, modified: null };
     // Each showDiff gets fresh model URIs: the language follows the path,
     // and a disposed model's URI is never reused.
     var serial = 0;
 
     function lineCount(text) { return String(text || "").split("\n").length; }
+
+    // A zone's height in editor lines: the node laid out off screen at the
+    // editor's content width (its text wraps there), never below the count
+    // of its hard lines. The 8px side margins of .wt-comment/.wt-note and
+    // their 2px top and bottom margins are taken off and added back.
+    function zoneLines(ed, node, minLines) {
+      var width = ed.getLayoutInfo().contentWidth - 16;
+      var lineHeight = ed.getOption(monaco.editor.EditorOption.lineHeight);
+      if (!(width > 0) || !(lineHeight > 0)) { return minLines; }
+      var probe = node.cloneNode(true);
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.left = "-10000px";
+      probe.style.top = "0";
+      probe.style.width = width + "px";
+      document.body.appendChild(probe);
+      var height = probe.getBoundingClientRect().height + 4;
+      document.body.removeChild(probe);
+      return Math.max(minLines, Math.ceil(height / lineHeight));
+    }
 
     function renderComments(list) {
       var mod = editor.getModifiedEditor();
@@ -58,7 +80,56 @@
             node.appendChild(reply);
             lines += lineCount(c.reply);
           }
-          zones.push(acc.addZone({ afterLineNumber: c.endLine, heightInLines: lines, domNode: node }));
+          zones.push(acc.addZone({ afterLineNumber: c.endLine, heightInLines: zoneLines(mod, node, lines), domNode: node }));
+        });
+      });
+    }
+
+    // The agent's notes: a read-only zone above each note's first line.
+    function renderNotes(list) {
+      var mod = editor.getModifiedEditor();
+      mod.changeViewZones(function (acc) {
+        noteZones.forEach(function (z) { acc.removeZone(z); });
+        noteZones = [];
+        (list || []).forEach(function (n) {
+          var node = document.createElement("div");
+          node.className = "wt-note";
+          var label = document.createElement("div");
+          label.className = "wt-note-label";
+          label.textContent = "Agent note";
+          var body = document.createElement("div");
+          body.textContent = n.text;           // textContent only: never HTML from the DB
+          node.appendChild(label);
+          node.appendChild(body);
+          noteZones.push(acc.addZone({
+            afterLineNumber: Math.max(0, n.startLine - 1), heightInLines: zoneLines(mod, node, lineCount(n.text) + 1), domNode: node
+          }));
+        });
+      });
+    }
+
+    // One line above each hunk with an Undo button; a disabled one carries
+    // the reason as its title. The button posts the hunk id only.
+    function renderHunks(list) {
+      var mod = editor.getModifiedEditor();
+      mod.changeViewZones(function (acc) {
+        hunkZones.forEach(function (z) { acc.removeZone(z); });
+        hunkZones = [];
+        (list || []).forEach(function (h) {
+          var node = document.createElement("div");
+          node.className = "wt-hunk";
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "wt-undo";
+          button.textContent = "Undo";
+          if (h.canUndo) {
+            button.addEventListener("click", function () { post({ type: "undo", hunkId: String(h.id) }); });
+          } else {
+            button.disabled = true;
+            button.title = String(h.reason || "");
+          }
+          node.appendChild(button);
+          hunkZones.push(acc.addZone({ afterLineNumber: Math.max(0, h.newStart - 1), heightInLines: 1, domNode: node }));
         });
       });
     }
@@ -95,8 +166,12 @@
         if (previous.original) { previous.original.dispose(); }
         if (previous.modified) { previous.modified.dispose(); }
         renderComments(a.comments);
+        renderNotes(a.notes);
+        renderHunks(a.hunks);
       },
       setComments: renderComments,
+      setNotes: renderNotes,
+      setHunks: renderHunks,
       focus: function () { editor.getModifiedEditor().focus(); }
     };
     post({ type: "ready" });

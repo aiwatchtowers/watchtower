@@ -128,12 +128,16 @@ func TestBuildSystemPrompt_GatesAndSurfaces(t *testing.T) {
 	assert.Contains(t, got, "No tools are connected in this session")
 	assert.NotContains(t, got, "=== AGENT ACTIONS ===")
 	assert.NotContains(t, got, "search_knowledge")
+	assert.NotContains(t, got, "search_guide", "no tools → search_guide is not mounted")
+	assert.Contains(t, got, "Watchtower is a macOS app")
 
 	o.ToolsAvailable = true
 	o.Surface = "target"
 	got, err = BuildSystemPrompt(context.Background(), d, cfg, o)
 	require.NoError(t, err)
 	assert.Contains(t, got, "Never create other Watchtower tasks from here")
+	assert.NotContains(t, got, "search_guide", "search_guide is mounted on the main surface only")
+	assert.Contains(t, got, "Watchtower is a macOS app")
 
 	o.Surface = "meeting"
 	_, err = BuildSystemPrompt(context.Background(), d, cfg, o)
@@ -360,4 +364,12 @@ func TestArtifactsContract(t *testing.T) {
 		assert.Contains(t, c, kind)
 	}
 	assert.Contains(t, c, "never send", "CHAT-05: artifacts only open or copy")
+}
+
+func TestPromptAppGuideMentionsSearchGuide(t *testing.T) {
+	d, cfg, o := promptFixture(t)
+	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.Contains(t, got, "search_guide")
+	assert.NotContains(t, got, "Sidebar:")
 }

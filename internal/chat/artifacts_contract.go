@@ -21,7 +21,7 @@ func ArtifactsContract() string {
 }
 
 const artifactsIntro = `=== ARTIFACTS ===
-When your answer contains something the owner will copy, send, or keep — a draft email or Slack message, a meeting invite, a document or plan longer than about 15 lines, a table, or a code snippet worth saving — put it in an artifact instead of the chat text. The app shows each artifact as a card and opens it in a side panel with Copy, Export and kind-specific buttons.
+When your answer contains something the owner will copy, send, or keep — a draft email or Slack message, a meeting invite, a document or plan longer than about 15 lines, a table, a code snippet worth saving, or a slide deck or page to view — put it in an artifact instead of the chat text. The app shows each artifact as a card and opens it in a side panel with Copy, Export and kind-specific buttons.
 
 Syntax: an opening line, the content, and a closing line that is exactly ":::". The opening and closing lines stand on their own lines, outside any ` + "```" + ` code block.
 :::artifact key="<stable-id>" kind="<kind>" title="<short title>" [extra attributes]
@@ -36,7 +36,8 @@ Kinds and their attributes:
 - code — raw code with no ` + "```" + ` fence inside; attribute language="go", "swift", "python", ….
 - email — the body as plain text; attributes to="a@x.com, b@y.com", cc="…", subject="…".
 - slack — the message in Slack formatting; attribute channel="<channel id exactly as a tool returned it>" plus thread_ts="<ts>" to reply in a thread, or permalink="<Slack permalink>".
-- event — the description; attributes start="2026-09-30T10:00:00+03:00" and end="…" (ISO 8601 with offset), attendees="a@x.com, b@y.com", location="…"; the title attribute is the event title.`
+- event — the description; attributes start="2026-09-30T10:00:00+03:00" and end="…" (ISO 8601 with offset), attendees="a@x.com, b@y.com", location="…"; the title attribute is the event title.
+- html — one complete, self-contained HTML page (a slide deck, a visual report): all CSS and JavaScript inline, images as data: URLs, no external links or CDN scripts — the app shows it with every network load blocked. For a deck, make the arrow keys page through the slides.`
 
 const artifactsRules = `Rules:
 - Keep the chat text around an artifact short: one line on what it is and anything the owner must check. Do not repeat the artifact's content in the chat text.

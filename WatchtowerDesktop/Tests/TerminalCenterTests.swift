@@ -139,7 +139,7 @@ final class TerminalCenterTests: XCTestCase {
     func testFreshStartLaunchesTheSessionIDAndPromptInTheFolder() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         XCTAssertEqual(center.states[s.id], .running)
         XCTAssertEqual(center.liveIDs, [s.id])
         let launch = try XCTUnwrap(sessions.first?.launches.first)
@@ -149,7 +149,165 @@ final class TerminalCenterTests: XCTestCase {
         let uuid = try XCTUnwrap(s.claudeSessionID)
         XCTAssertEqual(launch.args.last,
                        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
-        XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt(.current))")
+        XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt)")
+    }
+
+    private static let inertSignaller = ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
+
+    /// No session host: the default factory builds the local process, and
+    /// the pane is told the session stops with the app (board #496).
+    func testLaunchFallsBackToLocalWhenHostUnavailable() throws {
+        let local = FakeTerminalSession()
+        let center = TerminalCenter(makeLocalProcess: { local }, signaller: Self.inertSignaller)
+        center.shell = { "/bin/zsh" }
+        XCTAssertNil(center.sessionHost)
+        let s = try row(kind: .shell)
+        center.start(s, fresh: true)
+        XCTAssertTrue(center.process(for: s.id) === local)
+        XCTAssertEqual(local.launches.count, 1)
+        XCTAssertEqual(center.unprotected, [s.id])
+        local.exit(0)
+        center.start(s, fresh: false)
+        XCTAssertEqual(center.unprotected, [s.id], "a relaunch in the same local process stays unprotected")
+    }
+
+    func testLaunchRunsInTheHostWhenAvailable() async throws {
+        var transports: [FakeSessionHostTransport] = []
+        let client = SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in
+            let transport = FakeSessionHostTransport()
+            transports.append(transport)
+            return transport
+        })
+        let center = TerminalCenter(
+            makeLocalProcess: {
+                XCTFail("no local process while the host is available")
+                return FakeTerminalSession()
+            },
+            signaller: Self.inertSignaller
+        )
+        center.shell = { "/bin/zsh" }
+        center.sessionHost = client
+        let s = try row(kind: .shell)
+        center.start(s, fresh: true)
+        let hosted = try XCTUnwrap(center.process(for: s.id) as? HostedTerminalSession)
+        XCTAssertTrue(center.unprotected.isEmpty)
+        await hosted.connecting?.value
+        let launch = try XCTUnwrap(transports.first { !$0.sent(.launch).isEmpty }?.sent(.launch).first)
+        XCTAssertEqual(try launch.decoded(SessionHostLaunchRequest.self).row, s.id)
+    }
+
+    /// Closed before the host reported the pid: the center drops the
+    /// session, yet the run keeps it alive — it hangs the group up once the
+    /// pid arrives and forgets the exit in the host.
+    func testClosingBeforeLaunchedHangsUpAndForgets() async throws {
+        var transports: [FakeSessionHostTransport] = []
+        var hostSignals: [(pid_t, Int32)] = []
+        let client = SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in
+            let transport = FakeSessionHostTransport()
+            transports.append(transport)
+            return transport
+        })
+        client.signalGroup = { hostSignals.append(($0, $1)) }
+        let running = await client.ensureRunning()
+        XCTAssertTrue(running)
+        let center = TerminalCenter(makeLocalProcess: { FakeTerminalSession() }, signaller: Self.inertSignaller)
+        center.shell = { "/bin/zsh" }
+        center.sessionHost = client
+        let s = try row(kind: .shell)
+        center.start(s, fresh: true)
+        weak let hosted = center.process(for: s.id) as? HostedTerminalSession
+        await hosted?.connecting?.value
+        await center.close(sessionID: s.id)
+        XCTAssertNil(center.process(for: s.id))
+        XCTAssertNotNil(hosted, "a live run keeps its session")
+
+        let transport = try XCTUnwrap(transports.last)
+        let request = try XCTUnwrap(transport.sent(.launch).first).decoded(SessionHostLaunchRequest.self)
+        transport.push(.json(.launched, SessionHostSessionInfo(
+            row: request.row, run: request.run, pid: 4321, startedAtMs: 1, exited: false, code: nil
+        )))
+        XCTAssertEqual(hostSignals.map(\.0), [4321])
+        XCTAssertEqual(hostSignals.map(\.1), [SIGHUP])
+        transport.push(.json(.exit, SessionHostExit(code: nil)))
+        for _ in 0..<200 where transports[0].sent(.forget).isEmpty { await Task.yield() }
+        XCTAssertEqual(try transports[0].sent(.forget).first?.decoded(SessionHostAttachRequest.self),
+                       SessionHostAttachRequest(row: request.row, run: request.run))
+        XCTAssertNil(hosted, "the ended run lets its session go")
+    }
+
+    /// A quit that keeps sessions (PROJ-20): the hosted session is let go
+    /// without any signal — its connection closes, nothing is forgotten in
+    /// the host — while the local fallback session is hung up as on any quit.
+    func testDetachAllNeverSignals() async throws {
+        var transports: [FakeSessionHostTransport] = []
+        var hostSignals: [(pid_t, Int32)] = []
+        let client = SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in
+            let transport = FakeSessionHostTransport()
+            transports.append(transport)
+            return transport
+        })
+        client.signalGroup = { hostSignals.append(($0, $1)) }
+        let running = await client.ensureRunning()
+        XCTAssertTrue(running)
+        let local = FakeTerminalSession(pid: 555)
+        var signals: [(pid_t, Int32)] = []
+        let center = TerminalCenter(
+            makeLocalProcess: { local },
+            signaller: ProcessGroupSignaller(
+                signal: { pid, sig in
+                    signals.append((pid, sig))
+                    if sig == SIGHUP, pid == local.pid { local.exit(nil) }
+                },
+                isAlive: { _ in true },
+                sleep: { _ in }
+            )
+        )
+        center.shell = { "/bin/zsh" }
+        center.sessionHost = client
+        let hostedRow = try row(kind: .shell)
+        center.start(hostedRow, fresh: true)
+        let hosted = try XCTUnwrap(center.process(for: hostedRow.id) as? HostedTerminalSession)
+        await hosted.connecting?.value
+        let transport = try XCTUnwrap(transports.last)
+        let request = try XCTUnwrap(transport.sent(.launch).first).decoded(SessionHostLaunchRequest.self)
+        transport.push(.json(.launched, SessionHostSessionInfo(
+            row: request.row, run: request.run, pid: 4321, startedAtMs: 1, exited: false, code: nil
+        )))
+        XCTAssertEqual(hosted.pid, 4321)
+
+        center.sessionHost = nil
+        let localRow = try row(kind: .shell)
+        center.start(localRow, fresh: true)
+        XCTAssertEqual(center.liveIDs, [hostedRow.id, localRow.id])
+        XCTAssertEqual(center.liveHostedCount, 1, "only the hosted session can be kept")
+        XCTAssertEqual(center.unprotected, [localRow.id])
+
+        await center.detachAll()
+
+        XCTAssertFalse(signals.contains { $0.0 == 4321 }, "a kept session is never signalled")
+        XCTAssertTrue(hostSignals.isEmpty, "nor hung up through the host")
+        XCTAssertEqual(signals.map(\.0), [555])
+        XCTAssertEqual(signals.map(\.1), [SIGHUP], "the local session stops as on any quit")
+        XCTAssertTrue(local.detached)
+        XCTAssertTrue(transport.closed, "the hosted run's connection is closed")
+        XCTAssertTrue(transport.sent(.forget).isEmpty, "the host keeps the run")
+        XCTAssertNil(center.process(for: hostedRow.id))
+        XCTAssertNil(center.process(for: localRow.id))
+        XCTAssertTrue(center.states.isEmpty)
+        XCTAssertEqual(center.liveHostedCount, 0)
+    }
+
+    func testConnectSessionHostMakesOneClient() async {
+        let center = TerminalCenter(makeLocalProcess: { FakeTerminalSession() }, signaller: Self.inertSignaller)
+        var made = 0
+        let make = {
+            made += 1
+            return SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in FakeSessionHostTransport() })
+        }
+        await center.connectSessionHost(make)
+        await center.connectSessionHost(make)
+        XCTAssertEqual(made, 1)
+        XCTAssertNotNil(center.sessionHost)
     }
 
     func testNonFreshStartResumesTheStoredSession() throws {
@@ -167,7 +325,7 @@ final class TerminalCenterTests: XCTestCase {
     func testNonFreshStartWithoutATranscriptStartsTheSameIDAnew() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: false, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: false, prompt: TerminalLaunch.firstRunPrompt)
         XCTAssertEqual(sessions.first?.launches.first?.args.last,
                        "exec claude --session-id \(try XCTUnwrap(s.claudeSessionID))")
     }
@@ -208,7 +366,7 @@ final class TerminalCenterTests: XCTestCase {
     func testShellRowLaunchesTheLoginShellAlone() throws {
         let center = makeCenter()
         let s = try row(project: nil, kind: .shell)
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         XCTAssertEqual(sessions.first?.launches.first?.args, ["-l"])
         XCTAssertEqual(center.states[s.id], .running)
     }
@@ -234,7 +392,7 @@ final class TerminalCenterTests: XCTestCase {
     func testStartWhileRunningIsANoOp() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         center.start(s, fresh: false)
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(sessions[0].launches.count, 1)
@@ -273,7 +431,7 @@ final class TerminalCenterTests: XCTestCase {
     func testExitShowsExitedAndStartRelaunchesInTheSameProcessViewWithResume() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         transcripts = [try XCTUnwrap(s.claudeSessionID)]
         sessions[0].exit(0)
         XCTAssertEqual(center.states[s.id], .exited(0))
@@ -349,7 +507,7 @@ final class TerminalCenterTests: XCTestCase {
     func testMissingFolderIsUnavailableAndStartsNothing() throws {
         let center = makeCenter()
         let s = try row(folder: "/tmp/does-not-exist-\(UUID().uuidString)")
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         guard case .unavailable = center.states[s.id] else {
             return XCTFail("expected unavailable, got \(String(describing: center.states[s.id]))")
         }

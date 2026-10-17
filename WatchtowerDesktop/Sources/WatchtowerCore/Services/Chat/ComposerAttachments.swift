@@ -31,19 +31,24 @@ package final class ComposerAttachments {
         errorMessage = problems.isEmpty ? nil : problems.joined(separator: "\n")
     }
 
-    package func addPastedImage(_ png: Data, conversationID: Int64) {
+    /// Pasted bytes (a screenshot, PDF data, a long text paste) under `name`;
+    /// the same validation and store as a dropped file. true once attached.
+    @discardableResult
+    package func addPasted(_ data: Data, name: String, conversationID: Int64) -> Bool {
         guard let store else {
             errorMessage = "Attachments need an active workspace"
-            return
+            return false
         }
         do {
-            pending.append(try store.importData(png, name: "Pasted image.png", owner: .conversation(conversationID)))
+            pending.append(try store.importData(data, name: name, owner: .conversation(conversationID)))
             errorMessage = nil
+            return true
         } catch let rejection as AttachmentRejection {
             errorMessage = rejection.message
         } catch {
-            errorMessage = "The pasted image could not be attached: \(error.localizedDescription)"
+            errorMessage = "\(name) could not be attached: \(error.localizedDescription)"
         }
+        return false
     }
 
     package func remove(id: Int64) {

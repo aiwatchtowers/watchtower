@@ -275,10 +275,77 @@ package enum WorkbenchQueries {
     ///   sorted — the owner's doing too, so the caller reports them as owner
     ///   writes and they never notify.
     package static func updateTargetStatus(_ db: Database, targetID: Int64, status: String) throws -> [Int64] {
+        try rolledUpAncestors(db, of: targetID) {
+            try TargetQueries.updateStatus(db, id: Int(targetID), status: status)
+        }
+    }
+
+    /// The owner's card move to board column `columnID` of `status` (nil =
+    /// the status's first column, PROJ-19): `updateTargetStatus` writing the
+    /// column in the same statement (`TargetQueries.updateStatus(…,
+    /// boardColumnID:)`).
+    package static func updateTargetColumn(
+        _ db: Database, targetID: Int64, status: String, columnID: Int64?
+    ) throws -> [Int64] {
+        try rolledUpAncestors(db, of: targetID) {
+            try TargetQueries.updateStatus(db, id: Int(targetID), status: status, boardColumnID: columnID)
+        }
+    }
+
+    private static func rolledUpAncestors(_ db: Database, of targetID: Int64, _ write: () throws -> Void) throws -> [Int64] {
         let before = try ancestorStatuses(db, of: targetID)
-        try TargetQueries.updateStatus(db, id: Int(targetID), status: status)
+        try write()
         let after = try ancestorStatuses(db, of: targetID)
         return after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
+    }
+
+    /// Workbench `projectID`'s board column definition (PROJ-19): columns in
+    /// status order, then position; hidden statuses normalized to
+    /// `WorkbenchBoardColumns.hideableStatuses` order. Twin of Go
+    /// `GetBoardColumns` (internal/db/board_columns.go); a missing workbench
+    /// throws `workbenchNotFound`. Undecodable
+    /// `board_hidden_statuses` throws rather than reading as nothing hidden.
+    package static func boardColumns(_ db: Database, projectID: Int64) throws -> WorkbenchBoardColumns {
+        guard let project = try Row.fetchOne(
+            db, sql: "SELECT board_hidden_statuses FROM projects WHERE id = ?", arguments: [projectID]
+        ) else { throw WorkbenchQueryError.workbenchNotFound }
+        var hidden: [String] = []
+        if let stored: String = project["board_hidden_statuses"] {
+            let decoded = try JSONDecoder().decode([String].self, from: Data(stored.utf8))
+            hidden = WorkbenchBoardColumns.hideableStatuses.filter(decoded.contains)
+        }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, status, title, description, position FROM workbench_board_columns
+            WHERE project_id = ?
+            ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'in_review' THEN 2
+                WHEN 'blocked' THEN 3 WHEN 'done' THEN 4 ELSE 5 END, position, id
+            """, arguments: [projectID])
+        let columns = rows.map { row in
+            WorkbenchBoardColumnDef(
+                id: row["id"], status: row["status"], title: row["title"],
+                description: row["description"], position: row["position"]
+            )
+        }
+        return WorkbenchBoardColumns(columns: columns, hidden: hidden)
+    }
+
+    /// Per defined column of workbench `projectID`, the leaf targets that
+    /// show in it (`BoardColumnLayout.effectiveColumn`: a NULL or foreign
+    /// column counts for its status's first column) — what deleting the
+    /// column moves (the Board Columns… sheet). A parent is no card.
+    package static func boardColumnCardCounts(_ db: Database, projectID: Int64) throws -> [Int64: Int] {
+        let def = try boardColumns(db, projectID: projectID)
+        guard !def.columns.isEmpty else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT t.status, t.board_column_id FROM targets t
+            WHERE t.project_id = ? AND NOT EXISTS (SELECT 1 FROM targets c WHERE c.parent_id = t.id)
+            """, arguments: [projectID])
+        var counts: [Int64: Int] = [:]
+        for row in rows {
+            let column = BoardColumnLayout.effectiveColumn(status: row["status"], columnID: row["board_column_id"], def: def)
+            if let id = column?.id { counts[id, default: 0] += 1 }
+        }
+        return counts
     }
 
     /// Work on It took the target up (board #499): a workbench task still

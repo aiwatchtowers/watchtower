@@ -1,7 +1,7 @@
 # Workbench diff reviewer — guided review of an agent's work (v1: sessions)
 
 **Date:** 2026-10-16 · **Board:** #328 · **Owner decisions:** asks #169, #171, #173, #175
-**Status:** design approved in chat/asks; this document awaits the owner's review.
+**Status:** design approved in chat/asks; Plans 1–3 are implemented (Plan 2: `docs/superpowers/plans/2026-10-16-diff-reviewer-p2-deep.md`; Plan 3: `docs/superpowers/plans/2026-10-16-diff-reviewer-p3-agent-ai.md`, inventory amendments approved in ask #214). Feature note: `docs/features/diff-reviewer.md`.
 
 ## 1. Goal
 

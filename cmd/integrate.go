@@ -97,7 +97,7 @@ func init() {
 	}
 
 	for _, c := range []*cobra.Command{integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd} {
-		addWorkbenchIDFlag(c, &integrateWorkbenchID,
+		c.Flags().Int64Var(&integrateWorkbenchID, workbenchFlag, 0,
 			"act on a Watchtower workbench's folder (skill, SessionStart hook, local MCP) instead of the global pack")
 	}
 	integrateStatusCmd.Flags().BoolVar(&integrateJSON, "json", false, "with --workbench: print the status as JSON")
@@ -134,9 +134,6 @@ func resolveSkillsDir(scope, explicit string) (string, error) {
 }
 
 func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return err
-	}
 	if integrateWorkbenchID != 0 {
 		return runIntegrateForWorkbench(cmd, runWorkbenchInstall)
 	}
@@ -174,9 +171,6 @@ func runIntegrateCodex(cmd *cobra.Command, _ []string) error {
 }
 
 func runIntegrateStatus(cmd *cobra.Command, args []string) error {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return err
-	}
 	if integrateWorkbenchID != 0 {
 		return runIntegrateForWorkbench(cmd, func(ctx context.Context, w io.Writer, p *db.Workbench) error {
 			return runWorkbenchStatus(ctx, w, p, integrateJSON)
@@ -201,9 +195,6 @@ func runIntegrateStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runIntegrateRemove(cmd *cobra.Command, args []string) error {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return err
-	}
 	if integrateWorkbenchID != 0 {
 		return runIntegrateForWorkbench(cmd, runWorkbenchRemove)
 	}

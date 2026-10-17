@@ -31,6 +31,12 @@ final class KeyboardShortcutCatalogTests: XCTestCase {
         }
     }
 
+    /// Help > Ask Watchtower (⌘/) is listed under Global.
+    func testAskWatchtowerChordIsListedGlobally() throws {
+        let global = try XCTUnwrap(KeyboardShortcutCatalog.areas.first { $0.title == "Global" })
+        XCTAssertTrue(global.entries.contains { $0.keys == "⌘/" })
+    }
+
     /// The Workbench menu's chords (issue #288) are all listed.
     func testTheWorkbenchMenuChordsAreListed() throws {
         let workbench = try XCTUnwrap(KeyboardShortcutCatalog.areas.first { $0.title == "Workbench" })
@@ -46,16 +52,16 @@ final class KeyboardShortcutCatalogTests: XCTestCase {
         XCTAssertEqual(markdown.components(separatedBy: "\n### ").count, KeyboardShortcutCatalog.areas.count)
     }
 
-    /// docs/app-guide.md carries the list verbatim; on a failure, paste
+    /// docs/guide/reference/keyboard-shortcuts.md carries the list verbatim; on a failure, paste
     /// `KeyboardShortcutCatalog.markdown` (printed below) into its
-    /// "Keyboard Shortcuts" section.
+    /// "By area" section.
     func testTheGuideMatchesTheTable() throws {
         let guide = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Tests/Core
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerDesktop
             .deletingLastPathComponent() // the repository
-            .appendingPathComponent("docs/app-guide.md")
+            .appendingPathComponent("docs/guide/reference/keyboard-shortcuts.md")
         let text = try String(contentsOf: guide, encoding: .utf8)
         XCTAssertTrue(text.contains(KeyboardShortcutCatalog.markdown + "\n"),
                       "the guide's Keyboard Shortcuts section is out of date; expected:\n\(KeyboardShortcutCatalog.markdown)")

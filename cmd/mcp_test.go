@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -73,7 +76,7 @@ func localToolNames(t *testing.T, database *db.DB, opts []internalmcp.ServerOpti
 	return names, ls
 }
 
-// DEV-06 / DEV-01: plain `watchtower mcp` (no --chat, no --project) is still
+// DEV-06 / DEV-01: plain `watchtower mcp` (no --chat, no --workbench) is still
 // the read-only developer surface — query_only on, no write tool, no project
 // tool, no get_action.
 func TestDev06_PlainMCPStaysReadOnly(t *testing.T) {
@@ -210,54 +213,6 @@ func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {
 	assert.ErrorContains(t, err, "mutually exclusive")
 }
 
-// Spec 2026-10-02 §5.2: `mcp --project N` (a folder installed before the
-// rename) serves the renamed workbench tools under their old names only;
-// `mcp --workbench N` the new names only. Sixteen workbench tools either way.
-func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
-	resetMCPFlags(t)
-	legacyFlag := mcpCmd.Flags().Lookup(legacyWorkbenchFlag)
-	t.Cleanup(func() { legacyFlag.Changed = false })
-	cfg := &config.Config{ActiveWorkspace: "test-ws"}
-
-	for _, legacy := range []bool{false, true} {
-		database := openMCPTestDB(t)
-		folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
-		require.NoError(t, err)
-		pid, err := database.CreateWorkbench("acme", folder)
-		require.NoError(t, err)
-		mcpFlagWorkbench, legacyFlag.Changed = pid, legacy
-
-		opts, err := mcpModeOptions(cfg, database, "", nil)
-		require.NoError(t, err)
-		names, ls := localToolNames(t, database, opts)
-		workbenchTools := 0
-		for name := range names {
-			if name == "send_slack_message" || name == "get_writing_style" {
-				continue // main + project surfaces, not workbench tools (#166)
-			}
-			if tool, ok := buildToolRegistry(cfg, database).Get(name); ok && slices.Contains(tool.Surfaces, "project") {
-				workbenchTools++
-			}
-		}
-		assert.Equal(t, 16, workbenchTools, "legacy=%v", legacy)
-		assert.True(t, names["send_slack_message"] && names["get_writing_style"], "legacy=%v lists the Slack pair", legacy)
-		for newName, oldName := range tools.LegacyWorkbenchToolNames {
-			assert.Equal(t, legacy, names[oldName], "legacy=%v lists %s", legacy, oldName)
-			assert.Equal(t, !legacy, names[newName], "legacy=%v lists %s", legacy, newName)
-		}
-
-		if legacy {
-			text, isErr, err := ls.Call(context.Background(), "update_project", map[string]any{"description": "Old setup.", "reason": "setup"})
-			require.NoError(t, err)
-			require.False(t, isErr, text)
-			rows, err := database.ListAgentActions(db.AgentActionFilter{})
-			require.NoError(t, err)
-			require.Len(t, rows, 1)
-			assert.Equal(t, tools.UpdateWorkbenchTool, rows[0].Tool, "the audit row records the canonical name")
-		}
-	}
-}
-
 // Spec 2026-10-12 §6.5: `mcp --workbench N --agent codex` labels an agent
 // comment codex-cli when no terminal session names the agent; --agent is
 // refused outside workbench mode and for anything but an agent kind.
@@ -362,4 +317,62 @@ func TestMCP_SurfaceFlagRejectsUnknown(t *testing.T) {
 		_, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "t1", nil)
 		require.ErrorContains(t, err, "--surface must be main, target, automation or automation_editor", surface)
 	}
+}
+
+// A pre-rename `mcp --project N` is refused before the root's config hook:
+// a malformed, missing or stale config neither replaces the Repair line with
+// a config error nor gets rewritten on the way to the refusal (ask #312), and
+// the refusal is never an exitCodeError.
+func TestMCP_PreRenameRefusedBeforeConfigHook(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const repair = "ask the owner to run Repair install in Watchtower (or 'watchtower workbench resync 7')."
+	original := flagConfig
+	t.Cleanup(func() { flagConfig = original })
+
+	for name, content := range map[string]string{
+		"malformed": "active_workspace: [unclosed\n\tbad",
+		"stale":     "active_workspace: test\ndb:\n  schema_format: 0\n",
+		"missing":   "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			flagConfig = filepath.Join(t.TempDir(), "config.yaml")
+			if content != "" {
+				require.NoError(t, os.WriteFile(flagConfig, []byte(content), 0o600))
+			}
+
+			stdout, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, "mcp", "--project", "7")
+			require.Error(t, err)
+			assert.Empty(t, stdout, "no session is served")
+			assert.Contains(t, err.Error(), repair)
+			assert.NotContains(t, err.Error(), "config")
+			var ec *exitCodeError
+			assert.False(t, errors.As(err, &ec), "mcp --project must exit 1, got %v", err)
+
+			got, readErr := os.ReadFile(flagConfig)
+			if content == "" {
+				assert.ErrorIs(t, readErr, os.ErrNotExist, "no config is created")
+				return
+			}
+			require.NoError(t, readErr)
+			assert.Equal(t, content, string(got), "the config file is untouched")
+		})
+	}
+}
+
+// mcp's own PersistentPreRunE replaces the root's (cobra runs only the
+// closest one), so a normal `mcp --workbench N` must still get
+// ensureSchemaFormat's schema_format bump. No database exists under the temp
+// HOME, so the hook skips RunSchemaUpgrade.
+func TestMCP_WorkbenchStillRunsRootSchemaFormatHook(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "db:\n  schema_format: 0\n")
+	require.NoError(t, mcpCmd.ParseFlags([]string{"--workbench", "7"}))
+	t.Cleanup(func() { resetSetFlags(mcpCmd) })
+
+	require.NoError(t, mcpCmd.PersistentPreRunE(mcpCmd, nil))
+
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	require.NoError(t, v.ReadInConfig())
+	assert.Equal(t, db.CurrentSchemaFormat, v.GetInt("db.schema_format"), "rootCmd's ensureSchemaFormat must still run")
 }

@@ -66,6 +66,8 @@ struct WorkbenchPageView: View {
         .task(id: project.id) { await vm.startGitWatching(project: project) }
         // The 5 s poll follows the asks from here; this is the first read.
         .task(id: project.id) { await vm.asks.refreshIfChanged(projectID: project.id) }
+        // The folder's automation recipes are indexed (spec §13.4).
+        .task(id: project.id) { vm.workbenchPageOpened(projectID: project.id) }
         .onChange(of: project.id) { old, _ in vm.stopGitWatching(projectID: old) }
         .onDisappear { vm.stopGitWatching(projectID: project.id) }
         .confirmationDialog(
@@ -135,7 +137,8 @@ struct WorkbenchPageView: View {
                 WorkbenchInstallStatusIcons(vm: vm, project: project)
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
                 Spacer(minLength: 8)
-                WorkbenchHeaderControls(vm: vm, project: project, onDelete: confirmDelete) { sweeping = true }
+                WorkbenchHeaderControls(vm: vm, project: project, automationButtons: automationButtons(project),
+                                        onDelete: confirmDelete) { sweeping = true }
             }
             if let installError = vm.installErrors[project.id] {
                 Text(installError)
@@ -156,10 +159,18 @@ struct WorkbenchPageView: View {
         .padding(.vertical, 5)
     }
 
+    private func automationButtons(_ project: Workbench) -> WorkbenchAutomationButtons? {
+        guard let automations = appState.automationsViewModel else { return nil }
+        return WorkbenchAutomationButtons(
+            project: project, vm: automations, featureEnabled: appState.isAutomationsFeatureEnabled
+        ) { [appState] id, runID in appState.openAutomationRun(automationID: id, runID: runID) }
+    }
+
     private func confirmDelete() {
         guard let pool = appState.databaseManager?.dbPool else { return }
+        let legacy = vm.installStatus[project.id]?.legacy == true
         do {
-            deleteSummary = try pool.read { try WorkbenchDeleteSummary.fetch($0, project: project, vocabulary: vm.vocabulary(projectID: project.id)) }
+            deleteSummary = try pool.read { try WorkbenchDeleteSummary.fetch($0, project: project, legacy: legacy) }
         } catch {
             // Never confirm a delete against unknown counts.
             deleteSummaryError = error.localizedDescription

@@ -101,7 +101,7 @@ final class BackgroundStartTests: XCTestCase {
         XCTAssertEqual(row.targetID, t)
         XCTAssertEqual(row.title, "Ship it")
         XCTAssertEqual(launches.last?.environment.last,
-                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: t, vocabulary: .current))")
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: t))")
         let stored = try await rows(p)
         XCTAssertTrue(stored.contains { $0.id == row.id }, "the row is in its workbench's list")
         XCTAssertTrue(vm.terminalSessions[p]?.contains { $0.id == row.id } == true, "and the panel's list is refreshed")
@@ -128,6 +128,59 @@ final class BackgroundStartTests: XCTestCase {
         XCTAssertEqual(center.focusOrder.last, next.id)
         XCTAssertEqual(center.states[started.id], .running)
         XCTAssertNil(vm.sessionErrors[p])
+    }
+
+    // MARK: - Automation sessions (automations P5)
+
+    private func automationRequest(_ p: Int64, agent: AgentKind = .claude) async throws -> PendingSessionRequest {
+        let (a, run) = try await pool.write { db -> (Int64, Int64) in
+            let a = try TestDatabase.insertAutomation(db, slug: "review", name: "Review", workbenchID: p)
+            return (a, try TestDatabase.insertAutomationRun(db, automationID: a, status: "waiting", waitingReason: "app"))
+        }
+        return PendingSessionRequest(stepID: 1, runID: run, automationID: a, projectID: p, automationName: "Review",
+                                     prompt: "Review PR 7", title: "⚙ Review · run #\(run)", agent: agent)
+    }
+
+    /// Ruling R-P5-7: the session starts in the background with the step's
+    /// title, prompt and the run marker.
+    func testAnAutomationSessionStartsInTheBackgroundWithTheRunMarker() async throws {
+        let p = try await workbench()
+        let shown = try await insertSession(p, title: "shown")
+        let vm = makeVM()
+        await page(vm, p, showing: shown)
+        let focusBefore = center.focusOrder
+        let request = try await automationRequest(p)
+
+        let row = try await vm.startAutomationSession(request)
+
+        XCTAssertEqual(center.focusOrder, focusBefore)
+        XCTAssertEqual(vm.layout(projectID: p).primary, .session(shown.id))
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertEqual(row.title, request.title)
+        XCTAssertEqual(row.kind, .claude)
+        XCTAssertEqual(row.automationRunID, request.runID)
+        let env = try XCTUnwrap(launches.last?.environment)
+        XCTAssertTrue(env.contains("WATCHTOWER_FIRST_PROMPT=Review PR 7"), "\(env)")
+        XCTAssertEqual(env.last, "WATCHTOWER_AUTOMATION_RUN_ID=\(request.runID)")
+        XCTAssertNil(vm.sessionErrors[p])
+    }
+
+    func testAnAutomationSessionWhoseLaunchIsRefusedThrows() async throws {
+        let p = try await workbench()
+        let request = try await automationRequest(p)
+        try FileManager.default.removeItem(atPath: acme)
+        let vm = makeVM()
+
+        do {
+            _ = try await vm.startAutomationSession(request)
+            XCTFail("expected a failure")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            // The reason `launch_failed` carries, not a generic error text.
+            guard case let .failed(message) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(error.localizedDescription, message)
+        }
+        XCTAssertNil(vm.sessionErrors[p])
+        XCTAssertTrue(launches.isEmpty)
     }
 
     // MARK: - Bring forward
@@ -195,7 +248,7 @@ final class BackgroundStartTests: XCTestCase {
         _ = try await vm.startForTarget(targetID: t, prompt: "Fix the login", mode: .new, placement: .background,
                                         planFirst: true)
 
-        let base = TerminalLaunch.workOnTargetPrompt(targetID: t, vocabulary: .current)
+        let base = TerminalLaunch.workOnTargetPrompt(targetID: t)
         XCTAssertEqual(launches.map { $0.environment.last }, [
             "WATCHTOWER_FIRST_PROMPT=\(base) \(TerminalLaunch.planFirstSuffix)",
             "WATCHTOWER_FIRST_PROMPT=Fix the login \(TerminalLaunch.planFirstSuffix)"
@@ -229,7 +282,7 @@ final class BackgroundStartTests: XCTestCase {
         _ = try await vm.startForTarget(targetID: t, prompt: "  \n ", mode: .new, placement: .background)
         _ = try await vm.startForTarget(targetID: t, prompt: "", mode: .new, placement: .background, planFirst: true)
 
-        let base = TerminalLaunch.workOnTargetPrompt(targetID: t, vocabulary: .current)
+        let base = TerminalLaunch.workOnTargetPrompt(targetID: t)
         XCTAssertEqual(launches.map { $0.environment.last }, [
             "WATCHTOWER_FIRST_PROMPT=\(base)",
             "WATCHTOWER_FIRST_PROMPT=\(base) \(TerminalLaunch.planFirstSuffix)"
