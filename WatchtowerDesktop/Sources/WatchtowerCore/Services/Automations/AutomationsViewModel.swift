@@ -89,6 +89,9 @@ package final class AutomationsViewModel {
     /// the form is up; held here so an install finishing while the tab is
     /// off screen still opens the form on return.
     package var pendingEditID: Int64?
+    /// What a template copy installed in this session covers ("Covers: PAY,
+    /// OPS"), keyed by automation id; the edit form shows it (#582).
+    package private(set) var installCoverage: [Int64: String] = [:]
     /// An unconfirmed recipe picked in the "Run Automation…" palette: the
     /// tab opens its confirmation sheet and clears this (held here so the
     /// sheet opens when the tab appears).
@@ -341,6 +344,7 @@ package final class AutomationsViewModel {
         defer { installingTemplate = nil }
         do {
             let result = try await cli.installTemplate(template.name, workbenchID: workbenchID)
+            installCoverage[result.automationID] = AutomationTemplateGallery.coverageLine(result.params)
             refresh()
             select(result.automationID)
             pendingEditID = result.automationID

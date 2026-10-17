@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/docs/guide"
 	"watchtower/internal/db"
 )
 
@@ -31,7 +32,7 @@ func TestRun_IndexesAndIsIdempotent(t *testing.T) {
 	st, err := Run(ctx, d, Options{Now: now})
 	require.NoError(t, err)
 	assert.False(t, st.Incomplete)
-	assert.Equal(t, 3, st.Written) // slack thread + DM day + jira issue (C1 day has only a join row → nil)
+	assert.Equal(t, 3+len(guide.Pages()), st.Written) // slack thread + DM day + jira issue (C1 day has only a join row → nil)
 	assert.Equal(t, 2, countDocs(t, d, "slack"))
 	st, err = Run(ctx, d, Options{Now: now})
 	require.NoError(t, err)
@@ -134,7 +135,7 @@ func TestRun_SameSecondWriteAfterCursorIsIndexed(t *testing.T) {
 func TestRun_EmptyDatabase(t *testing.T) {
 	st, err := Run(context.Background(), db.OpenTestDB(t), Options{Now: testNow()})
 	require.NoError(t, err)
-	assert.Equal(t, Stats{}, st)
+	assert.Equal(t, Stats{Written: len(guide.Pages())}, st, "only the embedded guide is indexed")
 }
 
 func TestReindex_UnknownSourceFailsFirst(t *testing.T) {

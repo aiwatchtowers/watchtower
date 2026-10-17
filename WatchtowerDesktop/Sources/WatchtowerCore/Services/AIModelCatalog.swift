@@ -75,22 +75,10 @@ package final class AIModelCatalog {
         try JSONDecoder().decode(Output.self, from: data)
     }
 
-    @ObservationIgnored private var loading: Task<Void, Never>?
-
     /// Fetch the registry from the CLI. Safe to call repeatedly; concurrent
-    /// calls collapse into one run, and each returns once it has finished.
+    /// calls collapse into one run.
     package func load() async {
-        if let loading {
-            await loading.value
-            return
-        }
-        let task = Task { await fetch() }
-        loading = task
-        await task.value
-        loading = nil
-    }
-
-    private func fetch() async {
+        guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
 

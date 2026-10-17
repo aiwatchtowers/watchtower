@@ -25,7 +25,7 @@ package struct GettingReadyCard: Equatable, Sendable {
         case .ready: .ready
         case .preparing: .preparing
         case .error: .error
-        case .off, .needsSource, .needsDigests, .waitingForSync, .scheduled, nil: .waiting
+        case .off, .needsSource, .needsDigests, .daemonStopped, .waitingForSync, .scheduled, nil: .waiting
         }
     }
 
@@ -237,12 +237,6 @@ package struct HomeSnapshot: Equatable, Sendable {
         self.today = today
         self.todayReadFailed = todayReadFailed
         self.todayFailed = todayFailed
-    }
-
-    /// The "Press ⌘/ to ask" hint: only while the Getting ready zone is not shown.
-    package var showsAskHint: Bool {
-        if case .shown = gettingReady { return false }
-        return true
     }
 
     /// No card to show, and at least one allowed card's read failed: Home
