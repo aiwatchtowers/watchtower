@@ -134,6 +134,16 @@ func (cl *Client) SearchSince(since time.Time) ([]uint32, error) {
 	return uidsToUint32s(data.AllUIDs()), nil
 }
 
+// SearchAll returns every UID in the selected folder. The deletion diff uses
+// it: a message missing from this listing was expunged or moved away.
+func (cl *Client) SearchAll() ([]uint32, error) {
+	data, err := cl.c.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("imap: search all: %w", err)
+	}
+	return uidsToUint32s(data.AllUIDs()), nil
+}
+
 // SearchRange returns the UIDs of messages received in [since, before) —
 // IMAP SINCE/BEFORE are day-granular, SINCE inclusive and BEFORE exclusive.
 // It is the history backfill's cheap listing phase. Both bounds are sent as

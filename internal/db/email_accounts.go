@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -166,6 +167,74 @@ func (db *DB) ImapMessagesSyncedAfter(accountID int64, sinceISO string) ([]ImapM
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// ImapStoredUIDs returns the UIDs stored for accountID under one UIDVALIDITY.
+func (db *DB) ImapStoredUIDs(accountID, uidValidity int64) ([]int64, error) {
+	rows, err := db.Query(`SELECT uid FROM imap_messages WHERE account_id = ? AND uidvalidity = ?`,
+		accountID, uidValidity)
+	if err != nil {
+		return nil, fmt.Errorf("listing stored imap uids for account %d: %w", accountID, err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var u int64
+		if err := rows.Scan(&u); err != nil {
+			return nil, fmt.Errorf("scanning imap uid: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// DeleteImapMessages removes the given UIDs of one (account, UIDVALIDITY) in a
+// single transaction, using IN lists of at most 500. Returns the rows deleted.
+func (db *DB) DeleteImapMessages(accountID, uidValidity int64, uids []int64) (int, error) {
+	if len(uids) == 0 {
+		return 0, nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("deleting imap messages for account %d: %w", accountID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	total := 0
+	const chunk = 500
+	for start := 0; start < len(uids); start += chunk {
+		end := min(start+chunk, len(uids))
+		part := uids[start:end]
+		args := make([]any, 0, len(part)+2)
+		args = append(args, accountID, uidValidity)
+		for _, u := range part {
+			args = append(args, u)
+		}
+		//nolint:gosec // G202: the concatenation is only "?" placeholders; every value is a bound arg.
+		res, err := tx.Exec(`DELETE FROM imap_messages WHERE account_id = ? AND uidvalidity = ? AND uid IN (`+
+			strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")+`)`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("deleting imap messages for account %d: %w", accountID, err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("deleting imap messages for account %d: %w", accountID, err)
+	}
+	return total, nil
+}
+
+// DeleteImapMessagesOutsideUIDValidity removes the account's rows stored under
+// any UIDVALIDITY other than the current one: after the server recreated the
+// mailbox they name nothing on it.
+func (db *DB) DeleteImapMessagesOutsideUIDValidity(accountID, uidValidity int64) (int, error) {
+	res, err := db.Exec(`DELETE FROM imap_messages WHERE account_id = ? AND uidvalidity <> ?`,
+		accountID, uidValidity)
+	if err != nil {
+		return 0, fmt.Errorf("deleting stale-epoch imap messages for account %d: %w", accountID, err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // GetImapWatermark returns the sync watermark (last_uid, uidvalidity) for accountID.
