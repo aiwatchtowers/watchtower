@@ -65,6 +65,45 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.digests, input), .needsSource(.slack))
     }
 
+    /// #575: the daemon runs tracks and people cards only while Slack
+    /// Digests is on (dual path with `phaseTracksAndRollups`,
+    /// `phaseCustomTrackScan` and `phasePeopleCards`), so with Digests off
+    /// they say so instead of promising the next cycle for ever.
+    func testTracksAndPeopleNeedDigestsWhileDigestsOff() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.disabledFeatureIDs = ["slack-digests"]
+        XCTAssertEqual(evaluate(.digests, input), .off)
+        XCTAssertEqual(evaluate(.tracks, input), .needsDigests)
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsDigests)
+        // Content does not hide it: nothing new arrives while Digests is off.
+        input.contentPresent = [.tracks]
+        input.latestRuns = ["people": RunSnapshot(status: "error", startedAt: now.addingTimeInterval(-60), errorMessage: "x")]
+        XCTAssertEqual(evaluate(.tracks, input), .needsDigests)
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsDigests)
+        // Features that run without Slack Digests are untouched.
+        XCTAssertEqual(evaluate(.ideas, input), .scheduled(.nextCycle(minutes: 15)))
+        XCTAssertEqual(evaluate(.briefing, input), .scheduled(.nextCycle(minutes: 15)))
+        XCTAssertEqual(
+            Set(ReadinessFeature.allCases.filter(\.runsOnlyWithDigests)), [.tracks, .peopleCards],
+            "the daemon's compound Digest.Enabled gates cover exactly these")
+    }
+
+    func testOffAndNeedsSourceBeatNeedsDigests() {
+        var input = inputs(now: today(10))
+        input.disabledFeatureIDs = ["slack-digests", "tracks"]
+        XCTAssertEqual(evaluate(.tracks, input), .off)
+        input.connected = ConnectedSources(slack: false, mail: true)
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsSource(.slack))
+    }
+
+    func testDigestsOnMeansNoDigestsWait() {
+        let input = inputs(now: today(10))
+        XCTAssertEqual(evaluate(.tracks, input), .scheduled(.nextCycle(minutes: 15)))
+        XCTAssertEqual(evaluate(.peopleCards, input), .scheduled(.nextCycle(minutes: 15)))
+        XCTAssertEqual(FeatureReadiness.line(.needsDigests), "Needs Slack Digests — Turn on")
+    }
+
     func testContentMeansReadyEvenWhileRunning() {
         let now = today(10)
         var input = inputs(now: now)

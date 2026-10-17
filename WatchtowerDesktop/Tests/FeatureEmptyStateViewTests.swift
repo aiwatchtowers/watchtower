@@ -77,6 +77,21 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(button: "Turn on"))
     }
 
+    /// #575: Tracks with Slack Digests off — the reason and one Turn on
+    /// that switches Slack Digests on, keyed by its id.
+    func testNeedsDigestsTurnsOnSlackDigests() throws {
+        let tracks = EmptyStateCopy(
+            icon: "binoculars", title: "No tracks yet", landsHere: "Ongoing stories.",
+            feature: .tracks, primaryAction: nil)
+        var tapped: EmptyStateAction?
+        let view = makeView(copy: tracks, readiness: .needsDigests) { tapped = $0 }
+        XCTAssertNoThrow(try view.inspect().find(text: "Needs Slack Digests — Turn on"))
+        try view.inspect().find(button: "Turn on").tap()
+        XCTAssertEqual(tapped, .turnOn(featureID: "slack-digests"))
+        XCTAssertEqual(FeatureEmptyState<EmptyView>.turnOnFeatureID(copy: tracks, readiness: .needsDigests), "slack-digests")
+        XCTAssertEqual(FeatureEmptyState<EmptyView>.turnOnFeatureID(copy: tracks, readiness: .off), "tracks")
+    }
+
     func testTurnOnErrorShownWithTheButton() throws {
         let view = makeView(readiness: .off, turnOnError: AppState.featureChangesBusy)
         XCTAssertNoThrow(try view.inspect().find(text: AppState.featureChangesBusy))

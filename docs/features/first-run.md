@@ -24,6 +24,23 @@ until the next morning's hour.
      without a switch — Slack sync, calendar, Jira — are never off);
   2. `needsSource(source)` — `ReadinessFeature.source` is not connected
      (`ReadinessSource.isConnected`, `Readiness.swift:77`);
+  2a. `needsDigests` (#575) — the feature `runsOnlyWithDigests` (tracks,
+     people cards) and `slack-digests` is in `disabledFeatureIDs`. Dual path
+     with the daemon's compound gates (`phaseTracksAndRollups`,
+     `phaseCustomTrackScan`, `phasePeopleCards` in `internal/daemon/daemon.go`:
+     `Tracks.Enabled && Digest.Enabled`, `People.Enabled && Digest.Enabled`;
+     Go guard rows `tracks_starved_without_digest` /
+     `people_starved_without_digest` in `daemon_gates_test.go`). It beats
+     `ready` like `off` does: nothing new arrives while Digests is off. Line
+     "Needs Slack Digests — Turn on"; the empty state's Turn on and Home's
+     card button (**Turn on Slack Digests**, `HomeLink.turnOn`) switch on
+     `slack-digests`, and the Turn on progress/error key is that id
+     (`FeatureEmptyState.turnOnFeatureID`). Onboarding's Customize row of a
+     feature on while Slack Digests is off shows **Needs Slack Digests** with
+     a **Turn on Slack Digests** button (`OnboardingFeatureSelection.waitsOnSlackDigests`)
+     — an offer, never a silent switch (FEAT-04's spirit). The launch is
+     not decoupled (owner, ask #307), so token spend changes only when the
+     owner turns Slack Digests on;
   3. `ready` — the feature's content table has any row; content wins even while
      a new run is going;
   4. `preparing(detail)` — the newest `pipeline_runs` row is `running`, the

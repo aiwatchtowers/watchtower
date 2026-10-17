@@ -1,8 +1,8 @@
 import Foundation
 
 /// Per-feature readiness, pure: every input (the clock included) comes in
-/// `ReadinessInputs`. Precedence is fixed: off > needsSource > ready >
-/// preparing > error > waitingForSync > scheduled.
+/// `ReadinessInputs`. Precedence is fixed: off > needsSource > needsDigests >
+/// ready > preparing > error > waitingForSync > scheduled.
 package enum FeatureReadiness {
     /// A `running` row older than this is a dead process's leftover
     /// (`reapStalePipelineRuns` only reaps it after 24 h), not a run.
@@ -42,6 +42,10 @@ package enum FeatureReadiness {
     private static func readiness(of feature: ReadinessFeature, _ inputs: ReadinessInputs) -> Readiness {
         if let id = feature.featureID, inputs.disabledFeatureIDs.contains(id) { return .off }
         if !feature.source.isConnected(in: inputs.connected) { return .needsSource(feature.source) }
+        if feature.runsOnlyWithDigests, let digests = ReadinessFeature.digests.featureID,
+           inputs.disabledFeatureIDs.contains(digests) {
+            return .needsDigests
+        }
         if inputs.contentPresent.contains(feature) { return .ready }
 
         let syncing = inputs.syncProgress?.isSyncing(now: inputs.now) == true
@@ -143,6 +147,7 @@ package enum FeatureReadiness {
         case .off: "Off — Turn on"
         case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
         case .needsSource(let source): "Connect \(source.displayName) to get this"
+        case .needsDigests: "Needs Slack Digests — Turn on"
         case .ready: "Ready — Open"
         case .preparing(let detail): withDetail("Preparing now", detail)
         case .error(let message): withDetail("Didn't work yet — retries automatically", shortError(message))

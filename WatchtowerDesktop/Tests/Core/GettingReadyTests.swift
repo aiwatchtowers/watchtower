@@ -45,6 +45,16 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(sourceRows(result.zone), [GettingReadySourceRow(source: .jira, features: [.jira])])
     }
 
+    /// #575: a feature waiting on Slack Digests is a card with its reason,
+    /// not a Connect row, and keeps the zone open.
+    func testNeedsDigestsIsACard() throws {
+        let result = step(readinessMap([.digests: .off, .tracks: .needsDigests, .briefing: .ready]))
+        let card = try XCTUnwrap(cards(result.zone).first { $0.feature == .tracks })
+        XCTAssertEqual(card.readiness, .needsDigests)
+        XCTAssertFalse(card.isTerminal)
+        XCTAssertTrue(sourceRows(result.zone).isEmpty)
+    }
+
     func testCardsFollowPipelineOrder() {
         let named: [ReadinessFeature: Readiness] = [
             .jira: .scheduled(.nextCycle(minutes: 15)), .briefing: .ready, .slackSync: .preparing(detail: nil),
@@ -240,6 +250,7 @@ final class GettingReadyTests: XCTestCase {
             (.error(message: "x"), .error, true),
             (.waitingForSync(detail: nil), .waiting, false),
             (.scheduled(.inAboutADay), .waiting, false),
+            (.needsDigests, .waiting, false),
             (nil, .waiting, false)
         ]
         for (readiness, tone, terminal) in cases {

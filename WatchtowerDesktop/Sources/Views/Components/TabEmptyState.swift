@@ -52,10 +52,11 @@ struct TabEmptyState<Extra: View>: View {
         if let copy = EmptyStateCopyTable.copy(
             for: destination.rawValue, briefingHour: context.briefingHour, dayPlanHour: context.dayPlanHour
         ) {
-            let featureID = copy.feature?.featureID
+            let readiness = copy.feature.flatMap(context.readiness)
+            let featureID = FeatureEmptyState<Extra>.turnOnFeatureID(copy: copy, readiness: readiness)
             FeatureEmptyState(
                 copy: copy,
-                readiness: copy.feature.flatMap(context.readiness),
+                readiness: readiness,
                 syncLine: context.syncLine,
                 turnOnError: featureID.flatMap(context.turnOnError),
                 isTurningOn: featureID.map(context.isTurningOn) ?? false,

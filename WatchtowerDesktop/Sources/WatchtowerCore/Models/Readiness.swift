@@ -54,6 +54,13 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
         }
     }
 
+    /// Whether the daemon runs the feature only while Slack Digests is on too.
+    /// Dual path with the compound gates in `internal/daemon/daemon.go`
+    /// (`phaseTracksAndRollups`, `phaseCustomTrackScan`, `phasePeopleCards`:
+    /// `Tracks.Enabled && Digest.Enabled`, `People.Enabled && Digest.Enabled`) —
+    /// tracks and people cards mine what the digests produce (#575).
+    package var runsOnlyWithDigests: Bool { self == .tracks || self == .peopleCards }
+
     /// Whether the feature has nothing to work on until the first Slack sync
     /// finishes (when Slack is connected). Slack sync is that sync itself.
     package var readsSyncedData: Bool { self != .slackSync }
@@ -125,6 +132,9 @@ package enum Eta: Equatable, Sendable {
 package enum Readiness: Equatable, Sendable {
     case off
     case needsSource(ReadinessSource)
+    /// On, but the daemon skips it while Slack Digests is off
+    /// (`ReadinessFeature.runsOnlyWithDigests`, #575).
+    case needsDigests
     case ready
     case preparing(detail: String?)
     case error(message: String)

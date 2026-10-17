@@ -153,6 +153,11 @@ struct GettingReadyCardView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if readiness == .needsDigests, let featureID = ReadinessFeature.digests.featureID {
+                    Spacer(minLength: 0)
+                    Button("Turn on Slack Digests") { onLink(.turnOn(featureID: featureID)) }
+                        .buttonStyle(.link)
+                }
                 if case .needsSource(let source) = readiness, source.isOwnerIdentity {
                     Spacer(minLength: 0)
                     // No owner yet (OWNER-02): the fix is in Settings → Connections.

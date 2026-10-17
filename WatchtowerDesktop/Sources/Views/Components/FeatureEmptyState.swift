@@ -95,8 +95,9 @@ struct FeatureEmptyState<Extra: View>: View {
         }
     }
 
-    /// The one button: Turn on while off (for a feature with a switch),
-    /// Connect while its source is missing, otherwise the tab's own action —
+    /// The one button: Turn on while off (for a feature with a switch), Turn
+    /// on Slack Digests while the feature waits on it, Connect while its
+    /// source is missing, otherwise the tab's own action —
     /// never a Turn on or Connect the state doesn't call for. A failed Turn
     /// on keeps its retry: an enable whose restart failed leaves the feature
     /// on (no longer `.off`), and only the retry restarts the daemon.
@@ -107,8 +108,8 @@ struct FeatureEmptyState<Extra: View>: View {
             return copy.primaryAction.flatMap { isStateGated($0) ? nil : $0 }
         }
         switch readiness {
-        case .off:
-            return copy.feature?.featureID.map { .turnOn(featureID: $0) }
+        case .off, .needsDigests:
+            return turnOnFeatureID(copy: copy, readiness: readiness).map { .turnOn(featureID: $0) }
         case .needsSource(let source):
             return .connect(source)
         default:
@@ -117,6 +118,13 @@ struct FeatureEmptyState<Extra: View>: View {
             }
             return copy.primaryAction.flatMap { isStateGated($0) ? nil : $0 }
         }
+    }
+
+    /// The feature a Turn on here switches on, which keys its progress and
+    /// error: Slack Digests while the tab's feature waits on it (#575),
+    /// otherwise the tab's own feature.
+    static func turnOnFeatureID(copy: EmptyStateCopy, readiness: Readiness?) -> String? {
+        readiness == .needsDigests ? ReadinessFeature.digests.featureID : copy.feature?.featureID
     }
 
     static func label(for action: EmptyStateAction, retry: Bool = false) -> String {

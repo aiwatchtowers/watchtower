@@ -1314,7 +1314,9 @@ func isBenignShutdownErr(ctx context.Context, err error) bool {
 // but digest.enabled off there is nothing for it to read — gating on
 // Tracks.Enabled alone would still create an empty pipeline_runs row every
 // cycle instead of skipping outright. The rollups half stays gated on
-// Digest.Enabled alone, unrelated to whether tracks itself is on. now is used
+// Digest.Enabled alone, unrelated to whether tracks itself is on. The Desktop
+// mirrors the tracks gate as readiness "Needs Slack Digests"
+// (ReadinessFeature.runsOnlyWithDigests, #575): keep the two in step. now is used
 // only for the rollup attempt budget's date (rollupBudgetDate) — the
 // runDayPlanPhase/phaseBriefing shape, threaded through so the budget's date
 // is provably the UTC date of the instant the phase actually ran, not a
@@ -1383,7 +1385,8 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 // Compound-gated on Digest.Enabled too: people cards mine people_signals that
 // only phaseChannelDigests produces — starved without them, and gating on
 // People.Enabled alone would still create an empty pipeline_runs row every
-// throttle window instead of skipping outright.
+// throttle window instead of skipping outright. Dual path with the Desktop's
+// readiness "Needs Slack Digests" (ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if !d.config.People.Enabled || !d.config.Digest.Enabled {
 		return
@@ -1791,7 +1794,8 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 // Compound-gated on Digest.Enabled too: the activity it scans
 // (db.GetScanActivity) includes digest-derived events, so with digest off
 // there is materially less for it to find — the same "tracks mine digests"
-// dependency phaseTracksAndRollups's tracks half has.
+// dependency phaseTracksAndRollups's tracks half has (and the same Desktop
+// dual path, ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled {
 		return
