@@ -243,7 +243,7 @@ func NewUpdateWorkbench() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_workbench args: %w", err)
 			}
-			if err := d.UpdateWorkbenchDescription(call.Binding.WorkbenchID, strings.TrimSpace(a.Description)); err != nil {
+			if err := d.UpdateWorkbenchDescription(call.Binding.WorkbenchID, a.Description); err != nil {
 				return nil, fmt.Errorf("updating workbench: %w", err)
 			}
 			// "project_id" stays: this result is persisted in

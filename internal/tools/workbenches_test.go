@@ -124,7 +124,8 @@ func TestProjectInfo_BoardAlwaysFollowsTheSessionLanguage(t *testing.T) {
 }
 
 // TestUpdateProject_StoresTheTrimmedDescription: the value stored is the
-// trimmed text the validation checked, not the raw argument.
+// trimmed text requireText validated (UpdateWorkbenchDescription trims), not
+// the raw argument.
 func TestUpdateProject_StoresTheTrimmedDescription(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := workbenchRegistry(t, fx.d)

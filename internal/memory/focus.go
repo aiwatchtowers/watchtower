@@ -239,6 +239,10 @@ func sortedSet(m map[string]bool) []string {
 	return out
 }
 
+// focusStep is the focus step's row number: focus is Run step 1b, the first
+// step row.
+const focusStep = 1
+
 // runFocus is the focus-salience step (behind memory.focus.enabled): parse
 // focus.md, ALWAYS re-resolve its bullets against the live index
 // (final-review Fix 2 — matchFocus runs on every gated call, not just when
@@ -261,7 +265,7 @@ func sortedSet(m map[string]bool) []string {
 // mirroring "nothing to do" elsewhere in this package) and an error that is
 // logged by the caller but never fails the run (source-isolation precedent).
 func (p *Pipeline) runFocus(runID int64, stats *RunStats) (int, error) {
-	step := 1 // focus is Run step 1b, the first step row
+	step := focusStep
 
 	raw, err := p.readFocusFile()
 	if err != nil {
@@ -357,7 +361,7 @@ func (p *Pipeline) sweepFocusImportance() (swept, failed int, err error) {
 // leaves the fingerprint non-empty and the next run retries the
 // neutralization instead of silently losing residual state.
 func (p *Pipeline) runFocusDisable(runID int64, stats *RunStats) (int, error) {
-	step := 1 // as runFocus
+	step := focusStep
 
 	fp, err := p.db.FocusFingerprint()
 	if err != nil {
@@ -384,7 +388,7 @@ func (p *Pipeline) runFocusDisable(runID int64, stats *RunStats) (int, error) {
 // sweep, so the next run's fingerprint comparison retries the sweep, not the
 // already-correct match set).
 func (p *Pipeline) applyFocusState(runID int64, stepName string, now, cooled []string, fp string, stats *RunStats, start time.Time) (int, error) {
-	step := 1 // as runFocus
+	step := focusStep
 
 	if err := p.db.ReplaceFocusMatches(now, cooled); err != nil {
 		p.recordSemanticStep(runID, &step, stepName, "error", nil, start)
