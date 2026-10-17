@@ -19,7 +19,10 @@ final class SessionStartHandlerTests: XCTestCase {
     private var processes: [FakeTerminalSession] = []
     private var center: TerminalCenter!
     private var signals: [(pid_t, Int32)] = []
-    private var grant = SessionStartStopHandlers.DeviceGrant.specDefaults
+    /// A phone allowed to start but not to type (the handler reads only
+    /// the start flag; `MobileLinkCenter.sessionGrant` ties it to typing).
+    private static let mayStart = SessionStartStopHandlers.DeviceGrant(typingAllowed: false, startSessionsAllowed: true)
+    private var grant = mayStart
     private var grantedDevices: [String?] = []
     private var broughtForward: [Int64] = []
     /// Runs inside each launch-watch pause (the process exiting meanwhile).
@@ -34,7 +37,7 @@ final class SessionStartHandlerTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("acme"), withIntermediateDirectories: true)
         processes = []
         signals = []
-        grant = .specDefaults
+        grant = Self.mayStart
         grantedDevices = []
         broughtForward = []
         onPause = nil
@@ -86,7 +89,7 @@ final class SessionStartHandlerTests: XCTestCase {
             dbPool: pool, workbenches: vm, terminalCenter: center,
             deviceGrant: { [weak self] device in
                 self?.grantedDevices.append(device)
-                return self?.grant ?? .specDefaults
+                return self?.grant ?? .denied
             },
             bringForward: { [weak self] in self?.broughtForward.append($0) },
             launchPause: { [weak self] _ in
