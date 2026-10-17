@@ -901,6 +901,31 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(left, ["last_sync.json"], "only the stamps go; the sync record stays")
     }
 
+    /// Reset LLM data is one start-queue item: a banner Start pressed while
+    /// it restarts waits for it, and finds the daemon it left running.
+    func testResetLLMDataBlocksABannerStart() async throws {
+        let dir = try workspaceWithStamps()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.holdRestart = true
+        appState.daemonControlOverride = daemon
+
+        let reset = Task { try await appState.resetLLMData(workspaceDir: dir) }
+        for _ in 0..<10_000 where !daemon.isRestartParked { await Task.yield() }
+        XCTAssertTrue(daemon.isRestartParked)
+        appState.startDaemonFromBanner()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(daemon.starts, 0, "the Start waits for the reset")
+        daemon.releaseRestart()
+        try await reset.value
+        await appState.daemonStartChain?.value
+        XCTAssertEqual(daemon.starts, 0, "the reset's restart left a daemon running")
+        XCTAssertNil(appState.daemonStartFailure)
+    }
+
     func testResetLLMDataSurfacesAFailedRestart() async throws {
         let dir = try workspaceWithStamps()
         defer { try? FileManager.default.removeItem(atPath: dir) }

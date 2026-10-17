@@ -37,10 +37,10 @@ final class DaemonManagerStartTests: XCTestCase {
         XCTAssertNil(manager.notRunningSince)
     }
 
-    /// Every read that finds the daemon running reports it (so a stale
-    /// failure clears on any such poll); a down read reports only the flip.
+    /// Only a flip is reported: a poll that merely sees the same daemon
+    /// again must not clear a restart failure on the banner.
     @MainActor
-    func testEveryRunningReadIsReported() {
+    func testOnlyFlipsAreReported() {
         let manager = DaemonManager()
         var reports: [Bool] = []
         manager.onRunningChanged = { reports.append($0) }
@@ -48,7 +48,7 @@ final class DaemonManagerStartTests: XCTestCase {
         manager.isRunning = true
         manager.isRunning = false
         manager.isRunning = false
-        XCTAssertEqual(reports, [true, true, false])
+        XCTAssertEqual(reports, [true, false])
     }
 
     @MainActor

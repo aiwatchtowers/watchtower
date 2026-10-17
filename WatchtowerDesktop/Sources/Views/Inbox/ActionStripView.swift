@@ -102,7 +102,7 @@ struct ActionStripView: View {
         let manager = appState.featureManager
         Task {
             await manager.enableNow(ReactionCheatSheetView.reactionCommandsFeatureID) {
-                try await DaemonManager.restartQueued()
+                try await appState.restartOnChain(appState.daemonControl)
             }
         }
     }

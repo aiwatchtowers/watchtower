@@ -16,7 +16,8 @@ package enum DaemonRestartError: LocalizedError, Equatable {
     /// No `watchtower` binary was resolvable at all — `restart()` did
     /// nothing, which must not read as a quiet success.
     case cliNotFound
-    /// The start queue's item timeout passed (`DaemonStartQueue`).
+    /// A `watchtower` call did not finish within `cliCallTimeout`; it was
+    /// stopped and reaped before this was thrown.
     case timedOut
 
     package var errorDescription: String? {
@@ -30,7 +31,7 @@ package enum DaemonRestartError: LocalizedError, Equatable {
         case .cliNotFound:
             return "watchtower binary not found in PATH"
         case .timedOut:
-            return "the restart did not finish in time"
+            return "a watchtower command did not finish within \(DaemonManager.cliCallTimeout.components.seconds) s and was stopped"
         }
     }
 }
@@ -53,7 +54,7 @@ package final class DaemonManager {
             } else if notRunningSince == nil {
                 notRunningSince = Date()
             }
-            if isRunning != oldValue || isRunning { onRunningChanged?(isRunning) }
+            if isRunning != oldValue { onRunningChanged?(isRunning) }
         }
     }
     /// Since when the daemon has been seen down: set by the first status
@@ -62,8 +63,7 @@ package final class DaemonManager {
     /// anything was checked. Readiness waits `FeatureReadiness.daemonDownGrace`
     /// on it, so a restart does not flicker.
     package private(set) var notRunningSince: Date?
-    /// Called when `isRunning` flips, and on every read that finds it
-    /// running (the status poll included).
+    /// Called when `isRunning` flips (the status poll included).
     @ObservationIgnored package var onRunningChanged: (@MainActor (Bool) -> Void)?
     /// The daemon's live sync heartbeat, refreshed by `checkStatus()`. nil when
     /// no heartbeat file exists yet (no sync has run since the daemon shipped
@@ -207,15 +207,43 @@ package final class DaemonManager {
         return process
     }
 
-    /// Run a process off the main thread
-    nonisolated private static func runProcess(path: String, arguments: [String]) async throws -> Int32 {
+    /// The bound on one `watchtower` call (`sync stop`, `sync --daemon
+    /// --detach`, `sync --now`): a hung CLI is stopped, so a daemon start
+    /// queue item always ends.
+    package nonisolated static let cliCallTimeout: Duration = .seconds(60)
+
+    /// Run a process off the main thread, bounded by `timeout`.
+    nonisolated static func runProcess(
+        path: String, arguments: [String], timeout: Duration = cliCallTimeout
+    ) async throws -> Int32 {
         let process = makeProcess(path: path, arguments: arguments)
         try process.run()
-        // Off the concurrency pool (see ProcessPipes).
-        return await ProcessPipes.offPool {
-            process.waitUntilExit()
-            return process.terminationStatus
+        try await waitOrStop(process, timeout: timeout)
+        return process.terminationStatus
+    }
+
+    /// Waits for `process` up to `timeout`. Past it: SIGTERM, then SIGKILL
+    /// after 2 s, then waits for the exit and throws `.timedOut` — the
+    /// caller never moves on with the child still alive. (Only the CLI
+    /// process itself: a daemon `--detach` already handed off must survive.)
+    nonisolated static func waitOrStop(_ process: Process, timeout: Duration) async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        while process.isRunning, clock.now - start < timeout {
+            try? await Task.sleep(for: .milliseconds(50))
         }
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        NSLog("DaemonManager: watchtower call (pid %d) passed its bound; stopping it", pid)
+        process.terminate()
+        let terminated = clock.now
+        while process.isRunning, clock.now - terminated < .seconds(2) {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        if process.isRunning { kill(pid, SIGKILL) }
+        // Off the concurrency pool (see ProcessPipes).
+        await ProcessPipes.offPool { process.waitUntilExit() }
+        throw DaemonRestartError.timedOut
     }
 
     /// `runProcess` with the child's stderr kept instead of muted, for the one
@@ -230,11 +258,10 @@ package final class DaemonManager {
         let pipe = Pipe()
         process.standardError = pipe
         try process.run()
-        let data = await ProcessPipes.drain(pipe).value
-        let status = await ProcessPipes.offPool {
-            process.waitUntilExit()
-            return process.terminationStatus
-        }
+        let drained = ProcessPipes.drain(pipe)
+        try await waitOrStop(process, timeout: cliCallTimeout)
+        let data = await drained.value
+        let status = process.terminationStatus
         // Latin-1 never fails, so a non-UTF-8 diagnostic degrades to mojibake
         // instead of vanishing.
         let stderr = String(bytes: data, encoding: .utf8) ?? String(bytes: data, encoding: .isoLatin1) ?? ""

@@ -1465,8 +1465,9 @@ final class AppState {
         // One item on the start queue: no other start lands mid-wipe.
         let failure = await enqueueDaemonStart { () -> (any Error)? in
             await Self.stopWipeRestart(daemon: daemon, db: db, workspaceDir: workspaceDir)
-        }.value ?? DaemonRestartError.timedOut
+        }.value
         if let failure { throw failure }
+        daemonStartFailure = nil
     }
 
     private static func stopWipeRestart(
@@ -1503,7 +1504,7 @@ final class AppState {
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle. On the one start chain.
-    private func ensureDaemonRunning() {
+    func ensureDaemonRunning() {
         let daemon = daemonControl
         let manager = daemonManager
         let item = enqueueDaemonStart {
@@ -1512,9 +1513,8 @@ final class AppState {
                 await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            if !(await daemon.startDetached()) {
-                self.daemonStartFailure = Self.daemonStartFailureText(manager.errorMessage)
-            }
+            self.daemonStartFailure = await daemon.startDetached()
+                ? nil : Self.daemonStartFailureText(manager.errorMessage)
         }
         ensureDaemonTask = Task { _ = await item.value }
     }

@@ -13,12 +13,12 @@ extension AppState {
         set { daemonStartQueue.failure = newValue }
     }
 
-    /// Runs `operation` on the one daemon start queue (`DaemonStartQueue`):
-    /// after every earlier start or restart, bounded by the queue's item
-    /// timeout (nil = timed out, already shown on the banner). Enqueued
+    /// Runs `operation` on the one daemon start queue (`DaemonStartQueue`),
+    /// after every earlier start or restart: the entry point for every
+    /// start, restart and stop-then-start the app makes. Enqueued
     /// synchronously; await `.value` for the result.
     @discardableResult
-    func enqueueDaemonStart<T: Sendable>(_ operation: @escaping @MainActor () async -> T) -> Task<T?, Never> {
+    func enqueueDaemonStart<T: Sendable>(_ operation: @escaping @MainActor () async -> T) -> Task<T, Never> {
         daemonStartQueue.enqueue(operation)
     }
 
@@ -81,18 +81,26 @@ extension AppState {
         stoppedBannerDismissedFor = daemonManager.notRunningSince
     }
 
-    /// The restart a Turn on or a feature offer needs, on the start queue:
-    /// never in the middle of a banner Start's wait.
+    /// A restart on the start queue (a Turn on, the feature offer, Settings,
+    /// the Inbox action strip): never in the middle of a banner Start's
+    /// wait. A success clears the banner's failure.
     func restartOnChain(_ daemon: any DaemonControl) async throws {
-        let result = await enqueueDaemonStart { () -> Result<Void, any Error> in
-            do {
-                try await daemon.restartWaiting()
-                return .success(())
-            } catch {
-                return .failure(error)
-            }
+        try await daemonStartQueue.restart { try await daemon.restartWaiting() }
+    }
+
+    /// Settings → Slack disconnect as one item: stop, disconnect, start, so
+    /// no other start lands between them. Whether the disconnect went through.
+    func disconnectSlackOnQueue(
+        stop: @escaping @MainActor () async -> Void,
+        disconnect: @escaping @MainActor () async -> Bool,
+        start: @escaping @MainActor () async -> Void
+    ) async -> Bool {
+        await enqueueDaemonStart { () -> Bool in
+            await stop()
+            let done = await disconnect()
+            await start()
+            return done
         }.value
-        try (result ?? .failure(DaemonRestartError.timedOut)).get()
     }
 
     static func daemonStartFailureText(_ detail: String?) -> String {

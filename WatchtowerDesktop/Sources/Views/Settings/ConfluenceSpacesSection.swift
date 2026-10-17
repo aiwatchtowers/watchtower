@@ -73,7 +73,7 @@ struct ConfluenceSpacesSection: View {
             let manager = appState.featureManager
             Task {
                 await manager.enableNow(Self.featureID) {
-                    try await DaemonManager.restartQueued()
+                    try await appState.restartOnChain(appState.daemonControl)
                 }
             }
         }

@@ -7,6 +7,24 @@ import WatchtowerTestSupport
 
 /// #577: the app-wide "Watchtower isn't running" banner, its Start, and the
 /// one daemon start chain.
+/// A suspension that ends only when opened.
+@MainActor
+private final class HeldGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var isOpen = false
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
 /// A features CLI that reports memory on: a Turn on only restarts.
 private final class EnabledFeaturesRunner: CLIRunnerProtocol, @unchecked Sendable {
     func run(args: [String]) async throws -> Data {
@@ -141,6 +159,63 @@ final class DaemonBannerTests: XCTestCase {
         await appState.daemonStartChain?.value
         XCTAssertNil(appState.daemonStartFailure)
         XCTAssertNil(appState.emptyStateTurnOnError(for: "memory"))
+    }
+
+    /// A restart failure stays while the old daemon keeps running (a poll
+    /// seeing it is no success); only a successful restart clears it.
+    func testRestartFailureStaysUntilASuccessfulRestart() async throws {
+        let daemon = FakeDaemon()
+        let appState = makeAppState(daemon)
+        appState.daemonManager.isRunning = true
+        appState.daemonStartFailure = "The background sync did not restart: boom"
+        appState.daemonManager.isRunning = true
+        XCTAssertNotNil(appState.daemonStartFailure, "a running poll is not a restart")
+        try await appState.restartOnChain(daemon)
+        XCTAssertNil(appState.daemonStartFailure)
+    }
+
+    /// The launch start that fails says so on the banner.
+    func testLaunchStartFailureShowsOnTheBanner() async {
+        let daemon = FakeDaemon()
+        daemon.startSucceeds = false
+        let appState = makeAppState(daemon)
+        appState.ensureDaemonRunning()
+        await appState.ensureDaemonTask?.value
+        XCTAssertEqual(appState.daemonStartFailure, AppState.daemonStartFailureText(nil))
+    }
+
+    /// Slack disconnect is one item: a banner Start enqueued meanwhile runs
+    /// after its start, never between its stop and start; a failed
+    /// disconnect still starts the daemon again.
+    func testSlackDisconnectIsOneItem() async {
+        let daemon = FakeDaemon()
+        let appState = makeAppState(daemon)
+        var log: [String] = []
+        let gate = HeldGate()
+        let disconnect = Task {
+            await appState.disconnectSlackOnQueue(
+                stop: { log.append("stop") },
+                disconnect: {
+                    await gate.wait()
+                    log.append("disconnect")
+                    return false
+                },
+                start: {
+                    log.append("start")
+                    daemon.running = true
+                })
+        }
+        for _ in 0..<200 where log.isEmpty { await Task.yield() }
+        appState.startDaemonFromBanner()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(daemon.starts, 0, "the banner waits for the whole item")
+        gate.open()
+        let disconnected = await disconnect.value
+        await appState.daemonStartChain?.value
+        XCTAssertFalse(disconnected)
+        XCTAssertEqual(log, ["stop", "disconnect", "start"])
+        XCTAssertEqual(daemon.starts, 0, "the item's start left a daemon running")
+        XCTAssertNil(appState.daemonStartFailure)
     }
 
     // MARK: - Owner's stop and Dismiss

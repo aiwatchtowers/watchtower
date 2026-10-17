@@ -6,6 +6,7 @@ struct DataSettings: View {
     @State private var showResetConfirmation = false
     @State private var showFinalConfirmation = false
     @State private var isResetting = false
+    @State private var resetError: String?
     @State private var configSize: String?
     @State private var databaseSize: String?
     @State private var cacheSize: String?
@@ -161,6 +162,11 @@ struct DataSettings: View {
                     }
                 }
                 .disabled(isResetting)
+                if let resetError {
+                    Text(resetError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
             .padding(.vertical, 4)
         }
@@ -212,18 +218,42 @@ struct DataSettings: View {
 
     private func performReset() async {
         isResetting = true
-
-        // 1. Stop daemon, on the app's start queue (no start lands in between)
-        await DaemonStartQueue.shared.enqueue {
+        resetError = nil
+        let configDir = configDir
+        let dataDir = dataDir
+        // One item on the app's start queue: stop the daemon, and delete
+        // only once it is really gone — no start lands in between.
+        let stopped = await appState.enqueueDaemonStart { () -> Bool in
             let daemon = DaemonManager()
             daemon.resolvePathIfNeeded()
             if DaemonManager.checkDaemonRunning() {
                 await daemon.stopDaemon()
-                // Give it a moment to stop
-                try? await Task.sleep(for: .milliseconds(500))
             }
+            do {
+                try await DaemonManager.waitForDaemonExit()
+            } catch {
+                return false
+            }
+            Self.removeEverything(configDir: configDir, dataDir: dataDir)
+            return true
         }.value
+        guard stopped else {
+            resetError = "The background sync did not stop, so nothing was deleted. Try again."
+            isResetting = false
+            return
+        }
 
+        // L5 fix: dispatch terminate to main thread explicitly (not from async context).
+        // A stop-only quit: sessions kept in the session host would belong to
+        // the wiped workspace and could never be reattached (board #496).
+        await MainActor.run {
+            TrayAppDelegate.requestQuit(stoppingSessions: true)
+        }
+    }
+
+    /// Config, database, preferences, caches and crash reports.
+    @MainActor
+    private static func removeEverything(configDir: String, dataDir: String) {
         // 2. Remove config & database
         let fm = FileManager.default
         try? fm.removeItem(atPath: configDir)
@@ -260,13 +290,6 @@ struct DataSettings: View {
         }
         UserDefaults.standard.removePersistentDomain(forName: "com.watchtower.desktop")
         UserDefaults.standard.removePersistentDomain(forName: "WatchtowerDesktop")
-
-        // L5 fix: dispatch terminate to main thread explicitly (not from async context).
-        // A stop-only quit: sessions kept in the session host would belong to
-        // the wiped workspace and could never be reattached (board #496).
-        await MainActor.run {
-            TrayAppDelegate.requestQuit(stoppingSessions: true)
-        }
     }
 
     nonisolated private static func directorySize(_ path: String) -> String? {

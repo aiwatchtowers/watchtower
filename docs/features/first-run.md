@@ -105,10 +105,13 @@ match wins:
   <reason>."), a detach that exited 0 but no daemon within
   `daemonStartWaitBound` (60 s, polled every second — a first start after an
   update runs migrations first; `daemonDiedAfterStartText`), a background
-  restart that failed (`DaemonManager.restartLoggingQueued`), the launch start
-  failing, or a queue item timing out. **Retry**, **Open Logs** (the Logs
-  window), **Dismiss**. Any status read that finds the daemon running clears it
-  (`DaemonManager.onRunningChanged` fires on every running read).
+  restart that failed (`DaemonStartQueue.restartLogging`), the launch start
+  failing, or a `watchtower` call stopped at its bound. **Retry**, **Open
+  Logs** (the Logs window), **Dismiss**. Only a successful start or restart
+  clears it (`DaemonStartQueue.restart`, the banner's Start, a bring-up, the
+  Calendar restart, Reset LLM data), or a daemon newly up
+  (`DaemonManager.onRunningChanged` fires on a flip only): a poll that merely
+  sees the old daemon still running after a failed restart leaves it.
 - `stopped` — `ReadinessCenter.daemonDown`, the same
   `FeatureReadiness.isDaemonDown` rule as the readiness state (30 s grace):
   "Watchtower isn't running, so nothing new arrives." with **Start** and
@@ -124,18 +127,32 @@ Start and Retry run `AppState.startDaemonFromBanner`: a daemon already running
 is not a failure; otherwise `startDetached`, then the wait above.
 
 **One start queue.** Every daemon start, stop-then-start and restart the app
-makes runs on `DaemonStartQueue` (`AppState.enqueueDaemonStart` /
-`DaemonManager.restartQueued` / `restartLoggingQueued`), one item at a time:
+makes runs on `DaemonStartQueue`, one item at a time. The entry point is
+`AppState.enqueueDaemonStart` (and `restartOnChain` for a plain restart)
+wherever `AppState` is at hand; the account view models and Google sign-in,
+which have no `AppState`, use `LiveDaemonRestarter` /
+`DaemonManager.restartLoggingQueued` on `DaemonStartQueue.shared`, the queue
+`AppState` uses in production. Items:
 the launch `ensureDaemonRunning`, onboarding's and Run setup again's
 `bringUpDaemonInBackground`, the banner, a tab's Turn on and the feature offer
 (`restartOnChain`), the Calendar tab's restart, every account and grant change
 (`LiveDaemonRestarter`, Email/Calendar accounts, `GoogleAuthService`,
 `GoogleConnectFlow`), Settings → Features and Confluence spaces, the Inbox
-action strip, Reset LLM data (stop, wipe and restart as one item), Settings →
-Slack disconnect (stop, disconnect, start as one item) and the full reset's
-stop. Each item has a 90 s timeout (`itemTimeout`): a hung CLI call fails
-visibly on the banner and the queue moves on (the item keeps running,
-unobserved). An item never enqueues onto the queue and awaits it. Outside it:
+action strip, Reset LLM data (stop, wait for the exit, wipe and restart as one
+item), Settings → Slack disconnect (stop, disconnect, start as one item; the
+config and the Workspaces list are re-read whatever the outcome) and the full
+reset (stop, wait for the exit, and only then delete — a daemon that did not
+stop deletes nothing and says so).
+
+Items have no timeout of their own, so they never overlap. Every `watchtower`
+call inside one is bounded where it runs (`DaemonManager.cliCallTimeout`,
+60 s: past it the CLI process gets SIGTERM, SIGKILL 2 s later, and is reaped
+before the call throws `.timedOut`; a daemon already handed off by `--detach`
+is not touched), and the pid waits are bounded too (`restartStopGrace`,
+`daemonStartWaitBound`), so an item always ends; Reset LLM data and the full
+reset include the 60 s stop wait. Non-CLI work inside an item (the Slack
+disconnect's `auth logout` runner) is not bounded here. An item never enqueues
+onto the queue and awaits it. Outside it:
 the launch-time CLI-store stop and the quit stop. The Google reconnect alert
 no longer restarts on its own (a successful connect already does). The
 Calendar tab has no message of its own while the daemon is down: the app-wide

@@ -147,7 +147,7 @@ struct CalendarEventsView: View {
             } catch {
                 return error
             }
-        }.value ?? DaemonRestartError.timedOut
+        }.value
         if let error = failure {
             NSLog("CalendarEventsView: sync restart failed: %@", error.localizedDescription)
             restartError = "Couldn't restart the sync: \(error.localizedDescription)"
@@ -159,6 +159,7 @@ struct CalendarEventsView: View {
         } else {
             restartError = nil
             restartErrorOutlivesDaemon = false
+            appState.daemonStartFailure = nil
         }
         await refreshSyncHealth()
     }

@@ -2,9 +2,17 @@ import XCTest
 @testable import WatchtowerCore
 
 /// #577: every daemon start or restart the app makes runs on one queue, one
-/// at a time, and a hung item cannot stall it.
+/// at a time, and a hung CLI call cannot stall it or overlap the next item.
 @MainActor
 final class DaemonStartQueueTests: XCTestCase {
+    private var cleanup: [String] = []
+
+    override func tearDown() {
+        cleanup.forEach { try? FileManager.default.removeItem(atPath: $0) }
+        cleanup = []
+        super.tearDown()
+    }
+
     func testItemsRunOneAfterTheOther() async {
         let queue = DaemonStartQueue()
         var log: [String] = []
@@ -20,28 +28,77 @@ final class DaemonStartQueueTests: XCTestCase {
         let value = await second.value
         XCTAssertEqual(value, 7)
         XCTAssertEqual(log, ["a-start", "a-end", "b"])
+    }
+
+    /// A hung CLI call is stopped and reaped inside its item: the item ends
+    /// with `.timedOut`, and the next item starts only after the child is gone.
+    func testHungCLICallEndsItsItemBeforeTheNext() async throws {
+        let pidPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("daemon-queue-pid-\(UUID().uuidString)").path
+        cleanup.append(pidPath)
+        // /bin/sh, not a fresh script file (a first exec of a new file can
+        // wait on the system's scan); `exec` keeps the pid, so the recorded
+        // one IS the sleeper.
+        let command = "echo $$ > \(pidPath); exec sleep 100"
+        addTeardownBlock {
+            // Reap the sleeper even when the bound is broken.
+            if let text = try? String(contentsOfFile: pidPath, encoding: .utf8),
+               let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) { kill(pid, SIGKILL) }
+        }
+        let queue = DaemonStartQueue()
+        var log: [String] = []
+        queue.enqueue {
+            do {
+                _ = try await DaemonManager.runProcess(path: "/bin/sh", arguments: ["-c", command], timeout: .seconds(1))
+                log.append("hung-finished")
+            } catch {
+                log.append(error as? DaemonRestartError == .timedOut ? "hung-timedOut" : "hung-other")
+            }
+        }
+        let childAliveWhenNextStarted = await queue.enqueue { () -> Bool in
+            log.append("next")
+            guard let text = try? String(contentsOfFile: pidPath, encoding: .utf8),
+                  let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return true }
+            return kill(pid, 0) == 0
+        }.value
+        XCTAssertEqual(log, ["hung-timedOut", "next"])
+        XCTAssertFalse(childAliveWhenNextStarted, "no overlap: the child was reaped first")
+    }
+
+    /// The account view models' restarter runs on the queue, behind an item
+    /// already there; its success clears the banner failure.
+    func testLiveDaemonRestarterGoesThroughTheQueue() async {
+        let queue = DaemonStartQueue()
+        queue.failure = "old"
+        let gate = Gate()
+        let held = queue.enqueue { await gate.wait() }
+        let restarted = Flag()
+        let restarter = LiveDaemonRestarter(queue: queue) { await restarted.set() }
+        let account = Task { await restarter.restartLogging() }
+        for _ in 0..<200 { await Task.yield() }
+        let early = await restarted.value
+        XCTAssertFalse(early, "waits for the item ahead of it")
+        gate.open()
+        await held.value
+        await account.value
+        let late = await restarted.value
+        XCTAssertTrue(late)
         XCTAssertNil(queue.failure)
     }
 
-    /// A hung item times out visibly and the next one runs.
-    func testTimeoutMovesOn() async {
-        let queue = DaemonStartQueue(itemTimeout: .milliseconds(50))
-        let gate = Gate()
-        let hung = queue.enqueue { () -> Bool in
-            await gate.wait()
-            return true
-        }
-        let next = queue.enqueue { () -> Bool in true }
-        let hungValue = await hung.value
-        let nextValue = await next.value
-        XCTAssertNil(hungValue)
-        XCTAssertEqual(nextValue, true)
-        XCTAssertEqual(queue.failure, DaemonStartQueue.timedOutText)
-        gate.open()
+    func testFailedBackgroundRestartStaysOnTheBanner() async {
+        let queue = DaemonStartQueue()
+        await queue.restartLogging { throw DaemonRestartError.cliNotFound }
+        XCTAssertEqual(queue.failure, "The background sync did not restart: watchtower binary not found in PATH")
     }
 }
 
-/// A suspension that ends only when opened (stands in for a hung CLI call).
+private actor Flag {
+    private(set) var value = false
+    func set() { value = true }
+}
+
+/// A suspension that ends only when opened.
 @MainActor
 private final class Gate {
     private var waiters: [CheckedContinuation<Void, Never>] = []

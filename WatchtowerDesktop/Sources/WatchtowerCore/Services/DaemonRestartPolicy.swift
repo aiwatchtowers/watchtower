@@ -29,9 +29,20 @@ package protocol DaemonRestarting: Sendable {
 /// Production `DaemonRestarting`: `DaemonManager.restartLoggingQueued()`,
 /// on the app's one daemon start queue.
 package struct LiveDaemonRestarter: DaemonRestarting {
-    package init() {}
+    private let queue: DaemonStartQueue
+    private let restart: @Sendable () async throws -> Void
+
+    /// Tests pass their own queue and restart; production uses the shared
+    /// queue and `DaemonManager.restart()`.
+    package init(
+        queue: DaemonStartQueue = .shared,
+        restart: @escaping @Sendable () async throws -> Void = { try await DaemonManager.restart() }
+    ) {
+        self.queue = queue
+        self.restart = restart
+    }
 
     package func restartLogging() async {
-        await DaemonManager.restartLoggingQueued()
+        await queue.restartLogging(restart)
     }
 }
