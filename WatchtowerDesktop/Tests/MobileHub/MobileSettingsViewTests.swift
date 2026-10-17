@@ -137,8 +137,10 @@ final class MobileSettingsViewTests: XCTestCase {
 
         XCTAssertNoThrow(try view.inspect().find(text: "Permission prompts off"))
         let allows = try view.inspect().findAll(ViewType.Button.self) { try $0.labelView().text().string() == "Allow…" }
-        XCTAssertEqual(allows.count, 2, "typing and permission prompts")
-        try allows[1].tap()
+        XCTAssertEqual(allows.count, 3, "typing, starting sessions and permission prompts")
+        XCTAssertNoThrow(try view.inspect().find(text: "Starting sessions needs typing"))
+        XCTAssertThrowsError(try allows[1].tap(), "starting sessions waits for typing (#565)")
+        try allows[2].tap()
         XCTAssertEqual(model.pendingPermissionsAllow?.deviceID, "phone-a")
         XCTAssertNil(model.pendingAllow)
 

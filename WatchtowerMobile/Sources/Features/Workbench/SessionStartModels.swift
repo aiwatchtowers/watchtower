@@ -14,7 +14,12 @@ enum SessionStartText {
     static let ended = "The session ended"
     static let clippedBrief = "The brief is shortened on the phone. Editing it replaces the Mac's full prompt."
     static let leaveHint = "If the Mac is asleep the request waits and starts when it wakes. You can leave this screen."
-    static let notAllowed = "This phone is not allowed to start sessions on the Mac"
+    /// The Mac has not allowed this phone to start sessions (#565): the
+    /// owner allows typing and then starting sessions on the Mac.
+    static let notAllowed = "Your Mac has not allowed this phone to start sessions. "
+        + "On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
+    /// The phone's own "Start sessions from this phone" is off.
+    static let turnedOff = "Start sessions from this phone is off in Settings."
     static let chooseTarget = "Choose a target to start"
     static let briefReadOnly = "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac."
     static let stopConfirm = "Stop this session on the Mac?"
@@ -44,14 +49,15 @@ enum SessionStartText {
 }
 
 /// What this phone may do on the Mac (spec §4.13): the hub's grant, or the
-/// spec's defaults while it has none (typing off, starts on).
+/// spec's defaults while it has none (typing off, starts off: the Mac
+/// allows starts, #565).
 struct StartGrant: Equatable {
     let typingAllowed: Bool
     let startSessionsAllowed: Bool
 
     init(_ grant: DeviceGrant?) {
         typingAllowed = grant?.typingAllowed ?? false
-        startSessionsAllowed = grant?.startSessionsAllowed ?? true
+        startSessionsAllowed = grant?.mayStartSessions ?? false
     }
 }
 

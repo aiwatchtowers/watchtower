@@ -152,6 +152,7 @@ struct SettingsView: View {
         } else {
             let lines = [
                 settings.typingRequested ? "Typing: \(Self.typingCaption(grant: model.snapshot.grant))" : nil,
+                settings.startSessions ? "Starting sessions: \(Self.startSessionsCaption(grant: model.snapshot.grant))" : nil,
                 settings.permissionsRequested ? "Permission prompts: \(Self.permissionsCaption(grant: model.snapshot.grant))" : nil
             ].compactMap { $0 }
             if !lines.isEmpty {
@@ -165,6 +166,14 @@ struct SettingsView: View {
         grant?.typingAllowed == true
             ? "Allowed"
             : "Waiting for your Mac to confirm"
+    }
+
+    /// Whether the Mac lets this phone start sessions (#565): the owner
+    /// allows it on the Mac, after typing.
+    static func startSessionsCaption(grant: DeviceGrant?) -> String {
+        grant?.mayStartSessions == true
+            ? "Allowed"
+            : "Allow it on your Mac: Watchtower → Settings → Mobile, after typing"
     }
 
     /// The permission-prompt request's answer from the Mac (#517): its own
