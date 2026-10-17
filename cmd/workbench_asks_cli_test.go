@@ -168,23 +168,21 @@ func TestAsksJSONEmptyIsAnEmptyList(t *testing.T) {
 	assert.Equal(t, map[string]any{"ok": true, "asks": []any{}}, got)
 }
 
-// An unknown workbench, an id flag of 0 or below and both id flag spellings
-// answer ok: false with exit 0.
+// An unknown workbench and an id flag of 0 or below answer ok: false with
+// exit 0.
 func TestAsksJSONFailuresAreOKFalse(t *testing.T) {
-	f := newAsksFixture(t)
+	newAsksFixture(t)
 	for name, args := range map[string][]string{
 		"unknown workbench": {"--workbench", "999"},
 		"zero id":           {"--workbench", "0"},
-		"zero legacy id":    {"--project", "0"},
 		"negative id":       {"--workbench", "-1"},
-		"both flags":        {"--workbench", strconv.FormatInt(f.acme, 10), "--project", strconv.FormatInt(f.acme, 10)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := runAsksJSON(t, args...)
 			assert.Equal(t, false, got["ok"])
 			assert.NotEmpty(t, got["error"])
 			assert.NotContains(t, got, "asks")
-			if name != "unknown workbench" && name != "both flags" {
+			if name != "unknown workbench" {
 				assert.Contains(t, got["error"], "takes a positive id")
 			}
 		})

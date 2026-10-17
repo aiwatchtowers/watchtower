@@ -52,11 +52,11 @@ func loadJiraComments(ctx context.Context, q Queryer, query string, args ...any)
 func (jiraSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	rest, ok := splitRef(key, "jira:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	i := strings.Index(rest, ":")
 	if i <= 0 || i == len(rest)-1 {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	accountID, issueKey := rest[:i], rest[i+1:]
 
@@ -156,7 +156,7 @@ func (calendarSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
 func (calendarSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	id, ok := splitRef(key, "calendar:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 
 	var title, description, location, start, end, organizer, attendeesJSON, htmlLink string

@@ -187,7 +187,7 @@ struct WorkbenchTargetSlice: SliceSource {
         let pr = SliceClip.text(target.pr, limit: 120)
         let sessions = SliceClip.list(facts.sessions[id] ?? [], limit: Self.maxSessionIDs)
         let prompt = SliceClip.text(
-            TerminalLaunch.workOnTargetPrompt(targetID: id, vocabulary: .current), limit: 1000
+            TerminalLaunch.workOnTargetPrompt(targetID: id), limit: 1000
         )
         let lastStatus = facts.lastStatus[id]
         let recordName = kind.recordName(id: String(id))

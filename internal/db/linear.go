@@ -23,7 +23,7 @@ func (db *DB) UpsertLinearTeams(accountID int64, teams []LinearTeam, selectNew m
 	if err != nil {
 		return fmt.Errorf("upserting linear teams: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback() // no-op after Commit
 	for _, t := range teams {
 		if _, err := tx.Exec(`INSERT INTO linear_teams (account_id, id, key, name, is_selected) VALUES (?,?,?,?,?)
 			ON CONFLICT(account_id, id) DO UPDATE SET key = excluded.key, name = excluded.name`,
@@ -365,7 +365,7 @@ func (db *DB) UpsertLinearHistory(entries []LinearHistoryEntry) error {
 	if err != nil {
 		return fmt.Errorf("upserting linear history: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback() // no-op after Commit
 	for _, e := range entries {
 		if _, err := tx.Exec(`INSERT INTO linear_issue_history (account_id, id, field, issue_id, from_value,
 			from_string, to_value, to_string, actor_id, actor_display_name, changed_at)
@@ -398,7 +398,7 @@ func (db *DB) ReplaceLinearRelations(accountID int64, issueID string, rels []Lin
 	if err != nil {
 		return fmt.Errorf("replacing linear relations: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback() // no-op after Commit
 	if _, err := tx.Exec(`DELETE FROM linear_relations WHERE account_id = ? AND issue_id = ?`, accountID, issueID); err != nil {
 		return fmt.Errorf("clearing linear relations of %s: %w", issueID, err)
 	}
@@ -437,7 +437,7 @@ func (db *DB) UpsertLinearCycles(cycles []LinearCycle) error {
 	if err != nil {
 		return fmt.Errorf("upserting linear cycles: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback() // no-op after Commit
 	for _, c := range cycles {
 		if _, err := tx.Exec(`INSERT INTO linear_cycles (account_id, id, team_id, number, name, starts_at,
 			ends_at, completed_at, progress, synced_at)
@@ -476,7 +476,7 @@ func (db *DB) UpsertLinearProjects(projects []LinearProject) error {
 	if err != nil {
 		return fmt.Errorf("upserting linear projects: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback() // no-op after Commit
 	for _, p := range projects {
 		if _, err := tx.Exec(`INSERT INTO linear_projects (account_id, id, name, state, progress, target_date,
 			lead_id, url, synced_at)
@@ -511,7 +511,7 @@ func (db *DB) UpsertLinearUsers(users []LinearUser) error {
 	if err != nil {
 		return fmt.Errorf("upserting linear users: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback() // no-op after Commit
 	for _, u := range users {
 		if _, err := tx.Exec(`INSERT INTO linear_user_map (linear_user_id, email, display_name) VALUES (?,?,?)
 			ON CONFLICT(linear_user_id) DO UPDATE SET email = excluded.email, display_name = excluded.display_name`,

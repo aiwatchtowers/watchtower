@@ -129,7 +129,7 @@ package final class PeopleRosterLoad {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = ["sync", "--users-only", "--progress-json", "--account", "\(accountID)"]
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

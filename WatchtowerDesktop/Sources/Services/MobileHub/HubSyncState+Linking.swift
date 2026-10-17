@@ -33,6 +33,14 @@ extension HubSyncState {
         /// record's `typing_requested`): Settings → Mobile asks the owner to
         /// Allow it. Never a grant by itself.
         var typingRequested = false
+        /// The owner's separate grant to answer Claude Code permission
+        /// prompts from this phone (#517, spec §5.1): never implied by
+        /// typing, and it does not imply typing.
+        var permissionsAllowed = false
+        /// The phone's own "Answer permission prompts from this phone"
+        /// toggle (its `device` record's `permissions_requested`): Settings →
+        /// Mobile asks the owner to Allow it. Never a grant by itself.
+        var permissionsRequested = false
 
         /// The device gate's creator check (spec §5.2 rule 4): in `shared`
         /// scope a record must be written by the phone's own iCloud user.
@@ -214,6 +222,7 @@ extension HubSyncState {
     enum DeviceGrantKind: String {
         case typing = "typing_allowed"
         case startSessions = "start_sessions_allowed"
+        case permissions = "permissions_allowed"
     }
 
     /// Sets one grant of a linked device and stamps `decided_at`. False
@@ -234,6 +243,22 @@ extension HubSyncState {
         try queue.write { db in
             try db.execute(
                 sql: "UPDATE devices SET typing_requested = ? WHERE device_id = ? COLLATE NOCASE AND typing_requested != ?",
+                arguments: [requested, deviceID, requested]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    /// Stores the phone's request to answer permission prompts (not a
+    /// grant, no `decided_at`). False when the device is not linked or the
+    /// value did not change.
+    func setPermissionsRequested(_ requested: Bool, deviceID: String) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE devices SET permissions_requested = ?
+                    WHERE device_id = ? COLLATE NOCASE AND permissions_requested != ?
+                    """,
                 arguments: [requested, deviceID, requested]
             )
             return db.changesCount > 0
@@ -331,7 +356,9 @@ extension HubSyncState {
             typingAllowed: row["typing_allowed"],
             startSessionsAllowed: row["start_sessions_allowed"],
             decidedAt: (row["decided_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
-            typingRequested: row["typing_requested"]
+            typingRequested: row["typing_requested"],
+            permissionsAllowed: row["permissions_allowed"],
+            permissionsRequested: row["permissions_requested"]
         )
     }
 }

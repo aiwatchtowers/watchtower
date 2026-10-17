@@ -159,8 +159,8 @@ func (db *DB) MarkAgentLogFileMissing(path, at string) error {
 	return err
 }
 
-// ApplyAgentLogBatch writes one parsed slice of a transcript in a single
-// transaction and advances the file's offset with a compare-and-set. It
+// ApplyAgentLogBatch writes one parsed slice of a transcript (the scanner
+// keeps slices small, see agentlog.batchRows) in a single short transaction and advances the file's offset with a compare-and-set. It
 // returns applied=false (nothing written) when another writer moved the
 // offset first.
 func (db *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
@@ -230,7 +230,9 @@ func upsertAgentLogSession(tx *sql.Tx, s AgentLogSession) error {
 		ON CONFLICT(session_uuid) DO UPDATE SET
 		  model = CASE WHEN excluded.model <> '' AND excluded.ended_at >= agent_log_sessions.ended_at
 		               THEN excluded.model ELSE agent_log_sessions.model END,
-		  started_at = MIN(agent_log_sessions.started_at, excluded.started_at),
+		  started_at = CASE WHEN excluded.started_at = '' THEN agent_log_sessions.started_at
+		                    WHEN agent_log_sessions.started_at = '' THEN excluded.started_at
+		                    ELSE MIN(agent_log_sessions.started_at, excluded.started_at) END,
 		  ended_at = MAX(agent_log_sessions.ended_at, excluded.ended_at),
 		  git_branch = CASE WHEN agent_log_sessions.git_branch = '' THEN excluded.git_branch ELSE agent_log_sessions.git_branch END,
 		  project_id = COALESCE(agent_log_sessions.project_id, excluded.project_id),
@@ -369,18 +371,34 @@ func (db *DB) RepriceAgentLogEvents(version int, price func(model, speed string,
 	if err != nil {
 		return 0, err
 	}
-	err = db.WithTx(func(tx *sql.Tx) error {
-		for _, r := range todo {
-			usd, known := price(r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
-			if _, err := tx.Exec(`UPDATE agent_log_events SET cost_usd = ?, cost_estimated = ?, price_version = ? WHERE id = ?`,
-				usd, !known, version, r.id); err != nil {
-				return err
+	// One short transaction per slice, so a price bump never holds the write
+	// lock for every outdated row at once; a failed slice leaves its rows at
+	// the old version for the next scan.
+	done := 0
+	for len(todo) > 0 {
+		n := min(len(todo), agentLogRepriceSlice)
+		err = db.WithTx(func(tx *sql.Tx) error {
+			for _, r := range todo[:n] {
+				usd, known := price(r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
+				if _, err := tx.Exec(`UPDATE agent_log_events SET cost_usd = ?, cost_estimated = ?, price_version = ? WHERE id = ?`,
+					usd, !known, version, r.id); err != nil {
+					return err
+				}
 			}
+			return nil
+		})
+		if err != nil {
+			return done, err
 		}
-		return nil
-	})
-	return len(todo), err
+		done += n
+		todo = todo[n:]
+	}
+	return done, nil
 }
+
+// agentLogRepriceSlice is how many rows one reprice transaction updates
+// (a variable so tests can force several slices).
+var agentLogRepriceSlice = 1000
 
 // AgentLogStats aggregates the stored analytics of one workbench.
 func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {

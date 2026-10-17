@@ -24,7 +24,7 @@ Watchtower saves your answer first, then types one line into that session's term
 2. **Typed, press Return:** the agent's input already held text, or Watchtower could not tell whether the agent was free to take the line. Click the terminal and press Return.
 3. **Copied:** paste with ⌘V in the terminal and press Return.
 4. **Session not running:** press **Resume** or **Restart**. The agent reads the answer when it starts.
-5. **Green dot only, or an orange or blue install icon:** open the **…** menu in the page header and choose **Repair install**; it only adds what is missing. **Re-run Setup** brings an older folder fully up to date.
+5. **Green dot only, or an orange install icon:** open the **…** menu in the page header and choose **Repair install**; it only adds what is missing. **Re-run Setup** brings an older folder fully up to date.
 6. **Working that never changes:** you may have interrupted the agent with Esc or Ctrl+C. That reports nothing, so send a prompt.
 7. **"Claude Code was not found …" or "Codex was not found …":** see [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md).
 8. A Codex session with no state: **Repair install**, then start a new session.

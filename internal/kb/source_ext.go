@@ -74,7 +74,7 @@ func (s extSource) parseKey(key string) (sourceID, extID string, ok bool) {
 func (s extSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	sourceID, extID, ok := s.parseKey(key)
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	r := extRow{sourceID: sourceID, extID: extID}
 	err := q.QueryRowContext(ctx, `SELECT d.kind, d.parent_ext_id, d.title, d.url, d.status, d.author_id,

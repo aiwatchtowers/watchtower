@@ -97,3 +97,31 @@ func TestHistoryBackfill_SetLastErrorAfterAdvance(t *testing.T) {
 	rows, _ = d.ListHistoryBackfills()
 	assert.Empty(t, rows[0].LastError, "the next successful chunk clears the trace")
 }
+
+// #580: a hold records when it began and why; only a release clears it.
+func TestHistoryBackfill_HoldAndRelease(t *testing.T) {
+	d := OpenTestDB(t)
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	_, err := d.StartHistoryBackfill("imap", 3, 100, 400, now)
+	require.NoError(t, err)
+	rows, _ := d.ListHistoryBackfills()
+	id := rows[0].ID
+	assert.Nil(t, rows[0].HeldSince)
+
+	require.NoError(t, d.HoldHistoryBackfill(id, "held: offline", now))
+	rows, _ = d.ListHistoryBackfills()
+	require.NotNil(t, rows[0].HeldSince)
+	assert.True(t, rows[0].HeldSince.Equal(now))
+	assert.Equal(t, "held: offline", rows[0].LastError)
+
+	require.NoError(t, d.ReleaseHistoryBackfillHold(id, now))
+	rows, _ = d.ListHistoryBackfills()
+	assert.Nil(t, rows[0].HeldSince)
+	assert.Equal(t, "held: offline", rows[0].LastError, "release keeps last_error")
+
+	require.NoError(t, d.HoldHistoryBackfill(id, "held: again", now))
+	require.NoError(t, d.AdvanceHistoryBackfill(id, 300, now))
+	rows, _ = d.ListHistoryBackfills()
+	assert.NotNil(t, rows[0].HeldSince, "the hold belongs to the row: an advance (a skip too) keeps it")
+	assert.Empty(t, rows[0].LastError)
+}

@@ -70,8 +70,17 @@ struct SessionRowModel: Equatable, Identifiable {
 }
 
 /// One Waiting-for-you ask: its kind (word and the Mac's icon), the title and "Session · #target · age" (Now prefixes the workbench).
+/// A pending permission request (#517) is one too: "Needs approval", the
+/// tool, then the summary's first line and "Session · age" (Now prefixes
+/// the workbench there too); it opens its session.
 struct WaitingCardModel: Equatable, Identifiable {
-    let id: Int64
+    /// Where a tap goes: the ask's form, or the session with the prompt.
+    enum Destination: Hashable {
+        case ask(Int64)
+        case session(Int64)
+    }
+
+    let destination: Destination
     let kindLabel: String
     /// The Mac's kind icon (`OwnerAskPresentation.swift:136-142`).
     let kindIcon: String
@@ -80,8 +89,10 @@ struct WaitingCardModel: Equatable, Identifiable {
     /// Label, tint and border of the card.
     let tone = PhoneTone.waitingForYou
 
+    var id: Destination { destination }
+
     init(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot, now: Date, showWorkbench: Bool = false) {
-        id = ask.id
+        destination = .ask(ask.id)
         kindLabel = AskKindStyle.name(ask.kind)
         kindIcon = AskKindStyle.icon(ask.kind)
         title = ask.title
@@ -99,8 +110,30 @@ struct WaitingCardModel: Equatable, Identifiable {
         subline = parts.joined(separator: " · ")
     }
 
+    init(_ request: PermissionRequest, snapshot: WorkbenchReplicaSnapshot, now: Date, showWorkbench: Bool = false) {
+        destination = .session(request.sessionID)
+        kindLabel = "Needs approval"
+        kindIcon = "hand.raised.fill"
+        title = request.toolName
+        var parts: [String] = []
+        if let line = request.summary.split(separator: "\n", maxSplits: 1).first {
+            parts.append(String(line))
+        }
+        if showWorkbench, let workbench = snapshot.workbench(request.workbenchID) {
+            parts.append(workbench.name)
+        }
+        if let session = snapshot.session(request.sessionID) {
+            parts.append(session.title)
+        }
+        parts.append(CompactAge.string(from: request.createdAt, now: now))
+        subline = parts.joined(separator: " · ")
+    }
+
     var toneUse: ToneUse {
-        ToneUse(element: "ask \(id) card", tone: tone, role: .ask)
+        switch destination {
+        case let .ask(id): ToneUse(element: "ask \(id) card", tone: tone, role: .ask)
+        case let .session(id): ToneUse(element: "session \(id) permission request card", tone: tone, role: .waiting)
+        }
     }
 }
 
@@ -212,7 +245,9 @@ struct WorkbenchMenuModel {
         let branchName = workbench.detached ? "detached" : workbench.branch
         branch = branchName.isEmpty ? nil : branchName
         boardCounts = BoardCounts.items(workbench)
-        waiting = snapshot.openAsks(in: workbenchID).map { WaitingCardModel($0, snapshot: snapshot, now: now) }
+        waiting = snapshot.pendingPermissions.filter { $0.workbenchID == workbenchID }
+            .map { WaitingCardModel($0, snapshot: snapshot, now: now) }
+            + snapshot.openAsks(in: workbenchID).map { WaitingCardModel($0, snapshot: snapshot, now: now) }
         closedAsks = snapshot.asks
             .filter { $0.workbenchID == workbenchID && $0.status != .open }
             .sorted(by: WorkbenchReplicaSnapshot.newestFirst)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -317,19 +318,18 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 
 	output, err := cmd.Output()
 	if err != nil {
-		if execErr, ok := err.(*exec.Error); ok {
-			if execErr.Err == exec.ErrNotFound {
-				return "", nil, "", fmt.Errorf("claude CLI not found at %q (PATH=%s) — install Claude Code first", claudeBin, os.Getenv("PATH"))
-			}
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", nil, "", WithCause(fmt.Errorf("claude CLI not found at %q (PATH=%s) — install Claude Code first", claudeBin, os.Getenv("PATH")), err)
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			// The CLI reports an API or usage failure as an ordinary result
 			// envelope on stdout and exits 1, with the human-readable message
 			// behind kilobytes of usage telemetry. Parse it so the error
 			// carries that message instead of the whole blob.
 			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
-				return "", nil, "", fmt.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
-					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp))
+				return "", nil, "", WithCause(fmt.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
+					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp)), exitErr)
 			}
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
 			if stderrMsg == "" {
@@ -341,9 +341,9 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 				stderrMsg = "unparseable stdout: " + claude.DescribeOutput(output)
 			}
 			if stderrMsg != "" {
-				return "", nil, "", fmt.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg)
+				return "", nil, "", WithCause(fmt.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg), exitErr)
 			}
-			return "", nil, "", fmt.Errorf("claude CLI failed with exit code %d", exitErr.ExitCode())
+			return "", nil, "", WithCause(fmt.Errorf("claude CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 		}
 		return "", nil, "", fmt.Errorf("claude CLI error: %w", err)
 	}

@@ -10,13 +10,15 @@ package enum CatchUpQueries {
 
     // MARK: - Fetch
 
-    /// Newest recaps first (the Go `ListCatchupRecaps` order).
-    package static func fetchRecaps(_ db: Database, limit: Int = 50) throws -> [CatchUpRecap] {
-        try CatchUpRecap.fetchAll(
+    /// Newest recaps first (the Go `ListCatchupRecaps` order). `now` decides
+    /// which `building` rows read as stale (`CatchUpRecap.init(row:now:)`).
+    package static func fetchRecaps(_ db: Database, limit: Int = 50, now: Date = Date()) throws -> [CatchUpRecap] {
+        let rows = try Row.fetchAll(
             db,
             sql: "SELECT * FROM catchup_recaps ORDER BY id DESC LIMIT ?",
             arguments: [limit]
         )
+        return rows.map { CatchUpRecap(row: $0, now: now) }
     }
 
     package static func fetchRecap(_ db: Database, id: Int) throws -> CatchUpRecap? {
@@ -25,8 +27,10 @@ package enum CatchUpQueries {
 
     /// Reactive observation of the recap list — a CLI run inserting or finishing
     /// a row pushes straight into the Desktop list.
-    package static func observeRecaps(limit: Int = 50) -> ValueObservation<ValueReducers.Fetch<[CatchUpRecap]>> {
-        ValueObservation.tracking { db in try fetchRecaps(db, limit: limit) }
+    package static func observeRecaps(
+        limit: Int = 50, now: @escaping @Sendable () -> Date = { Date() }
+    ) -> ValueObservation<ValueReducers.Fetch<[CatchUpRecap]>> {
+        ValueObservation.tracking { db in try fetchRecaps(db, limit: limit, now: now()) }
     }
 
     /// Start of the next **auto** window: `period_to` of the most recently
@@ -94,7 +98,10 @@ package enum CatchUpQueries {
     /// the run's own coverage top-up stamps its `period_to` with its own
     /// `time.Now()`, landing a second or two past `to`, and a `period_to <= to`
     /// ack would leave such a cited digest unread forever. `tracks` and
-    /// `inbox_items` compare a single instant, so they keep `(from, to]`;
+    /// `inbox_items` compare a single instant, so they keep `(from, to]` — for
+    /// `inbox_items` that instant is `MAX(created_at, mentioned_at)`, so a
+    /// mention folded into an older channel item (#586) is acknowledged with the
+    /// window that gathered it, as Go `AcknowledgeCatchupWindow` does;
     /// `briefings` compares LOCAL calendar dates inclusively.
     ///
     /// Runs inside the caller's `write` block, which supplies the transaction the
@@ -138,7 +145,8 @@ package enum CatchUpQueries {
         try db.execute(
             sql: """
                 UPDATE inbox_items SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                WHERE read_at IS NULL AND created_at > ? AND created_at <= ?
+                WHERE read_at IS NULL
+                  AND MAX(created_at, mentioned_at) > ? AND MAX(created_at, mentioned_at) <= ?
                 """,
             arguments: [fromISO, toISO]
         )

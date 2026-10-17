@@ -48,7 +48,8 @@ func TestWorkbenchMethodology_ShowsDefaultsAndSources(t *testing.T) {
 	assert.Equal(t, methodologyValuesJSON{}, res.Personal)
 	assert.Equal(t, methodologyValuesJSON{Preset: "watchtower-flow", AskGuard: "strict", FinishCheck: "on"}, res.Effective)
 	assert.Equal(t, methodologyValuesJSON{Preset: "default", AskGuard: "default", FinishCheck: "default"}, res.Sources)
-	assert.Equal(t, methodologyFileJSON{Path: workbenchmethod.FileRel}, res.File)
+	assert.Equal(t, methodologyFileJSON{Path: workbenchmethod.FileRel, Ignored: []string{}}, res.File)
+	assert.Contains(t, out, `"ignored": []`, "an array, never null")
 	assert.JSONEq(t, `{"preset":"","ask_guard":"","finish_check":""}`, string(mustJSON(t, res.Personal)))
 }
 
@@ -68,15 +69,110 @@ func TestWorkbenchMethodology_SetsDropsAndClears(t *testing.T) {
 	require.NoError(t, err)
 	res := decodeMethodology(t, out)
 	assert.Equal(t, "soft", res.Personal.AskGuard, "the other setting stays")
-	assert.Equal(t, "off", res.Effective.FinishCheck)
-	assert.Equal(t, "file", res.Sources.FinishCheck)
-	assert.Equal(t, methodologyFileJSON{Path: workbenchmethod.FileRel, Present: true, BodyChars: 6}, res.File)
+	assert.Equal(t, "on", res.Effective.FinishCheck, "the file never turns a check down (board #558)")
+	assert.Equal(t, "default", res.Sources.FinishCheck)
+	assert.Equal(t, methodologyFileJSON{Path: workbenchmethod.FileRel, Present: true, BodyChars: 6,
+		Ignored: []string{"finish_check: off"}}, res.File)
+
+	text, _, err := runMethodology(t, id)
+	require.NoError(t, err)
+	assert.Contains(t, text, "ignored       finish_check: off in the folder file")
 
 	_, _, err = runMethodology(t, id, "--clear")
 	require.NoError(t, err)
 	m, err = database.GetWorkbenchMethodology(pid)
 	require.NoError(t, err)
 	assert.Equal(t, db.WorkbenchMethodology{}, m)
+}
+
+// Board #558's one-time carry-over through the owner's CLI: a workbench
+// made on this install (a fresh install, or after the upgrade) is never
+// carried; one marked carry-pending (it existed at migration 00133) gets its
+// file's off as the owner's setting, shown with its carry date, once — a
+// later edit of the file is never copied.
+func TestWorkbenchMethodology_CarriesFileChecksOverOnce(t *testing.T) {
+	database, pid, folder := methodologyWorkbench(t)
+	id := strconv.FormatInt(pid, 10)
+	writeFolderWorkflow(t, folder, "---\nask_guard: off\n---\n")
+
+	out, _, err := runMethodology(t, id, "--json")
+	require.NoError(t, err)
+	res := decodeMethodology(t, out)
+	assert.Equal(t, methodologyValuesJSON{}, res.Personal, "not pending: a fresh install never carries")
+	assert.Equal(t, "strict", res.Effective.AskGuard)
+	assert.Equal(t, []string{"ask_guard: off"}, res.File.Ignored)
+
+	_, err = database.Exec(`UPDATE projects SET methodology_carry_pending = 1 WHERE id = ?`, pid)
+	require.NoError(t, err)
+	out, _, err = runMethodology(t, id, "--json")
+	require.NoError(t, err)
+	res = decodeMethodology(t, out)
+	assert.Equal(t, "off", res.Personal.AskGuard, "carried over")
+	assert.NotEmpty(t, res.CarriedAt.AskGuard)
+	assert.Empty(t, res.CarriedAt.FinishCheck)
+	assert.Empty(t, res.File.Ignored, "the owner's value now stands; nothing to note")
+
+	writeFolderWorkflow(t, folder, "---\nask_guard: off\nfinish_check: off\n---\n")
+	out, _, err = runMethodology(t, id, "--json")
+	require.NoError(t, err)
+	res = decodeMethodology(t, out)
+	assert.Equal(t, methodologyValuesJSON{AskGuard: "off"}, res.Personal, "a later edit is never copied")
+	assert.Equal(t, []string{"finish_check: off"}, res.File.Ignored)
+}
+
+// Board #558: the carry-over never runs under an agent — a brief hook in a
+// session or an agent running the CLI leaves a pending workbench pending,
+// nothing copied; the owner's next run (no marker) carries it.
+func TestCarryOverWorkflowChecks_SkippedUnderAnAgent(t *testing.T) {
+	database, pid, folder := methodologyWorkbench(t)
+	id := strconv.FormatInt(pid, 10)
+	writeFolderWorkflow(t, folder, "---\nask_guard: off\nfinish_check: off\n---\n")
+	_, err := database.Exec(`UPDATE projects SET methodology_carry_pending = 1 WHERE id = ?`, pid)
+	require.NoError(t, err)
+
+	t.Setenv(agentEnvMarkers[0], "1")
+	_, _, err = runMethodology(t, id, "--json")
+	require.NoError(t, err)
+	unsetTerminalEnv(t)
+	runBriefHook(t, pid, "")
+	m, err := database.GetWorkbenchMethodology(pid)
+	require.NoError(t, err)
+	assert.Equal(t, db.WorkbenchMethodology{}, m, "nothing carried under an agent")
+	var pending int
+	require.NoError(t, database.QueryRow(`SELECT methodology_carry_pending FROM projects WHERE id = ?`, pid).Scan(&pending))
+	assert.Equal(t, 1, pending, "still pending")
+
+	require.NoError(t, os.Unsetenv(agentEnvMarkers[0]))
+	_, _, err = runMethodology(t, id, "--json")
+	require.NoError(t, err)
+	m, err = database.GetWorkbenchMethodology(pid)
+	require.NoError(t, err)
+	assert.Equal(t, db.WorkbenchMethodology{AskGuard: "off", FinishCheck: "off"}, m, "the owner's run carries it")
+}
+
+// Board #558: the checks are the owner's alone — under an agent the CLI
+// refuses to change them (AGENT-07's refusal) and writes nothing; a read
+// and a preset change still work.
+func TestWorkbenchMethodology_RefusesCheckWritesUnderAnAgent(t *testing.T) {
+	database, pid, _ := methodologyWorkbench(t)
+	id := strconv.FormatInt(pid, 10)
+	t.Setenv(agentEnvMarkers[0], "1")
+	for _, args := range [][]string{{"--ask-guard", "off"}, {"--finish-check", "off"}, {"--ask-guard", "file"}, {"--clear"}} {
+		_, _, err := runMethodology(t, append([]string{id}, args...)...)
+		require.Error(t, err, "%v", args)
+		assert.Contains(t, err.Error(), "refusing to change the ask guard or the finish check under an AI agent")
+	}
+	m, err := database.GetWorkbenchMethodology(pid)
+	require.NoError(t, err)
+	assert.Equal(t, db.WorkbenchMethodology{}, m)
+	_, _, err = runMethodology(t, id, "--json")
+	require.NoError(t, err, "a read is fine")
+}
+
+func writeFolderWorkflow(t *testing.T, folder, content string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, ".watchtower"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, workbenchmethod.FileRel), []byte(content), 0o644))
 }
 
 func TestWorkbenchMethodology_RefusesBadValuesWithoutWriting(t *testing.T) {

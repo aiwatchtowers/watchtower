@@ -55,7 +55,7 @@ func TestInstallProjectInstallsTheStopHook(t *testing.T) {
 }
 
 // A project installed before the Stop hook existed gets it on the next
-// `integrate claude-code --project N`, and the SessionStart entry is untouched.
+// `integrate claude-code --workbench N`, and the SessionStart entry is untouched.
 func TestInstallProjectAddsTheStopHookToAnOldInstall(t *testing.T) {
 	folder := fakeRepo(t)
 	if _, err := InstallSessionStartHook(folder, WorkbenchHookCommand("/tmp/acme bin/watchtower", 7), 7); err != nil {

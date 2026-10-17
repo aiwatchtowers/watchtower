@@ -35,6 +35,39 @@ func TestSearchRangeReturnsOnlyMessagesInsideTheRange(t *testing.T) {
 	}
 }
 
+// East of UTC the first sync's SINCE comes from the local clock while the
+// history backfill's top chunk ends at the same instant in UTC. Both must
+// name the same IMAP date, so a message on the day between them is found by
+// exactly one of the two searches.
+func TestFirstSyncAndBackfillMeetOnTheSameDayEastOfUTC(t *testing.T) {
+	ts := startTestServer(t)
+	boundary := ts.seedMessageAt(t, rawMessageSubject("boundary day"), time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC))
+
+	host, port := ts.hostPort(t)
+	cl, _, err := Dial(AccountConfig{Host: host, Port: port, Security: SecurityNone, Folder: "INBOX"},
+		PasswordAuth{Username: testUsername, Password: testPassword})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = cl.Close() }()
+
+	// 01:30 on Sep 21 at UTC+3 is 22:30 on Sep 20 in UTC.
+	since := time.Date(2026, 9, 21, 1, 30, 0, 0, time.FixedZone("UTC+3", 3*3600))
+	forward, err := cl.SearchSince(since)
+	if err != nil {
+		t.Fatalf("SearchSince: %v", err)
+	}
+	// Non-UTC bounds on purpose: SearchRange must send their UTC dates too.
+	chunk, err := cl.SearchRange(since.AddDate(0, 0, -2), since)
+	if err != nil {
+		t.Fatalf("SearchRange: %v", err)
+	}
+	inForward, inChunk := containsUID(forward, boundary), containsUID(chunk, boundary)
+	if inForward == inChunk {
+		t.Fatalf("boundary-day message: in first sync = %v, in backfill chunk = %v; want exactly one", inForward, inChunk)
+	}
+}
+
 func containsUID(uids []uint32, want uint32) bool {
 	for _, u := range uids {
 		if u == want {

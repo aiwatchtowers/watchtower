@@ -124,7 +124,7 @@ func TestBriefColumns_MaximalRulesStayWithinTheBrief(t *testing.T) {
 		board = append(board, briefNode(i, "todo", strings.Repeat("Implement the next part of the plan ", 8)))
 	}
 	method := joinBriefLines(briefMethodSection(e, ""), columns)
-	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary, briefRules,
+	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), briefRules,
 		method, "Cleanup: /usr/local/bin/watchtower workbench cleanup --session 3")
 
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)

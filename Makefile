@@ -35,7 +35,7 @@ LINEAR_ID   ?= $(WATCHTOWER_LINEAR_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID)"
 
-.PHONY: build test test-verbose test-cover test-race test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight testflight cloudkit-check
+.PHONY: golangci-version-check build test test-verbose test-cover test-race test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -275,12 +275,20 @@ hooks:
 leak-check:
 	bash scripts/leak-check.sh origin/main..HEAD
 
-lint:
+# CI pins golangci-lint (.github/workflows/ci.yml); keep this in step with it.
+# Another local version can disagree with CI both ways — gosec rules and
+# nolintlint's unused-directive check differ between releases — so lint warns.
+GOLANGCI_VERSION := 2.11.4
+golangci-version-check:
+	@golangci-lint version 2>/dev/null | grep -q 'version $(GOLANGCI_VERSION) ' || \
+		echo "warning: golangci-lint is not v$(GOLANGCI_VERSION) (the CI version); results may differ from CI" >&2
+
+lint: golangci-version-check
 	golangci-lint run ./...
 
 # Inner-loop lint: only issues introduced relative to origin/main.
 # The full `lint` target remains the pre-PR gate.
-lint-diff:
+lint-diff: golangci-version-check
 	golangci-lint run --new-from-rev origin/main ./...
 
 lint-swift:
@@ -342,8 +350,8 @@ periphery-baseline:
 	echo "Periphery baseline saved: $$count warnings"
 
 # Manual check of the Files pane's editor page (CodeEditorWeb/index.html
-# protocol + languages.js grammars) in a headless WKWebView. Not in any gate;
-# needs scripts/fetch-monaco.sh first.
+# protocol + languages.js grammars + textmate.js highlighting) in a headless
+# WKWebView. Not in any gate; needs scripts/fetch-monaco.sh first.
 editor-bridge-check:
 	bash scripts/editor-bridge-check.sh
 

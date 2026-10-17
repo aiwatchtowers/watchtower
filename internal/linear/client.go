@@ -130,7 +130,7 @@ func (c *Client) send(ctx context.Context, body []byte, access string, out any) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+access)
-	resp, err := c.http.Do(req) //nolint:gosec // endpoint is a package var, overridden only by tests
+	resp, err := c.http.Do(req) // endpoint is a package var, overridden only by tests
 	if err != nil {
 		return false, fmt.Errorf("linear request: %w", err)
 	}

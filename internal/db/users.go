@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -154,7 +155,7 @@ func (db *DB) ResolveSlackUserID(input string) (string, error) {
 	if err == nil {
 		return exact, nil
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("looking up slack user %s: %w", id, err)
 	}
 

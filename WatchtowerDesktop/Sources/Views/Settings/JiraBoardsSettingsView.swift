@@ -270,7 +270,7 @@ struct JiraBoardsSettingsView: View {
                 "jira", "--account", String(board.accountID),
                 "boards", action, String(board.id)
             ]
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = await Constants.resolvedEnvironmentAsync()
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
@@ -415,7 +415,7 @@ enum JiraBoardsCLI {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
 
         let output = await ProcessPipes.run(process).trimmed

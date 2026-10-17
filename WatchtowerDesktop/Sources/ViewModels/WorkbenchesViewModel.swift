@@ -332,14 +332,16 @@ final class WorkbenchesViewModel {
     /// Every deferred DELETE write in flight (the timer's and the quit's):
     /// the quit waits on it, bounded by `quitDeleteWait`.
     @ObservationIgnored let deleteWrites = DispatchGroup()
-    /// How long the quit commit of the Undo batch may hold the quit. A seam
-    /// for tests.
-    @ObservationIgnored var quitDeleteWait: TimeInterval = 2
+    /// How long the quit commit of the Undo batch may hold the quit: the
+    /// write's busy budget plus 3 s, so a write that waited the whole budget
+    /// still lands (board #588).
+    nonisolated static let defaultQuitDeleteWait = TimeInterval(DBLockInstrumentation.busyTimeoutMS) / 1000 + 3
+    /// `defaultQuitDeleteWait`; a seam for tests.
+    @ObservationIgnored var quitDeleteWait: TimeInterval = WorkbenchesViewModel.defaultQuitDeleteWait
     /// The Undo window's wait. A seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Runs deferred DELETEs in one write — the only DELETE path of the
-    /// deferred delete, the timer's and the quit's. Off the main actor, so
-    /// the quit can wait for it while it holds the main thread. A seam for
+    /// deferred delete, the timer's and the quit's. Off the main actor. A seam for
     /// tests (a failing or a slow write).
     @ObservationIgnored lazy var commitSessionDeletes: @Sendable ([Int64]) async throws -> Void = { [dbPool] ids in
         try await dbPool.write { db in
@@ -916,7 +918,7 @@ final class WorkbenchesViewModel {
         // and MCP server it relies on, so no first-run session.
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
-                                  prompt: TerminalLaunch.firstRunPrompt(vocabulary(projectID: project.id)),
+                                  prompt: TerminalLaunch.firstRunPrompt,
                                   agent: setupAgent(projectID: project.id))
         }
     }
@@ -952,13 +954,6 @@ final class WorkbenchesViewModel {
         defer { repairing.remove(projectID) }
         await installCodexPart(projectID: projectID, failure: "Setting up Codex failed:")
         await refreshInstallStatus(projectID: projectID)
-    }
-
-    /// The skill and server names the workbench's folder answers to
-    /// (`WorkbenchInstallStatus.vocabulary`); the current ones while its status
-    /// is unknown — not read yet, or the read failed (spec 2026-10-02 §5.3).
-    func vocabulary(projectID: Int64) -> WorkbenchVocabulary {
-        installStatus[projectID]?.vocabulary ?? .current
     }
 
     /// Reads `integrate status` for one project. The page runs this in

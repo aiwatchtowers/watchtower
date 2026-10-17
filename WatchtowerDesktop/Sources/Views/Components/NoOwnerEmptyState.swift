@@ -13,7 +13,7 @@ struct NoOwnerEmptyState: View {
             Image(systemName: "person.crop.circle.badge.questionmark")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            Text("Connect Slack, Google, Jira or Linear so Watchtower knows who you are")
+            Text("Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are")
                 .font(.headline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

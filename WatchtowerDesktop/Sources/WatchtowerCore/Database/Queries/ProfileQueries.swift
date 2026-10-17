@@ -53,6 +53,7 @@ package enum ProfileQueries {
     package static func upsertOwnerProfile(_ db: Database, owner: Owner, profile: UserProfile) throws {
         guard owner.isKnown else { throw OwnerError.noOwner }
         try rekeyOwnerProfile(db, ownerID: owner.id)
+        try rekeyOwnerDailyRows(db, ownerID: owner.id)
         let keyed = UserProfile(
             id: profile.id, slackUserID: owner.id, role: profile.role, team: profile.team,
             responsibilities: profile.responsibilities, reports: profile.reports, peers: profile.peers,
@@ -103,6 +104,19 @@ package enum ProfileQueries {
             sql: "UPDATE user_profile SET slack_user_id = ? WHERE slack_user_id = ?",
             arguments: [ownerID, key]
         )
+    }
+
+    /// Swift mirror of Go's `rekeyOwnerDailyRows` (internal/db/profile.go):
+    /// every briefing and day plan keyed under an earlier owner id moves onto
+    /// ownerID, skipping a date ownerID already has. One owner per install,
+    /// so another user_id there is the same person before a rung switch.
+    private static func rekeyOwnerDailyRows(_ db: Database, ownerID: String) throws {
+        for table in ["briefings", "day_plans"] where try db.tableExists(table) {
+            try db.execute(
+                sql: "UPDATE OR IGNORE \(table) SET user_id = ?1 WHERE user_id != ?1",
+                arguments: [ownerID]
+            )
+        }
     }
 
     package static func upsertProfile(_ db: Database, profile: UserProfile) throws {

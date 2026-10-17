@@ -434,7 +434,7 @@ extension WorkbenchesViewModel {
         // A blank brief is no brief: the work-on prompt goes instead.
         let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
         let brief = given.flatMap { $0.isEmpty ? nil : $0 } ?? TerminalLaunch.workOnPrompt(
-            targetID: targetID, isGroup: found.isGroup, vocabulary: vocabulary(projectID: found.project.id)
+            targetID: targetID, isGroup: found.isGroup
         )
         return try await createAndActivate(
             .init(projectID: found.project.id, kind: TerminalSession.Kind(agent),
@@ -665,13 +665,15 @@ extension WorkbenchesViewModel {
     /// database path, `SessionHostPaths.scope`), then reattaches once the
     /// session host connection (`TerminalCenter.startSessionHost`) is done;
     /// with none begun it ends at once. `activate` waits for it
-    /// (`hostReattach`), not for the stops of stray runs.
+    /// (`hostReattach`), not for the stops of stray runs. Its end, whatever
+    /// the reattach did, marks the center's liveness settled.
     func startHostReattach() {
         terminalCenter?.sessionHostScope = SessionHostPaths.scope(databasePath: dbPool.path)
         let connection = terminalCenter?.sessionHostConnection
-        hostReattach = Task { [weak self] in
+        hostReattach = Task { [weak self, weak center = terminalCenter] in
             await connection?.value
             await self?.reattachHostedSessions()
+            center?.markHostRunsSettled()
         }
     }
 

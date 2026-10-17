@@ -73,7 +73,7 @@
 - `internal/agentlog/scan_test.go::TestScan_SessionlessRecordDoesNotStopOtherFiles`
 - `internal/agentlog/scan_test.go::TestScan_FailedBatchSkipsFileAndContinues`
 
-**Robustness note:** one bad record or one file whose batch fails to store never stops the scan: the file is counted in `failed_files`, keeps its old offset and is retried next scan, and every other file is still read.
+**Robustness note:** one bad record or one file whose batch fails to store never stops the scan: the file is counted in `failed_files`, keeps the offset of its last committed slice and is retried from there next scan, and every other file is still read. Since #571 a read is stored in short slices (each with its own offset compare-and-set), so a budget stop or a failure keeps the earlier slices' rows and progress; nothing is removed or counted twice.
 
 **Locked since:** 2026-10-15
 
@@ -137,3 +137,4 @@
 - 2026-10-15 (board #297): file created, AGENTLOG-01..05.
 - 2026-10-15 (board #297, final review): guards added — `TestParseClaude_UUIDLessRecordsKeepDistinctKeys` (02), `TestScan_SessionlessRecordDoesNotStopOtherFiles` and `TestScan_FailedBatchSkipsFileAndContinues` (03), `TestListTranscripts_SymlinkedSubagentsDirSkipped` (04); robustness notes on 02/03. Nothing relaxed.
 - 2026-10-16 (board #298): AGENTLOG-06 (time adds up) and AGENTLOG-07 (hints cite evidence) added; AGENTLOG-01 gains the parser v2 shapes (`#<id>` board targets, `bash <script>`, first-real-command shell verb) and the guards `TestShellTarget_FirstRealCommand`, `TestToolUses_AgentCallTargetAndBackground`, `TestToolResults_AgentIDAndAsync`, `TestToolTarget_WorkbenchTargetID`; AGENTLOG-06 also guarded by `TestTimeModel_WaitClosedByTrigger` (a notification closes background work, a hook record is model). Nothing relaxed.
+- 2026-10-17 (board #571): AGENTLOG-03 robustness note — a read is stored in slices; a stop or failure keeps the earlier slices' progress. New tests `TestScan_LongTranscriptCommittedInSlicesAndResumes`, `TestScan_SlashSkillInLaterSliceOfIncrementalRead`, `TestRepriceAgentLogEvents_SlicesAndPartialFailure`. Nothing relaxed.

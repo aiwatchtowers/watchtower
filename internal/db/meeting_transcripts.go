@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -78,7 +79,7 @@ func (db *DB) GetMeetingTranscript(id int64) (*MeetingTranscript, error) {
 		SELECT `+meetingTranscriptColumns+`
 		FROM meeting_transcripts WHERE id = ?
 	`, id))
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

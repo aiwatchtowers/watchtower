@@ -41,6 +41,8 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(SliceKind.ownerAsk.rawValue, "owner_ask")
         XCTAssertEqual(SliceKind.sessionReport.rawValue, "session_report")
         XCTAssertEqual(SliceKind.sessionTimeline.rawValue, "session_timeline")
+        XCTAssertEqual(SliceKind.permissionRequest.rawValue, "permission_request")
+        XCTAssertEqual(PermissionRequest.sliceKind, .permissionRequest)
 
         XCTAssertEqual(Workbench.sliceKind, .workbench)
         XCTAssertEqual(WorkbenchTarget.sliceKind, .workbenchTarget)
@@ -53,11 +55,12 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
     func testWorkbenchActionKindsAreFrozen() {
         XCTAssertEqual(
-            ActionKind.allCases.suffix(12).map(\.rawValue),
+            ActionKind.allCases.suffix(14).map(\.rawValue),
             [
                 "ask_answer", "board_target_status", "board_target_priority", "board_comment_add",
                 "board_comment_reply", "board_target_create", "session_start", "session_input",
-                "session_input_cancel", "session_finish_request", "session_stop", "session_report_request"
+                "session_input_cancel", "session_finish_request", "session_stop", "session_report_request",
+                "permission_answer", "session_interrupt"
             ]
         )
     }
@@ -234,6 +237,39 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             XCTAssertEqual(session.agent.isKnown, known, raw)
         }
         XCTAssertEqual(TerminalSessionState.Agent(rawValue: "codex_cli"), .codexCLI)
+    }
+
+    func testPermissionRequestFixture() throws {
+        let request = try PermissionRequest.decode(payload: try fixture("permission_request"))
+        XCTAssertEqual(request.id, 9)
+        XCTAssertEqual(request.sessionID, 31)
+        XCTAssertEqual(request.workbenchID, 7)
+        XCTAssertEqual(request.toolName, "Bash")
+        XCTAssertEqual(request.summary, "git push origin main\n# Push the branch")
+        XCTAssertNil(request.summaryClipped)
+        XCTAssertEqual(request.createdAt, t0)
+        XCTAssertEqual(
+            ActionReason.allCases.suffix(3).map(\.rawValue),
+            ["not_pending", "not_working", "answer_on_mac"]
+        )
+    }
+
+    func testPermissionParams() throws {
+        try assertParams(
+            PermissionAnswerParams(requestID: 9, behavior: .allow),
+            entityID: "31",
+            wire("permission_answer", entity: "31", params: #"{"behavior":"allow","request_id":9}"#)
+        )
+        try assertParams(
+            PermissionAnswerParams(requestID: 9, behavior: .deny),
+            entityID: "31",
+            wire("permission_answer", entity: "31", params: #"{"behavior":"deny","request_id":9}"#)
+        )
+        try assertParams(
+            SessionInterruptParams(),
+            entityID: "31",
+            wire("session_interrupt", entity: "31", params: "{}")
+        )
     }
 
     func testOpenQuestionAskFixture() throws {

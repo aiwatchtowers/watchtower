@@ -67,10 +67,6 @@ var workbenchSessionStateCmd = &cobra.Command{
 			runCodexSessionStateHook(cmd.InOrStdin(), cmd.ErrOrStderr())
 			return nil
 		}
-		if err := checkWorkbenchIDFlags(cmd); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: session state not recorded: %v\n", err)
-			return nil
-		}
 		runSessionStateHook(cmd.InOrStdin(), cmd.ErrOrStderr(), workbenchSessionStateFlagWorkbench)
 		return nil
 	},
@@ -79,7 +75,7 @@ var workbenchSessionStateCmd = &cobra.Command{
 var workbenchSessionStateFlagWorkbench, workbenchSessionStateFlagAgent string
 
 func init() {
-	addWorkbenchIDFlag(workbenchSessionStateCmd, &workbenchSessionStateFlagWorkbench, "workbench id")
+	workbenchSessionStateCmd.Flags().StringVar(&workbenchSessionStateFlagWorkbench, workbenchFlag, "", "workbench id")
 	addHookAgentFlag(workbenchSessionStateCmd, &workbenchSessionStateFlagAgent)
 	workbenchCmd.AddCommand(workbenchSessionStateCmd)
 }

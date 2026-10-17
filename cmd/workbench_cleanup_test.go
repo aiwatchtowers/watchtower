@@ -69,8 +69,6 @@ func newCleanupFixture(t *testing.T) *cleanupFixture {
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.com",
 		"GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com",
-		"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "maintenance.auto", "GIT_CONFIG_VALUE_0": "false",
-		"GIT_CONFIG_KEY_1": "gc.auto", "GIT_CONFIG_VALUE_1": "0",
 	} {
 		t.Setenv(k, v)
 	}
@@ -156,7 +154,7 @@ func (f *cleanupFixture) sessionArg() string { return strconv.FormatInt(f.sessio
 
 func runCleanupCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	out, errOut, err := runWorkbenchAs(t, "workbench", append([]string{"cleanup"}, args...)...)
+	out, errOut, err := runWorkbench(t, append([]string{"cleanup"}, args...)...)
 	return out + errOut, err
 }
 

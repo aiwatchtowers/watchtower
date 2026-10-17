@@ -78,7 +78,7 @@ Watchtower notifies you when an agent asks something in a target comment, finish
 
 - **A closed target is missing.** It was archived. Turn on **Archive (K)**, or reopen it.
 - **The drift line says Drift check incomplete, Drift check skipped or Drift check failed.** The check could not cover the board: the folder is not a git repository, it ran out of time, or git failed. Hover the line for the reason.
-- **No drift line on an old workbench.** A workbench set up before the check existed shows an orange install icon (or a blue up-arrow one, for a pre-rename setup) once. **Repair install** in the **…** menu adds it.
+- **No drift line on an old workbench.** A workbench set up before the check existed shows an orange install icon once. **Repair install** in the **…** menu adds it.
 - **The description edit did not save.** The message names the target and keeps your text. If the agent changed the description while you typed, nothing is overwritten.
 
 ## Related

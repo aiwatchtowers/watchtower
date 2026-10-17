@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -18,9 +19,11 @@ var workbenchMethodologyCmd = &cobra.Command{
 	Short: "Show or set a workbench's methodology preset, ask guard and finish check (your personal settings)",
 	Long: "Without a setting flag it prints the workbench's effective methodology and where each value\n" +
 		"comes from: your personal setting, the folder's .watchtower/workflow.md, or the built-in default\n" +
-		"(watchtower-flow, strict, on). --preset watchtower-flow|none, --ask-guard strict|soft|off and\n" +
-		"--finish-check on|off set your personal value; the value file drops it, so the folder file (else\n" +
-		"the default) applies; --clear drops all three. A preset change updates the folder's skills.\n" +
+		"(watchtower-flow, strict, on). The folder file sets only the preset: its ask_guard and\n" +
+		"finish_check are ignored, so only your personal setting turns a check down.\n" +
+		"--preset watchtower-flow|none, --ask-guard strict|soft|off and --finish-check on|off set\n" +
+		"your personal value; the value file drops it, so the folder file (the preset only) or the\n" +
+		"default applies; --clear drops all three. A preset change updates the folder's skills.\n" +
 		"--create-file writes a commented .watchtower/workflow.md template when the folder has none (it\n" +
 		"never overwrites). --json prints the effective values, their sources and the file's state and\n" +
 		"exits 0 once the workbench is found; ok/error and the *_ok/*_error fields say what failed.",
@@ -39,6 +42,24 @@ var (
 // methodologyFileValue is the flag value that drops one personal setting.
 const methodologyFileValue = "file"
 
+// carryOverWorkflowChecks runs board #558's one-time carry-over
+// (workbenchmethod.CarryOverFileChecks) for the workbenches still marked
+// carry-pending by migration 00133, only in an owner process: the daemon at
+// start, and `workbench methodology` or the brief when no agent marker is set
+// (the Desktop's Agent Settings, a plain Terminal). Under an agent — a
+// session's brief hook, an agent running the CLI — it does nothing
+// (refuseUnderAgent), so an agent never decides when a file is read for it.
+// A workbench is processed once, whichever runner comes first. A failure is
+// one line on w; the rest is picked up by the next run.
+func carryOverWorkflowChecks(database *db.DB, w io.Writer) {
+	if refuseUnderAgent("carry workflow.md checks over") != nil {
+		return
+	}
+	if _, err := workbenchmethod.CarryOverFileChecks(database, time.Now()); err != nil {
+		fmt.Fprintf(w, "watchtower: carrying workflow.md checks over to your settings: %v\n", err)
+	}
+}
+
 // methodologyFlags maps each setting flag to its frontmatter key and value.
 var methodologyFlags = []struct {
 	flag, key string
@@ -52,8 +73,8 @@ var methodologyFlags = []struct {
 func init() {
 	c := workbenchMethodologyCmd
 	c.Flags().StringVar(&workbenchMethodologyFlagPreset, "preset", "", "watchtower-flow, none, or file (use the folder file)")
-	c.Flags().StringVar(&workbenchMethodologyFlagAskGuard, "ask-guard", "", "strict, soft, off, or file (use the folder file)")
-	c.Flags().StringVar(&workbenchMethodologyFlagFinishCheck, "finish-check", "", "on, off, or file (use the folder file)")
+	c.Flags().StringVar(&workbenchMethodologyFlagAskGuard, "ask-guard", "", "strict, soft, off, or file (drop your setting: the default, strict)")
+	c.Flags().StringVar(&workbenchMethodologyFlagFinishCheck, "finish-check", "", "on, off, or file (drop your setting: the default, on)")
 	c.Flags().BoolVar(&workbenchMethodologyFlagClear, "clear", false, "drop every personal setting")
 	c.Flags().BoolVar(&workbenchMethodologyFlagCreateFile, "create-file", false,
 		"write a commented "+workbenchmethod.FileRel+" template when the folder has none")
@@ -70,25 +91,31 @@ type methodologyValuesJSON struct {
 }
 
 // methodologyFileJSON is the folder file's state: present (a refused file
-// too), the reason it was ignored, the body's length in runes, and whether
-// it was cut at 64 KiB.
+// too), the reason it was ignored, the body's length in runes, whether it
+// was cut at 64 KiB, and the check settings it asks for that were ignored
+// ("ask_guard: off"; only a personal setting weakens a check, board #558).
 type methodologyFileJSON struct {
-	Path      string `json:"path"`
-	Present   bool   `json:"present"`
-	Error     string `json:"error"`
-	BodyChars int    `json:"body_chars"`
-	Truncated bool   `json:"truncated"`
+	Path      string   `json:"path"`
+	Present   bool     `json:"present"`
+	Error     string   `json:"error"`
+	BodyChars int      `json:"body_chars"`
+	Truncated bool     `json:"truncated"`
+	Ignored   []string `json:"ignored"`
 }
 
 // workbenchMethodologyJSON is `workbench methodology --json`, read by the
 // Desktop's Agent settings (WorkbenchMethodologyState). Keys are only added.
 type workbenchMethodologyJSON struct {
-	ID              int64                 `json:"id"`
-	OK              bool                  `json:"ok"`
-	Error           string                `json:"error"`
-	Personal        methodologyValuesJSON `json:"personal"`
-	Effective       methodologyValuesJSON `json:"effective"`
-	Sources         methodologyValuesJSON `json:"sources"`
+	ID        int64                 `json:"id"`
+	OK        bool                  `json:"ok"`
+	Error     string                `json:"error"`
+	Personal  methodologyValuesJSON `json:"personal"`
+	Effective methodologyValuesJSON `json:"effective"`
+	Sources   methodologyValuesJSON `json:"sources"`
+	// CarriedAt is when each check was carried over from the folder file by
+	// the board #558 upgrade (RFC 3339 UTC; "" = the owner's pick, or never
+	// carried; preset is always "").
+	CarriedAt       methodologyValuesJSON `json:"carried_at"`
 	File            methodologyFileJSON   `json:"file"`
 	FileCreated     bool                  `json:"file_created"`
 	FileCreateError string                `json:"file_create_error"`
@@ -112,11 +139,18 @@ func runWorkbenchMethodology(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if hasKey(changes, "ask_guard") || hasKey(changes, "finish_check") {
+		// The checks are the owner's alone (board #558, AGENT-07's refusal).
+		if err := refuseUnderAgent("change the ask guard or the finish check"); err != nil {
+			return err
+		}
+	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	carryOverWorkflowChecks(database, cmd.ErrOrStderr())
 	p, err := database.GetWorkbench(id)
 	if err != nil {
 		return fmt.Errorf("workbench %d: %w", id, err)
@@ -127,6 +161,11 @@ func runWorkbenchMethodology(cmd *cobra.Command, args []string) error {
 	}
 	printMethodologyReport(cmd.OutOrStdout(), res)
 	return stepErr
+}
+
+func hasKey(m map[string]string, key string) bool {
+	_, ok := m[key]
+	return ok
 }
 
 // methodologyChanges is the settings the flags write, by frontmatter key ("" =
@@ -185,6 +224,12 @@ func applyWorkbenchMethodology(database *db.DB, p *db.Workbench, changes map[str
 		res.OK, res.Error = false, err.Error()
 		return res, errors.Join(append(errs, err)...)
 	}
+	carried, err := database.GetWorkbenchChecksCarried(p.ID)
+	if err != nil {
+		res.OK, res.Error = false, err.Error()
+		return res, errors.Join(append(errs, err)...)
+	}
+	res.CarriedAt = methodologyValuesJSON{AskGuard: carried.AskGuard, FinishCheck: carried.FinishCheck}
 	e := workbenchmethod.Combine(personal, workbenchmethod.ReadFile(p.FolderPath))
 	fillMethodology(&res, personal, e)
 	if e.Preset != before {
@@ -238,7 +283,7 @@ func fillMethodology(res *workbenchMethodologyJSON, personal db.WorkbenchMethodo
 	res.Sources = methodologyValuesJSON{Preset: string(e.Sources.Preset), AskGuard: string(e.Sources.AskGuard),
 		FinishCheck: string(e.Sources.FinishCheck)}
 	res.File = methodologyFileJSON{Path: workbenchmethod.FileRel, Present: e.File.Present, BodyChars: e.File.BodyChars,
-		Truncated: e.File.Truncated}
+		Truncated: e.File.Truncated, Ignored: e.FileIgnored()}
 	if e.File.Err != nil {
 		res.File.Error = e.File.Err.Error()
 	}
@@ -256,6 +301,10 @@ func printMethodologyReport(w io.Writer, res workbenchMethodologyJSON) {
 		fmt.Fprintf(w, "  folder file   %s, %d chars of rules\n", res.File.Path, res.File.BodyChars)
 	default:
 		fmt.Fprintf(w, "  folder file   none (%s)\n", res.File.Path)
+	}
+	if len(res.File.Ignored) > 0 {
+		fmt.Fprintf(w, "  ignored       %s in the folder file — only your personal setting turns a check down\n",
+			strings.Join(res.File.Ignored, ", "))
 	}
 	if res.FileCreated {
 		fmt.Fprintf(w, "Created %s.\n", res.File.Path)

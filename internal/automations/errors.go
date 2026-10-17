@@ -42,6 +42,9 @@ const (
 	// InterruptExpired: a wait outlasted the recipe's pause_timeout_hours
 	// (the executor's Waiter returns it; the run ends expired).
 	InterruptExpired InterruptReason = "expired"
+	// InterruptDraftStop: a draft's in-memory dry run reached a call it
+	// never makes (mcp(), ask #326); DryRunInMemory reports DryRunStopped.
+	InterruptDraftStop InterruptReason = "draft_stop"
 )
 
 // RunInterrupted is what Sandbox.Run returns when an interrupt stopped the

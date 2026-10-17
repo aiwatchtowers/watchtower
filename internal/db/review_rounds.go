@@ -125,7 +125,7 @@ func (db *DB) SendReviewRound(projectID, id int64) (sent int, ok bool, err error
 	if err != nil {
 		return 0, false, err
 	}
-	defer tx.Rollback() //nolint:errcheck // a committed tx makes this a no-op
+	defer tx.Rollback() // a committed tx makes this a no-op
 	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ? AND project_id = ? AND status = 'open'`, id, projectID)
 	if err != nil {
@@ -206,7 +206,7 @@ func (db *DB) ReplyReviewComment(projectID, commentID int64, reply string, resol
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback() //nolint:errcheck // a committed tx makes this a no-op
+	defer tx.Rollback() // a committed tx makes this a no-op
 	const now = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 	set := `agent_reply = ?, agent_reply_at = ` + now + `, updated_at = ` + now
 	if resolved {

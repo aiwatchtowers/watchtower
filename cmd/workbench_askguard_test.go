@@ -43,7 +43,7 @@ func runAskGuard(t *testing.T, raw string, stdin io.Reader) (stdout, stderr stri
 	t.Helper()
 	rootCmd.SetIn(stdin)
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	return runWorkbenchAs(t, "workbench", "ask-guard", "--workbench", raw, "--pre-tool-use")
+	return runWorkbench(t, "ask-guard", "--workbench", raw, "--pre-tool-use")
 }
 
 func compactDenial(t *testing.T) string {
@@ -493,7 +493,7 @@ func TestAskGuard_NeedsExactlyOneHookFlag(t *testing.T) {
 	writeActionsConfig(t)
 	for _, flags := range [][]string{nil, {"--pre-tool-use", "--stop"}} {
 		rootCmd.SetIn(strings.NewReader(askToolPayload("AskUserQuestion")))
-		out, _, err := runWorkbenchAs(t, "workbench", append([]string{"ask-guard", "--workbench", "1"}, flags...)...)
+		out, _, err := runWorkbench(t, append([]string{"ask-guard", "--workbench", "1"}, flags...)...)
 		rootCmd.SetIn(nil)
 		require.Error(t, err, "flags %v", flags)
 		assert.NotContains(t, out, "hookSpecificOutput")
@@ -624,7 +624,7 @@ func runAskGuardStopHook(t *testing.T, raw string, stdin io.Reader) (stdout, std
 	t.Helper()
 	rootCmd.SetIn(stdin)
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	return runWorkbenchAs(t, "workbench", "ask-guard", "--workbench", raw, "--stop")
+	return runWorkbench(t, "ask-guard", "--workbench", raw, "--stop")
 }
 
 // guardBlock is the hook's stdout for a block with reason.

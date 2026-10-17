@@ -452,7 +452,7 @@ func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, fresh
 	case res.succeeded == 0 && res.failed > 0:
 		return res.stored, res, fmt.Errorf("all %d track batch(es) failed, last error: %w", res.failed, res.lastErr)
 	}
-	return res.stored, res, nil //nolint:nilerr // partial success only: at least one batch stored tracks; the failed batches' digests go to the retry set
+	return res.stored, res, nil // partial success only: at least one batch stored tracks; the failed batches' digests go to the retry set
 }
 
 // relevantEntries groups digests per channel, drops the entries the relevance
@@ -1311,47 +1311,6 @@ func (p *Pipeline) FormatActiveTracksForPrompt() (string, error) {
 }
 
 // --- helpers: prompt sections ---
-
-// maxExistingTracksPerChannel is the maximum number of existing tracks shown per channel.
-const maxExistingTracksPerChannel = 15
-
-// formatExistingItems loads tracks for this channel and formats for AI dedup.
-func (p *Pipeline) formatExistingItems(channelID, userID string) string {
-	tracks, err := p.db.GetTracks(db.TrackFilter{ChannelID: channelID})
-	if err != nil {
-		p.logger.Printf("tracks: warning: failed to load existing tracks for %s: %v", channelID, err)
-		return ""
-	}
-	if len(tracks) == 0 {
-		return ""
-	}
-
-	// Sort by updated_at DESC, limit to top N.
-	sort.Slice(tracks, func(i, j int) bool {
-		return tracks[i].UpdatedAt > tracks[j].UpdatedAt
-	})
-	totalCount := len(tracks)
-	if len(tracks) > maxExistingTracksPerChannel {
-		tracks = tracks[:maxExistingTracksPerChannel]
-	}
-
-	var sb strings.Builder
-	sb.WriteString("=== EXISTING TRACKS FOR THIS CHANNEL ===\n")
-	if totalCount > maxExistingTracksPerChannel {
-		fmt.Fprintf(&sb, "Showing %d of %d total.\n", maxExistingTracksPerChannel, totalCount)
-	}
-	for _, track := range tracks {
-		tagsStr := ""
-		if track.Tags != "" && track.Tags != "[]" {
-			tagsStr = " tags:" + track.Tags
-		}
-		fmt.Fprintf(&sb, "#%d [%s] %q%s\n", track.ID, track.Ownership, sanitize(track.Text), tagsStr)
-		if track.Context != "" {
-			fmt.Fprintf(&sb, "    context: %s\n", sanitize(truncate(track.Context, 100)))
-		}
-	}
-	return sb.String()
-}
 
 // maxExistingTracks is the maximum number of existing tracks included in prompts.
 const maxExistingTracks = 30
