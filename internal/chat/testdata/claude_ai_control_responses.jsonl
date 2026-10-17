@@ -1,0 +1,12 @@
+{"response":{"request_id":"85001a00-de3f-4796-a5d4-5457beb05a18","response":{"behavior":"allow","updatedInput":{"file_path":"/tmp/probe/outside/outside.txt"}},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"d194c211-c2a9-46a2-895f-4a796adab558","response":{"behavior":"deny","message":"Denied by the probe gate: not allowed here."},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"fed80016-e4de-4ee3-ba94-0f9f44196e80","response":{"behavior":"allow","updatedInput":{"file_path":"/tmp/probe/cwd/inside.txt","new_string":"inside edited","old_string":"inside file","replace_all":false}},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"68410eca-e0e3-402c-aebb-55210d22a220","response":{"behavior":"allow","updatedInput":{"file_path":"/tmp/probe/outside/outside.txt","new_string":"outside edited","old_string":"outside file","replace_all":false}},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"156c0b0d-1907-45c4-babb-416cdac3c033","response":{"behavior":"allow","updatedInput":{"content":"edited by gate\n","file_path":"/tmp/probe/cwd/a.txt"}},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"3ba8cc9e-d3e4-4f3e-b964-2784c1dc042f","response":{"behavior":"allow"},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"8c72db94-ac30-41c1-8287-07582802358a","response":{"behavior":"deny","message":"Denied by the probe gate: not allowed here."},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"463e0154-9948-4726-9849-c7a0c705a9c5","response":{"behavior":"deny","message":"Denied by the probe gate: not allowed here."},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"f17a7405-100f-4e69-8a81-aefd0d281ee5","response":{"behavior":"deny","message":"Denied by the probe gate: not allowed here."},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"6932ee3d-f3be-4324-9329-076fffe4be83","response":{"behavior":"deny","message":"Denied by the probe gate: not allowed here."},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"fd6315f8-4734-45c2-8e8c-ecf53a4bd541","response":{"behavior":"allow","updatedInput":{"items":["topic.sharing"]}},"subtype":"success"},"type":"control_response"}
+{"response":{"request_id":"43a5f047-602e-47c3-be7d-a13391bc2399","response":{"behavior":"deny","message":"Denied by the probe gate: not allowed here."},"subtype":"success"},"type":"control_response"}
