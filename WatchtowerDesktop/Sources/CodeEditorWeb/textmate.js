@@ -77,8 +77,8 @@
     // Code inside a string (`${…}`, `#{…}`, `\(…)`, JSX `{…}`) is code, not
     // string, as VS Code's themes reset it; the braces around it are
     // delimiters (bracket pairs, like Monarch's). Rust's format `{}` is
-    // not code and stays string.
-    ["embedded", ["meta.embedded", "meta.template.expression"]],
+    // not code and stays string, so meta.interpolation is HCL's only.
+    ["embedded", ["meta.embedded", "meta.template.expression", "meta.interpolation.hcl"]],
     ["delimiter.embedded", ["punctuation.section.embedded", "punctuation.definition.template-expression"]],
     ["regexp", ["string.regexp"]],
     ["number", ["constant.numeric", "keyword.other.unit"]],
@@ -142,11 +142,12 @@
 
   // Standard token types (0 other, 1 comment, 2 string, 3 regex) that
   // vscode-textmate's scope-name rule gets wrong: code inside strings (as
-  // VS Code's TypeScript extension sets it; meta.embedded is code already)
-  // and Go's `string` type, a keyword whose scope name says "string".
+  // VS Code's TypeScript extension sets it; meta.embedded is code already,
+  // and HCL's `${…}`) and Go's `string` type, a keyword whose scope name
+  // says "string".
   var TOKEN_TYPES = {
     "meta.template.expression": 0, "meta.template.expression string": 2, "meta.template.expression comment": 1,
-    "storage.type.string.go": 0
+    "meta.interpolation.hcl": 0, "storage.type.string.go": 0
   };
 
   var GRAMMAR_FOR_SCOPE = {};
@@ -227,7 +228,9 @@
           var index = parseInt(String(colour).slice(1), 16) - 1;
           return index >= 0 && index < TOKEN_CLASSES.length ? TOKEN_CLASSES[index][0] : "";
         });
-        return { tm: tm, registry: registry, classOf: classOf };
+        // The engine is up only with Oniguruma: a wasm failure fails the
+        // engine once, not each grammar.
+        return onigLib.then(function () { return { tm: tm, registry: registry, classOf: classOf }; });
       });
     return engine;
   }
@@ -420,12 +423,24 @@
     };
   }
 
-  // Monaco's own Monarch grammar for `languageId`, or null: its
-  // basic-languages entry keeps the loader of the module.
-  function monarchFor(languageId) {
-    var entry = monaco.languages.getLanguages().filter(function (l) { return l.id === languageId; })[0];
+  // What colours a language TextMate failed for: Monaco's own Monarch
+  // grammar (its basic-languages entry keeps the module's loader; TSX takes
+  // TypeScript's), or for JSON the JSON mode's tokenizer, switched back on.
+  var MONARCH_OF = { typescriptreact: "typescript" };
+  function fallbackFor(languageId) {
+    if (languageId === "json") {
+      setJsonModeTokens(true);
+      return Promise.resolve(null);
+    }
+    var from = MONARCH_OF[languageId] || languageId;
+    var entry = monaco.languages.getLanguages().filter(function (l) { return l.id === from; })[0];
     if (!entry || typeof entry.loader !== "function") { return Promise.resolve(null); }
     return entry.loader().then(function (mod) { return (mod && mod.language) || null; }, function () { return null; });
+  }
+
+  function failed(languageId, why) {
+    reportOnce("language " + languageId, "the TextMate grammar for " + languageId + " failed (" + why +
+      "); it keeps Monaco's Monarch colours");
   }
 
   var ready = {};      // language id -> Promise of its tokenizer (TextMate, else Monarch, else null)
@@ -435,15 +450,18 @@
       var scope = GRAMMARS[LANGUAGES[languageId]];
       ready[languageId] = getEngine().then(function (e) {
         return e.registry.loadGrammarWithConfiguration(scope, 1, { tokenTypes: TOKEN_TYPES }).then(function (grammar) {
-          if (!grammar) { throw new Error("no grammar for " + scope); }
+          if (!grammar) {
+            // Its module failed to load, and loadGrammar posted that, naming it.
+            if (!reported["grammar " + LANGUAGES[languageId]]) { failed(languageId, "no grammar for " + scope); }
+            throw new Error("no grammar for " + scope);
+          }
           textMate[languageId] = true;
           return tokensProvider(e, grammar, languageId);
         }, function (err) {
-          reportOnce("language " + languageId, "the TextMate grammar for " + languageId + " failed (" + describe(err) +
-            "); it keeps Monaco's Monarch colours");
+          failed(languageId, describe(err));
           throw err;
         });
-      }).catch(function () { return monarchFor(languageId); });
+      }).catch(function () { return fallbackFor(languageId); });
     }
     return ready[languageId];
   }
@@ -466,14 +484,18 @@
     Object.keys(LANGUAGES).forEach(function (id) {
       monaco.languages.registerTokensProviderFactory(id, { create: function () { return providerFor(id); } });
     });
-    // The JSON mode sets its own tokens provider when a JSON model appears,
-    // over the factory; switched off, it keeps its other features.
+    setJsonModeTokens(false);
+  };
+
+  // The JSON mode sets its own tokens provider when a JSON model appears,
+  // over the factory; switched off, it keeps its other features.
+  function setJsonModeTokens(on) {
     var json = monaco.json || (monaco.languages && monaco.languages.json);
     var defaults = json && json.jsonDefaults;
     if (defaults && defaults.setModeConfiguration) {
-      defaults.setModeConfiguration(Object.assign({}, defaults.modeConfiguration, { tokens: false }));
+      defaults.setModeConfiguration(Object.assign({}, defaults.modeConfiguration, { tokens: on }));
     } else {
-      reportOnce("json mode", "could not switch off the JSON mode's own colours; JSON may not use TextMate");
+      reportOnce("json mode", "could not switch the JSON mode's own colours " + (on ? "on" : "off"));
     }
-  };
+  }
 })();

@@ -854,10 +854,21 @@ func textMateChecks(_ page: Page) async {
           return hit ? "pair" : "none";
         }
         return [match("const s = `a${f(x[0])}`;", "typescript", 16), match("{\\"k[]\\": 1}", "json", 4),
-          match("var s = \\"[]\\"", "go", 10), match("let s = format!(\\"{}\\", a);", "rust", 18)].join(",");
+          match("var s = \\"[]\\"", "go", 10), match("let s = format!(\\"{}\\", a);", "rust", 18),
+          match("const a = <div>{f(x)}</div>;", "typescriptreact", 18), match("s = \\"#{f(x[0])}\\"", "ruby", 9),
+          match("let s = \\"\\\\(f(x[0]))\\"", "swift", 13), match("x = \\"${var.l[0]}\\"", "hcl", 13)].join(",");
         """) as? String
-    check("textmate: a bracket in a template expression pairs; one in a JSON key or a string does not",
-          brackets == "pair,none,none,none", "\(brackets ?? "nil")")
+    check("textmate: brackets in template expressions and interpolations pair; in a JSON key or a string they do not",
+          brackets == "pair,none,none,none,pair,pair,pair,pair", "\(brackets ?? "nil")")
+    // .tsx takes TypeScript's language configuration (its word pattern keeps `$`).
+    let tsxWord = await page.evalAsync("""
+        var m = monaco.editor.createModel("const $a = 1;", "typescriptreact");
+        await new Promise(function (r) { setTimeout(r, 100); });
+        var w = m.getWordAtPosition({ lineNumber: 1, column: 8 });
+        m.dispose();
+        return w ? w.word : "";
+        """) as? String
+    check("textmate: .tsx borrows TypeScript's language configuration", tsxWord == "$a", "\(tsxWord ?? "nil")")
 
     // An edited import re-tokenizes the lines below it (the imported names
     // ride in the line state).
@@ -1383,6 +1394,16 @@ func fallbackChecks(root: URL) async {
         return textMate + " " + types;
         """) as? String ?? ""
     check("fallback: Go keeps Monaco's Monarch grammar", result.hasPrefix("false ") && result.contains("identifier.go"), result)
+    let json = await page.evalAsync("""
+        var m = monaco.editor.createModel("{\\"k\\": 1}", "json");
+        m.tokenization.forceTokenization(1);
+        await wtTextMate.whenReady("json");
+        await new Promise(function (r) { setTimeout(r, 300); });
+        var types = monaco.editor.tokenize("{\\"k\\": 1}", "json")[0].map(function (t) { return t.type; }).join(",");
+        m.dispose();
+        return types;
+        """) as? String ?? ""
+    check("fallback: JSON gets the JSON mode's own colours back", json.contains("string.key.json"), json)
     _ = await page.evalAsync("""
         var m = monaco.editor.createModel("x = 1\\n", "python");
         m.tokenization.forceTokenization(1);
