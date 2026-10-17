@@ -262,6 +262,8 @@ func interruptEnd(r InterruptReason) *runEnd {
 		return &runEnd{status: db.RunBudgetExceeded, kind: db.ErrKindBudget}
 	case InterruptExpired:
 		return &runEnd{status: db.RunExpired, kind: db.ErrKindExpired}
+	case InterruptMemory:
+		return &runEnd{status: db.RunFailed, kind: db.ErrKindScript}
 	default:
 		return &runEnd{status: db.RunCancelled, kind: db.ErrKindCancelled}
 	}

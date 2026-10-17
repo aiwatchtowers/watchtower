@@ -13,7 +13,7 @@ The top of the file holds the settings:
 - **Budget**: tokens (1,000 to 2,000,000) and minutes (1 to 60).
 - Optionally, how many runs may overlap (1 to 4) and what to do about a missed slot.
 
-Text outside the settings and the script is the description. The script is one block of plain, synchronous JavaScript. It can only use what Watchtower gives it: ask the assistant, read tools, a small saved state and the outputs.
+Text outside the settings and the script is the description. The script is one block of plain, synchronous JavaScript. It can only use what Watchtower gives it: ask the assistant, read tools, a small saved state and the outputs. BigInt numbers (`10n`) are not available; a recipe that uses one shows "BigInt is not available in automations" and does not run.
 
 ### Event triggers
 An event trigger runs the recipe after a sync brings something new. For example, `trigger: {event: {type: slack.new_messages, where: {channel: releases}}}` runs after new messages land in #releases. The script finds what happened in `trigger.events`: ids, names and counts, never the text.

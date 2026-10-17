@@ -77,6 +77,32 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(button: "Turn on"))
     }
 
+    /// Daemon down: a short line, no Start of its own (the app-wide banner
+    /// has it), and the tab's own action stays (#577).
+    func testDaemonStoppedShowsLineAndKeepsTheTabsAction() throws {
+        let view = makeView(readiness: .daemonStopped)
+        XCTAssertNoThrow(try view.inspect().find(text: "Watchtower isn't running"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Start"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Turn on"))
+
+        let catchUp = try XCTUnwrap(EmptyStateCopyTable.copy(for: "catchUp", briefingHour: 8, dayPlanHour: 8))
+        XCTAssertEqual(FeatureEmptyState<EmptyView>.visibleAction(copy: catchUp, readiness: .daemonStopped),
+                       .tabAction(label: "Build a recap"))
+        let briefings = try XCTUnwrap(EmptyStateCopyTable.copy(for: "briefings", briefingHour: 8, dayPlanHour: 8))
+        XCTAssertEqual(FeatureEmptyState<EmptyView>.visibleAction(copy: briefings, readiness: .daemonStopped),
+                       briefings.primaryAction)
+    }
+
+    /// A Turn on whose restart failed keeps its error and Try again while the
+    /// daemon is down.
+    func testDaemonStoppedKeepsAFailedTurnOnsRetry() throws {
+        var tapped: EmptyStateAction?
+        let view = makeView(readiness: .daemonStopped, turnOnError: "restart failed") { tapped = $0 }
+        XCTAssertNoThrow(try view.inspect().find(text: "restart failed"))
+        try view.inspect().find(button: "Try again").tap()
+        XCTAssertEqual(tapped, .turnOn(featureID: "memory"))
+    }
+
     func testTurnOnErrorShownWithTheButton() throws {
         let view = makeView(readiness: .off, turnOnError: AppState.featureChangesBusy)
         XCTAssertNoThrow(try view.inspect().find(text: AppState.featureChangesBusy))
