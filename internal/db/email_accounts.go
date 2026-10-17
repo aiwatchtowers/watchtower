@@ -214,6 +214,12 @@ func (db *DB) SetEmailAccountAuthState(accountID int64, status, errMsg string) e
 // internal/imap) to whole unix seconds — the gmailTSUnixExpr twin.
 const imapTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
 
+// imapCurrentEpoch keeps only rows stored under the mailbox's current
+// UIDVALIDITY (email_accounts.uidvalidity). A UIDVALIDITY reset re-downloads
+// the mailbox under new UIDs while the old rows stay stored, so without this
+// the ideas pass would mine the same mail twice under two refs.
+const imapCurrentEpoch = `uidvalidity = (SELECT ea.uidvalidity FROM email_accounts ea WHERE ea.id = imap_messages.account_id)`
+
 // ListImapMessagesForExtract returns accountID's imap_messages with a decoded
 // internal_date strictly above sinceTS (and at or below beforeTS when it is
 // non-zero), oldest first, capped at limit with the same boundary-second
@@ -221,7 +227,8 @@ const imapTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
 // pre-digest for an IMAP/Outlook mailbox. IMAP stores no thread id, so every
 // message is its own thread: MessageID and ThreadID are both
 // "<uidvalidity>-<uid>", unique within the mailbox. A message with no date is
-// never returned (no floor can be placed on it).
+// never returned (no floor can be placed on it), nor one stored under an
+// earlier UIDVALIDITY (imapCurrentEpoch).
 func (db *DB) ListImapMessagesForExtract(accountID int64, sinceTS, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
 	return listExtractDrainingBoundary(func(op string, tsArg, before float64, lim int) ([]GmailExtractMessage, error) {
 		return db.queryImapExtractMessages(accountID, op, tsArg, before, lim)
@@ -235,7 +242,7 @@ func (db *DB) queryImapExtractMessages(accountID int64, op string, tsArg, before
 	query := `
 		SELECT uidvalidity || '-' || uid, subject, from_email, from_name, body_text, ` + imapTSUnixExpr + `
 		FROM imap_messages
-		WHERE account_id = ? AND internal_date != '' AND ` + imapTSUnixExpr + ` ` + op + ` ?`
+		WHERE account_id = ? AND internal_date != '' AND ` + imapCurrentEpoch + ` AND ` + imapTSUnixExpr + ` ` + op + ` ?`
 	args := []any{accountID, tsArg}
 	if beforeTS != 0 {
 		query += ` AND ` + imapTSUnixExpr + ` <= ?`
@@ -270,7 +277,7 @@ func (db *DB) queryImapExtractMessages(accountID int64, op string, tsArg, before
 func (db *DB) ImapNewestMessageTS(accountID int64) (float64, error) {
 	var ts float64
 	err := db.QueryRow(`SELECT COALESCE(MAX(`+imapTSUnixExpr+`), 0) FROM imap_messages
-		WHERE account_id = ? AND internal_date != ''`, accountID).Scan(&ts)
+		WHERE account_id = ? AND internal_date != '' AND `+imapCurrentEpoch, accountID).Scan(&ts)
 	if err != nil {
 		return 0, fmt.Errorf("getting newest imap message time for account %d: %w", accountID, err)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 // seedImapMailbox inserts an IMAP email_accounts row and returns its id.
@@ -20,6 +21,7 @@ func seedImapMailbox(t *testing.T, d *db.DB) int64 {
 	id, err := d.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
 		Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
 	require.NoError(t, err)
+	require.NoError(t, d.SetImapWatermark(id, 0, 1)) // current UIDVALIDITY epoch 1
 	return id
 }
 
@@ -181,4 +183,116 @@ func TestBackfill_DrainsImapMailbox(t *testing.T) {
 	floor, err := d.IdeasImapFloor(acct)
 	require.NoError(t, err)
 	assert.Equal(t, saved, floor)
+}
+
+// sysGen answers stage-1 calls with one idea citing the first ref tag in the
+// prompt and records each call's system prompt.
+type sysGen struct {
+	systems []string
+	users   []string
+}
+
+func (g *sysGen) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
+	g.systems = append(g.systems, system)
+	g.users = append(g.users, user)
+	ref := ""
+	if i := strings.Index(user, " ("); i >= 0 {
+		if j := strings.Index(user[i:], "):"); j > 0 {
+			ref = user[i+2 : i+j]
+		}
+	}
+	return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"x","author":"Ann","ref":%q}],"decisions":[]}]}`, ref),
+		&digest.Usage{}, "", nil
+}
+
+// #615 (F1/F4): a Google account and an IMAP mailbox sharing id 1 stay apart —
+// own floors, own stream_digests rows (source + scope) and own refs.
+func TestRunEmailDigests_GmailAndImapSameIDKeptApart(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	g := seedGoogleAccount(t, d, float64(base.Unix()))
+	m := seedImapMailbox(t, d)
+	require.Equal(t, g, m, "the fixture needs the same id on both tables")
+	setIdeasEmailFloorRaw(t, d, g, float64(base.Unix()))
+	require.NoError(t, d.SetIdeasImapFloor(m, float64(base.Unix())))
+	seedGmailMessageIdeas(t, d, g, "m1", "thr-1", "a@example.com", "Ann", "Subj", "gmail body",
+		base.Add(10*time.Second).UTC().Format(time.RFC3339))
+	seedImapMessage(t, d, m, 3, "Subj", "imap body", base.Add(30*time.Second))
+
+	gen := &sysGen{}
+	require.NoError(t, New(d, testCfg(), gen, testLogger()).runEmailDigests(context.Background(), time.Time{}))
+	require.Len(t, gen.users, 2)
+
+	digests, err := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, err)
+	require.Len(t, digests, 2)
+	bySource := map[string]db.StreamDigest{}
+	for _, sd := range digests {
+		bySource[sd.Source] = sd
+	}
+	assert.Contains(t, bySource["gmail"].TopicsJSON, fmt.Sprintf("gmail:%d:thr-1", g))
+	assert.Empty(t, bySource["gmail"].Scope)
+	assert.Contains(t, bySource["imap"].TopicsJSON, imapTag(m, 3))
+	assert.Equal(t, "me@example.com", bySource["imap"].Scope, "an IMAP digest is scoped to its address")
+
+	gf, err := d.IdeasEmailFloor(g)
+	require.NoError(t, err)
+	mf, err := d.IdeasImapFloor(m)
+	require.NoError(t, err)
+	assert.Equal(t, float64(base.Add(10*time.Second).Unix()), gf)
+	assert.Equal(t, float64(base.Add(30*time.Second).Unix()), mf)
+}
+
+// #615 (F1): the same inbox connected as Gmail and over IMAP is mined once —
+// the IMAP mailbox is skipped on the forward run and by the history backfill.
+func TestRunEmailDigests_ImapDuplicateOfGmailSkipped(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	_, err := d.Exec(`INSERT INTO google_accounts (email, label, gmail_enabled, gmail_last_internal_date, ideas_email_floor)
+		VALUES ('Me@Example.com', 'Test', 1, ?, ?)`, float64(base.Unix()), float64(base.Unix()))
+	require.NoError(t, err)
+	m := seedImapMailbox(t, d) // me@example.com
+	require.NoError(t, d.SetIdeasImapFloor(m, float64(base.Unix())))
+	seedImapMessage(t, d, m, 3, "Subj", "imap body", base.Add(30*time.Second))
+
+	gen := &sysGen{}
+	p := New(d, testCfg(), gen, testLogger())
+	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	_, complete, err := p.BackfillImap(context.Background(), m, base.Add(-48*time.Hour), base.Add(time.Hour))
+	require.NoError(t, err)
+	assert.True(t, complete)
+	assert.Empty(t, gen.users, "a duplicate mailbox costs no AI call")
+	mf, err := d.IdeasImapFloor(m)
+	require.NoError(t, err)
+	assert.Equal(t, float64(base.Unix()), mf)
+}
+
+// #615 (F6): a customized ideas.digest_email written when only gmail: tags
+// existed gets the IMAP ref instruction appended, so an IMAP mailbox is not
+// silently mined into nothing; the shipped v3 template needs no note.
+func TestMineStreamTopics_OldTemplateGetsImapRefNote(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		wantNote bool
+	}{
+		{"customized pre-v3", "%s\nCopy the gmail:<account_id>:<thread_id> tag as the ref.", true},
+		{"shipped default", prompts.Defaults[prompts.IdeasDigestEmail], false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDB(t)
+			require.NoError(t, d.UpsertPrompt(db.Prompt{ID: prompts.IdeasDigestEmail, Template: tc.template, Version: 2}))
+			base := time.Now().Add(-time.Hour).Truncate(time.Second)
+			m := seedImapMailbox(t, d)
+			require.NoError(t, d.SetIdeasImapFloor(m, float64(base.Unix())))
+			seedImapMessage(t, d, m, 3, "Subj", "imap body", base.Add(30*time.Second))
+
+			gen := &sysGen{}
+			p := New(d, testCfg(), gen, testLogger())
+			p.SetPromptStore(prompts.New(d, nil))
+			require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+			require.Len(t, gen.systems, 1)
+			assert.Equal(t, tc.wantNote, strings.Contains(gen.systems[0], `start with "imap:"`))
+		})
+	}
 }

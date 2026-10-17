@@ -42,6 +42,14 @@ func (p *Pipeline) BackfillImap(ctx context.Context, accountID int64, from, to t
 	if _, err := p.db.GetEmailAccount(accountID); err != nil {
 		return from, false, fmt.Errorf("backfill email: imap account %d: %w", accountID, err)
 	}
+	// A mailbox whose address is already mined elsewhere is skipped here too,
+	// like the forward run (see mailboxes): the chunk is done with nothing to do.
+	if ok, err := p.mines(imapBox(accountID)); err != nil || !ok {
+		if err != nil {
+			return from, false, fmt.Errorf("backfill email: %w", err)
+		}
+		return to, true, nil
+	}
 	return p.backfillMailbox(ctx, imapBox(accountID), from, to)
 }
 

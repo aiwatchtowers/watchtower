@@ -423,7 +423,10 @@ func (d *Daemon) backfillStreams(key backfillResumeKey, from time.Time, drain fu
 }
 
 // imapSource backfills one IMAP/Outlook mailbox like gmailSource: range
-// fetch, then that mailbox's ideas stream digests over the chunk (#615).
+// fetch through s, then that mailbox's ideas stream digests over the chunk
+// (#615) — none for a mailbox whose address is already mined as a Gmail
+// account or an earlier mailbox (ideas.BackfillImap completes the chunk
+// without an AI call). id is the email_accounts row.
 type imapSource struct {
 	s  mailSyncer
 	id int64

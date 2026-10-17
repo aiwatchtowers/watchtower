@@ -168,6 +168,7 @@ func TestFastForward_StreamDigestsImapMailbox(t *testing.T) {
 		id, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
 			Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
 		require.NoError(t, err)
+		require.NoError(t, database.SetImapWatermark(id, 0, 1))
 		return id
 	}
 	withMail, empty := newMailbox(), newMailbox()

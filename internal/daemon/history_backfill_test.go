@@ -649,6 +649,7 @@ func TestHistoryBackfill_ImapSourceRunsStage1(t *testing.T) {
 		acct, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
 			Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
 		require.NoError(t, err)
+		require.NoError(t, database.SetImapWatermark(acct, 1, 1))
 		at := from.Add(time.Hour).UTC().Format(time.RFC3339)
 		require.NoError(t, database.UpsertImapMessage(db.ImapMessage{AccountID: acct, UID: 1, UIDValidity: 1,
 			Subject: "Subj", BodyText: "we should try X", InternalDate: at}, at))

@@ -238,6 +238,26 @@ type mailbox struct {
 func gmailBox(id int64) mailbox { return mailbox{source: "gmail", id: id} }
 func imapBox(id int64) mailbox  { return mailbox{source: "imap", id: id} }
 
+// mailScope is the stream_digests.scope a mailbox's row carries: "" for Gmail
+// (as before), the mailbox's address — or its label when the login is not an
+// address — for IMAP/Outlook, so two mailboxes' "Email" digests read apart.
+func (p *Pipeline) mailScope(mb mailbox) (string, error) {
+	if mb.source != "imap" {
+		return "", nil
+	}
+	a, err := p.db.GetEmailAccount(mb.id)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", mb.what(), err)
+	}
+	if strings.Contains(a.EmailAddress, "@") {
+		return a.EmailAddress, nil
+	}
+	return a.Label, nil
+}
+
+// refPrefix is the start of every ref tag this mailbox's lines carry.
+func (mb mailbox) refPrefix() string { return mb.source + ":" }
+
 // what labels the mailbox in log lines and errors.
 func (mb mailbox) what() string {
 	if mb.source == "imap" {
@@ -247,7 +267,10 @@ func (mb mailbox) what() string {
 }
 
 // mailboxes lists every mailbox the email pre-digest mines: each Gmail-enabled
-// Google account, then each connected IMAP/Outlook mailbox, oldest first.
+// Google account, then each connected IMAP/Outlook mailbox, oldest first. An
+// IMAP/Outlook mailbox whose address is already mined — as a Gmail account or
+// an earlier mailbox (the same Gmail inbox connected over IMAP too) — is
+// skipped and logged, so the same mail is never paid for twice.
 func (p *Pipeline) mailboxes() ([]mailbox, error) {
 	google, err := p.db.ListGoogleAccounts()
 	if err != nil {
@@ -258,15 +281,41 @@ func (p *Pipeline) mailboxes() ([]mailbox, error) {
 		return nil, fmt.Errorf("listing email accounts: %w", err)
 	}
 	var out []mailbox
+	seen := map[string]bool{}
 	for _, a := range google {
 		if a.GmailEnabled {
 			out = append(out, gmailBox(a.ID))
+			seen[mailAddress(a.Email)] = true
 		}
 	}
 	for _, a := range imap {
+		addr := mailAddress(a.EmailAddress)
+		if addr != "" && seen[addr] {
+			p.logf("ideas: imap mailbox %d skipped: its address is already mined as another mailbox", a.ID)
+			continue
+		}
+		seen[addr] = addr != ""
 		out = append(out, imapBox(a.ID))
 	}
 	return out, nil
+}
+
+// mailAddress normalises a mailbox address for the duplicate check.
+func mailAddress(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+// mines reports whether mb is one of the mailboxes the email pre-digest mines
+// (see mailboxes): a duplicate-address mailbox is not.
+func (p *Pipeline) mines(mb mailbox) (bool, error) {
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return false, err
+	}
+	for _, b := range boxes {
+		if b == mb {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // mailFloor reads the mailbox's stored ideas floor.
@@ -471,9 +520,18 @@ func renderedEmailWindow(msgs []db.GmailExtractMessage, renderedIDs map[string]b
 // returns an error, so the caller writes no row and leaves its floor untouched
 // (IDEA-01). Shared by the Gmail and Jira passes, which differ only in their
 // prompt and their tag vocabulary. what labels the account in the log.
-func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, what, block string, renderedTags map[string]bool) ([]streamTopic, error) {
+//
+// refPrefix ("" = none) is a ref-tag prefix the pass needs the model to copy.
+// A stored template that never mentions it — a customized or pre-v3
+// ideas.digest_email, written when only "gmail:" tags existed — gets a short
+// ref instruction appended, so an IMAP mailbox's candidates are not all
+// rejected for refs the template told the model to write in another shape.
+func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, what, block, refPrefix string, renderedTags map[string]bool) ([]streamTopic, error) {
 	tmpl, _ := p.getPrompt(promptID)
 	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
+	if refPrefix != "" && !strings.Contains(tmpl, refPrefix) {
+		system += fmt.Sprintf("\n\nRef tags in this input start with %q: copy the tag in parentheses on the numbered line EXACTLY as the ref.", refPrefix)
+	}
 
 	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, promptID), system, block, "")
 	p.accumulateUsage(usage)
@@ -678,15 +736,19 @@ func (p *Pipeline) emailDigestPass(ctx context.Context, mb mailbox, floor float6
 	minTS, maxTS := win.minTS, win.maxTS
 
 	what := mb.what()
-	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", what, block, tags)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", what, block, mb.refPrefix(), tags)
 	if err != nil {
 		return floor, err
 	}
 
+	scope, err := p.mailScope(mb)
+	if err != nil {
+		return floor, err
+	}
 	if err := p.insertStreamTopics(db.StreamDigest{
 		Source:     mb.source,
 		AccountID:  mb.id,
-		Scope:      "",
+		Scope:      scope,
 		PeriodFrom: time.Unix(int64(minTS), 0).UTC().Format(time.RFC3339),
 		PeriodTo:   time.Unix(int64(maxTS), 0).UTC().Format(time.RFC3339),
 	}, topics, what); err != nil {

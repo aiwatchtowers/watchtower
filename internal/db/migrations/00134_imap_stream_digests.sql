@@ -30,6 +30,12 @@ CREATE TABLE stream_digests_new (
 INSERT INTO stream_digests_new (id, source, account_id, scope, period_from, period_to, topics_json, created_at, read_at)
 SELECT id, source, account_id, scope, period_from, period_to, topics_json, created_at, read_at
 FROM stream_digests;
+-- Carry the AUTOINCREMENT high-water mark: the consolidator's
+-- ideas_stream_digest_floor is an id floor, so a new row must never reuse an
+-- id at or below a deleted one's.
+DELETE FROM sqlite_sequence WHERE name = 'stream_digests_new';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'stream_digests_new', seq FROM sqlite_sequence WHERE name = 'stream_digests';
 DROP TABLE stream_digests;
 ALTER TABLE stream_digests_new RENAME TO stream_digests;
 CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
@@ -47,6 +53,9 @@ CREATE TABLE idea_mentions_new (
 INSERT INTO idea_mentions_new (id, idea_id, source, ref, quote, author, said_at, created_at)
 SELECT id, idea_id, source, ref, quote, author, said_at, created_at
 FROM idea_mentions;
+DELETE FROM sqlite_sequence WHERE name = 'idea_mentions_new';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'idea_mentions_new', seq FROM sqlite_sequence WHERE name = 'idea_mentions';
 DROP TABLE idea_mentions;
 ALTER TABLE idea_mentions_new RENAME TO idea_mentions;
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
@@ -72,6 +81,9 @@ CREATE TABLE stream_digests_old (
 INSERT INTO stream_digests_old (id, source, account_id, scope, period_from, period_to, topics_json, created_at, read_at)
 SELECT id, source, account_id, scope, period_from, period_to, topics_json, created_at, read_at
 FROM stream_digests WHERE source != 'imap';
+DELETE FROM sqlite_sequence WHERE name = 'stream_digests_old';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'stream_digests_old', seq FROM sqlite_sequence WHERE name = 'stream_digests';
 DROP TABLE stream_digests;
 ALTER TABLE stream_digests_old RENAME TO stream_digests;
 CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
@@ -89,6 +101,9 @@ CREATE TABLE idea_mentions_old (
 INSERT INTO idea_mentions_old (id, idea_id, source, ref, quote, author, said_at, created_at)
 SELECT id, idea_id, source, ref, quote, author, said_at, created_at
 FROM idea_mentions WHERE source != 'imap';
+DELETE FROM sqlite_sequence WHERE name = 'idea_mentions_old';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'idea_mentions_old', seq FROM sqlite_sequence WHERE name = 'idea_mentions';
 DROP TABLE idea_mentions;
 ALTER TABLE idea_mentions_old RENAME TO idea_mentions;
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
