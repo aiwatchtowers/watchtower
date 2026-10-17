@@ -69,7 +69,7 @@ small Go cleanup.
 ## internal/db is one 19.8k-line package with 578 methods on a single *DB
 
 - type: chore · confidence: high · tags: [go, god-package, complexity]
-- where: internal/db/ (62 non-test files), internal/db/memory.go (2,179 lines), internal/db/user_analyses.go:539 (ComputeUserInteractions, CC 48), internal/db/channel_stats.go:207 (CC 36)
+- where: internal/db/ (62 non-test files), internal/db/memory.go (2,179 lines), internal/db/user_analyses.go:539 (ComputeUserInteractions, CC 48; removed 2026-10-17), internal/db/channel_stats.go:207 (CC 36)
 
 All persistence for every domain (memory, jira, ideas, inbox, kb, targets, people analytics…) hangs off one `*DB` type: 578 exported methods, and `internal/db` imports `internal/slack` for id helpers. Analytics logic also lives here (`ComputeUserInteractions` CC 48, `ComputeAllUserStats` CC 32, `ComputeRecommendations` CC 36 are domain computations, not queries). Other outliers repo-wide: `sync.buildChannelQueue` CC 44, `guide.RunForWindow` CC 43, `cmd.runDigestGenerate` CC 36. There are 32 cmd functions over CC 15, so cmd also holds real logic (for example `runTargetsShow` CC 33 and `runTrends` CC 32 format and compute inline). Direction (incremental, no big bang): move the analytics computations into their domain packages (`guide`/`stats`) behind narrow query methods, and split `db` by sub-package for the largest domains (memory first, which already has its own vault package), keeping `*DB` as the connection holder. Move `slack.SplitAccountID`/`MentionPatterns` into a leaf `slackid` package so `db` has no network-client import.
 

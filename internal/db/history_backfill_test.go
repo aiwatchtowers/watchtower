@@ -72,10 +72,36 @@ func TestHistoryBackfill_FailuresCountAndActive(t *testing.T) {
 	assert.True(t, active)
 	require.NoError(t, d.SetHistoryBackfillStatus(id, "paused", now))
 	active, _ = d.HasActiveHistoryBackfill()
-	assert.True(t, active, "paused still holds memory back")
+	assert.True(t, active, "paused is still active: the phase resumes it")
 	require.NoError(t, d.SetHistoryBackfillStatus(id, "off", now))
 	active, _ = d.HasActiveHistoryBackfill()
 	assert.False(t, active)
+}
+
+// #578: memory's gate counts only running rows (held ones included) that
+// started after the cutoff; paused, done and off rows never count.
+func TestHistoryBackfill_RunningSince(t *testing.T) {
+	d := OpenTestDB(t)
+	started := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	_, _ = d.StartHistoryBackfill("slack", 1, 100, 200, started)
+	rows, _ := d.ListHistoryBackfills()
+	id := rows[0].ID
+
+	running, err := d.HasRunningHistoryBackfillSince(started.Add(-time.Hour))
+	require.NoError(t, err)
+	assert.True(t, running)
+	running, _ = d.HasRunningHistoryBackfillSince(started)
+	assert.False(t, running, "a row started at or before the cutoff no longer counts")
+
+	require.NoError(t, d.HoldHistoryBackfill(id, "held: offline", started))
+	running, _ = d.HasRunningHistoryBackfillSince(started.Add(-time.Hour))
+	assert.True(t, running, "a held row is still running")
+
+	for _, status := range []string{"paused", "done", "off"} {
+		require.NoError(t, d.SetHistoryBackfillStatus(id, status, started))
+		running, _ = d.HasRunningHistoryBackfillSince(started.Add(-time.Hour))
+		assert.False(t, running, status)
+	}
 }
 
 // R23: a skipped chunk leaves a trace in last_error after the advance
@@ -96,4 +122,32 @@ func TestHistoryBackfill_SetLastErrorAfterAdvance(t *testing.T) {
 	require.NoError(t, d.AdvanceHistoryBackfill(id, 200000, now))
 	rows, _ = d.ListHistoryBackfills()
 	assert.Empty(t, rows[0].LastError, "the next successful chunk clears the trace")
+}
+
+// #580: a hold records when it began and why; only a release clears it.
+func TestHistoryBackfill_HoldAndRelease(t *testing.T) {
+	d := OpenTestDB(t)
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	_, err := d.StartHistoryBackfill("imap", 3, 100, 400, now)
+	require.NoError(t, err)
+	rows, _ := d.ListHistoryBackfills()
+	id := rows[0].ID
+	assert.Nil(t, rows[0].HeldSince)
+
+	require.NoError(t, d.HoldHistoryBackfill(id, "held: offline", now))
+	rows, _ = d.ListHistoryBackfills()
+	require.NotNil(t, rows[0].HeldSince)
+	assert.True(t, rows[0].HeldSince.Equal(now))
+	assert.Equal(t, "held: offline", rows[0].LastError)
+
+	require.NoError(t, d.ReleaseHistoryBackfillHold(id, now))
+	rows, _ = d.ListHistoryBackfills()
+	assert.Nil(t, rows[0].HeldSince)
+	assert.Equal(t, "held: offline", rows[0].LastError, "release keeps last_error")
+
+	require.NoError(t, d.HoldHistoryBackfill(id, "held: again", now))
+	require.NoError(t, d.AdvanceHistoryBackfill(id, 300, now))
+	rows, _ = d.ListHistoryBackfills()
+	assert.NotNil(t, rows[0].HeldSince, "the hold belongs to the row: an advance (a skip too) keeps it")
+	assert.Empty(t, rows[0].LastError)
 }

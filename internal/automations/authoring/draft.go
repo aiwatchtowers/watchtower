@@ -69,7 +69,9 @@ type DraftManifest struct {
 }
 
 // DraftDryRun is the in-memory dry run: its journal, its would-be outputs,
-// the tokens it spent and how it ended.
+// the tokens it spent and how it ended (Status "refused" for an indexed
+// unconfirmed recipe, automations.DryRunStopped at its first mcp() call, else
+// the run status).
 type DraftDryRun struct {
 	Steps   []DraftStep   `json:"steps"`
 	Outputs []DraftOutput `json:"outputs"`
@@ -112,7 +114,9 @@ func NewDraftAutomation(d Deps) *tools.Tool {
 		Description: "Validate an automation recipe draft and dry-run it in memory before proposing save_automation. " +
 			"Returns parse errors, the normalised manifest, the permissions the draft widens (pass slug when editing a " +
 			"saved automation), and the dry run's steps, would-be outputs and tokens. Writes nothing: write tools, " +
-			"state and outputs answer {status:\"dry_run\"}.",
+			"state and outputs answer {status:\"dry_run\"}. Reads and llm() run for real; agent() and mcp() are never " +
+			"called: agent() answers {status:\"dry_run\"}, and the first mcp() call ends the dry run with " +
+			"status \"stopped\" (not a failure; dry-run the saved recipe from its card to see the rest).",
 		InputSchema: draftSchema(),
 		Access:      tools.AccessRead,
 		Surfaces:    []string{"main", tools.AutomationEditorSurface},

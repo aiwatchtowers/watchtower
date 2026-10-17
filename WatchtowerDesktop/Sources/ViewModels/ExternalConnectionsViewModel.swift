@@ -325,9 +325,14 @@ final class ExternalConnectionsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
+
+        // The login environment is awaited with the flow already shown as
+        // running (Cancel visible); a Cancel or a newer attempt meanwhile
+        // drops this launch.
+        process.environment = await Constants.resolvedEnvironmentAsync()
+        guard authProcess === process else { return }
 
         let result = await Self.runProcess(process)
         authProcess = nil
@@ -385,7 +390,7 @@ final class ExternalConnectionsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if stdin != nil {
             process.standardInput = Pipe()

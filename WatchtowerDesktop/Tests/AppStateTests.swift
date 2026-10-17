@@ -28,9 +28,10 @@ final class AppStateTests: XCTestCase {
         }
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
+        // An onboarding finish builds the sidebar counts (board #526).
+        await AppState.stopIsolatedSidebarCounts()
         TestDatabase.cleanup(path: dbPath)
-        super.tearDown()
     }
 
     // MARK: - wireMeetingRecorderLoaders
@@ -277,6 +278,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(SidebarDestination.inbox.isVisible(
             disabledFeatures: [], connected: appState.featureVisibility.connectedSources
         ))
+        await appState.stopSidebarCounts()?.value
     }
 
     func testAccountReloadRefreshesConnectedSources() async throws {
@@ -338,6 +340,26 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(appState.owner.id, "jira:acc-9")
         XCTAssertEqual(appState.owner.source, .jira)
+    }
+
+    /// The email (IMAP/Outlook) accounts VM's reload hook re-resolves the
+    /// owner too: an email-only install gets its owner the moment the
+    /// mailbox is added (OWNER-01 email rung, ask #307).
+    func testOwner02EmailAccountReloadRefreshesOwner() async throws {
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        appState.initEmailAccounts(dbPool: dbManager.dbPool)
+        let vm = try XCTUnwrap(appState.emailAccountsViewModel)
+        await vm.refreshAsync()
+        XCTAssertEqual(appState.owner, .unknown)
+
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertEmailAccount(db, emailAddress: "Me@Example.com")
+        }
+        await vm.refreshAsync()
+
+        XCTAssertEqual(appState.owner.id, "email:me@example.com")
+        XCTAssertEqual(appState.owner.source, .email)
     }
 
     // MARK: - Onboarding launch state
@@ -1702,5 +1724,6 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertTrue(appState.featureVisibility.connectedSources.jira)
         XCTAssertTrue(appState.featureSuggestion.isEmpty)
+        await appState.stopSidebarCounts()?.value
     }
 }

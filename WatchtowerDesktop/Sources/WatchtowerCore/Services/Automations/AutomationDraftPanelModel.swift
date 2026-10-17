@@ -122,7 +122,8 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     package let permissions: [Permission]
     package let cantLine: String?
     package let dryRunLines: [String]
-    /// Why there are no dry-run lines: the refusal (ask #271) or the run's error.
+    /// Why there are no (more) dry-run lines: the refusal (ask #271), the
+    /// draft stop at mcp() (ask #326) or the run's error.
     package let dryRunNote: String?
 
     package static let empty = Self(entry: nil)

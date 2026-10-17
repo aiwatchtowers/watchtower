@@ -288,6 +288,63 @@ final class MobileSettingsViewModelTests: XCTestCase {
         )
     }
 
+    /// #565: starting sessions has its own Allow… (asks first) and Revoke;
+    /// it sets the owner's grant, never the phone's own toggle.
+    func testStartSessionsAllowAsksFirstAndSetsTheOwnersGrant() async throws {
+        await fixture.tearDown()
+        fixture = try MobileSettingsFixture(phones: [("phone-a", .private, "_owner-acme")])
+        let model = fixture.makeModel()
+        let phone = try XCTUnwrap(model.devices.first)
+
+        model.requestStartSessionsAllow(phone)
+        XCTAssertEqual(model.pendingStartSessionsAllow?.deviceID, "phone-a")
+        XCTAssertNil(model.pendingAllow, "not the typing confirmation")
+        XCTAssertFalse(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a")).startSessionsGranted, "Allow… asks first")
+
+        model.confirmStartSessionsAllow()
+        XCTAssertNil(model.pendingStartSessionsAllow)
+        XCTAssertTrue(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a")).startSessionsGranted)
+
+        model.revokeStartSessions(try XCTUnwrap(model.devices.first))
+        XCTAssertFalse(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a")).startSessionsGranted)
+    }
+
+    /// #565: the row's start-sessions state (typing first) and the
+    /// confirmation's verbatim copy.
+    func testTheStartSessionsLabelNeedsTypingFirst() {
+        var phone = HubSyncState.LinkedDevice(
+            deviceID: "phone-a", name: "iPhone", scope: .private, userRecordName: "_owner-acme", linkedAt: Date()
+        )
+        XCTAssertEqual(MobileSettingsViewModel.startSessionsLabel(phone), "Starting sessions needs typing")
+        phone.typingAllowed = true
+        XCTAssertEqual(MobileSettingsViewModel.startSessionsLabel(phone), "Starting sessions off")
+        phone.startSessionsGranted = true
+        XCTAssertEqual(MobileSettingsViewModel.startSessionsLabel(phone), "Starting sessions allowed")
+        phone.startSessionsAllowed = false
+        XCTAssertEqual(
+            MobileSettingsViewModel.startSessionsLabel(phone), "Starting sessions allowed on the Mac — off on the phone"
+        )
+        XCTAssertEqual(
+            MobileSettingsViewModel.startSessionsQuestion(name: "iPhone"),
+            "Allow \"iPhone\" to start Claude Code sessions on this Mac?"
+        )
+    }
+
+    /// #565: allowing typing again brings back a stored start grant, and the
+    /// typing confirmation says so.
+    func testTheTypingConfirmationMentionsAStoredStartGrant() {
+        var phone = HubSyncState.LinkedDevice(
+            deviceID: "phone-a", name: "iPhone", scope: .private, userRecordName: "_owner-acme", linkedAt: Date()
+        )
+        let base = "The phone can then send text to sessions running on this Mac. Revoke turns it off again."
+        XCTAssertEqual(MobileSettingsViewModel.allowMessage(phone), base)
+        phone.startSessionsGranted = true
+        XCTAssertEqual(
+            MobileSettingsViewModel.allowMessage(phone),
+            base + " Starting sessions, allowed earlier for this phone, comes back with it."
+        )
+    }
+
     /// Board #67: Remove asks first (a shared phone's removal is at once and
     /// cannot be undone); Cancel keeps the phone, the confirmation removes it.
     func testRemoveAsksFirstAndCancelKeepsThePhone() async throws {

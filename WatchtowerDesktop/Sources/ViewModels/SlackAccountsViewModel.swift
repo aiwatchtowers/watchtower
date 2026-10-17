@@ -26,6 +26,10 @@ final class SlackAccountsViewModel {
     /// Resolves the CLI binary; injectable so tests can run a stand-in.
     private let cliPath: () -> String?
     private var authProcess: Process?
+    /// The sign-in child's environment; injectable so tests can hold it.
+    @ObservationIgnored var loginEnvironment: @Sendable () async -> [String: String] = {
+        await Constants.resolvedEnvironmentAsync()
+    }
 
     init(
         dbPool: DatabasePool,
@@ -174,9 +178,14 @@ final class SlackAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
+
+        // The login environment is awaited with the flow already shown as
+        // running (Cancel visible); a Cancel or a newer attempt meanwhile
+        // drops this launch.
+        process.environment = await loginEnvironment()
+        guard authProcess === process else { return }
 
         let result = await Self.runProcess(process)
         authProcess = nil
@@ -238,7 +247,7 @@ final class SlackAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         return await runProcess(process)
     }

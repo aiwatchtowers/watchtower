@@ -115,15 +115,14 @@ package final class AIModelCatalog {
         }
     }
 
-    /// `watchtower ai models --json`, set up off the main actor: an
-    /// unresolved `resolvedEnvironment()` runs the login shell (AppState
-    /// prewarms it at launch on a thread of its own).
+    /// `watchtower ai models --json`, set up off the main actor; the login
+    /// environment is awaited, never waited on (`resolvedEnvironmentAsync`).
     nonisolated private static func fetchModels(cliPath: String) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = ["ai", "models", "--json"]
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         return await ProcessPipes.run(process)
     }
 }

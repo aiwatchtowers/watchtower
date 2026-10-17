@@ -136,6 +136,33 @@ func TestManifest_PersonalRefusesShellSessionAsk(t *testing.T) {
 	}
 }
 
+// FeedsSourcesToLLM needs an llm: entry and an entry that brings data in
+// (#559): a read capability, tool:, mcp:, shell: or session:.
+func TestManifest_FeedsSourcesToLLM(t *testing.T) {
+	cases := []struct {
+		perms []string
+		want  bool
+	}{
+		{[]string{"llm:light", "gmail:read@work"}, true},
+		{[]string{"llm:strong", "tool:list_messages"}, true},
+		{[]string{"llm:light", "mcp:acme/*"}, true},
+		{[]string{"llm:light", `shell:"gh pr list"`}, true},
+		{[]string{"llm:light", "session:start"}, true},
+		{[]string{"llm:light", "slack:write@*"}, false},
+		{[]string{"llm:light"}, false},
+		{[]string{"jira:read@PAY", "slack:write@*"}, false},
+	}
+	for _, c := range cases {
+		m, err := ParseManifest(c.perms, nil, workbenchScope)
+		if err != nil {
+			t.Fatalf("ParseManifest(%v): %v", c.perms, err)
+		}
+		if got := m.FeedsSourcesToLLM(); got != c.want {
+			t.Errorf("FeedsSourcesToLLM(%v) = %v; want %v", c.perms, got, c.want)
+		}
+	}
+}
+
 func TestManifest_ScopeMatching(t *testing.T) {
 	d := openManifestTestDB(t)
 	list := tools.NewListJiraIssues()

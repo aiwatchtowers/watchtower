@@ -310,7 +310,7 @@ func TestRunSearchSync(t *testing.T) {
 	assert.True(t, general.IsMember)
 
 	// Verify messages were saved directly from search results
-	msgs, err := ts.db.GetMessagesByChannel(watchtowerslack.Namespace(ts.accountID, "C001"), 100)
+	msgs, err := ts.db.GetMessages(db.MessageOpts{ChannelID: watchtowerslack.Namespace(ts.accountID, "C001"), Limit: 100})
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(msgs), 1, "search sync should save messages")
 
@@ -827,7 +827,7 @@ func TestIntegrationSyncFlow(t *testing.T) {
 
 	// --- Verify messages in #general (C001) ---
 	c001ID := watchtowerslack.Namespace(ts.accountID, "C001")
-	c001Msgs, err := ts.db.GetMessagesByChannel(c001ID, 100)
+	c001Msgs, err := ts.db.GetMessages(db.MessageOpts{ChannelID: c001ID, Limit: 100})
 	require.NoError(t, err)
 	assert.Len(t, c001Msgs, 4) // 2 history messages + 2 thread replies
 
@@ -843,7 +843,7 @@ func TestIntegrationSyncFlow(t *testing.T) {
 	assert.True(t, found, "expected to find the deployment message")
 
 	// --- Verify messages in #engineering (C002) ---
-	c002Msgs, err := ts.db.GetMessagesByChannel(watchtowerslack.Namespace(ts.accountID, "C002"), 100)
+	c002Msgs, err := ts.db.GetMessages(db.MessageOpts{ChannelID: watchtowerslack.Namespace(ts.accountID, "C002"), Limit: 100})
 	require.NoError(t, err)
 	assert.Len(t, c002Msgs, 1)
 	assert.Equal(t, "New design mockups ready for review", c002Msgs[0].Text)
@@ -871,7 +871,7 @@ func TestIntegrationSyncFlow(t *testing.T) {
 	assert.Greater(t, syncState.MessagesSynced, 0)
 
 	// --- Verify archived channel (C003) was NOT synced for messages ---
-	c003Msgs, err := ts.db.GetMessagesByChannel(watchtowerslack.Namespace(ts.accountID, "C003"), 100)
+	c003Msgs, err := ts.db.GetMessages(db.MessageOpts{ChannelID: watchtowerslack.Namespace(ts.accountID, "C003"), Limit: 100})
 	require.NoError(t, err)
 	assert.Len(t, c003Msgs, 0, "archived channel should not have messages synced")
 }
@@ -898,12 +898,12 @@ func TestIntegrationSyncWithChannelFilter(t *testing.T) {
 	require.NoError(t, err)
 
 	// General should have messages
-	c001Msgs, err := ts.db.GetMessagesByChannel(watchtowerslack.Namespace(ts.accountID, "C001"), 100)
+	c001Msgs, err := ts.db.GetMessages(db.MessageOpts{ChannelID: watchtowerslack.Namespace(ts.accountID, "C001"), Limit: 100})
 	require.NoError(t, err)
 	assert.Len(t, c001Msgs, 1)
 
 	// Engineering should NOT have messages (wasn't requested)
-	c002Msgs, err := ts.db.GetMessagesByChannel(watchtowerslack.Namespace(ts.accountID, "C002"), 100)
+	c002Msgs, err := ts.db.GetMessages(db.MessageOpts{ChannelID: watchtowerslack.Namespace(ts.accountID, "C002"), Limit: 100})
 	require.NoError(t, err)
 	assert.Len(t, c002Msgs, 0)
 }
@@ -973,13 +973,13 @@ func TestSyncTwoAccountsNoCollision(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ch2, "account 2's C001 channel should exist under its namespaced id, distinct from account 1's")
 
-	msgs1, err := database.GetMessagesByChannel(ch1ID, 100)
+	msgs1, err := database.GetMessages(db.MessageOpts{ChannelID: ch1ID, Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, msgs1, 1)
 	assert.Equal(t, "org1 message", msgs1[0].Text)
 	assert.Equal(t, watchtowerslack.Namespace(account1ID, "U001"), msgs1[0].UserID)
 
-	msgs2, err := database.GetMessagesByChannel(ch2ID, 100)
+	msgs2, err := database.GetMessages(db.MessageOpts{ChannelID: ch2ID, Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, msgs2, 1)
 	assert.Equal(t, "org2 message", msgs2[0].Text)
@@ -1025,7 +1025,7 @@ func TestSyncChannelUsesRawIDForSlackAPI(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, state)
 
-	msgs, err := ts.db.GetMessagesByChannel(namespacedChannelID, 10)
+	msgs, err := ts.db.GetMessages(db.MessageOpts{ChannelID: namespacedChannelID, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, ts.ns("U001"), msgs[0].UserID)

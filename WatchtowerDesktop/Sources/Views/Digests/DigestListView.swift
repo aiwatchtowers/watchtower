@@ -594,7 +594,7 @@ struct DigestListView: View {
                 if !digest.isRead {
                     Circle().fill(Color.blue).frame(width: 6, height: 6)
                 }
-                streamSourceBadge(digest.source)
+                streamSourceBadge(digest)
                 if !digest.scope.isEmpty {
                     Text(digest.scope)
                         .font(.subheadline)
@@ -628,10 +628,10 @@ struct DigestListView: View {
         .onTapGesture { selectFeedStream(digest.id) }
     }
 
-    private func streamSourceBadge(_ source: String) -> some View {
-        let isJira = source == "jira"
+    private func streamSourceBadge(_ digest: StreamDigest) -> some View {
+        let isJira = digest.source == "jira"
         let color: Color = isJira ? .indigo : .red
-        return Label(isJira ? "Jira" : "Gmail", systemImage: isJira ? "ticket" : "envelope")
+        return Label(digest.sourceLabel, systemImage: isJira ? "ticket" : "envelope")
             .font(.caption2)
             .fontWeight(.semibold)
             .foregroundStyle(color)

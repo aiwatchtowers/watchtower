@@ -39,8 +39,75 @@ func (g *stage1Gen) saw(s string) bool {
 	return false
 }
 
+// floorWatchGen answers stage-1 calls like stage1Gen and, at each call,
+// records what the account's stored floors read — what a process killed at
+// that moment would leave behind for the forward run.
+type floorWatchGen struct {
+	stage1Gen
+	d         *db.DB
+	acct      int64
+	emailSeen []float64
+	jiraSeen  []string
+}
+
+func (g *floorWatchGen) Generate(ctx context.Context, sys, user, model string) (string, *digest.Usage, string, error) {
+	if f, err := g.d.IdeasEmailFloor(g.acct); err == nil {
+		g.emailSeen = append(g.emailSeen, f)
+	}
+	if f, err := g.d.IdeasJiraFloor(g.acct); err == nil {
+		g.jiraSeen = append(g.jiraSeen, f)
+	}
+	return g.stage1Gen.Generate(ctx, sys, user, model)
+}
+
+// C6: the drain never lowers the stored forward floor, so a process killed
+// mid-drain does not leave the forward run weeks back to re-mine everything.
+func TestBackfillEmail_NeverLowersTheStoredFloor(t *testing.T) {
+	d := newTestDB(t)
+	now := time.Now()
+	from, to := now.Add(-72*time.Hour), now.Add(-24*time.Hour)
+	a := seedGoogleAccount(t, d, float64(now.Unix()))
+	saved := float64(now.Add(-time.Hour).Unix())
+	setIdeasEmailFloorRaw(t, d, a, saved)
+	seedGmailMessageIdeas(t, d, a, "m1", "thr-1", "x@example.com", "Ann", "Subj", "in window",
+		from.Add(time.Hour).UTC().Format(time.RFC3339))
+
+	gen := &floorWatchGen{d: d, acct: a}
+	_, complete, err := New(d, backfillCfg(), gen, testLogger()).BackfillEmail(context.Background(), a, from, to)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.True(t, gen.saw("in window"), "the window is mined")
+	require.NotEmpty(t, gen.emailSeen)
+	for _, f := range gen.emailSeen {
+		assert.Equal(t, saved, f, "the stored floor stays put during the drain")
+	}
+}
+
+// C6: BackfillJira's counterpart.
+func TestBackfillJira_NeverLowersTheStoredFloor(t *testing.T) {
+	d := newTestDB(t)
+	now := time.Now()
+	from, to := now.Add(-72*time.Hour), now.Add(-24*time.Hour)
+	a := seedJiraAccount(t, d)
+	saved := db.FormatJiraTime(now.Add(-time.Hour))
+	setIdeasJiraFloorRaw(t, d, a, saved)
+	seedJiraIssueIdeas(t, d, a, "AA-1", "AA", "Alpha", "Open", "new", "alpha issue",
+		db.FormatJiraTime(from.Add(2*time.Hour)))
+
+	gen := &floorWatchGen{d: d, acct: a}
+	_, complete, err := New(d, backfillCfg(), gen, testLogger()).BackfillJira(context.Background(), a, from, to)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.True(t, gen.saw("AA-1"), "the window is mined")
+	require.NotEmpty(t, gen.jiraSeen)
+	for _, f := range gen.jiraSeen {
+		assert.Equal(t, saved, f, "the stored floor stays put during the drain")
+	}
+}
+
 // R28: only the given account's mail is digested, the other account's floor
-// is untouched, and the account's floor is restored to max(saved, reached).
+// is untouched, and the account's stored floor ends at max(saved, reached) —
+// here saved, which the drain never lowered.
 func TestBackfillEmail_ScopedToOneAccount(t *testing.T) {
 	d := newTestDB(t)
 	now := time.Now()
@@ -66,13 +133,13 @@ func TestBackfillEmail_ScopedToOneAccount(t *testing.T) {
 
 	fa, err := d.IdeasEmailFloor(a)
 	require.NoError(t, err)
-	assert.Equal(t, saved, fa, "A's floor is restored to max(saved, reached)")
+	assert.Equal(t, saved, fa, "A's stored floor stays at saved (the larger of saved and reached)")
 	fb, err := d.IdeasEmailFloor(b)
 	require.NoError(t, err)
 	assert.Equal(t, bFloor, fb, "B's floor is untouched")
 
-	// A second call over the same window re-renders A's mail: the floor is
-	// lowered again, so the window is mined again (cost, not correctness —
+	// A second call over the same window re-renders A's mail: the drain
+	// starts from the window again, so the window is mined again (cost, not correctness —
 	// IDEA-05 dedups the re-mined refs downstream).
 	n := len(gen.prompts)
 	_, _, err = p.BackfillEmail(context.Background(), a, from, to)
@@ -80,8 +147,10 @@ func TestBackfillEmail_ScopedToOneAccount(t *testing.T) {
 	assert.Equal(t, n+1, len(gen.prompts), "a repeat pays one stage-1 call for the window again")
 }
 
-// A floor already below the window is never raised: the mail between it and
-// the window start stays minable.
+// A floor already below the window is not skipped past: the mail between it
+// and the window start is mined, and the stored floor is then raised to what
+// the drain reached (reached > stored), so the forward run does not mine it
+// again.
 func TestBackfillEmail_KeepsALowerFloor(t *testing.T) {
 	d := newTestDB(t)
 	now := time.Now()
@@ -89,18 +158,24 @@ func TestBackfillEmail_KeepsALowerFloor(t *testing.T) {
 	a := seedGoogleAccount(t, d, float64(now.Unix()))
 	low := float64(from.Add(-48 * time.Hour).Unix())
 	setIdeasEmailFloorRaw(t, d, a, low)
+	below := from.Add(-24 * time.Hour)
 	seedGmailMessageIdeas(t, d, a, "m0", "thr-0", "x@example.com", "Ann", "Subj", "below the window",
-		from.Add(-24*time.Hour).UTC().Format(time.RFC3339))
+		below.UTC().Format(time.RFC3339))
 
 	gen := &stage1Gen{}
 	p := New(d, backfillCfg(), gen, testLogger())
-	_, _, err := p.BackfillEmail(context.Background(), a, from, to)
+	reached, _, err := p.BackfillEmail(context.Background(), a, from, to)
 	require.NoError(t, err)
 	assert.True(t, gen.saw("below the window"), "mined, not skipped")
+
+	fa, err := d.IdeasEmailFloor(a)
+	require.NoError(t, err)
+	assert.Equal(t, float64(below.Unix()), fa, "the stored floor is raised to the mined message")
+	assert.Equal(t, below.Unix(), reached.Unix())
 }
 
 // R29: only the given Jira account's issues are digested, the other
-// account's floor is untouched, and the floor is restored.
+// account's floor is untouched, and the stored floor stays at saved.
 func TestBackfillJira_ScopedToOneAccount(t *testing.T) {
 	d := newTestDB(t)
 	now := time.Now()
@@ -126,7 +201,7 @@ func TestBackfillJira_ScopedToOneAccount(t *testing.T) {
 
 	fa, err := d.IdeasJiraFloor(a)
 	require.NoError(t, err)
-	assert.Equal(t, saved, fa, "A's floor is restored to max(saved, reached)")
+	assert.Equal(t, saved, fa, "A's stored floor stays at saved (the larger of saved and reached)")
 	fb, err := d.IdeasJiraFloor(b)
 	require.NoError(t, err)
 	assert.Equal(t, bFloor, fb, "B's floor is untouched")

@@ -89,6 +89,27 @@ final class AutomationDraftPanelModelTests: XCTestCase {
         XCTAssertNil(panel.lastDryRunTokens)
     }
 
+    /// A draft that reached mcp() stops there (ask #326): the steps before it
+    /// show, and the note points to the card's Dry run — not a failure.
+    func testStoppedDryRunShowsStepsAndCardHint() throws {
+        let message = "Stopped at mcp(): external calls are not made in a draft; "
+            + "dry-run the saved recipe from its card to see the rest"
+        let panel = model(try line(dryRun: [
+            "steps": [
+                ["seq": 1, "kind": "tool", "name": "list_targets", "status": "ok", "args": "{}", "result": "[]",
+                 "permission": "", "error": "", "tokens": 0],
+                ["seq": 2, "kind": "mcp", "name": "github/list_prs", "status": "dry_run", "args": "{}",
+                 "result": "", "permission": "mcp:github/*", "error": "", "tokens": 0]
+            ],
+            "outputs": [], "tokens": 0, "status": "stopped", "error": message
+        ]))
+        XCTAssertEqual(panel.dryRunLines, [
+            "Read list_targets",
+            "Stopped before calling github/list_prs: Quick Connections are not called in a draft"
+        ])
+        XCTAssertEqual(panel.dryRunNote, message)
+    }
+
     func testParseErrorShowsErrors() throws {
         let panel = model(try line(name: "", dryRun: nil, errors: ["line 2: name is required"]))
         XCTAssertEqual(panel.errors, ["line 2: name is required"])

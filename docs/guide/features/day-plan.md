@@ -15,7 +15,7 @@ It reads your calendar, targets, today's briefing, Jira issues, people context a
 | Condition | Why |
 |---|---|
 | **Day Plan** is on in Settings → Features | The switch for the feature |
-| An account that tells Watchtower who you are | Slack, Google, Jira or Linear; see [Briefings](briefings.md) |
+| An account that tells Watchtower who you are | Slack, Google, Jira, Linear or an email account; see [Briefings](briefings.md) |
 | No plan for today yet | One plan per day |
 | Fewer than three failed attempts today | After three failures it gives up until tomorrow |
 
@@ -52,7 +52,7 @@ Settings → Features → **Day Plan** sets **Generate at hour** (05:00 to 12:00
 
 The empty tab says "No day plan yet" with a status line, or "Today's plan at or after 08:00" once you've had plans before.
 
-- **Connect Slack, Google, Jira or Linear so Watchtower knows who you are.** There is no owner. Click **Open Connections**. Without one, the footer has no Generate, Regenerate or Reset, but an existing plan stays readable.
+- **Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are.** There is no owner. Click **Open Connections**. Without one, the footer has no Generate, Regenerate or Reset, but an existing plan stays readable.
 - **Off — Turn on.** Click **Turn on**.
 - **Connect a source to get this.** No account is connected yet; connect any one source.
 - **Preparing now.** The plan is being written; wait a minute.

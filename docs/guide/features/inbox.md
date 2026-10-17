@@ -33,6 +33,8 @@ The **Proposals** section holds every action waiting for a decision, whatever st
 
 Behind the scenes, **Attention detection** collects the mentions, DMs, thread replies, Jira comment mentions, calendar invites and mail addressed to you. It closes each one when you answer in the source.
 
+Messages for you in one channel outside threads, such as several mentions or DMs, stay one item that keeps them: Catch Up shows "3 mentions" (or "3 messages" when they are not all mentions), each with its sender and an **Open** link, the 20 newest plus "+N earlier". A new message adds to the item and marks it unread again, so an older one is never replaced, and the item comes back in the next recap.
+
 It makes no AI calls, runs every sync cycle, and needs an account that identifies you. It has no screen of its own: its output is Catch Up's **For you** list and the briefing's **Needs Attention**.
 
 ## Using it
@@ -73,6 +75,7 @@ The empty tab says "Nothing waiting for you". It shows a reaction cheat sheet: o
 | Within ~15 min, After this sync | The next pass is due on the next cycle |
 | Didn't work yet — retries automatically | The last pass failed; the reason follows the dash |
 
+- **"Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".** There is no owner, so Attention detection never runs. Click **Open Connections** and connect one; a calendar alone is not enough.
 - **No reminder yet.** A reminder shows only once it is due.
 
 Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).

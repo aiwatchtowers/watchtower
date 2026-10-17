@@ -89,6 +89,14 @@ final class MeetingReminderCenterTests: XCTestCase {
         return fmt
     }()
 
+    /// Now without its fraction: the fixtures' start times go through
+    /// `iso`, which keeps whole seconds and rounds a fraction within a
+    /// millisecond of the next second up, so an event `5 * 60` after a
+    /// fractional now could land just past the threshold.
+    private static func wholeSecondNow() -> Date {
+        Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+    }
+
     /// `CalendarEvent` has only `init(row:)` — build the fixture from a
     /// dictionary Row (the JoinMeetingActionTests convention), with times
     /// derived from `start` so tests carry no hardcoded dates.
@@ -126,7 +134,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     // MARK: - Pure logic: pre-meeting threshold
 
     func testPreMeetingFiresWithinThreshold() {
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let soon = makeEvent(id: "soon", start: now.addingTimeInterval(4 * 60))
         let later = makeEvent(id: "later", start: now.addingTimeInterval(6 * 60))
 
@@ -137,7 +145,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     }
 
     func testPreMeetingFiresExactlyAtThreshold() {
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let event = makeEvent(start: now.addingTimeInterval(5 * 60))
         let due = MeetingReminderLogic.preMeetingEvents(
             events: [event], now: now, reminderMinutes: 5, delivered: []
@@ -148,7 +156,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     func testPreMeetingSkipsAlreadyStartedEvent() {
         // First observed only after its start (start == now and start < now):
         // never notify about a meeting that already began.
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let started = makeEvent(id: "started", start: now.addingTimeInterval(-60))
         let startingNow = makeEvent(id: "zero", start: now)
         let due = MeetingReminderLogic.preMeetingEvents(
@@ -158,7 +166,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     }
 
     func testPreMeetingSkipsAllDayEvents() {
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let allDay = makeEvent(id: "allday", start: now.addingTimeInterval(120), isAllDay: true)
         let due = MeetingReminderLogic.preMeetingEvents(
             events: [allDay], now: now, reminderMinutes: 5, delivered: []
@@ -168,7 +176,7 @@ final class MeetingReminderCenterTests: XCTestCase {
 
     func testPreMeetingZeroMinutesDisables() {
         // Degenerate valid setting: 0 turns the surface off entirely.
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let event = makeEvent(start: now.addingTimeInterval(120))
         XCTAssertTrue(MeetingReminderLogic.preMeetingEvents(
             events: [event], now: now, reminderMinutes: 0, delivered: []
@@ -180,7 +188,7 @@ final class MeetingReminderCenterTests: XCTestCase {
 
     func testPreMeetingNoEventsIsClean() {
         // Degenerate valid input: an empty schedule produces nothing.
-        let now = Date()
+        let now = Self.wholeSecondNow()
         XCTAssertTrue(MeetingReminderLogic.preMeetingEvents(
             events: [], now: now, reminderMinutes: 5, delivered: []
         ).isEmpty)
@@ -192,7 +200,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     // MARK: - Pure logic: dedup + reschedule
 
     func testPreMeetingDedupSuppressesSecondFire() {
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let event = makeEvent(start: now.addingTimeInterval(3 * 60))
         let key = MeetingReminderLogic.preMeetingDedupKey(event)
         let due = MeetingReminderLogic.preMeetingEvents(
@@ -204,7 +212,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     func testPreMeetingRescheduleRefires() {
         // The dedup key embeds the start time: after a reschedule the old key
         // no longer matches, so the moved event notifies again.
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let original = makeEvent(id: "evt", start: now.addingTimeInterval(3 * 60))
         let deliveredKey = MeetingReminderLogic.preMeetingDedupKey(original)
         let rescheduled = makeEvent(id: "evt", start: now.addingTimeInterval(4 * 60))
@@ -249,7 +257,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     // MARK: - Pure logic: banner visibility window
 
     func testBannerVisibleWithinWindow() {
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let event = makeEvent(id: "evt", start: now.addingTimeInterval(4 * 60))
         XCTAssertEqual(MeetingReminderLogic.bannerEvent(
             events: [event], now: now, reminderMinutes: 5, dismissed: []
@@ -257,7 +265,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     }
 
     func testBannerHiddenBeforeWindowAndAfterFiveMinutesPastStart() {
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let farFuture = makeEvent(id: "far", start: now.addingTimeInterval(6 * 60))
         XCTAssertNil(MeetingReminderLogic.bannerEvent(
             events: [farFuture], now: now, reminderMinutes: 5, dismissed: []
@@ -275,7 +283,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     }
 
     func testBannerPicksEarliestAndSkipsDismissedAndAllDay() {
-        let now = Date()
+        let now = Self.wholeSecondNow()
         let allDay = makeEvent(id: "allday", start: now.addingTimeInterval(60), isAllDay: true)
         let first = makeEvent(id: "first", start: now.addingTimeInterval(2 * 60))
         let second = makeEvent(id: "second", start: now.addingTimeInterval(3 * 60))
@@ -294,7 +302,7 @@ final class MeetingReminderCenterTests: XCTestCase {
     // MARK: - Banner countdown text
 
     func testCountdownTextFormats() {
-        let now = Date()
+        let now = Self.wholeSecondNow()
         XCTAssertEqual(UpcomingMeetingBannerView.countdownText(start: now.addingTimeInterval(90), now: now), "in 1:30")
         XCTAssertEqual(UpcomingMeetingBannerView.countdownText(start: now.addingTimeInterval(605), now: now), "in 10:05")
         XCTAssertEqual(UpcomingMeetingBannerView.countdownText(start: now, now: now), "started")

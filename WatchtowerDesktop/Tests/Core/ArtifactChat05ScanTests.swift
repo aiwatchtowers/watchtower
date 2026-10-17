@@ -39,7 +39,10 @@ final class ArtifactChat05ScanTests: XCTestCase {
             // controls are view-only, and it never reaches the loopback
             // server (workbench files only) or any socket.
             "Views/Common/SandboxedHTMLView.swift",
-            "WatchtowerCore/Services/LocalPreview/HTMLPreviewPolicy.swift"
+            "WatchtowerCore/Services/LocalPreview/HTMLPreviewPolicy.swift",
+            // The in-app preview's file scheme handler (#563): read-only
+            // from disk, no socket or URL loading of its own.
+            "Views/Common/SandboxedHTMLSchemeHandler.swift"
         ]
         try assertNeverWrites(files)
     }

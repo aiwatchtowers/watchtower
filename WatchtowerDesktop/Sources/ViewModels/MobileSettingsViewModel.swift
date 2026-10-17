@@ -13,8 +13,8 @@ protocol MobileSettingsHost: AnyObject {
 
 /// Settings → Mobile on the Mac (mobile POC spec §2.3, §8 I-1, §9, §10):
 /// the "Sync with iPhone" opt-in, the hub status, the QR sheet and
-/// the linked phones (Allow… / Revoke typing, Allow… / Revoke answering
-/// permission prompts, Remove).
+/// the linked phones (Allow… / Revoke typing, Allow… / Revoke starting
+/// sessions, Allow… / Revoke answering permission prompts, Remove).
 ///
 /// The hub and its link center are the app's (`AppState.mobileHub`); this
 /// model reads them and refreshes the polled parts (iCloud account, last
@@ -61,6 +61,12 @@ final class MobileSettingsViewModel {
         "Allow \"\(name)\" to approve commands in Claude Code sessions?"
     }
 
+    /// The confirmation of starting sessions from the phone (#565), the
+    /// dialog's title.
+    nonisolated static func startSessionsQuestion(name: String) -> String {
+        "Allow \"\(name)\" to start Claude Code sessions on this Mac?"
+    }
+
     /// Remove's confirmation (spec §2.3), the dialog's title.
     nonisolated static func removeQuestion(name: String) -> String {
         "Remove \"\(name)\"?"
@@ -84,6 +90,22 @@ final class MobileSettingsViewModel {
     nonisolated static func typingLabel(_ device: HubSyncState.LinkedDevice) -> String {
         if device.typingAllowed { return "Typing allowed" }
         return device.typingRequested ? "Asks to type into sessions" : "Typing off"
+    }
+
+    /// A phone row's start-sessions state (#565): it needs typing too,
+    /// because a started agent reads the target text the phone wrote.
+    nonisolated static func startSessionsLabel(_ device: HubSyncState.LinkedDevice) -> String {
+        if !device.typingAllowed { return "Starting sessions needs typing" }
+        if !device.startSessionsGranted { return "Starting sessions off" }
+        return device.startSessionsAllowed ? "Starting sessions allowed" : "Starting sessions allowed on the Mac — off on the phone"
+    }
+
+    /// The typing confirmation's message; a start grant stored from before
+    /// comes back with typing (#565), so it says so.
+    nonisolated static func allowMessage(_ device: HubSyncState.LinkedDevice?) -> String {
+        let base = "The phone can then send text to sessions running on this Mac. Revoke turns it off again."
+        guard device?.startSessionsGranted == true else { return base }
+        return base + " Starting sessions, allowed earlier for this phone, comes back with it."
     }
 
     /// A phone row's permission-prompt state (#517).
@@ -110,6 +132,8 @@ final class MobileSettingsViewModel {
     private(set) var notice: String?
     /// The phone whose Allow… waits for confirmation.
     var pendingAllow: HubSyncState.LinkedDevice?
+    /// The phone whose start-sessions Allow… waits for confirmation.
+    var pendingStartSessionsAllow: HubSyncState.LinkedDevice?
     /// The phone whose permission-prompts Allow… waits for confirmation.
     var pendingPermissionsAllow: HubSyncState.LinkedDevice?
     /// The phone whose Remove waits for confirmation; drives the dialog.
@@ -292,6 +316,30 @@ final class MobileSettingsViewModel {
             notice = nil
         } catch {
             notice = "Couldn't change typing for \(device.name): \(error.localizedDescription)"
+        }
+    }
+
+    func requestStartSessionsAllow(_ device: HubSyncState.LinkedDevice) {
+        pendingStartSessionsAllow = device
+    }
+
+    func confirmStartSessionsAllow() {
+        guard let device = pendingStartSessionsAllow else { return }
+        pendingStartSessionsAllow = nil
+        setStartSessions(true, device)
+    }
+
+    func revokeStartSessions(_ device: HubSyncState.LinkedDevice) {
+        setStartSessions(false, device)
+    }
+
+    private func setStartSessions(_ allowed: Bool, _ device: HubSyncState.LinkedDevice) {
+        guard let center = hub?.linkCenter else { return }
+        do {
+            try center.setStartSessionsGranted(allowed, deviceID: device.deviceID)
+            notice = nil
+        } catch {
+            notice = "Couldn't change starting sessions for \(device.name): \(error.localizedDescription)"
         }
     }
 

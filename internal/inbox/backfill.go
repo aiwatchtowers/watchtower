@@ -125,12 +125,12 @@ func (p *Pipeline) BackfillMentions(ctx context.Context, since time.Time, dryRun
 // was designed for a window of minutes and two of its semantics invert over
 // a multi-week backfill window:
 //
-//   - Grouping by (channel, thread) keeps only the LATEST message per group
-//     and creates one item for the group. A non-threaded message's thread
-//     key is always "" (FindPendingMentions COALESCEs thread_ts), so
-//     grouping would collapse every plain channel mention across the whole
-//     backfill window into a single item per channel — recovering roughly
-//     one mention out of however many actually went missing.
+//   - Grouping by (channel, thread) keeps only the LATEST message of a
+//     thread group and creates one item for the group; plain channel
+//     messages (thread key "") are folded into one accumulating channel
+//     item (board #586) — fine for a live cycle, but a recovery run should
+//     not merge weeks-old mentions into a channel item the owner may
+//     already be working through.
 //   - Folding into "any pending item on the thread" doesn't check the
 //     item's age. Over a live per-cycle window the existing pending item is
 //     always about the same conversation the new candidate belongs to; over

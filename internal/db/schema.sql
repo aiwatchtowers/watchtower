@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS messages (
     subtype      TEXT NOT NULL DEFAULT '',
     permalink    TEXT NOT NULL DEFAULT '',
     ts_unix      REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
-    raw_json     TEXT NOT NULL DEFAULT '{}',
+    raw_json     TEXT NOT NULL DEFAULT '{}', -- kept empty ('{}'): the Slack payload is not stored (Slack API terms: minimum necessary retention)
     PRIMARY KEY (channel_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
@@ -558,6 +558,9 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
     card_generated_at TEXT,
     composed_at     TEXT,
+    mentions        TEXT NOT NULL DEFAULT '[]', -- channel-level Slack items: JSON [{ts,sender,trigger,text,permalink}] of the folded messages, oldest first, the 20 newest
+    mentions_earlier INTEGER NOT NULL DEFAULT 0, -- older folded messages that fell off the 20-entry list
+    mentioned_at    TEXT NOT NULL DEFAULT '', -- when a fold last added a message ('' = never); Catch-Up windows use MAX(created_at, mentioned_at)
     UNIQUE(channel_id, message_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);
@@ -1562,7 +1565,8 @@ CREATE TABLE IF NOT EXISTS email_accounts (
     last_uid       INTEGER NOT NULL DEFAULT 0,    -- sync watermark: highest IMAP UID synced
     uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY; a change means last_uid must reset
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ideas_email_floor REAL NOT NULL DEFAULT 0     -- ideas registry floor: unix seconds of the newest imap_messages.internal_date the email pre-digest mined (see 00135)
 );
 
 CREATE TABLE IF NOT EXISTS imap_messages (
@@ -1933,7 +1937,7 @@ CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
 CREATE TABLE IF NOT EXISTS idea_mentions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner')),
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap')),
     ref         TEXT NOT NULL DEFAULT '',
     quote       TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL DEFAULT '',
@@ -1944,11 +1948,11 @@ CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 
 -- Stage-1 pre-digests for streams that have no existing digest pipeline
--- (Gmail, Jira): a lightweight per-account topic summary the stage-2
+-- (Gmail, IMAP/Outlook mailboxes, Jira): a lightweight per-account topic summary the stage-2
 -- consolidator reads alongside Slack digests and meeting recaps.
 CREATE TABLE IF NOT EXISTS stream_digests (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    source       TEXT NOT NULL CHECK(source IN ('gmail','jira')),
+    source       TEXT NOT NULL CHECK(source IN ('gmail','jira','imap')),  -- 'imap' = an email_accounts mailbox (IMAP or Outlook), see 00135
     account_id   INTEGER NOT NULL,
     scope        TEXT NOT NULL DEFAULT '',
     period_from  TEXT NOT NULL,
@@ -2454,9 +2458,12 @@ CREATE TABLE IF NOT EXISTS projects (
     worktree_setup TEXT NOT NULL DEFAULT '', -- the command run in a new session worktree before the agent's first launch; '' = none (00114)
     agent_analytics INTEGER NOT NULL DEFAULT 0 CHECK (agent_analytics IN (0, 1)), -- 1 = Agent analytics reads this workbench's Claude Code logs (00116)
     methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00123)
-    ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00123)
-    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), -- the owner's finish check; NULL = the folder file, else on (00123)
-    board_hidden_statuses TEXT NULL -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
+    ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = strict (00123; the folder file no longer sets it, 00133)
+    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), -- the owner's finish check; NULL = on (00123; the folder file no longer sets it, 00133)
+    board_hidden_statuses TEXT NULL, -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
+    methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), -- 1 = existed at the 00133 upgrade: its folder file's weaker checks are still to be carried into the owner's setting, once (board #558)
+    ask_guard_carried_at TEXT NULL, -- when ask_guard_mode was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
+    finish_check_carried_at TEXT NULL -- when finish_check was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
 );
 
 -- Workbench board columns (00125, PROJ-19): named columns inside one status
@@ -2952,6 +2959,7 @@ CREATE TABLE IF NOT EXISTS history_backfill (
     started_at     TEXT    NOT NULL,
     updated_at     TEXT    NOT NULL,
     done_at        TEXT,
+    held_since     TEXT,  -- when transient failures began holding the row (NULL = not held; 00131)
     UNIQUE (source_kind, account_id)
 );
 

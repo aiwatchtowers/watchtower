@@ -15,6 +15,9 @@ package enum FeatureReadiness {
     /// `DefaultIdeasMineIntervalHours` / `DefaultStreamsIntervalHours` in Go.
     static let ideasIntervalHours = 6
     static let streamsIntervalHours = 6
+    /// `memoryBackfillWaitMax` in Go: the longest memory waits for a running
+    /// history backfill row, from its `started_at` (#578).
+    package static let memoryBackfillWaitMax: TimeInterval = 24 * 60 * 60
 
     package static func evaluate(_ inputs: ReadinessInputs) -> [ReadinessFeature: Readiness] {
         Dictionary(uniqueKeysWithValues: ReadinessFeature.allCases.map { ($0, readiness(of: $0, inputs)) })
@@ -25,9 +28,9 @@ package enum FeatureReadiness {
     package static let ownerGated: Set<ReadinessFeature> = [.briefing, .dayPlan, .inbox]
 
     /// With the owner unknown, an owner-gated feature promises no run: a
-    /// scheduled or waiting state reads nil, so no line (Briefings and Day
-    /// Plan say why in their no-owner box; Inbox just shows none). The other
-    /// states are facts and stay.
+    /// scheduled or waiting state reads nil, so no line (Briefings, Day Plan
+    /// and Inbox say why in their no-owner box; Home's card names
+    /// `.ownerIdentity` instead). The other states are facts and stay.
     package static func honoringOwner(_ readiness: Readiness?, of feature: ReadinessFeature, ownerKnown: Bool) -> Readiness? {
         guard !ownerKnown, ownerGated.contains(feature) else { return readiness }
         switch readiness {
@@ -48,7 +51,11 @@ package enum FeatureReadiness {
                inputs.now.timeIntervalSince(run.startedAt) < preparingMaxAge {
                 return .preparing(detail: syncDetail)
             }
-            if run.status == "error" { return .error(message: run.errorMessage) }
+            // While memory waits for the history backfill, an older failed
+            // run is not what holds it (#578): the wait line wins.
+            if run.status == "error", !(feature == .memory && memoryWaitsForHistory(inputs)) {
+                return .error(message: run.errorMessage)
+            }
         }
         if feature.readsSyncedData, inputs.connected.slack, inputs.lastSyncTime == nil {
             return .waitingForSync(detail: syncDetail)
@@ -80,9 +87,21 @@ package enum FeatureReadiness {
             return interval(last: inputs.stamps.lastIdeas, hours: ideasIntervalHours, now: now) ?? cycle
         case .streamDigests:
             return interval(last: inputs.stamps.lastStreams, hours: streamsIntervalHours, now: now) ?? cycle
-        case .slackSync, .digests, .tracks, .memory, .inbox, .knowledgeIndex, .calendar, .jira:
+        case .memory:
+            return memoryWaitsForHistory(inputs) ? .afterHistoryLoads : cycle
+        case .slackSync, .digests, .tracks, .inbox, .knowledgeIndex, .calendar, .jira:
             return cycle
         }
+    }
+
+    /// Dual path with Go's `memoryWaitsForBackfill` (internal/daemon/daemon.go):
+    /// only before memory's first successful run, never under the kill switch
+    /// (`sync.backfill_days <= 0`), and only while a backfill row is running
+    /// and started less than `memoryBackfillWaitMax` ago; paused, done and off
+    /// rows never hold it.
+    private static func memoryWaitsForHistory(_ inputs: ReadinessInputs) -> Bool {
+        guard !inputs.backfillOff, !inputs.memoryHasRun else { return false }
+        return inputs.runningBackfillStarts.contains { inputs.now.timeIntervalSince($0) < memoryBackfillWaitMax }
     }
 
     /// A once-a-day pipeline's gate, as Go's `shouldRunBriefing`: already ran
@@ -114,6 +133,7 @@ package enum FeatureReadiness {
         case let .at(hour, tomorrow): "\(tomorrow ? "tomorrow" : "today") at \(String(format: "%02d:00", hour))"
         case .inAboutADay: "in about a day"
         case .inHours(let hours): "in about \(hours) h"
+        case .afterHistoryLoads: "waiting for history to load"
         }
     }
 
@@ -121,6 +141,7 @@ package enum FeatureReadiness {
     package static func line(_ readiness: Readiness) -> String {
         switch readiness {
         case .off: "Off — Turn on"
+        case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
         case .needsSource(let source): "Connect \(source.displayName) to get this"
         case .ready: "Ready — Open"
         case .preparing(let detail): withDetail("Preparing now", detail)

@@ -332,14 +332,16 @@ final class WorkbenchesViewModel {
     /// Every deferred DELETE write in flight (the timer's and the quit's):
     /// the quit waits on it, bounded by `quitDeleteWait`.
     @ObservationIgnored let deleteWrites = DispatchGroup()
-    /// How long the quit commit of the Undo batch may hold the quit. A seam
-    /// for tests.
-    @ObservationIgnored var quitDeleteWait: TimeInterval = 2
+    /// How long the quit commit of the Undo batch may hold the quit: the
+    /// write's busy budget plus 3 s, so a write that waited the whole budget
+    /// still lands (board #588).
+    nonisolated static let defaultQuitDeleteWait = TimeInterval(DBLockInstrumentation.busyTimeoutMS) / 1000 + 3
+    /// `defaultQuitDeleteWait`; a seam for tests.
+    @ObservationIgnored var quitDeleteWait: TimeInterval = WorkbenchesViewModel.defaultQuitDeleteWait
     /// The Undo window's wait. A seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Runs deferred DELETEs in one write — the only DELETE path of the
-    /// deferred delete, the timer's and the quit's. Off the main actor, so
-    /// the quit can wait for it while it holds the main thread. A seam for
+    /// deferred delete, the timer's and the quit's. Off the main actor. A seam for
     /// tests (a failing or a slow write).
     @ObservationIgnored lazy var commitSessionDeletes: @Sendable ([Int64]) async throws -> Void = { [dbPool] ids in
         try await dbPool.write { db in
@@ -363,6 +365,10 @@ final class WorkbenchesViewModel {
     /// sidebar on Projects, main window visible). The git status refresh
     /// runs only then. Unwired = never on screen.
     var isTabOnScreen: () -> Bool = { false }
+    /// `refreshOnPoll`'s visibility gate (board #731).
+    @ObservationIgnored private var pollRefreshGate = ForegroundRefreshGate()
+    /// The reload `setOnScreen` started — held so tests can await it.
+    @ObservationIgnored private(set) var onScreenRefresh: Task<Void, Never>?
     /// The project a delete is running for; the page disables Delete meanwhile.
     private(set) var deletingWorkbenchID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
@@ -672,9 +678,31 @@ final class WorkbenchesViewModel {
     }
 
     /// The notification center's 30 s poll. The agent writes comments and
-    /// asks from another process (DB only), so the list — and the badge — reloads.
+    /// asks from another process (DB only), so the list — and the badge —
+    /// reloads, while the UI is on screen (board #731; the notices
+    /// themselves go out either way). Off screen only the workbench ids are
+    /// read: one deleted elsewhere (the CLI) still has its terminals closed
+    /// and its state dropped by a full reload at once.
     func refreshOnPoll() async {
-        await reload()
+        if pollRefreshGate.tick() {
+            await reload()
+            return
+        }
+        let ids: [Int64]
+        do {
+            ids = try await dbPool.read { try WorkbenchQueries.fetchAll($0).map(\.id) }
+        } catch {
+            print("[Workbenches] off-screen poll read failed: \(error.localizedDescription)")
+            return
+        }
+        if !Self.vanished(previous: summaries.map(\.id), current: ids).isEmpty { await reload() }
+    }
+
+    /// The UI went on or off screen: back on screen after a skipped poll,
+    /// the list reloads at once.
+    func setOnScreen(_ onScreen: Bool) {
+        guard pollRefreshGate.setOnScreen(onScreen) else { return }
+        onScreenRefresh = Task { _ = await reload() }
     }
 
     nonisolated static func vanished(previous: [Int64], current: [Int64]) -> [Int64] {

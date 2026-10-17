@@ -39,7 +39,8 @@ struct StartSessionSheet: View {
                     grant: env.workbenchReplica.snapshot.grant(for: env.linkedDevice?.deviceID),
                     attempt: draft.targetID.flatMap { starter.attempts[$0] },
                     inFlight: starter.inFlight,
-                    now: context.date
+                    now: context.date,
+                    startsTurnedOn: env.deviceSettings.startSessions
                 ) {
                     content(model)
                 } else {

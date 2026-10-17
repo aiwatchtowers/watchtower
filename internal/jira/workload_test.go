@@ -183,7 +183,7 @@ func TestWorkload_WithJiraAndSlack(t *testing.T) {
 		ts := float64(baseTS + int64(i*60)) // 1 minute apart
 		tsStr := fmt.Sprintf("%d.%06d", int64(ts), i)
 		require.NoError(t, d.UpsertMessage(db.Message{
-			ChannelID: "C1", TS: tsStr, UserID: "U2", Text: "msg", RawJSON: "{}",
+			ChannelID: "C1", TS: tsStr, UserID: "U2", Text: "msg",
 		}))
 	}
 
@@ -226,7 +226,7 @@ func TestWorkload_SortOrder(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		tsStr := fmt.Sprintf("%d.%06d", baseTS+int64(i*60), i)
 		require.NoError(t, d.UpsertMessage(db.Message{
-			ChannelID: "C1", TS: tsStr, UserID: "U1", Text: "msg", RawJSON: "{}",
+			ChannelID: "C1", TS: tsStr, UserID: "U1", Text: "msg",
 		}))
 	}
 
@@ -324,7 +324,7 @@ func TestWorkload_WithMeetingHours(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		tsStr := fmt.Sprintf("%d.%06d", baseTS+int64(i*60), i)
 		require.NoError(t, d.UpsertMessage(db.Message{
-			ChannelID: "C1", TS: tsStr, UserID: "U1", Text: "msg", RawJSON: "{}",
+			ChannelID: "C1", TS: tsStr, UserID: "U1", Text: "msg",
 		}))
 	}
 

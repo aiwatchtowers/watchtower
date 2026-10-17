@@ -56,10 +56,10 @@ func seedExpertsFixture(t *testing.T, d *db.DB) {
 	require.NoError(t, d.UpsertUser(db.User{ID: "1:U1", Name: "petya", Email: "petya@example.com"}))
 	require.NoError(t, d.UpsertUser(db.User{ID: "1:U2", Name: "anya", Email: "anya@example.com"}))
 	msgs := []db.Message{
-		{ChannelID: "1:C1", TS: "1700000001.000001", UserID: "1:U1", Text: "payments retry logic is flaky again", RawJSON: "{}", Permalink: "https://slack.example.com/archives/C1/p1700000001000001"},
-		{ChannelID: "1:C1", TS: "1700000002.000001", UserID: "1:U1", Text: "fixed the payments webhook signature check", RawJSON: "{}", Permalink: "https://slack.example.com/archives/C1/p1700000002000001"},
-		{ChannelID: "1:C1", TS: "1700000003.000001", UserID: "1:U1", Text: "payments reconciliation job passed", RawJSON: "{}", Permalink: "https://slack.example.com/archives/C1/p1700000003000001"},
-		{ChannelID: "1:C1", TS: "1700000004.000001", UserID: "1:U2", Text: "asking about the payments dashboard", RawJSON: "{}", Permalink: "https://slack.example.com/archives/C1/p1700000004000001"},
+		{ChannelID: "1:C1", TS: "1700000001.000001", UserID: "1:U1", Text: "payments retry logic is flaky again", Permalink: "https://slack.example.com/archives/C1/p1700000001000001"},
+		{ChannelID: "1:C1", TS: "1700000002.000001", UserID: "1:U1", Text: "fixed the payments webhook signature check", Permalink: "https://slack.example.com/archives/C1/p1700000002000001"},
+		{ChannelID: "1:C1", TS: "1700000003.000001", UserID: "1:U1", Text: "payments reconciliation job passed", Permalink: "https://slack.example.com/archives/C1/p1700000003000001"},
+		{ChannelID: "1:C1", TS: "1700000004.000001", UserID: "1:U2", Text: "asking about the payments dashboard", Permalink: "https://slack.example.com/archives/C1/p1700000004000001"},
 	}
 	for _, m := range msgs {
 		require.NoError(t, d.UpsertMessage(m))
