@@ -39,10 +39,12 @@ final class HTMLPreviewReplyTests: XCTestCase {
     func testTheInAppPolicyForbidsFetchAndWorkersButShowsOwnFrames() {
         let policy = HTMLPreviewPolicy.inAppContentSecurityPolicy
         for directive in ["connect-src 'none'", "worker-src 'none'", "object-src 'none'", "form-action 'none'", "base-uri 'none'",
-                          "frame-src 'self'", "child-src 'self'", "default-src 'self'"] {
+                          "frame-src 'self'", "child-src 'self'", "default-src 'self'",
+                          "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://"] {
             XCTAssertTrue(policy.contains(directive), directive)
         }
         XCTAssertFalse(policy.contains("https:;"))
+        XCTAssertFalse(LocalPreviewHTTP.contentSecurityPolicy.contains("unsafe-eval"), "the browser keeps it off")
         XCTAssertTrue(LocalPreviewHTTP.contentSecurityPolicy.hasSuffix(HTMLPreviewPolicy.sourcePolicy(frames: "'none'")),
                       "the browser shares the same source directives")
     }

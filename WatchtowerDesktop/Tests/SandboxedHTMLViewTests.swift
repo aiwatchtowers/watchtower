@@ -212,11 +212,13 @@ final class SandboxedHTMLViewTests: XCTestCase {
         <script>
         const framed = [];
         let fetched = "pending";
+        let evaluated = "off";
+        try { evaluated = String(new Function("return 6 * 7")()) } catch (e) {}
         window.addEventListener("message", (e) => { framed.push(e.data) });
         fetch("style.css").then(r => r.text()).then(() => { fetched = "read" }).catch(() => { fetched = "blocked" });
         window.onload = () => setTimeout(() => {
           document.title = [getComputedStyle(document.body).color, window.leaked || 0, window.gitLeaked || 0,
-                            framed.sort().join("+"), fetched].join("|");
+                            framed.sort().join("+"), fetched, evaluated].join("|");
         }, 300);
         </script></body></html>
         """
@@ -224,8 +226,9 @@ final class SandboxedHTMLViewTests: XCTestCase {
         try index.write(to: file, atomically: true, encoding: .utf8)
         let webView = try host(.file(file, folder: folder))
         let title = try await waitForTitle(webView) { $0.contains("|") }
-        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok|blocked",
-                       "visible siblings load and frame; no dotfile does, directly or by a link; no script reads a file as text")
+        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok|blocked|42",
+                       "visible siblings load and frame; no dotfile does, directly or by a link; no script reads a file as text; "
+                           + "new Function runs")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(counter.hits, 0, "an https image off the allowlist never connects")
     }

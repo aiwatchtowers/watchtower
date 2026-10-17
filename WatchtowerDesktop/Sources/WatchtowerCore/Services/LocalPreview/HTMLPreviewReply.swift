@@ -81,10 +81,11 @@ extension HTMLPreviewPolicy {
     /// The source directives the app and the browser share (#563): scripts,
     /// styles, images and fonts from the page's own origin or the CDN
     /// allowlist; no fetch/XHR, WebSocket or worker (a script cannot read
-    /// the folder's files as text); `frames` for frame/child sources.
-    package static func sourcePolicy(frames: String) -> String {
+    /// the folder's files as text); `frames` for frame/child sources;
+    /// `allowEval` lets `eval`/`new Function` run (template compilers in a deck).
+    package static func sourcePolicy(frames: String, allowEval: Bool = false) -> String {
         let cdns = cdnHosts.map { "https://\($0)" }.joined(separator: " ")
-        return "default-src 'self'; script-src 'self' 'unsafe-inline' \(cdns); "
+        return "default-src 'self'; script-src 'self' 'unsafe-inline'\(allowEval ? " 'unsafe-eval'" : "") \(cdns); "
             + "style-src 'self' 'unsafe-inline' \(cdns); img-src 'self' data: blob: \(cdns); font-src 'self' data: \(cdns); "
             + "media-src 'self' blob:; connect-src 'none'; frame-src \(frames); child-src \(frames); worker-src 'none'; "
             + "object-src 'none'; form-action 'none'; base-uri 'none'"
@@ -92,6 +93,8 @@ extension HTMLPreviewPolicy {
 
     /// The in-app preview's CSP: the browser's, but frames of the page's own
     /// files show (the in-app view has no other origin to protect, so no
-    /// `sandbox`).
-    package static let inAppContentSecurityPolicy = sourcePolicy(frames: "'self'")
+    /// `sandbox`), and `eval` runs as it did before #563. That opens no
+    /// channel: `connect-src`/`worker-src` stay `'none'` and loads stay on the
+    /// folder and the CDN allowlist. The browser keeps it off.
+    package static let inAppContentSecurityPolicy = sourcePolicy(frames: "'self'", allowEval: true)
 }
