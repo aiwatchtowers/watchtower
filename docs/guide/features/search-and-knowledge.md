@@ -17,7 +17,7 @@ You remember a thing was discussed, but not where. Ask the assistant "what did w
 - the text files (`.md`, `.markdown`, `.txt`) of a workbench folder, visible only to that workbench's own sessions;
 - the Confluence spaces you select (pages, blog posts, comments and the text of attachments).
 
-Memory is not part of this index; the assistant reads it separately. A deleted source row leaves the index within one cycle, a Slack message deleted today within a sync cycle or two, an older one as the daily check reaches its day (see [Privacy](../concepts/privacy.md#when-something-is-deleted-at-the-source)).
+Memory is not part of this index; the assistant reads it separately. A deleted source row leaves the index within one cycle, a Slack message deleted today within a sync cycle or two, an older one when the day-by-day check reaches its day (see [Privacy](../concepts/privacy.md#when-something-is-deleted-at-the-source)).
 
 **Confluence in search** uses your Jira sign-in. It is read-only: Watchtower never writes to Confluence from the index. Nothing is fetched until you select a space; after that each cycle loads a bounded amount (about 90 seconds of work), so a big space takes several cycles to arrive.
 
