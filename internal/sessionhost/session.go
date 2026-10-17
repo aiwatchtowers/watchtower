@@ -48,7 +48,7 @@ func startSession(req LaunchReq, ringSize int, now time.Time) (*session, error) 
 	if req.Executable == "" {
 		return nil, errors.New("launch: empty executable")
 	}
-	cmd := exec.Command(req.Executable, req.Args...) //nolint:gosec // the host runs what its owner's app asks for
+	cmd := exec.Command(req.Executable, req.Args...) // the host runs what its owner's app asks for
 	// A nil Env would make exec inherit the host's environment.
 	cmd.Env = append([]string{}, req.Env...)
 	cmd.Dir = req.Cwd

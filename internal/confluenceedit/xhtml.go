@@ -161,8 +161,7 @@ type frame struct {
 	noCloser map[string]bool // delimiters with no closer left in s
 	noCode   map[int]bool    // backtick run lengths with no closing run left
 	noMid    bool            // no "](" left in s
-	nextMid  int             // the first "](" after lastOpen (valid when > lastOpen)
-	lastOpen int
+	nextMid  int             // the next "](" found by the last lookup (valid when past the index searched from)
 }
 
 var delimTags = map[string]string{"**": "strong", "~~": "s", "_": "em"}

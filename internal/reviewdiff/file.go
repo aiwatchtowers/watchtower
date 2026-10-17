@@ -23,7 +23,7 @@ func (r *Repo) File(ctx context.Context, tree, path string) (Side, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Side{}, ctxErr
 		}
-		return Side{}, nil //nolint:nilerr // a failing cat-file -e means the path is not in the tree
+		return Side{}, nil // a failing cat-file -e means the path is not in the tree
 	}
 	sizeOut, err := r.git(ctx, nil, "cat-file", "-s", spec)
 	if err != nil {

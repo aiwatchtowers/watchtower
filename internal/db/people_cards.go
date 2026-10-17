@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -126,7 +127,7 @@ func (db *DB) GetLatestPeopleCard(userID string) (*PeopleCard, error) {
 	row := db.QueryRow(peopleCardSelectCols+` FROM people_cards WHERE user_id = ? ORDER BY period_to DESC LIMIT 1`, userID)
 	var card PeopleCard
 	err := scanPeopleCard(row, &card)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

@@ -32,7 +32,7 @@ func (db *DB) ReplaceReviewNotes(projectID, sessionID int64, treeSHA string, not
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() //nolint:errcheck // a committed tx makes this a no-op
+	defer tx.Rollback() // a committed tx makes this a no-op
 	if _, err := tx.Exec(`DELETE FROM review_notes WHERE project_id = ? AND session_id = ?`, projectID, sessionID); err != nil {
 		return fmt.Errorf("clearing review notes: %w", err)
 	}
@@ -172,7 +172,7 @@ func (db *DB) ReplaceProposedReviewLessons(projectID int64, ls []ReviewLesson) (
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback() //nolint:errcheck // a committed tx makes this a no-op
+	defer tx.Rollback() // a committed tx makes this a no-op
 	if _, err := tx.Exec(`DELETE FROM review_lessons WHERE project_id = ? AND status = 'proposed'`, projectID); err != nil {
 		return nil, fmt.Errorf("clearing proposed lessons: %w", err)
 	}

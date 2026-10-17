@@ -13,10 +13,10 @@ import (
 // name to avoid collisions with helpers in other detector files.
 func wtExistsInboxItem(database *db.DB, channelID, messageTS, triggerType string) bool {
 	var n int
-	database.QueryRow( //nolint:errcheck
+	database.QueryRow(
 		`SELECT COUNT(*) FROM inbox_items WHERE channel_id=? AND message_ts=? AND trigger_type=?`,
 		channelID, messageTS, triggerType,
-	).Scan(&n) //nolint:errcheck
+	).Scan(&n) //nolint:errcheck // a failed count reads as zero: no row yet
 	return n > 0
 }
 

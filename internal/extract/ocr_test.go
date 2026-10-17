@@ -20,13 +20,13 @@ func fakeHelper(t *testing.T, body string) (path, argsFile string) {
 	path = filepath.Join(dir, "watchtower-ocr")
 	argsFile = filepath.Join(dir, "args.txt")
 	script := "#!/bin/sh\necho \"$@\" > '" + argsFile + "'\n" + body + "\n"
-	require.NoError(t, os.WriteFile(path, []byte(script), 0o700)) //nolint:gosec // a test script must be executable
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o700)) // a test script must be executable
 	return path, argsFile
 }
 
 func readArgs(t *testing.T, file string) string {
 	t.Helper()
-	b, err := os.ReadFile(file) //nolint:gosec // test-owned path
+	b, err := os.ReadFile(file) // test-owned path
 	require.NoError(t, err)
 	return strings.TrimSpace(string(b))
 }
@@ -105,7 +105,7 @@ func TestOCRTimeoutIsSixtySeconds(t *testing.T) {
 func TestResolveHelperPath(t *testing.T) {
 	exeDir := t.TempDir()
 	exe := filepath.Join(exeDir, "watchtower")
-	require.NoError(t, os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // test executable
+	require.NoError(t, os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o700)) // test executable
 	nextTo := filepath.Join(exeDir, "watchtower-ocr")
 	executable := func() (string, error) { return exe, nil }
 	env := map[string]string{}
@@ -113,9 +113,9 @@ func TestResolveHelperPath(t *testing.T) {
 
 	assert.Empty(t, resolveHelperPath(getenv, executable), "no helper anywhere")
 
-	require.NoError(t, os.WriteFile(nextTo, []byte("#!/bin/sh\n"), 0o600)) //nolint:gosec // deliberately not executable
+	require.NoError(t, os.WriteFile(nextTo, []byte("#!/bin/sh\n"), 0o600)) // deliberately not executable
 	assert.Empty(t, resolveHelperPath(getenv, executable), "a non-executable file is not a helper")
-	require.NoError(t, os.Chmod(nextTo, 0o700)) //nolint:gosec // test executable
+	require.NoError(t, os.Chmod(nextTo, 0o700)) // test executable
 	assert.Equal(t, nextTo, resolveHelperPath(getenv, executable), "next to the executable")
 
 	override, _ := fakeHelper(t, "true")
@@ -131,8 +131,8 @@ func TestResolveHelperPath(t *testing.T) {
 func TestResolveHelperPathFollowsSymlink(t *testing.T) {
 	realDir, linkDir := t.TempDir(), t.TempDir()
 	exe := filepath.Join(realDir, "watchtower")
-	require.NoError(t, os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o700))                                      //nolint:gosec // test executable
-	require.NoError(t, os.WriteFile(filepath.Join(realDir, "watchtower-ocr"), []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // test executable
+	require.NoError(t, os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o700))                                      // test executable
+	require.NoError(t, os.WriteFile(filepath.Join(realDir, "watchtower-ocr"), []byte("#!/bin/sh\n"), 0o700)) // test executable
 	link := filepath.Join(linkDir, "watchtower")
 	require.NoError(t, os.Symlink(exe, link))
 	got := resolveHelperPath(func(string) string { return "" }, func() (string, error) { return link, nil })

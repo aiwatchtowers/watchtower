@@ -301,8 +301,8 @@ func TestRunSyncStop_ForceKillsStuckDaemon(t *testing.T) {
 
 	select {
 	case waitErr := <-done:
-		exitErr, ok := waitErr.(*exec.ExitError)
-		require.True(t, ok, "expected the helper to die by signal, got err=%v", waitErr)
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, waitErr, &exitErr, "expected the helper to die by signal, got err=%v", waitErr)
 		status, ok := exitErr.Sys().(syscall.WaitStatus)
 		require.True(t, ok)
 		assert.True(t, status.Signaled() && status.Signal() == syscall.SIGKILL,

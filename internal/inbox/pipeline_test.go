@@ -514,7 +514,7 @@ func TestPipeline_Run_OrderedPhases(t *testing.T) {
 	mustCount := func(trig string, want int) {
 		t.Helper()
 		var n int
-		d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type=?`, trig).Scan(&n) //nolint:errcheck
+		d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type=?`, trig).Scan(&n) //nolint:errcheck // a missing row fails the assertion below
 		assert.Equal(t, want, n, "trigger_type=%s", trig)
 	}
 	mustCount("jira_assigned", 1)
@@ -523,7 +523,7 @@ func TestPipeline_Run_OrderedPhases(t *testing.T) {
 
 	// briefing_ready should be classified as ambient
 	var cls string
-	d.QueryRow(`SELECT item_class FROM inbox_items WHERE trigger_type='briefing_ready'`).Scan(&cls) //nolint:errcheck
+	d.QueryRow(`SELECT item_class FROM inbox_items WHERE trigger_type='briefing_ready'`).Scan(&cls) //nolint:errcheck // a missing row fails the assertion below
 	assert.Equal(t, "ambient", cls, "briefing_ready item_class")
 }
 
@@ -543,7 +543,7 @@ func TestPipeline_Run_AutoArchiveRuns(t *testing.T) {
 	require.NoError(t, err)
 
 	var reason string
-	d.QueryRow(`SELECT archive_reason FROM inbox_items WHERE trigger_type='decision_made'`).Scan(&reason) //nolint:errcheck
+	d.QueryRow(`SELECT archive_reason FROM inbox_items WHERE trigger_type='decision_made'`).Scan(&reason) //nolint:errcheck // a missing row fails the assertion below
 	assert.Equal(t, "seen_expired", reason)
 }
 
@@ -605,7 +605,7 @@ func TestInbox02_AutoResolveJiraOnUserComment(t *testing.T) {
 	_, _, err = p.Run(context.Background())
 	require.NoError(t, err)
 	var status string
-	d.QueryRow(`SELECT status FROM inbox_items WHERE trigger_type='jira_comment_mention' AND channel_id='WT-1'`).Scan(&status) //nolint:errcheck
+	d.QueryRow(`SELECT status FROM inbox_items WHERE trigger_type='jira_comment_mention' AND channel_id='WT-1'`).Scan(&status) //nolint:errcheck // a missing row fails the assertion below
 	if status != "resolved" {
 		t.Errorf("want resolved, got %q", status)
 	}
@@ -630,7 +630,7 @@ func TestInbox02_AutoResolveCalendarOnUserRSVP(t *testing.T) {
 	_, _, err = p.Run(context.Background())
 	require.NoError(t, err)
 	var status string
-	d.QueryRow(`SELECT status FROM inbox_items WHERE trigger_type='calendar_invite'`).Scan(&status) //nolint:errcheck
+	d.QueryRow(`SELECT status FROM inbox_items WHERE trigger_type='calendar_invite'`).Scan(&status) //nolint:errcheck // a missing row fails the assertion below
 	if status != "resolved" {
 		t.Errorf("want resolved, got %q", status)
 	}

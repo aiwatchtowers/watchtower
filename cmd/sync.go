@@ -263,7 +263,7 @@ func runSyncStop(cfg *config.Config, force bool) error {
 
 	fmt.Printf("Stopping daemon (PID %d)...\n", pid)
 	if err := signalStop(pid, syscall.SIGTERM); err != nil {
-		if err == errProcessGone {
+		if errors.Is(err, errProcessGone) {
 			reapPIDFile(pidPath)
 			fmt.Println("Daemon stopped.")
 			return nil
@@ -311,7 +311,7 @@ func forceStopSync(pidPath string, pid int) error {
 	}
 	fmt.Printf("Daemon (PID %d) still running; sending a second SIGTERM...\n", pid)
 	if err := signalStop(pid, syscall.SIGTERM); err != nil {
-		if err == errProcessGone {
+		if errors.Is(err, errProcessGone) {
 			reapPIDFile(pidPath)
 			fmt.Printf("Daemon (PID %d) stopped (SIGTERM).\n", pid)
 			return nil
@@ -330,7 +330,7 @@ func forceStopSync(pidPath string, pid int) error {
 	}
 	fmt.Printf("Daemon (PID %d) still running; sending SIGKILL...\n", pid)
 	if err := signalStop(pid, syscall.SIGKILL); err != nil {
-		if err == errProcessGone {
+		if errors.Is(err, errProcessGone) {
 			reapPIDFile(pidPath)
 			fmt.Printf("Daemon (PID %d) stopped (SIGKILL).\n", pid)
 			return nil

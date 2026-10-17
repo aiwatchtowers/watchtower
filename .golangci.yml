@@ -24,10 +24,20 @@ linters:
     - exhaustive
     - nilerr
     - predeclared
+    - errorlint
+    - durationcheck
+    - makezero
+    - fatcontext
+    - copyloopvar
+    - bidichk
+    - reassign
 
     # Code quality
     - unconvert
     - ineffassign
+    - unused
+    - wastedassign
+    - nolintlint
 
     # Style & consistency
     - misspell
@@ -62,6 +72,15 @@ linters:
 
     exhaustive:
       default-signifies-exhaustive: true
+
+    errorlint:
+      # Only == / type assertions on errors. "%w: %v" (wrap a sentinel, keep
+      # the cause as text) is a deliberate choice here, not a lint finding.
+      errorf: false
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
 
     gosec:
       excludes:

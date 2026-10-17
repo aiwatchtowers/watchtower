@@ -38,7 +38,7 @@ func (c Client) Fetch(ctx context.Context, token string) ([]byte, error) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("User-Agent", c.UserAgent)
-	resp, err := c.HTTP.Do(req) //nolint:gosec // G704: the URL is the fixed Anthropic endpoint (tests override it)
+	resp, err := c.HTTP.Do(req) // the URL is the fixed Anthropic endpoint (tests override it)
 	if err != nil {
 		return nil, fmt.Errorf("planusage: request failed: %w", redact(err, token))
 	}

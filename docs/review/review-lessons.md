@@ -1781,6 +1781,15 @@ Entry format:
 - rule-gap (candidate, dim 6): *an observer wrapped around a sync phase lists every call site of that phase, including startup pre-syncs outside the cycle, and every writer of the state it diffs on the default sync path.*
 - outcome: TBD
 
+## 2026-10-17 — chore/revdiff-linters (enable errorlint[errorf off], unused, wastedassign, nolintlint, copyloopvar, durationcheck, makezero, fatcontext, bidichk, reassign + mechanical fixes; panel: prosecutor (5) + codex (0, default prompt), 3 specialists DOWN (not installed); judge verified against 76c5e6ab6 by reading and grep) — verdict: approve
+
+- contested (held minor, prosecutor F1): with nolintlint on, lint cleanliness depends on the golangci-lint version both ways. CI's v2.11.4 is clean. The local 2.10.1 still reports G704 on the four lines whose `//nolint:gosec` was dropped, and flags three directives that 2.11.4 needs as unused. No directive set is clean on both versions, so the fix is pinning or checking the local binary, not editing comments. [8]
+- contested (held minor, prosecutor F2): a mechanical `%v`→`%w` on a fallthrough where `err` can be nil (codesign exited 0 with no Team ID line) renders `%!w(<nil>)`. It only affects a log/selfErr string, but it shows that a mechanical errorlint pass must check nil-reachability, not just the verb. [3/9]
+- false-positive: none dismissed. F4's llm-pipelines.md half really is caused by this PR, because `isFirstRun` was deleted here as unused. Stale docs that name a function were in scope.
+- miss: codex (default prompt) raised nothing. Every finding came from the prosecutor. On a lint-only PR codex's default lens adds little.
+- weak-dimension: 8 (tooling blast radius: the version skew between the local and CI linters).
+- rule-gap (candidate, dim 8): *a PR that enables nolintlint, or another linter whose output depends on the version, pins the golangci-lint version that `make lint`/`lint-diff` use (or checks it against CI's) in the same change.*
+
 ## 2026-10-17 — feature/738-textmate-highlighting (board #738: vendored vscode-textmate + Oniguruma wasm + 60-odd grammars via `fetch-textmate.sh`, `textmate.js` class map / refiners / `LineState`, `registerTokensProviderFactory` for 63 Monaco ids, JSON mode `tokens:false`, JetBrains palettes, CSP `'wasm-unsafe-eval'`; panel: prosecutor (12) + codex (wrapper timed out, 3 findings recovered from its raw reproduction) + 3 specialists, all up; judge verified against d69003951 by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
 
 - contested (held major, prosecutor F1+F2 + codex, 2 lanes): a token class name with "string" in it (`string.escape` for interpolation braces) makes Monaco type the token as StandardTokenType String. With no reset for `meta.embedded`, everything inside `${…}` is typed String, and bracket matching there disappears. Codex's before/after run showed main matched all six brackets and the branch matched none. That breaks the owner's "bracket colorization untouched" decision. [8]
