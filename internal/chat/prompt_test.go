@@ -416,7 +416,7 @@ func TestPrompt_ClaudeAISectionPinsRules(t *testing.T) {
 		"publish private pages, slide decks and documents to the owner's claude.ai account",
 		"Artifact tool",
 		"Claude Docs",
-		"Write the page's source file with the Write tool inside " + dir + " only",
+		"Write the page's source file with the Write tool at an absolute path inside " + dir + " only",
 		"answer with the link",
 		"Never tell the owner to paste a prompt into claude.ai",
 		"never say you cannot create it there",

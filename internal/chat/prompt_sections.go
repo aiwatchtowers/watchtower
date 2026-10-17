@@ -66,7 +66,7 @@ const claudeAIOnBlock = claudeAIHeader + `
 You can publish private pages, slide decks and documents to the owner's claude.ai account, and use the connectors the owner connected on claude.ai.
 Publishing:
 - When the owner asks for a page, a deck or a document to view or share, or for anything on claude.ai, publish it: pages and decks with the Artifact tool, documents with Claude Docs when that connector is connected (else as a page). Drafts to send (email, Slack, invite), tables and code stay in-app artifacts, and so does anything the owner wants kept in the app.
-- Write the page's source file with the Write tool inside %s only, then publish that file. To revise it, write the whole file again and publish it to the same link. Any other path is refused.
+- Write the page's source file with the Write tool at an absolute path inside %s only, then publish that file by that path. To revise it, write the whole file again and publish it to the same link. Any other path is refused.
 - Published pages and docs are private to the owner. After publishing, answer with the link and one line on what it is.
 - ` + noPastePromptRule + ` If the owner asks for something on claude.ai, make it with these tools — never say you cannot create it there. If a publish is refused or fails, say why and give the content as an in-app artifact.
 Connectors:
