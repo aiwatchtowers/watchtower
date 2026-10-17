@@ -15,6 +15,9 @@ const (
 	foreignURL     = "https://claude.ai/artifact/other-2"
 	docsServer     = "claude.ai Claude Docs"
 	gmailServer    = "claude.ai Gmail"
+	ownDoc         = "own-doc"
+	// ownC is a container naming the doc this session created.
+	ownC = `"container":{"kind":"project","id":"own-doc"}`
 )
 
 // fakeCatalog maps "token/tool" to annotations.
@@ -58,6 +61,7 @@ func testPolicy() Policy {
 		PathCheck:   lexicalCheck,
 		PublishDir:  testPublishDir,
 		OwnArtifact: func(url string) bool { return url == ownURL },
+		OwnDoc:      func(id string) bool { return id == ownDoc },
 	}
 }
 
@@ -190,12 +194,12 @@ var decideCases = []decideCase{
 	{name: "complete authentication", call: gmail("complete_authentication"), want: Deny},
 
 	// Rule 6: overrides.
-	{name: "docs create private", call: docs("create", `{"object":"utterance","payload":{"value":{"body":"Done"}}}`), want: Allow},
+	{name: "docs create private", call: docs("create", `{"object":"utterance",`+ownC+`,"payload":{"value":{"body":"Done"}}}`), want: Allow},
 	{name: "docs create mention other", call: docs("create",
 		`{"object":"utterance","payload":{"value":{"blocks":{"m":{"type":"mention","user":"someone@example.com"}}}}}`), want: Ask,
 		reason: "mentions someone"},
 	{name: "docs update", call: docs("update",
-		`{"ref":{"object":"node","id":"n1"},"payload":{"ops":[{"op":"delete","target":{"kind":"find","text":" draft"}}]}}`), want: Allow},
+		`{"ref":{"object":"node","id":"n1"},`+ownC+`,"payload":{"ops":[{"op":"delete","target":{"kind":"find","text":" draft"}}]}}`), want: Allow},
 	{name: "docs mention without user", call: docs("create",
 		`{"payload":{"value":{"blocks":{"m":{"type":"mention","id":"someone"}}}}}`), want: Ask},
 	{name: "docs mention in attrs", call: docs("update",
@@ -203,7 +207,7 @@ var decideCases = []decideCase{
 	{name: "docs mention aliased user", call: docs("create",
 		`{"payload":{"value":{"blocks":{"m":{"type":"mention","user":"me","User":"someone@example.com"}}}}}`), want: Ask},
 	{name: "docs mention of a tab", call: docs("update",
-		`{"payload":{"ops":[{"op":"insert","with":{"blocks":{"t":{"type":"mention","ref":"file/f2"}}}}]}}`), want: Allow},
+		`{`+ownC+`,"payload":{"ops":[{"op":"insert","with":{"blocks":{"t":{"type":"mention","ref":"file/f2"}}}}]}}`), want: Allow},
 	{name: "docs mention nested user with a ref", call: docs("create",
 		`{"payload":{"value":{"blocks":{"m":{"type":"mention","attrs":{"user":"u-other"},"Ref":"x"}}}}}`), want: Ask},
 	{name: "docs mention aliased ref", call: docs("create",
@@ -220,6 +224,30 @@ var decideCases = []decideCase{
 	{name: "docs batch share field", call: docs("batch", `{"container":{"kind":"project","id":"p1"},"batch":[],"Sharing":{"link":true}}`), want: Ask,
 		reason: "who can see"},
 	{name: "docs batch bad json", call: docs("batch", `{`), want: Ask},
+	// Rule 6, OwnDoc: only a doc this session created is free.
+	{name: "docs update of a foreign doc", call: docs("update",
+		`{"ref":{"object":"node","id":"n1"},"container":{"kind":"project","id":"other-doc"},"payload":{"ops":[]}}`), want: Ask,
+		reason: "did not create"},
+	{name: "docs update naming no doc", call: docs("update", `{"ref":{"object":"node","id":"n1"},"payload":{"ops":[]}}`), want: Ask},
+	{name: "docs rename own doc", call: docs("update", `{"ref":{"object":"project","id":"own-doc"},"payload":{"kind":"patch","patch":[]}}`), want: Allow},
+	{name: "docs rename foreign doc", call: docs("update", `{"ref":{"object":"project","id":"other-doc"},"payload":{"kind":"patch","patch":[]}}`), want: Ask},
+	{name: "docs comment on a foreign doc", call: docs("create",
+		`{"object":"utterance","container":{"kind":"project","id":"other-doc"},"payload":{"value":{"body":"Hi"}}}`), want: Ask},
+	{name: "docs create with a birth container", call: docs("create",
+		`{"object":"utterance","container":{"kind":"project","create":{"name":"x"}},"payload":{"value":{"body":"Hi"}}}`), want: Ask},
+	{name: "docs batch on own doc", call: docs("batch", `{`+ownC+`,"batch":[{"verb":"update","ref":{"object":"node","id":"n1"},"payload":{"ops":[]}}]}`), want: Allow},
+	{name: "docs batch on a foreign doc", call: docs("batch", `{"container":{"kind":"project","id":"other-doc"},"batch":[]}`), want: Ask},
+	{name: "docs batch member names a foreign doc", call: docs("batch",
+		`{`+ownC+`,"batch":[{"verb":"update","ref":{"object":"project","id":"other-doc"},"payload":{"kind":"patch","patch":[]}}]}`), want: Ask},
+	{name: "docs birth member names the doc being born", call: docs("batch",
+		`{"container":{"kind":"project","create":{"name":"Plan","doc":{"markdown":"# Plan"}}},"batch":[{"verb":"update","ref":{"object":"project","id":"$lid:p"},"payload":{"kind":"patch","patch":[]}}]}`), want: Allow},
+	{name: "docs container aliased key", call: docs("update",
+		`{`+ownC+`,"Container":{"kind":"project","id":"other-doc"},"ref":{"object":"node","id":"n1"},"payload":{"ops":[]}}`), want: Ask},
+	{name: "docs container id aliased", call: docs("update",
+		`{"container":{"kind":"project","id":"own-doc","ID":"other-doc"},"ref":{"object":"node","id":"n1"},"payload":{"ops":[]}}`), want: Ask},
+	{name: "docs member ref aliased", call: docs("batch",
+		`{`+ownC+`,"batch":[{"verb":"update","REF":{"object":"project","id":"other-doc"},"payload":{}}]}`), want: Ask},
+	{name: "docs container not an object", call: docs("update", `{"container":"own-doc","ref":{"object":"node","id":"n1"},"payload":{"ops":[]}}`), want: Ask},
 	{name: "docs read", call: docs("read", `{"ref":{"object":"project","id":"p1"}}`), want: Allow},
 	{name: "docs query", call: docs("query", `{}`), want: Allow},
 	{name: "docs guide", call: docs("guide", `{"items":["topic.index"]}`), want: Allow},

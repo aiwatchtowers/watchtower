@@ -64,8 +64,9 @@ type Catalog interface {
 }
 
 // Policy is the per-session input of the decision table. A nil Catalog asks
-// for every connector call, a nil PathCheck denies every path and a nil
-// OwnArtifact asks before updating any existing artifact. Disabled is the
+// for every connector call, a nil PathCheck denies every path, a nil
+// OwnArtifact asks before updating any existing artifact and a nil OwnDoc
+// asks before any Claude Docs write to an existing doc. Disabled is the
 // one field whose nil value allows: it means nothing is switched off, so the
 // caller must not pass nil when it failed to load the owner's switches.
 type Policy struct {
@@ -77,6 +78,10 @@ type Policy struct {
 	PublishDir string
 	// OwnArtifact reports whether this session published the artifact at url.
 	OwnArtifact func(url string) bool
+	// OwnDoc reports whether this session created the Claude Docs doc id (a
+	// bare id or its claude.ai link). A Docs write to any other doc asks:
+	// only the owner's own new private doc is free (ask #236).
+	OwnDoc func(id string) bool
 }
 
 // Decide classifies one call. Rules apply in order, first match wins.
@@ -105,7 +110,7 @@ func (p Policy) Decide(c Call) Decision {
 		return deny("connect %s on claude.ai first", name)
 	}
 	if row, ok := findOverride(server, tool); ok {
-		return row.decide(c.Input)
+		return p.decideOverride(row, c.Input)
 	}
 	if p.Catalog != nil {
 		if ann, ok := p.Catalog.Lookup(server, tool); ok &&
@@ -419,6 +424,19 @@ func (f fields) flag(key string) (bool, error) {
 	return b, nil
 }
 
+// caseVariant reports whether f has a key spelled like one of keys in another
+// case: the gate reads exact keys, a server matching them loosely might not.
+func (f fields) caseVariant(keys ...string) bool {
+	for k := range f {
+		for _, want := range keys {
+			if k != want && strings.EqualFold(k, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // strList reads a list of strings; absent is empty, anything else is an error.
 func (f fields) strList(key string) ([]string, error) {
 	raw, ok := f[key]
@@ -503,13 +521,98 @@ func findOverride(server, tool string) (override, bool) {
 	return override{}, false
 }
 
-func (o override) decide(input json.RawMessage) Decision {
+func (p Policy) decideOverride(o override, input json.RawMessage) Decision {
 	if o.CheckDocsWrite {
 		if reason, risky := docsWriteRisk(input); risky {
 			return Decision{Verdict: Ask, Reason: reason}
 		}
+		if !p.docsWriteStaysInOwnDoc(o.Tool, input) {
+			return Decision{Verdict: Ask, Reason: "Claude Docs call changes a doc this chat did not create"}
+		}
 	}
 	return Decision{Verdict: o.Verdict, Reason: o.Why}
+}
+
+// docsWriteStaysInOwnDoc reports whether a Claude Docs create/update/batch
+// only touches a doc this session created, read by exact key: a batch whose
+// container births a new doc, or a container / doc ref naming an own doc.
+// A call naming no doc (a node ref without a container), a key it reads
+// spelled in another case as well, or any batch member naming another doc
+// fails.
+func (p Policy) docsWriteStaysInOwnDoc(tool string, input json.RawMessage) bool {
+	in, err := parseObject(input)
+	if err != nil || in.caseVariant("container", "ref", "batch") {
+		return false
+	}
+	if raw, ok := in["container"]; ok {
+		container, err := parseObject(raw)
+		if err != nil || container.caseVariant("kind", "id", "create") {
+			return false
+		}
+		_, hasID := container["id"]
+		if create, ok := container["create"]; ok && !hasID {
+			if tool != "batch" || isNull(create) {
+				return false
+			}
+		} else if !p.ownDocRef(container, "kind") {
+			return false
+		}
+	} else {
+		ref, err := parseObject(in["ref"])
+		if err != nil || !p.ownDocRef(ref, "object") {
+			return false
+		}
+	}
+	return p.batchMembersStayInOwnDoc(in)
+}
+
+// ownDocRef reports whether obj names an own doc: obj[kindKey] is "project"
+// and obj["id"] is a doc this session created.
+func (p Policy) ownDocRef(obj fields, kindKey string) bool {
+	if obj.caseVariant(kindKey, "id") {
+		return false
+	}
+	kind, _, err := obj.str(kindKey)
+	if err != nil || kind != "project" {
+		return false
+	}
+	id, ok, err := obj.str("id")
+	return err == nil && ok && id != "" && p.OwnDoc != nil && p.OwnDoc(id)
+}
+
+// batchMembersStayInOwnDoc refuses a batch member whose ref names a doc
+// ("object":"project") other than an own one or the doc being born
+// ("$lid:…"). Members address tabs and nodes inside the container.
+func (p Policy) batchMembersStayInOwnDoc(in fields) bool {
+	raw, ok := in["batch"]
+	if !ok || isNull(raw) {
+		return true
+	}
+	var members []json.RawMessage
+	if json.Unmarshal(raw, &members) != nil {
+		return false
+	}
+	for _, m := range members {
+		member, err := parseObject(m)
+		if err != nil || member.caseVariant("ref") {
+			return false
+		}
+		refRaw, ok := member["ref"]
+		if !ok {
+			continue
+		}
+		ref, err := parseObject(refRaw)
+		if err != nil || ref.caseVariant("object", "id") {
+			return false
+		}
+		if object, _, _ := ref.str("object"); object != "project" {
+			continue
+		}
+		if id, _, _ := ref.str("id"); !strings.HasPrefix(id, "$lid:") && !p.ownDocRef(ref, "object") {
+			return false
+		}
+	}
+	return true
 }
 
 // shareKeys are object keys that would change who can see a doc. No Claude
