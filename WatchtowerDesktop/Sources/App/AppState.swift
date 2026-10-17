@@ -323,8 +323,7 @@ final class AppState {
     var isAskPanelShown = false
     /// The panel's guide index and help conversation; the CLI is resolved on the first ⌘/.
     @ObservationIgnored private(set) lazy var askCenter = makeAskCenter()
-    /// The main window's link gate: `AllowedURLSchemes` plus in-app screen
-    /// links. One instance, so the root never swaps it on a re-render.
+    /// The main window's link gate (`AllowedURLSchemes` + screen links); one instance across re-renders.
     @ObservationIgnored private(set) lazy var mainWindowOpenURL = AllowedURLSchemes.openURLAction { [weak self] url in
         self?.openNavLink(url)
     }
