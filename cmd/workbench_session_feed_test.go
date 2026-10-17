@@ -73,7 +73,7 @@ func (fx sessionFeedFx) transcript(t *testing.T, conv string, lines ...string) {
 func (fx sessionFeedFx) run(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	full := append([]string{"session-feed", "--session", strconv.FormatInt(fx.session, 10)}, args...)
-	out, _, err := runWorkbenchAs(t, "workbench", full...)
+	out, _, err := runWorkbench(t, full...)
 	return out, err
 }
 
@@ -170,19 +170,19 @@ func TestSessionFeed_AskFromOwnWorkbenchOnly(t *testing.T) {
 
 func TestSessionFeed_Errors(t *testing.T) {
 	fx := newSessionFeedFx(t, "conv-1")
-	_, _, err := runWorkbenchAs(t, "workbench", "session-feed", "--session", "9999")
+	_, _, err := runWorkbench(t, "session-feed", "--session", "9999")
 	assert.EqualError(t, err, "session 9999 not found")
 
 	res, err := fx.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (?, 'shell', 'sh', '/tmp/acme')`, fx.wb)
 	require.NoError(t, err)
 	shell, _ := res.LastInsertId()
-	_, _, err = runWorkbenchAs(t, "workbench", "session-feed", "--session", strconv.FormatInt(shell, 10))
+	_, _, err = runWorkbench(t, "session-feed", "--session", strconv.FormatInt(shell, 10))
 	assert.EqualError(t, err, fmt.Sprintf("session %d is not an agent session", shell))
 
 	res, err = fx.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (?, 'codex', 'cx', '/tmp/acme')`, fx.wb)
 	require.NoError(t, err)
 	codex, _ := res.LastInsertId()
-	_, _, err = runWorkbenchAs(t, "workbench", "session-feed", "--session", strconv.FormatInt(codex, 10))
+	_, _, err = runWorkbench(t, "session-feed", "--session", strconv.FormatInt(codex, 10))
 	assert.EqualError(t, err, fmt.Sprintf("session %d: codex sessions are not supported yet", codex))
 
 	_, err = fx.run(t, "--subagent", "toolu_nope")

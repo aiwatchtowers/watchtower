@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/kb"
+	"watchtower/internal/tools"
 )
 
 var workbenchResyncCmd = &cobra.Command{
@@ -64,8 +65,9 @@ type workbenchResyncJSON struct {
 
 	// The migration of a folder set up before the Workbench rename (spec
 	// 2026-10-02 §5.4). LegacySkill is a devpack state: removed, drifted or
-	// foreign (both kept), unchanged (the whole old setup was left because
-	// the new MCP registration did not go in), "" = there was none.
+	// foreign (both kept), "" = there was none. Until 2026-10-16 it could
+	// also be unchanged (the old setup was kept when the registration
+	// failed); the files now migrate either way (ask #312).
 	LegacySkill           string `json:"legacy_skill"`
 	LegacyMCPRemoved      bool   `json:"legacy_mcp_removed"`
 	LegacyHooksReplaced   bool   `json:"legacy_hooks_replaced"`
@@ -163,8 +165,7 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 		res.IndexOK, res.Indexed = true, changed
 	}
 
-	voc, toolsKnown := resyncVocabulary(res.install)
-	suggestions, err := resyncSuggestions(database, p, voc, toolsKnown)
+	suggestions, err := resyncSuggestions(database, p, res.install.MCPRegistered)
 	if note := legacyPermissionNote(res.install); note != "" {
 		suggestions = append(suggestions, note)
 	}
@@ -246,30 +247,14 @@ func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON)
 	return err
 }
 
-// resyncVocabulary is the skill and tool names the folder's Claude Code
-// session has after the install: the new ones once the new server is
-// registered, the old ones when a pre-rename folder was left on its old
-// setup (its registration did not go in). Otherwise no server of ours is
-// known to serve the folder, so toolsKnown is false and the suggestions name
-// no tool.
-func resyncVocabulary(rep devpack.WorkbenchInstallReport) (voc vocabulary, toolsKnown bool) {
-	switch {
-	case rep.MCPRegistered:
-		return workbenchVocabulary, true
-	case rep.LegacySkill.State == devpack.StateUnchanged: // the old setup was kept
-		return legacyWorkbenchVocabulary, true
-	default:
-		return workbenchVocabulary, false
-	}
-}
-
-// resyncSuggestions names what the owner may want the agent to do next, in
-// voc (toolsKnown false: without a tool name); resync itself never creates
-// targets (the agent proposes, the owner agrees).
-func resyncSuggestions(database *db.DB, p *db.Workbench, voc vocabulary, toolsKnown bool) ([]string, error) {
+// resyncSuggestions names what the owner may want the agent to do next;
+// resync itself never creates targets (the agent proposes, the owner
+// agrees). toolsKnown says our server is registered for the folder: without
+// it no session of the folder lists our tools, so no tool is named.
+func resyncSuggestions(database *db.DB, p *db.Workbench, toolsKnown bool) ([]string, error) {
 	out := []string{}
 	if strings.TrimSpace(p.Description) == "" {
-		out = append(out, "The workbench has no description yet: ask Claude Code to run the "+voc.SkillName+" skill's setup.")
+		out = append(out, "The workbench has no description yet: ask Claude Code to run the "+devpack.WorkbenchSkillName+" skill's setup.")
 	}
 	sources, err := database.ListWorkbenchSources(p.ID)
 	if err != nil {
@@ -278,7 +263,7 @@ func resyncSuggestions(database *db.DB, p *db.Workbench, voc vocabulary, toolsKn
 	if len(sources) == 0 {
 		tool := ""
 		if toolsKnown {
-			tool = " (" + voc.SourceTool + ")"
+			tool = " (" + tools.AddWorkbenchSourceTool + ")"
 		}
 		out = append(out, "The workbench has no sources: ask Claude Code to add the Slack channels, Jira projects and Confluence spaces its docs name"+
 			tool+" — search and the session brief then prefer them.")

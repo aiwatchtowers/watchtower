@@ -57,8 +57,9 @@ func statusJSON(t *testing.T, p *db.Workbench) workbenchStatusJSON {
 }
 
 // integrate status --json: a never-resynced folder reports legacy, and its
-// old hook and registration still count as installed; after the resync
-// legacy is false.
+// old hook and registration still count in hook/stop_hook/mcp (the wire
+// contract) although they no longer run — the text status says so; after
+// the resync legacy is false.
 func TestIntegrateWorkbenchStatusJSON_ReportsALegacyFolder(t *testing.T) {
 	f := useFakeWorkbenchClaude(t)
 	p := testWorkbench(t)
@@ -69,6 +70,11 @@ func TestIntegrateWorkbenchStatusJSON_ReportsALegacyFolder(t *testing.T) {
 	assert.True(t, got.Hook && got.StopHook && got.MCP, "%+v", got)
 	assert.Equal(t, "unchanged", got.LegacySkill)
 	assert.Equal(t, "missing", got.Skill)
+
+	var text bytes.Buffer
+	require.NoError(t, runWorkbenchStatus(context.Background(), &text, p, false))
+	assert.Contains(t, text.String(), "legacy   set up under the old Projects name — its hooks and MCP server no longer run with this Watchtower; "+
+		"run 'watchtower workbench resync "+strconv.FormatInt(p.ID, 10)+"' (the Desktop's Re-run Setup) or Repair install")
 
 	var out bytes.Buffer
 	require.NoError(t, runWorkbenchInstall(context.Background(), &out, p))
@@ -134,10 +140,12 @@ func TestIntegrateWorkbenchRemove_NamesEverySurvivingRegistration(t *testing.T) 
 	assert.NotContains(t, out.String(), "Nothing left installed.")
 }
 
-// A resync whose `mcp add` failed leaves a legacy folder entirely on its old
-// setup (old skill, hooks and registration): mcp and hook still read true
-// (the session keeps working), current_mcp says the new registration is
-// missing. A later install that registers it migrates the folder.
+// A resync whose `mcp add` failed still migrates a legacy folder's files
+// (ask #312): the new skill and hooks are in, the old skill is gone, and
+// only the old registration is left — it goes once the new one is in. So
+// mcp and hook read true, legacy stays true (Repair stays offered) and
+// current_mcp says the new registration is missing. A later install that
+// registers it finishes the migration.
 func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T) {
 	f := useFakeWorkbenchClaude(t)
 	p := testWorkbench(t)
@@ -148,10 +156,10 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	var out bytes.Buffer
 	assert.Error(t, runWorkbenchInstall(context.Background(), &out, p))
 	got := statusJSON(t, p)
-	assert.Equal(t, "missing", got.Skill, "the new skill is not installed over an old registration")
-	assert.Equal(t, "unchanged", got.LegacySkill, "the old skill is kept")
-	assert.True(t, got.Hook && got.StopHook, "the old hooks are kept: %+v", got)
-	assert.True(t, got.MCP, "the old registration still serves the folder")
+	assert.Equal(t, "unchanged", got.Skill, "the new skill is installed although the registration failed")
+	assert.Equal(t, "", got.LegacySkill, "the old skill is removed")
+	assert.True(t, got.Hook && got.StopHook, "the new hooks are in: %+v", got)
+	assert.True(t, got.MCP, "the old registration is still there")
 	assert.False(t, got.CurrentMCP)
 	assert.True(t, got.Legacy)
 
@@ -163,10 +171,11 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	assert.False(t, got.Legacy)
 }
 
-// The resync's suggestions name the skill and tools the folder's session
-// actually has: the new ones once the new server is registered, the old ones
-// when a pre-rename folder was left on its old setup, and no tool at all
-// when no server of ours is known to serve the folder.
+// The resync's suggestions name the new skill and tools once the new server
+// is registered, and no tool at all when it is not: a pre-rename folder whose
+// registration failed has its new skill but no server that lists our tools
+// (its old `mcp --project N` only answers with the Repair line), and neither
+// has a fresh folder without a registration.
 func TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary(t *testing.T) {
 	sourcesLine := func(t *testing.T, res workbenchResyncJSON) string {
 		t.Helper()
@@ -199,13 +208,15 @@ func TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary(t *testing.T) {
 		assert.Contains(t, sourcesLine(t, res), "(add_workbench_source)")
 		assert.Contains(t, strings.Join(res.Suggestions, "\n"), "run the watchtower-workbench skill's setup")
 	})
-	t.Run("legacy folder kept on its old setup", func(t *testing.T) {
+	t.Run("legacy folder whose registration failed", func(t *testing.T) {
 		res := resync(t, true, true)
 		require.False(t, res.MCPRegistered)
-		assert.Contains(t, sourcesLine(t, res), "(add_project_source)")
+		line := sourcesLine(t, res)
+		assert.NotContains(t, line, "add_workbench_source")
+		assert.NotContains(t, line, "add_project_source")
 		joined := strings.Join(res.Suggestions, "\n")
-		assert.Contains(t, joined, "run the watchtower-project skill's setup")
-		assert.NotContains(t, joined, "add_workbench_source")
+		assert.Contains(t, joined, "run the watchtower-workbench skill's setup")
+		assert.NotContains(t, joined, "watchtower-project skill's setup")
 	})
 	t.Run("fresh folder without a registration", func(t *testing.T) {
 		res := resync(t, false, true)
@@ -244,4 +255,17 @@ func TestIntegrateWorkbenchRemove_ReportsAFailedLeftoversCheck(t *testing.T) {
 	require.Error(t, runWorkbenchRemove(context.Background(), &out, p))
 	assert.Contains(t, out.String(), "Could not check what is left installed:")
 	assert.NotContains(t, out.String(), "Nothing left installed.")
+}
+
+// A kept (edited or foreign) old skill names tools that no longer exist: the
+// report line says so and asks for its deletion once its edits are carried
+// over. Swift twin: WorkbenchesViewModelResyncTests' kept line.
+func TestPrintLegacyMigration_KeptSkillSaysItsToolsAreGone(t *testing.T) {
+	for _, state := range []devpack.State{devpack.StateDrifted, devpack.StateForeign} {
+		var out bytes.Buffer
+		printLegacyMigration(&out, devpack.WorkbenchInstallReport{LegacySkill: devpack.SkillStatus{State: state}})
+		assert.Equal(t, "  legacy   Your own copy of the old watchtower-project skill was kept — it names tools that no longer exist, "+
+			"so delete .claude/skills/watchtower-project once its edits are carried over; until then Claude Code sees both skills.\n",
+			out.String(), state)
+	}
 }

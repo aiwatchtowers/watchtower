@@ -555,7 +555,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.load()
         XCTAssertFalse(vm.refreshIfChanged(), "nothing changed yet")
 
-        // A second pool on the same file stands in for `watchtower mcp --project`:
+        // A second pool on the same file stands in for `watchtower mcp --workbench`:
         // ValueObservation on dbManager.dbPool would never see this write.
         let foreign = try DatabasePool(path: dbPath)
         try foreign.write { db in

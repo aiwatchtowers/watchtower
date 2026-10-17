@@ -275,9 +275,10 @@ final class WorkbenchCLITests: XCTestCase {
 
     /// `integrate status` on a folder set up before the Workbench rename
     /// (spec 2026-10-02 §5.4): its old hooks and registration count as
-    /// present, only the new skill reads `missing`. That is no Repair — the
-    /// icon nudges toward Re-run Setup instead (A10) — and the prompts name
-    /// the old skill (§5.3). An older CLI's JSON has no legacy keys.
+    /// present, only the new skill reads `missing`. The CLI no longer serves
+    /// the old `project …` commands those hooks call, so the folder needs
+    /// Repair (which runs the migrating resync). An older CLI's JSON has no
+    /// legacy keys.
     func testLegacyFolderStatus() throws {
         let legacy = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(#"""
             {"project_id":1,"folder":"/tmp/acme","skill":"missing","skill_path":"","hook":true,"stop_hook":true,
@@ -285,18 +286,18 @@ final class WorkbenchCLITests: XCTestCase {
             """#.utf8))
         XCTAssertTrue(legacy.legacy)
         XCTAssertEqual(legacy.legacySkill, "unchanged")
-        XCTAssertFalse(legacy.needsRepair, "a working legacy folder is not offered Repair")
-        XCTAssertEqual(legacy.legacyNotice, "Set up by an older Watchtower — Re-run Setup to update")
-        XCTAssertEqual(legacy.vocabulary, .legacy)
-        XCTAssertEqual(legacy.skillDisplay, "watchtower-project (older setup)")
+        XCTAssertTrue(legacy.needsRepair, "a legacy folder's hooks call commands that are gone")
+        XCTAssertTrue(legacy.claudeNeedsRepair)
+        XCTAssertTrue(legacy.repairHelp.contains("Skill missing"), legacy.repairHelp)
+        XCTAssertTrue(legacy.repairHelp.contains("Set up under the old Projects name — it no longer runs; Repair install migrates it"),
+                      legacy.repairHelp)
 
         let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
             #"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
         XCTAssertFalse(older.legacy)
         XCTAssertEqual(older.legacySkill, "")
-        XCTAssertNil(older.legacyNotice)
-        XCTAssertEqual(older.vocabulary, .current)
-        XCTAssertEqual(older.skillDisplay, "unchanged")
+        XCTAssertFalse(older.needsRepair)
+        XCTAssertFalse(older.repairHelp.contains("old Projects name"), older.repairHelp)
 
         // A resync whose `mcp add` failed: the new skill is in, only the old
         // registration serves it. The skill names tools the session lacks,
@@ -306,8 +307,6 @@ final class WorkbenchCLITests: XCTestCase {
              "legacy":true,"legacy_skill":"","current_mcp":false}
             """#.utf8))
         XCTAssertEqual(mixed.currentMCP, false)
-        XCTAssertEqual(mixed.vocabulary, .current)
-        XCTAssertEqual(mixed.legacyNotice, "Set up by an older Watchtower — Re-run Setup to update")
         XCTAssertTrue(mixed.needsRepair)
         XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true, currentMCP: true).needsRepair)
         XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: false, claudeFound: false,
@@ -315,20 +314,46 @@ final class WorkbenchCLITests: XCTestCase {
                        "without claude the registration is not repairable from here")
     }
 
+    /// Ask #312: a legacy folder without `claude` is offered Repair, and the
+    /// Repair settles it — the resync migrates the files although nothing
+    /// can be registered, and without `claude` status sees no old
+    /// registration — so Repair is not offered again in a loop.
+    func testLegacyFolderWithoutClaudeRepairSettles() throws {
+        let before = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(#"""
+            {"skill":"missing","hook":true,"stop_hook":true,"mcp":false,"claude_found":false,
+             "legacy":true,"legacy_skill":"unchanged","current_mcp":false}
+            """#.utf8))
+        XCTAssertTrue(before.claudeNeedsRepair, "the old setup no longer runs")
+        let after = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(#"""
+            {"skill":"unchanged","hook":true,"stop_hook":true,"mcp":false,"claude_found":false,
+             "legacy":false,"legacy_skill":"","current_mcp":false}
+            """#.utf8))
+        XCTAssertFalse(after.claudeNeedsRepair, "nothing left that Repair can fix without claude")
+        XCTAssertFalse(after.needsRepair)
+    }
+
     /// An older CLI sends no `current_mcp`: the decision falls back to `mcp`.
     func testStatusWithoutCurrentMCPKeepsTheOldRule() throws {
         let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
-            #"{"skill":"unchanged","hook":true,"mcp":true,"legacy":true,"legacy_skill":""}"#.utf8))
+            #"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
         XCTAssertEqual(older.currentMCP, older.mcp)
         XCTAssertFalse(older.needsRepair)
+        let unregistered = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            #"{"skill":"unchanged","hook":true,"mcp":false}"#.utf8))
+        XCTAssertEqual(unregistered.currentMCP, unregistered.mcp)
+        XCTAssertTrue(unregistered.needsRepair)
     }
 
-    /// A legacy folder still needs Repair for what is actually broken, and
-    /// when it has no skill at all there is nothing for the agent to read.
+    /// Every legacy folder needs Repair, whatever else it has — including
+    /// one whose new skill is already in (the migration left old hooks or
+    /// the old registration). A folder that is not legacy and lacks the new
+    /// skill needs it too.
     func testLegacyFolderStillRepairsWhatIsBroken() {
         XCTAssertTrue(WorkbenchInstallStatus(skill: "missing", hook: false, mcp: true, legacy: true, legacySkill: "unchanged").needsRepair)
         XCTAssertTrue(WorkbenchInstallStatus(skill: "missing", hook: true, mcp: true, legacy: true).needsRepair,
                       "no skill in either vocabulary")
+        XCTAssertTrue(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true, legacy: true).needsRepair,
+                      "old hooks or registration left behind")
         XCTAssertTrue(WorkbenchInstallStatus(skill: "missing", hook: true, mcp: true, legacySkill: "drifted").needsRepair,
                       "not legacy: the new skill is simply missing")
     }

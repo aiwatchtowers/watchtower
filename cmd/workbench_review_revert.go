@@ -18,7 +18,7 @@ var (
 
 func init() {
 	c := workbenchReviewRevertHunkCmd
-	addWorkbenchIDFlag(c, &reviewFlagWorkbench, "workbench id")
+	c.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 	c.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 	c.Flags().Int64Var(&reviewFlagRound, "round", 0, "review round id")
 	c.Flags().StringVar(&reviewFlagHunk, "hunk", "", "hunk id from the round's diff")

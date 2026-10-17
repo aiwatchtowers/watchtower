@@ -25,12 +25,8 @@ import (
 )
 
 var workbenchCmd = &cobra.Command{
-	Use: "workbench",
-	// The pre-rename name keeps working for the Desktop builds and the
-	// folders set up before the rename; cobra shows it only in this
-	// command's own help, never in the root command list.
-	Aliases: []string{"project"},
-	Short:   "Manage workbenches: folder-bound boards (board, comments)",
+	Use:   "workbench",
+	Short: "Manage workbenches: folder-bound boards (board, comments)",
 	Long: "A workbench binds a folder (e.g. a repository) to a board of targets and\n" +
 		"owner<->agent comments. Claude Code works on it through\n" +
 		"`watchtower mcp --workbench N`, installed by `watchtower integrate claude-code --workbench N`.",

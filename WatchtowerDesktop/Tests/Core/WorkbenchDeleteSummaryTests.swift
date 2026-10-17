@@ -34,7 +34,7 @@ final class WorkbenchDeleteSummaryTests: XCTestCase {
             }
             return try XCTUnwrap(WorkbenchQueries.fetch(db, id: pid))
         }
-        let summary = try queue.read { try WorkbenchDeleteSummary.fetch($0, project: project, vocabulary: .current) }
+        let summary = try queue.read { try WorkbenchDeleteSummary.fetch($0, project: project, legacy: false) }
         XCTAssertEqual(summary.codeQuestions, 2, "this workbench's only, the id prefix matched exactly")
         XCTAssertEqual(summary.targets, 2)
         XCTAssertEqual(summary.asks, 1)
@@ -78,13 +78,16 @@ final class WorkbenchDeleteSummaryTests: XCTestCase {
         XCTAssertTrue(some.message.contains("0 comments. Its 3 questions about the code go too. The files"), some.message)
     }
 
-    /// A folder set up before the Workbench rename has the old skill and
-    /// server (spec 2026-10-02 §5.5): the confirmation names those.
+    /// A folder set up before the Workbench rename (`integrate status`
+    /// reports `legacy`): `devpack.RemoveWorkbench` removes the old skill and
+    /// MCP registration too, so the confirmation names them.
     func testALegacyFolderNamesTheOldSkillAndServer() {
         let s = WorkbenchDeleteSummary(name: "acme", folder: "/tmp/acme", targets: 0, asks: 0, comments: 0,
-                                       vocabulary: .legacy)
-        XCTAssertTrue(s.message.contains("the watchtower-project skill"))
-        XCTAssertTrue(s.message.contains("the watchtower-project MCP registration"))
-        XCTAssertFalse(s.message.contains("watchtower-workbench"))
+                                       legacy: true)
+        XCTAssertTrue(s.message.contains("the watchtower-workbench skill"), s.message)
+        XCTAssertTrue(s.message.contains("the pre-rename watchtower-project skill"), s.message)
+        XCTAssertTrue(s.message.contains("watchtower-project MCP registration go too"), s.message)
+        let current = WorkbenchDeleteSummary(name: "acme", folder: "/tmp/acme", targets: 0, asks: 0, comments: 0)
+        XCTAssertFalse(current.message.contains("watchtower-project"), current.message)
     }
 }

@@ -51,9 +51,6 @@ var workbenchSessionProbeCmd = &cobra.Command{
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	Args:              cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if err := checkWorkbenchIDFlags(cmd); err != nil {
-			return writeJSON(cmd.OutOrStdout(), sessionProbeFailure{OK: false, Error: err.Error()})
-		}
 		res, err := probeSession(workbenchSessionProbeFlagWorkbench, workbenchSessionProbeFlagSession, time.Now(),
 			cmd.ErrOrStderr())
 		if err != nil {
@@ -70,7 +67,7 @@ var (
 
 func init() {
 	c := workbenchSessionProbeCmd
-	addWorkbenchIDFlag(c, &workbenchSessionProbeFlagWorkbench, "workbench id")
+	c.Flags().Int64Var(&workbenchSessionProbeFlagWorkbench, workbenchFlag, 0, "workbench id")
 	c.Flags().Int64Var(&workbenchSessionProbeFlagSession, "session", 0, "terminal session id")
 	workbenchCmd.AddCommand(c)
 }

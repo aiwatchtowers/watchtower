@@ -15,6 +15,7 @@ import (
 
 	gosync "sync"
 	"sync/atomic"
+	"watchtower/internal/automations"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -106,7 +107,9 @@ type Daemon struct {
 	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
-	planUsage           PlanUsageRunner // nil = Claude plan limits not wired
+	automationEvents    AutomationEvents // nil = no event automations
+	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync and startupCalendarSync only
+	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
 	pidPath             string
 	db                  *db.DB
@@ -416,8 +419,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// a calendar connect — onboarding's finish, the Add sheet — so shows
 	// events within seconds (#740). The cycle below syncs them a second time —
 	// a few API calls per account, accepted on a (re)start for that latency.
-	d.phaseCalendarSync(ctx)
-	d.phaseCalDAVSync(ctx)
+	d.startupCalendarSync(ctx)
 
 	// Run an initial sync immediately on startup.
 	d.runSync(ctx)
@@ -483,7 +485,9 @@ func (d *Daemon) runSync(ctx context.Context) {
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
 	syncStart := time.Now()
-	syncErr, inboxSyncErr := d.phaseSlackSync(ctx)
+	d.cycleEvents = d.beginAutomationEvents()
+	var syncErr, inboxSyncErr error
+	d.observePhase(ctx, automations.SlackSource(d.db), func() { syncErr, inboxSyncErr = d.phaseSlackSync(ctx) })
 	// Owner commands first: the reaction poll needs only the freshly synced
 	// Slack messages (thread context) and is what `Sync Now` is usually pressed
 	// for, so it runs before the other source syncs (Jira alone can take
@@ -491,13 +495,18 @@ func (d *Daemon) runSync(ctx context.Context) {
 	if ctx.Err() == nil {
 		d.phaseReactionCommands(ctx)
 	}
-	d.phaseCalendarSync(ctx)
-	d.phaseCalDAVSync(ctx)
+	// One calendar snapshot spans both calendar phases.
+	d.observePhase(ctx, automations.CalendarSource(d.db, automations.RealClock{}), func() {
+		d.phaseCalendarSync(ctx)
+		d.phaseCalDAVSync(ctx)
+	})
 	d.phaseGmailSync(ctx)
 	d.phaseImapSync(ctx)
-	d.phaseJiraSync(ctx)
+	d.observePhase(ctx, automations.JiraSource(d.db), func() { d.phaseJiraSync(ctx) })
 	d.phaseLinearSync(ctx)
-	d.phaseExternalSync(ctx)
+	d.observePhase(ctx, automations.ConfluenceSource(d.db), func() { d.phaseExternalSync(ctx) })
+	// Once per cycle, also on a cancelled ctx: it only queues rows.
+	d.flushAutomationEvents(syncStart)
 	d.phaseAgentAnalytics(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
@@ -777,6 +786,22 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 	}
 }
 
+// startupCalendarSync is Run's calendar pass ahead of the first cycle (#740),
+// observed as its own event cycle — Begin, the calendar phases under one
+// snapshot, Flush keyed by its own start — so a calendar change made while
+// the daemon was stopped still fires, though this pass writes it before the
+// first runSync's snapshot. With no bus, or no calendar subscriber, it just
+// runs the two phases.
+func (d *Daemon) startupCalendarSync(ctx context.Context) {
+	start := time.Now()
+	d.cycleEvents = d.beginAutomationEvents()
+	d.observePhase(ctx, automations.CalendarSource(d.db, automations.RealClock{}), func() {
+		d.phaseCalendarSync(ctx)
+		d.phaseCalDAVSync(ctx)
+	})
+	d.flushAutomationEvents(start)
+}
+
 // phaseCalendarSync pulls Google Calendar events for every connected
 // google_accounts row with calendar enabled. Lightweight, runs every cycle.
 // Like phaseCalDAVSync/phaseImapSync, this loops over one syncer per
@@ -815,7 +840,9 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 // aborting the rest of the accounts.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
 	for _, s := range d.gmailSyncers {
-		n, err := s.Sync(ctx)
+		var n int
+		var err error
+		d.observePhase(ctx, automations.MailSource(d.db, "gmail", s.AccountID()), func() { n, err = s.Sync(ctx) })
 		if from, ok := s.FirstSyncFrom(); ok {
 			d.startHistoryBackfill("gmail", s.AccountID(), from)
 		}
@@ -833,7 +860,9 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 // and skipped rather than aborting the rest of the accounts.
 func (d *Daemon) phaseImapSync(ctx context.Context) {
 	for _, s := range d.imapSyncers {
-		n, err := s.Sync(ctx)
+		var n int
+		var err error
+		d.observePhase(ctx, automations.MailSource(d.db, "imap", s.AccountID()), func() { n, err = s.Sync(ctx) })
 		if from, ok := s.FirstSyncFrom(); ok {
 			d.startHistoryBackfill("imap", s.AccountID(), from)
 		}

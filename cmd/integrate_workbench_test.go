@@ -257,8 +257,8 @@ func editSettingsHooks(t *testing.T, folder string, edit func(hooks map[string]a
 }
 
 func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
-	if err := checkWorkbenchFlags("--workbench", false, "", false, false); err != nil {
-		t.Fatalf("plain --project must be accepted: %v", err)
+	if err := checkWorkbenchFlags(false, "", false, false); err != nil {
+		t.Fatalf("plain --workbench must be accepted: %v", err)
 	}
 	for name, args := range map[string][4]any{
 		"scope":       {true, "", false, false},
@@ -266,8 +266,8 @@ func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
 		"skills-only": {false, "", true, false},
 		"mcp-only":    {false, "", false, true},
 	} {
-		if err := checkWorkbenchFlags("--project", args[0].(bool), args[1].(string), args[2].(bool), args[3].(bool)); err == nil || !strings.HasPrefix(err.Error(), "--project ") {
-			t.Fatalf("--project with --%s must be refused", name)
+		if err := checkWorkbenchFlags(args[0].(bool), args[1].(string), args[2].(bool), args[3].(bool)); err == nil || !strings.HasPrefix(err.Error(), "--workbench ") {
+			t.Fatalf("--workbench with --%s must be refused", name)
 		}
 	}
 }

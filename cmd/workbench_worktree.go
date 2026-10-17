@@ -36,7 +36,7 @@ func init() {
 	ensure := &cobra.Command{Use: "ensure", Short: "Put a removed session worktree back from its branch", Args: cobra.NoArgs, RunE: runWorkbenchWorktreeEnsure}
 	forget := &cobra.Command{Use: "forget", Short: "Unregister a removed session worktree's MCP entry (no git write)", Args: cobra.NoArgs, RunE: runWorkbenchWorktreeForget}
 	for _, c := range []*cobra.Command{create, ensure, forget} {
-		addWorkbenchIDFlag(c, &workbenchGitFlagWorkbench, "workbench id")
+		c.Flags().Int64Var(&workbenchGitFlagWorkbench, workbenchFlag, 0, "workbench id")
 		c.Flags().BoolVar(&workbenchGitFlagJSON, "json", false, "output JSON")
 		workbenchWorktreeCmd.AddCommand(c)
 	}

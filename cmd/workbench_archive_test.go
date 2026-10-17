@@ -32,7 +32,7 @@ func TestProj15_DriftStillSeesArchivedUnmergedWork(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, archived, "precondition: the target is archived")
 
-	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", strconv.FormatInt(pid, 10), "--json", "--no-network")
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--workbench", strconv.FormatInt(pid, 10), "--json", "--no-network")
 	require.NoError(t, err)
 	var rep workbenchcheck.Report
 	require.NoError(t, json.Unmarshal([]byte(stdout), &rep), stdout)
@@ -40,7 +40,7 @@ func TestProj15_DriftStillSeesArchivedUnmergedWork(t *testing.T) {
 	assert.Equal(t, workbenchcheck.KindDoneUnmerged, rep.Findings[0].Kind)
 	assert.Equal(t, int(tid), rep.Findings[0].TargetID)
 
-	brief := loadWorkbenchBrief(pid, workbenchVocabulary)
+	brief := loadWorkbenchBrief(pid)
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [done]`)
 	assert.Contains(t, brief, "0 done, 1 archived.")
@@ -57,7 +57,7 @@ func TestProj15_DriftStillSeesArchivedUnmergedWork(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, archived, "precondition: the stamp archives it")
 
-	stdout, _, err = runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", strconv.FormatInt(pid, 10), "--json", "--no-network")
+	stdout, _, err = runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--workbench", strconv.FormatInt(pid, 10), "--json", "--no-network")
 	require.NoError(t, err)
 	rep = workbenchcheck.Report{}
 	require.NoError(t, json.Unmarshal([]byte(stdout), &rep), stdout)
@@ -72,12 +72,12 @@ func TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted(t *testing.T) {
 	board := []db.BoardNode{briefNode(1, "in_progress", "active feature"), briefNode(2, "done", "recent feature"), old}
 	comments := []db.WorkbenchComment{{ID: 9, TargetID: sql.NullInt64{Int64: 4, Valid: true}, Author: "owner", Body: "one more thing"}}
 
-	out := renderWorkbenchBrief(board, briefWorkbench(), comments, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, briefWorkbench(), comments, workbenchcheck.Report{}, nil, nil, time.Now())
 	assert.Contains(t, out, "Targets: 1 in progress, 0 in review, 0 blocked, 0 todo, 1 done, 2 archived. New comments for you: 1.")
 	assert.NotContains(t, out, "old feature")
 	assert.Contains(t, out, "old task", "a comment on an archived target keeps its title")
 
-	none := renderWorkbenchBrief(board[:2], briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	none := renderWorkbenchBrief(board[:2], briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now())
 	assert.Contains(t, none, "1 done. New comments", "no archived count without archived targets")
 }
 
