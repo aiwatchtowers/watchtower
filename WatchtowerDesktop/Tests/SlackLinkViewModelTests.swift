@@ -108,6 +108,34 @@ final class SlackLinkViewModelTests: XCTestCase {
                        "https://slack.com/archives/C0456/p1740577800000100")
     }
 
+    /// An accumulated channel item (#586) decodes every message, and each gets
+    /// its own link: its permalink, else an archives link on the item's channel.
+    func testAccumulatedChannelItemListsEveryMentionWithItsLink() {
+        let row: Row = [
+            "id": 1,
+            "channel_id": "2:C0456",
+            "message_ts": "1740577900.000100",
+            "sender_user_id": "2:U043",
+            "trigger_type": "mention",
+            "mentions": """
+            [{"ts":"1740577800.000100","sender":"2:U042","text":"first","permalink":"https://example.com/p1"},
+             {"ts":"1740577900.000100","sender":"2:U043","text":"second"}]
+            """
+        ]
+        let item = InboxItem(row: row)
+        let mentions = item.decodedMentions
+        XCTAssertEqual(mentions.map(\.text), ["first", "second"])
+        XCTAssertEqual(CatchUpViewModel.slackMessageURL(for: mentions[0], channelID: item.channelID)?.absoluteString,
+                       "https://example.com/p1")
+        XCTAssertEqual(CatchUpViewModel.slackMessageURL(for: mentions[1], channelID: item.channelID)?.absoluteString,
+                       "https://slack.com/archives/C0456/p1740577900000100")
+        XCTAssertEqual(InboxItemInline.countTitle(count: 2, triggerType: "mention"), "2 mentions")
+        XCTAssertEqual(InboxItemInline.countTitle(count: 3, triggerType: "dm"), "3 messages")
+        // A row without the column, or with a malformed value, has no list.
+        XCTAssertTrue(InboxItem(row: ["id": 2, "mentions": "not json"]).decodedMentions.isEmpty)
+        XCTAssertTrue(InboxItem(row: ["id": 3]).decodedMentions.isEmpty)
+    }
+
     func testWhoToPingUserLinkResolvesSecondAccountTeam() {
         let links = SlackLinkResolver(teamIDByAccount: [1: "T001", 2: "T999"], fallbackTeamID: "T001")
         XCTAssertEqual(WhoToPingView.slackUserURL("2:U042", links: links)?.absoluteString,

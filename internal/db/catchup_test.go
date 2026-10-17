@@ -199,6 +199,21 @@ func TestListCatchupInbox_ActionablePendingInWindow(t *testing.T) {
 	assert.Contains(t, items[0].Meta, "#eng")
 	assert.Equal(t, "1:C1", items[0].ChannelID)
 	assert.Equal(t, "1:U1", items[0].SenderID)
+	assert.NotContains(t, items[0].Meta, "messages", "a one-message item names no count")
+}
+
+// A channel-level item that accumulated several messages (#586) says so.
+func TestListCatchupInbox_AccumulatedItemShowsCount(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, status, item_class, mentions, created_at) VALUES
+		('1:C1', '3', '1:U1', 'mention', 'latest', 'pending', 'actionable',
+		 '[{"ts":"1","sender":"1:U1","text":"a"},{"ts":"2","sender":"1:U2","text":"b"},{"ts":"3","sender":"1:U1","text":"latest"}]',
+		 '1970-01-01T00:20:00Z')`)
+	require.NoError(t, err)
+	items, err := d.ListCatchupInbox(1000, 2000, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Contains(t, items[0].Meta, "3 messages")
 }
 
 func TestListCatchupTracksAndTargets(t *testing.T) {

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -891,4 +892,27 @@ func TestDeduplicateThreadInboxItems_MergesSameTriggerType(t *testing.T) {
 	merged, err := db.GetInboxItemByID(int(firstID))
 	require.NoError(t, err)
 	assert.Equal(t, "resolved", merged.Status)
+}
+
+// AppendInboxMentions seeds a pre-column row with its own message, skips a
+// ts already listed, keeps the list oldest first, and leaves the top-level
+// text alone when the appended message is older than the row's own.
+func TestAppendInboxMentions_SeedDedupOrder(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.CreateInboxItem(InboxItem{ChannelID: "1:C1", MessageTS: "200.0", SenderUserID: "1:U1",
+		TriggerType: "mention", Snippet: "own"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.AppendInboxMentions(int(id), InboxItem{MessageTS: "100.0", SenderUserID: "1:U2", Snippet: "older"},
+		[]InboxMention{{TS: "100.0", SenderID: "1:U2", Text: "older"}, {TS: "200.0", SenderID: "1:U1", Text: "dup"}}))
+
+	it, err := d.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	var list []InboxMention
+	require.NoError(t, json.Unmarshal([]byte(it.Mentions), &list))
+	require.Len(t, list, 2)
+	assert.Equal(t, "100.0", list[0].TS)
+	assert.Equal(t, "own", list[1].Text, "the seeded row message wins over a duplicate ts")
+	assert.Equal(t, "200.0", it.MessageTS, "an older message does not take over the top-level text")
+	assert.Equal(t, "own", it.Snippet)
 }

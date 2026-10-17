@@ -139,8 +139,27 @@ struct InboxItemInline: View {
     let url: URL?
 
     var body: some View {
+        let mentions = item.decodedMentions
         VStack(alignment: .leading, spacing: 6) {
-            if !item.snippet.isEmpty {
+            if mentions.count > 1 {
+                // A channel-level item that accumulated several messages (#586):
+                // every one listed with its own link, oldest first.
+                Text(Self.countTitle(count: mentions.count, triggerType: item.triggerType))
+                    .font(.caption)
+                    .fontWeight(.medium)
+                ForEach(Array(mentions.enumerated()), id: \.offset) { _, mention in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(mention.text)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if let link = CatchUpViewModel.slackMessageURL(for: mention, channelID: item.channelID) {
+                            Link("Open", destination: link)
+                                .font(.caption2)
+                        }
+                    }
+                }
+            } else if !item.snippet.isEmpty {
                 Text(item.snippet)
                     .font(.caption)
                     .textSelection(.enabled)
@@ -149,7 +168,7 @@ struct InboxItemInline: View {
             Text(caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if let url {
+            if mentions.count <= 1, let url {
                 Link("Open in Slack", destination: url)
                     .font(.caption2)
             }
@@ -161,6 +180,11 @@ struct InboxItemInline: View {
 
     private var caption: String {
         [item.triggerType, origin].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// "3 mentions" for a mention item, "3 messages" for a DM or reaction fold.
+    nonisolated static func countTitle(count: Int, triggerType: String) -> String {
+        "\(count) \(triggerType == "mention" ? "mentions" : "messages")"
     }
 }
 

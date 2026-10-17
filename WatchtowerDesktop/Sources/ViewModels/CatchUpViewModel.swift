@@ -471,6 +471,12 @@ final class CatchUpViewModel {
         return SlackDeepLink.archives(channelID: item.channelID, messageTS: item.messageTS)
     }
 
+    /// The same rule for one message of an accumulated channel item (#586).
+    nonisolated static func slackMessageURL(for mention: InboxItem.Mention, channelID: String) -> URL? {
+        if let permalink = mention.permalink, !permalink.isEmpty { return URL(string: permalink) }
+        return SlackDeepLink.archives(channelID: channelID, messageTS: mention.ts)
+    }
+
     // MARK: - CLI (drains stdout+stderr concurrently, off the concurrency pool)
 
     nonisolated private static func runCLI(

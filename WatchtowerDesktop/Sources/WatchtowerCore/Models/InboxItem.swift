@@ -41,6 +41,9 @@ package struct InboxItem: FetchableRecord, Identifiable, Equatable {
     package let cardGeneratedAt: Date?  // column: card_generated_at (nullable TEXT ISO8601)
     package let createdAt: String
     package let updatedAt: String
+    /// JSON `[{ts,sender,text,permalink}]`, oldest first: every message folded
+    /// into a channel-level Slack item (#586); "[]" for every other item.
+    package let mentions: String
 
     /// Typed item class derived from `item_class` column.
     package var itemClass: ItemClass {
@@ -106,6 +109,25 @@ package struct InboxItem: FetchableRecord, Identifiable, Equatable {
         }
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+        mentions = row["mentions"] ?? "[]"
+    }
+
+    // MARK: - Accumulated Mentions
+
+    /// One message of a channel-level item's `mentions` list (Go `db.InboxMention`).
+    package struct Mention: Decodable, Equatable {
+        package let ts: String
+        package let sender: String
+        package let text: String
+        package let permalink: String?
+    }
+
+    /// The decoded `mentions` list; empty for a malformed value or an item
+    /// that is not a channel-level fold.
+    package var decodedMentions: [Mention] {
+        guard let data = mentions.data(using: .utf8),
+              let list = try? JSONDecoder().decode([Mention].self, from: data) else { return [] }
+        return list
     }
 
     // MARK: - Status Predicates

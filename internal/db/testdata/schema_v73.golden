@@ -1442,7 +1442,7 @@ thread_digest TEXT NOT NULL DEFAULT '',
 draft_reply TEXT NOT NULL DEFAULT '',
 card_status TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
 card_generated_at TEXT,
-composed_at TEXT,
+composed_at TEXT, mentions TEXT NOT NULL DEFAULT '[]',
 UNIQUE(channel_id, message_ts)
 )
 
@@ -4257,6 +4257,7 @@ GROUP BY up.ancestor
 26	card_status	TEXT	notnull=1	dflt='none'	pk=0
 27	card_generated_at	TEXT	notnull=0	dflt=NULL	pk=0
 28	composed_at	TEXT	notnull=0	dflt=NULL	pk=0
+29	mentions	TEXT	notnull=1	dflt='[]'	pk=0
 
 ## inbox_learned_rules
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

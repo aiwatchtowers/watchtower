@@ -300,7 +300,7 @@ func (db *DB) ListCatchupInbox(from, to float64, limit int) ([]CatchupItem, erro
 	rows, err := db.Query(`
 		SELECT i.id, i.trigger_type, i.snippet, i.channel_id, i.sender_user_id,
 		       COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), u.name, i.sender_user_id),
-		       COALESCE(c.name, '')
+		       COALESCE(c.name, ''), json_array_length(i.mentions)
 		FROM inbox_items i
 		LEFT JOIN users u ON u.id = i.sender_user_id
 		LEFT JOIN channels c ON c.id = i.channel_id
@@ -316,13 +316,19 @@ func (db *DB) ListCatchupInbox(from, to float64, limit int) ([]CatchupItem, erro
 	for rows.Next() {
 		var it CatchupItem
 		var sender, channel string
-		if err := rows.Scan(&it.ID, &it.Title, &it.Body, &it.ChannelID, &it.SenderID, &sender, &channel); err != nil {
+		var mentions int
+		if err := rows.Scan(&it.ID, &it.Title, &it.Body, &it.ChannelID, &it.SenderID, &sender, &channel, &mentions); err != nil {
 			return nil, fmt.Errorf("scanning catchup inbox item: %w", err)
 		}
 		it.Area = "inbox"
 		it.Meta = "from " + sender
 		if channel != "" {
 			it.Meta += " in #" + channel
+		}
+		if mentions > 1 {
+			// A channel-level item that accumulated several messages (#586);
+			// Body is the newest one.
+			it.Meta += fmt.Sprintf(" · %d messages, the latest shown", mentions)
 		}
 		out = append(out, it)
 	}

@@ -1,8 +1,11 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +20,7 @@ const inboxSelectCols = `id, channel_id, message_ts, thread_ts, sender_user_id,
 	COALESCE(read_at,''), created_at, updated_at,
 	COALESCE(item_class,'actionable'), COALESCE(archived_at,''), COALESCE(archive_reason,''),
 	COALESCE(why_matters,''), COALESCE(thread_digest,''), COALESCE(draft_reply,''), COALESCE(card_status,'none'), COALESCE(card_generated_at,''),
-	COALESCE(composed_at,'')`
+	COALESCE(composed_at,''), mentions`
 
 // inboxItemColumns is an alias for inboxSelectCols used by feed queries.
 const inboxItemColumns = inboxSelectCols
@@ -33,7 +36,7 @@ func scanInboxItem(row interface{ Scan(...any) error }) (*InboxItem, error) {
 		&it.ReadAt, &it.CreatedAt, &it.UpdatedAt,
 		&it.ItemClass, &it.ArchivedAt, &it.ArchiveReason,
 		&it.WhyMatters, &it.ThreadDigest, &it.DraftReply, &it.CardStatus, &cardGeneratedAt,
-		&it.ComposedAt,
+		&it.ComposedAt, &it.Mentions,
 	); err != nil {
 		return nil, err
 	}
@@ -70,11 +73,14 @@ func (db *DB) CreateInboxItem(it InboxItem) (int64, error) {
 		it.ItemClass = "actionable"
 	}
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	if it.Mentions == "" {
+		it.Mentions = "[]"
+	}
 	res, err := db.Exec(`INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
-		trigger_type, snippet, context, raw_text, permalink, status, priority, ai_reason, waiting_user_ids, item_class, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		trigger_type, snippet, context, raw_text, permalink, status, priority, ai_reason, waiting_user_ids, item_class, mentions, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		it.ChannelID, it.MessageTS, it.ThreadTS, it.SenderUserID,
-		it.TriggerType, it.Snippet, it.Context, it.RawText, it.Permalink, it.Status, it.Priority, it.AIReason, it.WaitingUserIDs, it.ItemClass, now, now,
+		it.TriggerType, it.Snippet, it.Context, it.RawText, it.Permalink, it.Status, it.Priority, it.AIReason, it.WaitingUserIDs, it.ItemClass, it.Mentions, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting inbox item: %w", err)
@@ -84,17 +90,111 @@ func (db *DB) CreateInboxItem(it InboxItem) (int64, error) {
 
 // FindPendingInboxByThread returns the ID of an existing pending inbox item
 // for the same thread (channel_id + thread_ts). For non-threaded messages
-// (threadTS=""), finds the channel-level inbox item. Returns 0 if not found.
+// (threadTS=""), finds the channel-level inbox item. Returns 0, nil if there
+// is none; any other read error is returned — read as "none" it would mint a
+// duplicate item and hide the failure from the INBOX-09 watermark gate.
 func (db *DB) FindPendingInboxByThread(channelID, threadTS string) (int, error) {
 	var id int
 	err := db.QueryRow(`SELECT id FROM inbox_items
 		WHERE channel_id = ? AND thread_ts = ? AND status = 'pending'
 		ORDER BY created_at DESC LIMIT 1`,
 		channelID, threadTS).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
 	if err != nil {
-		return 0, nil //nolint:nilerr // not found is not an error
+		return 0, fmt.Errorf("finding pending inbox item for %s/%q: %w", channelID, threadTS, err)
 	}
 	return id, nil
+}
+
+// InboxMention is one message folded into a channel-level (non-thread) Slack
+// inbox item; inbox_items.mentions holds them as a JSON array, oldest first.
+type InboxMention struct {
+	TS        string `json:"ts"`
+	SenderID  string `json:"sender"`
+	Text      string `json:"text"`
+	Permalink string `json:"permalink,omitempty"`
+}
+
+// MarshalInboxMentions renders mentions for inbox_items.mentions.
+func MarshalInboxMentions(ms []InboxMention) string {
+	if len(ms) == 0 {
+		return "[]"
+	}
+	data, _ := json.Marshal(ms) // plain strings: cannot fail
+	return string(data)
+}
+
+// AppendInboxMentions folds newer messages into a pending channel-level
+// item without losing the ones already there (board #586): the new mentions
+// are appended to inbox_items.mentions (a row written before the column
+// existed is seeded with its own message first; a ts already listed is
+// skipped), the list is kept oldest first, and the row is marked unread. Its
+// message_ts/sender/snippet/context/raw_text/permalink move to latest only
+// when latest is newer than the row's own message.
+func (db *DB) AppendInboxMentions(id int, latest InboxItem, add []InboxMention) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("appending mentions to inbox item %d: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var raw, messageTS, sender, snippet, permalink string
+	if err := tx.QueryRow(`SELECT mentions, message_ts, sender_user_id, snippet, permalink
+		FROM inbox_items WHERE id = ?`, id).Scan(&raw, &messageTS, &sender, &snippet, &permalink); err != nil {
+		return fmt.Errorf("reading mentions of inbox item %d: %w", id, err)
+	}
+	var list []InboxMention
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return fmt.Errorf("parsing mentions of inbox item %d: %w", id, err)
+	}
+	if len(list) == 0 {
+		list = []InboxMention{{TS: messageTS, SenderID: sender, Text: snippet, Permalink: permalink}}
+	}
+	seen := make(map[string]bool, len(list))
+	for _, m := range list {
+		seen[m.TS] = true
+	}
+	for _, m := range add {
+		if !seen[m.TS] {
+			list = append(list, m)
+			seen[m.TS] = true
+		}
+	}
+	sort.SliceStable(list, func(i, j int) bool { return slackTSLess(list[i].TS, list[j].TS) })
+
+	if slackTSLess(messageTS, latest.MessageTS) {
+		_, err = tx.Exec(`UPDATE inbox_items SET mentions = ?,
+			message_ts = ?, sender_user_id = ?, snippet = ?, context = ?, raw_text = ?, permalink = ?,
+			ai_reason = '', read_at = NULL,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+			WHERE id = ?`,
+			MarshalInboxMentions(list), latest.MessageTS, latest.SenderUserID, latest.Snippet,
+			latest.Context, latest.RawText, latest.Permalink, id)
+	} else {
+		_, err = tx.Exec(`UPDATE inbox_items SET mentions = ?, read_at = NULL,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+			WHERE id = ?`, MarshalInboxMentions(list), id)
+	}
+	if err != nil {
+		return fmt.Errorf("updating mentions of inbox item %d: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing mentions of inbox item %d: %w", id, err)
+	}
+	return nil
+}
+
+// slackTSLess orders Slack message timestamps ("1700000000.000100")
+// numerically; an unparsable ts sorts by its text.
+func slackTSLess(a, b string) bool {
+	fa, errA := strconv.ParseFloat(a, 64)
+	fb, errB := strconv.ParseFloat(b, 64)
+	if errA != nil || errB != nil {
+		return a < b
+	}
+	return fa < fb
 }
 
 // UpdateInboxItemSnippet updates the snippet, context, raw_text, sender,

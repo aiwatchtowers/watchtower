@@ -558,6 +558,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
     card_generated_at TEXT,
     composed_at     TEXT,
+    mentions        TEXT NOT NULL DEFAULT '[]', -- channel-level Slack items: JSON [{ts,sender,text,permalink}] of every folded message, oldest first
     UNIQUE(channel_id, message_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);

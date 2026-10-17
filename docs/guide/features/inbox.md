@@ -33,6 +33,8 @@ The **Proposals** section holds every action waiting for a decision, whatever st
 
 Behind the scenes, **Attention detection** collects the mentions, DMs, thread replies, Jira comment mentions, calendar invites and mail addressed to you. It closes each one when you answer in the source.
 
+Several mentions of you in one channel, outside threads, stay one item that keeps them all: Catch Up shows "3 mentions" with an **Open** link to each. A new mention adds to the item and marks it unread again, so an older one is never replaced.
+
 It makes no AI calls, runs every sync cycle, and needs an account that identifies you. It has no screen of its own: its output is Catch Up's **For you** list and the briefing's **Needs Attention**.
 
 ## Using it

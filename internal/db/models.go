@@ -514,6 +514,7 @@ type InboxItem struct {
 	CardStatus      string // none|ready|failed
 	CardGeneratedAt string
 	ComposedAt      string // empty if not yet folded into a situation by the composer
+	Mentions        string // JSON []InboxMention: every message folded into a channel-level Slack item; "[]" otherwise
 }
 
 // DashboardSituation is a cluster of inbox signals composed into a single
