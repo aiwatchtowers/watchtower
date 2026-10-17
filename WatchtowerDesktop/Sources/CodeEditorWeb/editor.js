@@ -10,10 +10,11 @@
   require.config({ paths: { vs: "vs" } });
   require(["vs/editor/editor.main"], function () {
     registerExtraLanguages();
+    registerTextMateGrammars();
 
     // The TypeScript worker is trimmed from the bundle (fetch-monaco.sh):
     // switch the TS/JS language service off so nothing asks for it.
-    // Highlighting comes from the Monarch grammars and stays.
+    // Highlighting (TextMate grammars, textmate.js) does not need it.
     var ts = (monaco.typescript || (monaco.languages && monaco.languages.typescript));
     if (ts) {
       var off = { completionItems: false, hovers: false, documentSymbols: false, definitions: false,

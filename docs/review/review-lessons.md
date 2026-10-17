@@ -1789,4 +1789,12 @@ Entry format:
 - miss: codex (default prompt) raised nothing. Every finding came from the prosecutor. On a lint-only PR codex's default lens adds little.
 - weak-dimension: 8 (tooling blast radius: the version skew between the local and CI linters).
 - rule-gap (candidate, dim 8): *a PR that enables nolintlint, or another linter whose output depends on the version, pins the golangci-lint version that `make lint`/`lint-diff` use (or checks it against CI's) in the same change.*
+
+## 2026-10-17 — feature/738-textmate-highlighting (board #738: vendored vscode-textmate + Oniguruma wasm + 60-odd grammars via `fetch-textmate.sh`, `textmate.js` class map / refiners / `LineState`, `registerTokensProviderFactory` for 63 Monaco ids, JSON mode `tokens:false`, JetBrains palettes, CSP `'wasm-unsafe-eval'`; panel: prosecutor (12) + codex (wrapper timed out, 3 findings recovered from its raw reproduction) + 3 specialists, all up; judge verified against d69003951 by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, prosecutor F1+F2 + codex, 2 lanes): a token class name with "string" in it (`string.escape` for interpolation braces) makes Monaco type the token as StandardTokenType String. With no reset for `meta.embedded`, everything inside `${…}` is typed String, and bracket matching there disappears. Codex's before/after run showed main matched all six brackets and the branch matched none. That breaks the owner's "bracket colorization untouched" decision. [8]
+- false-positive: none dismissed. The prosecutor's textmate.js line numbers did not match the file, but the content they cited was real.
+- miss: codex alone found the opposite direction. A JSON key's class (`property`) drops "string", so brackets inside a key string become matchable (type Other). That is the same root cause, seen only by running main vs branch on the same input. [8]
+- weak-dimension: 7. Every TextMate behaviour lives in a manual harness whose samples had no interpolation, comment or docstring. 10 of 16 mutations survived.
+- rule-gap (candidate, Desktop dim 8): *in a Monaco theme or class map, a token class's name decides its standard token type (`\b(comment|string|regex)\b`), and that type drives bracket pairs and auto-closing. Any new class map is checked for bracket matching inside strings and interpolations against main's tokenizer on the same input.*
 - outcome: TBD
