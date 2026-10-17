@@ -27,13 +27,40 @@ type PromptOptions struct {
 	VaultDir       string // memory vault root; "" = no memory block
 	MemoryChat     bool   // memory.enabled && memory.surfaces.chat
 	WebSearch      bool   // the backend exposes WebSearch (Claude only)
+	ClaudeAI       ClaudeAIPrompt
 	Now            time.Time
+}
+
+// ClaudeAIPromptKind selects the prompt's claude.ai section.
+type ClaudeAIPromptKind int
+
+const (
+	// ClaudeAIPromptNone renders no claude.ai text: today's prompt (embedded
+	// surfaces, decision Q2).
+	ClaudeAIPromptNone ClaudeAIPromptKind = iota
+	// ClaudeAIPromptOn is a session in claude.ai mode: publishing and the
+	// account's connectors.
+	ClaudeAIPromptOn
+	// ClaudeAIPromptOtherProvider is a Codex or Ollama main chat (decision Q4).
+	ClaudeAIPromptOtherProvider
+	// ClaudeAIPromptUnavailable is a Claude main chat ClaudeAIAvailability
+	// turned off; Reason says why.
+	ClaudeAIPromptUnavailable
+)
+
+// ClaudeAIPrompt is the prompt side of claude.ai mode. Pick Kind from the same
+// ClaudeAIAvailability answer that sets ClaudeOptions.ClaudeAI, so the prompt
+// never promises a tool the session lacks.
+type ClaudeAIPrompt struct {
+	Kind       ClaudeAIPromptKind
+	PublishDir string // On: the conversation's publish dir (required)
+	Reason     string // Unavailable: ClaudeAIAvailability's reason
 }
 
 // BuildSystemPrompt assembles the main chat's system prompt in the spec §4.1
 // order: identity/time/owner/language, connected sources + Slack linking
-// rules, tools & workflow, the surface's actions contract, the artifacts
-// and question-card contracts, skills, memory, the project block, the app guide and the response
+// rules, tools & workflow, the surface's actions contract, the claude.ai
+// section, the artifacts and question-card contracts, skills, memory, the project block, the app guide and the response
 // style. No DB schema — the chat has no SQL tool.
 func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o PromptOptions) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -55,9 +82,13 @@ func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o Prom
 	if err != nil {
 		return "", err
 	}
+	claudeAI, err := claudeAIBlock(o.ClaudeAI)
+	if err != nil {
+		return "", err
+	}
 	sections := []string{identity, sources}
 	sections = append(sections, toolSections(o, teams, fallback)...)
-	sections = append(sections, ArtifactsContract(), QuestionsContract())
+	sections = append(sections, claudeAI, ArtifactsContract(), QuestionsContract())
 	extra, err := contextSections(d, o)
 	if err != nil {
 		return "", err

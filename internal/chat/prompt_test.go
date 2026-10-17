@@ -81,6 +81,7 @@ func TestBuildSystemPrompt_ChatLanguageDirective(t *testing.T) {
 
 func TestBuildSystemPrompt_SectionsAndOrder(t *testing.T) {
 	d, cfg, o := promptFixture(t)
+	o.ClaudeAI = ClaudeAIPrompt{Kind: ClaudeAIPromptOn, PublishDir: "/tmp/wt-chat/publish/conv-1"}
 	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
 	require.NoError(t, err)
 
@@ -92,6 +93,7 @@ func TestBuildSystemPrompt_SectionsAndOrder(t *testing.T) {
 		"=== TOOLS",
 		"=== WORKFLOW ===",
 		"=== AGENT ACTIONS ===",
+		"=== CLAUDE.AI ===",
 		"=== ARTIFACTS ===",
 		"=== QUESTIONS ===",
 		"=== SKILLS ===",
@@ -239,6 +241,9 @@ func TestBuildSystemPrompt_Budget(t *testing.T) {
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(o.VaultDir, "map.md"), []byte(strings.Repeat("м", 50_000)), 0o600))
 
+	o.WebSearch = true
+	o.ClaudeAI = ClaudeAIPrompt{Kind: ClaudeAIPromptOn, PublishDir: "/tmp/wt-chat/publish/conv-1"}
+
 	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, utf8.RuneCountInString(got), PromptBudgetChars)
@@ -372,4 +377,87 @@ func TestPromptAppGuideMentionsSearchGuide(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, got, "search_guide")
 	assert.NotContains(t, got, "Sidebar:")
+}
+
+// claudeAIPrompt builds the fixture's prompt with the given claude.ai section.
+func claudeAIPrompt(t *testing.T, c ClaudeAIPrompt) string {
+	t.Helper()
+	d, cfg, o := promptFixture(t)
+	o.ClaudeAI = c
+	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	return got
+}
+
+// The zero value is today's prompt: the golden (built with it) pins that no
+// claude.ai text appears, so the other surfaces and providers see no change.
+func TestPrompt_ClaudeAISectionOnlyWhenOn(t *testing.T) {
+	none := claudeAIPrompt(t, ClaudeAIPrompt{})
+	assert.NotContains(t, none, "=== CLAUDE.AI ===")
+	assert.NotContains(t, none, "claude.ai")
+
+	explicit := claudeAIPrompt(t, ClaudeAIPrompt{Kind: ClaudeAIPromptNone, PublishDir: "/tmp/x", Reason: "r"})
+	assert.Equal(t, none, explicit, "None ignores the other fields")
+
+	on := claudeAIPrompt(t, ClaudeAIPrompt{Kind: ClaudeAIPromptOn, PublishDir: "/tmp/wt-chat/publish/conv-1"})
+	assert.Contains(t, on, "=== CLAUDE.AI ===")
+	assert.NotContains(t, on, otherProviderClaudeAILine)
+}
+
+// TestPrompt_ClaudeAISectionPinsRules pins every rule of the On section (spec
+// D7, CHAT-05): publish privately from the publish dir only, answer with the
+// link, never a paste-this-prompt answer, free reads, writes wait for the
+// owner's Approve and are never reported as done before the step finished.
+func TestPrompt_ClaudeAISectionPinsRules(t *testing.T) {
+	const dir = "/tmp/wt-chat/publish/conv-1"
+	got := claudeAIPrompt(t, ClaudeAIPrompt{Kind: ClaudeAIPromptOn, PublishDir: dir})
+
+	for _, want := range []string{
+		"publish private pages, slide decks and documents to the owner's claude.ai account",
+		"Artifact tool",
+		"Claude Docs",
+		"Write the page's source file with the Write tool inside " + dir + " only",
+		"answer with the link",
+		"Never tell the owner to paste a prompt into claude.ai",
+		"never say you cannot create it there",
+		"read through the owner's claude.ai connectors",
+		"send, create, edit, post, share or delete",
+		"waits for the owner's Approve",
+		"up to 15 minutes",
+		"Never say it was sent, created or posted until its step finished successfully",
+		"rejected, cancelled or failed call was not done",
+		"Do not retry a call the owner rejected",
+		"Connect on claude.ai",
+	} {
+		assert.Contains(t, got, want)
+	}
+	assert.Contains(t, ArtifactsContract(), "never send", "the in-app artifact contract is not edited")
+}
+
+func TestPrompt_OtherProviderLine(t *testing.T) {
+	got := claudeAIPrompt(t, ClaudeAIPrompt{Kind: ClaudeAIPromptOtherProvider})
+	assert.Contains(t, got, "Publishing to claude.ai and claude.ai connectors need the Claude provider; use the in-app artifact instead.")
+	assert.Contains(t, got, "Never tell the owner to paste a prompt into claude.ai")
+	assert.NotContains(t, got, "Artifact tool", "no tool is promised that the session does not have")
+}
+
+func TestPrompt_UnavailableLine(t *testing.T) {
+	reason := "claude.ai tools need a claude.ai login; this chat uses an API key."
+	got := claudeAIPrompt(t, ClaudeAIPrompt{Kind: ClaudeAIPromptUnavailable, Reason: reason})
+	assert.Contains(t, got, "Publishing to claude.ai and claude.ai connectors are not available in this chat: "+reason)
+	assert.Contains(t, got, "use the in-app artifact instead")
+	assert.NotContains(t, got, "Artifact tool")
+
+	got = claudeAIPrompt(t, ClaudeAIPrompt{Kind: ClaudeAIPromptUnavailable})
+	assert.Contains(t, got, "are not available in this chat.", "an empty reason still renders a whole sentence")
+	assert.NotContains(t, got, "chat: ")
+}
+
+// On without a publish dir is a wiring bug: every publish would be denied
+// while the prompt promises it, so the prompt refuses to build.
+func TestPrompt_ClaudeAIOnNeedsPublishDir(t *testing.T) {
+	d, cfg, o := promptFixture(t)
+	o.ClaudeAI = ClaudeAIPrompt{Kind: ClaudeAIPromptOn}
+	_, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	assert.ErrorContains(t, err, "publish dir")
 }
