@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/fsutil"
 )
 
 // Client wraps the Codex CLI for AI queries (ask/chat).
@@ -93,7 +95,10 @@ func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
 		return nil
 	}
 	defer cleanup()
-	args, _ := c.buildArgs(systemPrompt, userMessage, dir)
+	args, _, promptFile, _ := c.buildArgs(systemPrompt, userMessage, dir)
+	if promptFile != "" {
+		_ = os.Remove(promptFile)
+	}
 	return args
 }
 
@@ -104,28 +109,23 @@ func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 // watchtower MCP server (its env_vars; codex otherwise filters them out).
 func (c *Client) SetMCPEnvVars(names []string) { c.mcpEnvVars = names }
 
-// codexStdinHeader/codexStdinUserHeader delimit the two sections of the
-// stdin payload (buildArgs) so codex can still tell the system
-// instructions apart from the owner's turn even though both now arrive as
-// one stdin stream instead of separate channels.
-const (
-	codexStdinSystemHeader = "SYSTEM INSTRUCTIONS:\n"
-	codexStdinUserHeader   = "USER MESSAGE:\n"
-)
-
-// codexStdinContent renders the whole turn (system prompt + user message,
-// which for the chat session already carries the replayed history — see
-// chat.ReplayFromDB) as one delimited stdin payload.
-func codexStdinContent(systemPrompt, userMessage string) string {
-	var b strings.Builder
-	if systemPrompt != "" {
-		b.WriteString(codexStdinSystemHeader)
-		b.WriteString(systemPrompt)
-		b.WriteString("\n\n")
+// instructionsArgs hands a non-empty system prompt to codex as a 0600 file
+// named by `-c model_instructions_file="<path>"`: only the path is on argv.
+// The prompt carries the owner's data, which as `-c
+// developer_instructions=<text>` would be readable by every local process
+// through `ps` (and a large one would hit ARG_MAX). The model instructions
+// replace codex's built-in base instructions; Watchtower's prompts carry
+// their own rules and the tool list still reaches the model. path is the
+// file the caller removes once the child has exited ("" when none).
+func instructionsArgs(systemPrompt string) (args []string, path string, err error) {
+	if systemPrompt == "" {
+		return nil, "", nil
 	}
-	b.WriteString(codexStdinUserHeader)
-	b.WriteString(userMessage)
-	return b.String()
+	path, err = fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
+	if err != nil {
+		return nil, "", fmt.Errorf("writing system prompt file: %w", err)
+	}
+	return []string{"-c", "model_instructions_file=" + strconv.Quote(path)}, path, nil
 }
 
 // NewClient creates a new AI client that invokes the Codex CLI.
@@ -141,20 +141,23 @@ func NewClient(model, dbPath, codexPath string) *Client {
 }
 
 // buildArgs constructs the CLI arguments for a codex exec call, plus its
-// stdin content. The argv carries flags and paths only: no
-// -c developer_instructions=..., no positional prompt — codex reads "-" from
-// stdin, and stdin carries the whole turn (system prompt then user message,
-// delimited by codexStdinContent). Both carry the owner's data, which on
-// argv would be readable by every local process through `ps` (and a large
-// one would hit ARG_MAX); codex has no file form of developer_instructions.
-// workDir is an optional working directory to pass via --cd.
-func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
-	args := c.execArgs()
+// stdin content. The argv carries flags and paths only: the system prompt
+// travels as a model_instructions_file (instructionsArgs) and the user
+// message on stdin behind the "-" positional — never as a positional prompt,
+// where `ps` would show it. promptFile is the system-prompt file to remove
+// once the child has exited. workDir is an optional working directory to
+// pass via --cd.
+func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) (args []string, stdin, promptFile string, err error) {
+	args = c.execArgs()
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
 	}
-	args = append(args, "-")
-	return args, codexStdinContent(systemPrompt, userMessage)
+	instr, promptFile, err := instructionsArgs(systemPrompt)
+	if err != nil {
+		return nil, "", "", err
+	}
+	args = append(append(args, instr...), "-")
+	return args, userMessage, promptFile, nil
 }
 
 // execArgs is the `codex exec` prefix: the shared execArgs, plus web search
@@ -230,12 +233,19 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 		defer cleanup()
 
-		args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
+		args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, workDir)
+		if buildErr != nil {
+			errCh <- buildErr
+			return
+		}
+		if promptFile != "" {
+			// Every return below comes after the child is reaped or never
+			// started, so the file is never removed while codex reads it.
+			defer os.Remove(promptFile)
+		}
 
 		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
-		if promptStdin != "" {
-			cmd.Stdin = strings.NewReader(promptStdin)
-		}
+		cmd.Stdin = strings.NewReader(promptStdin)
 		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 		defer reap()
 		cmd.Dir = c.processDir()
@@ -331,12 +341,16 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 	defer cleanup()
 
-	args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
+	args, promptStdin, promptFile, err := c.buildArgs(systemPrompt, userMessage, workDir)
+	if err != nil {
+		return "", nil, err
+	}
+	if promptFile != "" {
+		defer os.Remove(promptFile)
+	}
 
 	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
-	if promptStdin != "" {
-		cmd.Stdin = strings.NewReader(promptStdin)
-	}
+	cmd.Stdin = strings.NewReader(promptStdin)
 	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 	defer reap()
 	cmd.Dir = c.processDir()

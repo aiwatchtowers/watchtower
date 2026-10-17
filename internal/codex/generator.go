@@ -50,7 +50,13 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	codexBin := FindBinary(g.codexPath)
 
-	args, stdin := buildArgs(model, systemPrompt, userMessage)
+	args, stdin, promptFile, err := buildArgs(model, systemPrompt, userMessage)
+	if err != nil {
+		return "", nil, "", err
+	}
+	if promptFile != "" {
+		defer os.Remove(promptFile)
+	}
 
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Stdin = strings.NewReader(stdin)
@@ -135,13 +141,18 @@ func execArgs(model string) []string {
 }
 
 // buildArgs builds the `codex exec` CLI args and their stdin content. The
-// args end in the "-" positional (codex reads the prompt from stdin) and
-// carry no prompt text: the whole turn travels on stdin as codexStdinContent
-// (the Client.buildArgs layout), since on argv the owner's data would be
-// readable by every local process through `ps` and a large input (a meeting
-// transcript) would hit ARG_MAX.
-func buildArgs(model, systemPrompt, userMessage string) ([]string, string) {
-	return append(execArgs(model), "-"), codexStdinContent(systemPrompt, userMessage)
+// args carry no prompt text — on argv the owner's data would be readable by
+// every local process through `ps`, and a large input (a meeting transcript)
+// would hit ARG_MAX: the system prompt travels as a model_instructions_file
+// (instructionsArgs, the Client.buildArgs layout) and the user message on
+// stdin behind the "-" positional. promptFile is the system-prompt file to
+// remove once the child has exited.
+func buildArgs(model, systemPrompt, userMessage string) (args []string, stdin, promptFile string, err error) {
+	instr, promptFile, err := instructionsArgs(systemPrompt)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return append(append(execArgs(model), instr...), "-"), userMessage, promptFile, nil
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message

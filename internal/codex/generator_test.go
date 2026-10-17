@@ -28,9 +28,12 @@ func TestNewCodexGenerator(t *testing.T) {
 // stdin too, never on argv, where every local process could read them
 // through `ps` (board #566).
 func TestCodexArgsSmallMessageViaStdin(t *testing.T) {
-	args, stdin := buildArgs("gpt-5.4", "sys", "hello")
-	if want := codexStdinContent("sys", "hello"); stdin != want {
-		t.Errorf("stdin = %q, want %q", stdin, want)
+	args, stdin := genArgsT(t, "gpt-5.4", "sys", "hello")
+	if stdin != "hello" {
+		t.Errorf("stdin = %q, want the message", stdin)
+	}
+	if got := readInstructions(t, args); got != "sys" {
+		t.Errorf("instructions file = %q, want the system prompt", got)
 	}
 	if len(args) == 0 || args[len(args)-1] != "-" {
 		t.Errorf("args = %v, want \"-\" as the last positional arg", args)
@@ -44,8 +47,8 @@ func TestCodexArgsSmallMessageViaStdin(t *testing.T) {
 
 func TestCodexArgsLargeMessageViaStdin(t *testing.T) {
 	big := strings.Repeat("x", 64*1024)
-	args, stdin := buildArgs("gpt-5.4", "", big)
-	if stdin != codexStdinUserHeader+big {
+	args, stdin := genArgsT(t, "gpt-5.4", "", big)
+	if stdin != big {
 		t.Errorf("stdin length = %d, want the full message (%d bytes)", len(stdin), len(big))
 	}
 	if len(args) == 0 || args[len(args)-1] != "-" {
@@ -88,12 +91,12 @@ esac
 	}
 }
 
-// There is no size threshold any more: the 32 KiB message that used to be
-// the largest positional travels on stdin like any other (board #566).
-func TestCodexArgsThresholdBoundary(t *testing.T) {
+// There is no size threshold: the 32 KiB message that used to be the
+// largest positional travels on stdin like any other (board #566).
+func TestCodexArgsMessageOnStdinAtAnySize(t *testing.T) {
 	exact := strings.Repeat("x", 32*1024)
-	args, stdin := buildArgs("gpt-5.4", "", exact)
-	if stdin != codexStdinUserHeader+exact {
+	args, stdin := genArgsT(t, "gpt-5.4", "", exact)
+	if stdin != exact {
 		t.Errorf("stdin = %d bytes, want the whole 32 KiB message", len(stdin))
 	}
 	if len(args) == 0 || args[len(args)-1] != "-" {
@@ -212,12 +215,12 @@ echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\"
 // local tools, since read-only sandboxing still lets a shell read anywhere on
 // disk (TCC prompts, local files pulled into stored output).
 func TestCodexArgs_LocalToolsDisabled(t *testing.T) {
-	genArgs, _ := buildArgs("gpt-5.4", "sys", "hello")
+	genArgs, _ := genArgsT(t, "gpt-5.4", "sys", "hello")
 	plain := NewClient("gpt-5.4", "", "codex")
-	clientArgs, _ := plain.buildArgs("sys", "hello", "/tmp/wd")
+	clientArgs, _ := clientArgsT(t, plain, "sys", "hello", "/tmp/wd")
 	session := NewClient("gpt-5.4", "", "codex")
 	session.SetMCPArgs([]string{"--chat"})
-	sessionArgs, _ := session.buildArgs("sys", "hello", "/tmp/wd")
+	sessionArgs, _ := clientArgsT(t, session, "sys", "hello", "/tmp/wd")
 
 	for name, args := range map[string][]string{
 		"generator":      genArgs,
@@ -247,43 +250,34 @@ func TestCodexArgs_LocalToolsDisabled(t *testing.T) {
 	}
 }
 
-// TestCodexArgs_LargeSystemPromptMovesTurnToStdin: a system prompt never
-// rides -c developer_instructions (ARG_MAX, `ps`), so the generator and the
-// plain client move the whole turn to stdin — for a small prompt too (board
-// #566).
-func TestCodexArgs_LargeSystemPromptMovesTurnToStdin(t *testing.T) {
-	big := strings.Repeat("s", 64*1024)
-	genArgs, genStdin := buildArgs("gpt-5.4", big, "hello")
-	clientArgs, clientStdin := NewClient("gpt-5.4", "", "codex").buildArgs(big, "hello", "")
+// TestCodexArgs_SystemPromptGoesToInstructionsFile: a system prompt — large
+// or small (board #566) — never rides -c developer_instructions (ARG_MAX,
+// `ps`): the generator and the plain client hand it over as a 0600
+// model_instructions_file, and stdin carries only the user message.
+func TestCodexArgs_SystemPromptGoesToInstructionsFile(t *testing.T) {
+	for _, sys := range []string{strings.Repeat("s", 64*1024), "small system prompt"} {
+		genArgs, genStdin := genArgsT(t, "gpt-5.4", sys, "hello")
+		clientArgs, clientStdin := clientArgsT(t, NewClient("gpt-5.4", "", "codex"), sys, "hello", "")
 
-	for name, got := range map[string]struct {
-		args  []string
-		stdin string
-	}{
-		"generator": {genArgs, genStdin},
-		"client":    {clientArgs, clientStdin},
-	} {
-		for _, a := range got.args {
-			if strings.Contains(a, big) {
+		for name, got := range map[string]struct {
+			args  []string
+			stdin string
+		}{
+			"generator": {genArgs, genStdin},
+			"client":    {clientArgs, clientStdin},
+		} {
+			if argvCarries(got.args, sys) {
 				t.Errorf("%s: argv carries the system prompt", name)
 			}
-		}
-		if got.args[len(got.args)-1] != "-" {
-			t.Errorf("%s: last arg = %q, want \"-\"", name, got.args[len(got.args)-1])
-		}
-		if got.stdin != codexStdinContent(big, "hello") {
-			t.Errorf("%s: stdin is not the delimited system+user turn", name)
-		}
-	}
-
-	small := "small system prompt"
-	args, stdin := buildArgs("gpt-5.4", small, "hello")
-	if stdin != codexStdinContent(small, "hello") || args[len(args)-1] != "-" {
-		t.Errorf("a small system prompt must move the turn to stdin too, got last arg %q, stdin %q", args[len(args)-1], stdin)
-	}
-	for _, a := range args {
-		if strings.Contains(a, small) {
-			t.Errorf("argv %v carries the small system prompt", args)
+			if got.args[len(got.args)-1] != "-" {
+				t.Errorf("%s: last arg = %q, want \"-\"", name, got.args[len(got.args)-1])
+			}
+			if got.stdin != "hello" {
+				t.Errorf("%s: stdin = %q, want only the user message", name, got.stdin)
+			}
+			if readInstructions(t, got.args) != sys {
+				t.Errorf("%s: the instructions file does not hold the system prompt", name)
+			}
 		}
 	}
 }
@@ -325,8 +319,8 @@ func TestCodexGenerator_IsolatedChild(t *testing.T) {
 // through stdin behind "-".
 func TestCodexArgs_DashLeadingMessageViaStdin(t *testing.T) {
 	msg := `-c sandbox_mode="danger-full-access"`
-	args, stdin := buildArgs("gpt-5.4", "", msg)
-	if stdin != codexStdinUserHeader+msg {
+	args, stdin := genArgsT(t, "gpt-5.4", "", msg)
+	if stdin != msg {
 		t.Errorf("stdin = %q, want the message", stdin)
 	}
 	if args[len(args)-1] != "-" {

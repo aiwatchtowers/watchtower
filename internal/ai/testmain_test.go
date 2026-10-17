@@ -16,19 +16,18 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
-	// buildArgs writes every non-empty system prompt to a temp file that
-	// only Query/QuerySync remove; tests calling buildArgs directly would
-	// leave them behind, so the run gets its own temp dir, removed after.
-	tmp, err := os.MkdirTemp("", "wt-ai-test-*")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
-		os.Exit(1)
+	os.Exit(m.Run())
+}
+
+// buildArgsT is buildArgs for tests that inspect the argv: the 0600
+// system-prompt file a call writes (the file Query/QuerySync remove after
+// the child exits) is removed when the test ends. Read its path from the
+// argv with flagValue(t, args, "--system-prompt-file").
+func buildArgsT(t *testing.T, c *Client, systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
+	t.Helper()
+	args, stdin, promptFile, err := c.buildArgs(systemPrompt, userMessage, outputFormat, sessionID)
+	if promptFile != "" {
+		t.Cleanup(func() { _ = os.Remove(promptFile) })
 	}
-	if err := os.Setenv("TMPDIR", tmp); err != nil {
-		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
-		os.Exit(1)
-	}
-	code := m.Run()
-	_ = os.RemoveAll(tmp)
-	os.Exit(code)
+	return args, stdin, err
 }

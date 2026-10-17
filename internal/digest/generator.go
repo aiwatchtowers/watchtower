@@ -237,7 +237,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	// ARG_MAX).
 	var systemPromptFile string
 	if systemPrompt != "" {
-		path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
+		path, err := fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
 		if err != nil {
 			return "", nil, "", fmt.Errorf("writing system prompt file: %w", err)
 		}

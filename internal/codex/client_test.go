@@ -20,11 +20,15 @@ func TestNewClient(t *testing.T) {
 
 func TestClient_BuildArgs(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
-	args, stdin := c.buildArgs("you are a helper", "what is 2+2", "")
+	args, stdin := clientArgsT(t, c, "you are a helper", "what is 2+2", "")
 	// Board #566: the prompts carry the owner's data and never sit on argv
-	// (`ps`): the whole turn travels on stdin.
-	if want := codexStdinContent("you are a helper", "what is 2+2"); stdin != want {
-		t.Errorf("stdin = %q, want %q", stdin, want)
+	// (`ps`): the message travels on stdin, the system prompt in a 0600
+	// model_instructions_file.
+	if stdin != "what is 2+2" {
+		t.Errorf("stdin = %q, want the user message", stdin)
+	}
+	if got := readInstructions(t, args); got != "you are a helper" {
+		t.Errorf("instructions file = %q, want the system prompt", got)
 	}
 
 	// Check required args are present.
@@ -53,7 +57,7 @@ func TestClient_BuildArgs(t *testing.T) {
 
 func TestClient_BuildArgs_WithWorkDir(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
-	args, _ := c.buildArgs("sys", "msg", "/tmp/mcp-dir")
+	args, _ := clientArgsT(t, c, "sys", "msg", "/tmp/mcp-dir")
 
 	assertContains(t, args, "--cd")
 	assertContains(t, args, "/tmp/mcp-dir")
@@ -61,7 +65,7 @@ func TestClient_BuildArgs_WithWorkDir(t *testing.T) {
 
 func TestClient_BuildArgs_NoSystemPrompt(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
-	args, stdin := c.buildArgs("", "hello", "")
+	args, stdin := clientArgsT(t, c, "", "hello", "")
 
 	// Should not contain developer_instructions when system prompt is empty.
 	for _, a := range args {
@@ -69,8 +73,11 @@ func TestClient_BuildArgs_NoSystemPrompt(t *testing.T) {
 			t.Error("should not include developer_instructions with empty system prompt")
 		}
 	}
-	if strings.Contains(stdin, codexStdinSystemHeader) {
-		t.Errorf("stdin = %q: no system section without a system prompt", stdin)
+	if path := instructionsFileOf(t, args); path != "" {
+		t.Errorf("no system prompt, yet a model_instructions_file %q", path)
+	}
+	if stdin != "hello" {
+		t.Errorf("stdin = %q, want the user message", stdin)
 	}
 }
 
@@ -80,8 +87,8 @@ func TestClient_BuildArgs_NoSystemPrompt(t *testing.T) {
 func TestClient_BuildArgs_LeadingDashGoesToStdin(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
 	msg := "-v looks wrong"
-	args, stdin := c.buildArgs("sys", msg, "")
-	if !strings.HasSuffix(stdin, codexStdinUserHeader+msg) {
+	args, stdin := clientArgsT(t, c, "sys", msg, "")
+	if stdin != msg {
 		t.Fatalf("stdin = %q, want the leading-dash message", stdin)
 	}
 	if len(args) == 0 || args[len(args)-1] != "-" {
@@ -94,15 +101,15 @@ func TestClient_BuildArgs_LeadingDashGoesToStdin(t *testing.T) {
 	}
 }
 
-// TestClient_BuildArgs_StdinThresholdBoundary: there is no size threshold
-// any more (board #566) — the 32 KiB message that used to be the largest
-// positional travels on stdin like a larger one.
-func TestClient_BuildArgs_StdinThresholdBoundary(t *testing.T) {
+// TestClient_BuildArgs_MessageOnStdinAtAnySize: there is no size threshold
+// (board #566) — the 32 KiB message that used to be the largest positional
+// travels on stdin like a larger one.
+func TestClient_BuildArgs_MessageOnStdinAtAnySize(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
 
 	exact := strings.Repeat("x", 32*1024)
-	args, stdin := c.buildArgs("", exact, "")
-	if stdin != codexStdinUserHeader+exact {
+	args, stdin := clientArgsT(t, c, "", exact, "")
+	if stdin != exact {
 		t.Errorf("stdin = %d bytes, want the whole 32 KiB message", len(stdin))
 	}
 	if len(args) == 0 || args[len(args)-1] != "-" {
@@ -110,8 +117,8 @@ func TestClient_BuildArgs_StdinThresholdBoundary(t *testing.T) {
 	}
 
 	over := exact + "x"
-	args2, stdin2 := c.buildArgs("", over, "")
-	if stdin2 != codexStdinUserHeader+over {
+	args2, stdin2 := clientArgsT(t, c, "", over, "")
+	if stdin2 != over {
 		t.Errorf("stdin length = %d, want the full over-threshold message", len(stdin2))
 	}
 	if len(args2) == 0 || args2[len(args2)-1] != "-" {
@@ -184,50 +191,88 @@ esac
 // TestChat04_CodexSessionArgvCarriesNoContent pins CHAT-04 (spec §9) for the
 // chat session's codex backend (`ai session --provider codex`,
 // cmd/ai_session.go): buildArgs must never emit the system prompt via
-// -c developer_instructions=... nor place a short user message positionally
-// — both must travel only on stdin, delimited so codex can still tell them
-// apart. Since board #566 this holds for every client (cliGenerator, digest
-// generators, plain `ai query`), not only the chat session's.
+// -c developer_instructions=... nor place a short user message positionally:
+// the system prompt reaches codex only through a 0600 model_instructions_file
+// (its path is the one argv token) and the user message only on stdin. Since
+// board #566 this holds for every client (cliGenerator, digest generators,
+// plain `ai query`), not only the chat session's.
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
 func TestChat04_CodexSessionArgvCarriesNoContent(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
 
 	const sysSecret = "SYSTEM-PROMPT-SENTINEL-9f3a"
 	const userSecret = "short owner message"
-	args, stdin := c.buildArgs(sysSecret, userSecret, "")
+	args, stdin := clientArgsT(t, c, sysSecret, userSecret, "")
 
-	argv := strings.Join(args, "\x00")
-	if strings.Contains(argv, sysSecret) {
+	if argvCarries(args, sysSecret) {
 		t.Errorf("argv %v must never carry the system prompt", args)
 	}
-	if strings.Contains(argv, userSecret) {
+	if argvCarries(args, userSecret) {
 		t.Errorf("argv %v must never carry the user message", args)
 	}
 	assertNotContains(t, args, "developer_instructions="+sysSecret)
-	assertContains(t, args, "-") // codex exec - reads the whole turn from stdin
+	assertContains(t, args, "-") // codex exec - reads the user message from stdin
 	if args[len(args)-1] != "-" {
 		t.Errorf("last arg = %q, want \"-\"", args[len(args)-1])
 	}
 
-	if !strings.Contains(stdin, sysSecret) {
-		t.Errorf("stdin must carry the system prompt, got %q", stdin)
+	if got := readInstructions(t, args); got != sysSecret {
+		t.Errorf("the model_instructions_file must carry the system prompt, got %q", got)
 	}
-	if !strings.Contains(stdin, userSecret) {
+	if stdin != userSecret {
 		t.Errorf("stdin must carry the user message, got %q", stdin)
 	}
-	if strings.Index(stdin, sysSecret) > strings.Index(stdin, userSecret) {
-		t.Errorf("system instructions must come before the user message in stdin, got %q", stdin)
+	if strings.Contains(stdin, sysSecret) {
+		t.Errorf("stdin must not repeat the system prompt, got %q", stdin)
 	}
 
 	// A read-folder client (`ai query --read-folder`) keeps the same layout.
 	c2 := NewClient("gpt-5.4", "", "codex")
 	c2.SetReadFolder("/tmp/wd")
-	args2, stdin2 := c2.buildArgs(sysSecret, userSecret, "/tmp/wd")
-	if stdin2 != stdin {
-		t.Errorf("stdin = %q, want the same delimited turn %q", stdin2, stdin)
+	args2, stdin2 := clientArgsT(t, c2, sysSecret, userSecret, "/tmp/wd")
+	if stdin2 != userSecret || readInstructions(t, args2) != sysSecret {
+		t.Errorf("read-folder layout differs: stdin %q", stdin2)
 	}
-	if argv2 := strings.Join(args2, "\x00"); strings.Contains(argv2, sysSecret) || strings.Contains(argv2, userSecret) {
+	if argvCarries(args2, sysSecret) || argvCarries(args2, userSecret) {
 		t.Errorf("argv %v must never carry the prompts", args2)
+	}
+}
+
+// TestQuerySync_SmallPromptsNeverReachArgv (board #566) runs the whole path
+// through a fake codex binary: a small system prompt and a small user message
+// — the common daemon case — never appear on its argv; the prompt arrives in
+// the model_instructions_file and the message on stdin, and the file is gone
+// once QuerySync returns.
+func TestQuerySync_SmallPromptsNeverReachArgv(t *testing.T) {
+	const sysMarker, userMarker = "SYS-MARKER-566", "USER-MARKER-566"
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	body := `#!/bin/sh
+reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
+case "$*" in *MARKER-566*) reply on-argv ;; esac
+input=$(cat)
+case "$input" in *` + userMarker + `*) ;; *) reply user-missing ;; esac
+file=""
+for a in "$@"; do
+  case "$a" in model_instructions_file=*) file=${a#model_instructions_file=}; file=${file#\"}; file=${file%\"} ;; esac
+done
+if [ -n "$file" ] && grep -q ` + sysMarker + ` "$file"; then reply "ok|$file"; fi
+reply sys-missing
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewClient("gpt-5.4", "", script)
+	out, _, err := c.QuerySync(context.Background(), "sys "+sysMarker, "hello "+userMarker, "")
+	if err != nil {
+		t.Fatalf("QuerySync error: %v", err)
+	}
+	got, path, _ := strings.Cut(out, "|")
+	if got != "ok" {
+		t.Fatalf("output = %q, want ok: the prompts must travel by file and stdin, never argv", out)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("instructions file %q must be removed after the call, stat err = %v", path, statErr)
 	}
 }
 

@@ -182,6 +182,46 @@ func TestQuerySystemPrompt_Stdin(t *testing.T) {
 	}
 }
 
+// TestQueryInput_PromptStdin (board #566): with --prompt-stdin the prompt
+// and system prompt both come from one JSON object on stdin — the Desktop
+// keeps the owner's typed message off argv — and no positional prompt is
+// taken; without it the positional prompt still works for CLI users.
+func TestQueryInput_PromptStdin(t *testing.T) {
+	t.Cleanup(func() { aiFlagPromptStdin, aiFlagSystemPrompt, aiFlagSystemPromptStdin = false, "", false })
+
+	aiFlagPromptStdin = true
+	prompt, sys, err := queryInput(nil, strings.NewReader(`{"prompt":"-v owner text","system_prompt":"private context"}`))
+	if err != nil || prompt != "-v owner text" || sys != "private context" {
+		t.Fatalf("queryInput = %q, %q, %v", prompt, sys, err)
+	}
+	prompt, sys, err = queryInput(nil, strings.NewReader(`{"prompt":"hi"}`))
+	if err != nil || prompt != "hi" || sys != "" {
+		t.Fatalf("no system prompt: %q, %q, %v", prompt, sys, err)
+	}
+	for name, in := range map[string]string{
+		"empty stdin":   "",
+		"no prompt":     `{"system_prompt":"s"}`,
+		"not JSON":      "hello",
+		"unknown field": `{"prompt":"hi","model":"x"}`,
+	} {
+		if _, _, err := queryInput(nil, strings.NewReader(in)); err == nil {
+			t.Errorf("%s: must be refused", name)
+		}
+	}
+	if _, _, err := queryInput([]string{"also positional"}, strings.NewReader(`{"prompt":"hi"}`)); err == nil {
+		t.Error("--prompt-stdin with a positional prompt must be refused")
+	}
+
+	aiFlagPromptStdin, aiFlagSystemPrompt = false, "argv sys"
+	prompt, sys, err = queryInput([]string{"positional"}, strings.NewReader("ignored"))
+	if err != nil || prompt != "positional" || sys != "argv sys" {
+		t.Fatalf("positional form = %q, %q, %v", prompt, sys, err)
+	}
+	if _, _, err := queryInput(nil, strings.NewReader("")); err == nil {
+		t.Error("no prompt at all must be refused")
+	}
+}
+
 func TestAIQueryCmd_SystemPromptFlagsMutuallyExclusive(t *testing.T) {
 	resetSystemPromptFlags(t)
 	t.Cleanup(func() { resetSystemPromptFlags(t) })
@@ -234,8 +274,8 @@ func TestAIQueryCmd_SystemPromptStdinFlagParses(t *testing.T) {
 // mutual-exclusion check reads "changed" left over from an earlier test.
 func resetSystemPromptFlags(t *testing.T) {
 	t.Helper()
-	aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", false
-	for _, name := range []string{"system-prompt", "system-prompt-stdin"} {
+	aiFlagSystemPrompt, aiFlagSystemPromptStdin, aiFlagPromptStdin = "", false, false
+	for _, name := range []string{"system-prompt", "system-prompt-stdin", "prompt-stdin"} {
 		aiQueryCmd.Flags().Lookup(name).Changed = false
 	}
 }

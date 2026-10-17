@@ -266,7 +266,7 @@ func TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed(t *testing.T) {
 
 // There is no size threshold any more: the 32 KiB message that used to be
 // the largest one inline travels on stdin like any other (board #566).
-func TestGenerateArgsThresholdBoundary(t *testing.T) {
+func TestGenerateArgsMessageOnStdinAtAnySize(t *testing.T) {
 	exact := strings.Repeat("x", 32*1024)
 	args, stdin := generateArgs("m", "", exact)
 	if stdin != exact {
