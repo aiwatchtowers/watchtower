@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/chat/connectorpolicy"
+	"watchtower/internal/tools"
 )
 
 // fakeSink is an ActionSink with the registry's transitions: a row moves by
@@ -27,6 +28,7 @@ type fakeSink struct {
 	rows       map[int64]*fakeRow
 	next       int64
 	proposeErr error
+	statusErr  error // ActionStatus fails with it for every row
 	// beforeCancel runs (under no lock) when CancelCall is entered: a test
 	// lands the owner's Approve between the timeout and the cancel.
 	beforeCancel func(id int64)
@@ -74,6 +76,9 @@ func (s *fakeSink) ActionStatus(_ context.Context, id int64) (string, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.statusErr != nil {
+		return "", s.statusErr
+	}
 	r, ok := s.rows[id]
 	if !ok {
 		return "", errors.New("no such row")
@@ -704,6 +709,34 @@ func TestGate_ProposeErrorDenies(t *testing.T) {
 	require.Len(t, answers, 1)
 	assert.Equal(t, "deny", behavior(t, answers[0]))
 	assert.Contains(t, denyMessage(t, answers[0]), "database is locked")
+}
+
+// A row that vanished or belongs to another session process can never be
+// approved for this one: the call is denied at once, not after the window.
+func TestGate_PermanentStatusErrorDeniesAtOnce(t *testing.T) {
+	for name, statusErr := range map[string]error{
+		"not found":        fmt.Errorf("#1: %w", tools.ErrNotFound),
+		"not this session": fmt.Errorf("#1: %w", tools.ErrNotThisSession),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fx := gateFake(t, gmailSend("r1", "tu1"))
+			fx.sink.statusErr = statusErr
+			fx.opts.Gate.ApprovalTimeout = time.Minute
+			h := startSession(t, NewClaudeBackend(fx.opts), nil)
+			h.next(EventSessionReady)
+			start := time.Now()
+			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+			h.next(EventTurnDone)
+			require.NoError(t, h.finish())
+
+			assert.Less(t, time.Since(start), 10*time.Second, "denied at once, not after the approval window")
+			answers := fx.controlAnswers(t)["r1"]
+			require.Len(t, answers, 1)
+			assert.Equal(t, "deny", behavior(t, answers[0]))
+			assert.Equal(t, denyRowGone, denyMessage(t, answers[0]))
+			assert.Equal(t, "pending", fx.sink.row(1).status, "nothing claimed")
+		})
+	}
 }
 
 func TestGate_InvalidOptionsRefuseToStart(t *testing.T) {

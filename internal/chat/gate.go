@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/chat/connectorpolicy"
+	"watchtower/internal/tools"
 )
 
 // The claude.ai-mode permission gate (#737, spec D3–D5): with
@@ -417,6 +418,11 @@ func (g *gate) await(p *claudeProc, req permissionRequest, w *gateWait, id int64
 			lastErr = err.Error()
 		}
 		switch {
+		case rowGone(err):
+			// Permanent: polling on would only deny "not approved in time"
+			// 15 minutes later.
+			g.answer(p, permissionDenyLine(req.RequestID, denyRowGone))
+			return
 		case err != nil, status == "pending":
 		case status == "approved":
 			if g.claim(p, req, w, id) {
@@ -452,6 +458,15 @@ func (g *gate) settledByStopOrExit(p *claudeProc, req permissionRequest, w *gate
 		return true
 	}
 	return false
+}
+
+// denyRowGone answers a call whose row is missing or bound to another
+// session process: no Approve this session could act on can ever arrive.
+const denyRowGone = "This call's approval record is gone or belongs to another chat session. It was not sent."
+
+// rowGone reports a permanent ActionStatus error.
+func rowGone(err error) bool {
+	return errors.Is(err, tools.ErrNotFound) || errors.Is(err, tools.ErrNotThisSession)
 }
 
 // closedRowMessage is the deny text for a row the owner or another path
