@@ -853,6 +853,10 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	}
 
 	cfg = migrateJiraFeatureKeys(cfg, logger)
+	// Board #558: carry the pre-upgrade workflow.md checks into the owner's
+	// settings, once per workbench; the app restarts the daemon on an update,
+	// so sessions kept by the session host pick the values up.
+	carryOverWorkflowChecks(database, logger.Writer())
 
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)

@@ -2454,9 +2454,12 @@ CREATE TABLE IF NOT EXISTS projects (
     worktree_setup TEXT NOT NULL DEFAULT '', -- the command run in a new session worktree before the agent's first launch; '' = none (00114)
     agent_analytics INTEGER NOT NULL DEFAULT 0 CHECK (agent_analytics IN (0, 1)), -- 1 = Agent analytics reads this workbench's Claude Code logs (00116)
     methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00123)
-    ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00123)
-    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), -- the owner's finish check; NULL = the folder file, else on (00123)
-    board_hidden_statuses TEXT NULL -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
+    ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = strict (00123; the folder file no longer sets it, 00133)
+    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), -- the owner's finish check; NULL = on (00123; the folder file no longer sets it, 00133)
+    board_hidden_statuses TEXT NULL, -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
+    methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), -- 1 = existed at the 00133 upgrade: its folder file's weaker checks are still to be carried into the owner's setting, once (board #558)
+    ask_guard_carried_at TEXT NULL, -- when ask_guard_mode was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
+    finish_check_carried_at TEXT NULL -- when finish_check was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
 );
 
 -- Workbench board columns (00125, PROJ-19): named columns inside one status

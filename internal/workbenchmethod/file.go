@@ -2,7 +2,8 @@
 // 2026-10-15-workbench-configurable-methodology-design.md): the preset skill,
 // the ask guard mode and the finish check, from the owner's personal
 // overrides (projects.*, migration 00123), the folder's
-// .watchtower/workflow.md and the built-in defaults, in that order.
+// .watchtower/workflow.md (the preset only, board #558) and the built-in
+// defaults, in that order.
 package workbenchmethod
 
 import (

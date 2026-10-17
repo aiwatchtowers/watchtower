@@ -30,7 +30,7 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
         }
     }
 
-    /// The picker's choices, From folder file first.
+    /// The picker's choices, From folder file (Default for a check) first.
     package var choices: [String] {
         switch self {
         case .preset: [Self.fromFile, "watchtower-flow", "none"]
@@ -39,10 +39,13 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
         }
     }
 
+    /// A check's `file` choice reads Default: the folder file never sets a
+    /// check (board #558).
     package func choiceLabel(_ choice: String) -> String {
-        switch choice {
-        case Self.fromFile: "From folder file"
-        case "watchtower-flow": "Watchtower flow"
+        switch (self, choice) {
+        case (.preset, Self.fromFile): "From folder file"
+        case (_, Self.fromFile): "Default"
+        case (_, "watchtower-flow"): "Watchtower flow"
         default: choice.prefix(1).uppercased() + String(choice.dropFirst())
         }
     }
@@ -50,8 +53,10 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
     /// What a value does; soft names the Desktop-down limit (spec §7.1).
     package func choiceHelp(_ choice: String) -> String {
         switch (self, choice) {
-        case (_, Self.fromFile):
+        case (.preset, Self.fromFile):
             "Use the folder's .watchtower/workflow.md, else the built-in default."
+        case (_, Self.fromFile):
+            "Use the built-in default. The folder's workflow.md cannot turn this check down; only your setting here can."
         case (.preset, "watchtower-flow"):
             "Watchtower's default methodology: features, specs and plans become targets, and reviewer agents put work in review."
         case (.preset, "none"):
@@ -103,9 +108,14 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
         package let error: String
         package let bodyChars: Int
         package let truncated: Bool
+        /// The check settings the file asks for that were ignored
+        /// ("ask_guard: off") — only for a check with no personal value:
+        /// only a personal setting turns a check down (board #558). nil from
+        /// a CLI that predates the key.
+        package let ignored: [String]?
 
         enum CodingKeys: String, CodingKey {
-            case present, error, truncated
+            case present, error, truncated, ignored
             case bodyChars = "body_chars"
         }
     }
@@ -116,6 +126,9 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
     package let personal: Values
     package let effective: Values
     package let sources: Values
+    /// When each check was carried over from workflow.md by the board #558
+    /// upgrade (RFC 3339; "" = the owner's pick); nil from an older CLI.
+    package let carriedAt: Values?
     package let file: File
     package let fileCreated: Bool
     package let fileCreateError: String
@@ -131,6 +144,7 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, ok, error, personal, effective, sources, file
+        case carriedAt = "carried_at"
         case fileCreated = "file_created"
         case fileCreateError = "file_create_error"
         case installRan = "install_ran"
@@ -155,13 +169,33 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
         return sources[key] == "file" ? "Now \(value), from .watchtower/workflow.md" : "Now \(value), the built-in default"
     }
 
+    /// Under a personal value the upgrade carried over from workflow.md
+    /// (board #558): that the owner did not pick it, and when; nil otherwise.
+    /// The date is shown in the viewer's time zone (`dateStyle` medium).
+    package func carriedLine(_ key: WorkbenchMethodologyKey, timeZone: TimeZone = .current) -> String? {
+        guard !personal[key].isEmpty, let at = carriedAt?[key], !at.isEmpty,
+              let date = ISO8601DateFormatter().date(from: at) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.timeZone = timeZone
+        return "Carried over from workflow.md on \(formatter.string(from: date)) — the file no longer sets it."
+    }
+
     package var fileButtonTitle: String { file.present ? "Open workflow.md" : "Create workflow.md" }
 
-    /// Why the folder file was ignored, or that it was cut; nil otherwise.
+    /// Why the folder file was ignored, that it was cut, or that it asks to
+    /// turn a check down, which only a personal setting can (board #558);
+    /// nil otherwise.
     package var fileNote: String? {
         if !file.error.isEmpty { return "workflow.md was ignored: \(file.error). The built-in defaults apply." }
-        if file.truncated { return "workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB." }
-        return nil
+        var notes: [String] = []
+        if file.truncated { notes.append("workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB.") }
+        if let ignored = file.ignored, !ignored.isEmpty {
+            notes.append("workflow.md asks for \(ignored.joined(separator: ", ")); that is ignored. "
+                + "Only your settings can turn a check down: to turn it down, pick the value above.")
+        }
+        return notes.isEmpty ? nil : notes.joined(separator: " ")
     }
 
     /// After a preset change: preset none kept an edited or foreign
