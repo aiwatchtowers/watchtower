@@ -400,6 +400,20 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.jira, input), .ready)
     }
 
+    /// Picking boards is the owner's fix whether or not the daemon runs, so
+    /// it wins over "Watchtower isn't running".
+    func testJiraBoardsGapWinsOverDaemonStopped() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.connected = ConnectedSources(jira: true)
+        input.jiraBoardsSelected = false
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-120)
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        input.jiraBoardsSelected = true
+        XCTAssertEqual(evaluate(.jira, input), .daemonStopped)
+    }
+
     func testSourceActionTitles() {
         XCTAssertEqual(ReadinessSource.jira.actionTitle, "Connect Jira")
         XCTAssertEqual(ReadinessSource.jiraBoards.actionTitle, "Choose Jira boards")
