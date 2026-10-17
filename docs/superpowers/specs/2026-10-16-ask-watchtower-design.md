@@ -1,5 +1,7 @@
 # Ask Watchtower — in-app help — design
 
+> **Superseded/merged by reconciliation (ask #333, 2026-10-17).** #426 shipped as the in-app help design (`2026-10-16-in-app-help-design.md`, notes in `docs/features/in-app-help.md`): ⌘/ opens the AI Chat popup and the guide is searched only through Knowledge. From this spec only the `watchtower-nav://` screen links and the guide link ref by release version were kept; the Ask panel, `internal/userguide`, `search_guide`/`get_guide_page`, `watchtower guide index|search|catalog` and `ai query --no-tools` were removed. Kept here as history.
+
 Board #426, from GitHub issues #289, #292 and #291 (triage asks #195, #197, #198).
 Owner decisions: asks #231, #233, #235, #236, #238 (2026-10-16). Mockup:
 https://claude.ai/artifact/28kLVXgsvbNfKj7yYPCiNe

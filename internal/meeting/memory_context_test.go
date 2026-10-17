@@ -206,7 +206,7 @@ func TestGatherMemoryContext_Capped(t *testing.T) {
 	vp := initMemVault(t, cfg)
 	d := openTestDB(t)
 	facts := make([]string, 0, 400)
-	for i := 0; i < 400; i++ {
+	for range 400 {
 		facts = append(facts, "a very long fact line about the attendee that keeps going and going")
 	}
 	writePersonEntity(t, d, vp, "ent_alice", "Alice", "Backend lead", "Owns the migration", facts, []string{"U123"})

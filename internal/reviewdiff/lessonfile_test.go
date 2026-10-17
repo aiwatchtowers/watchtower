@@ -25,20 +25,18 @@ func lessonFolder(t *testing.T, content *string) (folder, file string) {
 	return folder, file
 }
 
-func ptr(s string) *string { return &s }
-
 func TestAppendLessonRule_InsertsUnderTheHeading(t *testing.T) {
 	cases := []struct {
 		name             string
 		before           *string
 		lens, text, want string
 	}{
-		{"existing section", ptr("## Tests\n- a\n\n## Docs\n- b\n"), "Tests", "new", "## Tests\n- a\n- new\n\n## Docs\n- b\n"},
-		{"lens id matches heading", ptr("## Tests\n- a\n\n## Docs\n- b\n"), "docs", "new", "## Tests\n- a\n\n## Docs\n- b\n- new\n"},
+		{"existing section", new("## Tests\n- a\n\n## Docs\n- b\n"), "Tests", "new", "## Tests\n- a\n- new\n\n## Docs\n- b\n"},
+		{"lens id matches heading", new("## Tests\n- a\n\n## Docs\n- b\n"), "docs", "new", "## Tests\n- a\n\n## Docs\n- b\n- new\n"},
 		{"no file", nil, "House rules", "new", "## House rules\n- new\n"},
-		{"new section, no final newline", ptr("## Tests\n- a"), "Docs", "new", "## Tests\n- a\n\n## Docs\n- new\n"},
-		{"empty file", ptr(""), "Docs", "new", "## Docs\n- new\n"},
-		{"duplicate", ptr("## Tests\n- Does it?\n"), "Tests", "Does it?", "## Tests\n- Does it?\n"},
+		{"new section, no final newline", new("## Tests\n- a"), "Docs", "new", "## Tests\n- a\n\n## Docs\n- new\n"},
+		{"empty file", new(""), "Docs", "new", "## Docs\n- new\n"},
+		{"duplicate", new("## Tests\n- Does it?\n"), "Tests", "Does it?", "## Tests\n- Does it?\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -68,7 +66,7 @@ func TestAppendLessonRule_RefusesUnsafe(t *testing.T) {
 		assert.Empty(t, entries)
 	})
 	t.Run("symlinked review.md", func(t *testing.T) {
-		folder, file := lessonFolder(t, ptr(""))
+		folder, file := lessonFolder(t, new(""))
 		outside := filepath.Join(t.TempDir(), "outside.md")
 		require.NoError(t, os.WriteFile(outside, []byte("keep\n"), 0o644))
 		require.NoError(t, os.Remove(file))
@@ -78,7 +76,7 @@ func TestAppendLessonRule_RefusesUnsafe(t *testing.T) {
 		assert.Equal(t, "keep\n", string(got))
 	})
 	t.Run("fifo", func(t *testing.T) {
-		folder, file := lessonFolder(t, ptr(""))
+		folder, file := lessonFolder(t, new(""))
 		require.NoError(t, os.Remove(file))
 		require.NoError(t, syscall.Mkfifo(file, 0o644))
 		done := make(chan error, 1)

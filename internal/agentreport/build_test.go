@@ -36,7 +36,7 @@ func putSessionWith(t *testing.T, d *db.DB, wb int64, id string, n, version int,
 	start := t0.Format(tsLayout)
 	end := t0.Add(time.Duration(n) * time.Second).Format(tsLayout)
 	evs := make([]db.AgentLogEvent, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		e := db.AgentLogEvent{SessionUUID: id, Key: fmt.Sprintf("%s:%d", id, i), SrcPath: path, SrcOffset: int64(i),
 			TS: t0.Add(time.Duration(i) * time.Second).Format(tsLayout)}
 		switch i % 4 {
@@ -158,8 +158,8 @@ func TestBuildOverview_Performance(t *testing.T) {
 	ins, err := tx.Prepare(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, name, target, outcome, duration_ms,
 		input_tokens, output_tokens, cost_usd, src_path, src_offset) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	require.NoError(t, err)
-	for day := 0; day < 30; day++ {
-		for s := 0; s < 25; s++ {
+	for day := range 30 {
+		for s := range 25 {
 			id := fmt.Sprintf("s-%d-%d", day, s)
 			path := "/tmp/x/" + id + ".jsonl"
 			base := now.AddDate(0, 0, -day).Add(time.Duration(s) * time.Minute)
@@ -169,7 +169,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 			_, err = tx.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, project_id, folder_path, home_cwd, source_path, started_at, ended_at)
 				VALUES (?, 'claude', ?, '/w', '/w', ?, ?, ?)`, id, wb, path, base.Format(tsLayout), base.Add(25*time.Minute).Format(tsLayout))
 			require.NoError(t, err)
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				ts := base.Add(time.Duration(i) * 700 * time.Millisecond).Format(tsLayout)
 				key := fmt.Sprintf("%s:%d", id, i)
 				switch i % 5 {

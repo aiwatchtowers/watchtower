@@ -12,10 +12,7 @@ func WatchWake(ctx context.Context, pollInterval time.Duration) <-chan struct{} 
 	ch := make(chan struct{}, 1)
 	go func() {
 		defer close(ch)
-		checkInterval := pollInterval / 2
-		if checkInterval < 5*time.Second {
-			checkInterval = 5 * time.Second
-		}
+		checkInterval := max(pollInterval/2, 5*time.Second)
 		ticker := time.NewTicker(checkInterval)
 		defer ticker.Stop()
 

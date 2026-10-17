@@ -136,7 +136,7 @@ func TestReviewLessonInputComments_ExcludesDraftsCarriedOpenAndDecided(t *testin
 	}
 	oldest := mkRound("sent")
 	oldC := mkComment(oldest, "sent", nil)
-	for i := 0; i < 19; i++ {
+	for range 19 {
 		r := mkRound("delivered")
 		mkComment(r, "sent", nil)
 	}

@@ -128,7 +128,7 @@ func TestGetUserByEmailFoldExcludesDeletedAndIsStable(t *testing.T) {
 	first, err := db.GetUserByEmailFold("alice@example.com")
 	require.NoError(t, err)
 	require.NotNil(t, first)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		again, err := db.GetUserByEmailFold("alice@example.com")
 		require.NoError(t, err)
 		require.NotNil(t, again)

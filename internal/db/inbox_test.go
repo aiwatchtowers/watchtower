@@ -847,7 +847,7 @@ func TestDeduplicateThreadInboxItems_NonThreadItemsNeverCollapse(t *testing.T) {
 	db := openTestDB(t)
 
 	var ids []int64
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		id, err := db.CreateInboxItem(InboxItem{
 			ChannelID:    "C1",
 			MessageTS:    fmt.Sprintf("1.%d", i),

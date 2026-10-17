@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,12 +23,13 @@ func beliefSubjectEntity(id, epID string) Node {
 
 // beliefTestNode builds a belief page with an ## Evidence block.
 func beliefTestNode(id, statement, subject string, conf float64, stab int, status string, ev ...beliefEvidence) Node {
-	body := "# " + statement + "\n\n## Evidence\n"
+	var body strings.Builder
+	body.WriteString("# " + statement + "\n\n## Evidence\n")
 	for _, e := range ev {
-		body += e.render()
+		body.WriteString(e.render())
 	}
-	body += "\n## History\n- 2026-01-01: seeded\n"
-	return Node{ID: id, Type: "belief", Tier: "long", Status: status, Confidence: conf, Stability: stab, Subject: subject, Title: statement, Body: body}
+	body.WriteString("\n## History\n- 2026-01-01: seeded\n")
+	return Node{ID: id, Type: "belief", Tier: "long", Status: status, Confidence: conf, Stability: stab, Subject: subject, Title: statement, Body: body.String()}
 }
 
 func opsJSON(t *testing.T, ops ...beliefOpJSON) string {
@@ -481,11 +483,12 @@ func TestBuildReviseBeliefsPromptListsKnownSubjects(t *testing.T) {
 // section from raw "YYYY-MM-DD: cause[ — rationale]" lines, for
 // NotableRevision tests.
 func beliefBodyWithHistory(lines ...string) string {
-	body := "# Test Belief\n\n## History\n"
+	var body strings.Builder
+	body.WriteString("# Test Belief\n\n## History\n")
 	for _, l := range lines {
-		body += "- " + l + "\n"
+		body.WriteString("- " + l + "\n")
 	}
-	return body
+	return body.String()
 }
 
 func TestNotableRevision_StatusTransitionIsAlwaysNotable(t *testing.T) {

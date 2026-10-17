@@ -58,15 +58,13 @@ func openConcurrently(dbPath string, n int) []error {
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	for i := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			d, err := Open(dbPath)
 			if err == nil {
 				err = d.Close()
 			}
 			errs[i] = err
-		}()
+		})
 	}
 	wg.Wait()
 	return errs

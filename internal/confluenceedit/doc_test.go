@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -497,12 +498,7 @@ func srcHasMarkerBracket(src string) bool {
 				return true
 			}
 		}
-		for _, ch := range n.children {
-			if walk(ch) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(n.children, walk)
 	}
 	return walk(root)
 }

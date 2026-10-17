@@ -95,7 +95,7 @@ func (db *DB) GetCustomEmojiMap() (map[string]string, error) {
 		if e.AliasFor != "" {
 			target := e.AliasFor
 			resolved := false
-			for depth := 0; depth < 10; depth++ {
+			for range 10 {
 				url, ok := result[target]
 				if !ok {
 					break

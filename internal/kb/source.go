@@ -32,6 +32,7 @@ type progressReporter interface {
 // whole-space backfill can be large), Slack (the backfill giant) last.
 func allSources() []Source {
 	return []Source{
+		guideSource{},
 		calendarSource{},
 		newWorkbenchDocSource(),
 		ideaSource{},

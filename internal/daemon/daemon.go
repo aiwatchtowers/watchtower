@@ -1181,13 +1181,21 @@ func (d *Daemon) cleanupOrphanRecordings(cutoff time.Time) {
 const kbCycleBudget = 60 * time.Second
 
 // phaseKnowledgeIndex brings the knowledge-search index up to date.
-// Mechanical (no AI, KB-02); off = no indexing, the existing index stays
-// readable (FEAT-01/02).
+// Mechanical (no AI, KB-02); off = no indexing of the owner's data, the
+// existing index stays readable (FEAT-01/02). The built-in user guide is not
+// owner data: it is indexed every cycle even when the switch is off, with no
+// pipeline_runs row (FEAT-01), and nothing tied to the switch deletes it.
 func (d *Daemon) phaseKnowledgeIndex(ctx context.Context) {
-	if !d.config.Knowledge.Enabled {
+	if d.db == nil {
 		return
 	}
-	if d.db == nil {
+	if !d.config.Knowledge.Enabled {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := kb.Run(ctx, d.db, kb.Options{Budget: kbCycleBudget, Sources: []string{kb.GuideSource}}); err != nil && !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("knowledge index (guide): %v", err)
+		}
 		return
 	}
 	d.trackedPipelineRun("knowledge-index", func() pipelineRunStats {

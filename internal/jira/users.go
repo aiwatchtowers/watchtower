@@ -141,10 +141,7 @@ func fuzzyMatch(a, b string) float64 {
 
 	lenA := utf8.RuneCountInString(a)
 	lenB := utf8.RuneCountInString(b)
-	maxLen := lenA
-	if lenB > maxLen {
-		maxLen = lenB
-	}
+	maxLen := max(lenB, lenA)
 	if maxLen == 0 {
 		return 1.0
 	}

@@ -210,12 +210,10 @@ func TestEscalationRaceFilesOneAsk(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i, h := range handles {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			results[i], errs[i] = escalateQuestion(h, a, time.Now())
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

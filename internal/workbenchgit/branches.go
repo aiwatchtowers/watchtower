@@ -147,7 +147,7 @@ func parseTrack(track string) (ahead, behind int, gone bool, err error) {
 	case "gone":
 		return 0, 0, true, nil
 	}
-	for _, part := range strings.Split(track, ", ") {
+	for part := range strings.SplitSeq(track, ", ") {
 		key, value, _ := strings.Cut(part, " ")
 		n, convErr := strconv.Atoi(value)
 		switch {

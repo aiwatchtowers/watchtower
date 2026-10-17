@@ -2,6 +2,7 @@ package prompts
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -259,12 +260,7 @@ func TestAppendedSystemPromptsRegistered(t *testing.T) {
 
 // contains checks if a slice contains a string value.
 func contains(slice []string, val string) bool {
-	for _, v := range slice {
-		if v == val {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(slice, val)
 }
 
 // TestPrompts_TerminalTitleIsAgentNeutral pins the v2 text: the title prompt

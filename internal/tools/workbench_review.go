@@ -120,7 +120,7 @@ func reviewText(v reviewView) string {
 		}
 		fmt.Fprintf(&b, "\n#%d %s\n", c.ID, where)
 		if quote := strings.TrimRight(c.Quote, "\n"); quote != "" {
-			for _, l := range strings.Split(quote, "\n") {
+			for l := range strings.SplitSeq(quote, "\n") {
 				fmt.Fprintf(&b, "> %s\n", l) // a blank line inside the quote stays a "> " line
 			}
 		}
@@ -130,7 +130,7 @@ func reviewText(v reviewView) string {
 		b.WriteString("\nUndone by the owner (reverted in the work tree — do not redo without asking):\n")
 		for _, rv := range v.Reverts {
 			fmt.Fprintf(&b, "- %s %s\n", rv.Path, rv.Header)
-			for _, l := range strings.Split(strings.TrimRight(rv.Patch, "\n"), "\n") {
+			for l := range strings.SplitSeq(strings.TrimRight(rv.Patch, "\n"), "\n") {
 				fmt.Fprintf(&b, "  %s\n", l)
 			}
 		}

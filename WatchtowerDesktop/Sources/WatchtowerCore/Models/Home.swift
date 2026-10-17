@@ -258,12 +258,6 @@ package struct HomeSnapshot: Equatable, Sendable {
         self.todayFailed = todayFailed
     }
 
-    /// The "Press ⌘/ to ask" hint: only while the Getting ready zone is not shown.
-    package var showsAskHint: Bool {
-        if case .shown = gettingReady { return false }
-        return true
-    }
-
     /// No card to show, and at least one allowed card's read failed: Home
     /// shows the read error where the all-clear line would be.
     package var showsReadError: Bool {
