@@ -155,7 +155,7 @@ func (s *Sandbox) Run() (any, error) {
 	case r := <-results:
 		return s.outcome(r.v, r.err)
 	case <-grace.C:
-		return s.abandon(results)
+		return nil, s.abandon(results)
 	}
 }
 
@@ -180,8 +180,9 @@ func (s *Sandbox) execute() (r runResult) {
 }
 
 // abandon leaves a script goroutine stuck past the grace behind; it counts
-// in AbandonedRuns until it ends.
-func (s *Sandbox) abandon(results <-chan runResult) (any, error) {
+// in AbandonedRuns until it ends. The error is the run's: the fatal SDK
+// error, else a *RunInterrupted marked Abandoned.
+func (s *Sandbox) abandon(results <-chan runResult) error {
 	abandonedRuns.Add(1)
 	go func() {
 		<-results
@@ -191,9 +192,9 @@ func (s *Sandbox) abandon(results <-chan runResult) (any, error) {
 	fatal, reason := s.fatal, s.reason
 	s.mu.Unlock()
 	if fatal != nil {
-		return nil, fatal
+		return fatal
 	}
-	return nil, &RunInterrupted{Reason: reason, Abandoned: true}
+	return &RunInterrupted{Reason: reason, Abandoned: true}
 }
 
 func (s *Sandbox) outcome(_ goja.Value, runErr error) (any, error) {

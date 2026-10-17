@@ -139,26 +139,30 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	prompt := args[0]
 	enc := json.NewEncoder(os.Stdout)
 	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
-		return emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
+		emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
+		return nil
 	}
 	// Before the config/DB work below, so a writer feeding a large prompt on
 	// stdin is not kept waiting (the Desktop tolerates a CLI that exits
 	// before reading — see WatchtowerAIService.feedStdin).
 	systemPrompt, err := querySystemPrompt(os.Stdin)
 	if err != nil {
-		return emitError(enc, err.Error())
+		emitError(enc, err.Error())
+		return nil
 	}
 
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return emitError(enc, fmt.Sprintf("loading config: %v", err))
+		emitError(enc, fmt.Sprintf("loading config: %v", err))
+		return nil
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	applyProviderOverride(cfg)
 	if err := cfg.ValidateWorkspace(); err != nil {
-		return emitError(enc, fmt.Sprintf("invalid config: %v", err))
+		emitError(enc, fmt.Sprintf("invalid config: %v", err))
+		return nil
 	}
 
 	// Determine database path
@@ -174,7 +178,8 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 
 	aiClient, cleanup, err := newQueryClient(cfg, dbPath)
 	if err != nil {
-		return emitError(enc, fmt.Sprintf("preparing tools: %v", err))
+		emitError(enc, fmt.Sprintf("preparing tools: %v", err))
+		return nil
 	}
 	defer cleanup()
 	if readFolder != "" {
@@ -354,14 +359,13 @@ func orPickHint(model string) string {
 	return model
 }
 
-func emitError(enc *json.Encoder, msg string) error {
+func emitError(enc *json.Encoder, msg string) {
 	if aiFlagEvents == "v2" {
 		_ = enc.Encode(chat.Event{Type: chat.EventError, TurnID: v2TurnID(), Code: chat.CodeInternal, Message: msg, Retryable: true})
-		return nil
+		return
 	}
 	_ = enc.Encode(aiStreamEvent{Type: "error", Error: msg})
 	_ = enc.Encode(aiStreamEvent{Type: "done"})
-	return nil
 }
 
 // v2TurnID is the turn id `ai query --events v2` stamps on its events: the

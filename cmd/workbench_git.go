@@ -104,7 +104,7 @@ func init() {
 // resolveErr is git failing to list the worktrees or the requested folder
 // failing to resolve (workbenchgit.ErrFolderUnreadable), which the caller
 // turns into its envelope.
-func workbenchGitTarget(ctx context.Context, cmd *cobra.Command) (
+func workbenchGitTarget(ctx context.Context) (
 	id int64, o workbenchgit.Options, folder workbenchgit.ResolvedFolder, resolveErr, err error,
 ) {
 	id = workbenchGitFlagWorkbench
@@ -159,7 +159,7 @@ func workbenchGitContext(cmd *cobra.Command, budget time.Duration) (context.Cont
 func runWorkbenchGitStatus(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitReadBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func runWorkbenchGitStatus(cmd *cobra.Command, _ []string) error {
 func runWorkbenchGitBranches(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitReadBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ func printGitBranches(w io.Writer, l workbenchgit.BranchList) {
 func runWorkbenchGitSwitch(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -241,7 +241,7 @@ func runWorkbenchGitSwitch(cmd *cobra.Command, _ []string) error {
 func runWorkbenchGitCreate(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}

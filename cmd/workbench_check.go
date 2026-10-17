@@ -388,8 +388,8 @@ func recordCodexStopState(database *db.DB, row db.TerminalSession, in hookEvent,
 	if n := codexBackgroundCount(turns); n > 0 {
 		turn.background = sql.NullInt64{Int64: n, Valid: true}
 	}
-	state, onlyFrom, _ := agentStateFor("Stop", "")
-	return recordAgentState(database, row.ID, row.WorkbenchID.Int64, in.SessionID, state, onlyFrom, nil, false, at, turn)
+	state, _ := agentStateFor("Stop", "")
+	return recordAgentState(database, row.ID, row.WorkbenchID.Int64, in.SessionID, state, "", nil, false, at, turn)
 }
 
 // markStopTurnEnd records the turn end before the drift check, which can
@@ -536,9 +536,9 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 	if err := recordStopTurnEnd(database, rowID, workbenchID, in); err != nil {
 		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
-	state, onlyFrom, _ := agentStateFor("Stop", "")
+	state, _ := agentStateFor("Stop", "")
 	turn := hookTurn{stop: true, tasks: in.BackgroundTasks, cwd: hookCwd("Stop", "", in.Cwd)}
-	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn)
+	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil, false, at, turn)
 }
 
 // workbenchHasStateHooks reports whether workbench id's folder has its core

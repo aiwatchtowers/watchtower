@@ -159,7 +159,7 @@ func catchupPipeline() (*catchup.Pipeline, *db.DB, func(), error) {
 	}
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	gen, closeGen := cliPooledGenerator(cfg, logger)
+	gen, closeGen := cliPooledGenerator(cfg)
 	p := catchup.New(database, cfg, gen, logger)
 	p.SetPromptStore(prompts.New(database, nil))
 	digestPipe := digest.New(database, cfg, gen, logger)

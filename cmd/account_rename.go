@@ -24,7 +24,7 @@ func newAccountRenameCmd(table, noun string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("invalid account id %q: %w", args[0], err)
 			}
-			_, database, err := openSlackCmdDB(cmd)
+			_, database, err := openSlackCmdDB()
 			if err != nil {
 				return err
 			}

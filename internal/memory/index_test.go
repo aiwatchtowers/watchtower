@@ -845,7 +845,7 @@ func TestMemoryFocusMatchesSurviveReindex(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(v.path, focusFileName), []byte("## Now\n- Focused Thing\n"), 0o644))
 	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 	var stats RunStats
-	steps, err := p.runFocus(1, 0, &stats)
+	steps, err := p.runFocus(1, &stats)
 	require.NoError(t, err)
 	require.Equal(t, 1, steps)
 

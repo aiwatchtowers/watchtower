@@ -596,7 +596,8 @@ func (o *Orchestrator) ownsID(id string) bool {
 // so the "last synced" stamp is true — and is returned after it.
 func (o *Orchestrator) finishWithInboxReactions(ctx context.Context) error {
 	reactErr := o.syncInboxReactions(ctx)
-	return errors.Join(o.finishSync(), reactErr)
+	o.finishSync()
+	return reactErr
 }
 
 // syncInboxReactions refreshes the reactions on pending inbox messages so
@@ -717,8 +718,9 @@ func (o *Orchestrator) ownerRawID() (string, bool) {
 	return raw, raw != ""
 }
 
-// finishSync logs API stats, updates the sync timestamp, and marks sync as done.
-func (o *Orchestrator) finishSync() error {
+// finishSync logs API stats, updates the sync timestamp, and marks sync as
+// done. Its writes are best-effort: a failure is a logged warning.
+func (o *Orchestrator) finishSync() {
 	o.progress.SetPhase(PhaseDone)
 	counts, retries := o.slackClient.APIStats()
 	total := 0
@@ -741,7 +743,6 @@ func (o *Orchestrator) finishSync() error {
 	if err := o.db.TouchSyncedAt(); err != nil {
 		o.logger.Printf("warning: failed to update synced_at: %v", err)
 	}
-	return nil
 }
 
 // ensureWorkspace loads (and, on first run, resolves via team.info) the

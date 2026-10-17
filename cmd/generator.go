@@ -76,7 +76,7 @@ var cliBoundedGenerator = func(cfg *config.Config) digest.Generator {
 // terminal than in the daemon. cliGenerator (interactive commands like
 // ask/chat) deliberately does NOT get this wrapper: those calls are already
 // bounded by the user.
-func cliPooledGenerator(cfg *config.Config, logger *log.Logger) (digest.Generator, func()) {
+func cliPooledGenerator(cfg *config.Config) (digest.Generator, func()) {
 	rawGen := digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
 	poolSize := cfg.AI.Workers
 	if poolSize <= 0 {

@@ -396,7 +396,7 @@ func TestGenerateAndDigestLock_CreatePrivateDirectories(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	cfg := &config.Config{ActiveWorkspace: "test"}
-	_, unlock, err := (&Pipeline{cfg: cfg}).acquireDigestLock()
+	unlock, err := (&Pipeline{cfg: cfg}).acquireDigestLock()
 	if err != nil {
 		t.Fatalf("acquireDigestLock: %v", err)
 	}

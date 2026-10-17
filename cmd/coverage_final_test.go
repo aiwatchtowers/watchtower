@@ -48,7 +48,7 @@ func TestCliPooledGenerator(t *testing.T) {
 	cfg, err := loadTestConfig()
 	require.NoError(t, err)
 
-	gen, savePool := cliPooledGenerator(cfg, nil)
+	gen, savePool := cliPooledGenerator(cfg)
 	assert.NotNil(t, gen)
 	assert.NotNil(t, savePool)
 	savePool() // cleanup should not panic

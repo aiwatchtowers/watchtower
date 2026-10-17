@@ -55,7 +55,7 @@ func TestRunEmailDigests_ImapMailboxMinedAndFloorAdvances(t *testing.T) {
 			"ideas":[{"text":"try a vendor","author":"Ann","ref":%q},{"text":"invented","author":"X","ref":"imap:%d:1-99"}],
 			"decisions":[{"text":"launch Friday","author":"Ann","ref":%q}]}]}`, imapTag(acct, 7), acct, imapTag(acct, 8)), nil
 	}}
-	require.NoError(t, New(d, testCfg(), gen, testLogger()).runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, New(d, testCfg(), gen, testLogger()).runEmailDigests(context.Background()))
 	assert.Equal(t, 1, gen.calls)
 	assert.Contains(t, prompt, "("+imapTag(acct, 7)+")")
 
@@ -86,7 +86,7 @@ func TestRunEmailDigests_ImapFloorZeroInitializesAndSkips(t *testing.T) {
 		t.Fatal("generator must not be called on the init pass")
 		return "", nil
 	}}
-	require.NoError(t, New(d, testCfg(), gen, testLogger()).runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, New(d, testCfg(), gen, testLogger()).runEmailDigests(context.Background()))
 	floor, err := d.IdeasImapFloor(acct)
 	require.NoError(t, err)
 	assert.Equal(t, float64(at.Unix()), floor)
@@ -105,7 +105,7 @@ func TestConsolidate_ImapRefMentionSourceIsImap(t *testing.T) {
 		return fmt.Sprintf(`{"ops":[{"op":"new_idea","title":"New vendor","essence":"e",
 			"mentions":[{"source":"gmail","ref":%q,"quote":"try a new vendor","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, ref), nil
 	}}
-	proposed, _, err := New(d, testCfg(), gen, testLogger()).runConsolidate(context.Background(), time.Time{}, time.Time{})
+	proposed, _, err := New(d, testCfg(), gen, testLogger()).runConsolidate(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, proposed)
 
@@ -220,7 +220,7 @@ func TestRunEmailDigests_GmailAndImapSameIDKeptApart(t *testing.T) {
 	seedImapMessage(t, d, m, 3, "Subj", "imap body", base.Add(30*time.Second))
 
 	gen := &sysGen{}
-	require.NoError(t, New(d, testCfg(), gen, testLogger()).runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, New(d, testCfg(), gen, testLogger()).runEmailDigests(context.Background()))
 	require.Len(t, gen.users, 2)
 
 	digests, err := d.ListStreamDigestsAfter(0, "")
@@ -257,7 +257,7 @@ func TestRunEmailDigests_ImapDuplicateOfGmailSkipped(t *testing.T) {
 
 	gen := &sysGen{}
 	p := New(d, testCfg(), gen, testLogger())
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 	_, complete, err := p.BackfillImap(context.Background(), m, base.Add(-48*time.Hour), base.Add(time.Hour))
 	require.NoError(t, err)
 	assert.True(t, complete)
@@ -290,7 +290,7 @@ func TestMineStreamTopics_OldTemplateGetsImapRefNote(t *testing.T) {
 			gen := &sysGen{}
 			p := New(d, testCfg(), gen, testLogger())
 			p.SetPromptStore(prompts.New(d, nil))
-			require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+			require.NoError(t, p.runEmailDigests(context.Background()))
 			require.Len(t, gen.systems, 1)
 			assert.Equal(t, tc.wantNote, strings.Contains(gen.systems[0], `start with "imap:"`))
 		})

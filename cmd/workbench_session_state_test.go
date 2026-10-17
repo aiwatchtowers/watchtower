@@ -80,28 +80,27 @@ func unsetTerminalEnv(t *testing.T) {
 func TestSessionState_AgentStateFor(t *testing.T) {
 	for _, tc := range []struct {
 		event, notification string
-		state, onlyFrom     string
+		state               string
 		ok                  bool
 	}{
-		{"UserPromptSubmit", "", "working", "", true},
-		{"Stop", "", "waiting", "", true},
-		{"StopFailure", "", "waiting", "", true},
-		{"PostToolUse", "", "working", "", true},
-		{"SubagentStop", "", "", "", true},
-		{"Notification", "permission_prompt", "approval", "", true},
-		{"Notification", "elicitation_dialog", "approval", "", true},
-		{"Notification", "idle_prompt", "waiting", "", true},
-		{"Notification", "auth_success", "", "", false},
-		{"Notification", "agent_completed", "", "", false},
-		{"Notification", "", "", "", false},
-		{"SessionStart", "", "", "", false},
-		{"PreToolUse", "", "", "", false},
-		{"", "", "", "", false},
+		{"UserPromptSubmit", "", "working", true},
+		{"Stop", "", "waiting", true},
+		{"StopFailure", "", "waiting", true},
+		{"PostToolUse", "", "working", true},
+		{"SubagentStop", "", "", true},
+		{"Notification", "permission_prompt", "approval", true},
+		{"Notification", "elicitation_dialog", "approval", true},
+		{"Notification", "idle_prompt", "waiting", true},
+		{"Notification", "auth_success", "", false},
+		{"Notification", "agent_completed", "", false},
+		{"Notification", "", "", false},
+		{"SessionStart", "", "", false},
+		{"PreToolUse", "", "", false},
+		{"", "", "", false},
 	} {
-		state, onlyFrom, ok := agentStateFor(tc.event, tc.notification)
+		state, ok := agentStateFor(tc.event, tc.notification)
 		assert.Equal(t, tc.ok, ok, "%s/%s", tc.event, tc.notification)
 		assert.Equal(t, tc.state, state, "%s/%s", tc.event, tc.notification)
-		assert.Equal(t, tc.onlyFrom, onlyFrom, "%s/%s", tc.event, tc.notification)
 	}
 }
 
@@ -668,8 +667,8 @@ func storedFailure(t *testing.T, database *db.DB, rowID int64) (failure *db.Agen
 func TestProj11_StopFailureRecordsErrorOtherWritesClearIt(t *testing.T) {
 	stopHookWaiting := func(t *testing.T, database *db.DB, pid, row int64) {
 		// The Stop hook's write (writeStopAgentState) after its settings check.
-		state, onlyFrom, _ := agentStateFor("Stop", "")
-		require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, state, onlyFrom, nil, false, hookNow(), hookTurn{}))
+		state, _ := agentStateFor("Stop", "")
+		require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, state, "", nil, false, hookNow(), hookTurn{}))
 	}
 	hookEvent := func(event, notification string) func(*testing.T, *db.DB, int64, int64) {
 		return func(t *testing.T, _ *db.DB, pid, _ int64) {
