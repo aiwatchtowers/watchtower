@@ -90,10 +90,11 @@ func (p Policy) Decide(c Call) Decision {
 		}
 	}
 
-	// The request's own server name must map to the token in the tool name;
-	// a mismatch means the rules below would classify another server's tool.
+	// Only a claude.ai connector passes, and the request's own server name
+	// must map to the token in the tool name: a local server named
+	// "claude_ai_Claude_Docs" or a mismatch would borrow another server's rules.
 	server, tool, ok := ParseToolName(c.Tool)
-	if !ok || !strings.HasPrefix(server, "claude_ai_") || ServerToken(c.Server) != server {
+	if !ok || !strings.HasPrefix(c.Server, "claude.ai ") || ServerToken(c.Server) != server {
 		return deny("%s is not available in this chat", c.Tool)
 	}
 	name := displayName(c.Server)
@@ -230,6 +231,11 @@ func publishSources(in fields) ([]string, error) {
 			return nil, fmt.Errorf("files list has an unexpected shape")
 		}
 		for i, raw := range list {
+			var path string
+			if json.Unmarshal(raw, &path) == nil {
+				out = append(out, resolve(path))
+				continue
+			}
 			entry, err := parseObject(raw)
 			if err != nil {
 				return nil, fmt.Errorf("files[%d]: %w", i, err)
