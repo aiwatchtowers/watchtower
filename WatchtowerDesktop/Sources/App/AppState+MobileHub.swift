@@ -141,6 +141,14 @@ extension AppState {
             deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
             bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
         ).register(on: dispatcher)
+        // Permission answers decide the waiting hook's row (its own grant)
+        // and interrupts send one Esc (the typing grant), #517.
+        PermissionAnswerHandlers(
+            dbPool: dbPool, terminalCenter: terminalCenter,
+            status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
+            deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
+            deviceName: { [sidecar = storage.sidecar] in MobileLinkCenter.deviceName(sidecar, deviceID: $0) }
+        ).register(on: dispatcher)
     }
 
     /// A line from the phone goes through the asks' own delivery

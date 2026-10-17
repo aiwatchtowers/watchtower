@@ -397,6 +397,15 @@ final class TerminalCenter {
         }
     }
 
+    /// One Esc (`0x1B`) into a running session, through the app's input
+    /// path (never counted as the owner's): the phone's Interrupt (#517).
+    /// False without a running process; the caller checks the agent works.
+    func sendInterrupt(sessionID: Int64) -> Bool {
+        guard states[sessionID] == .running, let process = processes[sessionID] else { return false }
+        process.sendInput([0x1B])
+        return true
+    }
+
     /// The pause between a hand-off's paste and its Return in a Claude Code
     /// session (`AgentInputProfile.pasteSettle`).
     nonisolated static let submitDelay: Duration = AgentInputProfile.claude.pasteSettle

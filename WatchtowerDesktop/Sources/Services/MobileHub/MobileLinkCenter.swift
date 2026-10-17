@@ -1111,6 +1111,19 @@ final class MobileLinkCenter {
         if grant == .typing, !allowed { onTypingRevoked?(deviceID) }
     }
 
+    /// The linked phone's name (`permission_requests.decided_by`, #517);
+    /// nil without a device or with an unreadable sidecar.
+    nonisolated static func deviceName(_ sidecar: HubSyncState, deviceID: String?) -> String? {
+        guard let deviceID else { return nil }
+        do {
+            return try sidecar.linkedDevice(deviceID)?.name
+        } catch {
+            Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
+                .error("device name unreadable: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     /// The grants a session start or input from `deviceID` gets. The relay
     /// gate already refused an unlinked device; an unreadable sidecar
     /// grants nothing.
