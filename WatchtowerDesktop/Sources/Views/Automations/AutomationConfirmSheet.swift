@@ -71,6 +71,7 @@ struct AutomationConfirmSheet: View {
                     .textSelection(.enabled)
             }
             changed(detail)
+            llmAutoWarning(detail)
             mayDo(detail)
             script(detail)
             Text("Approval hash \(String(detail.approvalHash.prefix(12)))")
@@ -92,6 +93,15 @@ struct AutomationConfirmSheet: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// #559: model text written over other people's mail, messages or
+    /// tickets can reach these tools without a card.
+    @ViewBuilder private func llmAutoWarning(_ detail: AutomationDetail) -> some View {
+        if let line = AutomationLLMWarning.line(feedsSourcesToLLM: detail.feedsSourcesToLLM,
+                                                tools: detail.llmAutoWrites) {
+            LLMWarningLabel(text: line)
         }
     }
 
