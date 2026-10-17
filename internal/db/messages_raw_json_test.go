@@ -43,5 +43,10 @@ func TestMigration00130_ClearsMessagesRawJSON(t *testing.T) {
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM messages WHERE raw_json != '{}'`).Scan(&n))
 	assert.Zero(t, n)
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&n))
-	assert.Equal(t, 2, n, "rows and their text survive")
+	assert.Equal(t, 2, n, "rows survive")
+	for ts, want := range map[string]string{"1700000001.000001": "full", "1700000002.000001": "empty"} {
+		var text string
+		require.NoError(t, raw.QueryRow(`SELECT text FROM messages WHERE channel_id = 'C1' AND ts = ?`, ts).Scan(&text))
+		assert.Equal(t, want, text, "text survives unchanged")
+	}
 }

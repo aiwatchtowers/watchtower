@@ -458,15 +458,6 @@ func TestGetPeriodSummary_NotFound(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestClassifyConnection(t *testing.T) {
-	assert.Equal(t, "weak", classifyConnection(0, 0))
-	assert.Equal(t, "weak", classifyConnection(1, 1))          // total < 5
-	assert.Equal(t, "peer", classifyConnection(5, 5))          // balanced
-	assert.Equal(t, "peer", classifyConnection(6, 4))          // 60/40 within ±30%
-	assert.Equal(t, "i_depend", classifyConnection(8, 2))      // 80% outbound
-	assert.Equal(t, "depends_on_me", classifyConnection(2, 8)) // 80% inbound
-}
-
 func TestComputeAllUserStats_WithThreadsHoursVolume(t *testing.T) {
 	db := openTestDB(t)
 

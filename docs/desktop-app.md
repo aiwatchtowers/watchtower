@@ -136,7 +136,7 @@ The app reads the existing database created by the Go CLI. Schema version 4, WAL
 | subtype | TEXT | Slack message subtype |
 | permalink | TEXT | Slack permalink |
 | ts_unix | REAL | **GENERATED** column: unix timestamp from ts |
-| raw_json | TEXT | Original Slack JSON |
+| raw_json | TEXT | Always `'{}'`: kept empty since migration 00130 (Slack minimum retention, 2026-10-17); the original Slack JSON is no longer stored |
 
 **Important:** `ts_unix` is a `GENERATED ALWAYS AS (...) STORED` column. GRDB handles this fine for reads but must never try to write it.
 
@@ -578,7 +578,7 @@ WatchtowerDesktop/
 ### Task 3: Query layer
 - [x] Create `WorkspaceQueries.swift`: `fetchWorkspace()`, `fetchStats()` (channel/user/message/digest counts + DB file size)
 - [x] Create `ChannelQueries.swift`: `fetchAll(filter:sort:)` with type/archived/member filters and name/messages/recent sort; `fetchByID(_:)`, `fetchByName(_:)`, `fetchWatched()` joining watch_list
-- [x] Create `MessageQueries.swift`: `fetchByChannel(_:limit:offset:)` paginated; `fetchByTimeRange(channelID:from:to:)`; `fetchThreadReplies(channelID:threadTS:)`; `fetchRecentWatched()` with MessageWithContext
+- [x] Create `MessageQueries.swift`: `fetchByChannel(_:limit:offset:)` paginated (removed 2026-10-17); `fetchByTimeRange(channelID:from:to:)`; `fetchThreadReplies(channelID:threadTS:)` (removed 2026-10-17); `fetchRecentWatched()` with MessageWithContext
 - [x] Create `UserQueries.swift`: `fetchAll(activeOnly:)`, `fetchByID(_:)`, `fetchDisplayName(forID:)`
 - [x] Create `DigestQueries.swift`: `fetchAll(type:channelID:from:to:limit:)` filtered; `fetchByID(_:)`, `fetchLatest(type:)`, `fetchWithDecisions()`, `fetchNewSince()`, `maxID()`
 - [x] Create `WatchQueries.swift`: `fetchAll()`, `isWatched()`, `add()` INSERT OR REPLACE, `remove()` DELETE
@@ -669,7 +669,7 @@ WatchtowerDesktop/
 - [x] Create `ThreadView.swift`: sheet panel showing thread replies
 - [x] Header: channel name, thread info
 - [x] Reply list: same MessageRow component, sorted ascending by ts
-- [x] Query: fetchThreadReplies(channelID:threadTS:) from MessageQueries
+- [x] Query: fetchThreadReplies(channelID:threadTS:) from MessageQueries (removed 2026-10-17)
 - [x] Close button (sheet dismiss)
 - [ ] Show "No replies" empty state if reply_count > 0 but replies not synced yet
 
@@ -783,7 +783,7 @@ WatchtowerDesktop/
 ### Task 19: Live database observation
 - [x] Create `DatabaseObserver.swift`: centralized GRDB ValueObservation manager
 - [x] `observeWorkspace()` → Publisher<Workspace?, Error>
-- [x] `observeMessages(channelID:limit:)` → Publisher<[Message], Error>
+- [x] `observeMessages(channelID:limit:)` → Publisher<[Message], Error> (removed 2026-10-17)
 - [x] `observeDigests(type:limit:)` → Publisher<[Digest], Error>
 - [x] `observeStats()` → Publisher<WorkspaceStats, Error>
 - [x] `observeWatchList()` → Publisher<[WatchItem], Error>

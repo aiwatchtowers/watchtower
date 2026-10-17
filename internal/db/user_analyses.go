@@ -491,27 +491,6 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 	return results, nil
 }
 
-// classifyConnection determines connection type from directional scores.
-// peer: balanced bidirectional (±30%), i_depend: I reach out more,
-// depends_on_me: they reach out more, weak: low total score.
-func classifyConnection(scoreTo, scoreFrom float64) string {
-	total := scoreTo + scoreFrom
-	if total < 5 {
-		return "weak"
-	}
-	if total == 0 {
-		return "weak"
-	}
-	ratio := scoreTo / total // 0..1; 0.5 = balanced
-	if ratio >= 0.35 && ratio <= 0.65 {
-		return "peer"
-	}
-	if ratio > 0.65 {
-		return "i_depend"
-	}
-	return "depends_on_me"
-}
-
 // accountPrefixOf returns the "<accountID>:" namespace prefix of a Slack id for
 // a LIKE-scoping match (`LIKE prefix || '%'`), or "" for a bare, non-namespaced
 // id (which then falls back to an unscoped match). The trailing colon keeps the

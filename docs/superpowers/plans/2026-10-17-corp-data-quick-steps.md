@@ -22,7 +22,7 @@ Goal: cheap data minimisation that no reader notices. Part of board group #595
 Depends on: none.
 
 Nothing reads Slack `raw_json`: Go selects it into `db.Message.RawJSON`
-(`internal/db/messages.go` — `msgSelectCols`, `msgSelectColsAliased` and the
+(`internal/db/messages.go` — `msgSelectCols`, `msgColumns(prefixed)` and the
 inline SELECT lists, `internal/db/search.go:28`) but no code reads the field;
 Swift `Message.rawJSON` (`WatchtowerDesktop/Sources/WatchtowerCore/Models/Message.swift`)
 has no consumer.

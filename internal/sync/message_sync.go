@@ -412,7 +412,7 @@ func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Me
 			IsEdited:   msg.Edited != nil,
 			IsDeleted:  false,
 			Subtype:    msg.SubType,
-			Permalink:  "", // permalink generated at query time by context builder
+			Permalink:  "", // permalink generated at query time by the renderer
 		})
 	}
 

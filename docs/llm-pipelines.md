@@ -346,9 +346,10 @@ Run(ctx)
     │    │  UpsertPeriodSummary()
     │    │
     │
-    └─ (Social graph phase removed: nothing computes user interactions any more.
-        `UpsertUserInteractions` remains in internal/db but has no production caller,
-        so the `user_interactions` table is no longer filled.)
+    └─ (Social graph phase: no production caller even before 2026-10-17, so
+        `user_interactions` was already not being filled. Its dead function
+        `ComputeUserInteractions` was removed 2026-10-17; `UpsertUserInteractions`
+        remains in internal/db. See docs/backlog/2026-09-26-people-connections-view-and-meeting-prep-read-tables-that.md.)
 ```
 
 ### Output classification

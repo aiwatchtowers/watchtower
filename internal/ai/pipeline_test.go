@@ -134,7 +134,7 @@ func setupIntegrationDB(t *testing.T) (*db.DB, time.Time) {
 }
 
 // TestIntegrationAIPromptAssembly verifies the system prompt and user message
-// assembly produce well-formed prompts with data from the context builder.
+// assembly produce well-formed prompts with data from the query-time renderer.
 func TestIntegrationAIPromptAssembly(t *testing.T) {
 	_, refTime := setupIntegrationDB(t)
 
