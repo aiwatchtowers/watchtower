@@ -38,7 +38,9 @@ Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in 
 
 ### Quote in reply
 
-Hover a finished answer and choose **Quote in reply** to pick the exact passage you mean. Quotes collect above the message box and go out together with your next message.
+Select a passage of an answer right in the chat, then click **Ask about this** next to it, or right-click the selection and choose **Ask About This**. The passage joins the quotes above the message box and the cursor moves there, so you type your follow-up. Quotes go out together with your next message, each with an optional comment.
+
+A selection stays within one paragraph, list item or table cell; ⌘C copies it. Your own messages can be selected and copied, not quoted. The chats inside other tabs offer selection and copy only.
 
 ### Projects
 
