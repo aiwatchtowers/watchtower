@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -159,7 +160,7 @@ func (db *DB) upsertCalendarEventsTx(events []CalendarEvent, syncedAt string) er
 		err := tx.QueryRow(`SELECT attendees, rsvp_changed FROM calendar_events WHERE id = ?`, ev.ID).
 			Scan(&prevAttendees, &prevChanges)
 		existed := err == nil
-		if err != nil && err != sql.ErrNoRows {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("reading calendar event %s: %w", ev.ID, err)
 		}
 		rsvpChanged := "{}"

@@ -2,6 +2,7 @@ package imap
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -253,7 +254,7 @@ func extractPlainText(raw []byte) string {
 
 	for {
 		part, err := r.NextPart()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -326,7 +327,7 @@ func (db *DB) GetJiraIssueByKey(key string) (*JiraIssue, error) {
 	row := db.QueryRow(`SELECT `+jiraIssueColumns+` FROM jira_issues WHERE key = ?`, key)
 
 	issue, err := scanJiraIssue(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -1140,7 +1141,7 @@ func (db *DB) GetJiraActiveSprintStats(accountID int64, boardID int) (*SprintSta
 	err := db.QueryRow(`SELECT id, name, end_date FROM jira_sprints
 		WHERE account_id = ? AND board_id = ? AND state = 'active' ORDER BY start_date LIMIT 1`, accountID, boardID).
 		Scan(&sprintID, &sprintName, &endDate)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

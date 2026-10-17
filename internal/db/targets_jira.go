@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -22,7 +23,7 @@ func (db *DB) CreateTargetFromJiraIssue(issue JiraIssue) (*Target, error) {
 	if err == nil {
 		return existing, nil
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("checking existing jira target %s: %w", issue.Key, err)
 	}
 

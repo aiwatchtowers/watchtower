@@ -526,7 +526,7 @@ func TestIntegrateCodex_AppServerContextFollowsTheCaller(t *testing.T) {
 			return runWorkbenchStatus(ctx, w, p, true)
 		},
 	} {
-		f.ctx = nil
+		f.ctx = nil //nolint:fatcontext // resets the fake's recorded context, nothing nests
 		ctx, cancel := context.WithCancel(context.Background())
 		var out bytes.Buffer
 		_ = run(ctx, &out, p)
@@ -538,9 +538,9 @@ func TestIntegrateCodex_AppServerContextFollowsTheCaller(t *testing.T) {
 		}
 		cancel()
 		f.ctx = nil
-		ctx, cancel = context.WithCancel(context.Background())
-		cancel()
-		_ = run(ctx, &out, p)
+		cancelled, cancelNow := context.WithCancel(context.Background())
+		cancelNow()
+		_ = run(cancelled, &out, p)
 		if f.ctx == nil || !errors.Is(f.ctx.Err(), context.Canceled) {
 			t.Fatalf("%s: a cancelled caller must cancel the app-server context", name)
 		}

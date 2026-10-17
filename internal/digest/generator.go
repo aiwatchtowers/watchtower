@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -317,12 +318,11 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 
 	output, err := cmd.Output()
 	if err != nil {
-		if execErr, ok := err.(*exec.Error); ok {
-			if execErr.Err == exec.ErrNotFound {
-				return "", nil, "", fmt.Errorf("claude CLI not found at %q (PATH=%s) — install Claude Code first", claudeBin, os.Getenv("PATH"))
-			}
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", nil, "", fmt.Errorf("claude CLI not found at %q (PATH=%s) — install Claude Code first", claudeBin, os.Getenv("PATH"))
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			// The CLI reports an API or usage failure as an ordinary result
 			// envelope on stdout and exits 1, with the human-readable message
 			// behind kilobytes of usage telemetry. Parse it so the error

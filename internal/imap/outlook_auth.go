@@ -175,7 +175,7 @@ func postMicrosoftToken(ctx context.Context, data url.Values) (*MicrosoftOAuthTo
 	// #nosec G704 -- the request URL is microsoftTokenEndpoint, a package
 	// constant overridable only by tests (httptest.Server); no caller input
 	// reaches it, so this isn't an SSRF sink despite the taint analysis.
-	resp, err := hc.Do(req) //nolint:gosec
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}
@@ -288,7 +288,7 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 	mux.HandleFunc(outlookCallbackPath, callback)
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go server.Serve(listener) //nolint:errcheck
+	go server.Serve(listener)
 	defer func() {
 		time.Sleep(500 * time.Millisecond)
 		server.Close()

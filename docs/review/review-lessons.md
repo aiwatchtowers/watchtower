@@ -1781,6 +1781,16 @@ Entry format:
 - rule-gap (candidate, dim 6): *an observer wrapped around a sync phase lists every call site of that phase, including startup pre-syncs outside the cycle, and every writer of the state it diffs on the default sync path.*
 - outcome: TBD
 
+## 2026-10-17 — chore/revdiff-linters (enable errorlint[errorf off], unused, wastedassign, nolintlint, copyloopvar, durationcheck, makezero, fatcontext, bidichk, reassign + mechanical fixes; panel: prosecutor (5) + codex (0, default prompt), 3 specialists DOWN (not installed); judge verified against 76c5e6ab6 by reading and grep) — verdict: approve
+
+- contested (held minor, prosecutor F1): with nolintlint on, lint cleanliness depends on the golangci-lint version both ways. CI's v2.11.4 is clean. The local 2.10.1 still reports G704 on the four lines whose `//nolint:gosec` was dropped, and flags three directives that 2.11.4 needs as unused. No directive set is clean on both versions, so the fix is pinning or checking the local binary, not editing comments. [8]
+- contested (held minor, prosecutor F2): a mechanical `%v`→`%w` on a fallthrough where `err` can be nil (codesign exited 0 with no Team ID line) renders `%!w(<nil>)`. It only affects a log/selfErr string, but it shows that a mechanical errorlint pass must check nil-reachability, not just the verb. [3/9]
+- false-positive: none dismissed. F4's llm-pipelines.md half really is caused by this PR, because `isFirstRun` was deleted here as unused. Stale docs that name a function were in scope.
+- miss: codex (default prompt) raised nothing. Every finding came from the prosecutor. On a lint-only PR codex's default lens adds little.
+- weak-dimension: 8 (tooling blast radius: the version skew between the local and CI linters).
+- rule-gap (candidate, dim 8): *a PR that enables nolintlint, or another linter whose output depends on the version, pins the golangci-lint version that `make lint`/`lint-diff` use (or checks it against CI's) in the same change.*
+- outcome: TBD
+
 ## 2026-10-17 — fix/564-silence-tails (board #564: five tails of the #554 silence defence — `BackgroundLoad` actor with a 5 s per-window wait and `SpeechDetectorNotReady` → energy fallback, `SpeechOnlyAudio`/`writeMuted` so Apple mutes into its PCM buffer, 2 s overlapping L5 chunks merged, per-call engine drop counts, wiring tests; Desktop only; panel: prosecutor + codex + 3 specialists, all lanes up; judge verified against 0396d13c8 by reading, no runs; judge synthesis, round 1) — verdict: changes-needed
 
 - contested (held major, 4 lanes): the 5 s load wait is charged per window, not per run. The lanes priced it at "21 min per 2 h", but sequential windows can't wait longer in total than the load itself takes, so the real cost is that the live loop still stalls about as long as the download (the AC's "never stalls the live loop" is not met), and without bound only on a download that hangs. **Price a per-call timeout against the thing it waits on: total wait = min(load time, timeout × calls). The fix contract is that a gate pays the wait once and then polls with zero wait.** [6/4]

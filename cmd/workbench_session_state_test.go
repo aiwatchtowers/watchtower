@@ -1332,9 +1332,9 @@ func subagentStart(agentID, agentType string) string {
 // withTeammates is the background_tasks array list with n running teammate
 // entries in front, ids that are never a hook agent_id (spec Appendix C).
 func withTeammates(n int, list string) string {
-	entries := make([]string, n)
-	for i := range entries {
-		entries[i] = `{"id":"tm` + strconv.Itoa(i) + `","type":"teammate","status":"running"}`
+	entries := make([]string, 0, n+1)
+	for i := range n {
+		entries = append(entries, `{"id":"tm`+strconv.Itoa(i)+`","type":"teammate","status":"running"}`)
 	}
 	rest := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(list, "["), "]"))
 	if rest != "" {

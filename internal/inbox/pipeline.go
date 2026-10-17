@@ -862,7 +862,7 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context, ownerEmail string) int
 		var att, rsvpChanged, endTime string
 		// A missing event row reads as empty: nothing answers, nothing ended.
 		row := p.db.QueryRow(`SELECT attendees, rsvp_changed, end_time FROM calendar_events WHERE id=?`, c.eventID)
-		row.Scan(&att, &rsvpChanged, &endTime) //nolint:errcheck
+		row.Scan(&att, &rsvpChanged, &endTime) //nolint:errcheck // a missing event row reads as empty
 		reason := calendarResolveReason(c, ownerRSVP(att, ownerEmail), db.CalendarRSVPChangedAt(rsvpChanged, ownerEmail), endTime, now)
 		if reason == "" {
 			continue

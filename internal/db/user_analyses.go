@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -130,7 +131,7 @@ func (db *DB) GetLatestUserAnalysis(userID string) (*UserAnalysis, error) {
 
 	var a UserAnalysis
 	err := scanUserAnalysis(row, &a)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
