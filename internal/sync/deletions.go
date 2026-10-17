@@ -9,9 +9,11 @@ import (
 	"watchtower/internal/sourcediff"
 )
 
-// sweepMaxPages caps the search pages the rolling sweep spends on one day:
-// about 30 s of the shared ~20 req/min Tier-2 budget per cycle
-// (internal/slack/ratelimit.go). A day needing more is skipped, not split.
+// sweepMaxPages caps the search pages the rolling sweep spends per cycle:
+// about 30 s of the shared ~20 req/min Tier-2 budget (internal/slack/
+// ratelimit.go). It applies to the widened query (sweepSearchRange, about
+// three days), so the effective cap for the swept day itself is lower. A
+// day whose query needs more is skipped, not split.
 const sweepMaxPages = 10
 
 // liveDiffLag keeps the newest hours out of the live diff: search indexes
@@ -121,6 +123,15 @@ func (o *Orchestrator) diffLiveWindow(l *searchListing) {
 	}
 }
 
+// sweepSearchRange gives the search dates for the UTC day [from, to). Slack
+// reads after:/before: as dates in the searcher's own timezone, which can be
+// anywhere from UTC-12 to UTC+14, so the day is widened by one more day at
+// the start than slackSearchRange gives: after: from-2, before: to+1, i.e.
+// local days from-1..to. Only [from, to) is diffed.
+func sweepSearchRange(from, to time.Time) (after, before string) {
+	return slackSearchRange(from.AddDate(0, 0, -1), to)
+}
+
 // sweepDeletionDay diffs one stored past day (before the live window)
 // against search.messages per cycle, walking from the newest stored day back
 // to the oldest and then wrapping, so deletions and retention purges older
@@ -166,7 +177,7 @@ func (o *Orchestrator) sweepDeletionDay(ctx context.Context) error {
 	}
 	to := from.AddDate(0, 0, 1)
 
-	after, beforeDate := slackSearchRange(from, to)
+	after, beforeDate := sweepSearchRange(from, to)
 	listing := newSearchListing(sweepMaxPages)
 	completed, _, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, beforeDate), false, listing)
 	if err != nil {
@@ -174,7 +185,7 @@ func (o *Orchestrator) sweepDeletionDay(ctx context.Context) error {
 	}
 	switch {
 	case listing.tooLarge:
-		o.logger.Printf("slack deletion sweep: %s has more than %d pages, skipped", day, sweepMaxPages)
+		o.logger.Printf("slack deletion sweep: %s has more than %d pages, skipped (query %s..%s)", day, sweepMaxPages, after, beforeDate)
 	case !completed || !listing.complete():
 		o.logger.Printf("slack deletion sweep: account %d day %s: incomplete listing (received %d of %d matches), retrying next cycle",
 			o.accountID, day, listing.matched, listing.total)

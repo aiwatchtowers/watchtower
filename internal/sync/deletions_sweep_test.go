@@ -67,8 +67,8 @@ func (s *sweepSearch) sent() []string {
 }
 
 const (
-	sweepQuery10 = "after:2026-09-09 before:2026-09-12" // sweeps 2026-09-10
-	sweepQuery05 = "after:2026-09-04 before:2026-09-07" // sweeps 2026-09-05
+	sweepQuery10 = "after:2026-09-08 before:2026-09-12" // sweeps 2026-09-10
+	sweepQuery05 = "after:2026-09-03 before:2026-09-07" // sweeps 2026-09-05
 )
 
 // newSweepSetup builds an orchestrator at liveDiffNow (2026-09-22T15:00Z)
@@ -230,4 +230,62 @@ func TestRunSearchSync_SweepsAfterCompletedSearch(t *testing.T) {
 	assert.Equal(t, []string{sweepQuery10}, sweepQueries(s.sent()))
 	assert.True(t, isTombstone(t, ts.db, ts.ns("C001"), rows[10][3]))
 	assert.Equal(t, "2026-09-10", sweepCursor(t, ts))
+}
+
+// localDaySearch models search.messages in the searcher's Slack timezone:
+// after:/before: are exclusive local dates, so it returns the pool rows whose
+// local date lies strictly between them.
+func localDaySearch(t *testing.T, pool []string, loc *time.Location) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var after, before string
+		for _, f := range strings.Fields(r.FormValue("query")) {
+			if v, ok := strings.CutPrefix(f, "after:"); ok {
+				after = v
+			}
+			if v, ok := strings.CutPrefix(f, "before:"); ok {
+				before = v
+			}
+		}
+		var matches []map[string]any
+		for _, msgTS := range pool {
+			at, err := parseSlackTS(msgTS)
+			require.NoError(t, err)
+			local := at.In(loc).Format(searchDateFormat)
+			if (after == "" || local > after) && (before == "" || local < before) {
+				matches = append(matches, liveDiffMatch(msgTS))
+			}
+		}
+		jsonOK(w, map[string]any{"ok": true, "messages": map[string]any{
+			"matches": matches,
+			"paging":  map[string]any{"count": 100, "total": len(matches), "page": 1, "pages": 1},
+			"total":   len(matches),
+		}})
+	}
+}
+
+// search's day bounds are local to the searcher: a UTC day must be covered
+// whole for any offset from UTC-12 to UTC+14, or its edge hours look deleted.
+func TestSweep_CoversTheUTCDayInAnyTimezone(t *testing.T) {
+	for _, offset := range []int{-12, -8, 14} {
+		t.Run(fmt.Sprintf("UTC%+d", offset), func(t *testing.T) {
+			var pool []string
+			mux := http.NewServeMux()
+			var handler http.HandlerFunc
+			mux.HandleFunc("/search.messages", func(w http.ResponseWriter, r *http.Request) { handler(w, r) })
+			ts := newTestSetup(t, mux)
+			require.NoError(t, ts.db.EnsureUser(ts.ns("U001"), "alice"))
+			ts.orch.now = func() time.Time { return liveDiffNow }
+			for _, hm := range [][2]int{{0, 5}, {3, 0}, {7, 59}, {12, 0}, {16, 30}, {20, 0}, {23, 55}} {
+				msgTS := fmt.Sprintf("%d.000100", time.Date(2026, 9, 10, hm[0], hm[1], 0, 0, time.UTC).Unix())
+				require.NoError(t, ts.db.UpsertMessage(db.Message{ChannelID: ts.ns("C001"), TS: msgTS,
+					UserID: ts.ns("U001"), Text: "msg " + msgTS}))
+				pool = append(pool, msgTS)
+			}
+			handler = localDaySearch(t, pool, time.FixedZone("owner", offset*3600))
+
+			require.NoError(t, ts.orch.sweepDeletionDay(context.Background()))
+			assert.Equal(t, 0, countTombstones(t, ts.db))
+			assert.Equal(t, "2026-09-10", sweepCursor(t, ts))
+		})
+	}
 }
