@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -32,7 +33,7 @@ func TestOpenPermissionRequestSetsApprovalAndInserts(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNewPendingRequest(t, got, row, pid, at)
-	if _, err := d.GetPermissionRequest(id + 100); err != ErrPermissionRequestNotFound {
+	if _, err := d.GetPermissionRequest(id + 100); !errors.Is(err, ErrPermissionRequestNotFound) {
 		t.Fatalf("missing row err = %v", err)
 	}
 }
@@ -149,7 +150,7 @@ func TestGetPermissionRequestRefusesABadStamp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.GetPermissionRequest(id); err == nil || err == ErrPermissionRequestNotFound {
+	if _, err := d.GetPermissionRequest(id); err == nil || errors.Is(err, ErrPermissionRequestNotFound) {
 		t.Fatalf("err = %v, want a bad created_at error", err)
 	}
 }
