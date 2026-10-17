@@ -168,6 +168,15 @@ type Tool struct {
 	// Ready is what must hold before a row may be approved — e.g. the owner
 	// picked one of several pinned candidates. Optional.
 	Ready func(args json.RawMessage) error
+	// AppliedBySession marks a row only the live chat session that proposed
+	// it may run (claude_ai_connector_call, #737): the call itself is the
+	// CLI's pending permission request, so nothing else can perform it. Such
+	// a tool is never listed (no MCP surface or loop offers it), Propose
+	// refuses it (ProposeSessionCall records it), Apply refuses it before its
+	// claim and Execute is never called; the session drives the row through
+	// ClaimSessionCall / FinishSessionCall / CancelSessionCall, and
+	// ExpireSessionCalls fails what a dead session left behind.
+	AppliedBySession bool
 
 	// resolved is InputSchema prepared for validation. Unexported: a tool
 	// author declares the schema, the registry prepares it once in Register
@@ -247,6 +256,10 @@ var (
 	// exists — refused (fail closed, automationWorkbench), since the run may
 	// have been a workbench one whose workbench is gone.
 	ErrAutomationRunGone = errors.New("the automation run no longer exists")
+	// ErrSessionApplied: an AppliedBySession row reached a path that would run
+	// it outside its chat session (Apply, `actions apply`). Wrapped after the
+	// tool name: "claude_ai_connector_call runs only in …".
+	ErrSessionApplied = errors.New("runs only in the chat session that proposed it")
 )
 
 // Registry holds the tools and the DB the proposal rows live in.
@@ -302,12 +315,14 @@ func (r *Registry) Get(name string) (*Tool, bool) {
 	return t, ok
 }
 
-// List returns the tools visible on surface, in registration order.
+// List returns the tools visible on surface, in registration order. An
+// AppliedBySession tool is never listed: no MCP server or tool loop offers it
+// to a model on any surface.
 func (r *Registry) List(surface string) []*Tool {
 	var out []*Tool
 	for _, name := range r.order {
 		t := r.tools[name]
-		if visibleOn(t, surface) {
+		if visibleOn(t, surface) && !t.AppliedBySession {
 			out = append(out, t)
 		}
 	}
@@ -431,13 +446,36 @@ func reasonOf(args json.RawMessage) string {
 // agent_actions.tool ever gets. A pre-rename workbench tool name still
 // resolves here only so rows stored under it keep working; no adapter sends
 // one.
+//
+// An AppliedBySession tool is refused like a tool the surface does not offer
+// (a model naming it on a dispatch-by-name path); ProposeSessionCall is its
+// only way in.
 func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessage, b Binding) (Receipt, error) {
+	return r.propose(ctx, name, args, b, false)
+}
+
+// ProposeSessionCall records a call of an AppliedBySession tool for the chat
+// session's permission gate: always a pending row (the tool is AlwaysAsk),
+// through every gate Propose runs. Any other tool is refused.
+func (r *Registry) ProposeSessionCall(ctx context.Context, name string, args json.RawMessage, b Binding) (Receipt, error) {
+	return r.propose(ctx, name, args, b, true)
+}
+
+func (r *Registry) propose(ctx context.Context, name string, args json.RawMessage, b Binding, session bool) (Receipt, error) {
 	t, ok := r.Get(name)
 	if !ok {
 		return Receipt{}, ErrUnknownTool
 	}
 	if t.Access != AccessWrite {
 		return Receipt{}, ErrNotWritable
+	}
+	if session && !t.AppliedBySession {
+		return Receipt{}, fmt.Errorf("%s is not a session-applied tool", t.Name)
+	}
+	if !session && t.AppliedBySession {
+		// Worded like any tool the surface does not offer: the model was
+		// never shown this one.
+		return Receipt{}, &ValidationError{Msg: fmt.Sprintf("%s is not available on the %s surface", t.Name, b.Surface)}
 	}
 	args, b, err := r.admitProposal(ctx, t, args, b)
 	if err != nil {
@@ -926,6 +964,10 @@ func (r *Registry) apply(ctx context.Context, id int64, live Binding) (*db.Agent
 	}
 	if row == nil {
 		return nil, ErrNotFound
+	}
+	if t, ok := r.Get(row.Tool); ok && t.AppliedBySession {
+		// Refused before the claim: the row stays as it is for its session.
+		return nil, fmt.Errorf("#%d: %s %w", id, t.Name, ErrSessionApplied)
 	}
 	// The read is needed for the tool name and args anyway; checking the status
 	// here only buys the caller a message naming the state it was actually in.
