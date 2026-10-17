@@ -8,6 +8,7 @@ import WatchtowerCore
 final class FakeReadinessEnvironment: ReadinessEnvironment {
     var now = Date()
     var daemonRunning = true
+    var daemonNotRunningSince: Date?
     var syncProgress: SyncProgress?
     var lastSyncTime: Date? = Date().addingTimeInterval(-3600)
     var disabledFeatureIDs: Set<String> = []

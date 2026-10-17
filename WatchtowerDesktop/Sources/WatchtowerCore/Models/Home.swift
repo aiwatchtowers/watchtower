@@ -25,7 +25,7 @@ package struct GettingReadyCard: Equatable, Sendable {
         case .ready: .ready
         case .preparing: .preparing
         case .error: .error
-        case .off, .needsSource, .waitingForSync, .scheduled, nil: .waiting
+        case .off, .needsSource, .daemonStopped, .waitingForSync, .scheduled, nil: .waiting
         }
     }
 
