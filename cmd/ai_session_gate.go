@@ -40,8 +40,10 @@ type claudeAISetup struct {
 	prompt chat.ClaudeAIPrompt
 	// publish is the conversation's publish dir; nil unless mode.On.
 	publish *chat.PublishDir
-	// reason says why a main-chat session has no claude.ai tools; "" when
-	// it has them or the surface is not main.
+	// reason is what Settings shows for a main chat without claude.ai
+	// tools (the unavailable sidecar); "" when it has them, the surface is
+	// not main, or the cause is this conversation's own (its publish dir) —
+	// the sidecar is shared by every conversation.
 	reason string
 }
 
@@ -52,28 +54,26 @@ type claudeAISetup struct {
 // Ollama main chat gets the prompt's one line; a Claude main chat gets the
 // tools, or the reason it cannot have them.
 func resolveClaudeAI(cfg *config.Config, surface string, convID int64, env []string, warn io.Writer) claudeAISetup {
+	if surface != "main" {
+		return claudeAISetup{}
+	}
 	provider := providers.ByID(cfg.AI.Provider).ID
 	on, reason := chat.ClaudeAIAvailability(env, provider, surface)
 	switch {
-	case surface != "main":
-		return claudeAISetup{}
 	case provider != "claude":
 		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptOtherProvider}, reason: reason}
 	case !on:
-		return unavailableClaudeAI(reason)
+		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptUnavailable, Reason: reason}, reason: reason}
 	}
 	publish, err := chat.NewPublishDir(chat.NeutralWorkDir(), convID)
 	if err != nil {
 		fmt.Fprintf(warn, "claude.ai tools are off: %v\n", err)
-		return unavailableClaudeAI("claude.ai tools are off: the chat's publish folder could not be prepared.")
+		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptUnavailable,
+			Reason: "claude.ai tools are off: the chat's publish folder could not be prepared."}}
 	}
 	mode := chat.ClaudeAIMode{On: true, Connectors: cfg.AI.ClaudeAI.Connectors}
 	return claudeAISetup{mode: mode, publish: publish, prompt: chat.ClaudeAIPrompt{
 		Kind: chat.ClaudeAIPromptOn, PublishDir: publish.Path(), Connectors: mode.Connectors}}
-}
-
-func unavailableClaudeAI(reason string) claudeAISetup {
-	return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptUnavailable, Reason: reason}, reason: reason}
 }
 
 // connectorsFilePath is the claude.ai connectors sidecar beside the database.
@@ -128,16 +128,17 @@ func withClaudeAI(opts chat.ClaudeOptions, w sessionWiring, ext []ai.ExternalMCP
 // process — a respawn, a resumed or replayed session of the same
 // conversation — ever claims, finishes or cancels it (AGENT-05).
 type registrySink struct {
-	reg     *tools.Registry
-	db      *db.DB
-	token   string
-	binding tools.Binding // the conversation's; TurnID is set per call
-	now     func() time.Time
+	reg      *tools.Registry
+	database *db.DB
+	token    string
+	binding  tools.Binding // the conversation's; TurnID is set per call
+	now      func() time.Time
+	warn     io.Writer
 }
 
-func newRegistrySink(reg *tools.Registry, database *db.DB, conv *db.ChatConversation) *registrySink {
+func newRegistrySink(reg *tools.Registry, database *db.DB, conv *db.ChatConversation, warn io.Writer) *registrySink {
 	token := rand.Text()
-	return &registrySink{reg: reg, db: database, token: token, now: time.Now,
+	return &registrySink{reg: reg, database: database, token: token, now: time.Now, warn: warn,
 		binding: tools.Binding{
 			Surface: "main", ConversationID: conv.ID,
 			ContextType: conv.ContextType, ContextID: conv.ContextID,
@@ -171,13 +172,18 @@ func (s *registrySink) ProposeConnectorCall(ctx context.Context, c chat.Connecto
 	if err != nil {
 		return 0, err
 	}
+	if rc.Status != "pending" {
+		// Unreachable while the tool is AlwaysAsk; a call no owner approved
+		// must never look approved to the gate.
+		return 0, fmt.Errorf("connector call #%d was recorded %s, not pending", rc.ActionID, rc.Status)
+	}
 	return rc.ActionID, nil
 }
 
 // ActionStatus reads the row's status; a row of another session is
 // tools.ErrNotThisSession, never a status this session could act on.
 func (s *registrySink) ActionStatus(_ context.Context, id int64) (string, error) {
-	row, err := s.db.GetAgentAction(id)
+	row, err := s.database.GetAgentAction(id)
 	if err != nil {
 		return "", err
 	}
@@ -191,17 +197,22 @@ func (s *registrySink) ActionStatus(_ context.Context, id int64) (string, error)
 }
 
 // ClaimApproved takes the approved row and returns its stored input — the
-// owner's edits included. An input that cannot be read after the claim
-// fails the row (it would otherwise stay executing until the next session
-// start called it unknown).
+// owner's edits included. Any error fails the row if the claim already moved
+// it to executing (a failed re-read, an unreadable input): the gate then
+// denies the call, and the row must not stay executing until the next
+// session start calls its outcome unknown.
 func (s *registrySink) ClaimApproved(_ context.Context, id int64) (json.RawMessage, bool, error) {
 	row, ok, err := s.reg.ClaimSessionCall(id, s.token)
-	if err != nil || !ok {
-		return nil, false, err
+	if err == nil && !ok {
+		return nil, false, nil
 	}
-	input, err := approvedInput(row.ArgsJSON)
+	var input json.RawMessage
+	if err == nil {
+		input, err = approvedInput(row.ArgsJSON)
+	}
 	if err != nil {
-		if ferr := s.reg.FinishSessionCall(id, s.token, "", err.Error()); ferr != nil {
+		// Not executing (the claim itself failed) is ErrBadTransition: nothing to undo.
+		if ferr := s.reg.FinishSessionCall(id, s.token, "", err.Error()); ferr != nil && !errors.Is(ferr, tools.ErrBadTransition) {
 			err = fmt.Errorf("%w (and recording it: %v)", err, ferr)
 		}
 		return nil, false, err
@@ -238,6 +249,9 @@ func (s *registrySink) ExpireCall(_ context.Context, id int64, reason string) (b
 // session is gone: this one is starting) and any other conversation's older
 // than sessionCallOrphanAge.
 func (s *registrySink) ExpireOrphans(context.Context) error {
-	_, err := s.reg.ExpireSessionCalls(s.binding.ConversationID, s.now().Add(-sessionCallOrphanAge))
+	n, err := s.reg.ExpireSessionCalls(s.binding.ConversationID, s.now().Add(-sessionCallOrphanAge))
+	if n > 0 {
+		fmt.Fprintf(s.warn, "claude.ai gate: %d connector call(s) an ended session left open marked failed\n", n)
+	}
 	return err
 }

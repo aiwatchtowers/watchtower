@@ -45,6 +45,7 @@ func TestAISession_RequiresConversation(t *testing.T) {
 }
 
 func TestAISession_EndToEndWithFakeClaude(t *testing.T) {
+	claudeAILoginEnv(t)
 	fake := filepath.Join(t.TempDir(), "claude")
 	require.NoError(t, os.WriteFile(fake, []byte(fakeSessionClaude), 0o755))
 	r := startAISession(t, fake, "main")

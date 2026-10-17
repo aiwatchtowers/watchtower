@@ -84,6 +84,16 @@ func TestAISession_PromptOptionsClaudeAIByProvider(t *testing.T) {
 	assert.Equal(t, "claude.ai tools need a claude.ai login; this chat uses an API key.", keyed.prompt.Reason)
 	assert.Equal(t, keyed.prompt.Reason, keyed.reason)
 
+	// A publish dir that cannot be made turns this conversation's mode off,
+	// without telling Settings (the sidecar is every conversation's).
+	require.NoError(t, os.WriteFile(filepath.Join(chat.NeutralWorkDir(), "publish", "8"), nil, 0o600))
+	broken := resolveClaudeAI(cfgFor("claude"), "main", 8, os.Environ(), io.Discard)
+	assert.Equal(t, chat.ClaudeAIPromptUnavailable, broken.prompt.Kind)
+	assert.NotEmpty(t, broken.prompt.Reason)
+	assert.False(t, broken.mode.On)
+	assert.Nil(t, broken.publish)
+	assert.Empty(t, broken.reason)
+
 	// The prompt options carry exactly the resolved section.
 	assert.Equal(t, on.prompt, sessionPromptOptions(cfgFor("claude"), "main", 0, time.Now(), on.prompt).ClaudeAI)
 }
@@ -105,7 +115,7 @@ func TestClaudeSessionOptions_ClaudeAIModeWiring(t *testing.T) {
 	require.True(t, w.claudeAI.mode.On)
 	ext := []ai.ExternalMCPServer{{Name: "acme", Kind: "http", URL: "https://example.com/mcp",
 		AllowTools: []string{"getIssue"}, DenyTools: []string{"createIssue"}}}
-	sink := newRegistrySink(tools.New(w.database), w.database, conv)
+	sink := newRegistrySink(tools.New(w.database), w.database, conv, io.Discard)
 
 	opts := withClaudeAI(claudeSessionOptions(w, ext), w, ext, sink)
 
@@ -144,8 +154,8 @@ func TestAISession_RegistrySinkBindsConversationAndTurn(t *testing.T) {
 	require.NoError(t, reg.Register(tools.NewClaudeAIConnectorCall()))
 	ctx := context.Background()
 	conv := &db.ChatConversation{ID: 3, ContextType: "track", ContextID: "12"}
-	sink := newRegistrySink(reg, database, conv)
-	other := newRegistrySink(reg, database, conv)
+	sink := newRegistrySink(reg, database, conv, io.Discard)
+	other := newRegistrySink(reg, database, conv, io.Discard)
 	require.NotEmpty(t, sink.token)
 	assert.NotEqual(t, sink.token, other.token, "one random token per process")
 
@@ -201,6 +211,23 @@ func TestAISession_RegistrySinkBindsConversationAndTurn(t *testing.T) {
 	expired, err := sink.ExpireCall(ctx, id2, "stopped before the approved call ran")
 	require.NoError(t, err)
 	assert.True(t, expired)
+
+	// A claimed row whose input cannot be read fails at once — never left
+	// executing.
+	id3, err := sink.ProposeConnectorCall(ctx, chat.ConnectorCall{TurnID: "turn-9",
+		Server: "claude.ai Gmail", Tool: "mcp__claude_ai_Gmail__send", Reason: "Send", Input: input})
+	require.NoError(t, err)
+	_, err = reg.Approve(ctx, id3, nil)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE agent_actions SET args_json = '{"server":"claude.ai Gmail"}' WHERE id = ?`, id3)
+	require.NoError(t, err)
+	_, ok, err = sink.ClaimApproved(ctx, id3)
+	require.Error(t, err)
+	assert.False(t, ok)
+	row, err = database.GetAgentAction(id3)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.Error, "no input")
 }
 
 // ExpireOrphans fails this conversation's open rows whatever their age and
@@ -211,14 +238,14 @@ func TestAISession_RegistrySinkExpireOrphans(t *testing.T) {
 	require.NoError(t, reg.Register(tools.NewClaudeAIConnectorCall()))
 	ctx := context.Background()
 	propose := func(convID int64) int64 {
-		s := newRegistrySink(reg, database, &db.ChatConversation{ID: convID})
+		s := newRegistrySink(reg, database, &db.ChatConversation{ID: convID}, io.Discard)
 		id, err := s.ProposeConnectorCall(ctx, chat.ConnectorCall{TurnID: "t", Server: "claude.ai Gmail",
 			Tool: "mcp__claude_ai_Gmail__send", Reason: "Send", Input: json.RawMessage(`{"to":"x@example.com"}`)})
 		require.NoError(t, err)
 		return id
 	}
 	own, other2, other3 := propose(1), propose(2), propose(3)
-	sink := newRegistrySink(reg, database, &db.ChatConversation{ID: 1})
+	sink := newRegistrySink(reg, database, &db.ChatConversation{ID: 1}, io.Discard)
 	// 10 minutes on, the other conversations' rows may still have a live
 	// session; 30 minutes on, none can.
 	sink.now = func() time.Time { return time.Now().Add(10 * time.Minute) }
@@ -284,7 +311,18 @@ func startAISession(t *testing.T, claudePath, surface string) *aiSessionRun {
 		err := aiSessionCmd.RunE(aiSessionCmd, nil)
 		_ = outW.Close()
 		r.done <- err
+		close(r.done)
 	}()
+	// A test that failed before close() still ends the session (stdin EOF
+	// closes it) and waits for it, so no session outlives its test.
+	t.Cleanup(func() {
+		_ = inW.Close()
+		select {
+		case <-r.done:
+		case <-time.After(15 * time.Second):
+			t.Error("ai session did not exit at the end of the test")
+		}
+	})
 	go func() {
 		sc := bufio.NewScanner(outR)
 		for sc.Scan() {
@@ -341,20 +379,38 @@ func (r *aiSessionRun) close() {
 func gateFakeClaude(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	t.Cleanup(func() { _ = exec.Command("pkill", "-KILL", "-f", dir).Run() })
+	t.Cleanup(func() { reapProcessesOf(t, dir) })
 	script, err := os.ReadFile(filepath.Join("..", "internal", "chat", "testdata", "fake_claude.sh"))
 	require.NoError(t, err)
 	bin := filepath.Join(dir, "claude")
 	require.NoError(t, os.WriteFile(bin, script, 0o755))
-	for k, v := range map[string]string{"FAKE_MODE": "gate", "FAKE_ARGV": "argv", "FAKE_STDIN": "stdin",
-		"FAKE_PID": "pid", "FAKE_CLAUDE_GATE_REQUESTS": "requests", "FAKE_MCP_STATUS": "mcp_status"} {
-		if k != "FAKE_MODE" {
-			v = filepath.Join(dir, v)
-		}
-		t.Setenv(k, v)
+	t.Setenv("FAKE_MODE", "gate")
+	for k, name := range map[string]string{"FAKE_ARGV": "argv", "FAKE_STDIN": "stdin", "FAKE_PID": "pid",
+		"FAKE_CLAUDE_GATE_REQUESTS": "requests", "FAKE_MCP_STATUS": "mcp_status"} {
+		t.Setenv(k, filepath.Join(dir, name))
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "requests"), nil, 0o600))
 	return bin, dir
+}
+
+// reapProcessesOf kills every process started from dir (the fake CLI and
+// anything it left behind) and waits until none is left; a survivor fails
+// the test.
+func reapProcessesOf(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_ = exec.Command("pkill", "-KILL", "-f", dir).Run()
+		out, _ := exec.Command("pgrep", "-f", dir).Output()
+		if strings.TrimSpace(string(out)) == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("processes of %s survived the test: %s", dir, out)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // spawnArgv waits for the fake CLI's first spawn to record its argv (the
@@ -459,16 +515,15 @@ func TestAISession_ClaudeAIGateEndToEnd(t *testing.T) {
 	assert.Equal(t, r.convID, row.ConversationID)
 	assert.Equal(t, "main", row.Surface)
 	assert.NotEmpty(t, row.SessionToken)
-	answers := controlAnswers(t, filepath.Join(dir, "stdin"))
-	require.Len(t, answers["r-read"], 1)
-	assert.Equal(t, "allow", answers["r-read"][0]["behavior"])
-	assert.Empty(t, answers["r-send"], "nothing is answered while the row is pending")
+	assert.Empty(t, controlAnswers(t, filepath.Join(dir, "stdin"))["r-send"], "nothing is answered while the row is pending")
 
 	ok, err := reg.Approve(context.Background(), row.ID, nil)
 	require.NoError(t, err)
 	require.True(t, ok)
 	r.next(chat.EventTurnDone)
-	answers = controlAnswers(t, filepath.Join(dir, "stdin"))
+	answers := controlAnswers(t, filepath.Join(dir, "stdin"))
+	require.Len(t, answers["r-read"], 1)
+	assert.Equal(t, "allow", answers["r-read"][0]["behavior"], "a connector read runs without a row")
 	require.Len(t, answers["r-send"], 1, "the approved call is let through exactly once")
 	assert.Equal(t, "allow", answers["r-send"][0]["behavior"])
 	assert.Equal(t, map[string]any{"to": "someone@example.com", "body": "hello"}, answers["r-send"][0]["updatedInput"])

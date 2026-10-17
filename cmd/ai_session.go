@@ -246,7 +246,7 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		ext := loadExternalMCPServers(w.cfg, w.dbPath)
 		opts := claudeSessionOptions(w, ext)
 		if w.claudeAI.mode.On {
-			sink := newRegistrySink(buildToolRegistry(w.cfg, w.database), w.database, w.conv)
+			sink := newRegistrySink(buildToolRegistry(w.cfg, w.database), w.database, w.conv, w.warn)
 			opts = withClaudeAI(opts, w, ext, sink)
 		}
 		return chat.NewClaudeBackend(opts), nil
