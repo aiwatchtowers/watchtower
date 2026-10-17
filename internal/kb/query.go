@@ -16,7 +16,7 @@ var ftsKeywords = map[string]bool{"AND": true, "OR": true, "NOT": true, "NEAR": 
 // term. A query with no usable term yields "", "".
 func BuildMatch(query string) (and, or string) {
 	var terms []string
-	for _, word := range strings.Fields(query) {
+	for word := range strings.FieldsSeq(query) {
 		word = Normalize(word)
 		prefix := strings.HasSuffix(word, "*")
 		pieces := strings.FieldsFunc(word, func(r rune) bool {

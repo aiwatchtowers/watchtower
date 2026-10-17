@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -56,7 +57,7 @@ type consolidateResult struct {
 
 // consolidateInput is the gathered, budget-capped stage-1 material for one
 // consolidate cycle: the rendered "=== NEW MATERIAL ===" body, the set of
-// refs it actually contains (ref -> source, "slack"|"meeting"|"gmail"|
+// refs it actually contains (ref -> source, "slack"|"meeting"|"gmail"|"imap"|
 // "jira"), and the per-source floor each should advance to — the highest id
 // among the units this run actually consumed, never past a unit that was
 // left out for lack of budget (IDEA-01). The start* fields hold the floors as
@@ -347,9 +348,7 @@ func (m *materialAssembler) include(id, unit string, refs map[string]string) boo
 	m.b.WriteString(unit)
 	m.budget -= len(unit)
 	m.in.included++
-	for ref, src := range refs {
-		m.in.validRefs[ref] = src
-	}
+	maps.Copy(m.in.validRefs, refs)
 	return true
 }
 
@@ -513,9 +512,10 @@ func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string
 	return b.String(), refs, nil
 }
 
-// renderStreamUnit renders one stream_digests row's (Gmail or Jira) already
+// renderStreamUnit renders one stream_digests row's (Gmail, IMAP or Jira) already
 // stage-1-validated candidates, one line each. Refs come verbatim from
-// topics_json (gmail:<acct>:<thread> or a bare Jira key) — no reconstruction.
+// topics_json (gmail:<acct>:<thread>, imap:<acct>:<uidvalidity>-<uid> or a
+// bare Jira key) — no reconstruction.
 // topics_json holds a bare JSON array of streamTopic (see
 // runEmailDigestAccount/runJiraDigestAccount's json.Marshal(topics) — not
 // wrapped in a streamTopics envelope). Returns "" for a row whose candidates

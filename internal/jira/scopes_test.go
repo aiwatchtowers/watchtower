@@ -32,7 +32,7 @@ func TestAuthURLScopes_DefaultExcludesConfluence(t *testing.T) {
 	parsed, err := url.Parse(u)
 	require.NoError(t, err)
 	got := strings.Fields(parsed.Query().Get("scope"))
-	for _, s := range strings.Fields(ConfluenceScopes) {
+	for s := range strings.FieldsSeq(ConfluenceScopes) {
 		assert.NotContains(t, got, s)
 	}
 }
@@ -45,7 +45,7 @@ func TestAuthURLScopes_WithConfluenceIncludesAll(t *testing.T) {
 	parsed, err := url.Parse(u)
 	require.NoError(t, err)
 	got := strings.Fields(parsed.Query().Get("scope"))
-	for _, s := range strings.Fields(ConfluenceScopes) {
+	for s := range strings.FieldsSeq(ConfluenceScopes) {
 		assert.Contains(t, got, s)
 	}
 }

@@ -480,7 +480,7 @@ func (p *Pipeline) jiraDigestPass(ctx context.Context, acct db.JiraAccount, floo
 	}
 
 	what := fmt.Sprintf("jira account %d", acct.ID)
-	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", what, block, tags)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", what, block, "", tags)
 	if err != nil {
 		return floor, err
 	}

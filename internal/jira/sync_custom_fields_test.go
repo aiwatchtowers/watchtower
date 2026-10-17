@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -115,9 +116,7 @@ func customFieldSearchServer(t *testing.T, extra map[string]any) (*httptest.Serv
 			"created":   updated,
 			"updated":   updated,
 		}
-		for k, v := range extra {
-			fields[k] = v
-		}
+		maps.Copy(fields, extra)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"issues": []map[string]any{{"id": "1001", "key": "TEST-1", "fields": fields}},

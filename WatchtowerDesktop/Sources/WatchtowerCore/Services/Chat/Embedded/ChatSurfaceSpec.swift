@@ -144,16 +144,11 @@ package struct ChatRunOptions: Equatable, Sendable {
     /// 2026-10-02 §9.1), checked by the CLI; no provider reads files in it
     /// yet (rulings R42/R44).
     package var readFolder: String?
-    /// `--no-tools`: the run gets no tool and no MCP server on any provider,
-    /// so it can reach none of the owner's data (the ⌘/ help chat). Stronger
-    /// than `.draftOnly`, which only withholds the write tools.
-    package var noTools: Bool
 
-    package init(provider: String? = nil, model: String? = nil, readFolder: String? = nil, noTools: Bool = false) {
+    package init(provider: String? = nil, model: String? = nil, readFolder: String? = nil) {
         self.provider = provider
         self.model = model
         self.readFolder = readFolder
-        self.noTools = noTools
     }
 
     /// Only Claude resumes a session (`--session-id`); a conversation whose

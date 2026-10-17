@@ -69,7 +69,7 @@ type bulkChangelogPage struct {
 func (c *Client) BulkFetchChangelogs(ctx context.Context, issueIDsOrKeys, fieldIDs []string) (map[string][]ChangeHistory, error) {
 	out := map[string][]ChangeHistory{}
 	token := ""
-	for page := 0; page < maxChangelogPages; page++ {
+	for page := range maxChangelogPages {
 		req := map[string]any{"issueIdsOrKeys": issueIDsOrKeys, "fieldIds": fieldIDs, "maxResults": 1000}
 		if token != "" {
 			req["nextPageToken"] = token

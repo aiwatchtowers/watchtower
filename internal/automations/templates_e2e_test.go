@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -229,10 +230,8 @@ func runWorkbenchDryRun(t *testing.T, slug string) {
 func templateOf(t *testing.T, slug string) string {
 	t.Helper()
 	for _, tpl := range automations.Templates() {
-		for _, f := range tpl.Files {
-			if f == slug {
-				return tpl.Name
-			}
+		if slices.Contains(tpl.Files, slug) {
+			return tpl.Name
 		}
 	}
 	t.Fatalf("no template installs %s", slug)

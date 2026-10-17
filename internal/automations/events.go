@@ -3,6 +3,7 @@ package automations
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path"
 	"strings"
 )
@@ -19,9 +20,7 @@ type Event struct {
 // trigger.events element; Type wins over a stray "type" field.
 func (e Event) MarshalJSON() ([]byte, error) {
 	flat := make(map[string]any, len(e.Fields)+1)
-	for k, v := range e.Fields {
-		flat[k] = v
-	}
+	maps.Copy(flat, e.Fields)
 	flat["type"] = e.Type
 	data, err := json.Marshal(flat)
 	if err != nil {

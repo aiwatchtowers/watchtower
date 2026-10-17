@@ -50,10 +50,10 @@ func HasConfluenceWriteScopes(tok *OAuthToken) bool {
 		return false
 	}
 	granted := make(map[string]bool)
-	for _, s := range strings.Fields(tok.Scope) {
+	for s := range strings.FieldsSeq(tok.Scope) {
 		granted[s] = true
 	}
-	for _, want := range strings.Fields(ConfluenceWriteScopes) {
+	for want := range strings.FieldsSeq(ConfluenceWriteScopes) {
 		if !granted[want] {
 			return false
 		}
@@ -70,10 +70,10 @@ func HasConfluenceScopes(tok *OAuthToken) bool {
 		return false
 	}
 	granted := make(map[string]bool)
-	for _, s := range strings.Fields(tok.Scope) {
+	for s := range strings.FieldsSeq(tok.Scope) {
 		granted[s] = true
 	}
-	for _, want := range strings.Fields(ConfluenceScopes) {
+	for want := range strings.FieldsSeq(ConfluenceScopes) {
 		if !granted[want] {
 			return false
 		}

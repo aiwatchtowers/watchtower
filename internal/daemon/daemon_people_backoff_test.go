@@ -76,7 +76,7 @@ func TestDaemon_PeopleBackoff_ThreeFailuresExhaustBudget(t *testing.T) {
 	var buf bytes.Buffer
 	d.SetLogger(log.New(&buf, "", 0))
 
-	for i := 0; i < maxDailyAIAttempts; i++ {
+	for range maxDailyAIAttempts {
 		d.phasePeopleCards(context.Background())
 	}
 	require.Equal(t, maxDailyAIAttempts, gen.calls, "each failed cycle reaches the AI once (one batch of two users)")
@@ -95,7 +95,7 @@ func TestDaemon_PeopleBackoff_ShutdownDoesNotConsumeBudget(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		d.phasePeopleCards(ctx)
 	}
 	assert.Equal(t, 0, d.peopleAttempts, "a cancelled run must not be charged")
@@ -105,7 +105,7 @@ func TestDaemon_PeopleBackoff_ShutdownDoesNotConsumeBudget(t *testing.T) {
 // The budget is persisted: a restarted daemon honors an already-spent budget.
 func TestDaemon_PeopleBackoff_SurvivesRestart(t *testing.T) {
 	d1, database, gen1 := peopleBackoffTestSetup(t)
-	for i := 0; i < maxDailyAIAttempts; i++ {
+	for range maxDailyAIAttempts {
 		d1.phasePeopleCards(context.Background())
 	}
 	require.Equal(t, maxDailyAIAttempts, gen1.calls)
@@ -124,13 +124,13 @@ func TestDaemon_PeopleBackoff_SurvivesRestart(t *testing.T) {
 // A new calendar day gets a fresh budget of three.
 func TestDaemon_PeopleBackoff_ResetsNextCalendarDay(t *testing.T) {
 	d, _, gen := peopleBackoffTestSetup(t)
-	for i := 0; i < maxDailyAIAttempts; i++ {
+	for range maxDailyAIAttempts {
 		d.phasePeopleCards(context.Background())
 	}
 	require.Equal(t, maxDailyAIAttempts, gen.calls)
 
 	d.peopleAttemptDate = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-	for i := 0; i < maxDailyAIAttempts+1; i++ {
+	for range maxDailyAIAttempts + 1 {
 		d.phasePeopleCards(context.Background())
 	}
 	assert.Equal(t, 2*maxDailyAIAttempts, gen.calls, "the new day's own full budget, then nothing")

@@ -381,7 +381,7 @@ func firstCWD(path string) string {
 	}
 	defer fh.Close()
 	br := bufio.NewReaderSize(fh, 64<<10)
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		raw, _, complete, _ := NextLine(br, maxLineBytes)
 		if !complete {
 			return ""

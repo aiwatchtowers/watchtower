@@ -71,7 +71,7 @@ struct GettingReadyZoneView: View {
                 titles.append(tab.title)
             }
         }
-        return "Connect \(row.source.displayName) to get \(joinedNames(titles))"
+        return "\(row.source.actionTitle) to get \(joinedNames(titles))"
     }
 
     /// Jira fills five tabs; every other feature its Open's tab.
@@ -153,11 +153,14 @@ struct GettingReadyCardView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if case .needsSource(let source) = readiness, source.isOwnerIdentity {
+                if case .needsSource(let source) = readiness, source.isOwnerIdentity || source == .jiraBoards {
                     Spacer(minLength: 0)
-                    // No owner yet (OWNER-02): the fix is in Settings → Connections.
-                    Button("Open Connections") { onLink(.connect(source)) }
-                        .buttonStyle(.link)
+                    // No owner yet (OWNER-02): the fix is in Settings →
+                    // Connections. No Jira board picked (#572): Boards.
+                    Button(source.isOwnerIdentity ? "Open Connections" : source.actionTitle) {
+                        onLink(.connect(source))
+                    }
+                    .buttonStyle(.link)
                 }
             }
         }
@@ -184,7 +187,7 @@ private struct GettingReadySourceRowView: View {
             Text(text)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Connect \(source.displayName)") { onLink(.connect(source)) }
+            Button(source.actionTitle) { onLink(.connect(source)) }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

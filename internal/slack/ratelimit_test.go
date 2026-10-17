@@ -94,7 +94,7 @@ func TestUnlimitedRateLimiter(t *testing.T) {
 
 	// Should be able to make many rapid calls without blocking
 	start := time.Now()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		err := rl.Wait(context.Background(), Tier2)
 		require.NoError(t, err)
 		err = rl.Wait(context.Background(), Tier3)

@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,11 +20,12 @@ import (
 // dedupeEpisodeNode builds an active episode carrying several provenance refs
 // (the belief pass's input set is built from exactly these).
 func dedupeEpisodeNode(id string, refs ...episodeRef) Node {
-	body := "# Episode\n\n## Story\nThe migration shipped.\n\n## Outcome\nDone cleanly.\n\n## Provenance\n"
+	var body strings.Builder
+	body.WriteString("# Episode\n\n## Story\nThe migration shipped.\n\n## Outcome\nDone cleanly.\n\n## Provenance\n")
 	for _, r := range refs {
-		body += "- " + r.ChannelID + " " + r.TS + "\n"
+		body.WriteString("- " + r.ChannelID + " " + r.TS + "\n")
 	}
-	return Node{ID: id, Type: "episode", Tier: "short", Status: "active", Title: "Episode", Body: body}
+	return Node{ID: id, Type: "episode", Tier: "short", Status: "active", Title: "Episode", Body: body.String()}
 }
 
 // dedupeFixture wires the standard belief-pass scene: one entity subject linking

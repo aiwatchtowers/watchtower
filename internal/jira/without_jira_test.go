@@ -87,7 +87,7 @@ func TestWithoutJira_DetectsChannelWithoutLinks(t *testing.T) {
 
 	// 4 digests on different days with enough messages.
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		day := base.AddDate(0, 0, i)
 		seedDigest(t, d, "C1",
 			float64(day.Unix()),
@@ -120,7 +120,7 @@ func TestWithoutJira_FiltersChannelWithLinks(t *testing.T) {
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
 	// Both channels have enough digests.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		day := base.AddDate(0, 0, i)
 		seedDigest(t, d, "C1", float64(day.Unix()), 5, day.Format(time.RFC3339))
 		seedDigest(t, d, "C2", float64(day.Unix()), 5, day.Format(time.RFC3339))
@@ -145,7 +145,7 @@ func TestWithoutJira_ThresholdFiltering(t *testing.T) {
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
 	// Only 2 days of digests — below minDaysDiscussed threshold (3).
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		day := base.AddDate(0, 0, i)
 		seedDigest(t, d, "C1", float64(day.Unix()), 10, day.Format(time.RFC3339))
 	}
@@ -165,7 +165,7 @@ func TestWithoutJira_ThresholdFiltering_LowMessages(t *testing.T) {
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
 	// 4 days but only 2 messages each = 8 total — below minMessageCount (10).
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		day := base.AddDate(0, 0, i)
 		seedDigest(t, d, "C1", float64(day.Unix()), 2, day.Format(time.RFC3339))
 	}
@@ -186,13 +186,13 @@ func TestWithoutJira_SortOrder(t *testing.T) {
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
 	// C1: 3 days, 15 messages.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		day := base.AddDate(0, 0, i)
 		seedDigest(t, d, "C1", float64(day.Unix()), 5, day.Format(time.RFC3339))
 	}
 
 	// C2: 5 days, 25 messages.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		day := base.AddDate(0, 0, i)
 		seedDigest(t, d, "C2", float64(day.Unix()), 5, day.Format(time.RFC3339))
 	}
@@ -222,7 +222,7 @@ func TestWithoutJira_ChannelNameFallback(t *testing.T) {
 
 	// No channel row inserted — name should fall back to channel ID.
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		day := base.AddDate(0, 0, i)
 		seedDigest(t, d, "C_UNKNOWN", float64(day.Unix()), 5, day.Format(time.RFC3339))
 	}
@@ -241,7 +241,7 @@ func TestWithoutJira_OldLinksDoNotExclude(t *testing.T) {
 	seedChannel(t, d, "C1", "general")
 
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		day := base.AddDate(0, 0, i)
 		seedDigest(t, d, "C1", float64(day.Unix()), 5, day.Format(time.RFC3339))
 	}

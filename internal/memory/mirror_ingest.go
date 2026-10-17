@@ -382,7 +382,7 @@ func writeMirrorSection(b *strings.Builder, heading, content string, last bool) 
 func mirrorSectionContent(body, heading string) string {
 	var out []string
 	in := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(line, "## ") {
 			if strings.TrimRight(line, " \t") == heading {
 				in, out = true, nil

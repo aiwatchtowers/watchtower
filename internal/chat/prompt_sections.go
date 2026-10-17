@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"watchtower/docs/guide"
 	"watchtower/internal/chat/blocks"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -27,24 +28,27 @@ const memoryMapMaxRunes = 4000
 const noToolsBlock = `=== TOOLS ===
 No tools are connected in this session. Answer from the conversation only, and say so plainly when the owner asks you to look something up or to create something.`
 
-// appGuide is the short app guide (spec §4.1 item 9): what Watchtower is,
-// the search_guide rule only where that tool is mounted (the main surface
-// with tools), and the screen-link rule — the screen ids are
-// WatchtowerDesktop/Sources/App/SidebarDestination.swift's.
-func appGuide(o PromptOptions) string {
-	lines := []string{
-		"=== WATCHTOWER APP (answer questions about the app from this) ===",
-		"Watchtower is a macOS app that mirrors the owner's Slack, Google (Gmail, Calendar), Jira and recorded meetings into a local database and runs AI pipelines over it.",
+// appGuideSection is the prompt's app map: the user guide's catalogue plus the
+// instruction to search the guide (docs/guide, indexed as the "guide" source).
+// A session without tools cannot search, so it gets the catalogue to link
+// only (noToolsBlock's rule: no promise the session cannot keep). The main
+// surface (AI Chat and its ⌘/ popup) also gets the screen-link rule: the
+// Desktop renders watchtower-nav://<screen> as an in-app link there.
+func appGuideSection(o PromptOptions) string {
+	lead := "For any question about how Watchtower works, link the guide section that covers it; a page lives at " + guide.BaseURL(guide.Version) + "<path>. The guide's pages:\n"
+	if o.ToolsAvailable {
+		lead = "For any question about how Watchtower works, search the user guide first: search_knowledge with sources [\"guide\"]. " +
+			"Answer from what you find and link the section you used as the hit's link + \"#\" + its chunk_anchor; if the guide has nothing on it, say so instead of guessing. The guide's pages:\n"
 	}
-	if o.Surface == "main" && o.ToolsAvailable {
-		lines = append(lines, appGuideSearchRule)
+	out := "=== WATCHTOWER APP ===\n" + lead + guide.Map()
+	if o.Surface == "main" {
+		out += "\n\n" + appGuideNavRule
 	}
-	return strings.Join(append(lines, appGuideNavRule), "\n")
+	return out + "\n==="
 }
 
-const appGuideSearchRule = "For any question about how to use Watchtower — a tab, a setting, why something is empty — call search_guide and answer from the sections it returns, using screen names as the app shows them; if nothing matches, say the guide doesn't cover it."
-
-const appGuideNavRule = "To link a screen write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer."
+// appGuideNavRule lists WatchtowerDesktop's SidebarDestination raw values.
+const appGuideNavRule = "To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text."
 
 const responseStyle = `=== RESPONSE STYLE ===
 - Give the answer first and keep it short. Do not narrate your search steps — the app already shows them.

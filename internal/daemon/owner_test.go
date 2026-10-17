@@ -47,7 +47,7 @@ func TestOwner02_DaemonDayPlanNoOwnerLoggedOncePerUTCDay(t *testing.T) {
 	const line = "daemon: day_plan skipped: no owner identity (connect Slack, Google, Jira, Linear or an email account)"
 
 	day1 := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		d.runDayPlanPhases(context.Background(), day1.Add(time.Duration(i)*time.Hour))
 	}
 	assert.Equal(t, 1, strings.Count(buf.String(), line), "three cycles on one UTC day log one line")
@@ -73,7 +73,7 @@ func TestOwner02_DaemonBriefingNoOwnerIsBenignAndLoggedOnce(t *testing.T) {
 	gen := &erroringGenerator{}
 	d.SetBriefingPipeline(briefing.New(database, cfg, gen, d.logger))
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		d.phaseBriefing(context.Background())
 	}
 
@@ -109,7 +109,7 @@ func TestOwner02_DaemonInboxNoOwnerLoggedOncePerUTCDay(t *testing.T) {
 	d, database, buf := noOwnerDaemon(t, cfg)
 	d.SetInboxPipeline(inbox.New(database, cfg, nil, d.logger))
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		d.phaseInbox(context.Background())
 	}
 
@@ -160,7 +160,7 @@ func TestDaemon_InboxOwnerLookupErrorLoggedOncePerCycle(t *testing.T) {
 	d.phaseInbox(context.Background())
 
 	lines := 0
-	for _, l := range strings.Split(buf.String(), "\n") {
+	for l := range strings.SplitSeq(buf.String(), "\n") {
 		if strings.Contains(l, "resolving owner") {
 			lines++
 		}

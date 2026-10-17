@@ -28,7 +28,7 @@ const (
 func seedSlackAccounts(t *testing.T, d *db.DB, n int) []int64 {
 	t.Helper()
 	ids := make([]int64, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id, err := d.CreateSlackAccount(db.SlackAccount{TeamID: "T" + string(rune('A'+i)), TeamName: "acme"})
 		require.NoError(t, err)
 		ids = append(ids, id)

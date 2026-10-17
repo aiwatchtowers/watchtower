@@ -13,7 +13,8 @@ struct HomeView: View {
                 snapshot: appState.homeCenter.snapshot,
                 today: context.date,
                 onLink: { appState.openHomeLink($0) },
-                onHideGettingReady: { appState.homeCenter.hideGettingReady() }
+                onHideGettingReady: { appState.homeCenter.hideGettingReady() },
+                onAsk: { appState.toggleHelpChat() }
             )
         }
     }
@@ -27,17 +28,20 @@ struct HomeContent: View {
     let today: Date
     let onLink: (HomeLink) -> Void
     let onHideGettingReady: () -> Void
+    let onAsk: () -> Void
 
     init(
         snapshot: HomeSnapshot?,
         today: Date,
         onLink: @escaping (HomeLink) -> Void,
-        onHideGettingReady: @escaping () -> Void
+        onHideGettingReady: @escaping () -> Void,
+        onAsk: @escaping () -> Void = {}
     ) {
         self.snapshot = snapshot
         self.today = today
         self.onLink = onLink
         self.onHideGettingReady = onHideGettingReady
+        self.onAsk = onAsk
     }
 
     var body: some View {
@@ -51,15 +55,11 @@ struct HomeContent: View {
                     TodayZoneView(
                         cards: snapshot.today, nothingNeedsYou: snapshot.nothingNeedsYou,
                         readFailed: snapshot.showsReadError, onLink: onLink)
-                    if snapshot.showsAskHint {
-                        Text("Press ⌘/ to ask anything about Watchtower.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
                 } else {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                 }
+                helpLine
             }
             .frame(maxWidth: 960, alignment: .leading)
             .padding(.horizontal, 40)
@@ -68,6 +68,18 @@ struct HomeContent: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle("Home")
+    }
+
+    private var helpLine: some View {
+        HStack(spacing: 0) {
+            Text("Stuck? Press ")
+            Button("⌘/", action: onAsk).buttonStyle(.link)
+            Text(" to ask, or open the ")
+            Link("User Guide", destination: GuideLinks.readme)
+            Text(".")
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
     }
 
     private var header: some View {

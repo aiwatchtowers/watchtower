@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -247,7 +247,7 @@ func newCappedTestPipeline(t *testing.T, database *db.DB, gen digest.Generator, 
 		for id := range perAccount {
 			ids = append(ids, id)
 		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		slices.Sort(ids)
 		out := make([]Account, 0, len(ids))
 		for _, id := range ids {
 			out = append(out, Account{AccountID: id, OwnerID: "1:UOWNER", Lister: stubLister{items: perAccount[id]}})
@@ -261,7 +261,7 @@ func newCappedTestPipeline(t *testing.T, database *db.DB, gen digest.Generator, 
 // reactions in one channel.
 func dictionaryReactions(channel string, n int) []slack.ReactedItem {
 	out := make([]slack.ReactedItem, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out = append(out, msgItem(channel, fmt.Sprintf("10%d.1", i), "UAUTHOR", "handle this", "",
 			slack.ItemReaction{Name: "white_check_mark", Users: []string{"UOWNER"}}))
 	}

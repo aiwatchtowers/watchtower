@@ -600,7 +600,7 @@ func TestIdeasMine_Backfill_Capped_PrintsEnvelope(t *testing.T) {
 	base := from.Add(time.Hour).Unix()
 	tx, err := database.Begin()
 	require.NoError(t, err)
-	for i := 0; i < 501; i++ {
+	for i := range 501 {
 		ts := time.Unix(base+int64(i), 0).UTC().Format(time.RFC3339)
 		_, ierr := tx.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

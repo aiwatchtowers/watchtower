@@ -209,7 +209,7 @@ func TestRepriceAgentLogEvents_SlicesAndPartialFailure(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	var evs []AgentLogEvent
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		evs = append(evs, apiCall("s1", "m"+string(rune('a'+i))+":r", 3))
 	}
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,

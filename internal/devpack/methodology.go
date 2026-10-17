@@ -115,7 +115,7 @@ func packVersion(content string) (int, bool) {
 	}
 	rest := strings.TrimPrefix(content, "---\n")
 	frontmatter := rest[:strings.Index(rest, "\n---")]
-	for _, line := range strings.Split(frontmatter, "\n") {
+	for line := range strings.SplitSeq(frontmatter, "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), MarkerKey+": v"); ok {
 			n, err := strconv.Atoi(strings.TrimSpace(v))
 			return n, err == nil
