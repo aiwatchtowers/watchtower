@@ -91,7 +91,7 @@ final class ChatViewModel {
     let actionFeed: AgentActionFeed
     let pool: ChatSessionPool
     /// The composer's not-yet-sent attachments (Task 21). nil `store` (no
-    /// active workspace) still renders — `add`/`addPastedImage` just report
+    /// active workspace) still renders — `add`/`addPasted` just report
     /// "Attachments need an active workspace".
     let composerAttachments: ComposerAttachments
     /// The composer's @-picker and the current draft's picked mentions
@@ -638,9 +638,12 @@ final class ChatViewModel {
         composerAttachments.add(urls: urls, conversationID: id)
     }
 
-    func attachPastedImage(_ png: Data) {
-        guard let id = conversationIDCreatingIfNeeded() else { return }
-        composerAttachments.addPastedImage(png, conversationID: id)
+    /// A paste the composer turned into a file (screenshot, PDF data, long
+    /// text — board #534); true once attached.
+    @discardableResult
+    func attachPasted(_ data: Data, name: String) -> Bool {
+        guard let id = conversationIDCreatingIfNeeded() else { return false }
+        return composerAttachments.addPasted(data, name: name, conversationID: id)
     }
 
     /// `mentions` are the composer's picked candidates (Task 25); only those

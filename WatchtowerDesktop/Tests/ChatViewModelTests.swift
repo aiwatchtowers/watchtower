@@ -1530,7 +1530,7 @@ final class ChatLandingViewModelTests: XCTestCase {
 
     func testAttachingOnTheLandingStaysOnTheLanding() throws {
         let vm = makeViewModel()
-        vm.attachPastedImage(Data([0x89, 0x50, 0x4E, 0x47]))
+        vm.attachPasted(Data([0x89, 0x50, 0x4E, 0x47]), name: "Pasted image.png")
         XCTAssertTrue(vm.isOnLanding)
     }
 

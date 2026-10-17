@@ -52,7 +52,7 @@ struct ChatComposerView: View {
                 attachments: chatVM.composerAttachments.pending,
                 attachmentError: chatVM.composerAttachments.errorMessage,
                 onAttachFiles: { chatVM.attachFiles($0) },
-                onPasteImage: { chatVM.attachPastedImage($0) },
+                onPasteData: { chatVM.attachPasted($0, name: $1) },
                 onRemoveAttachment: { chatVM.composerAttachments.remove(id: $0) },
                 onCursorChange: { text, cursor in
                     lastCursor = cursor

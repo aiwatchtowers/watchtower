@@ -25,7 +25,7 @@ final class ChatComposerFieldAttachmentTests: XCTestCase {
             isStreaming: false, onSend: onSend, onStop: nil,
             placeholder: "Ask…", dictationTargetID: nil, dictationCenter: nil,
             attachments: attachments, attachmentError: error,
-            onAttachFiles: onAttach, onPasteImage: nil, onRemoveAttachment: onRemove)
+            onAttachFiles: onAttach, onPasteData: nil, onRemoveAttachment: onRemove)
     }
 
     func testChipsShowNamesAndRemoveCallsBack() throws {
@@ -57,5 +57,16 @@ final class ChatComposerFieldAttachmentTests: XCTestCase {
         XCTAssertNoThrow(try with.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" })
         let without = makeView(onAttach: nil)
         XCTAssertThrowsError(try without.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" })
+    }
+
+    func testLongPasteOfferButtonsCallBack() throws {
+        var attached = 0
+        var kept = 0
+        let offer = LongPasteOffer(characterCount: 12_000, onAttach: { attached += 1 }, onKeep: { kept += 1 })
+        XCTAssertNoThrow(try offer.inspect().find(text: "Long paste: \(12_000.formatted()) characters"))
+        try offer.inspect().find(button: "Attach as File").tap()
+        try offer.inspect().find(button: "Keep as Text").tap()
+        XCTAssertEqual(attached, 1)
+        XCTAssertEqual(kept, 1)
     }
 }
