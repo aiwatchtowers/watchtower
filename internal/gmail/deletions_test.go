@@ -176,3 +176,40 @@ func TestCheckDeletions_ScopedToAccount(t *testing.T) {
 		t.Fatal("other account touched")
 	}
 }
+
+func seedUndated(t *testing.T, d *db.DB, acct int64, id string) {
+	t.Helper()
+	if err := d.UpsertGmailMessage(acct, db.GmailMessage{ID: id, ThreadID: "th-" + id, InternalDate: "",
+		ToJSON: "[]", CcJSON: "[]", LabelsJSON: "[]", SyncedAt: "2026-10-10T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckDeletions_UndatedRowIsNeverACandidate(t *testing.T) {
+	rec := &listRecorder{}
+	s, d, acct := newTestSyncerForMux(t, listMux(rec, []string{"m1", "m2", "m3"}, nil))
+	seedMail(t, d, acct, "m1", "m2", "m3")
+	seedUndated(t, d, acct, "u1")
+	if n, err := s.CheckDeletions(t.Context(), time.Now()); err != nil || n != 0 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if countMail(t, d, acct) != 4 {
+		t.Fatal("undated row must survive")
+	}
+}
+
+func TestCheckDeletions_AllUndatedStoreSkipsListing(t *testing.T) {
+	rec := &listRecorder{}
+	s, d, acct := newTestSyncerForMux(t, listMux(rec, nil, nil))
+	seedUndated(t, d, acct, "u1")
+	seedUndated(t, d, acct, "u2")
+	if n, err := s.CheckDeletions(t.Context(), time.Now()); err != nil || n != 0 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if rec.count() != 0 || countMail(t, d, acct) != 2 {
+		t.Fatal("no listing and no deletion expected")
+	}
+	if at, _ := d.GmailDeletionsCheckedAt(acct); at.IsZero() {
+		t.Fatal("stamp expected")
+	}
+}

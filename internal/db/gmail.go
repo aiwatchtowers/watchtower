@@ -229,9 +229,10 @@ func (db *DB) GmailMessagesSyncedAfter(accountID int64, sinceISO string) ([]Gmai
 	return out, rows.Err()
 }
 
-// GmailStoredIDs returns the ids of every message stored for accountID and
-// the oldest internal_date among them as unix seconds (0 when none is stored
-// or none parses).
+// GmailStoredIDs returns the ids of the messages stored for accountID whose
+// internal_date parses, and the oldest of those dates as unix seconds. Rows
+// with an empty or unparseable date are left out: a date-bounded listing
+// cannot vouch for them.
 func (db *DB) GmailStoredIDs(accountID int64) (ids []string, oldestUnix float64, err error) {
 	rows, err := db.Query(`SELECT id, internal_date FROM gmail_messages WHERE account_id = ?`, accountID)
 	if err != nil {
@@ -243,11 +244,13 @@ func (db *DB) GmailStoredIDs(accountID int64) (ids []string, oldestUnix float64,
 		if err := rows.Scan(&id, &date); err != nil {
 			return nil, 0, fmt.Errorf("scanning stored gmail id: %w", err)
 		}
+		t, perr := time.Parse(time.RFC3339, date)
+		if perr != nil {
+			continue // undated rows are never deletion candidates
+		}
 		ids = append(ids, id)
-		if t, perr := time.Parse(time.RFC3339, date); perr == nil {
-			if u := float64(t.Unix()); oldestUnix == 0 || u < oldestUnix {
-				oldestUnix = u
-			}
+		if u := float64(t.Unix()); oldestUnix == 0 || u < oldestUnix {
+			oldestUnix = u
 		}
 	}
 	if err := rows.Err(); err != nil {

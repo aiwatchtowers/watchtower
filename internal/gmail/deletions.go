@@ -46,6 +46,7 @@ func (s *Syncer) CheckDeletions(ctx context.Context, now time.Time) (removed int
 			missing = append(missing, id)
 		}
 	}
+	// ok == false with an empty reason means nothing is missing.
 	ok, reason := sourcediff.Check(len(stored), len(stored)-len(missing), len(missing), sourcediff.MailFloors)
 	if !ok && reason != "" {
 		if s.logger != nil {
@@ -59,6 +60,9 @@ func (s *Syncer) CheckDeletions(ctx context.Context, now time.Time) (removed int
 		}
 	}
 	if err := s.db.SetGmailDeletionsCheckedAt(s.accountID, now); err != nil {
+		if s.logger != nil {
+			s.logger.Printf("gmail deletions: account %d: removed %d messages but stamping failed", s.accountID, removed)
+		}
 		return removed, err
 	}
 	return removed, nil
