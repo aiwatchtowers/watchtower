@@ -255,13 +255,14 @@ func assertNotContains(t *testing.T, args []string, unwanted string) {
 	}
 }
 
-func TestMCPWorkDir_WritesExtraArgs(t *testing.T) {
-	dir, err := mcpWorkDir("/tmp/w.db", []string{"--chat", "--surface", "target"}, nil)
+func TestRunHome_WritesExtraArgs(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	dir, err := newRunHome("/tmp/w.db", []string{"--chat", "--surface", "target"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	b, err := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))
+	b, err := os.ReadFile(filepath.Join(dir, "config.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,9 +276,9 @@ func TestMCPWorkDir_WritesExtraArgs(t *testing.T) {
 func TestClient_NoToolsMountsNothing(t *testing.T) {
 	c := NewClient("gpt-5.4", "/tmp/test.db", "codex")
 	c.SetNoTools()
-	dir, cleanup, err := c.workDir()
+	dir, home, cleanup, err := c.workDir()
 	defer cleanup()
-	if err != nil || dir != "" {
+	if err != nil || dir != "" || home != "" {
 		t.Fatalf("workDir() = %q, %v; want no MCP dir", dir, err)
 	}
 	args := c.ArgsForTest("sys", "msg")

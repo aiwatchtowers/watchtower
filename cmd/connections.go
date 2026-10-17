@@ -208,11 +208,11 @@ func connectionAuthState(cfg *config.Config, id int64, errW io.Writer) string {
 }
 
 // warnIfProviderIgnoresConnections tells the owner that Quick Connections are
-// wired only for the claude provider, so an enabled connection is inert under
-// codex/ollama. Non-fatal: the enable/add still succeeds.
+// wired only for the claude and codex providers, so an enabled connection is
+// inert under any other (ollama). Non-fatal: the enable/add still succeeds.
 func warnIfProviderIgnoresConnections(w io.Writer, cfg *config.Config, name string) {
-	if p := cfg.AI.ConfiguredProviderID(); p != "claude" {
-		fmt.Fprintf(w, "warning: Quick Connections work only with the claude AI provider; connection %q will be inert under provider %q\n", name, p)
+	if p := cfg.AI.ConfiguredProviderID(); p != "claude" && p != "codex" {
+		fmt.Fprintf(w, "warning: Quick Connections work only with the claude and codex AI providers; connection %q will be inert under provider %q\n", name, p)
 	}
 }
 
@@ -396,7 +396,7 @@ func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error 
 			label = conn.Name
 		}
 		warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, label)
-		refreshToolsAfterEnable(cmd, cfg, database, id)
+		refreshToolsAfterEnable(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, database, id)
 	} else {
 		fmt.Fprintf(out, "Connection %d disabled.\n", id)
 	}
@@ -511,7 +511,7 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Connection %d signed in and enabled.\n", id)
 	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
-	refreshToolsAfterEnable(cmd, cfg, database, id)
+	refreshToolsAfterEnable(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, database, id)
 	return nil
 }
 

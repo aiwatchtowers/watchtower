@@ -99,6 +99,7 @@ func runConnectionsSplit(t *testing.T, stdin string, args ...string) (stdout, st
 // invocations (the pflag-singleton gotcha shared by every connections test).
 func resetConnectionsFlags() {
 	connectionsFlagJSON = false
+	connectionsImportFlagJSON = false
 	connectionsAddFlagName = ""
 	connectionsAddFlagKind = ""
 	connectionsAddFlagCommand = ""
@@ -364,9 +365,9 @@ func TestConnections_AddRejectsReservedName(t *testing.T) {
 }
 
 // TestConnectionsEnable_WarnsUnderNonClaudeProvider covers the provider-
-// honesty warning: codex/ollama chats never wire external connections
-// (codex.Client has no SetExternalMCPServers, ollama routes through runtime
-// B), so enabling a connection under either is inert. The warning must not
+// honesty warning: ollama chats never wire external connections (they route
+// through runtime B), so enabling a connection there is inert; claude and
+// codex mount them. The warning must not
 // block the enable — the row still ends up Enabled either way.
 func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
 	stubToolsList(t, []db.ExternalTool{{Name: "get_item"}}, nil)
@@ -377,6 +378,7 @@ func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
 	}{
 		{"ollama provider warns", "ollama", true},
 		{"claude provider silent", "claude", false},
+		{"codex provider silent", "codex", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -426,6 +428,7 @@ func TestConnectionsAdd_WarnsUnderNonClaudeProvider(t *testing.T) {
 	}{
 		{"ollama provider warns", "ollama", true},
 		{"claude provider silent", "claude", false},
+		{"codex provider silent", "codex", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -795,6 +798,7 @@ func TestConnectionsOAuth_WarnsUnderNonClaudeProvider(t *testing.T) {
 	}{
 		{"ollama provider warns", "ollama", true},
 		{"claude provider silent", "claude", false},
+		{"codex provider silent", "codex", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

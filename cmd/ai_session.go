@@ -217,8 +217,12 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 	case "codex":
 		// Stateless per turn: the backend replays the active path every turn.
 		// The MCP server reads the running turn from the turn file.
+		// The client runs codex with its own CODEX_HOME: only the
+		// watchtower server and the enabled Quick Connections, web search
+		// off — never the owner's ~/.codex/config.toml (board #594).
 		c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
 		c.SetMCPArgs(w.mcpArgs)
+		c.SetExternalMCPServers(loadExternalMCPServers(w.cfg, w.dbPath))
 		// CHAT-04 (spec §9): the chat session's system prompt and replayed
 		// history must never sit on this process's argv — route the whole
 		// turn through stdin instead of -c developer_instructions=... and a

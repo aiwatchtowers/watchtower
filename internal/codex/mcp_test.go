@@ -7,14 +7,17 @@ import (
 	"testing"
 )
 
-func TestMcpWorkDir_CreatesConfig(t *testing.T) {
-	tmpDir, err := mcpWorkDir("/tmp/test.db", nil, nil)
+// The run's codex home (newRunHome, formerly the --cd folder's
+// .codex/config.toml) mounts `watchtower mcp --db-path`.
+func TestRunHome_CreatesConfig(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	tmpDir, err := newRunHome("/tmp/test.db", nil, nil, nil)
 	if err != nil {
-		t.Fatalf("mcpWorkDir failed: %v", err)
+		t.Fatalf("newRunHome failed: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	configPath := filepath.Join(tmpDir, ".codex", "config.toml")
+	configPath := filepath.Join(tmpDir, "config.toml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("reading config.toml: %v", err)
@@ -36,21 +39,28 @@ func TestMcpWorkDir_CreatesConfig(t *testing.T) {
 	}
 }
 
-func TestMcpWorkDir_DirectoryStructure(t *testing.T) {
-	tmpDir, err := mcpWorkDir("/tmp/test.db", nil, nil)
+// The home is private: it can hold a Quick Connection's secret.
+func TestRunHome_DirectoryStructure(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	tmpDir, err := newRunHome("/tmp/test.db", nil, nil, nil)
 	if err != nil {
-		t.Fatalf("mcpWorkDir failed: %v", err)
+		t.Fatalf("newRunHome failed: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Check .codex dir exists.
-	codexDir := filepath.Join(tmpDir, ".codex")
-	info, err := os.Stat(codexDir)
+	info, err := os.Stat(tmpDir)
 	if err != nil {
-		t.Fatalf(".codex dir should exist: %v", err)
+		t.Fatalf("home dir should exist: %v", err)
 	}
-	if !info.IsDir() {
-		t.Error(".codex should be a directory")
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Errorf("home = %v, want a 0700 directory", info.Mode())
+	}
+	cfg, err := os.Stat(filepath.Join(tmpDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mode().Perm() != 0o600 {
+		t.Errorf("config.toml mode = %v, want 0600", cfg.Mode().Perm())
 	}
 }
 

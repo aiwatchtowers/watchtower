@@ -144,7 +144,7 @@ func tierModel(cfg *config.Config, provider, tier string) string {
 // tools are the `mcp --chat --surface automation --automation-run N` server's
 // (the effective set plus get_action; never a Quick Connection). The child
 // gets only PATH, HOME, LANG, USER and the run marker (codex also CODEX_HOME,
-// a scrubbed per-run home: codexAgentHome), runs in its own
+// a scrubbed per-run home: codex.Client's own CODEX_HOME), runs in its own
 // process group (killed as a group on cancel or deadline), and is metered
 // once: BeforeModelCall before it starts, its usage — or an estimate — after.
 // Its server runs under this process's config and workspace (--config,
@@ -172,17 +172,15 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	env := automationAgentEnv(req.RunID)
 	var client ai.Provider
 	if r.provider == "codex" {
-		home, err := codexAgentHome(r.dbPath, mcpArgs)
-		if err != nil {
-			return automations.AgentResult{}, err
-		}
-		defer func() { _ = os.RemoveAll(home) }()
+		// The client runs the child with its own scrubbed CODEX_HOME (web
+		// search off, only the watchtower server, the owner's sign-in
+		// linked), never ~/.codex: the owner's MCP servers and web search
+		// are outside the effective tool set and GateAgentCall, and an
+		// exfiltration channel for injected text.
 		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
 		c.SetMCPArgs(mcpArgs)
 		c.SetMCPEnvVars(codexAgentServerEnv)
-		// codex only: CODEX_HOME joins the env allowlist, pointing at the
-		// scrubbed per-run home (codexAgentHome) instead of ~/.codex.
-		c.SetChildEnv(append(env, "CODEX_HOME="+home))
+		c.SetChildEnv(env)
 		c.SetProcessGroup(true)
 		client = c
 	} else {
@@ -240,43 +238,6 @@ func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
 // server: codex starts MCP servers with a filtered environment, and the
 // server refuses to start without the run marker (mcpAutomationOptions).
 var codexAgentServerEnv = []string{automations.RunEnvMarker}
-
-// codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
-// temp folder the caller removes after the run. Its config.toml turns web
-// search off and declares only the watchtower automation-run server, so
-// neither the owner's ~/.codex/config.toml MCP servers nor web search —
-// both outside the effective tool set and GateAgentCall, and an
-// exfiltration channel for injected text — reach the child. The owner's
-// auth.json is linked, never copied, so codex can sign in; removing the
-// folder removes only the link.
-func codexAgentHome(dbPath string, mcpArgs []string) (string, error) {
-	dir, err := os.MkdirTemp("", "wt-agent-codex-home-*")
-	if err != nil {
-		return "", fmt.Errorf("creating the agent's codex home: %w", err)
-	}
-	config := "web_search = \"disabled\"\n\n" + codex.WatchtowerServerTOML(dbPath, mcpArgs, codexAgentServerEnv)
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", fmt.Errorf("writing the agent's codex config: %w", err)
-	}
-	auth := filepath.Join(ownerCodexHome(), "auth.json")
-	if _, err := os.Stat(auth); err == nil {
-		if err := os.Symlink(auth, filepath.Join(dir, "auth.json")); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", fmt.Errorf("linking the codex sign-in: %w", err)
-		}
-	}
-	return dir, nil
-}
-
-// ownerCodexHome is the owner's codex home: CODEX_HOME, else ~/.codex.
-func ownerCodexHome() string {
-	if v := os.Getenv("CODEX_HOME"); v != "" {
-		return v
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".codex")
-}
 
 // automationAgentPassthrough is the env an agent() child inherits from this
 // process when set: identity plus network plumbing (proxy, CA bundle, TMPDIR;

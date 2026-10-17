@@ -41,7 +41,17 @@ type Client struct {
 	processGroup bool
 	// noTools runs codex with no MCP server and no web search (SetNoTools).
 	noTools bool
+	// externalServers are the owner's enabled Quick Connections
+	// (SetExternalMCPServers), declared next to the watchtower server in the
+	// run's own CODEX_HOME.
+	externalServers []ai.ExternalMCPServer
 }
+
+// SetExternalMCPServers declares the owner's enabled Quick Connections in
+// the run's CODEX_HOME next to the watchtower server, each limited to its
+// QC-02 allowed tools (externalServersTOML). Only a run that mounts the
+// watchtower server (a database path, no SetNoTools/SetReadFolder) gets them.
+func (c *Client) SetExternalMCPServers(servers []ai.ExternalMCPServer) { c.externalServers = servers }
 
 // SetChildEnv replaces the inherited environment of the child with env (the
 // rich PATH is still appended last). Unset = os.Environ() as today.
@@ -54,18 +64,23 @@ func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, tr
 func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
 
 // childEnviron is the child's environment: the base (os.Environ() unless
-// replaced) without PATH, then the rich PATH.
-func (c *Client) childEnviron() []string {
+// replaced) without PATH, then the rich PATH. A run with its own codex home
+// (home != "", see newRunHome) gets CODEX_HOME=home in place of any
+// inherited one, so the owner's ~/.codex/config.toml is never read.
+func (c *Client) childEnviron(home string) []string {
 	base := os.Environ()
 	if c.childEnvSet {
 		base = c.childEnv
 	}
 	var env []string
 	for _, e := range base {
-		if strings.HasPrefix(e, "PATH=") {
+		if strings.HasPrefix(e, "PATH=") || (home != "" && strings.HasPrefix(e, "CODEX_HOME=")) {
 			continue
 		}
 		env = append(env, e)
+	}
+	if home != "" {
+		env = append(env, "CODEX_HOME="+home)
 	}
 	return append(env, "PATH="+RichPATH())
 }
@@ -92,7 +107,7 @@ func (c *Client) SetNoTools() { c.noTools = true }
 // package: cmd's `ai query` wiring tests). A temp MCP dir it may create is
 // removed.
 func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
-	dir, cleanup, err := c.workDir()
+	dir, _, cleanup, err := c.workDir()
 	if err != nil {
 		return nil
 	}
@@ -233,21 +248,24 @@ func (c *Client) execArgs() []string {
 	return args
 }
 
-// workDir prepares where the run works: the read folder as is, or a temp
-// dir holding the MCP config when there is a database (removed by the
-// returned cleanup), or none — always none for a no-tools run.
-func (c *Client) workDir() (dir string, cleanup func(), err error) {
+// workDir prepares where the run works: the read folder as is, or, when
+// there is a database, the run's own codex home (newRunHome: the watchtower
+// server, the Quick Connections, web search off) that is also the run's
+// working root — home is then that folder, set as the child's CODEX_HOME,
+// and the returned cleanup removes it —, or none (always none for a
+// no-tools run).
+func (c *Client) workDir() (dir, home string, cleanup func(), err error) {
 	if c.readFolder != "" {
-		return c.readFolder, func() {}, nil
+		return c.readFolder, "", func() {}, nil
 	}
 	if c.dbPath == "" || c.noTools {
-		return "", func() {}, nil
+		return "", "", func() {}, nil
 	}
-	tmpDir, err := mcpWorkDir(c.dbPath, c.mcpArgs, c.mcpEnvVars)
+	home, err = newRunHome(c.dbPath, c.mcpArgs, c.mcpEnvVars, c.externalServers)
 	if err != nil {
-		return "", func() {}, err
+		return "", "", func() {}, err
 	}
-	return tmpDir, func() { _ = os.RemoveAll(tmpDir) }, nil
+	return home, home, func() { _ = os.RemoveAll(home) }, nil
 }
 
 // processDir is the subprocess cwd: the read folder, or a TCC-neutral
@@ -273,8 +291,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(errCh)
 		defer close(sidCh)
 
-		// Set up MCP config if database path is provided.
-		workDir, cleanup, mcpErr := c.workDir()
+		// The run's own codex home when a database path is provided.
+		workDir, home, cleanup, mcpErr := c.workDir()
 		if mcpErr != nil {
 			errCh <- mcpErr
 			return
@@ -290,7 +308,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 		defer reap()
 		cmd.Dir = c.processDir()
-		cmd.Env = c.childEnviron()
+		cmd.Env = c.childEnviron(home)
 
 		var stderrBuf strings.Builder
 		cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
@@ -375,8 +393,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // QuerySync sends a non-streaming request via the Codex CLI and returns
 // the full response text and token usage.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *ai.Usage, error) {
-	// Set up MCP config if database path is provided.
-	workDir, cleanup, mcpErr := c.workDir()
+	// The run's own codex home when a database path is provided.
+	workDir, home, cleanup, mcpErr := c.workDir()
 	if mcpErr != nil {
 		return "", nil, mcpErr
 	}
@@ -391,7 +409,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 	defer reap()
 	cmd.Dir = c.processDir()
-	cmd.Env = c.childEnviron()
+	cmd.Env = c.childEnviron(home)
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}

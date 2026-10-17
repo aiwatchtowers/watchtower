@@ -15,6 +15,7 @@ struct QuickConnectionsDetail: View {
     /// caption while the chat is still on another provider.
     @State private var providerID = "claude"
     @State private var showAddConnectionSheet = false
+    @State private var showImportSheet = false
     @State private var connectionPendingRemoval: ExternalConnection?
     /// Connections whose Tools list is open.
     @State private var expandedTools: Set<Int> = []
@@ -67,10 +68,19 @@ struct QuickConnectionsDetail: View {
                         .foregroundStyle(.red)
                 }
 
-                Button("Add Connection") {
-                    showAddConnectionSheet = true
+                HStack {
+                    Button("Add Connection") {
+                        showAddConnectionSheet = true
+                    }
+                    Button("Import from ~/.codex and ~/.claude…") {
+                        showImportSheet = true
+                    }
+                    .help("Add the MCP servers you set up for codex or Claude Code as Quick Connections")
                 }
                 .disabled(vm.isBusy)
+                .sheet(isPresented: $showImportSheet) {
+                    ImportExternalConnectionsView(vm: vm)
+                }
             } else {
                 Text("Loading...")
                     .font(.caption)

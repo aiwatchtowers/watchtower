@@ -25,6 +25,13 @@ final class ExternalConnectionsViewModel {
     /// The last tools command's failure, per connection (cleared on success).
     private(set) var toolsErrors: [Int: String] = [:]
 
+    /// The import sheet's list of servers found in ~/.codex and ~/.claude.
+    private(set) var importList: ExternalConnectionImportList?
+    /// The import sheet's last failure (listing, or names not imported).
+    private(set) var importError: String?
+    /// A `connections import` of names is running.
+    private(set) var isImporting = false
+
     private let dbPool: DatabasePool
     private let makeRunner: () -> (any CLIRunnerProtocol)?
     private var authProcess: Process?
@@ -302,6 +309,59 @@ final class ExternalConnectionsViewModel {
             return "Could not read the tool list: \(error.localizedDescription)"
         }
         return error.localizedDescription
+    }
+
+    // MARK: - Import from ~/.codex and ~/.claude
+
+    /// Loads what the owner's codex and Claude Code configs offer
+    /// (`connections import --json`) into `importList`; nil while loading or
+    /// after a failure (`importError`).
+    func loadImportCandidates() async {
+        importList = nil
+        importError = nil
+        guard let runner = makeRunner() else {
+            importError = "Watchtower CLI not found"
+            return
+        }
+        do {
+            let data = try await runner.run(args: ExternalConnectionImportList.listArgs)
+            importList = try JSONDecoder().decode(ExternalConnectionImportList.self, from: data)
+        } catch {
+            importError = Self.toolsErrorText(error)
+        }
+    }
+
+    /// Imports `names` (`connections import --json -- <name>…`): each becomes
+    /// an enabled connection whose tools are listed. An imported http server
+    /// that could not list its tools without headers then gets the OAuth
+    /// sign-in the Add sheet runs, one at a time. True when every name was
+    /// imported; otherwise `importError` names the ones that were not.
+    func importConnections(_ names: [String]) async -> Bool {
+        guard !names.isEmpty, !isImporting else { return false }
+        guard let runner = makeRunner() else {
+            importError = "Watchtower CLI not found"
+            return false
+        }
+        isImporting = true
+        importError = nil
+        defer { isImporting = false }
+        let results: [ExternalConnectionImportResult]
+        do {
+            let data = try await runner.run(args: ExternalConnectionImportList.importArgs(names: names))
+            results = try JSONDecoder().decode([ExternalConnectionImportResult].self, from: data)
+        } catch {
+            importError = Self.toolsErrorText(error)
+            await refreshAsync()
+            return false
+        }
+        await refreshAsync()
+        for result in results where result.signIn {
+            guard let id = result.id, let row = connections.first(where: { Int64($0.id) == id }) else { continue }
+            await signIn(row)
+        }
+        let failures = results.compactMap(\.failure)
+        importError = failures.isEmpty ? nil : failures.joined(separator: "\n")
+        return failures.isEmpty
     }
 
     // MARK: - Flow helpers

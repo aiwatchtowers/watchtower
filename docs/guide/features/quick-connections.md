@@ -14,9 +14,11 @@ Then ask "what's on my Trello board for this sprint?" in the chat; the assistant
 
 If the server does not say, a tool is allowed when its name starts with get, list, search, read, find, describe or lookup and does not go on to create, update, delete, send or the like. Every other tool stays hidden, and tools the server declares as writes can never be allowed.
 
-**Where it works.** Only chats that can use tools see a connection: the main AI Chat and a target's chat. Draft-only chats never do. Automations can call the same allowed tools through their `mcp()` function. Quick Connections work only with the Claude AI provider; under Codex or Ollama the Settings card says so, and enabled connections do nothing.
+**Where it works.** Only chats that can use tools see a connection: the main AI Chat and a target's chat. Draft-only chats never do. Automations can call the same allowed tools through their `mcp()` function. Quick Connections work with the Claude and Codex AI providers; under Ollama the Settings card says so, and enabled connections do nothing.
 
 **Secrets.** An API key or header never goes in the database or on a command line. It lives in a private file on your Mac, readable only by you. For servers that offer sign-in, OAuth is used instead and Watchtower refreshes the token before each chat.
+
+**Your own codex and Claude Code servers.** The chat never loads the MCP servers you set up for codex (`~/.codex/config.toml`) or Claude Code (`~/.claude.json`), and Codex's own web search is off in the chat. Import those servers to use them here: they then follow the same read-only rules.
 
 **Plain http is refused.** Headers (and OAuth tokens) are sent only over https. Plain http is accepted only for a server on your own Mac (`localhost`, `127.0.0.1`). For a server on your network, use https or an SSH tunnel to localhost.
 
@@ -27,7 +29,8 @@ If the server does not say, a tool is allowed when its name starts with get, lis
 3. For http, choose **Sign in with OAuth (recommended)**, which opens the server's authorization page after **Add**, or **Headers (manual)** to enter a static key.
 4. Click **Add**. The connection starts off. Turn on its **Enabled** switch; this lists its tools.
 5. Open **Tools** under the connection to see each tool labelled **read-only**, **unmarked** (the server does not say whether it writes) or **write**. Switch read-only and unmarked tools on or off. **Refresh list** re-reads them from the server; **Use defaults** returns to the read-only default.
-6. To remove a connection, click **Remove**. The assistant loses its tools at once and the stored secret is deleted.
+6. To bring in servers you already use with codex or Claude Code, click **Import from ~/.codex and ~/.claude…**. Every server that can be imported starts ticked; untick any you don't want and click **Import**. Each one is enabled at once and its keys move to the private secret file. A remote server that needs a sign-in opens its authorization page.
+7. To remove a connection, click **Remove**. The assistant loses its tools at once and the stored secret is deleted.
 
 Only add stdio commands you trust: a local process has the same access to your Mac as anything you run yourself.
 
@@ -38,7 +41,9 @@ The status dot shows the state: green is OK, orange is a problem the next chat r
 - **Orange, no usable tools.** The server's tools could not be listed, or none is read-only. The connection is not offered to the chat. Fix the server, then toggle **Enabled** or press **Refresh list**.
 - **Red, with Sign in again.** The server revoked the grant. Click **Sign in again**.
 - **A tool you need is missing.** It is marked as a write, or it was added to the server after the last listing. Press **Refresh list**; a declared write stays off.
-- **The assistant ignores the connection.** Check the provider: Quick Connections need Claude.
+- **The assistant ignores the connection.** Check the provider: Quick Connections need Claude or Codex.
+- **A server from codex or Claude Code is missing from the chat.** The chat does not read those configs. Use **Import from ~/.codex and ~/.claude…**.
+- **Import says "Can't import".** The reason follows: an SSE server, a server that runs in a set working folder, or a variable such as `$API_TOKEN` that is not set. Add that server with **Add Connection** instead.
 
 ## Related
 

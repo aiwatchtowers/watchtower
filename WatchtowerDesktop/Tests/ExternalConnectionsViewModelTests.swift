@@ -315,6 +315,65 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
 
         XCTAssertEqual(runner.invocations, [["connections", "tools", "3", "--default", "--json"]])
     }
+
+    // MARK: - Import from ~/.codex and ~/.claude (#594)
+
+    func testLoadImportCandidates() async throws {
+        let runner = ScriptedToolsRunner { _ in
+            Data(#"{"servers":[{"name":"tracker","source":"codex","kind":"stdio","command":"npx","has_secret":true}],"warnings":["w"]}"#.utf8)
+        }
+        let vm = ExternalConnectionsViewModel(dbPool: try makePool()) { runner }
+
+        await vm.loadImportCandidates()
+
+        XCTAssertEqual(runner.invocations, [["connections", "import", "--json"]])
+        XCTAssertEqual(vm.importList?.servers.map(\.name), ["tracker"])
+        XCTAssertEqual(vm.importList?.warnings, ["w"])
+        XCTAssertNil(vm.importError)
+    }
+
+    func testLoadImportCandidatesFailureIsShown() async throws {
+        let runner = ScriptedToolsRunner { _ in
+            throw CLIRunnerError.nonZeroExit(code: 1, stderr: "log line\nError: opening database: locked")
+        }
+        let vm = ExternalConnectionsViewModel(dbPool: try makePool()) { runner }
+
+        await vm.loadImportCandidates()
+
+        XCTAssertNil(vm.importList)
+        XCTAssertEqual(vm.importError, "Error: opening database: locked")
+    }
+
+    /// Imported rows reload; a name that was not imported keeps the sheet
+    /// open with its reason.
+    func testImportConnectionsReportsFailures() async throws {
+        let pool = try makePool()
+        let runner = ScriptedToolsRunner { _ in
+            Data(#"[{"name":"tracker","id":1,"status":"ok","sign_in":false},{"name":"legacy","error":"cannot import: sse","sign_in":false}]"#.utf8)
+        }
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO external_connections (id, name, kind, enabled, status) VALUES (1, 'tracker', 'stdio', 1, 'ok')")
+        }
+        let vm = ExternalConnectionsViewModel(dbPool: pool) { runner }
+
+        let done = await vm.importConnections(["tracker", "legacy"])
+
+        XCTAssertFalse(done)
+        XCTAssertEqual(runner.invocations, [["connections", "import", "--json", "--", "tracker", "legacy"]])
+        XCTAssertEqual(vm.importError, "legacy: cannot import: sse")
+        XCTAssertEqual(vm.connections.map(\.name), ["tracker"])
+        XCTAssertFalse(vm.isImporting)
+    }
+
+    func testImportConnectionsAllImported() async throws {
+        let runner = ScriptedToolsRunner { _ in Data(#"[{"name":"tracker","id":1,"status":"ok","sign_in":false}]"#.utf8) }
+        let vm = ExternalConnectionsViewModel(dbPool: try makePool()) { runner }
+
+        let done = await vm.importConnections(["tracker"])
+
+        XCTAssertTrue(done)
+        XCTAssertNil(vm.importError)
+    }
 }
 
 /// A `CLIRunnerProtocol` whose reply depends on the arguments.

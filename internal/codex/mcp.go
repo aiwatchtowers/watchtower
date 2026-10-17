@@ -3,44 +3,8 @@ package codex
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 )
-
-// mcpWorkDir creates a temporary directory with a .codex/config.toml that
-// configures the watchtower MCP server — the watchtower binary itself run as
-// `watchtower mcp --db-path <db>`, exposing curated read-only tools over stdio
-// (no third-party npx package, no network). extra appends further flags to the
-// server command — the chat mode flags (--chat --surface … --conversation …
-// --turn …) the Desktop passes through `ai query --tools chat`; pass nil for
-// the read-only dev server. The caller must remove the returned directory when
-// done (typically via defer os.RemoveAll). envVars are passed through to the
-// server (WatchtowerServerTOML); nil for every caller but an automation's
-// agent() child.
-// Returns the path to the temp directory and any error.
-func mcpWorkDir(dbPath string, extra, envVars []string) (string, error) {
-	tmpDir, err := os.MkdirTemp("", "codex-mcp-*")
-	if err != nil {
-		return "", fmt.Errorf("creating temp dir for codex MCP config: %w", err)
-	}
-
-	codexDir := filepath.Join(tmpDir, ".codex")
-	if err := os.MkdirAll(codexDir, 0o755); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("creating .codex dir: %w", err)
-	}
-
-	configContent := WatchtowerServerTOML(dbPath, extra, envVars)
-
-	configPath := filepath.Join(codexDir, "config.toml")
-	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("writing codex MCP config: %w", err)
-	}
-
-	return tmpDir, nil
-}
 
 // WatchtowerServerTOML is the config.toml table that mounts this binary as
 // codex's watchtower MCP server: `watchtower mcp --db-path <db> <extra…>`.
@@ -57,16 +21,7 @@ func WatchtowerServerTOML(dbPath string, extra, envVars []string) string {
 	return s
 }
 
-// quotedList is items as the inside of a TOML string array.
-func quotedList(items []string) string {
-	quoted := make([]string, 0, len(items))
-	for _, a := range items {
-		quoted = append(quoted, strconv.Quote(a))
-	}
-	return strings.Join(quoted, ", ")
-}
-
-// mcpConfigOverrides mounts the same watchtower server as mcpWorkDir's
+// mcpConfigOverrides mounts the same watchtower server as newRunHome's
 // config.toml, as `-c` overrides — for a run whose working root is not a
 // temp dir (a read-folder run).
 func mcpConfigOverrides(dbPath string, extra []string) []string {
