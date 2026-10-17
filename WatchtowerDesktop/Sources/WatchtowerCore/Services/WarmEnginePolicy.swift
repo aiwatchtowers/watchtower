@@ -84,16 +84,42 @@ package enum WarmEnginePolicy {
         return untilStart > 0 && untilStart <= prewarmLead
     }
 
-    /// Folds fetched events into the policy's meeting window. All-day events
-    /// never hold an engine; ongoing = startDate ≤ now < endDate; next = the
-    /// earliest start inside (now, now + `prewarmLead`].
+    /// Folds fetched events into the policy's meeting window. Only an event
+    /// that may be recorded holds an engine (`mayBeRecorded`); ongoing =
+    /// startDate ≤ now < endDate; next = the earliest start inside
+    /// (now, now + `prewarmLead`].
     package static func window(events: [CalendarEvent], now: Date) -> WarmMeetingWindow {
-        let timed = events.filter { !$0.isAllDay }
+        let timed = events.filter(mayBeRecorded)
         let ongoing = timed.contains { $0.startDate <= now && now < $0.endDate }
         let next = timed
             .map(\.startDate)
             .filter { $0 > now && $0.timeIntervalSince(now) <= prewarmLead }
             .min()
         return WarmMeetingWindow(hasOngoingMeeting: ongoing, nextStart: next)
+    }
+
+    /// Whether an event is a meeting the owner may record, worth the engine's
+    /// load (board #731: a solo block, a focus slot or a declined meeting
+    /// loaded the model as well): timed, not cancelled, a plain event (Google's
+    /// `default` type — never focus time, out of office or a working
+    /// location), not declined by the calendar's own account, and with a call
+    /// link or someone besides the organizer (room resources do not count).
+    /// Guests that do not decode count as a meeting.
+    package static func mayBeRecorded(_ event: CalendarEvent) -> Bool {
+        guard !event.isAllDay, event.eventStatus != "cancelled" else { return false }
+        guard event.eventType.isEmpty || event.eventType == "default" else { return false }
+        let people = event.attendeesIncludingOrganizer
+        // Guests that do not decode are unknown, not absent: warm, as before.
+        // No guests is "", "[]" or "null" (Go marshals a nil slice so).
+        let raw = event.attendees.trimmingCharacters(in: .whitespacesAndNewlines)
+        if event.parsedAttendees.isEmpty, !["", "[]", "null"].contains(raw) { return true }
+        let owner = event.accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !owner.isEmpty, people.contains(where: {
+            $0.email.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(owner) == .orderedSame
+                && $0.responseStatus == "declined"
+        }) {
+            return false
+        }
+        return event.conferenceLink != nil || people.count >= 2
     }
 }

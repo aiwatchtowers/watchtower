@@ -26,7 +26,7 @@ Other facts:
 
 - 451K messages total; history reaches back to 2020 (sync pulled the backlog), the active period is ~2 months.
 - Last 30 days: **124.4K messages, 5.03M chars / 6.36M bytes of text ≈ 1.5M tokens/month ≈ 50K tokens/day** on average; peak weekdays 60–90K, weekends 5–15K.
-- **73% of messages (90.7K of 124.4K) have empty `text`** — bot notifications with content in attachments/blocks (`raw_json`; 178 MB over 30 days). Human text (`is_bot=0`): 28.8K messages, 3.05M chars (~60% of the text stream, ≈30K tokens/day).
+- **73% of messages (90.7K of 124.4K) have empty `text`** — bot notifications with content in attachments/blocks (`raw_json`; 178 MB over 30 days) (superseded: raw_json is kept empty since migration 00134, 2026-10-17). Human text (`is_bot=0`): 28.8K messages, 3.05M chars (~60% of the text stream, ≈30K tokens/day).
 - No Gmail tables in the DB — mail is not synced, excluded from estimates.
 - Jira: 1165 issues across 2 projects, but **sync has been dead since 2026-04-24** — 0 updates in 30 days.
 

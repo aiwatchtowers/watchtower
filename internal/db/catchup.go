@@ -120,15 +120,26 @@ func (db *DB) ListCatchupStreams(from, to float64, limit int) ([]CatchupItem, er
 			return nil, fmt.Errorf("scanning catchup stream: %w", err)
 		}
 		it.Area = "streams"
-		it.Title = source
+		name := streamSourceName(source)
+		it.Title = name
 		if scope != "" {
 			it.Title += " · " + scope
 		}
 		it.Body = renderStreamTopics(it.ID, topicsJSON)
-		it.Meta = fmt.Sprintf("%s account %d · to %s", source, accountID, periodTo)
+		it.Meta = fmt.Sprintf("%s account %d · to %s", name, accountID, periodTo)
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// streamSourceName names a stream_digests.source for a reader: an
+// IMAP/Outlook mailbox's 'imap' reads "Email" (its scope carries the address);
+// 'gmail' and 'jira' keep their stored names.
+func streamSourceName(source string) string {
+	if source == "imap" {
+		return "Email"
+	}
+	return source
 }
 
 // renderStreamTopics turns stream_digests.topics_json into "Title: summary"

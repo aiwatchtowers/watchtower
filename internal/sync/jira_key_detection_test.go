@@ -48,7 +48,7 @@ func TestSyncMessages_JiraDetectorSeesTheIDsThatLandInMessages(t *testing.T) {
 
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{Full: true}))
 
-	stored, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
+	stored, err := ts.db.GetMessages(db.MessageOpts{ChannelID: ts.ns("C001"), Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, stored, 2)
 
@@ -89,7 +89,7 @@ func TestSyncMessages_JiraDetectorFailureIsBestEffort(t *testing.T) {
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{Full: true}))
 
 	assert.Positive(t, det.calls, "the detector was reached")
-	stored, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
+	stored, err := ts.db.GetMessages(db.MessageOpts{ChannelID: ts.ns("C001"), Limit: 100})
 	require.NoError(t, err)
 	assert.Len(t, stored, 2, "the page stays committed when link detection fails")
 }
@@ -172,7 +172,7 @@ func TestSyncViaSearch_JiraDetectorSeesTheIDsThatLandInMessages(t *testing.T) {
 	}
 	require.Len(t, seen, 2, "the search path must hand the detector its whole page, not just the head")
 
-	stored, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
+	stored, err := ts.db.GetMessages(db.MessageOpts{ChannelID: ts.ns("C001"), Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, stored, 2)
 

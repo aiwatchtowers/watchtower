@@ -848,8 +848,11 @@ struct WorkbenchCLI {
     /// The two LLM calls (overview, lessons) run under Go's 5-minute budget; the Desktop waits a little longer.
     static let reviewAITimeout: TimeInterval = 330
 
-    func reviewOverview(projectID: Int64, roundID: Int64) async throws -> ReviewEnvelope {
-        try await review(["overview", "--workbench", String(projectID), "--round", String(roundID)], timeout: Self.reviewAITimeout)
+    /// `cachedOnly` reads only a cached overview and never calls the model (Quick mode, board #585).
+    func reviewOverview(projectID: Int64, roundID: Int64, cachedOnly: Bool = false) async throws -> ReviewEnvelope {
+        let args = ["overview", "--workbench", String(projectID), "--round", String(roundID)]
+        if cachedOnly { return try await review(args + ["--cached-only"]) }
+        return try await review(args, timeout: Self.reviewAITimeout)
     }
 
     /// Undoes one hunk of the round's diff in the working tree (never the index).

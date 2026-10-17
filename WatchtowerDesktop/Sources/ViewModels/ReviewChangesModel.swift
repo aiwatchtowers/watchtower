@@ -29,7 +29,13 @@ final class ReviewChangesModel {
     enum Load: Equatable { case idle, loading, failed(String), ready }
     enum View: Equatable { case all, sinceLastRound }
     enum Mode: String { case quick, deep }
-    enum OverviewState: Equatable { case idle, loading, ready(ReviewOverview), failed(String) }
+    /// `onRequest`: Quick mode found no cached overview for this tree, so the
+    /// strong model runs only when the owner presses Make overview (board #585).
+    /// `outdated`: a made overview landed after the tree moved on and none is
+    /// cached for the new tree; it is shown as being for an earlier version.
+    enum OverviewState: Equatable {
+        case idle, loading, onRequest, outdated(ReviewOverview), ready(ReviewOverview), failed(String)
+    }
 
     enum ModelError: Error, Equatable, LocalizedError {
         case noRound
@@ -97,6 +103,13 @@ final class ReviewChangesModel {
     /// The tree the overview shown or loading was asked for; a refresh that
     /// may regenerate asks again when the round's tree differs (after an Undo).
     private var overviewTreeSHA: String?
+    /// The model call running (Make overview, Retry or Deep's own): a refresh
+    /// or an Undo never cancels it; one landing for an earlier tree is
+    /// followed up (board #585).
+    @ObservationIgnored private var generationID: UUID?
+    /// The failure shown came from the model call, not from a cached read:
+    /// Retry repeats whichever failed.
+    private var failedGenerating = false
     /// The session's notes and chapters from the agent (`annotate_changes`).
     private(set) var notes: [ReviewNote] = []
     /// Where the selected file's notes sit on its new side; an unplaced note is absent.
@@ -225,6 +238,7 @@ final class ReviewChangesModel {
             breakHintDismissed = false
             savedActiveSeconds = info.activeSeconds
             overviewTask?.cancel()
+            generationID = nil
             overview = .idle
             aiChaptersPending = false
             appliedAIChapters = []
@@ -299,8 +313,9 @@ final class ReviewChangesModel {
             try await loadDiff(info)
             // A refresh that may regenerate asks when the overview was built
             // for another tree (also the one an earlier Undo left). After an
-            // Undo, without an overview on screen (one still loading for the
-            // old tree would be dropped) a new one is asked for anyway.
+            // Undo, without an overview on screen a new one is asked for
+            // anyway. A model call still running is left to finish
+            // (`startOverview`), and followed up when it lands.
             if regenerateOverview ? overviewTreeSHA != info.treeSha : treeChanged && !overviewShown { startOverview() }
             let roundID = info.id
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
@@ -449,6 +464,10 @@ final class ReviewChangesModel {
             try saveState(mode: m, phase: phase, chapterKey: persistedChapterKey)
             mode = m
         }
+        // Deep makes its overview by itself: switching to it asks for one
+        // unless the current tree's is shown (a running model call finishes
+        // and is followed up).
+        if m == .deep, load == .ready, !(overviewShown && overviewTreeSHA == round?.treeSha) { startOverview() }
     }
 
     func setPhase(_ p: ReviewPhase) throws {
@@ -557,30 +576,72 @@ final class ReviewChangesModel {
 
     // MARK: - Overview and notes
 
-    /// Loads the AI overview of the open round; an answer for a round or tree
-    /// no longer shown is dropped. A failure keeps the chapters as they are.
-    func loadOverview() async {
+    /// Loads the AI overview of the open round; an answer for another round
+    /// is dropped. A failure keeps the chapters as they are. Without
+    /// `generate` only a cached overview is read (no model call): a miss
+    /// drops the old tree's AI state and leaves Make overview on screen
+    /// (`earlier`: the made overview of an earlier tree, shown as such).
+    private func loadOverview(generate: Bool, generation: UUID?, earlier: ReviewOverview?) async {
         guard let info = round else { return }
-        overview = .loading
         aiChaptersPending = false
         let state: OverviewState
         do {
-            let env = try Self.checked(await cli.reviewOverview(projectID: projectID, roundID: info.id))
-            guard let ready = env.overview else { throw Failure(message: "The overview is missing from the answer.") }
-            state = .ready(ready)
+            let env = try Self.checked(await cli.reviewOverview(projectID: projectID, roundID: info.id, cachedOnly: !generate))
+            if let ready = env.overview {
+                state = .ready(ready)
+            } else if generate {
+                throw Failure(message: "The overview is missing from the answer.")
+            } else {
+                state = .onRequest
+            }
         } catch {
             state = .failed(Self.message(error))
         }
-        guard !Task.isCancelled, round?.id == info.id, round?.treeSha == info.treeSha else { return }
-        overview = state
-        if case .ready(let ready) = state {
+        if let generation, generationID == generation { generationID = nil }
+        guard !Task.isCancelled, round?.id == info.id else { return }
+        guard round?.treeSha == info.treeSha else {
+            // A model call that ran past a tree change is followed up for the
+            // new tree: Deep makes its overview; Quick reads its cache and
+            // else shows a made one as being for an earlier version.
+            guard generate else { return }
+            if case .ready(let made) = state {
+                startOverview(earlier: made)
+            } else {
+                startOverview()
+            }
+            return
+        }
+        showOverview(state, generated: generate, earlier: earlier)
+    }
+
+    private func showOverview(_ state: OverviewState, generated: Bool, earlier: ReviewOverview?) {
+        switch state {
+        case .ready(let ready):
+            overview = state
             lastReadyOverview = ready
             offerAIChapters(ready)
+        case .onRequest:
+            // No risks, chapters or coverage of code that has changed since.
+            lastReadyOverview = nil
+            if !appliedAIChapters.isEmpty {
+                appliedAIChapters = []
+                refreshChapters()
+            }
+            overview = earlier.map { .outdated($0) } ?? .onRequest
+        default:
+            failedGenerating = generated
+            overview = state
         }
     }
 
+    /// Repeats what failed: a cached read stays a cached read in Quick.
     func retryOverview() {
-        startOverview()
+        startOverview(generate: failedGenerating)
+    }
+
+    /// Quick mode's Make overview: one strong-model call for this tree.
+    func makeOverview() {
+        startOverview(generate: true)
     }
 
     /// Switches to the AI chapters held back by `aiChaptersPending`.
@@ -767,11 +828,20 @@ final class ReviewChangesModel {
         overview.chapters.map { ReviewChapterSpec(title: $0.title, paths: $0.paths, core: $0.core, lenses: $0.lenses) }
     }
 
-    /// Starts the overview's load, dropping the one running.
-    private func startOverview() {
+    /// Starts the overview's load, dropping a cached read still running but
+    /// never a model call (it is followed up when it lands). Deep makes the
+    /// overview by itself; Quick only reads a cached one unless the owner
+    /// asked (`generate`: Make overview, or Retry of a failed model call).
+    private func startOverview(generate: Bool = false, earlier: ReviewOverview? = nil) {
+        guard generationID == nil else { return }
         overviewTask?.cancel()
         overviewTreeSHA = round?.treeSha
-        overviewTask = Task { [weak self] in await self?.loadOverview() }
+        let make = generate || mode == .deep
+        let generation = make ? UUID() : nil
+        generationID = generation
+        // The only place that shows the spinner; a cached read keeps what is shown.
+        if make { overview = .loading }
+        overviewTask = Task { [weak self] in await self?.loadOverview(generate: make, generation: generation, earlier: earlier) }
     }
 
     /// Switches to the overview's chapters, unless they would replace

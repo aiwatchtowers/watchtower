@@ -12,7 +12,6 @@ package struct Message: FetchableRecord, Decodable, Identifiable, Equatable {
     package let subtype: String
     package let permalink: String
     package let tsUnix: Double
-    package let rawJSON: String
 
     package var id: String { "\(channelID)_\(ts)" }
 
@@ -25,6 +24,5 @@ package struct Message: FetchableRecord, Decodable, Identifiable, Equatable {
         case isEdited = "is_edited"
         case isDeleted = "is_deleted"
         case tsUnix = "ts_unix"
-        case rawJSON = "raw_json"
     }
 }

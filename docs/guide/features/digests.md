@@ -1,6 +1,6 @@
 # Digests
 
-Digests turn each busy Slack channel into a short summary of topics, decisions and action items, so you can read a minute instead of scrolling. The same tab also holds Gmail and Jira summaries, meeting recaps, and a **Decisions** journal of what your teams settled.
+Digests turn each busy Slack channel into a short summary of topics, decisions and action items, so you can read a minute instead of scrolling. The same tab also holds mail and Jira summaries, meeting recaps, and a **Decisions** journal of what your teams settled.
 
 ## Why use it
 
@@ -16,7 +16,7 @@ Left out: muted channels, one-to-one DMs (group DMs are kept), and channels with
 
 **Daily rollups combine channels.** Once at least two channel digests exist for the same UTC day, the daemon writes one **Daily** digest across channels, and rewrites it when a newer channel digest lands. A day with one channel digest gets no rollup. After 3 failed attempts in a day the daemon stops retrying the rollup until the next day.
 
-**Mail and Jira are digested too.** Stream digests summarise new Gmail threads and changed Jira issues per account, at most every 6 hours by default. They need **Stream Digests** on and a connected account, not Slack.
+**Mail and Jira are digested too.** Stream digests summarise new mail (Gmail, Outlook or IMAP) and changed Jira issues per account, at most every 6 hours by default. They need **Stream Digests** on and a connected account, not Slack.
 
 Meeting recaps appear in the same feed once a recording has one.
 
@@ -35,7 +35,7 @@ Meeting recaps appear in the same feed once a recording has one.
 - **"No digests yet"** with Slack connected: wait for the next sync cycle after the first sync. **Slack Digests** must be on (Settings → Features), and a channel needs at least one new human message.
 - **A channel is missing.** It is muted (see [Statistics](statistics.md)), a one-to-one DM, bot-only, or inside the 30-minute trickle wait.
 - **No Daily digest.** It needs two or more channel digests from the same UTC day.
-- **No mail or Jira rows.** **Stream Digests** must be on and a Gmail or Jira account connected. Rows come at most every 6 hours.
+- **No mail or Jira rows.** **Stream Digests** must be on and a mail (Gmail, Outlook or IMAP) or Jira account connected. Rows come at most every 6 hours.
 - **A decision is missing or doubled.** Decisions appear after the next Ideas run, which merges near-duplicates. Use **Supersede** for one that was replaced and **Reverse** for one that was undone.
 
 Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
