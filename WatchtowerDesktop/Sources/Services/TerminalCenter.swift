@@ -155,6 +155,10 @@ final class TerminalCenter {
     /// The row each process was started from, so a project's sessions can be
     /// found (and closed) after the project's rows are gone.
     @ObservationIgnored private var rows: [Int64: TerminalSession] = [:]
+    /// Sessions an automation run let go of (a refused launch's row): no
+    /// later launch carries the run marker, whatever copy of the row the
+    /// caller holds.
+    @ObservationIgnored private var droppedRunMarkers: Set<Int64> = []
     @ObservationIgnored var makeProcess: () -> any TerminalSessionProcess
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
@@ -180,6 +184,9 @@ final class TerminalCenter {
     /// Watchtower caused it by closing the terminal (`close`/`closeAll`,
     /// which drop the process before signalling it). One subscriber.
     @ObservationIgnored var onSessionExit: ((_ id: Int64, _ code: Int32?, _ closedByApp: Bool) -> Void)?
+    /// Every process exit too, by session row id, for a subscriber that
+    /// outlives the workbench view model (`AutomationSessionCenter`).
+    @ObservationIgnored var onRowExit: ((_ id: Int64) -> Void)?
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
     /// inside its folder (`TerminalPathLinks`): workbench id, session id,
     /// location.
@@ -884,6 +891,7 @@ final class TerminalCenter {
             states[id] = .exited(code)
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
+            onRowExit?(id)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
         // A click into one terminal of a split makes it the active session.
@@ -912,7 +920,8 @@ final class TerminalCenter {
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex, setup: setup))
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex, setup: setup,
+                            automationRunID: droppedRunMarkers.contains(id) ? nil : session.automationRunID))
     }
 
     func close(sessionID: Int64) async {
@@ -945,6 +954,16 @@ final class TerminalCenter {
             for id in ids {
                 group.addTask { @MainActor in await self.close(sessionID: id) }
             }
+        }
+    }
+
+    /// The rows' run marker is gone from the database
+    /// (`AutomationQueries.disownUnattachedSessions`): their next launch
+    /// runs without it.
+    func dropAutomationRun(sessionIDs: [Int64]) {
+        for id in sessionIDs {
+            droppedRunMarkers.insert(id)
+            rows[id]?.automationRunID = nil
         }
     }
 

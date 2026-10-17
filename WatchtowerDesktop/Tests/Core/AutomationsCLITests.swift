@@ -166,4 +166,31 @@ final class AutomationsCLITests: XCTestCase {
                           error.localizedDescription)
         }
     }
+    func testSessionLaunchedArgs() async throws {
+        let (cli, runner) = cli(#"{"attached":true}"#)
+        let attached = try await cli.sessionLaunched(step: 9, session: 4)
+        XCTAssertEqual(runner.invocations, [["automations", "session-launched", "--step", "9", "--session", "4", "--json"]])
+        XCTAssertTrue(attached)
+        let refused = try await self.cli(#"{"attached":false}"#).0.sessionLaunched(step: 9, session: 4)
+        XCTAssertFalse(refused)
+    }
+
+    func testSessionEndedArgs() async throws {
+        let (cli, runner) = cli(#"{"ended":true}"#)
+        let ended = try await cli.sessionEnded(step: 9, status: .launchFailed, error: "Codex was not found.")
+        XCTAssertTrue(ended)
+        let (stopped, stoppedRunner) = self.cli(#"{"ended":false}"#)
+        let notWaiting = try await stopped.sessionEnded(step: 9, status: .stopped, error: nil)
+        XCTAssertFalse(notWaiting)
+        XCTAssertEqual(runner.invocations, [["automations", "session-ended", "--step", "9", "--status", "launch_failed",
+                                             "--error", "Codex was not found.", "--json"]])
+        XCTAssertEqual(stoppedRunner.invocations, [["automations", "session-ended", "--step", "9", "--status", "stopped",
+                                                    "--json"]])
+    }
+
+    func testRescanWorkbenchArgs() async throws {
+        let (cli, runner) = cli("[]")
+        try await cli.rescan(workbenchID: 3)
+        XCTAssertEqual(runner.invocations, [["automations", "rescan", "--workbench", "3"]])
+    }
 }

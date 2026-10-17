@@ -1,6 +1,6 @@
 # Agent analytics
 
-Agent analytics reads the history of the Claude Code sessions that ran in a workbench folder and totals their tokens, cost, tools and errors. It is for the person who wants to know what their agents cost and did. It is a command-line feature with no screen.
+Agent analytics reads the history of the Claude Code sessions that ran in a workbench folder and totals their tokens, cost, tools and errors. It is for the person who wants to know what their agents cost and did. The workbench page's **Analytics** view shows it (see [Sessions](workbench/sessions.md#read-the-analytics-view)), and the `watchtower agents` commands print it.
 
 ## Why use it
 
@@ -33,6 +33,7 @@ watchtower agents disable --workbench 3
 - `enable` turns it on and reads the folder's history now.
 - `scan` reads new lines on demand and reports `unknown_records` and `failed_files`.
 - `stats` prints totals and a per-session breakdown: tokens, `cost_usd`, `tools` and `outcomes` (separate keys), skills and owner turns.
+- `report` prints the time, cost, task and hint breakdown the **Analytics** view shows.
 - `disable` stops reading.
 
 Find a workbench's number with `watchtower workbench list`, or use the id in its board.

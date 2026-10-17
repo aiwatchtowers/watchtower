@@ -745,6 +745,23 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchMethodologyState.self, from: data)
     }
 
+    /// The workbench's board column definition (board #267, PROJ-19) as
+    /// `watchtower workbench columns <id> --json` prints it.
+    func boardColumns(projectID: Int64) async throws -> WorkbenchBoardColumns {
+        let data = try await runner.run(args: ["workbench", "columns", String(projectID), "--json"])
+        return try JSONDecoder().decode(WorkbenchBoardColumns.self, from: data)
+    }
+
+    /// Replaces the whole definition (`--set -`, the JSON on stdin) and
+    /// returns the stored one. A refused definition exits 1 with Go's
+    /// message on stderr (`CLIRunnerError.nonZeroExit`); nothing is written.
+    func setBoardColumns(projectID: Int64, _ def: WorkbenchBoardColumns) async throws -> WorkbenchBoardColumns {
+        let data = try await runner.run(
+            args: ["workbench", "columns", String(projectID), "--set", "-", "--json"], stdin: try JSONEncoder().encode(def)
+        )
+        return try JSONDecoder().decode(WorkbenchBoardColumns.self, from: data)
+    }
+
     /// The folder's branch, upstream counters and dirty state (#233). Go runs
     /// git (never the `/usr/bin/git` shim, never outside a repository); the
     /// Desktop never does. `folder` (absolute) asks about that folder instead
@@ -763,8 +780,14 @@ struct WorkbenchCLI {
 
     /// Every review call prints one envelope; a refusal is `ok: false` with
     /// `error` at exit 0, not a throw.
-    private func review(_ args: [String]) async throws -> ReviewEnvelope {
-        let data = try await runner.run(args: ["workbench", "review"] + args + ["--json"])
+    private func review(_ args: [String], timeout: TimeInterval? = nil) async throws -> ReviewEnvelope {
+        let full = ["workbench", "review"] + args + ["--json"]
+        let data: Data
+        if let timeout {
+            data = try await runner.run(args: full, timeout: timeout)
+        } else {
+            data = try await runner.run(args: full)
+        }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(ReviewEnvelope.self, from: data)
@@ -793,6 +816,37 @@ struct WorkbenchCLI {
 
     func reviewContext(projectID: Int64, sessionID: Int64) async throws -> ReviewEnvelope {
         try await review(["context", "--workbench", String(projectID), "--session", String(sessionID)])
+    }
+
+    /// The two LLM calls (overview, lessons) run under Go's 5-minute budget; the Desktop waits a little longer.
+    static let reviewAITimeout: TimeInterval = 330
+
+    func reviewOverview(projectID: Int64, roundID: Int64) async throws -> ReviewEnvelope {
+        try await review(["overview", "--workbench", String(projectID), "--round", String(roundID)], timeout: Self.reviewAITimeout)
+    }
+
+    /// Undoes one hunk of the round's diff in the working tree (never the index).
+    func reviewRevertHunk(projectID: Int64, roundID: Int64, hunkID: String, since: Bool) async throws -> ReviewEnvelope {
+        try await review(["revert-hunk", "--workbench", String(projectID), "--round", String(roundID), "--hunk", hunkID]
+            + (since ? ["--since"] : []))
+    }
+
+    enum LessonAction: Equatable {
+        case propose
+        case accept(Int64)
+        case dismiss(Int64)
+    }
+
+    func reviewLessons(projectID: Int64, action: LessonAction) async throws -> ReviewEnvelope {
+        let workbench = ["--workbench", String(projectID)]
+        switch action {
+        case .propose:
+            return try await review(["lessons", "propose"] + workbench, timeout: Self.reviewAITimeout)
+        case .accept(let id):
+            return try await review(["lessons", "accept"] + workbench + ["--lesson", String(id)])
+        case .dismiss(let id):
+            return try await review(["lessons", "dismiss"] + workbench + ["--lesson", String(id)])
+        }
     }
 
     /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`).

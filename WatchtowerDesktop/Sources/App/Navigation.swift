@@ -201,6 +201,16 @@ struct MainNavigationView: View {
     private var automationsTabActions: AutomationsTabActions {
         var actions = AutomationsTabActions()
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
+        actions.onOpenSession = { projectID, sessionID in
+            guard let vm = appState.workbenchesViewModel else { return }
+            appState.selectedDestination = .workbench
+            Task { await vm.showAutomationSession(sessionID, projectID: projectID) }
+        }
+        actions.onOpenAsk = { projectID, askID in
+            guard let vm = appState.workbenchesViewModel else { return }
+            appState.selectedDestination = .workbench
+            Task { await vm.showAsk(askID, projectID: projectID) }
+        }
         return actions
     }
 

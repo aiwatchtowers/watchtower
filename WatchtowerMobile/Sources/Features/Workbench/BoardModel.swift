@@ -63,7 +63,7 @@ struct BoardRowModel: Equatable, Identifiable {
         let status = Self.status(target.status)
         statusGlyph = status.glyph
         statusTone = status.tone
-        statusText = Self.statusLabel(target.status)
+        statusText = target.column ?? Self.statusLabel(target.status)
         priority = target.priority
         priorityTone = PriorityMark.tone(target.priority)
         isDimmed = target.status == .done

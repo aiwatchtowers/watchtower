@@ -14,7 +14,7 @@ import (
 
 // ParserVersion is stamped on agent_log_files; bump it when parsing changes
 // so present files are reparsed from 0 (idempotent keys, AGENTLOG-03).
-const ParserVersion = 1
+const ParserVersion = 2
 
 const maxLineBytes = 8 << 20
 
@@ -109,7 +109,7 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 	br := bufio.NewReaderSize(r, 64<<10)
 	off := startOffset
 	for {
-		raw, n, complete, err := nextLine(br, maxLineBytes)
+		raw, n, complete, err := NextLine(br, maxLineBytes)
 		if !complete {
 			break // EOF mid-line, or plain EOF: the rest waits for the next scan
 		}
@@ -131,10 +131,10 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 	return p.res, nil
 }
 
-// nextLine returns one '\n'-terminated line without the newline, the bytes
+// NextLine returns one '\n'-terminated line without the newline, the bytes
 // consumed, and complete=false when the input ended before a newline. A line
 // longer than limit comes back as nil (consumed and complete).
-func nextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
+func NextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
 	var buf []byte
 	var n int64
 	tooLong := false
@@ -306,27 +306,45 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 		if strings.HasPrefix(text, "<local-command") || strings.HasPrefix(text, "[Request interrupted by user") {
 			return
 		}
-		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn"})
+		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(text)})
 		p.slashSkill(rec, off, text) // Task 4
 		return
 	}
 	var blocks []struct {
 		Type string `json:"type"`
+		Text string `json:"text"`
 	}
 	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
 		return
 	}
-	hasResult := false
+	hasResult, firstText := false, ""
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
 			hasResult = true
+		}
+		if b.Type == "text" && firstText == "" {
+			firstText = b.Text
 		}
 	}
 	if hasResult {
 		p.toolResults(rec) // Task 4
 		return
 	}
-	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn"})
+	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(firstText)})
+}
+
+// turnTrigger tells the owner's own turn from a system-injected one: a task or
+// sub-agent notification, or a hook / reminder block. Leading whitespace is
+// ignored.
+func turnTrigger(text string) string {
+	text = strings.TrimLeft(text, " \t\r\n")
+	switch {
+	case strings.HasPrefix(text, "<task-notification>"), strings.HasPrefix(text, "<agent-message"):
+		return "notification"
+	case strings.HasPrefix(text, "<system-reminder>"), strings.HasPrefix(text, "Stop hook feedback:"):
+		return "hook"
+	}
+	return "owner"
 }
 
 func (p *claudeParser) attachment(rec claudeRecord) {

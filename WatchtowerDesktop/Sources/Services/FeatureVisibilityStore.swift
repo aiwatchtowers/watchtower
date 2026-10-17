@@ -14,5 +14,10 @@ import WatchtowerCore
 @Observable
 final class FeatureVisibilityStore {
     var disabledFeatureIDs: Set<String> = []
+    /// A `features list` load has succeeded at least once, so
+    /// `disabledFeatureIDs` is real rather than the fail-open empty set.
+    /// What starts background work for a feature (the automation session
+    /// center, workbench rescans) waits for it; what only shows a tab does not.
+    var isLoaded = false
     var connectedSources: ConnectedSources = .all
 }

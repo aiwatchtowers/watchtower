@@ -29,7 +29,7 @@ package final class AutomationFormModel {
 
     package var fields: RecipeFrontmatter {
         didSet {
-            guard fields != oldValue, isEditable, !frontmatterEditedInRecipe else { return }
+            guard fields != oldValue, !frontmatterEditedInRecipe else { return }
             writeFields()
         }
     }
@@ -73,7 +73,7 @@ package final class AutomationFormModel {
     /// script (its settings block is one the form wrote earlier), the form's
     /// fields are spliced in again; otherwise the form pauses and says so.
     private func pageSent(base: Int) {
-        guard isEditable, base < spliceRevision else { return }
+        guard base < spliceRevision else { return }
         let block = RecipeFrontmatter.block(in: buffer.text).map(String.init)
         guard block != formBlock else { return }
         if let block, formBlocks.contains(block) {
@@ -81,12 +81,6 @@ package final class AutomationFormModel {
         } else {
             lostFormEdit = true
         }
-    }
-
-    /// Workbench recipes are edited in their folder in P3 (R-P3-5); the form
-    /// shows them read-only.
-    package var isEditable: Bool {
-        detail.scope == "personal"
     }
 
     /// The owner changed the frontmatter in the Monaco pane: the form's

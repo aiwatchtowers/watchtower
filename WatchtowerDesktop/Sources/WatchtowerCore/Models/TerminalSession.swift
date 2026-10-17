@@ -46,6 +46,9 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
     package var worktreeBranch: String?
     /// The commit that branch was cut from; nil with `worktreeBranch`.
     package var worktreeBase: String?
+    /// The automation run that started this session (00122); nil = the owner
+    /// started it, or the run was deleted since.
+    package var automationRunID: Int64?
     // `closed_at` is a legacy column, no longer read or written: the Close
     // action was removed, so every row is just running or not running.
 
@@ -61,5 +64,6 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
         case transcriptPath = "agent_transcript_path"
         case worktreeBranch = "worktree_branch"
         case worktreeBase = "worktree_base"
+        case automationRunID = "automation_run_id"
     }
 }

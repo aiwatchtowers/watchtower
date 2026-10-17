@@ -46,7 +46,7 @@ struct BoardTargetDetailModel {
         id = target.id
         self.target = target
         title = target.text
-        statusLabel = BoardRowModel.statusLabel(target.status)
+        statusLabel = target.column ?? BoardRowModel.statusLabel(target.status)
         row = BoardRowModel(target, snapshot: snapshot)
         breadcrumb = Self.breadcrumb(of: target, in: snapshot)
         isReadOnly = target.archived

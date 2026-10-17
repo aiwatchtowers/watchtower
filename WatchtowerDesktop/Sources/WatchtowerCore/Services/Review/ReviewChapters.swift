@@ -7,14 +7,45 @@ package struct ReviewChapter: Equatable, Sendable, Identifiable {
     package let paths: [String]
     package let changedLines: Int
     package let core: Bool
+    /// Who split the diff: the session's agent, the overview model, or the mechanical rule.
+    package let source: Source
+    /// The lens ids this chapter shows; nil = all.
+    package let lenses: [String]?
     package var id: String { key }
 
-    package init(key: String, title: String, paths: [String], changedLines: Int, core: Bool) {
+    package enum Source: String, Sendable { case agent, ai, mechanical }
+
+    package init(
+        key: String,
+        title: String,
+        paths: [String],
+        changedLines: Int,
+        core: Bool,
+        source: Source = .mechanical,
+        lenses: [String]? = nil
+    ) {
+        self.source = source
+        self.lenses = lenses
         self.key = key
         self.title = title
         self.paths = paths
         self.changedLines = changedLines
         self.core = core
+    }
+}
+
+/// A chapter proposed by the agent or the overview model, before validation.
+package struct ReviewChapterSpec: Equatable, Sendable {
+    package let title: String
+    package let paths: [String]
+    package let core: Bool
+    package let lenses: [String]?
+
+    package init(title: String, paths: [String], core: Bool, lenses: [String]?) {
+        self.title = title
+        self.paths = paths
+        self.core = core
+        self.lenses = lenses
     }
 }
 
@@ -104,6 +135,55 @@ package enum ReviewChapters {
             ))
         }
         return chapters
+    }
+
+    /// The agent's chapters, else the AI's, else none; files no chosen chapter
+    /// names go into mechanical chapters appended after (all empty = mechanical).
+    package static func resolve(
+        _ files: [ReviewDiffFile], agent: [ReviewChapterSpec], ai: [ReviewChapterSpec]
+    ) -> [ReviewChapter] {
+        var lines: [String: Int] = [:]
+        // Collapsed (generated, lock) files cost no reading time, as in mechanical chapters.
+        for file in files where lines[file.path] == nil {
+            lines[file.path] = file.collapsedReason == nil ? file.additions + file.deletions : 0
+        }
+        func build(_ specs: [ReviewChapterSpec], source: ReviewChapter.Source, prefix: String, taken: inout Set<String>) -> [ReviewChapter] {
+            var out: [ReviewChapter] = []
+            for (index, spec) in specs.enumerated() {
+                var paths: [String] = []
+                for path in spec.paths where lines[path] != nil && !taken.contains(path) {
+                    taken.insert(path)
+                    paths.append(path)
+                }
+                guard !paths.isEmpty else { continue }
+                out.append(ReviewChapter(
+                    key: "\(prefix):\(index + 1)", title: spec.title,
+                    paths: paths.filter(isTest) + paths.filter { !isTest($0) },
+                    changedLines: paths.reduce(0) { $0 + (lines[$1] ?? 0) },
+                    core: spec.core, source: source, lenses: spec.lenses
+                ))
+            }
+            return out.filter(\.core) + out.filter { !$0.core }
+        }
+        var taken = Set<String>()
+        var chosen = build(agent, source: .agent, prefix: "agent", taken: &taken)
+        if chosen.isEmpty { chosen = build(ai, source: .ai, prefix: "ai", taken: &taken) }
+        if chosen.isEmpty { return mechanical(files) }
+        let rest = files.filter { !taken.contains($0.path) }
+        return chosen + (rest.isEmpty ? [] : mechanical(rest))
+    }
+
+    /// The lenses a chapter shows, in `all`'s order. An AI chapter shows what it
+    /// marks plus house_rules and every owner lens.
+    package static func lenses(for chapter: ReviewChapter, all: [ReviewLens]) -> [ReviewLens] {
+        guard chapter.source == .ai, let marked = chapter.lenses else { return all }
+        return all.filter { marked.contains($0.id) || $0.id == "house_rules" || !$0.builtin }
+    }
+
+    /// Reading time at 400 changed lines per hour, rounded up.
+    package static func estimateMinutes(changedLines: Int) -> Int {
+        guard changedLines > 0 else { return 0 }
+        return (changedLines * 60 + 399) / 400
     }
 
     package static func isTest(_ path: String) -> Bool {

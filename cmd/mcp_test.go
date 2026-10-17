@@ -212,7 +212,7 @@ func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {
 
 // Spec 2026-10-02 §5.2: `mcp --project N` (a folder installed before the
 // rename) serves the renamed workbench tools under their old names only;
-// `mcp --workbench N` the new names only. Sixteen workbench tools either way.
+// `mcp --workbench N` the new names only. Eighteen workbench tools either way.
 func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
 	resetMCPFlags(t)
 	legacyFlag := mcpCmd.Flags().Lookup(legacyWorkbenchFlag)
@@ -239,7 +239,7 @@ func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
 				workbenchTools++
 			}
 		}
-		assert.Equal(t, 16, workbenchTools, "legacy=%v", legacy)
+		assert.Equal(t, 18, workbenchTools, "legacy=%v", legacy)
 		assert.True(t, names["send_slack_message"] && names["get_writing_style"], "legacy=%v lists the Slack pair", legacy)
 		for newName, oldName := range tools.LegacyWorkbenchToolNames {
 			assert.Equal(t, legacy, names[oldName], "legacy=%v lists %s", legacy, oldName)
