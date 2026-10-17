@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -257,10 +258,8 @@ func appendHistory(body, line string) string {
 // identical.
 func appendToSection(body string, headingRe *regexp.Regexp, heading, line string) string {
 	trimmed := strings.TrimSuffix(line, "\n")
-	for _, existing := range strings.Split(body, "\n") {
-		if existing == trimmed {
-			return body
-		}
+	if slices.Contains(strings.Split(body, "\n"), trimmed) {
+		return body
 	}
 	loc := headingRe.FindStringIndex(body)
 	if loc == nil {
@@ -294,7 +293,7 @@ func SectionBullets(body, heading string) []string {
 	want := "## " + heading
 	var out []string
 	in := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## ") {
 			in = trimmed == want
@@ -303,8 +302,8 @@ func SectionBullets(body, heading string) []string {
 		if !in {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "- ") {
-			if b := strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")); b != "" {
+		if after, ok := strings.CutPrefix(trimmed, "- "); ok {
+			if b := strings.TrimSpace(after); b != "" {
 				out = append(out, b)
 			}
 		}
@@ -358,7 +357,7 @@ func newULID(now time.Time) string {
 	out := make([]byte, 26)
 	for i := range out {
 		var v byte
-		for j := 0; j < 5; j++ {
+		for j := range 5 {
 			bit := i*5 + j - 2 // index into the 128-bit array
 			v <<= 1
 			if bit >= 0 && raw[bit/8]>>(7-bit%8)&1 == 1 {

@@ -34,7 +34,7 @@ func TestWithTx_LockMetricsSiteNamesTheCaller(t *testing.T) {
 	require.NoError(t, err)
 	const site = "internal/kb.withTx <- internal/kb.TestWithTx_LockMetricsSiteNamesTheCaller"
 	var sites []string
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
 		var e lockmetrics.Event
 		require.NoError(t, json.Unmarshal([]byte(line), &e), line)
 		if e.Kind == lockmetrics.KindTx && e.Site == site {

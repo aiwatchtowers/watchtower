@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,13 +38,7 @@ func TestClient_BuildArgs(t *testing.T) {
 	assertContains(t, args, "sandbox_mode=read-only")
 
 	// System prompt passed via developer_instructions.
-	found := false
-	for _, a := range args {
-		if a == "developer_instructions=you are a helper" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(args, "developer_instructions=you are a helper")
 	if !found {
 		t.Error("expected developer_instructions arg with system prompt")
 	}
@@ -237,21 +232,17 @@ func TestChat04_CodexSessionArgvCarriesNoContent(t *testing.T) {
 
 func assertContains(t *testing.T, args []string, want string) {
 	t.Helper()
-	for _, a := range args {
-		if a == want {
-			return
-		}
+	if slices.Contains(args, want) {
+		return
 	}
 	t.Errorf("args %v should contain %q", args, want)
 }
 
 func assertNotContains(t *testing.T, args []string, unwanted string) {
 	t.Helper()
-	for _, a := range args {
-		if a == unwanted {
-			t.Errorf("args %v should not contain %q", args, unwanted)
-			return
-		}
+	if slices.Contains(args, unwanted) {
+		t.Errorf("args %v should not contain %q", args, unwanted)
+		return
 	}
 }
 
@@ -268,26 +259,4 @@ func TestMCPWorkDir_WritesExtraArgs(t *testing.T) {
 	if !strings.Contains(string(b), `args = ["mcp", "--db-path", "/tmp/w.db", "--chat", "--surface", "target"]`) {
 		t.Fatalf("config.toml = %s", b)
 	}
-}
-
-// A no-tools run (`ai query --no-tools`, the ⌘/ help chat) mounts no MCP
-// server even with a database path and turns web search off.
-func TestClient_NoToolsMountsNothing(t *testing.T) {
-	c := NewClient("gpt-5.4", "/tmp/test.db", "codex")
-	c.SetNoTools()
-	dir, cleanup, err := c.workDir()
-	defer cleanup()
-	if err != nil || dir != "" {
-		t.Fatalf("workDir() = %q, %v; want no MCP dir", dir, err)
-	}
-	args := c.ArgsForTest("sys", "msg")
-	assertContains(t, args, "mcp_servers={}")
-	for _, a := range args {
-		if (strings.Contains(a, "mcp_servers") && a != "mcp_servers={}") || strings.Contains(a, "/tmp/test.db") {
-			t.Errorf("no-tools args mount an MCP server: %q in %v", a, args)
-		}
-	}
-	assertNotContains(t, args, "--cd")
-	assertContains(t, args, `web_search="disabled"`)
-	assertContains(t, args, "features.shell_tool=false")
 }

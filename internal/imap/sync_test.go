@@ -239,7 +239,7 @@ func TestSyncCapsToMaxMessagesPerSyncAndAdvancesOnlyToLastProcessed(t *testing.T
 	// not about how many cycles a larger backlog takes to fully drain.
 	const total = 3
 	uids := make([]uint32, total)
-	for i := 0; i < total; i++ {
+	for i := range total {
 		uids[i] = ts.seedMessage(t, rawMessageSubject(fmt.Sprintf("Msg%d", i)))
 	}
 	database := db.OpenTestDB(t)

@@ -137,9 +137,9 @@ func TestJiraFeaturesEnable_UnknownNameIsRejected(t *testing.T) {
 // featureToggleRef.
 func TestJiraFeatureConfigKeys_MatchStructAndToggleRef(t *testing.T) {
 	tags := map[string]bool{}
-	typ := reflect.TypeOf(config.JiraFeatureToggles{})
-	for i := 0; i < typ.NumField(); i++ {
-		tags[typ.Field(i).Tag.Get("mapstructure")] = true
+	typ := reflect.TypeFor[config.JiraFeatureToggles]()
+	for field := range typ.Fields() {
+		tags[field.Tag.Get("mapstructure")] = true
 	}
 	require.Len(t, tags, typ.NumField(), "every field needs its own mapstructure tag")
 

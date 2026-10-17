@@ -623,7 +623,7 @@ func runTargetsPromoteSubItem(cmd *cobra.Command, args []string) error {
 		// Comma-separated input → JSON array. Empty input → empty array (clears tags).
 		parts := []string{}
 		if trimmed := strings.TrimSpace(targetsFlagPromoteTags); trimmed != "" {
-			for _, p := range strings.Split(targetsFlagPromoteTags, ",") {
+			for p := range strings.SplitSeq(targetsFlagPromoteTags, ",") {
 				p = strings.TrimSpace(p)
 				if p != "" {
 					parts = append(parts, p)

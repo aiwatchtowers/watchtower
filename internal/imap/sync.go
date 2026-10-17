@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"slices"
 	"sort"
 	"time"
 	"unicode/utf8"
@@ -67,7 +68,7 @@ func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error
 	if err != nil {
 		return 0, fmt.Errorf("listing account %d: %w", s.account.ID, err)
 	}
-	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+	slices.Sort(uids)
 
 	batch := s.appConfig.Imap.MaxMessagesPerSync
 	if batch <= 0 {
@@ -201,7 +202,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	// Ascending UID order so a cap below keeps the oldest, unprocessed tail
 	// for the next cycle — the watermark then only advances to what was
 	// actually stored (mirrors gmail.Syncer's oldest-first capping).
-	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+	slices.Sort(uids)
 	if len(uids) > maxMsgs {
 		s.logger.Printf("imap account %d: %d messages exceed cap %d, processing oldest %d; remainder next cycle",
 			s.account.ID, len(uids), maxMsgs, maxMsgs)

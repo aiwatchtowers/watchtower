@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/docs/guide"
 	"watchtower/internal/db"
 )
 
@@ -192,6 +193,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		"idea":          {"кэш*"},
 		"confluence":    {"канарейк*", "diagram"},
 		"project_doc":   {"роадмап", "rollout"},
+		"guide":         {"inbox"},
 	}
 	require.Len(t, perSource, len(SourceNames()), "the fixture covers every source")
 	var all []Hit
@@ -204,7 +206,19 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		require.NoError(t, err, src)
 		n := countDocs(t, d, src)
 		require.Positive(t, n, "seedAll indexed no %s document", src)
-		assert.Len(t, res.Hits, n, "every %s document is reachable", src)
+		if src == GuideSource {
+			// More pages than one search returns: search each page by a term of
+			// its own and require that page among the hits.
+			for _, p := range guide.Pages() {
+				res, err := Search(ctx, d, Request{Queries: []string{guideProbe(p)}, Sources: []string{src}, Limit: MaxLimit, Now: testNow()})
+				require.NoError(t, err, p.Path)
+				assert.Contains(t, hitRefs(res), "guide:"+p.Path, "guide page %s is reachable", p.Path)
+			}
+			n = len(guide.Pages())
+			assert.Equal(t, n, countDocs(t, d, src), "every guide page is indexed")
+		} else {
+			assert.Len(t, res.Hits, n, "every %s document is reachable", src)
+		}
 		all = append(all, res.Hits...)
 	}
 	broad, err := Search(ctx, d, Request{Queries: []string{"стейдж привет бюджет инвойс", "миграция OR кэш*"}, Limit: MaxLimit, Now: testNow()})
@@ -233,3 +247,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		assert.True(t, seen[src], "no hit from source %s", src)
 	}
 }
+
+// guideProbe is a query that reaches the page: its title as a phrase of
+// words (OR-fallback ranks the page's own title chunk first).
+func guideProbe(p guide.Page) string { return p.Title }

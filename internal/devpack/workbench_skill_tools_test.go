@@ -70,7 +70,7 @@ func skillToolsSectionNames(content string) map[string]bool {
 	entry := regexp.MustCompile("(?m)^- (`[a-z_]+`(?: / `[a-z_]+`)*) —")
 	named := map[string]bool{}
 	for _, m := range entry.FindAllStringSubmatch(section, -1) {
-		for _, tok := range strings.Split(m[1], " / ") {
+		for tok := range strings.SplitSeq(m[1], " / ") {
 			named[strings.Trim(tok, "`")] = true
 		}
 	}

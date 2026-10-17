@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,14 +111,14 @@ func TestSelectedCalendarsScopedToAccount(t *testing.T) {
 // calendarListFixture builds a minimal googleCalendarList JSON body from
 // (id, primary) pairs.
 func calendarListFixture(entries ...[2]any) string {
-	items := ""
+	var items strings.Builder
 	for i, e := range entries {
 		if i > 0 {
-			items += ","
+			items.WriteString(",")
 		}
-		items += fmt.Sprintf(`{"id":%q,"summary":%q,"primary":%v}`, e[0], e[0], e[1])
+		items.WriteString(fmt.Sprintf(`{"id":%q,"summary":%q,"primary":%v}`, e[0], e[0], e[1]))
 	}
-	return fmt.Sprintf(`{"items":[%s]}`, items)
+	return fmt.Sprintf(`{"items":[%s]}`, items.String())
 }
 
 // eventsFixture builds a minimal googleEventsList JSON body with a single

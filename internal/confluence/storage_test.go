@@ -58,7 +58,7 @@ func TestStorageCDATANoLeak(t *testing.T) {
 
 func TestStorageCap(t *testing.T) {
 	var b strings.Builder
-	for i := 0; i < 3000; i++ {
+	for i := range 3000 {
 		fmt.Fprintf(&b, "<p>paragraph %d with some words in it</p>", i)
 	}
 	secs, _, _, _ := StorageToSections(b.String(), 5000)

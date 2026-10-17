@@ -80,13 +80,11 @@ func TestConcurrentAccess(t *testing.T) {
 	p.SetMessageChannels(100)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			p.AddMessages(10)
 			p.IncMessageChannel()
-		}()
+		})
 	}
 	wg.Wait()
 

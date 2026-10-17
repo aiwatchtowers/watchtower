@@ -863,16 +863,16 @@ func TestNextLinkWithoutCursorIsAnError(t *testing.T) {
 func TestEXT01_FetcherReachesOnlyTheGETAPI(t *testing.T) {
 	// The API seam has exactly the two GET methods of *jira.ConfluenceAPI
 	// the fetcher uses; nothing else is reachable from the fetcher.
-	apiType := reflect.TypeOf((*API)(nil)).Elem()
+	apiType := reflect.TypeFor[API]()
 	var names []string
-	for i := 0; i < apiType.NumMethod(); i++ {
-		names = append(names, apiType.Method(i).Name)
+	for method := range apiType.Methods() {
+		names = append(names, method.Name)
 	}
 	assert.Equal(t, []string{"Download", "GetJSON"}, names)
-	fetcherType := reflect.TypeOf(&Fetcher{})
+	fetcherType := reflect.TypeFor[*Fetcher]()
 	var fetcherMethods []string
-	for i := 0; i < fetcherType.NumMethod(); i++ {
-		fetcherMethods = append(fetcherMethods, fetcherType.Method(i).Name)
+	for method := range fetcherType.Methods() {
+		fetcherMethods = append(fetcherMethods, method.Name)
 	}
 	assert.Equal(t, []string{"All", "Changed", "Comments", "Containers", "Download", "Fetch", "SetLogger", "Users"}, fetcherMethods,
 		"a new Fetcher method must be exercised by this guard")
@@ -934,10 +934,10 @@ func TestFetchUnsupportedKind(t *testing.T) {
 //     scoped to this task's contract, so EXT-01's guard does not silently
 //     depend on EXT-04 staying green for unrelated reasons.
 func TestEXT01_FetcherCannotReachPut(t *testing.T) {
-	apiType := reflect.TypeOf((*API)(nil)).Elem()
+	apiType := reflect.TypeFor[API]()
 	var names []string
-	for i := 0; i < apiType.NumMethod(); i++ {
-		names = append(names, apiType.Method(i).Name)
+	for method := range apiType.Methods() {
+		names = append(names, method.Name)
 	}
 	require.Equal(t, []string{"Download", "GetJSON"}, names,
 		"the fetcher's API seam must stay GET-only even though *jira.ConfluenceAPI now has PutJSON")

@@ -45,14 +45,14 @@ printf '{"type":"result","subtype":"success","result":"","session_id":"s1"}\n'
 `), 0o755))
 
 	config := filepath.Join(dir, "config.yaml")
-	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf(`active_workspace: test-ws
+	require.NoError(t, os.WriteFile(config, fmt.Appendf(nil, `active_workspace: test-ws
 workspaces:
   test-ws:
     slack_token: "xoxp-test-token"
 claude_path: %q
 ai:
   provider: claude
-`, stub)), 0o600))
+`, stub), 0o600))
 
 	dbPath := filepath.Join(dir, "wt.db")
 	database, err := db.Open(dbPath)

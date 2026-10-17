@@ -104,7 +104,7 @@ func DetectWithoutJira(d *db.DB, cfg *config.Config, since time.Time) ([]Without
 	linkedChannels := make(map[string]bool)
 	if len(channelIDs) > 0 {
 		placeholders := make([]string, len(channelIDs))
-		args := make([]interface{}, 0, len(channelIDs)+1)
+		args := make([]any, 0, len(channelIDs)+1)
 		for i, id := range channelIDs {
 			placeholders[i] = "?"
 			args = append(args, id)

@@ -38,7 +38,7 @@ func TestDisableBackgroundGit_AppendsAndGitSeesIt(t *testing.T) {
 		t.Fatalf("git config --list: %v", err)
 	}
 	got := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		scope, kv, _ := strings.Cut(line, "\t")
 		if scope != "command" {
 			continue

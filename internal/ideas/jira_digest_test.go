@@ -456,7 +456,7 @@ func seedJiraIssuesInOneTimestamp(t *testing.T, d *db.DB, accountID int64, n int
 		VALUES (?, ?, ?, 'WT', 0, 's', 'd', 'Open', 'new', 0, ?, ?, ?)`)
 	require.NoError(t, err)
 	defer stmt.Close()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		key := fmt.Sprintf("WT-%05d", i)
 		_, err = stmt.Exec(accountID, key, key, updatedAt, updatedAt, updatedAt)
 		require.NoError(t, err)
@@ -541,7 +541,7 @@ func TestIdeas01_JiraTieDrainStopsAtByteCeiling(t *testing.T) {
 	const seeded, wantRendered, wantUnrendered = 8, 5, 3
 	const fatSummary = 100000 // summaries are not excerpt-capped, so this sets the line size
 	u1 := base.Add(10 * time.Second).Format(time.RFC3339)
-	for i := 0; i < seeded; i++ {
+	for i := range seeded {
 		seedJiraIssueIdeas(t, d, acctID, fmt.Sprintf("WT-%03d", i), "WT",
 			strings.Repeat("s", fatSummary), "Open", "new", "d", u1)
 	}

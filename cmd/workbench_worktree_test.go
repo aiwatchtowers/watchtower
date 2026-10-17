@@ -144,13 +144,13 @@ func TestWorkbenchWorktree_ForgetUnregistersOnlyAndKeepsSharedExcludeLines(t *te
 	assert.Contains(t, out, `"forgot": true`)
 	joined := f.joinedCalls()
 	assert.Contains(t, joined, c.Cwd+" :: claude mcp remove --scope local watchtower-workbench")
-	for _, line := range strings.Split(joined, "\n") {
+	for line := range strings.SplitSeq(joined, "\n") {
 		assert.Contains(t, line, " :: claude ", "forget runs only claude calls")
 		assert.Contains(t, line, "mcp ", "forget runs only claude mcp calls")
 	}
 	assert.DirExists(t, c.Path, "forget never removes the worktree")
 	after := readExclude(t, f.folder)
-	for _, line := range strings.Split(strings.TrimSpace(before), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(before), "\n") {
 		assert.Contains(t, after, line, "a line the main folder needs survives")
 	}
 }

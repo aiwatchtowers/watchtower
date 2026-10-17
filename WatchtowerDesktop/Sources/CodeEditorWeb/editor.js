@@ -388,6 +388,13 @@
         }).filter(function (edit) { return models[edit.id]; });
       },
       focus: function () { editor.focus(); },
+      // ⌘/ from the menu: false when the editor text does not have the keyboard.
+      toggleComment: function () {
+        var action = editor.getAction("editor.action.commentLine");
+        if (!action || !editor.hasTextFocus()) { return false; }
+        action.run();
+        return true;
+      },
       setReadOnly: function (flag) { editor.updateOptions({ readOnly: !!flag }); },
       definitionAtCursor: function () {
         var position = editor.getPosition();

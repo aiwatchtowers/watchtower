@@ -33,7 +33,7 @@ func TestMigration00007CleansMalformedExternalRefs(t *testing.T) {
 		t.Fatalf("migrate to v6: %v", err)
 	}
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := raw.Exec(`INSERT INTO targets (text, period_start, period_end)
 			VALUES ('t', '2026-07-01', '2026-07-31')`); err != nil {
 			t.Fatal(err)

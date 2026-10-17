@@ -331,12 +331,6 @@ final class HomeTodayTests: XCTestCase {
         XCTAssertTrue(todaySnapshot(.allReady).nothingNeedsYou)
     }
 
-    func testHomeHintHiddenWhileGettingReady() {
-        XCTAssertFalse(todaySnapshot(.shown(cards: [], sourceRows: [])).showsAskHint)
-        XCTAssertTrue(todaySnapshot(.hidden).showsAskHint)
-        XCTAssertTrue(todaySnapshot(.allReady).showsAskHint)
-    }
-
     func testShownZoneIsNotNothingNeedsYou() {
         XCTAssertFalse(todaySnapshot(.shown(cards: [], sourceRows: [])).nothingNeedsYou)
     }

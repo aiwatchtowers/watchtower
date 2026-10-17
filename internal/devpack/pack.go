@@ -70,10 +70,10 @@ func HasMarker(content string) bool {
 		return false
 	}
 	rest := content[len("---\n"):]
-	end := strings.Index(rest, "\n---")
-	if end < 0 {
+	before, _, ok := strings.Cut(rest, "\n---")
+	if !ok {
 		return false
 	}
-	frontmatter := rest[:end]
+	frontmatter := before
 	return strings.Contains(frontmatter, MarkerKey+":")
 }

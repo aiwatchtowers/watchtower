@@ -410,11 +410,11 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 // Permalink format: https://...slack.com/archives/C.../p1234?thread_ts=1234567890.123456
 func extractThreadTSFromPermalink(permalink string) sql.NullString {
 	const marker = "thread_ts="
-	idx := strings.Index(permalink, marker)
-	if idx < 0 {
+	_, after, ok := strings.Cut(permalink, marker)
+	if !ok {
 		return sql.NullString{}
 	}
-	ts := permalink[idx+len(marker):]
+	ts := after
 	// Trim any trailing query params
 	if ampIdx := strings.IndexByte(ts, '&'); ampIdx >= 0 {
 		ts = ts[:ampIdx]

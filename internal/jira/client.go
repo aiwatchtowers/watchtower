@@ -337,7 +337,7 @@ func carryOverUnreturnedFields(newToken, old *OAuthToken) {
 }
 
 // get performs a GET request and decodes the JSON response into result.
-func (c *Client) get(ctx context.Context, path string, result interface{}) error {
+func (c *Client) get(ctx context.Context, path string, result any) error {
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return err
@@ -356,7 +356,7 @@ func (c *Client) get(ctx context.Context, path string, result interface{}) error
 }
 
 // getWithQuery performs a GET request with query parameters and decodes the JSON response.
-func (c *Client) getWithQuery(ctx context.Context, path string, params url.Values, result interface{}) error {
+func (c *Client) getWithQuery(ctx context.Context, path string, params url.Values, result any) error {
 	if len(params) > 0 {
 		path = path + "?" + params.Encode()
 	}

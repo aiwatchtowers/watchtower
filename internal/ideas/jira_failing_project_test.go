@@ -69,12 +69,12 @@ func TestIdeas01_JiraFloorHeldBackByFailingProject(t *testing.T) {
 
 	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
-	var all string
+	var all strings.Builder
 	for _, sd := range digests {
-		all += sd.TopicsJSON
+		all.WriteString(sd.TopicsJSON)
 	}
 	for _, k := range []string{"AAA-1", "AAA-2", "BBB-1"} {
-		assert.Contains(t, all, `"ref":"`+k+`"`, "%s is mined exactly because the floor waited", k)
+		assert.Contains(t, all.String(), `"ref":"`+k+`"`, "%s is mined exactly because the floor waited", k)
 	}
 	floor, err = d.IdeasJiraFloor(acctID)
 	require.NoError(t, err)
@@ -222,12 +222,12 @@ func TestIdeas01_JiraBackfillBoundIsOffsetSafe(t *testing.T) {
 	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	require.NotEmpty(t, digests)
-	var mined string
+	var mined strings.Builder
 	for _, sd := range digests {
-		mined += sd.TopicsJSON
+		mined.WriteString(sd.TopicsJSON)
 	}
-	assert.Contains(t, mined, `"ref":"WT-1"`, "a +0530 issue inside the window is mined")
-	assert.Contains(t, mined, `"ref":"WT-2"`)
+	assert.Contains(t, mined.String(), `"ref":"WT-1"`, "a +0530 issue inside the window is mined")
+	assert.Contains(t, mined.String(), `"ref":"WT-2"`)
 }
 
 // A project past the cap logs "no longer holding the floor" once a day, not
@@ -239,7 +239,7 @@ func TestIdeas01_JiraAbandonedProjectLoggedOncePerDay(t *testing.T) {
 	selectJiraProject(t, d, acctID, 2, "BBB", now.Add(-jiraLaggingProjectMaxAge-time.Hour).Format(time.RFC3339), "sync: 500", true)
 	var buf bytes.Buffer
 	p := New(d, testCfg(), &fakeGen{reply: jiraTopicsFor()}, log.New(&buf, "", 0))
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, ok, err := p.failingJiraProjectClamp(acctID, now)
 		require.NoError(t, err)
 		assert.False(t, ok)

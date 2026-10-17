@@ -53,6 +53,8 @@ done
 
 Show the list to the user with a one-line "does the guide need an update?" for each PR (what changed on screen, which page would cover it). For the ones the user marks, propose guide edits following `docs/guide/WRITING.md` and apply them in a separate commit before the version bump. This step never blocks the release: if the user says skip, or the list is empty, continue.
 
+Then run `go test ./docs/guide/ ./internal/kb/ ./internal/chat/` (guide links, catalogue, page size, the guide knowledge source, the prompt golden). If the guide's catalogue changed (a page added, renamed or re-titled), regenerate the chat prompt golden with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update` and commit it with the guide edits. Any other failure halts the release.
+
 ## Step 4: Update Version in Code
 
 Update the `Version` variable in `cmd/version.go` to the new version.

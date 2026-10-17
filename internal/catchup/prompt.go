@@ -135,7 +135,7 @@ func renderSection(b *strings.Builder, header string, items []db.CatchupItem, bo
 			b.WriteString(" — " + meta)
 		}
 		b.WriteString("\n")
-		for _, line := range strings.Split(truncateRunes(it.Body, bodyCap), "\n") {
+		for line := range strings.SplitSeq(truncateRunes(it.Body, bodyCap), "\n") {
 			if strings.TrimSpace(line) == "" {
 				continue
 			}

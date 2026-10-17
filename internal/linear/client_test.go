@@ -106,11 +106,9 @@ func TestLinear02_ConcurrentRefreshSingleFlight(t *testing.T) {
 	})
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			assert.NoError(t, c.Do(context.Background(), `query { a }`, nil, &struct{}{}))
-		}()
+		})
 	}
 	wg.Wait()
 	assert.Equal(t, int32(1), refreshes.Load())
@@ -188,11 +186,9 @@ func TestLinear02_TwoClientsOneStoreSingleRefresh(t *testing.T) {
 			var wg sync.WaitGroup
 			for _, c := range clients {
 				for range 4 {
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
+					wg.Go(func() {
 						assert.NoError(t, c.Do(context.Background(), `query { a }`, nil, &struct{}{}))
-					}()
+					})
 				}
 			}
 			wg.Wait()
