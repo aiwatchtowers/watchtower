@@ -43,8 +43,12 @@ package enum FeatureReadiness {
         if let id = feature.featureID, inputs.disabledFeatureIDs.contains(id) { return .off }
         if !feature.source.isConnected(in: inputs.connected) { return .needsSource(feature.source) }
         if inputs.contentPresent.contains(feature) { return .ready }
-        // Jira with no board picked never syncs: say so instead of an ETA (#572).
-        if feature.source == .jira, !inputs.jiraBoardsSelected { return .needsSource(.jiraBoards) }
+        // Jira with no board picked never syncs: say so instead of an ETA
+        // (#572) — for Jira's features, and for Jira-or-mail ones while Jira
+        // is their only connected source.
+        if !inputs.jiraBoardsSelected, waitsOnJiraBoards(feature, inputs.connected) {
+            return .needsSource(.jiraBoards)
+        }
 
         let syncing = inputs.syncProgress?.isSyncing(now: inputs.now) == true
         let syncDetail = syncing ? inputs.syncProgress?.summary : nil
@@ -63,6 +67,14 @@ package enum FeatureReadiness {
             return .waitingForSync(detail: syncDetail)
         }
         return .scheduled(eta(of: feature, inputs, syncing: syncing))
+    }
+
+    private static func waitsOnJiraBoards(_ feature: ReadinessFeature, _ connected: ConnectedSources) -> Bool {
+        switch feature.source {
+        case .jira: true
+        case .jiraOrMail: !connected.mail
+        default: false
+        }
     }
 
     private static func eta(of feature: ReadinessFeature, _ inputs: ReadinessInputs, syncing: Bool) -> Eta {

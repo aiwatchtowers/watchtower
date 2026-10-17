@@ -13,6 +13,16 @@ package enum JiraBoardPicker {
         return boards.filter { ids.contains(Int($0.accountID)) }
     }
 
+    /// The sites the step fetches and lists: the enabled sites a connect
+    /// added (not in `before`, the ids read before it), else every enabled
+    /// site — a re-consent of a known site adds none.
+    package static func sites(_ accounts: [JiraAccount], before: Set<Int>?) -> [JiraAccount] {
+        let enabled = accounts.filter(\.enabled)
+        guard let before else { return enabled }
+        let added = enabled.filter { !before.contains($0.id) }
+        return added.isEmpty ? enabled : added
+    }
+
     /// The `rowID`s selected now: the picker's starting choice.
     package static func selected(_ boards: [JiraBoard]) -> Set<String> {
         Set(boards.filter(\.isSelected).map(\.rowID))

@@ -316,8 +316,12 @@ final class FeatureReadinessTests: XCTestCase {
         input.jiraBoardsSelected = false
         XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
         XCTAssertEqual(FeatureReadiness.line(.needsSource(.jiraBoards)), "Choose Jira boards to get this")
-        // Jira-or-mail features don't wait on boards.
-        XCTAssertNotEqual(evaluate(.streamDigests, input), .needsSource(.jiraBoards))
+        // Jira is Stream Digests' only source: it waits on boards too.
+        XCTAssertEqual(evaluate(.streamDigests, input), .needsSource(.jiraBoards))
+        // With mail it has something to read.
+        input.connected.mail = true
+        XCTAssertEqual(evaluate(.streamDigests, input), .scheduled(.nextCycle(minutes: 15)))
+        input.connected.mail = false
 
         input.jiraBoardsSelected = true
         XCTAssertEqual(evaluate(.jira, input), .scheduled(.nextCycle(minutes: 15)))

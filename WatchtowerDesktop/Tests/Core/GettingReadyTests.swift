@@ -251,4 +251,20 @@ final class GettingReadyTests: XCTestCase {
             XCTAssertEqual(card.isTerminal, terminal, "\(String(describing: readiness))")
         }
     }
+
+    // MARK: - Jira boards (#572)
+
+    /// Slack + Jira after a Skip on the board step: every Slack card done,
+    /// Jira waits for boards. The zone stays open on a Jira card instead of
+    /// "Everything's ready" with the prompt gone for good.
+    func testJiraBoardsGapIsAWaitingCardThatKeepsTheZoneOpen() {
+        let first = step(readinessMap([.digests: .preparing(detail: nil), .jira: .needsSource(.jiraBoards)]))
+        let second = step(
+            readinessMap([.digests: .ready, .jira: .needsSource(.jiraBoards)]),
+            memory: first.memory, sawUnready: first.sawUnready)
+        XCTAssertEqual(cards(second.zone).map(\.feature), [.digests, .jira])
+        XCTAssertEqual(sourceRows(second.zone), [])
+        XCTAssertNil(second.memory.completedAt)
+        XCTAssertFalse(try XCTUnwrap(cards(second.zone).last).isTerminal)
+    }
 }

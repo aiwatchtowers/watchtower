@@ -22,6 +22,10 @@ final class JiraAccountsViewModel {
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
     @ObservationIgnored private(set) var daemonRestartTask: Task<Void, Never>?
+    /// The policy a connect held for its board step (`addAccountHoldingRestart`).
+    @ObservationIgnored private var heldRestart: DaemonRestartPolicy?
+    /// The last browser flow ended in a user Cancel (SIGTERM/SIGKILL).
+    @ObservationIgnored private var lastAuthFlowCancelled = false
 
     private let dbPool: DatabasePool
     private let daemon: any DaemonRestarting
@@ -93,11 +97,25 @@ final class JiraAccountsViewModel {
         await runAuthFlow(args: Self.addArgs(site: site), failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
-    /// The add sheet's board step changed which boards sync: re-wire the
-    /// daemon so its next cycle syncs them now (unless onboarding defers it —
-    /// the daemon starts at the finish then).
-    func boardsChosen(daemonPolicy: DaemonRestartPolicy) {
-        daemonRestartTask = daemonPolicy.apply(using: daemon)
+    /// The add sheet's connect (#572): `addAccount` with the daemon restart
+    /// held while the board step is up, so the new site and its chosen
+    /// boards are wired in by one restart (`finishBoardStep`), not two
+    /// overlapping ones. Returns whether the connect succeeded.
+    func addAccountHoldingRestart(site: String = "", daemonPolicy: DaemonRestartPolicy) async -> Bool {
+        await addAccount(site: site, daemonPolicy: .deferred)
+        guard error == nil, !lastAuthFlowCancelled else { return false }
+        heldRestart = daemonPolicy
+        return true
+    }
+
+    /// The board step closed (Done, Skip or the sheet went away): applies the
+    /// connect's held policy once — a restart under `.restart`, nothing under
+    /// onboarding's `.deferred` (the daemon starts at the finish). A second
+    /// call does nothing.
+    func finishBoardStep() {
+        guard let policy = heldRestart else { return }
+        heldRestart = nil
+        daemonRestartTask = policy.apply(using: daemon)
     }
 
     // MARK: - Re-login
@@ -153,6 +171,7 @@ final class JiraAccountsViewModel {
     }
 
     func cancelConnect() {
+        lastAuthFlowCancelled = true
         if let process = authProcess, process.isRunning {
             process.terminate()
         }
@@ -227,6 +246,7 @@ final class JiraAccountsViewModel {
 
         isConnecting = true
         error = nil
+        lastAuthFlowCancelled = false
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -275,6 +295,7 @@ final class JiraAccountsViewModel {
         failurePrefix: String,
         daemonPolicy: DaemonRestartPolicy
     ) {
+        if result.exitCode == 15 || result.exitCode == 9 { lastAuthFlowCancelled = true }
         if result.exitCode == 0 {
             error = nil
             refresh()

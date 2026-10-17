@@ -101,17 +101,19 @@ package enum ReadinessQueries {
         ) ?? false
     }
 
-    /// Whether a site that is still connected (not removed) has a selected
-    /// board — the daemon's Jira sync skips an account without one
-    /// (`internal/jira/sync.go`). A database without the tables reads true:
-    /// nothing to ask the owner to pick.
+    /// Whether an enabled, not removed site has a selected board — the
+    /// daemon's Jira sync skips an account without one
+    /// (`internal/jira/sync.go`). v1 is install-wide while Go skips per
+    /// account: one site with a picked board counts for all, so a second site
+    /// added with none still reads true. A database without the tables reads
+    /// true: nothing to ask the owner to pick.
     package static func jiraBoardsSelected(_ db: Database) throws -> Bool {
         let tables = try existingTables(db, among: ["jira_boards", "jira_accounts"])
         guard tables.count == 2 else { return true }
         return try Bool.fetchOne(db, sql: """
             SELECT EXISTS(
                 SELECT 1 FROM jira_boards b JOIN jira_accounts a ON a.id = b.account_id
-                WHERE b.is_selected = 1 AND a.status != 'removed'
+                WHERE b.is_selected = 1 AND a.status != 'removed' AND a.enabled = 1
             )
             """) ?? false
     }

@@ -22,6 +22,16 @@ final class JiraBoardPickerTests: XCTestCase {
         XCTAssertEqual(listed.map(\.rowID), ["1:10"])
     }
 
+    func testSitesAreTheAddedOnesElseEveryEnabledSite() {
+        let accounts = [account(1), account(2), account(3, enabled: false), account(4)]
+        XCTAssertEqual(JiraBoardPicker.sites(accounts, before: [1, 2]).map(\.id), [4])
+        // A re-consent of a known site adds none: every enabled site.
+        XCTAssertEqual(JiraBoardPicker.sites(accounts, before: [1, 2, 3, 4]).map(\.id), [1, 2, 4])
+        // A disabled new site is not listed.
+        XCTAssertEqual(JiraBoardPicker.sites(accounts, before: [1, 2, 4]).map(\.id), [1, 2, 4])
+        XCTAssertEqual(JiraBoardPicker.sites(accounts, before: nil).map(\.id), [1, 2, 4])
+    }
+
     func testStartingChoiceIsTheCurrentSelection() {
         let boards = [board(1, 10, selected: true), board(1, 11), board(2, 10, selected: true)]
         XCTAssertEqual(JiraBoardPicker.selected(boards), ["1:10", "2:10"])

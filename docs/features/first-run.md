@@ -33,8 +33,12 @@ until the next morning's hour.
      (`internal/jira/sync.go`), so an ETA would never come true (#572). The
      line is "Choose Jira boards to get this" (`ReadinessSource.actionTitle`),
      and the action (`performEmptyStateAction(.connect(.jiraBoards))`, Home's
-     source row too) opens the **Boards** tab, not Settings. Stream Digests
-     (`jiraOrMail`) does not wait on boards;
+     Getting ready card) opens the **Boards** tab, not Settings. Stream
+     Digests (`jiraOrMail`) waits on boards only while mail is not connected.
+     Only enabled, not removed sites count, and v1 is install-wide (one
+     site with a picked board counts for all; Go skips per account). On Home
+     it is a waiting card, never a source row, so it keeps the Getting ready
+     zone open (`GettingReadyPolicy.entries`);
   4. `preparing(detail)` — the newest `pipeline_runs` row is `running`, the
      daemon is running and `started_at` is under `preparingMaxAge` (2 h,
      `FeatureReadiness.swift:9`). An older `running` row is a dead process's

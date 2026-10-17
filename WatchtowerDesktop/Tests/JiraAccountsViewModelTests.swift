@@ -182,4 +182,39 @@ extension JiraAccountsViewModelTests {
         XCTAssertNil(vm.daemonRestartTask)
         XCTAssertEqual(daemon.restartCount, 0)
     }
+
+    // MARK: - Board step (#572)
+
+    func testBoardStepRestartsOnceAfterTheStepUnderRestart() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .restart)
+        XCTAssertTrue(connected)
+        XCTAssertNil(vm.daemonRestartTask, "no restart while the board step is up")
+        XCTAssertEqual(daemon.restartCount, 0)
+        vm.finishBoardStep()
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+        // Done after Skip, or a second disappear: still one restart.
+        vm.finishBoardStep()
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
+    func testBoardStepNeverRestartsUnderDeferred() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .deferred)
+        XCTAssertTrue(connected)
+        vm.finishBoardStep()
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testFailedConnectHoldsNoRestart() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/false")
+        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .restart)
+        XCTAssertFalse(connected)
+        vm.finishBoardStep()
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
 }

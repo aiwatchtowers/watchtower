@@ -192,6 +192,9 @@ final class ReadinessQueriesTests: XCTestCase {
         XCTAssertFalse(try queue.read(ReadinessQueries.jiraBoardsSelected))
         try queue.write { db in try db.execute(sql: "UPDATE jira_boards SET is_selected = 1 WHERE account_id = 10") }
         XCTAssertTrue(try queue.read(ReadinessQueries.jiraBoardsSelected))
+        // A paused (disabled) site syncs nothing either.
+        try queue.write { db in try db.execute(sql: "UPDATE jira_accounts SET enabled = 0 WHERE id = 10") }
+        XCTAssertFalse(try queue.read(ReadinessQueries.jiraBoardsSelected))
     }
 
     func testJiraBoardsSelectedWithoutTheTableReadsTrue() throws {
