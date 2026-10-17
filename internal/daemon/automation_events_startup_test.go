@@ -66,7 +66,7 @@ func TestStartupCalendarSync_IsItsOwnEventCycle(t *testing.T) {
 	require.True(t, ok, "the pass ends with its own Flush: %v", calls)
 	at, err := time.Parse(time.RFC3339Nano, cycle)
 	require.NoError(t, err)
-	assert.False(t, at.Before(before.Truncate(time.Second)), "cycle id %q is the pass's start", cycle)
+	assert.False(t, at.Before(before), "cycle id %q is the pass's start", cycle)
 	require.Len(t, ev.published, 1)
 	assert.Equal(t, "created", ev.published[0].Fields["change"])
 	assert.Nil(t, d.cycleEvents, "the pass ends its events")

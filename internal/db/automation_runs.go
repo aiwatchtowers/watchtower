@@ -385,7 +385,8 @@ func (db *DB) MergeQueuedAutomationRunEvents(runID int64, cycleID string, events
 	return true, nil
 }
 
-// decodeEventPayload decodes an event run's event_json; ” is the empty payload.
+// decodeEventPayload decodes an event run's event_json; an empty string is
+// the empty payload.
 func decodeEventPayload(eventJSON string) (AutomationEventPayload, error) {
 	var p AutomationEventPayload
 	if eventJSON == "" {

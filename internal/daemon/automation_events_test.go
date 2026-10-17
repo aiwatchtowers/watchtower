@@ -401,10 +401,10 @@ func TestRunSync_FlushOncePerCycleAfterSources(t *testing.T) {
 		"wants:gmail.new_messages", "wants:jira.issue_changed", "wants:confluence.page_changed"}, calls[:6])
 	cycle, ok := strings.CutPrefix(calls[6], "flush:")
 	require.True(t, ok, "the last call flushes: %v", calls)
-	at, err := time.Parse(time.RFC3339, cycle)
+	at, err := time.Parse(time.RFC3339Nano, cycle)
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(cycle, "Z"), "cycle id %q is UTC", cycle)
-	assert.False(t, at.Before(before.Truncate(time.Second)) || at.After(after), "cycle id %q is the cycle's sync start", cycle)
+	assert.False(t, at.Before(before) || at.After(after), "cycle id %q is the cycle's sync start", cycle)
 
 	// Statically: the flush follows the last observed source and precedes
 	// the pipelines.
@@ -412,6 +412,18 @@ func TestRunSync_FlushOncePerCycleAfterSources(t *testing.T) {
 	assert.Greater(t, order["flushAutomationEvents"], order["phaseExternalSync"])
 	assert.Less(t, order["flushAutomationEvents"], order["phaseAgentAnalytics"])
 	assert.Less(t, order["flushAutomationEvents"], order["phaseChannelDigests"])
+}
+
+func TestFlushAutomationEvents_CycleIDsWithinOneSecondDiffer(t *testing.T) {
+	ev := newRecordingEvents()
+	d, _, _ := newEventsTestDaemon(t, nil)
+	d.SetAutomationEvents(ev)
+	at := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	for _, start := range []time.Time{at, at.Add(250 * time.Millisecond)} {
+		d.cycleEvents = d.beginAutomationEvents()
+		d.flushAutomationEvents(start)
+	}
+	assert.Equal(t, []string{"begin", "flush:2026-10-14T12:00:00Z", "begin", "flush:2026-10-14T12:00:00.25Z"}, ev.callList())
 }
 
 func TestRunSync_FlushRunsOnCancelledContext(t *testing.T) {
@@ -457,7 +469,7 @@ func TestRunSync_RealBusQueuesOneRun(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, runs, 1, "two matching events, one run per automation per cycle")
 	assert.Equal(t, db.TriggerEvent, runs[0].Trigger)
-	_, err = time.Parse(time.RFC3339, runs[0].EventCycle)
+	_, err = time.Parse(time.RFC3339Nano, runs[0].EventCycle)
 	assert.NoError(t, err, "event_cycle %q", runs[0].EventCycle)
 	assert.Contains(t, runs[0].EventJSON, `"count":2`)
 	assert.Equal(t, 1, wakes)

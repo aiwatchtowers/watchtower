@@ -74,7 +74,8 @@ func (d *Daemon) observePhase(ctx context.Context, src automations.EventSource, 
 }
 
 // flushAutomationEvents queues the cycle's event runs, cycle id = syncStart
-// in RFC 3339 UTC, and ends the cycle's events. The bus logs each
+// in RFC 3339 UTC with nanoseconds (two cycles in one second never share an
+// id), and ends the cycle's events. The bus logs each
 // automation's error itself; this logs one summary line.
 func (d *Daemon) flushAutomationEvents(syncStart time.Time) {
 	ev := d.cycleEvents
@@ -82,7 +83,7 @@ func (d *Daemon) flushAutomationEvents(syncStart time.Time) {
 	if ev == nil {
 		return
 	}
-	cycleID := syncStart.UTC().Format(time.RFC3339)
+	cycleID := syncStart.UTC().Format(time.RFC3339Nano)
 	rep, err := ev.Flush(cycleID)
 	if err == nil && rep.Queued+rep.Merged+rep.Coalesced == 0 {
 		return
