@@ -76,7 +76,7 @@ type Catalog interface {
 // caller must not pass nil when it failed to load the owner's switches.
 type Policy struct {
 	Catalog Catalog
-	// Disabled holds the server tokens switched off in Settings → AI.
+	// Disabled holds the server tokens switched off in Settings → Profile → claude.ai tools.
 	Disabled map[string]bool
 	// PathCheck returns nil only for a path inside the session's publish dir.
 	PathCheck  func(path string) error
@@ -109,7 +109,7 @@ func (p Policy) Decide(c Call) Decision {
 	}
 	name := displayName(c.Server)
 	if p.Disabled[server] {
-		return deny("%s is switched off in Settings → AI", name)
+		return deny("%s is switched off in Settings → Profile → claude.ai tools", name)
 	}
 	if p.Catalog == nil || !p.Catalog.Connector(server) {
 		return deny("%s is not one of this account's claude.ai connectors", c.Server)

@@ -19,7 +19,7 @@ import (
 // The claude.ai connector catalog (#737, spec D2): what the warm session's
 // mcp_status says about the owner's account connectors, kept live for the
 // gate's policy and mirrored into a 0600 sidecar file the Desktop reads for
-// Settings → AI → claude.ai connectors.
+// Settings → Profile → claude.ai tools.
 //
 // Sidecar file: <dir of the db path>/claude-ai-connectors.json, written by
 // temp file + rename (a reader sees the old file or the new one), pinned by

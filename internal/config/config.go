@@ -51,7 +51,7 @@ type AIConfig struct {
 	ClaudeAI ClaudeAIConfig `mapstructure:"claude_ai"`
 }
 
-// ClaudeAIConfig is Settings → AI → claude.ai connectors. Everything is on
+// ClaudeAIConfig is Settings → Profile → claude.ai tools. Everything is on
 // by default (ask #236); the owner narrows it. A change takes effect when
 // the next chat session starts.
 type ClaudeAIConfig struct {

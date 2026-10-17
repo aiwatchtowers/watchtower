@@ -199,7 +199,7 @@ var decideCases = []decideCase{
 
 	// Rule 4: switched off.
 	{name: "disabled server", call: Call{Tool: "mcp__claude_ai_Slack__search", Server: "claude.ai Slack", Input: json.RawMessage(`{}`)}, want: Deny,
-		reason: "Slack is switched off in Settings → AI"},
+		reason: "Slack is switched off in Settings → Profile → claude.ai tools"},
 
 	// Rule 5: authentication tools.
 	{name: "authenticate", call: gmail("authenticate"), want: Deny, reason: "connect Gmail on claude.ai first"},

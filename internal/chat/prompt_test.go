@@ -450,7 +450,7 @@ func TestPrompt_ClaudeAISectionPinsRules(t *testing.T) {
 func TestPrompt_ClaudeAIConnectorsOff(t *testing.T) {
 	got := claudeAIPrompt(t, ClaudeAIPrompt{Kind: ClaudeAIPromptOn, PublishDir: testPublishDir})
 	assert.Contains(t, got, "Artifact tool")
-	assert.Contains(t, got, "claude.ai connectors are turned off in Watchtower's Settings → AI")
+	assert.Contains(t, got, "claude.ai connectors are turned off in Watchtower's Settings → Profile → claude.ai tools")
 	assert.NotContains(t, got, "use the connectors the owner connected")
 	assert.NotContains(t, got, "Connect on claude.ai")
 }
