@@ -133,7 +133,7 @@ const execHelper = "$__automationExec"
 // wrapper prefix sits on the script's first line).
 func bigIntRefusal(prog *ast.Program) error {
 	var refusal *PreParseError
-	walkAST(reflect.ValueOf(prog), func(node any) bool {
+	walkAST(reflect.ValueOf(prog), func(node any) walkStep {
 		switch n := node.(type) {
 		case *ast.NumberLiteral:
 			if _, isBig := n.Value.(*big.Int); isBig {
@@ -144,7 +144,10 @@ func bigIntRefusal(prog *ast.Program) error {
 				refusal = &PreParseError{Word: execHelper, Line: programLine(prog, n.Idx), Reserved: true}
 			}
 		}
-		return refusal == nil
+		if refusal != nil {
+			return walkStop
+		}
+		return walkInto
 	})
 	if refusal == nil {
 		return nil
@@ -160,37 +163,57 @@ func programLine(prog *ast.Program, idx file.Idx) int {
 }
 
 // rewriteExecCalls turns `x.exec(a…)` and `x["exec"](a…)` into
-// `$__automationExec(x, a…)`. An aliased exec (`var f = re.exec; f.call(re,
-// s)`) or an optional call (`re.exec?.(s)`) is not rewritten.
+// `$__automationExec(x, a…)`. Not rewritten: `super.exec(…)` (a RegExp
+// subclass calling its parent), anything inside an optional chain
+// (`a?.b.exec(x)` must stay undefined on a nullish receiver), and an
+// aliased exec (`var f = re.exec; f.call(re, s)`).
 func rewriteExecCalls(prog *ast.Program) {
-	walkAST(reflect.ValueOf(prog), func(node any) bool {
-		call, ok := node.(*ast.CallExpression)
-		if !ok {
-			return true
-		}
-		var target ast.Expression
-		switch c := call.Callee.(type) {
-		case *ast.DotExpression:
-			if c.Identifier.Name == "exec" {
-				target = c.Left
-			}
-		case *ast.BracketExpression:
-			if lit, ok := c.Member.(*ast.StringLiteral); ok && lit.Value == "exec" {
-				target = c.Left
+	walkAST(reflect.ValueOf(prog), func(node any) walkStep {
+		switch n := node.(type) {
+		case *ast.OptionalChain:
+			return walkSkip
+		case *ast.CallExpression:
+			if target := execCallTarget(n.Callee); target != nil {
+				n.Callee = &ast.Identifier{Name: execHelper, Idx: n.Callee.Idx0()}
+				n.ArgumentList = append([]ast.Expression{target}, n.ArgumentList...)
 			}
 		}
-		if target != nil {
-			call.Callee = &ast.Identifier{Name: execHelper, Idx: call.Callee.Idx0()}
-			call.ArgumentList = append([]ast.Expression{target}, call.ArgumentList...)
-		}
-		return true
+		return walkInto
 	})
 }
 
+// execCallTarget is x of a callee `x.exec` or `x["exec"]` (nil for super).
+func execCallTarget(callee ast.Expression) ast.Expression {
+	var target ast.Expression
+	switch c := callee.(type) {
+	case *ast.DotExpression:
+		if c.Identifier.Name == "exec" {
+			target = c.Left
+		}
+	case *ast.BracketExpression:
+		if lit, ok := c.Member.(*ast.StringLiteral); ok && lit.Value == "exec" {
+			target = c.Left
+		}
+	}
+	if _, super := target.(*ast.SuperExpression); super {
+		return nil
+	}
+	return target
+}
+
+// walkStep is what walkAST does after visiting a node.
+type walkStep int
+
+const (
+	walkInto walkStep = iota // go on into the node's children
+	walkSkip                 // skip the node's children
+	walkStop                 // end the walk
+)
+
 // walkAST calls visit on every node of an AST value (pointers, interfaces,
-// structs, slices), parents before children, until visit returns false; it
+// structs, slices), parents before children, as visit's walkStep says; it
 // reports whether the walk ran to the end.
-func walkAST(v reflect.Value, visit func(node any) bool) bool {
+func walkAST(v reflect.Value, visit func(node any) walkStep) bool {
 	switch v.Kind() {
 	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
@@ -199,8 +222,14 @@ func walkAST(v reflect.Value, visit func(node any) bool) bool {
 		if _, ok := v.Interface().(*file.File); ok {
 			return true // source text and line tables, no nodes
 		}
-		if v.Kind() == reflect.Pointer && !visit(v.Interface()) {
-			return false
+		if v.Kind() == reflect.Pointer {
+			switch visit(v.Interface()) {
+			case walkStop:
+				return false
+			case walkSkip:
+				return true
+			case walkInto:
+			}
 		}
 		return walkAST(v.Elem(), visit)
 	case reflect.Struct:
@@ -353,11 +382,16 @@ func (s *Sandbox) outcome(_ goja.Value, runErr error) (any, error) {
 // The heap is the whole daemon's, so the baseline moves up to the current
 // live bytes whenever the run resumes from a wait or another run starts or
 // ends, and nothing is sampled while the run waits: another run's growth is
-// not charged to this one. The reading is the live heap as of the last GC
+// not charged to this one. The baseline never rises more than RunHeapBudget
+// above where it stood at the run's start, so however many waits and
+// sibling runs come and go, a run is stopped once the live heap passes its
+// start + 2 × RunHeapBudget. The reading is the live heap as of the last GC
 // (/gc/heap/live:bytes, garbage never counts), sampled every
 // heapPollInterval, so a run is stopped at the first GC after it passed the
-// budget: the overshoot is what it allocated since that GC (at most about
-// the heap's size then, GOGC=100) plus one native step still running.
+// limit: on top of the limit it may hold what it allocated since the
+// previous GC (with GOGC=100 up to about the live heap then — a string
+// doubled in a loop reaches about twice the limit) plus one native step
+// still running.
 var RunHeapBudget uint64 = 1 << 30
 
 // heapPollInterval is how often watchHeap samples the heap.
@@ -385,6 +419,7 @@ func liveHeap() uint64 {
 func (s *Sandbox) watchHeap(done <-chan struct{}) {
 	m := s.env.Meter
 	base, events, paused := liveHeap(), runEvents.Load(), false
+	ceiling := base + RunHeapBudget // the baseline never rises above this
 	tick := time.NewTicker(heapPollInterval)
 	defer tick.Stop()
 	for {
@@ -399,7 +434,7 @@ func (s *Sandbox) watchHeap(done <-chan struct{}) {
 		}
 		live := liveHeap()
 		if e := runEvents.Load(); paused || e != events {
-			paused, events, base = false, e, max(base, live)
+			paused, events, base = false, e, min(max(base, live), ceiling)
 		}
 		if live > base+RunHeapBudget {
 			s.abort(errTooMuchMemory())

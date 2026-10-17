@@ -1,11 +1,13 @@
 package automations
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -382,8 +384,10 @@ func TestSandbox_HeapBudgetSparesSiblingRuns(t *testing.T) {
 // heldWhileWaiting keeps what the waiting module allocated alive.
 var heldWhileWaiting []byte
 
-// A waiting run is never stopped for memory: nothing is sampled while its
-// meter is paused, and its baseline moves up when it resumes.
+// A waiting run is not charged for what others allocate meanwhile: nothing
+// is sampled while its meter is paused, and its baseline moves up when it
+// resumes (by at most one budget in all), so its own later growth is
+// measured from there.
 func TestSandbox_HeapBudgetSparesAWaitingRun(t *testing.T) {
 	lowHeapBudget(t, 32<<20)
 	t.Cleanup(func() { heldWhileWaiting = nil })
@@ -391,7 +395,7 @@ func TestSandbox_HeapBudgetSparesAWaitingRun(t *testing.T) {
 		"wait": func(env *Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
 			env.Meter.PauseActive()
 			defer env.Meter.ResumeActive()
-			heldWhileWaiting = make([]byte, 128<<20) // someone else's memory, grown while this run waits
+			heldWhileWaiting = make([]byte, 24<<20) // someone else's memory, grown while this run waits
 			for i := range heldWhileWaiting {
 				heldWhileWaiting[i] = 1
 			}
@@ -400,7 +404,8 @@ func TestSandbox_HeapBudgetSparesAWaitingRun(t *testing.T) {
 			return nil, nil
 		},
 	}}
-	_, err := runScript(t, `wait(); var end = Date.now() + 200; while (Date.now() < end) {} return 1`,
+	_, err := runScript(t, `wait(); var own = ["x".repeat(10 * 1024 * 1024) + "a", "x".repeat(10 * 1024 * 1024) + "b"];
+		var end = Date.now() + 200; while (Date.now() < end) {} return own.length`,
 		sbOpts{modules: []Module{testModule(), wait}})
 	if err != nil {
 		t.Fatalf("Run = %v; want no memory stop for a waiting run", err)
@@ -476,4 +481,49 @@ func TestSandbox_MemoryStopThenStuckIsAbandoned(t *testing.T) {
 		t.Fatalf("Run = %v; want an abandoned memory interrupt", err)
 	}
 	waitNoAbandonedRuns(t)
+}
+
+// Calls the exec rewrite leaves alone: a RegExp subclass calling super.exec,
+// and calls inside an optional chain (undefined on a nullish receiver).
+func TestSandbox_ExecRewriteSkipsSuperAndOptionalChains(t *testing.T) {
+	script := `class R extends RegExp {
+			exec(s) { var m = super.exec(s); if (m) { m.tag = "sub" } return m }
+			alt(s) { return super["exec"](s) }
+		}
+		var r = new R("b"), a = { b: null }, n = null;
+		return [r.exec("abc").tag, r.alt("abc")[0], String(a.b?.exec("x")), String(n?.["exec"]("x")),
+			String(n?.x.exec("y")), /c/?.exec("abc")[0]].join("|")`
+	if got := mustRun(t, script, sbOpts{}); got != "sub|b|undefined|undefined|undefined|c" {
+		t.Fatalf("got %q", got)
+	}
+	if want := plainGoja(t, "(function () { "+script+" })()"); want != "sub|b|undefined|undefined|undefined|c" {
+		t.Fatalf("bare goja = %q", want)
+	}
+}
+
+// However many sibling runs start and end, a run never gets more than one
+// budget of forgiveness: it is stopped once it grew 2 × RunHeapBudget.
+func TestSandbox_HeapBudgetForgivenessIsCapped(t *testing.T) {
+	lowHeapBudget(t, 32<<20)
+	var stop atomic.Bool
+	churned := make(chan struct{})
+	go func() {
+		defer close(churned)
+		for !stop.Load() {
+			sb, err := NewSandbox(&Env{Ctx: context.Background(), Recipe: &Recipe{Script: `return 1`}, Journal: NewMemoryJournal(),
+				Meter: NewMeter(Budget{Tokens: 1, Minutes: 1}, nil)}, nil)
+			if err == nil {
+				_, _ = sb.Run()
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	defer func() { stop.Store(true); <-churned }()
+	_, err := runScript(t, `var keep = [], end = Date.now() + 20000;
+		while (Date.now() < end) { keep.push("x".repeat(2 * 1024 * 1024) + keep.length); var t = Date.now() + 15; while (Date.now() < t) {} }
+		return keep.length`, sbOpts{})
+	var se *ScriptError
+	if !errors.As(err, &se) || !strings.Contains(se.Message, "too much memory") {
+		t.Fatalf("Run = %v; want the memory RangeError despite the churn", err)
+	}
 }
