@@ -13,6 +13,7 @@ struct HomeView: View {
                 snapshot: appState.homeCenter.snapshot,
                 today: context.date,
                 onLink: { appState.openHomeLink($0) },
+                onDecideSuggestion: { await appState.decideInstructionSuggestion(id: $0, add: $1) },
                 onHideGettingReady: { appState.homeCenter.hideGettingReady() }
             )
         }
@@ -26,14 +27,17 @@ struct HomeContent: View {
     let snapshot: HomeSnapshot?
     let today: Date
     let onLink: (HomeLink) -> Void
+    let onDecideSuggestion: (Int64, Bool) async -> String?
     let onHideGettingReady: () -> Void
 
     init(
         snapshot: HomeSnapshot?,
         today: Date,
         onLink: @escaping (HomeLink) -> Void,
+        onDecideSuggestion: @escaping (Int64, Bool) async -> String? = { _, _ in nil },
         onHideGettingReady: @escaping () -> Void
     ) {
+        self.onDecideSuggestion = onDecideSuggestion
         self.snapshot = snapshot
         self.today = today
         self.onLink = onLink
@@ -50,7 +54,8 @@ struct HomeContent: View {
                         onLink: onLink, onHide: onHideGettingReady)
                     TodayZoneView(
                         cards: snapshot.today, nothingNeedsYou: snapshot.nothingNeedsYou,
-                        readFailed: snapshot.showsReadError, onLink: onLink)
+                        readFailed: snapshot.showsReadError, onLink: onLink,
+                        onDecideSuggestion: onDecideSuggestion)
                     if snapshot.showsAskHint {
                         Text("Press ⌘/ to ask anything about Watchtower.")
                             .font(.footnote)

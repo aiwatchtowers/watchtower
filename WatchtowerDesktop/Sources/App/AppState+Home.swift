@@ -3,7 +3,7 @@ import WatchtowerCore
 
 extension AppState {
     /// Today cards with no tab of their own to follow.
-    static let homeAlwaysAllowed: Set<TodayCardKind> = [.myTargets, .agentsWaiting]
+    static let homeAlwaysAllowed: Set<TodayCardKind> = [.myTargets, .agentsWaiting, .instructionSuggestion]
 
     /// The Today cards that follow a tab, shown only while that tab is.
     private static let homeCardTabs: [(TodayCardKind, SidebarDestination)] = [
@@ -52,8 +52,23 @@ extension AppState {
         case .workbench(let route): navigateToWorkbench(route)
         case .workbenches: selectedDestination = .workbench
         case .catchUp: selectedDestination = .catchUp
+        case .instructionSettings:
+            settingsTab = .system
+            openSettingsWindow?()
         case .feature(let feature): selectedDestination = Self.homeDestination(for: feature)
         case .connect(let source): performEmptyStateAction(.connect(source))
+        }
+    }
+
+    /// Add / Dismiss from Home's suggestion card; the CLI's refusal (an
+    /// over-limit Add) comes back as text for the card to show.
+    func decideInstructionSuggestion(id: Int64, add: Bool) async -> String? {
+        guard let cli = workbenchesViewModel?.cli else { return "The command line is not available." }
+        do {
+            _ = try await cli.decideSuggestion(id: id, add: add)
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 

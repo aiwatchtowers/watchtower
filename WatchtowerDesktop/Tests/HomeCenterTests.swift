@@ -383,7 +383,7 @@ final class HomeCenterTests: XCTestCase {
     /// feature at a time.
     func testTodayCardsFollowTheirOwnTab() {
         let appState = AppState.isolated()
-        let always: Set<TodayCardKind> = [.myTargets, .agentsWaiting]
+        let always: Set<TodayCardKind> = [.myTargets, .agentsWaiting, .instructionSuggestion]
         let rows: [(ConnectedSources, Set<String>, Set<TodayCardKind>)] = [
             // Briefings has no source gate; Inbox and Catch-Up need any source.
             (.none, [], always.union([.briefing])),
@@ -410,7 +410,7 @@ final class HomeCenterTests: XCTestCase {
         let appState = AppState.isolated()
         appState.featureVisibility.connectedSources = .none
         appState.featureVisibility.disabledFeatureIDs = ["briefing"]
-        XCTAssertEqual(appState.homeTodayCardsAllowed, [.myTargets, .agentsWaiting])
+        XCTAssertEqual(appState.homeTodayCardsAllowed, [.myTargets, .agentsWaiting, .instructionSuggestion])
 
         appState.featureVisibility.connectedSources = .all
         appState.featureVisibility.disabledFeatureIDs = []

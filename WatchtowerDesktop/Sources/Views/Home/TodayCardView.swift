@@ -6,16 +6,29 @@ import WatchtowerCore
 struct TodayCardView: View {
     let card: TodayCard
     let onLink: (HomeLink) -> Void
+    /// Add (true) / Dismiss (false) a suggestion; the error to show, nil on success.
+    let onDecideSuggestion: (Int64, Bool) async -> String?
+    @State private var decided = false
+    @State private var busy = false
+    @State private var errorText: String?
 
-    init(card: TodayCard, onLink: @escaping (HomeLink) -> Void) {
+    init(
+        card: TodayCard,
+        onLink: @escaping (HomeLink) -> Void,
+        onDecideSuggestion: @escaping (Int64, Bool) async -> String? = { _, _ in nil }
+    ) {
         self.card = card
         self.onLink = onLink
+        self.onDecideSuggestion = onDecideSuggestion
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button { onLink(card.link) } label: { header }
                 .buttonStyle(.plain)
+            if let id = card.suggestionID {
+                suggestionActions(id: id)
+            }
             ForEach(Array(card.items.enumerated()), id: \.offset) { _, item in
                 TodayItemRow(item: item, onLink: onLink)
             }
@@ -24,6 +37,32 @@ struct TodayCardView: View {
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(HomeCardBackground())
+        .opacity(decided ? 0 : 1)
+        .frame(height: decided ? 0 : nil)
+    }
+
+    private func suggestionActions(id: Int64) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let errorText {
+                Text(errorText).font(.caption).foregroundStyle(.red)
+            }
+            HStack {
+                Button("Add") { decide(id, add: true) }
+                Button("Dismiss") { decide(id, add: false) }
+                Button("More\u{2026}") { onLink(card.link) }
+            }
+            .disabled(busy)
+        }
+    }
+
+    private func decide(_ id: Int64, add: Bool) {
+        busy = true
+        Task {
+            let failure = await onDecideSuggestion(id, add)
+            busy = false
+            errorText = failure
+            decided = failure == nil
+        }
     }
 
     private var header: some View {

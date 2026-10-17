@@ -118,6 +118,7 @@ final class HomeTodayTests: XCTestCase {
         data.targets = [homeTarget(1, "Ship the release", status: "in_progress")]
         data.asks = try homeAsks([("acme", "Check the build", "check", false)])
         data.pendingRecap = recap(from: now.addingTimeInterval(-86400))
+        data.suggestion = HomeInstructionSuggestion(id: 4, text: "Run the tests first")
         return data
     }
 
@@ -137,7 +138,8 @@ final class HomeTodayTests: XCTestCase {
     /// Owner ask #308: Since you were away leads.
     func testFixedOrder() throws {
         XCTAssertEqual(cards(try fullData()).map(\.kind),
-                       [.sinceYouWereAway, .nextMeeting, .waitingOnYou, .briefing, .myTargets, .agentsWaiting])
+                       [.sinceYouWereAway, .nextMeeting, .waitingOnYou, .briefing, .myTargets, .agentsWaiting,
+                        .instructionSuggestion])
     }
 
     func testAllowedFiltersCards() throws {
@@ -146,6 +148,15 @@ final class HomeTodayTests: XCTestCase {
         let kinds = cards(try fullData(), allowed: allowed).map(\.kind)
         XCTAssertFalse(kinds.contains(.sinceYouWereAway))
         XCTAssertEqual(kinds.count, TodayCardKind.allCases.count - 1)
+    }
+
+    func testInstructionSuggestionCardCopy() throws {
+        var data = HomeTodayData()
+        data.suggestion = HomeInstructionSuggestion(id: 4, text: "Run the tests first")
+        let card = try XCTUnwrap(cards(data).first)
+        XCTAssertEqual(card.kind, .instructionSuggestion)
+        XCTAssertEqual(card.suggestionID, 4)
+        XCTAssertEqual(card.body, "You keep telling agents: \u{201C}Run the tests first\u{201D} — add to your instructions?")
     }
 
     // MARK: - Waiting on you

@@ -340,4 +340,42 @@ final class HomeQueriesTests: XCTestCase {
             XCTAssertTrue(HomeQueries.observedTables.contains(table), table)
         }
     }
+
+    // MARK: - Instruction suggestion
+
+    private func insertSuggestion(
+        _ d: Database, _ text: String, status: String = "open", daysAgo: Double = 1
+    ) throws {
+        let seen = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-daysAgo * 86400))
+        try d.execute(
+            sql: """
+                INSERT INTO instruction_suggestions (text, field, first_seen_at, last_seen_at, status, fingerprint)
+                VALUES (?, 'session', ?, ?, ?, ?)
+                """, arguments: [text, seen, seen, status, text])
+    }
+
+    private func suggestionRead() throws -> HomeTodayData {
+        try db.read { HomeQueries.today($0, now: Date(), calendar: .current) }
+    }
+
+    func testInstructionSuggestionCardShowsNewest() throws {
+        try db.write { d in
+            try insertSuggestion(d, "older", daysAgo: 3)
+            try insertSuggestion(d, "newest", daysAgo: 1)
+        }
+        XCTAssertEqual(try suggestionRead().suggestion?.text, "newest")
+    }
+
+    func testInstructionSuggestionCardHiddenAfterSevenDays() throws {
+        try db.write { try insertSuggestion($0, "stale", daysAgo: 8) }
+        XCTAssertNil(try suggestionRead().suggestion)
+    }
+
+    func testInstructionSuggestionCardHiddenWhenDecided() throws {
+        try db.write { d in
+            try insertSuggestion(d, "added", status: "added")
+            try insertSuggestion(d, "dismissed", status: "dismissed")
+        }
+        XCTAssertNil(try suggestionRead().suggestion)
+    }
 }
