@@ -231,3 +231,66 @@ func calendarAccountID(calendarID string) (int64, bool) {
 	id, err := strconv.ParseInt(rest, 10, 64)
 	return id, err == nil
 }
+
+// ConfluencePageRef names one stored Confluence page: its ext source and
+// page id.
+type ConfluencePageRef struct {
+	SourceID int64
+	PageID   string // ext_id
+}
+
+// ConfluencePageVersions returns every stored Confluence page's version —
+// pages only, never blog posts or attachments, and never a title or body.
+// Read-only.
+func (db *DB) ConfluencePageVersions() (map[ConfluencePageRef]int64, error) {
+	rows, err := db.Query(`SELECT d.source_id, d.ext_id, d.version FROM ext_documents d
+        JOIN ext_sources s ON s.id = d.source_id
+        WHERE s.provider = 'confluence' AND d.kind = 'page'`)
+	if err != nil {
+		return nil, fmt.Errorf("querying confluence page versions: %w", err)
+	}
+	defer rows.Close()
+	versions := make(map[ConfluencePageRef]int64)
+	for rows.Next() {
+		var r ConfluencePageRef
+		var v int64
+		if err := rows.Scan(&r.SourceID, &r.PageID, &v); err != nil {
+			return nil, fmt.Errorf("scanning confluence page version: %w", err)
+		}
+		versions[r] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading confluence page versions: %w", err)
+	}
+	return versions, nil
+}
+
+// ConfluenceSourceMark is one Confluence space source as an automation event
+// source snapshots it before phaseExternalSync.
+type ConfluenceSourceMark struct {
+	Space        string // container_key
+	BackfillDone bool
+}
+
+// ConfluenceSourceMarks returns every Confluence source's mark keyed by its
+// ext source id. Read-only.
+func (db *DB) ConfluenceSourceMarks() (map[int64]ConfluenceSourceMark, error) {
+	rows, err := db.Query(`SELECT id, container_key, backfill_done FROM ext_sources WHERE provider = 'confluence'`)
+	if err != nil {
+		return nil, fmt.Errorf("querying confluence source marks: %w", err)
+	}
+	defer rows.Close()
+	marks := make(map[int64]ConfluenceSourceMark)
+	for rows.Next() {
+		var id int64
+		var m ConfluenceSourceMark
+		if err := rows.Scan(&id, &m.Space, &m.BackfillDone); err != nil {
+			return nil, fmt.Errorf("scanning confluence source mark: %w", err)
+		}
+		marks[id] = m
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading confluence source marks: %w", err)
+	}
+	return marks, nil
+}

@@ -230,3 +230,43 @@ func TestAutomationEventSources_CalendarReads(t *testing.T) {
 		t.Errorf("google fallback label = %q, %v, %v", got, ok, err)
 	}
 }
+
+func TestAutomationEventSources_ConfluenceReads(t *testing.T) {
+	d := openTestDB(t)
+	acct, err := d.CreateJiraAccount(JiraAccount{CloudID: "c1", SiteURL: "https://acme.example.com", SiteName: "acme", Label: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := d.CreateExtSource("confluence", acct, "ENG", "1", "Engineering")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE ext_sources SET backfill_done = 1 WHERE id = ?`, src); err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range []struct {
+		id, kind string
+		version  int
+	}{{"100", "page", 3}, {"200", "blogpost", 1}, {"300", "attachment", 2}} {
+		if _, err := d.Exec(`INSERT INTO ext_documents (source_id, ext_id, kind, title, version) VALUES (?,?,?,?,?)`,
+			src, doc.id, doc.kind, "t", doc.version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	versions, err := d.ConfluencePageVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 || versions[ConfluencePageRef{SourceID: src, PageID: "100"}] != 3 {
+		t.Errorf("versions = %+v, want only page 100 at version 3", versions)
+	}
+
+	sources, err := d.ConfluenceSourceMarks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (ConfluenceSourceMark{Space: "ENG", BackfillDone: true}); len(sources) != 1 || sources[src] != want {
+		t.Errorf("sources = %+v, want %d = %+v", sources, src, want)
+	}
+}

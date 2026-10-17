@@ -86,6 +86,7 @@ var noContentCases = []struct {
 	{"mail", mailContentEvents},
 	{"jira", jiraContentEvents},
 	{"calendar", calendarContentEvents},
+	{"confluence", confluenceContentEvents},
 }
 
 func TestBus_EventsCarryNoContent(t *testing.T) {
