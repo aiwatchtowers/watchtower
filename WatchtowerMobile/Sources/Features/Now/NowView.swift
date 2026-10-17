@@ -44,6 +44,13 @@ struct NowView: View {
             .navigationDestination(for: AskRoute.self) { route in
                 AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)
             }
+            // A permission request's row opens its session (#517).
+            .navigationDestination(for: SessionRoute.self) { route in
+                SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
+            }
+            .navigationDestination(for: BoardTargetRoute.self) { route in
+                BoardTargetDetailView(replica: replica, writer: env.boardWriter, targetID: route.id)
+            }
             .refreshable { await env.refresh(.pull) }
         }
     }

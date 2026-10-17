@@ -256,6 +256,35 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(settings.lastError)
     }
 
+    /// "Answer permission prompts from this phone" (#517): its own request,
+    /// off by default, never implied by typing nor implying it.
+    func testThePermissionsToggleWritesPermissionsRequested() async throws {
+        let transport = SpyTransport()
+        let defaults = try makeDefaults()
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
+        XCTAssertFalse(settings.permissionsRequested, "off by default")
+        settings.linkedDevice = device
+
+        await settings.setPermissionsRequested(true)
+
+        let payloads = try await deviceWrites(transport)
+        let written = try XCTUnwrap(payloads.first)
+        XCTAssertTrue(written.permissionsRequested)
+        XCTAssertFalse(written.typingRequested)
+        XCTAssertTrue(settings.permissionsRequested)
+        XCTAssertNil(settings.lastError)
+        XCTAssertTrue(
+            DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).permissionsRequested,
+            "the choice must survive a relaunch"
+        )
+        let allowed = DeviceGrant(
+            deviceID: device.deviceID, hubID: "hub", name: device.name, scope: .private, linked: true,
+            typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true
+        )
+        XCTAssertEqual(SettingsView.permissionsCaption(grant: allowed), "Allowed")
+        XCTAssertEqual(SettingsView.permissionsCaption(grant: nil), "Waiting for your Mac to confirm")
+    }
+
     func testStartSessionsToggleWritesTheDeviceRecord() async throws {
         let transport = SpyTransport()
         let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)

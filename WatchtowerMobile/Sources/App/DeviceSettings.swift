@@ -19,15 +19,17 @@ struct LinkedDevice: Equatable, Sendable {
 /// The phone-side Settings choices (spec §10, §13 A4):
 /// - "Type into sessions from this phone" (`typing_requested`, default off),
 /// - "Start sessions from this phone" (`start_sessions`, default on),
+/// - "Answer permission prompts from this phone" (`permissions_requested`,
+///   default off, #517): its own request, never implied by typing,
 /// - "New asks" alerts (default on; the notification code reads it).
 ///
-/// The two Workbench choices are requests to the Mac: each change rewrites
+/// The Workbench choices are requests to the Mac: each change rewrites
 /// the phone's `device` record while it is linked. Before linking, the
 /// choice is only kept, and the link flow sends it with the link record.
 /// A choice kept with no hub at all (`unlinkedHubID`, from an earlier
 /// build) is every hub's default until a link completes and adopts it.
 /// Every choice is persisted in `UserDefaults`, so it survives a relaunch;
-/// the two Workbench choices per hub (each Mac has its own `device` record),
+/// the Workbench choices per hub (each Mac has its own `device` record),
 /// the alerts choice once for the phone.
 /// The record goes out sealed (`SecureTransport`, mobile E2E): the hub
 /// drops a plaintext `device` record, and takes a sealed one only when its
@@ -37,6 +39,7 @@ struct LinkedDevice: Equatable, Sendable {
 final class DeviceSettings {
     private(set) var typingRequested: Bool
     private(set) var startSessions: Bool
+    private(set) var permissionsRequested: Bool
     var newAskAlerts: Bool {
         didSet { defaults.set(newAskAlerts, forKey: Keys.newAskAlerts) }
     }
@@ -67,7 +70,7 @@ final class DeviceSettings {
     nonisolated static let unlinkedHubID = "unlinked"
 
     private enum Setting {
-        case typingRequested, startSessions
+        case typingRequested, startSessions, permissionsRequested
     }
 
     /// The `UserDefaults` keys: the Workbench choices under the hub's id.
@@ -75,10 +78,12 @@ final class DeviceSettings {
         static let newAskAlerts = "notifications.newAsks"
         let typingRequested: String
         let startSessions: String
+        let permissionsRequested: String
 
         init(hubID: String) {
             typingRequested = "hub.\(hubID).device.typingRequested"
             startSessions = "hub.\(hubID).device.startSessions"
+            permissionsRequested = "hub.\(hubID).device.permissionsRequested"
         }
     }
 
@@ -101,6 +106,8 @@ final class DeviceSettings {
             ?? defaults.object(forKey: unlinked.typingRequested) as? Bool ?? false
         startSessions = defaults.object(forKey: keys.startSessions) as? Bool
             ?? defaults.object(forKey: unlinked.startSessions) as? Bool ?? true
+        permissionsRequested = defaults.object(forKey: keys.permissionsRequested) as? Bool
+            ?? defaults.object(forKey: unlinked.permissionsRequested) as? Bool ?? false
         newAskAlerts = defaults.object(forKey: Keys.newAskAlerts) as? Bool ?? true
     }
 
@@ -112,7 +119,8 @@ final class DeviceSettings {
         guard keys.typingRequested != unlinked.typingRequested else { return }
         for (own, carried, value) in [
             (keys.typingRequested, unlinked.typingRequested, typingRequested),
-            (keys.startSessions, unlinked.startSessions, startSessions)
+            (keys.startSessions, unlinked.startSessions, startSessions),
+            (keys.permissionsRequested, unlinked.permissionsRequested, permissionsRequested)
         ] {
             if defaults.object(forKey: own) == nil, defaults.object(forKey: carried) != nil {
                 defaults.set(value, forKey: own)
@@ -126,6 +134,7 @@ final class DeviceSettings {
         let keys = Keys(hubID: hubID)
         defaults.removeObject(forKey: keys.typingRequested)
         defaults.removeObject(forKey: keys.startSessions)
+        defaults.removeObject(forKey: keys.permissionsRequested)
     }
 
     func setTypingRequested(_ value: Bool) async {
@@ -156,6 +165,21 @@ final class DeviceSettings {
         }
     }
 
+    /// Turning it off revokes on the Mac, as typing does (spec §5.1).
+    func setPermissionsRequested(_ value: Bool) async {
+        guard value != permissionsRequested else { return }
+        let previous = permissionsRequested
+        permissionsRequested = value
+        await write(.permissionsRequested) { [weak self] saved in
+            guard let self else { return }
+            if saved {
+                defaults.set(value, forKey: keys.permissionsRequested)
+            } else {
+                permissionsRequested = previous
+            }
+        }
+    }
+
     /// The `device` record for the current choices, or nil while unlinked.
     func devicePayload() -> DevicePayload? {
         linkedDevice.map { devicePayload(for: $0, linkNonce: nil, unlinked: false, now: now()) }
@@ -175,7 +199,7 @@ final class DeviceSettings {
             unlinked: unlinked ? true : nil,
             typingRequested: typingRequested,
             startSessions: startSessions,
-            permissionsRequested: false,
+            permissionsRequested: permissionsRequested,
             updatedAt: now
         )
     }

@@ -247,8 +247,8 @@ final class SessionDetailWiringTests: XCTestCase {
             ["sessionID", "report", "timeline", "waitingForKeys", "store", "requester", "cancellable", "decodeCache"]
         )
         XCTAssertEqual(fieldNames(try model(11)), [
-            "id", "title", "state", "target", "branch", "agentLine", "approvalNotice", "asks", "asksSince", "report",
-            "timeline", "timelineEmptyText", "timelineMoreText"
+            "id", "title", "state", "target", "branch", "agentLine", "approvalNotice", "permission", "answerRows",
+            "answerNotice", "asks", "asksSince", "report", "timeline", "timelineEmptyText", "timelineMoreText"
         ])
     }
 

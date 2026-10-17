@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerKit
 import WatchtowerSync
 
 struct SessionRoute: Hashable {
@@ -9,13 +10,18 @@ struct SessionRoute: Hashable {
 /// age, the Mac's state), its open asks on top, the report's progress and
 /// summary, and the timeline. Opening it asks the Mac for a fresh report.
 /// Its asks open their forms. The actions menu stops a live session on the
-/// Mac after a confirmation, and Finish asks it to wrap up. "Tell the
-/// session…" sends it a line (PROJ-16), on a phone the Mac allowed to type.
+/// Mac after a confirmation, Finish asks it to wrap up, and Interrupt sends
+/// one Esc while it works. "Tell the session…" sends it a line (PROJ-16), on
+/// a phone the Mac allowed to type. A pending Claude Code permission prompt
+/// shows as a card with Allow once and Deny (#517) on a phone the Mac
+/// allowed to answer.
 struct SessionDetailView: View {
     @Environment(AppEnvironment.self) private var env
     let replica: WorkbenchReplicaModel
     @State private var viewModel: SessionDetailViewModel
     @State private var confirmingStop = false
+    /// The Bash card whose Allow waits for the confirmation.
+    @State private var confirmingAllow: PermissionCardModel?
     @State private var sendError: String?
 
     init(replica: WorkbenchReplicaModel, sessionID: Int64, store: ReplicaStore, requester: SessionReportRequester) {
@@ -30,7 +36,8 @@ struct SessionDetailView: View {
                 snapshot: replica.snapshot,
                 report: viewModel.report,
                 timeline: viewModel.timeline,
-                now: context.date
+                now: context.date,
+                permissions: permissions
             ) {
                 content(detail, now: context.date)
             } else {
@@ -64,6 +71,9 @@ struct SessionDetailView: View {
                         if actions.showsFinish {
                             Button("Finish", systemImage: "flag.checkered") { finish() }
                         }
+                        if actions.canInterrupt {
+                            Button("Interrupt", systemImage: "escape") { interrupt() }
+                        }
                         if actions.canStop {
                             Button("Stop", systemImage: "stop.fill", role: .destructive) { confirmingStop = true }
                         }
@@ -78,6 +88,17 @@ struct SessionDetailView: View {
             Button("Stop", role: .destructive) { stop() }
             Button("Cancel", role: .cancel) {}
         }
+        .confirmationDialog(
+            confirmingAllow?.allowConfirmTitle ?? "",
+            isPresented: Binding(get: { confirmingAllow != nil }, set: { if !$0 { confirmingAllow = nil } }),
+            titleVisibility: .visible,
+            presenting: confirmingAllow
+        ) { card in
+            Button(PermissionCardModel.allowLabel) { answer(card, .allow) }
+            Button("Cancel", role: .cancel) {}
+        } message: { card in
+            Text(card.summary).monospaced()
+        }
         .alert("Couldn't send", isPresented: Binding(get: { sendError != nil }, set: { if !$0 { sendError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -89,10 +110,21 @@ struct SessionDetailView: View {
     private func actions(now: Date) -> SessionActionsModel? {
         replica.snapshot.session(viewModel.sessionID).map {
             SessionActionsModel(
-                session: $0, snapshot: replica.snapshot, inFlight: env.sessionStarts.inFlight, now: now,
-                showsFinish: input(now: now)?.showsFinish == true
+                session: $0, snapshot: replica.snapshot, inFlight: env.sessionStarts.inFlight.union(env.sessionInputs.inFlight),
+                now: now, showsFinish: input(now: now)?.showsFinish == true,
+                grant: replica.snapshot.grant(for: env.linkedDevice?.deviceID),
+                typingRequested: env.deviceSettings.typingRequested
             )
         }
+    }
+
+    private var permissions: PermissionAccess {
+        PermissionAccess(
+            grant: replica.snapshot.grant(for: env.linkedDevice?.deviceID),
+            requested: env.deviceSettings.permissionsRequested,
+            inFlight: env.sessionInputs.inFlight,
+            sentRequestID: env.sessionInputs.answered[viewModel.sessionID]
+        )
     }
 
     private func input(now: Date) -> SessionInputModel? {
@@ -145,6 +177,32 @@ struct SessionDetailView: View {
         }
     }
 
+    /// Allow once (after the Bash confirmation) or Deny.
+    private func answer(_ card: PermissionCardModel, _ behavior: PermissionAnswerParams.Behavior) {
+        Task {
+            do {
+                try await env.sessionInputs.answer(sessionID: card.sessionID, requestID: card.requestID, behavior: behavior)
+            } catch {
+                sendError = BoardWriteText.sendError(error)
+            }
+        }
+    }
+
+    private func turnOnPermissions() {
+        Task { await env.deviceSettings.setPermissionsRequested(true) }
+    }
+
+    private func interrupt() {
+        let sessionID = viewModel.sessionID
+        Task {
+            do {
+                try await env.sessionInputs.interrupt(sessionID: sessionID)
+            } catch {
+                sendError = BoardWriteText.sendError(error)
+            }
+        }
+    }
+
     private func stop() {
         let sessionID = viewModel.sessionID
         Task {
@@ -176,10 +234,30 @@ struct SessionDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 if let actions = actions(now: now) {
-                    ForEach(actions.stopRows) { StopRowView(row: $0, onDismiss: dismissStop) }
+                    ForEach(actions.stopRows + actions.interruptRows) { StopRowView(row: $0, onDismiss: dismissStop) }
                 }
-                if let notice = detail.approvalNotice {
+                if let card = detail.permission {
+                    PermissionCardView(
+                        card: card,
+                        onAllow: {
+                            if card.confirmsAllow {
+                                confirmingAllow = card
+                            } else {
+                                answer(card, .allow)
+                            }
+                        },
+                        onDeny: { answer(card, .deny) },
+                        onTurnOn: turnOnPermissions
+                    )
+                } else if let notice = detail.approvalNotice {
                     ApprovalNoticeView(text: notice)
+                }
+                ForEach(detail.answerRows) { AnswerRowView(row: $0, onDismiss: dismissLine) }
+                if let notice = detail.answerNotice {
+                    Label(notice, systemImage: "checkmark.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(minHeight: 44, alignment: .leading)
                 }
                 if let input = input(now: now) {
                     ForEach(input.lines) { LineRowView(row: $0, onCancel: cancelLine, onDismiss: dismissLine) }
@@ -279,7 +357,7 @@ private struct StopRowView: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             switch row.state {
             case let .sending(caption):
-                Label("Stop · \(caption)", systemImage: "clock")
+                Label("\(row.title) · \(caption)", systemImage: "clock")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
@@ -294,7 +372,7 @@ private struct StopRowView: View {
                         .contentShape(Rectangle())
                 }
                 .font(.subheadline)
-                .accessibilityLabel("Dismiss the failed stop")
+                .accessibilityLabel("Dismiss the failed \(row.title.lowercased())")
             }
         }
         .frame(minHeight: 44)
@@ -302,7 +380,7 @@ private struct StopRowView: View {
     }
 }
 
-/// The phone never answers a permission prompt (PROJ-16).
+/// A prompt the phone has no request for: Codex, or one not yet published.
 private struct ApprovalNoticeView: View {
     let text: String
 
@@ -316,6 +394,89 @@ private struct ApprovalNoticeView: View {
         .frame(minHeight: 44)
         .card(.waiting)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// A pending permission prompt (#517): the tool, its summary (monospace,
+/// scrollable), Allow once and Deny while the phone may answer, else the
+/// hint (with Turn On while the phone's own toggle is off).
+private struct PermissionCardView: View {
+    let card: PermissionCardModel
+    let onAllow: () -> Void
+    let onDeny: () -> Void
+    let onTurnOn: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack(spacing: Spacing.regular) {
+                Image(systemName: "hand.raised.fill").accessibilityHidden(true)
+                Text("Needs approval · \(card.tool)").font(TypeScale.rowEmphasis)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(PhoneTone.waitingForYou.color)
+            .accessibilityElement(children: .combine)
+            ScrollView {
+                Text(card.summary)
+                    .font(.footnote.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 160)
+            if let note = card.clippedNote {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
+            if let hint = card.hint {
+                Text(hint.text).font(.caption).foregroundStyle(.secondary)
+                if hint == .turnOn {
+                    Button("Turn On", action: onTurnOn)
+                        .frame(minHeight: 44)
+                }
+            } else {
+                HStack(spacing: Spacing.regular) {
+                    Button(action: onAllow) {
+                        Text(PermissionCardModel.allowLabel).frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button(role: .destructive, action: onDeny) {
+                        Text(PermissionCardModel.denyLabel).frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .disabled(!card.canAnswer)
+            }
+        }
+        .card(.waiting)
+    }
+}
+
+/// One answer the phone sent: how far it got, or the Mac's refusal (e.g.
+/// "Answered on the Mac") with Dismiss.
+private struct AnswerRowView: View {
+    let row: PermissionAnswerRow
+    let onDismiss: (PendingAction) -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            switch row.state {
+            case let .waiting(caption):
+                Label(caption, systemImage: "clock")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            case let .failed(message):
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(PhoneTone.red.color)
+                Spacer(minLength: 8)
+                Button { onDismiss(row.pending) } label: {
+                    Text("Dismiss").frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .font(.subheadline)
+                .accessibilityLabel("Dismiss the answer")
+            }
+        }
+        .frame(minHeight: 44)
+        .buttonStyle(.borderless)
     }
 }
 

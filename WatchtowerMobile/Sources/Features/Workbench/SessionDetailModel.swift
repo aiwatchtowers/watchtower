@@ -16,9 +16,18 @@ struct SessionDetailModel {
     let branch: String?
     /// "Claude Code · 41m": the agent and the session's age.
     let agentLine: String
-    /// "Needs approval on the Mac": the phone never answers a permission
-    /// prompt (PROJ-16).
+    /// "Needs approval on the Mac": a session at a prompt the phone has no
+    /// request for (Codex, or one the hub has not published yet).
     let approvalNotice: String?
+    /// A live Claude session's pending permission prompt (#517); nil
+    /// without one.
+    let permission: PermissionCardModel?
+    /// The phone's answers to the session's prompts, until the Mac applied
+    /// them.
+    let answerRows: [PermissionAnswerRow]
+    /// "Sent to the session" once the Mac applied an answer: never
+    /// "Allowed" or "Denied", since a Mac answer that came first wins.
+    let answerNotice: String?
     /// The session's open asks, newest first.
     let asks: [WaitingCardModel]
     /// "since 15m": the oldest open ask's age; nil without asks.
@@ -42,7 +51,8 @@ struct SessionDetailModel {
         report: SessionReport?,
         timeline: SessionTimeline?,
         now: Date,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        permissions: PermissionAccess = PermissionAccess()
     ) {
         guard let session = snapshot.session(sessionID) else { return nil }
         id = session.id
@@ -54,7 +64,14 @@ struct SessionDetailModel {
         }
         branch = Self.branch(target: targetRecord, workbench: snapshot.workbench(session.workbenchID))
         agentLine = "\(Self.agentName(session.agent)) · \(CompactAge.string(from: session.createdAt, now: now))"
-        approvalNotice = session.stateKind == .needsApproval ? "Needs approval on the Mac" : nil
+        let rows = PermissionAnswerRow.rows(sessionID: session.id, snapshot: snapshot, now: now)
+        answerRows = rows
+        let request = session.live && session.agent == .claudeCode ? snapshot.pendingPermission(for: session.id) : nil
+        let permission = request.map { PermissionCardModel(request: $0, session: session, rows: rows, access: permissions) }
+        self.permission = permission
+        approvalNotice = session.stateKind == .needsApproval && permission == nil ? SessionInputModel.needsApproval : nil
+        let sentShown = permissions.sentRequestID != nil && (permission == nil || permission?.requestID == permissions.sentRequestID)
+        answerNotice = sentShown && rows.isEmpty ? SessionInputDelivery.submitted.text : nil
 
         let openAsks = snapshot.asks
             .filter { $0.status == .open && $0.sessionID == sessionID }
@@ -98,6 +115,9 @@ struct SessionDetailModel {
         var uses = state.toneUses
         if approvalNotice != nil {
             uses.append(ToneUse(element: "session \(id) approval notice", tone: .waitingForYou, role: .waiting))
+        }
+        if permission != nil {
+            uses.append(ToneUse(element: "session \(id) permission card", tone: .waitingForYou, role: .waiting))
         }
         uses += asks.map(\.toneUse)
         uses += report?.segments.map { ToneUse(element: "session \(id) report \($0.label)", tone: $0.tone, role: .progress) } ?? []

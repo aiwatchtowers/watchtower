@@ -64,7 +64,8 @@ struct AskRow: View {
 }
 
 /// "Waiting for you" as one waiting card of flat ask rows (design pass spec
-/// N4, S2, D4): each row its own link to the ask's form, rows separated by
+/// N4, S2, D4): each row its own link to the ask's form (a permission
+/// request's to its session), rows separated by
 /// `RowDivider`s, an optional header on top. For a `ScrollView` only: one
 /// `List` row cannot hold several links.
 struct WaitingStack<Header: View>: View {
@@ -74,17 +75,26 @@ struct WaitingStack<Header: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            ForEach(Array(asks.enumerated()), id: \.element.id) { index, ask in
+            ForEach(Array(asks.enumerated()), id: \.element.destination) { index, ask in
                 if index > 0 {
                     RowDivider()
                 }
-                NavigationLink(value: AskRoute(id: ask.id)) {
-                    AskRow(ask: ask, showsChevron: true)
-                }
-                .buttonStyle(.plain)
+                link(ask)
             }
         }
         .card(.waiting, padding: EdgeInsets())
+    }
+
+    @ViewBuilder
+    private func link(_ ask: WaitingCardModel) -> some View {
+        switch ask.destination {
+        case let .ask(id):
+            NavigationLink(value: AskRoute(id: id)) { AskRow(ask: ask, showsChevron: true) }
+                .buttonStyle(.plain)
+        case let .session(id):
+            NavigationLink(value: SessionRoute(id: id)) { AskRow(ask: ask, showsChevron: true) }
+                .buttonStyle(.plain)
+        }
     }
 }
 
