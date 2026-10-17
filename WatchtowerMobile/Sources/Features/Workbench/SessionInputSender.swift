@@ -89,10 +89,11 @@ final class SessionInputSender {
     /// (false) while an answer to the session is on its way.
     @discardableResult
     func answer(sessionID: Int64, requestID: Int64, behavior: PermissionAnswerParams.Behavior) async throws -> Bool {
-        answered[sessionID] = nil
         let params = try PermissionAnswerParams(requestID: requestID, behavior: behavior).wireParams()
         let entity = SessionStarter.sessionRecordName(sessionID)
         return try await sendGuard.run(Self.answerKey(sessionID)) {
+            // Inside the guard: a refused duplicate keeps the last success.
+            answered[sessionID] = nil
             _ = try await enqueue(.permissionAnswer, entity, params)
         }
     }

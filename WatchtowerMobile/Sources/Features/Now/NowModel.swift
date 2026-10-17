@@ -21,7 +21,7 @@ struct NowModel {
 
     init(snapshot: WorkbenchReplicaSnapshot, now: Date) {
         macStatus = MacStatus(heartbeat: snapshot.heartbeat, now: now)
-        let all = snapshot.pendingPermissions.map { WaitingCardModel($0) }
+        let all = snapshot.pendingPermissions.map { WaitingCardModel($0, snapshot: snapshot, now: now, showWorkbench: true) }
             + snapshot.openAsks().map { WaitingCardModel($0, snapshot: snapshot, now: now, showWorkbench: true) }
         waiting = Array(all.prefix(Self.waitingLimit))
         waitingMore = max(0, all.count - Self.waitingLimit)

@@ -11,7 +11,7 @@ enum PermissionHint: Equatable {
 
     var text: String {
         switch self {
-        case .turnOn: "Turn on Answer permission prompts from this phone to answer here."
+        case .turnOn: "Turn on \"Answer permission prompts from this phone\" to answer here."
         case .waitingForMac: "Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"
         }
     }
@@ -33,7 +33,7 @@ struct PermissionAccess: Equatable {
 /// only with a hint otherwise. Only the hook's JSON decides the prompt;
 /// nothing is typed into the session (PROJ-16).
 struct PermissionCardModel: Equatable {
-    static let clippedNote = "Shortened on the phone — the full text is on the Mac"
+    static let clippedNote = "Shortened — the full request is in the session on the Mac."
     static let allowLabel = "Allow once"
     static let denyLabel = "Deny"
 

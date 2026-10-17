@@ -121,7 +121,8 @@ final class PermissionCardTests: XCTestCase {
         let clipped = try XCTUnwrap(try detail(try snapshot([
             permissionRequestJSON(9, session: 12, ["summary": String(repeating: "a", count: 2000), "summary_clipped": true])
         ])).permission)
-        XCTAssertEqual(clipped.clippedNote, "Shortened on the phone — the full text is on the Mac")
+        XCTAssertEqual(clipped.clippedNote, "Shortened — the full request is in the session on the Mac.")
+        XCTAssertEqual(PermissionHint.turnOn.text, "Turn on \"Answer permission prompts from this phone\" to answer here.")
     }
 
     /// The hub never publishes a Codex request; even a stray one leaves a
@@ -161,6 +162,10 @@ final class PermissionCardTests: XCTestCase {
             let session = try XCTUnwrap(replica.session(id))
             XCTAssertFalse(actions(session).canInterrupt, "session \(id) is \(session.stateKind.rawValue)")
         }
+        let codex = try mirror(TerminalSessionState.self, DemoSeed.JSON.session(31, workbench: DemoSeed.acmeID, [
+            "agent": "codex_cli", "state_kind": "working", "state_caption": "Working", "state_tone": "green"
+        ]))
+        XCTAssertFalse(actions(codex).canInterrupt, "the hub interrupts Claude sessions only")
         let atPrompt = try snapshot([permissionRequestJSON(7, session: 10)])
         XCTAssertFalse(actions(working, in: atPrompt).canInterrupt, "at a prompt the phone offers Deny, never Esc")
         XCTAssertFalse(
@@ -182,7 +187,9 @@ final class PermissionCardTests: XCTestCase {
         let card = try XCTUnwrap(model.waiting.first)
         XCTAssertEqual(card.kindLabel, "Needs approval")
         XCTAssertEqual(card.title, "Bash")
-        XCTAssertEqual(card.subline, "rm -rf build")
+        XCTAssertEqual(card.subline, "rm -rf build · Acme · Board lanes · 1m")
+        let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.acmeID, snapshot: replica, now: now))
+        XCTAssertEqual(menu.waiting.first?.subline, "rm -rf build · Board lanes · 1m", "the menu is one workbench's")
         XCTAssertEqual(card.destination, .session(12), "it opens the session's card")
         XCTAssertEqual(model.waiting.count, 4, "with the three open asks")
         XCTAssertEqual(replica.openAskCount, 4, "the Workbench badge counts it")
