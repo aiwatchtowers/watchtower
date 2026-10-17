@@ -41,8 +41,9 @@ struct WindowedTranscriber {
         var prevLang: String?
         var promptState = ContextPromptState(speechGate: config.speechGate)
         var lastEngineError: Error?
-        var gate = WindowSpeechGate(detector: speechDetector, config: config)
-        defer { gate.logSummary(engineDrops: engine.takeDropCounts()) }
+        var gate = WindowSpeechGate(detector: speechDetector, config: config,
+                                    modelWait: WindowSpeechGate.batchModelWait)
+        defer { gate.logSummary() }
 
         for (index, range) in ranges.enumerated() {
             // A cancelled batch throws rather than returning the windows it
