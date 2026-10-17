@@ -72,6 +72,10 @@ struct AutomationConfirmSheet: View {
             }
             changed(detail)
             mayDo(detail)
+            if let warning = AutomationCardPresentation.shellWarning(permissions: detail.permissions) {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
             script(detail)
             Text("Approval hash \(String(detail.approvalHash.prefix(12)))")
                 .font(.caption.monospaced())
