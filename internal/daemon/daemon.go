@@ -108,7 +108,7 @@ type Daemon struct {
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
 	automationEvents    AutomationEvents // nil = no event automations
-	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync only
+	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync and startupCalendarSync only
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
 	pidPath             string
@@ -419,8 +419,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// a calendar connect — onboarding's finish, the Add sheet — so shows
 	// events within seconds (#740). The cycle below syncs them a second time —
 	// a few API calls per account, accepted on a (re)start for that latency.
-	d.phaseCalendarSync(ctx)
-	d.phaseCalDAVSync(ctx)
+	d.startupCalendarSync(ctx)
 
 	// Run an initial sync immediately on startup.
 	d.runSync(ctx)
@@ -785,6 +784,22 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 		close(done)
 		<-finished
 	}
+}
+
+// startupCalendarSync is Run's calendar pass ahead of the first cycle (#740),
+// observed as its own event cycle — Begin, the calendar phases under one
+// snapshot, Flush keyed by its own start — so a calendar change made while
+// the daemon was stopped still fires, though this pass writes it before the
+// first runSync's snapshot. With no bus, or no calendar subscriber, it just
+// runs the two phases.
+func (d *Daemon) startupCalendarSync(ctx context.Context) {
+	start := time.Now()
+	d.cycleEvents = d.beginAutomationEvents()
+	d.observePhase(ctx, automations.CalendarSource(d.db, automations.RealClock{}), func() {
+		d.phaseCalendarSync(ctx)
+		d.phaseCalDAVSync(ctx)
+	})
+	d.flushAutomationEvents(start)
 }
 
 // phaseCalendarSync pulls Google Calendar events for every connected

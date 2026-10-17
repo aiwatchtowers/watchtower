@@ -48,9 +48,28 @@ func TestDaemon_Run_SyncsCalendarsBeforeFirstCycle(t *testing.T) {
 	}
 	firstCycle, ok := order["runSync"]
 	require.True(t, ok, "Run must start with an immediate runSync")
+	at, ok := order["startupCalendarSync"]
+	require.True(t, ok, "Run must call startupCalendarSync before the first cycle")
+	assert.Less(t, at, firstCycle, "startupCalendarSync must run before the first runSync")
+
+	// startupCalendarSync runs both calendar phases.
+	var startup *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "startupCalendarSync" {
+			startup = fd
+		}
+	}
+	require.NotNil(t, startup, "startupCalendarSync not found in daemon.go")
+	called := map[string]bool{}
+	ast.Inspect(startup.Body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				called[sel.Sel.Name] = true
+			}
+		}
+		return true
+	})
 	for _, phase := range []string{"phaseCalendarSync", "phaseCalDAVSync"} {
-		at, ok := order[phase]
-		require.True(t, ok, "Run must call %s before the first cycle", phase)
-		assert.Less(t, at, firstCycle, "%s must run before the first runSync", phase)
+		assert.True(t, called[phase], "startupCalendarSync must call %s", phase)
 	}
 }
