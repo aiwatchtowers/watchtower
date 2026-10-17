@@ -34,6 +34,10 @@ struct SessionHostHello: Codable, Equatable {
 
 struct SessionHostErrorMessage: Codable, Equatable {
     let message: String
+
+    /// The host's message to a connection whose run a newer attach took
+    /// over (Go `sessionhost.TakenOver`); matched by value.
+    static let takenOver = "taken over"
 }
 
 extension SessionHostFrame {
@@ -119,12 +123,16 @@ final class SessionHostClient {
     }
 
     /// Drops an exited session's record; best effort (a running session's
-    /// forget is refused by the host, and logged).
-    func forget(row: Int64, run: String) async {
+    /// forget is refused by the host, and logged). False when it was not
+    /// dropped.
+    @discardableResult
+    func forget(row: Int64, run: String) async -> Bool {
         do {
             _ = try await request(.json(.forget, SessionHostAttachRequest(row: row, run: run)), expecting: .forgot)
+            return true
         } catch {
             Self.logger.error("forget row \(row) run \(run, privacy: .public): \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 

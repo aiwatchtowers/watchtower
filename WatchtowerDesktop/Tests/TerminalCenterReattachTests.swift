@@ -301,26 +301,62 @@ final class TerminalCenterReattachTests: XCTestCase {
         hosted.detachFromHost()
     }
 
+    /// A run that ended while the app was away is attached, so the pane
+    /// shows its last output; its exit is reported once, as a natural one,
+    /// and forgotten by its session.
     func testReattachReportsExitOnceAndForgets() async throws {
         let row = try await sessionRow()
-        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-b", pid: 5151, startedAtMs: 1, exited: true, code: 0)]
+        let info = SessionHostSessionInfo(row: row.id, run: "run-b", pid: 5151, startedAtMs: 1, exited: true, code: 0)
+        control.listed = [info]
 
         await vm.reattachHostedSessions()
+
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        await hosted.connecting?.value
+        XCTAssertEqual(transports.count, 2, "the exited run is attached for its last output")
+        let session = try XCTUnwrap(transports.last)
+        XCTAssertEqual(try session.sent(.attach).first?.decoded(SessionHostAttachRequest.self),
+                       SessionHostAttachRequest(row: row.id, run: "run-b"))
+        XCTAssertTrue(try forgotten().isEmpty, "the session forgets it after the exit")
+        session.push(.json(.attached, info))
+        session.push(SessionHostFrame(type: .output, payload: Array("last words".utf8)))
+        session.push(.json(.exit, SessionHostExit(code: 0)))
+        let view = try XCTUnwrap(hosted.view as? PalettedTerminalView)
+        XCTAssertEqual(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "last words")
 
         XCTAssertEqual(exits.count, 1)
         XCTAssertEqual(exits.first?.0, row.id)
         XCTAssertEqual(exits.first?.1, 0)
         XCTAssertEqual(exits.first?.2, false, "an exit while the app was away is a natural exit")
         XCTAssertEqual(center.states[row.id], .exited(0))
+        for _ in 0..<200 where control.sent(.forget).isEmpty { await Task.yield() }
         XCTAssertEqual(try forgotten(), [SessionHostAttachRequest(row: row.id, run: "run-b")])
         XCTAssertTrue(signals.isEmpty)
         XCTAssertEqual(factoryCalls, 0)
-        XCTAssertEqual(transports.count, 1, "nothing attached")
+        XCTAssertEqual(launchesSent(), 0)
 
         control.listed = []
         await vm.reattachHostedSessions()
         XCTAssertEqual(exits.count, 1, "reported once")
         XCTAssertEqual(try forgotten().count, 1)
+    }
+
+    /// The host refuses a forget while it has not reaped a killed child
+    /// yet: the stray's forget is asked once more.
+    func testStrayForgetIsRetriedOnceWhenRefused() async throws {
+        alive = [6200]
+        diesOnHangup = [6200]
+        control.refusedForgets = 1
+        control.listed = [SessionHostSessionInfo(row: 9003, run: "run-z", pid: 6200, startedAtMs: 1, exited: false, code: nil)]
+
+        await vm.reattachHostedSessions()
+        await center.strayStops?.value
+
+        XCTAssertEqual(try forgotten(), [
+            SessionHostAttachRequest(row: 9003, run: "run-z"),
+            SessionHostAttachRequest(row: 9003, run: "run-z")
+        ])
+        XCTAssertEqual(control.refusedForgets, 0)
     }
 
     func testReattachIgnoresListFailure() async throws {

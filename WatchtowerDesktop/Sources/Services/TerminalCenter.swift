@@ -982,7 +982,8 @@ final class TerminalCenter {
     /// started before the app last quit or was updated — as `.running`,
     /// without launching anything: no `TerminalLaunch`, no `--resume`, no
     /// new process. `startedAt` is the host's, so a hook state stamped
-    /// during the run stays trusted. Nothing happens while the row already
+    /// during the run stays trusted. An exited run is adopted the same way
+    /// and reports its exit once the replay is in. Nothing happens while the row already
     /// runs here or no host is connected.
     func adopt(_ session: TerminalSession, info: SessionHostSessionInfo) {
         guard let host = sessionHost, states[session.id] != .running else { return }
@@ -1009,12 +1010,13 @@ final class TerminalCenter {
     /// (`sessionHostScope`, or "" from an older host) are touched: row ids
     /// of another workspace's database mean other rows. A running run of a
     /// row this center does not run yet is adopted (the newest, when the
-    /// host holds several); an exited run of a row nothing runs for is
-    /// reported once through `onSessionExit` as a natural exit, and every
-    /// exited run is forgotten. A running run whose row is gone — or that
-    /// is not the one the row runs — is stopped (hang-up, then kill after
-    /// `killGrace`) and forgotten in `strayStops`, which the caller need
-    /// not wait for. Runs this center already holds are left to their
+    /// host holds several). The newest exited run of a row nothing runs for
+    /// is adopted too, so the pane shows its last output: its session
+    /// reports the exit once through `onSessionExit` as a natural exit and
+    /// forgets it; every other exited run is forgotten here. A running run
+    /// whose row is gone — or that is not the one the row runs — is
+    /// stopped (hang-up, then kill after `killGrace`) and forgotten in
+    /// `strayStops`, which the caller need not wait for. Runs this center already holds are left to their
     /// session. Safe to call again: a second call finds its own runs held.
     func reattach(_ listed: [SessionHostSessionInfo], rows existing: [Int64: TerminalSession]) async {
         guard let host = sessionHost else { return }
@@ -1035,12 +1037,14 @@ final class TerminalCenter {
             }
         }
         let exited = Dictionary(grouping: unheld.filter(\.exited), by: \.row)
+        var shown: [Int64: String] = [:] // row → the exited run attached
         for (row, runs) in exited {
             guard let session = existing[row], running[row] == nil, processes[row] == nil,
                   let last = runs.max(by: { $0.startedAtMs < $1.startedAtMs }) else { continue }
-            reportExitedWhileAway(session, code: last.code.map { Int32(clamping: $0) })
+            adopt(session, info: last)
+            shown[row] = last.run
         }
-        for info in unheld where info.exited {
+        for info in unheld where info.exited && shown[info.row] != info.run {
             await host.forget(row: info.row, run: info.run)
         }
         guard !strays.isEmpty else { return }
@@ -1059,14 +1063,6 @@ final class TerminalCenter {
     /// After a kill, how many `pollStep`s a stray's stop waits for the host
     /// to reap the child, so the host accepts its forget.
     static let reapPolls = 10
-
-    /// A run that ended while the app was away: the row reads as exited
-    /// with its code, and the exit goes out as one the app did not cause.
-    private func reportExitedWhileAway(_ session: TerminalSession, code: Int32?) {
-        rows[session.id] = session
-        states[session.id] = .exited(code)
-        onSessionExit?(session.id, code, false)
-    }
 
     /// Stops a hosted run nothing here shows — its row is gone, or another
     /// run of the row was adopted — the way `close` stops a session, then
@@ -1087,7 +1083,13 @@ final class TerminalCenter {
                 }
             }
         }
-        await host.forget(row: info.row, run: info.run)
+        // The group is gone, but the host may not have reaped the child
+        // yet and refuses to forget a running run: asked again once.
+        let forgot = await host.forget(row: info.row, run: info.run)
+        if !forgot {
+            await signaller.sleep(Self.pollStep)
+            await host.forget(row: info.row, run: info.run)
+        }
     }
 
     func close(sessionID: Int64) async {

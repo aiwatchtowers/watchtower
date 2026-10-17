@@ -14,6 +14,9 @@ final class FakeSessionHostTransport: SessionHostTransport {
     var openError: (any Error)?
     var autoReply = true
     var listed: [SessionHostSessionInfo] = []
+    /// How many Forgets are refused (as for a run not reaped yet) before
+    /// they are answered.
+    var refusedForgets = 0
     private var onFrame: ((SessionHostFrame) -> Void)?
     private var onClose: (() -> Void)?
 
@@ -30,6 +33,9 @@ final class FakeSessionHostTransport: SessionHostTransport {
         switch frame.type {
         case .hello: push(.json(.helloOK, SessionHostHello(version: 1, pid: 99)))
         case .list: push(.json(.listed, SessionHostListResponse(sessions: listed)))
+        case .forget where refusedForgets > 0:
+            refusedForgets -= 1
+            push(.json(.error, SessionHostErrorMessage(message: "forget: session is running")))
         case .forget: push(SessionHostFrame(type: .forgot))
         default: break
         }
@@ -247,12 +253,39 @@ final class HostedTerminalSessionTests: XCTestCase {
         fresh.push(SessionHostFrame(type: .output, payload: Array("y".utf8)))
         XCTAssertEqual(try terminalView(session).getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "y")
 
-        // Attached restored the retry: the next drop is looked up again.
+        // The reattach's Attached does not restore the retry (two windows
+        // taking one run from each other must not loop): the next drop
+        // ends the run.
         fresh.hangUp()
-        await session.recovering?.value
-        await session.connecting?.value
-        XCTAssertEqual(transports[0].sent(.list).count, 2)
+        XCTAssertEqual(exits, [nil])
+        XCTAssertEqual(transports[0].sent(.list).count, 1)
+    }
+
+    /// Another app instance attached the run: the pane says so and lets go,
+    /// with no reattach, no exit and no forget; closing it signals nothing.
+    func testATakenOverRunIsNeitherReattachedNorReported() async throws {
+        let (session, transport) = try await startedSession()
+        var exits: [Int32?] = []
+        session.onExit = { exits.append($0) }
+        try launched(transport, session: session)
+        let key = try XCTUnwrap(session.key)
+        transports[0].listed = [SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil)]
+
+        transport.push(.json(.error, SessionHostErrorMessage(message: SessionHostErrorMessage.takenOver)))
+        transport.hangUp()
+
+        XCTAssertNil(session.recovering, "a taken-over run is not looked up")
         XCTAssertTrue(exits.isEmpty)
+        XCTAssertTrue(transport.closed)
+        XCTAssertEqual(transports.count, 2, "no reattach connection")
+        XCTAssertTrue(transports[0].sent(.list).isEmpty)
+        XCTAssertTrue(transports[0].sent(.forget).isEmpty)
+        XCTAssertEqual(session.pid, 0)
+        let terminal = try terminalView(session).getTerminal()
+        let text = (0..<terminal.rows).compactMap { terminal.getLine(row: $0)?.translateToString(trimRight: true) }.joined(separator: "\n")
+        XCTAssertTrue(text.contains("[Watchtower] Another Watchtower window took this session over."), text)
+        session.sendInput([0x61])
+        XCTAssertTrue(transport.sent(.input).isEmpty)
     }
 
     /// A second drop before the reattach was answered is the run's end.
@@ -342,7 +375,13 @@ final class HostedTerminalSessionTests: XCTestCase {
         XCTAssertEqual(session.pid, 777)
         XCTAssertFalse(session.bracketedPasteMode)
         transport.push(.json(.attached, info))
-        XCTAssertEqual(transport.sent(.resize).count, 1, "the pane's size goes to the host on attach")
+        // One column narrower first: a same-size resize does not make
+        // every program redraw.
+        let terminal = try terminalView(session).getTerminal()
+        XCTAssertEqual(try transport.sent(.resize).map { try $0.decoded(SessionHostResize.self) }, [
+            SessionHostResize(cols: terminal.cols - 1, rows: terminal.rows),
+            SessionHostResize(cols: terminal.cols, rows: terminal.rows)
+        ], "the pane's size goes to the host on attach, as a real change")
         transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[?2004h".utf8)))
         XCTAssertTrue(session.bracketedPasteMode)
     }

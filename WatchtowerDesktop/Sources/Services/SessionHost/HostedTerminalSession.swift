@@ -39,7 +39,9 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// the app lets go of it (`detachFromHost`).
     private var keepAlive: HostedTerminalSession?
     /// Reattaches left after a bound connection drops while the run may
-    /// still be going; one per binding.
+    /// still be going: one per `start` or `attach`, not restored by the
+    /// reattach itself, so two windows taking one run from each other
+    /// cannot loop.
     private var reattachesLeft = 1
     /// The connect of the current run (tests await it).
     private(set) var connecting: Task<Void, Never>?
@@ -88,6 +90,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         }
         let key = SessionHostAttachRequest(row: row, run: UUID().uuidString.lowercased())
         pid = 0
+        reattachesLeft = 1
         terminal.dropsTerminalReplies = false
         let scope = scope()
         connect(key) { [terminal] in
@@ -104,6 +107,12 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// pane's size goes to the host once it answers. The terminal's own
     /// replies are dropped until `replayQuietPeriod` after Attached.
     func attach(_ info: SessionHostSessionInfo) {
+        reattachesLeft = 1
+        reattach(info)
+    }
+
+    /// `attach` without restoring the reattach budget (`runLost`).
+    private func reattach(_ info: SessionHostSessionInfo) {
         terminal.getTerminal().resetToInitialState()
         terminal.dropsTerminalReplies = true
         pid = pid_t(info.pid)
@@ -188,14 +197,12 @@ final class HostedTerminalSession: TerminalSessionProcess {
             guard let info = try? frame.decoded(SessionHostSessionInfo.self) else { return }
             pid = pid_t(info.pid)
             bound = true
-            reattachesLeft = 1
             if hangUpOnBind, pid > 0 {
                 hangUpOnBind = false
                 client.signalGroup(pid, SIGHUP)
             }
             if frame.type == .attached {
-                // The host nudges the child to redraw at the pane's size.
-                if !info.exited { terminal.reportHostSize() }
+                if !info.exited { nudgeRedraw() }
                 endReplayQuiet(after: transport)
             }
         case .output:
@@ -206,15 +213,40 @@ final class HostedTerminalSession: TerminalSessionProcess {
         case .error:
             let message = (try? frame.decoded(SessionHostErrorMessage.self).message) ?? "unreadable error"
             Self.logger.error("session host: \(message, privacy: .public)")
-            // Before the host took the run, an error is the launch or
-            // attach failing: the run is over.
-            if !bound {
+            if bound, message == SessionHostErrorMessage.takenOver {
+                lostToTakeover()
+            } else if !bound {
+                // Before the host took the run, an error is the launch or
+                // attach failing: the run is over.
                 terminal.feed(text: "\r\n[Watchtower] \(message)\r\n")
                 finishRun(code: nil, forget: false)
             }
         default:
             break // HelloOK; unknown types are skipped by the decoder
         }
+    }
+
+    /// Makes the child redraw at the pane's size after an attach. A resize
+    /// to the same size does not make every program redraw (Node/Ink
+    /// ignores it), so the size goes out one column narrower first.
+    private func nudgeRedraw() {
+        let size = terminal.getTerminal()
+        if size.cols > 1 { resizeHost(cols: size.cols - 1, rows: size.rows) }
+        terminal.reportHostSize()
+    }
+
+    /// Another app instance attached this run (a dev build shares the
+    /// host with the installed app): it is that window's now. The pane
+    /// says so and lets go — no reattach, which would take it back and
+    /// loop, and no exit, since the run goes on. The pid is dropped so
+    /// closing the pane signals nothing.
+    private func lostToTakeover() {
+        terminal.feed(text: "\r\n[Watchtower] Another Watchtower window took this session over.\r\n")
+        exited = true
+        pid = 0
+        closeTransport()
+        terminal.dropsTerminalReplies = false
+        keepAlive = nil
     }
 
     /// Lets the terminal answer again once the replay is in.
@@ -228,7 +260,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
 
     /// The connection ended without an Exit. Before the host took the run
     /// it is gone. A bound run may still be going (the host dropped a slow
-    /// reader, or another attach took it over), so the host is asked once:
+    /// reader), so the host is asked once:
     /// a running run is reattached, an exited one reports its code, and an
     /// unknown one — or a second drop of the same binding — is gone.
     private func runLost(_ transport: any SessionHostTransport, reason: String) {
@@ -251,7 +283,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
             if info.exited {
                 finishRun(code: info.code.map { Int32(clamping: $0) }, forget: true)
             } else {
-                attach(info)
+                reattach(info)
             }
         }
     }
