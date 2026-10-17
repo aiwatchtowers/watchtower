@@ -39,6 +39,22 @@ const (
 	Error    FrameType = 0x8F
 )
 
+// ProtocolVersion is the protocol version this host speaks. The protocol
+// only grows additively.
+const ProtocolVersion = 1
+
+// HelloMsg is the payload of Hello (client: version) and HelloOK (host:
+// version and pid).
+type HelloMsg struct {
+	Version int `json:"version"`
+	Pid     int `json:"pid,omitempty"`
+}
+
+// ErrorMsg is the payload of an Error frame.
+type ErrorMsg struct {
+	Message string `json:"message"`
+}
+
 // LaunchReq starts a session for a terminal row.
 type LaunchReq struct {
 	Row        int64    `json:"row"`
