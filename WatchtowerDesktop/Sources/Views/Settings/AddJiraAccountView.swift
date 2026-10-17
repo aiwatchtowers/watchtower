@@ -39,6 +39,8 @@ struct AddJiraAccountView: View {
     /// Account ids read before the connect, so the board step lists the
     /// site it added; nil when the read failed (every enabled site).
     @State private var accountIDsBefore: Set<Int>?
+    /// Set on the click, before any await, so a double click starts one connect.
+    @State private var starting = false
 
     var body: some View {
         Group {
@@ -96,6 +98,7 @@ struct AddJiraAccountView: View {
                         connect()
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(starting)
                 }
             }
 
@@ -111,17 +114,17 @@ struct AddJiraAccountView: View {
     }
 
     private func connect() {
-        guard let vm else { return }
+        guard let vm, !starting else { return }
+        starting = true
         cancelled = false
         let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
-            accountIDsBefore = try? await appState.databaseManager?.dbPool.read { db in
-                Set(try JiraAccountQueries.fetchAll(db).map(\.id))
-            }
-            let connected = await vm.addAccountHoldingRestart(site: trimmedSite, daemonPolicy: daemonPolicy)
+            let result = await vm.addAccountHoldingRestart(site: trimmedSite, daemonPolicy: daemonPolicy)
+            starting = false
+            accountIDsBefore = result.accountIDsBefore
             // A user Cancel clears error (SIGTERM/SIGKILL branch) and returns
             // false; `cancelled` also covers a Cancel before the launch.
-            if connected && !cancelled {
+            if result.connected && !cancelled {
                 choosingBoards = true
             }
         }

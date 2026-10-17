@@ -76,7 +76,9 @@ fetch failed), and Done writes only the changes (`JiraBoardPicker.invocations`
 the step is up (`JiraAccountsViewModel.addAccountHoldingRestart`) and applied
 once when the sheet closes — Done, Skip or otherwise — by `finishBoardStep`:
 one restart under `.restart`, none under onboarding's `.deferred` (the daemon
-starts at the finish). No foreground sync: the daemon path syncs and starts
+starts at the finish). A sheet that closes while `jira add` is still in the
+browser marks the step closed, and the connect then applies its policy itself
+when it succeeds (reset at each connect). No foreground sync: the daemon path syncs and starts
 the backfill. Skip leaves
 Jira with no board, which readiness reports as `needsSource(.jiraBoards)`
 (first-run.md). Nothing is preselected. The Google card carries no scopes: connecting a

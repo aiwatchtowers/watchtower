@@ -187,7 +187,7 @@ extension JiraAccountsViewModelTests {
 
     func testBoardStepRestartsOnceAfterTheStepUnderRestart() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
-        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .restart)
+        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .restart).connected
         XCTAssertTrue(connected)
         XCTAssertNil(vm.daemonRestartTask, "no restart while the board step is up")
         XCTAssertEqual(daemon.restartCount, 0)
@@ -202,7 +202,7 @@ extension JiraAccountsViewModelTests {
 
     func testBoardStepNeverRestartsUnderDeferred() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
-        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .deferred)
+        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .deferred).connected
         XCTAssertTrue(connected)
         vm.finishBoardStep()
         XCTAssertNil(vm.daemonRestartTask)
@@ -211,10 +211,31 @@ extension JiraAccountsViewModelTests {
 
     func testFailedConnectHoldsNoRestart() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/false")
-        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .restart)
+        let connected = await vm.addAccountHoldingRestart(daemonPolicy: .restart).connected
         XCTAssertFalse(connected)
         vm.finishBoardStep()
         XCTAssertNil(vm.daemonRestartTask)
         XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    /// The sheet closes while `jira add` is still in the browser: the
+    /// connect that succeeds afterwards restarts once by itself under
+    /// `.restart` and never under `.deferred`.
+    func testStepClosedBeforeTheConnectFinishesAppliesThePolicyOnce() async throws {
+        for (policy, expected) in [(DaemonRestartPolicy.restart, 1), (.deferred, 0)] {
+            let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+            let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: policy).connected }
+            for _ in 0..<1000 where !vm.isConnecting { await Task.yield() }
+            XCTAssertTrue(vm.isConnecting, "\(policy)")
+            vm.finishBoardStep()
+            let connected = await connect.value
+            XCTAssertTrue(connected)
+            await vm.daemonRestartTask?.value
+            XCTAssertEqual(daemon.restartCount, expected, "\(policy)")
+            // Nothing is left held for a later sheet to fire.
+            vm.finishBoardStep()
+            await vm.daemonRestartTask?.value
+            XCTAssertEqual(daemon.restartCount, expected, "\(policy)")
+        }
     }
 }
