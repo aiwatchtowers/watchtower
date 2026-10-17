@@ -363,6 +363,18 @@ extension WorkbenchInstallStatus {
             + "ask guard \(askGuard && askToolBlock ? "on" : "missing") · "
             + "cleanup permission \(cleanupPermission ? "on" : "missing") · MCP \(mcp ? "on" : "missing")"
             + (codex.flatMap { $0.found || $0.trustError != nil ? "\n" + $0.summary : nil } ?? "")
+            + (groupRulesNote.map { "\n" + $0 } ?? "")
+    }
+
+    /// Board #476: a skill without the group rules gets a group's Work on It
+    /// as a single target's; nil when every set-up skill has them.
+    var groupRulesNote: String? {
+        let claudeLacks = (skill != "missing" || runsOnLegacySkill) && !groupPrompt
+        let codexLacks = codex.map { $0.skill && !$0.groupPrompt } ?? false
+        let lacking = [claudeLacks ? "Claude Code" : nil, codexLacks ? "Codex" : nil].compactMap { $0 }
+        guard !lacking.isEmpty else { return nil }
+        return "The \(lacking.joined(separator: " and ")) skill here has no group rules, "
+            + "so Work on It starts a group as a single target"
     }
 }
 

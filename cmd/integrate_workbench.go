@@ -467,6 +467,10 @@ type workbenchStatusJSON struct {
 	// workbench cleanup` (session cleanup §10) is there. Additive; a
 	// Re-run Setup adds it to a folder set up before it.
 	CleanupPermission bool `json:"cleanup_permission"`
+	// GroupPrompt: the skill a Claude Code session here reads names the
+	// group first prompt (checked by content in devpack), so Work on It on
+	// a group may send it (board #476). Additive.
+	GroupPrompt bool `json:"group_prompt"`
 	// Codex is the codex part (spec §4.5). hooks_trusted is null when codex
 	// could not be asked (not found, no answer, an unknown protocol);
 	// trust_error says why the trust could not be confirmed.
@@ -483,6 +487,7 @@ type codexStatusJSON struct {
 	HooksTrusted       *bool  `json:"hooks_trusted"`
 	ImportedDuplicates bool   `json:"imported_duplicates"`
 	TrustError         string `json:"trust_error,omitempty"`
+	GroupPrompt        bool   `json:"group_prompt"`
 }
 
 // legacySkillState is a legacy skill's state on the wire: "" when there is
@@ -521,10 +526,11 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			CurrentMCP: st.CurrentMCP, StateHooks: st.StateHooks,
 			AskGuard: st.AskGuard, AskToolBlock: st.AskToolBlock,
 			CleanupPermission: st.CleanupPermission,
+			GroupPrompt:       st.GroupPrompt,
 			Codex: codexStatusJSON{
 				Found: cs.Found, Skill: cs.Skill, SkillState: string(cs.SkillState),
 				HooksTrusted: cs.HooksTrusted, ImportedDuplicates: cs.ImportedDuplicates,
-				TrustError: cs.TrustError,
+				TrustError: cs.TrustError, GroupPrompt: cs.GroupPrompt,
 			},
 		})
 	}

@@ -935,6 +935,13 @@ final class WorkbenchesViewModel {
         installStatus[projectID]?.vocabulary ?? .current
     }
 
+    /// Whether the skill the agent's session reads knows the group first
+    /// prompt (`WorkbenchInstallStatus.skillKnowsGroupPrompt`); yes while the
+    /// status is unknown, as the shipped skill does.
+    func skillKnowsGroupPrompt(projectID: Int64, agent: AgentKind) -> Bool {
+        installStatus[projectID]?.skillKnowsGroupPrompt(agent) ?? true
+    }
+
     /// Reads `integrate status` for one project. The page runs this in
     /// `.task(id: project.id)`, so switching projects while the CLI is still
     /// running (it takes seconds) cancels it: a cancelled read is not a

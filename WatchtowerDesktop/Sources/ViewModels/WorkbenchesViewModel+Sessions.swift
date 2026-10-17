@@ -432,10 +432,10 @@ extension WorkbenchesViewModel {
         let agent = agent ?? currentDefaultAgent()
         let text = (title ?? found.targetText).trimmingCharacters(in: .whitespacesAndNewlines)
         // A blank brief is no brief: the work-on prompt goes instead.
-        let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let brief = given.flatMap { $0.isEmpty ? nil : $0 } ?? TerminalLaunch.workOnPrompt(
-            targetID: targetID, isGroup: found.isGroup, vocabulary: vocabulary(projectID: found.project.id)
-        )
+        let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let brief = given.isEmpty
+            ? await workOnPrompt(targetID: targetID, isGroup: found.isGroup, projectID: found.project.id, agent: agent)
+            : given
         return try await createAndActivate(
             .init(projectID: found.project.id, kind: TerminalSession.Kind(agent),
                   title: text.isEmpty ? "Target #\(targetID)" : text,
@@ -446,6 +446,30 @@ extension WorkbenchesViewModel {
             ticket: ticket,
             checkLaunch: checkLaunch,
             placing: (found.project, worktree, text)
+        )
+    }
+
+    /// The work-on prompt for `agent`'s new session (board #476). A group
+    /// whose workbench status was never read this run (a phone start, a
+    /// click before the page's read) reads it first, so an old skill does
+    /// not get the group prompt; still unknown, the group prompt goes, as
+    /// the shipped skill knows it. A skill without the group rules gets the
+    /// target prompt — logged, and named in the install tooltip.
+    private func workOnPrompt(targetID: Int64, isGroup: Bool, projectID: Int64, agent: AgentKind) async -> String {
+        if isGroup, installStatus[projectID] == nil {
+            await refreshInstallStatus(projectID: projectID)
+            if installStatus[projectID] == nil {
+                NSLog("WorkbenchesViewModel: install status of workbench %lld unknown; target #%lld gets the group prompt",
+                      projectID, targetID)
+            }
+        }
+        let knows = skillKnowsGroupPrompt(projectID: projectID, agent: agent)
+        if isGroup, !knows {
+            NSLog("WorkbenchesViewModel: the %@ skill of workbench %lld has no group rules; group #%lld starts as a target",
+                  agent.rawValue, projectID, targetID)
+        }
+        return TerminalLaunch.workOnPrompt(
+            targetID: targetID, isGroup: isGroup, skillKnowsGroups: knows, vocabulary: vocabulary(projectID: projectID)
         )
     }
 

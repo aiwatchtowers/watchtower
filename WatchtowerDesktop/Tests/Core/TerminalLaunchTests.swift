@@ -132,6 +132,21 @@ final class TerminalLaunchTests: XCTestCase {
         }
     }
 
+    /// Board #476: the group wording goes only to a skill that knows it; any
+    /// other gets the target wording, in the folder's vocabulary.
+    func testWorkOnPromptSendsTheGroupWordingOnlyToASkillThatKnowsIt() {
+        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
+            let target = TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: vocabulary)
+            let group = TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: vocabulary)
+            for (isGroup, knows, want) in [(true, true, group), (true, false, target), (false, true, target), (false, false, target)] {
+                XCTAssertEqual(
+                    TerminalLaunch.workOnPrompt(targetID: 7, isGroup: isGroup, skillKnowsGroups: knows, vocabulary: vocabulary),
+                    want, "\(vocabulary) isGroup=\(isGroup) skillKnowsGroups=\(knows)"
+                )
+            }
+        }
+    }
+
     /// A folder set up before the Workbench rename has only the old skill
     /// (spec 2026-10-02 §5.3); the prompts name what the folder has, and stay
     /// one line without control characters.
@@ -151,9 +166,14 @@ final class TerminalLaunchTests: XCTestCase {
                        "Work on group #7 using the watchtower-workbench skill.")
         XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .legacy),
                        "Work on group #7 using the watchtower-project skill.")
-        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true, vocabulary: .current),
+        // `integrate status`'s group_prompt looks for this prefix in the
+        // installed skill (Go `groupPromptMarker`, internal/devpack/workbench.go).
+        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
+            XCTAssertTrue(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: vocabulary).hasPrefix("Work on group #"))
+        }
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true, skillKnowsGroups: true, vocabulary: .current),
                        TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .current))
-        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false, vocabulary: .current),
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false, skillKnowsGroups: true, vocabulary: .current),
                        TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .current))
         for vocabulary in [WorkbenchVocabulary.current, .legacy] {
             for prompt in [
