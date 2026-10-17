@@ -17,6 +17,9 @@ struct CodeFilesPaneView: View {
     /// The folder the pane shows and edits in.
     let root: CodeRoot
     @State private var refusals: [CodeFilesCenter.Refusal] = []
+    /// The html files shown as Preview, by absolute path (#535).
+    @State private var htmlPreviews: Set<String> = []
+    @State private var htmlReload = 0
 
     var body: some View {
         let tabs = files.tabs(for: root)
@@ -50,9 +53,14 @@ struct CodeFilesPaneView: View {
                         .id(root)
                     Divider()
                     CodeFileBanners(buffer: buffer)
+                    if HTMLPreviewPolicy.isHTMLFile(active) {
+                        CodeHTMLPreviewBar(buffer: buffer, isOn: htmlPreviewShown(buffer), reload: $htmlReload)
+                        Divider()
+                    }
                 }
                 MonacoEditorView(files: files, project: project, root: root, tabs: tabs)
                     .overlay { activeOverlay(tabs) }
+                    .overlay { htmlPreviewOverlay(tabs) }
                     .overlay {
                         if let questions = files.questions {
                             AskAIButtonOverlay(questions: questions, project: project)
@@ -97,6 +105,28 @@ struct CodeFilesPaneView: View {
     private var inspectorToggle: some View {
         if let usages = files.usages {
             CodeInspectorToggle(usages: usages, project: project)
+        }
+    }
+
+    private func htmlPreviewShown(_ buffer: CodeFileBuffer) -> Binding<Bool> {
+        Binding(
+            get: { htmlPreviews.contains(buffer.url.path) },
+            set: { on in
+                if on { htmlPreviews.insert(buffer.url.path) } else { htmlPreviews.remove(buffer.url.path) }
+            }
+        )
+    }
+
+    /// The rendered page over the editor (kept mounted, so the tab keeps
+    /// its undo) while the active html file is in Preview.
+    @ViewBuilder
+    private func htmlPreviewOverlay(_ tabs: CodeTabs) -> some View {
+        if let active = tabs.active, HTMLPreviewPolicy.isHTMLFile(active) {
+            let buffer = files.buffer(for: root, relPath: active)
+            if buffer.state == .loaded, htmlPreviews.contains(buffer.url.path) {
+                CodeHTMLPreviewPane(buffer: buffer, reload: htmlReload)
+                    .id(buffer.url)
+            }
         }
     }
 

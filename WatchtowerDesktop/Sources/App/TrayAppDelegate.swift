@@ -251,6 +251,8 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                 // Not reported stopped: the next launch reconciles them.
                 AppState.shared.automationSessionCenter?.stop()
                 await AppState.shared.terminalCenter.closeAll()
+                // The html preview's loopback server (#535), if it ever started.
+                LocalPreviewServer.shared.stop()
             },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }

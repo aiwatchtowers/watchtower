@@ -39,7 +39,14 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "Views/Comments/DocumentTextView.swift",
             // Split out of / added beside them by #178–#181.
             "Views/Comments/DocumentAttributedString.swift",
-            "Views/Comments/CommentTextEditor.swift"
+            "Views/Comments/CommentTextEditor.swift",
+            // The sandboxed web view an html artifact renders in (#535). The
+            // loopback server it hands "Open in Browser" to
+            // (`LocalPreviewServer`) only answers local GET/HEAD requests and
+            // never connects anywhere; it is pinned by its own tests.
+            "Views/Common/SandboxedHTMLView.swift",
+            "WatchtowerCore/Services/LocalPreview/HTMLPreviewPolicy.swift",
+            "WatchtowerCore/Services/LocalPreview/LocalPreviewRouting.swift"
         ]
         let forbidden = ["Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool",
                          ".send(", "sendDraft", "startTurn"]
