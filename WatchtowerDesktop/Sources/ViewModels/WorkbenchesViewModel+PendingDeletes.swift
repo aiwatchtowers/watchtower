@@ -81,23 +81,34 @@ extension WorkbenchesViewModel {
         for case let projectID? in lists { await asks.load(projectID: projectID) }
     }
 
-    /// The quit path (`willTerminate`): the batch is committed now, through
-    /// the same write as the window's, and the quit waits — bounded by
-    /// `quitDeleteWait` in all — for it and for a commit the window's timer
-    /// already started. A row still closing is committed too: the quit
-    /// closes every terminal anyway. A timeout or an error is logged; the
-    /// row then survives and is listed again on the next launch — the safe
-    /// side. Whether every write finished within the bound.
+    /// The quit path (`QuitCoordinator`'s async phase, started at its
+    /// beginning, alongside the chat, terminal and daemon steps; board
+    /// #588): the batch is committed now, through the same write as the
+    /// window's, and the quit waits — never holding the main thread — for
+    /// every delete write in flight (`deleteWrites`: this batch and a commit
+    /// the window's timer already started), bounded by `quitDeleteWait` for
+    /// the whole set. The bound outlasts the write's busy budget, so a
+    /// briefly locked database no longer loses the delete. A row still
+    /// closing is committed too: the quit closes every terminal anyway. A
+    /// timeout or an error is logged; the row then survives and is listed
+    /// again on the next launch — the safe side. Whether every write
+    /// finished within the bound.
     @discardableResult
-    func commitPendingDeletesForQuit() -> Bool {
+    func commitPendingDeletesForQuit() async -> Bool {
         cancelPendingDeleteWindow()
         let ids = pendingDeletes.takeBatch().map(\.sessionID)
         if !ids.isEmpty { startSessionDeletes(ids) }
-        guard deleteWrites.wait(timeout: .now() + quitDeleteWait) == .success else {
-            NSLog("WorkbenchesViewModel: deleting sessions on quit timed out; they are listed again next launch")
-            return false
+        let writes = deleteWrites
+        let bound = quitDeleteWait
+        let finished = await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            writes.notify(queue: .global(qos: .userInitiated)) { once.resume(true) }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + bound) { once.resume(false) }
         }
-        return true
+        if !finished {
+            NSLog("WorkbenchesViewModel: deleting sessions on quit timed out; they are listed again next launch")
+        }
+        return finished
     }
 
     /// The workbench is gone and its delete cascaded its hidden sessions:
@@ -175,5 +186,24 @@ extension WorkbenchesViewModel {
     private static func sessionLists(of entries: [PendingSessionDeletes.Entry]) -> [Int64?] {
         var seen: Set<Int64?> = []
         return entries.map(\.workbenchID).filter { seen.insert($0).inserted }
+    }
+}
+
+/// Resumes a continuation once: the quit's wait races the delete writes'
+/// `notify` against its bound, and only the first one to fire counts.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: value)
     }
 }
