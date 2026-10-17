@@ -144,7 +144,7 @@ RunChannelDigests(ctx)
     │
     ├─ For each channel: filter by threshold
     │    │
-    │    │  msgs = GetMessagesByTimeRange(channelID, since, now)
+    │    │  msgs = GetOldestMessagesByTimeRange(channelID, since, now, limit)
     │    │  visible = count(msgs where text != "" && !isDeleted)
     │    │
     │    ├─ visible < MinMessages (default 5)? → SKIP
