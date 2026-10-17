@@ -193,7 +193,7 @@ var (
 	// ownedHookSpecs is every event the workbench install owns an entry in.
 	// installedStateSpecs: what InstallStateHooks writes and RemoveStateHooks takes out.
 	installedStateSpecs = append([]hookSpec{permissionWaitSpec}, stateHookSpecs...)
-	ownedHookSpecs      = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec, permissionWaitSpec}, stateHookSpecs...)
+	ownedHookSpecs      = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec}, installedStateSpecs...)
 )
 
 // askGuardMarkerTemplate opens the Stop prompt hook an install from before

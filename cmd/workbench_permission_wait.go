@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -23,6 +24,13 @@ import (
 // permissionPollEvery is how often permission-wait reads its request back
 // (spec 2026-10-17-phone-permission-answers §4.2 step 3). A var for tests.
 var permissionPollEvery = time.Second
+
+// permissionReadFailures is how many reads in a row may fail before the
+// wait gives up and closes its request expired.
+const permissionReadFailures = 3
+
+// readPermissionRequest is the poll's read; a var so a test can fail it.
+var readPermissionRequest = (*db.DB).GetPermissionRequest
 
 // permissionSummaryRunes caps what a request shows the owner.
 const permissionSummaryRunes = 2000
@@ -43,8 +51,9 @@ var workbenchPermissionWaitCmd = &cobra.Command{
 		"it records the prompt on the Desktop terminal's row named by\n" +
 		"WATCHTOWER_TERMINAL_SESSION_ID (state Needs approval, a pending permission request) and\n" +
 		"waits until the owner's phone allows or denies it, then prints the decision. When the\n" +
-		"owner answers at the Mac first, the session leaves the board, or the hook is stopped, it\n" +
-		"prints nothing and the prompt stays on the Mac. Without that variable it does nothing.\n" +
+		"owner answers at the Mac first, the session leaves the board, or the hook is stopped (the\n" +
+		"request is then closed expired), it prints nothing and the prompt stays on the Mac.\n" +
+		"Without that variable it does nothing.\n" +
 		"It always exits 0.",
 	// No root schema/config pre-run: a broken config must not fail the hook
 	// (the `workbench session-state` precedent); the DB is opened by the command.
@@ -52,15 +61,7 @@ var workbenchPermissionWaitCmd = &cobra.Command{
 	Args:               cobra.ArbitraryArgs,
 	FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if err := checkWorkbenchIDFlags(cmd); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: permission request not recorded: %v\n", err)
-			return nil
-		}
-		base := cmd.Context()
-		if base == nil {
-			base = context.Background()
-		}
-		ctx, stop := signal.NotifyContext(base, syscall.SIGTERM, os.Interrupt)
+		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 		defer stop()
 		runPermissionWaitHook(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
 			workbenchPermissionWaitFlagWorkbench)
@@ -89,7 +90,7 @@ func runPermissionWaitHook(ctx context.Context, stdin io.Reader, stdout, stderr 
 	}
 	if err == nil {
 		var decision string
-		decision, err = waitPermissionDecision(ctx, stdin, rowID, rawWorkbenchID)
+		decision, err = waitPermissionDecision(ctx, stdin, stderr, rowID, rawWorkbenchID)
 		if decision != "" {
 			fmt.Fprint(stdout, decision)
 		}
@@ -101,7 +102,7 @@ func runPermissionWaitHook(ctx context.Context, stdin io.Reader, stdout, stderr 
 
 // waitPermissionDecision records the request (spec §4.2 step 2) and waits
 // for its answer (step 3): the decision to print, or "" for none.
-func waitPermissionDecision(ctx context.Context, stdin io.Reader, rowID int64, rawWorkbenchID string) (string, error) {
+func waitPermissionDecision(ctx context.Context, stdin io.Reader, stderr io.Writer, rowID int64, rawWorkbenchID string) (string, error) {
 	workbenchID, err := strconv.ParseInt(strings.TrimSpace(rawWorkbenchID), 10, 64)
 	if err != nil || workbenchID <= 0 {
 		return "", fmt.Errorf("invalid --workbench %q", briefClip(rawWorkbenchID, 40))
@@ -119,7 +120,7 @@ func waitPermissionDecision(ctx context.Context, stdin io.Reader, rowID int64, r
 	if in.Event != "PermissionRequest" || in.SessionID == "" {
 		return "", nil
 	}
-	_, database, err := openJiraCmdDB()
+	database, err := openHookDB()
 	if err != nil {
 		return "", err
 	}
@@ -131,64 +132,108 @@ func waitPermissionDecision(ctx context.Context, stdin io.Reader, rowID int64, r
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return "", err
 	}
+	summary, clipped := permissionSummary(in.ToolName, in.ToolInput)
 	id, err := database.OpenPermissionRequest(row.ID, workbenchID, in.SessionID, in.ToolName,
-		permissionSummary(in.ToolName, in.ToolInput), at, db.AgentOrder{})
+		summary, clipped, at, db.AgentOrder{})
 	if err != nil {
 		return "", err
 	}
-	return pollPermissionRequest(ctx, database, id, workbenchID, in.SessionID)
+	return pollPermissionRequest(ctx, stderr, database, id, workbenchID, in.SessionID)
 }
 
 // pollPermissionRequest reads request id back every permissionPollEvery
-// until it is decided. The phone's allow or deny is the decision. The Mac
-// answered when the session's state moved past the request's time to a
-// state other than approval (a tool's working, a Mac deny's waiting, a
-// subagent's event alike: any of them fails safe) or the session left the
-// board or finished: the request is closed answered_on_mac and nothing is
-// printed. A request closed by anything else (a newer prompt of the
-// session, the Desktop's expiry) and a cancelled ctx print nothing.
-func pollPermissionRequest(ctx context.Context, database *db.DB, id, workbenchID int64, sessionID string) (string, error) {
+// until it is decided (checkPermissionRequest). A stopped hook (ctx done:
+// its timeout, Claude Code quitting, a signal) closes the request expired,
+// so the phone no longer offers an answer nothing reads. A failed read is
+// one stderr line and the poll goes on; permissionReadFailures in a row
+// close the request expired too. Either close is a compare-and-set: an
+// answer that landed first stays.
+func pollPermissionRequest(ctx context.Context, stderr io.Writer, database *db.DB, id, workbenchID int64,
+	sessionID string) (string, error) {
 	ticker := time.NewTicker(permissionPollEvery)
 	defer ticker.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
-			return "", nil
+			return "", expirePermissionRequest(database, id)
 		case <-ticker.C:
 		}
-		req, err := database.GetPermissionRequest(id)
-		if errors.Is(err, db.ErrPermissionRequestNotFound) {
-			return "", nil // the session's row was deleted, its requests with it
+		decision, done, err := checkPermissionRequest(stderr, database, id, workbenchID, sessionID)
+		if done {
+			return decision, err
 		}
-		if err != nil {
-			return "", err
+		if err == nil {
+			failures = 0
+			continue
 		}
-		switch req.Status {
-		case db.PermissionAllowed:
-			return permissionAllowOutput, nil
-		case db.PermissionDenied:
-			return permissionDenyOutput, nil
-		case db.PermissionPending:
-		default:
-			return "", nil
-		}
-		row, err := hookSessionRow(database, req.TerminalSessionID, workbenchID, sessionID)
-		if err != nil {
-			return "", err
-		}
-		if row == nil || row.Finished ||
-			(row.AgentStateAt.After(req.CreatedAt) && row.AgentState.String != agentStateApproval) {
-			_, err := database.ClosePermissionRequest(id, db.PermissionAnsweredOnMac, hookNow())
-			return "", err
+		failures++
+		fmt.Fprintf(stderr, "watchtower: permission request %d: reading it back (%d of %d): %v\n",
+			id, failures, permissionReadFailures, err)
+		if failures >= permissionReadFailures {
+			return "", expirePermissionRequest(database, id)
 		}
 	}
 }
 
+// checkPermissionRequest is one read of request id. The phone's allow or
+// deny is the decision. The Mac answered when the session's state moved,
+// at or past the request's time, to a state other than approval (a tool's
+// working, a Mac deny's waiting, a subagent's event alike: any of them
+// fails safe) or the session left the board or finished: the request is
+// closed answered_on_mac and nothing is printed. A request closed by
+// anything else (a newer prompt of the session, the Desktop's expiry) or
+// gone with its session prints nothing. done is false while it waits, and
+// on a failed read (err).
+func checkPermissionRequest(stderr io.Writer, database *db.DB, id, workbenchID int64,
+	sessionID string) (decision string, done bool, err error) {
+	req, err := readPermissionRequest(database, id)
+	if errors.Is(err, db.ErrPermissionRequestNotFound) {
+		return "", true, nil // the session's row was deleted, its requests with it
+	}
+	if err != nil {
+		return "", false, err
+	}
+	switch req.Status {
+	case db.PermissionAllowed:
+		return permissionAllowOutput, true, nil
+	case db.PermissionDenied:
+		return permissionDenyOutput, true, nil
+	case db.PermissionPending:
+	default:
+		return "", true, nil
+	}
+	row, err := hookSessionRow(database, req.TerminalSessionID, workbenchID, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	if row != nil && !row.Finished &&
+		(row.AgentStateAt.Before(req.CreatedAt) || row.AgentState.String == agentStateApproval) {
+		return "", false, nil
+	}
+	closed, err := database.ClosePermissionRequest(id, db.PermissionAnsweredOnMac, hookNow())
+	if err == nil && !closed {
+		// The phone's answer landed after the Mac's: Claude Code keeps the Mac's.
+		fmt.Fprintf(stderr, "watchtower: permission request %d: the phone answered after the Mac; the Mac's answer stands\n", id)
+	}
+	return "", true, err
+}
+
+// expirePermissionRequest closes request id expired: no hook reads it any
+// more. The database calls take no context, so a cancelled wait still
+// writes it, under the busy timeout already set.
+func expirePermissionRequest(database *db.DB, id int64) error {
+	_, err := database.ClosePermissionRequest(id, db.PermissionExpired, hookNow())
+	return err
+}
+
 // permissionSummary is what a permission request shows the owner, at most
-// permissionSummaryRunes runes: a Bash command (and its description on the
-// next line), the file an Edit, Write or NotebookEdit touches, the URL a
-// WebFetch reads, otherwise the tool input as compact JSON.
-func permissionSummary(toolName string, toolInput json.RawMessage) string {
+// permissionSummaryRunes runes, and whether it was cut short (clipped): a
+// Bash command (and its description on the next line as a `# ` comment,
+// so it never reads as part of the command), the file an Edit, Write or
+// NotebookEdit touches, the URL a WebFetch reads, otherwise the tool input
+// as compact JSON.
+func permissionSummary(toolName string, toolInput json.RawMessage) (summary string, clipped bool) {
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(toolInput, &fields)
 	str := func(key string) string {
@@ -203,7 +248,7 @@ func permissionSummary(toolName string, toolInput json.RawMessage) string {
 	case "Bash":
 		s = str("command")
 		if d := str("description"); s != "" && d != "" {
-			s += "\n" + d
+			s += "\n# " + d
 		}
 	case "Edit", "Write", "NotebookEdit":
 		s = str("file_path")
@@ -221,5 +266,8 @@ func permissionSummary(toolName string, toolInput json.RawMessage) string {
 			s = strings.TrimSpace(string(toolInput))
 		}
 	}
-	return clipRunes(s, permissionSummaryRunes)
+	if utf8.RuneCountInString(s) <= permissionSummaryRunes {
+		return s, false
+	}
+	return clipRunes(s, permissionSummaryRunes), true
 }

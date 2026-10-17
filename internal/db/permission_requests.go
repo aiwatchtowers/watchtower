@@ -21,13 +21,16 @@ var ErrPermissionRequestNotFound = errors.New("permission request not found")
 
 // PermissionRequest is one permission prompt a PermissionRequest hook waits
 // on (spec 2026-10-17-phone-permission-answers §4.1). Summary is what the
-// owner approves; the full tool input is never stored.
+// owner approves (a Bash command, a file path, a URL, else the tool input
+// as JSON, at most 2000 runes); nothing else of the tool input is stored.
+// SummaryClipped says the summary was cut short: the phone offers Deny only.
 type PermissionRequest struct {
 	ID                int64
 	TerminalSessionID int64
 	WorkbenchID       int64
 	ToolName          string
 	Summary           string
+	SummaryClipped    bool
 	Status            string
 	CreatedAt         time.Time
 	DecidedAt         sql.NullString // agent-state stamp layout
@@ -40,7 +43,7 @@ type PermissionRequest struct {
 // session's older pending requests answered_on_mac (one prompt at a time per
 // session) and inserts the new one pending. It returns the new row's id.
 func (db *DB) OpenPermissionRequest(sessionRowID, workbenchID int64, sessionID string, toolName, summary string,
-	at time.Time, order AgentOrder) (int64, error) {
+	summaryClipped bool, at time.Time, order AgentOrder) (int64, error) {
 	if _, err := db.SetTerminalAgentState(sessionRowID, workbenchID, sessionID, "approval", at, "", nil, false, order); err != nil {
 		return 0, fmt.Errorf("recording approval state for session %d: %w", sessionRowID, err)
 	}
@@ -56,9 +59,9 @@ func (db *DB) OpenPermissionRequest(sessionRowID, workbenchID int64, sessionID s
 		return 0, fmt.Errorf("closing older permission requests of session %d: %w", sessionRowID, err)
 	}
 	res, err := tx.Exec(`INSERT INTO permission_requests
-		(terminal_session_id, workbench_id, tool_name, summary, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		sessionRowID, workbenchID, toolName, summary, PermissionPending, stamp)
+		(terminal_session_id, workbench_id, tool_name, summary, summary_clipped, status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sessionRowID, workbenchID, toolName, summary, summaryClipped, PermissionPending, stamp)
 	if err != nil {
 		return 0, fmt.Errorf("inserting permission request: %w", err)
 	}
@@ -72,13 +75,14 @@ func (db *DB) OpenPermissionRequest(sessionRowID, workbenchID int64, sessionID s
 	return id, nil
 }
 
-// GetPermissionRequest reads one request; read-only.
+// GetPermissionRequest reads one request; read-only. A created_at that is
+// not an agent-state stamp is an error (Go writes only that layout).
 func (db *DB) GetPermissionRequest(id int64) (*PermissionRequest, error) {
 	var r PermissionRequest
 	var created string
-	err := db.QueryRow(`SELECT id, terminal_session_id, workbench_id, tool_name, summary, status,
+	err := db.QueryRow(`SELECT id, terminal_session_id, workbench_id, tool_name, summary, summary_clipped, status,
 		created_at, decided_at, decided_by FROM permission_requests WHERE id = ?`, id).
-		Scan(&r.ID, &r.TerminalSessionID, &r.WorkbenchID, &r.ToolName, &r.Summary, &r.Status,
+		Scan(&r.ID, &r.TerminalSessionID, &r.WorkbenchID, &r.ToolName, &r.Summary, &r.SummaryClipped, &r.Status,
 			&created, &r.DecidedAt, &r.DecidedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrPermissionRequestNotFound
@@ -86,7 +90,10 @@ func (db *DB) GetPermissionRequest(id int64) (*PermissionRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading permission request %d: %w", id, err)
 	}
-	r.CreatedAt, _ = ParseAgentStateStamp(created)
+	var ok bool
+	if r.CreatedAt, ok = ParseAgentStateStamp(created); !ok {
+		return nil, fmt.Errorf("reading permission request %d: bad created_at %q", id, created)
+	}
 	return &r, nil
 }
 

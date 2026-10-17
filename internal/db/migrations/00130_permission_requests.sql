@@ -5,6 +5,7 @@ CREATE TABLE permission_requests (
   workbench_id        INTEGER NOT NULL,
   tool_name           TEXT NOT NULL DEFAULT '',
   summary             TEXT NOT NULL DEFAULT '',
+  summary_clipped     INTEGER NOT NULL DEFAULT 0,
   status              TEXT NOT NULL CHECK (status IN ('pending','allowed','denied','answered_on_mac','expired')),
   created_at          TEXT NOT NULL,
   decided_at          TEXT,
