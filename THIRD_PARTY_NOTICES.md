@@ -565,3 +565,32 @@ of the copyright holder.
 All trademarks and registered trademarks mentioned herein are the
 property of their respective owners.
 ```
+
+## Code viewer (Desktop app)
+
+The Desktop app's code viewer (`WatchtowerDesktop/Sources/CodeEditorWeb`)
+bundles components fetched at build time, not committed: the Monaco editor
+(`scripts/fetch-monaco.sh`, its MIT `LICENSE` copied into `vs/`) and the
+TextMate highlighting (`scripts/fetch-textmate.sh`, board #738). The latter
+copies each component's licence and notices into `textmate/` next to the
+files they cover.
+
+| Component | npm package | Version | Licence | Upstream |
+|---|---|---|---|---|
+| Monaco editor | `monaco-editor` | 0.57.0 | MIT | https://github.com/microsoft/monaco-editor |
+| TextMate tokenizer | `vscode-textmate` | 9.3.2 | MIT | https://github.com/microsoft/vscode-textmate |
+| Oniguruma regex engine (WebAssembly) | `vscode-oniguruma` | 2.0.1 | MIT; Oniguruma itself BSD-2-Clause (the package's `NOTICES.txt`) | https://github.com/microsoft/vscode-oniguruma |
+| TextMate grammars | `tm-grammars` | 1.32.22 | MIT (the collection); each grammar under its own licence, listed with its copyright notice and full text in the package's `NOTICE` (shipped as `textmate/tm-grammars.NOTICE`) | https://github.com/shikijs/textmate-grammars-themes |
+
+Only grammars whose licence is MIT, Apache-2.0, MPL-2.0 (HCL, shipped
+unmodified; source at https://github.com/hashicorp/syntax) or the TextMate
+bundle licence are vendored; the list is `GRAMMARS` in
+`scripts/fetch-textmate.sh`. The YAML and MIPS grammars come from
+https://github.com/textmate/yaml.tmbundle and
+https://github.com/textmate/mips.tmbundle, which `tm-grammars`' NOTICE does
+not cover; their README states:
+
+    Permission to copy, use, modify, sell and distribute this
+    software is granted. This software is provided "as is" without
+    express or implied warranty, and with no claim as to its
+    suitability for any purpose.
