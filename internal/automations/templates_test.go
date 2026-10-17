@@ -229,6 +229,26 @@ func TestRenderTemplate_ListParam(t *testing.T) {
 	}
 }
 
+// #582: every template still parses with two values for each of its params,
+// so a placeholder on a line that must not be repeated is caught here.
+func TestRenderTemplate_EveryTemplateParsesWithListParams(t *testing.T) {
+	for _, tpl := range automations.Templates() {
+		params := map[string]string{}
+		for _, p := range tpl.Params {
+			params[p.Key] = p.Example + ",OTHER"
+		}
+		files, err := automations.RenderTemplate(tpl.Name, params)
+		if err != nil {
+			t.Fatalf("%s: %v", tpl.Name, err)
+		}
+		for slug, data := range files {
+			if _, err := automations.ParseRecipe(slug, data, templateScope(tpl.Scope)); err != nil {
+				t.Errorf("%s/%s with %v: %v", tpl.Name, slug, params, err)
+			}
+		}
+	}
+}
+
 func TestRenderTemplate_Params(t *testing.T) {
 	files, err := automations.RenderTemplate("jira-state-report", map[string]string{"PROJECT": "PAY"})
 	if err != nil {

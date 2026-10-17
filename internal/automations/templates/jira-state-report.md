@@ -24,10 +24,15 @@ function clip(s, n) {
   return s && s.length > n ? s.slice(0, n) + "…" : s || "";
 }
 
-// Non-ASCII text takes more bytes than characters (counted as 3 here).
-function utf8Bytes(s) {
+// The bytes of the input as llm() sends it: Go's JSON writes <, > and &
+// (and U+2028, U+2029) as 6-byte escapes; other non-ASCII text is counted
+// as 3 bytes.
+function inputBytes(s) {
   let n = 0;
-  for (let i = 0; i < s.length; i++) n += s.charCodeAt(i) < 0x80 ? 1 : 3;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c === 0x3c || c === 0x3e || c === 0x26 || c === 0x2028 || c === 0x2029 ? 6 : c < 0x80 ? 1 : 3;
+  }
   return n;
 }
 
@@ -56,7 +61,7 @@ for (let keep = 200; ; keep = Math.floor(keep / 2)) {
       intervals: d.intervals.slice(0, keep * 5),
     })),
   };
-  if (keep === 0 || utf8Bytes(JSON.stringify(input)) <= 190 * 1024) break;
+  if (keep === 0 || inputBytes(JSON.stringify(input)) <= 190 * 1024) break;
 }
 
 const names = projects.join(", ");

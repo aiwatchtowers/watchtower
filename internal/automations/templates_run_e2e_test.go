@@ -522,16 +522,31 @@ FROM n;
 // cap, and the estimated tokens fit the recipes' budgets (the generator
 // reports no usage, so llm() estimates bytes/4).
 func TestTemplates_ProductionSizeReports(t *testing.T) {
+	// Go's JSON writes & as a 6-byte escape: titles of 160 "&" are 960 bytes
+	// in the llm() input, so a script counting characters sends well past the
+	// cap. (150 issues and no description keep list_jira_issues under its
+	// 256 KiB result cap.)
+	ampOpsSeed := strings.NewReplacer(
+		`'Operations work item ' || i || ' ' || hex(randomblob(40)),
+    hex(randomblob(4096))`, `replace(hex(zeroblob(80)), '0', '&'), ''`,
+		"WHERE i < 200", "WHERE i < 150",
+	).Replace(productionSizeOpsSeed)
+	if ampOpsSeed == productionSizeOpsSeed {
+		t.Fatal("the &-heavy seed did not replace the OPS titles")
+	}
 	for _, c := range []struct {
 		name, template string
 		params         map[string]string
+		seed           string
 		want           []string
 	}{
-		{"jira-state-report", "jira-state-report", map[string]string{"PROJECT": "PAY"}, []string{"PAY-300"}},
+		{"jira-state-report", "jira-state-report", map[string]string{"PROJECT": "PAY"}, "", []string{"PAY-300"}},
 		// #582: two production-size projects still fit one llm() input.
 		{"jira-state-report two projects", "jira-state-report", map[string]string{"PROJECT": "PAY,OPS"},
-			[]string{`"key":"PAY-`, `"key":"OPS-`}},
-		{"team-performance-report", "team-performance-report", nil, []string{"PAY-300"}},
+			productionSizeOpsSeed, []string{`"key":"PAY-`, `"key":"OPS-`}},
+		{"jira-state-report &-heavy titles", "jira-state-report", map[string]string{"PROJECT": "PAY,OPS"},
+			ampOpsSeed, []string{`"key":"OPS-`, strings.Repeat(`\u0026`, 2)}},
+		{"team-performance-report", "team-performance-report", nil, "", []string{"PAY-300"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nA busy week."}}
@@ -539,9 +554,9 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 			if _, err := f.d.Exec(productionSizeSeed); err != nil {
 				t.Fatalf("seeding production-size rows: %v", err)
 			}
-			if strings.Contains(c.params["PROJECT"], "OPS") {
-				if _, err := f.d.Exec(productionSizeOpsSeed); err != nil {
-					t.Fatalf("seeding production-size OPS rows: %v", err)
+			if c.seed != "" {
+				if _, err := f.d.Exec(c.seed); err != nil {
+					t.Fatalf("seeding more production-size rows: %v", err)
 				}
 			}
 			a := f.installTemplate(t, c.template, c.params)

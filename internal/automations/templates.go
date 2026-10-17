@@ -139,9 +139,16 @@ func (p TemplateParam) HasDefault() bool {
 }
 
 // ErrNoActiveJiraProject is <PROJECT>'s default finding nothing: the install
-// is refused rather than writing a report on no project.
-var ErrNoActiveJiraProject = errors.New("needs a Jira project where you are assignee or reporter of an open issue; " +
-	"connect Jira and sync it, or pass --param PROJECT=<KEY>")
+// is refused rather than writing a report on no project. Its text is what the
+// Desktop gallery shows; the CLI's text output adds the --param hint.
+// It is a sentence for the owner, not a Go-style error string.
+var ErrNoActiveJiraProject error = noActiveJiraProjectError{}
+
+type noActiveJiraProjectError struct{}
+
+func (noActiveJiraProjectError) Error() string {
+	return "This template needs a Jira project where you are the assignee or reporter of an open issue."
+}
 
 // ownerJiraProjects is <PROJECT>'s default: every active Jira project of the
 // owner (db.OwnerActiveJiraProjects), comma-separated; none is
@@ -158,8 +165,17 @@ func ownerJiraProjects(d *db.DB) (string, error) {
 	return strings.Join(keys, ","), nil
 }
 
-// TemplateParamValues splits a param value into its comma-separated values.
-func TemplateParamValues(value string) []string { return strings.Split(value, ",") }
+// TemplateParamValues splits a param value into its comma-separated values,
+// a repeated one kept once (first place).
+func TemplateParamValues(value string) []string {
+	var out []string
+	for _, v := range strings.Split(value, ",") {
+		if !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
 
 // FillTemplateParams returns params plus a default for every declared param
 // of template name that params leaves out and that has one
@@ -180,6 +196,9 @@ func FillTemplateParams(d *db.DB, name string, params map[string]string) (map[st
 			continue
 		}
 		value, err := resolve(d)
+		if errors.Is(err, ErrNoActiveJiraProject) {
+			return nil, err // already says what to do, in the gallery's words
+		}
 		if err != nil {
 			return nil, fmt.Errorf("choosing <%s> for %s: %w", p.Key, name, err)
 		}
@@ -202,7 +221,9 @@ func RenderTemplate(name string, params map[string]string) (map[string][]byte, e
 	if !ok {
 		return nil, fmt.Errorf("no template %q", name)
 	}
-	for key, value := range params {
+	keys := slices.Sorted(maps.Keys(params)) // a stable error and fill order
+	for _, key := range keys {
+		value := params[key]
 		if !slices.ContainsFunc(t.Params, func(p TemplateParam) bool { return p.Key == key }) {
 			return nil, fmt.Errorf("template %s has no param %s", name, key)
 		}
@@ -219,8 +240,8 @@ func RenderTemplate(name string, params map[string]string) (map[string][]byte, e
 		if err != nil {
 			return nil, fmt.Errorf("template %s: %w", name, err)
 		}
-		for key, value := range params {
-			data = fillTemplateParam(data, key, TemplateParamValues(value))
+		for _, key := range keys {
+			data = fillTemplateParam(data, key, TemplateParamValues(params[key]))
 		}
 		out[slug] = data
 	}
