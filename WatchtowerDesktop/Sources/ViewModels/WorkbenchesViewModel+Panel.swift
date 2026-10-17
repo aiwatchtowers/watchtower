@@ -140,12 +140,11 @@ extension WorkbenchesViewModel {
 
     /// The workbench's sessions whose agent works now — a turn running, or
     /// background agents after it — as the sessions panel shows them
-    /// (`SessionAgentStateCenter`, live sessions only). A live session
-    /// waiting at its prompt does not count.
+    /// (`sessionStatuses`: live sessions, none in the Undo batch). A live
+    /// session waiting at its prompt does not count.
     func workingSessionCount(workbenchID: Int64) -> Int {
-        guard let agentStates else { return 0 }
-        return agentStates.statuses.values.filter { status in
-            status.workbenchID == workbenchID && [.working, .background].contains(status.state.kind)
+        sessionStatuses.values.filter { status in
+            status.workbenchID == workbenchID && ReviewChangesModel.agentWorkingKinds.contains(status.state.kind)
         }.count
     }
 

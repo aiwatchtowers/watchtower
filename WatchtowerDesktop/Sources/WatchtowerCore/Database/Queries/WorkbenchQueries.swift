@@ -230,11 +230,11 @@ package enum WorkbenchQueries {
         )
     }
 
-    /// Unread agent comments per project (projects with none are absent).
-    /// Unread agent comments per workbench, on its open targets only: a
-    /// closed target — or an archived one, which is always closed — keeps
-    /// its comments out of the badges, else every done summary an agent
-    /// leaves on closing would count forever (ask #339).
+    /// Unread agent comments per workbench on its open targets only
+    /// (workbenches with none are absent): a closed target — or an archived
+    /// one, which is always closed — keeps its comments out of the badges,
+    /// else every done summary an agent leaves on closing would count
+    /// forever (ask #339).
     package static func unreadCounts(_ db: Database) throws -> [Int64: Int] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.project_id, COUNT(*) AS n FROM project_comments c

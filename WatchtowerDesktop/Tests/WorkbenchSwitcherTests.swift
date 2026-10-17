@@ -279,6 +279,11 @@ final class WorkbenchSwitcherTests: XCTestCase {
         XCTAssertEqual(vm.workingSessionCount(workbenchID: b), 0, "a session not running here is not working")
         XCTAssertEqual(WorkbenchesViewModel(dbPool: pool, cli: nil).workingSessionCount(workbenchID: a), 0,
                        "no state center, nothing working")
+
+        vm.pendingDeletes.enqueueSessionDelete(
+            .init(sessionID: working.id, workbenchID: a, title: working.title), now: Date()
+        )
+        XCTAssertEqual(vm.workingSessionCount(workbenchID: a), 1, "a session in the Undo batch is gone from the count")
     }
 
     func testSwitcherSummariesLoadWithTheLastActivity() async throws {

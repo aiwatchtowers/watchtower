@@ -1857,3 +1857,13 @@ Entry format:
 - weak-dimension: 7. Bimodal again: tight pure-core tests (gate, backoff, policy, query oracle) beside zero tests for the AppState wiring that is the actual fix.
 - rule-gap: candidate for review-rules §4: "a single range query replacing N per-item queries must stay bounded when the items are non-contiguous". The pinned-day gap was found by 3 lanes. Promote if it recurs.
 - outcome: TBD
+
+## 2026-10-18 — fix/workbench-switcher-honest (ask #339: unread agent comments only on open targets in the shared `WorkbenchQueries.unreadCounts` — switcher, sidebar badge, go-to palette; "N working" from `SessionAgentStateCenter` (.working + .background) replaces "N sessions · M running"; switcher row = name over the segments, folder as tooltip; Desktop only, 14 files +112/−103; panel: prosecutor (7) + codex (0), 3 specialists DOWN (not installed); judge verified by reading and grep, no runs; judge synthesis, round 1) — verdict: approve
+
+- contested (held minor, prosecutor F2): `workingSessionCount` reads raw `agentStates.statuses`, while every other panel reader goes through `sessionStatuses`, which drops PROJ-17 pending deletes. The liveness half of the claim does not hold: `SessionAgentStatus.resolve` already runs against `liveAgentIDs`, so a re-check against `liveIDs` adds nothing. What is left is a session in the Undo window still counting as working, and a doc comment saying "as the sessions panel shows them". **A new reader of shared session state uses the VM's filtered accessor (`sessionStatuses`), not the center's raw map, or its doc comment says why not.** [6]
+- contested (cut to nit, prosecutor F1): the Go briefing still counts unread agent comments on done/dismissed targets. The owner's scope for ask #339 named three Swift surfaces, and the briefing is a separate reader with no stated parity with the badge, so this is not a dual-path break. It went to Needs human.
+- false-positive: F6 (search still matches the folder path while the folder is only a tooltip). Searching by folder is still useful, and the popover doc "find a workbench by name or folder" is still true.
+- miss: codex returned no findings again. Every item came from the prosecutor, and all of them were minor or nit.
+- weak-dimension: 7 (thin). The working-count test covers working/background/waiting/other-workbench but not the pending-delete path that F2 is about.
+- rule-gap: none new. The existing "doc asserts an invariant → check every input it reads" process rule caught F2.
+- outcome: TBD
