@@ -39,7 +39,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Quick Connections) wit
 ## System
 
 - **AI** — provider (Claude, Codex, Ollama / Local), **Light Model** and **Strong Model** (empty = the provider's default), CLI paths (auto-detected when empty), **Test Connection**. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
-- **Workbench** — **Default Agent** (Claude Code or Codex) for new sessions and the **Work on It** button (the menu offers **Work on It with …** the other agent). See [Workbench](../features/workbench/README.md).
+- **Workbench** — **Default Agent** (Claude Code or Codex) for new sessions and the **Work on It** button (the menu offers **Work on It with …** the other agent), plus **Session instructions** and **Target procedure**, your standing directions for the agents (each saves with its own **Save**). See [Your instructions](../features/workbench/instructions.md).
 - **Sync** — **Poll Interval** (default `15m`), **Workers**, **Initial History Days** (bounds the first Slack sync to a few days; the month of history comes from [history backfill](../concepts/history-backfill.md)), **Sync Threads**.
 - **Daemon** — read-only status. The app starts and stops the daemon itself. **Open Logs** opens the live log window.
 - **Data** — storage, **Reset AI-Generated Data** (deletes what the AI made, then rebuilds it) and, under Danger Zone, **Reset All Data**.
