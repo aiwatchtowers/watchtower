@@ -225,20 +225,26 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     /// deliberate: Quit tears the window down anyway, and `close()` drops the
     /// scene synchronously. An update's relaunch passes `forUpdate`: that
     /// quit never asks about sessions and leaves the hosted ones running
-    /// (PROJ-19).
-    static func requestQuit(forUpdate: Bool = false) {
+    /// (PROJ-19). `stoppingSessions` (removing all data) never offers to
+    /// keep them: kept sessions of a wiped workspace could never be
+    /// reattached.
+    static func requestQuit(forUpdate: Bool = false, stoppingSessions: Bool = false) {
         for window in windowsBlockingTermination(NSApp.windows) {
             window.close()
         }
         quitIsForUpdate = forUpdate
+        quitStopsSessions = stoppingSessions
         NSApp.terminate(nil)
-        // Still running: the quit was cancelled, so the next one is not
-        // an update's unless it says so.
+        // Still running: the quit was cancelled, so the next one is a plain
+        // quit unless it says otherwise.
         quitIsForUpdate = false
+        quitStopsSessions = false
     }
 
     /// The quit `NSApp.terminate` is running now came from an update.
     private static var quitIsForUpdate = false
+    /// The quit `NSApp.terminate` is running now stops every session.
+    private static var quitStopsSessions = false
 
     /// Filter half of `requestQuit`, split out for tests: the windows whose
     /// presented sheets make SwiftUI cancel termination.
@@ -250,10 +256,12 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         let app = AppState.shared
         let plan = Self.quitPlan(
             forUpdate: Self.quitIsForUpdate,
+            stopsSessions: Self.quitStopsSessions,
             quitReason: Self.currentQuitReason(),
             recording: app.meetingRecorderCenter.isBusy,
             askDrafts: app.workbenchesViewModel?.asks.drafts.count ?? 0,
-            liveSessions: app.terminalCenter.liveHostedCount
+            liveSessions: app.terminalCenter.liveHostedCount,
+            unprotectedSessions: app.terminalCenter.liveIDs.intersection(app.terminalCenter.unprotected).count
         )
         return Self.terminateDecision(
             managesLifecycle: managesLifecycle,
@@ -343,14 +351,24 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    static func quitPrompt(recording: Bool, askDrafts: Int, liveSessions: Int = 0) -> QuitPrompt? {
+    /// `unprotectedSessions` (live local-fallback sessions, which stop on
+    /// any quit) is mentioned only next to the hosted sessions' choice.
+    static func quitPrompt(
+        recording: Bool, askDrafts: Int, liveSessions: Int = 0, unprotectedSessions: Int = 0
+    ) -> QuitPrompt? {
         let drafts = askDrafts == 1 ? "1 unsent ask answer" : "\(askDrafts) unsent ask answers"
         let sessions = liveSessions == 1
             ? "1 workbench session is running"
             : "\(liveSessions) workbench sessions are running"
-        let sessionsChoice = liveSessions == 1
+        let unprotected = switch unprotectedSessions {
+        case 0: ""
+        case 1: " 1 unprotected session will stop."
+        default: " \(unprotectedSessions) unprotected sessions will stop."
+        }
+        let sessionsChoice = (liveSessions == 1
             ? "Keep it running and Watchtower reattaches when you open it again, or stop it now."
-            : "Keep them running and Watchtower reattaches when you open it again, or stop them now."
+            : "Keep them running and Watchtower reattaches when you open it again, or stop them now.")
+            + unprotected
         let base: QuitPrompt
         if recording {
             base = QuitPrompt(
@@ -409,16 +427,25 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     /// recording or unsent answers still ask. Any other quit with a live
     /// hosted session asks Keep or Stop. `quitReason` is the quitting Apple
     /// event's `kAEQuitReason` (`currentQuitReason`), nil when there is none.
+    /// A `stopsSessions` quit (removing all data) never asks about sessions
+    /// either and stops them all.
     static func quitPlan(
         forUpdate: Bool,
+        stopsSessions: Bool = false,
         quitReason: OSType?,
         recording: Bool,
         askDrafts: Int,
-        liveSessions: Int
+        liveSessions: Int,
+        unprotectedSessions: Int = 0
     ) -> QuitPlan {
-        let keeps = forUpdate || quitReason.map(systemSessionEndReasons.contains) == true
+        let keeps = !stopsSessions && (forUpdate || quitReason.map(systemSessionEndReasons.contains) == true)
+        let asksAboutSessions = !keeps && !stopsSessions
         return QuitPlan(
-            prompt: quitPrompt(recording: recording, askDrafts: askDrafts, liveSessions: keeps ? 0 : liveSessions),
+            prompt: quitPrompt(
+                recording: recording, askDrafts: askDrafts,
+                liveSessions: asksAboutSessions ? liveSessions : 0,
+                unprotectedSessions: unprotectedSessions
+            ),
             keepsSessions: keeps
         )
     }

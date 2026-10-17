@@ -141,9 +141,12 @@ final class TrayAppDelegateTerminateTests: XCTestCase {
         XCTAssertEqual(recordingOrder, ["prompt", "chat", "detach", "daemon"])
     }
 
-    private func plainQuit(liveSessions: Int, recording: Bool = false, askDrafts: Int = 0) -> TrayAppDelegate.QuitPlan {
+    private func plainQuit(
+        liveSessions: Int, recording: Bool = false, askDrafts: Int = 0, unprotectedSessions: Int = 0
+    ) -> TrayAppDelegate.QuitPlan {
         TrayAppDelegate.quitPlan(
-            forUpdate: false, quitReason: nil, recording: recording, askDrafts: askDrafts, liveSessions: liveSessions
+            forUpdate: false, quitReason: nil, recording: recording, askDrafts: askDrafts,
+            liveSessions: liveSessions, unprotectedSessions: unprotectedSessions
         )
     }
 
@@ -203,6 +206,41 @@ final class TrayAppDelegateTerminateTests: XCTestCase {
             + "Keep it running and Watchtower reattaches when you open it again, or stop it now."))
         XCTAssertEqual(drafts.keepSessionsTitle, "Keep Sessions and Quit")
         XCTAssertEqual(drafts.quitTitle, "Stop Sessions and Quit")
+    }
+
+    /// Local-fallback sessions stop on any quit, Keep included: the prompt
+    /// says so instead of keeping quiet about them.
+    func testQuitPromptNamesUnprotectedSessionsThatStop() throws {
+        let one = try XCTUnwrap(plainQuit(liveSessions: 2, unprotectedSessions: 1).prompt)
+        XCTAssertEqual(one.informative, "Keep them running and Watchtower reattaches when you open it again, "
+            + "or stop them now. 1 unprotected session will stop.")
+        let three = try XCTUnwrap(TrayAppDelegate.quitPrompt(
+            recording: true, askDrafts: 0, liveSessions: 1, unprotectedSessions: 3))
+        XCTAssertTrue(three.informative.hasSuffix(" or stop it now. 3 unprotected sessions will stop."))
+        // Without hosted sessions there is no Keep choice to qualify.
+        XCTAssertNil(plainQuit(liveSessions: 0, unprotectedSessions: 2).prompt,
+                     "local sessions alone stop as before, unasked")
+        let drafts = try XCTUnwrap(plainQuit(liveSessions: 0, askDrafts: 1, unprotectedSessions: 2).prompt)
+        XCTAssertFalse(drafts.informative.contains("unprotected"))
+    }
+
+    /// Removing all data quits stopping every session: no Keep button, and
+    /// the hosted sessions are closed, never detached.
+    func testStoppingSessionsQuitNeverOffersKeep() async {
+        let plan = TrayAppDelegate.quitPlan(
+            forUpdate: false, stopsSessions: true, quitReason: nil, recording: false, askDrafts: 0, liveSessions: 2
+        )
+        XCTAssertNil(plan.prompt)
+        XCTAssertFalse(plan.keepsSessions)
+        let order = await run(plan)
+        XCTAssertEqual(order, ["chat", "close", "daemon"])
+
+        let recording = TrayAppDelegate.quitPlan(
+            forUpdate: false, stopsSessions: true, quitReason: OSType(kAEShutDown),
+            recording: true, askDrafts: 0, liveSessions: 2
+        )
+        XCTAssertNil(recording.prompt?.keepSessionsTitle)
+        XCTAssertEqual(recording.choice(button: 0), .quitStoppingSessions)
     }
 
     /// A logout, restart or shutdown never asks about sessions and leaves
