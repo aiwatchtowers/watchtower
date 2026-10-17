@@ -143,7 +143,7 @@ struct FeatureEmptyState<Extra: View>: View {
             } else {
                 "Turn on"
             }
-        case .connect(let source): "Connect \(source.displayName)"
+        case .connect(let source): source.actionTitle
         case .openSettings(_, let label): label
         case .tabAction(let label): label
         }

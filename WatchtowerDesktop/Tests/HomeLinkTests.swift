@@ -91,6 +91,18 @@ final class HomeLinkTests: XCTestCase {
         XCTAssertEqual(appState.selectedDestination, .home, "Connect opens Settings, not a tab")
     }
 
+    /// Jira connected with no board picked (#572): the action opens the Boards
+    /// tab, where the board switches are, not Settings.
+    func testChooseJiraBoardsOpensBoards() {
+        let appState = AppState.isolated()
+        appState.selectedDestination = .home
+        var opened = 0
+        appState.openSettingsWindow = { opened += 1 }
+        appState.openHomeLink(.connect(.jiraBoards))
+        XCTAssertEqual(appState.selectedDestination, .boards)
+        XCTAssertEqual(opened, 0)
+    }
+
     /// Each feature opens a tab whose empty state is about that feature (or
     /// its sibling: stream digests on Digests, Jira on its views); Knowledge
     /// search opens Search, which keeps its own empty state.

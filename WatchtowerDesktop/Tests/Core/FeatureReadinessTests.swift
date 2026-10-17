@@ -459,4 +459,81 @@ final class FeatureReadinessTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Jira boards (#572)
+
+    func testJiraWithoutSelectedBoardsAsksToChooseThem() {
+        var input = inputs(now: today(10))
+        input.connected = ConnectedSources(jira: true)
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.jiraBoards)), "Choose Jira boards to get this")
+        // Jira is Stream Digests' only source: it waits on boards too.
+        XCTAssertEqual(evaluate(.streamDigests, input), .needsSource(.jiraBoards))
+        // With mail it has something to read.
+        input.connected.mail = true
+        XCTAssertEqual(evaluate(.streamDigests, input), .scheduled(.nextCycle(minutes: 15)))
+        input.connected.mail = false
+
+        input.jiraBoardsSelected = true
+        XCTAssertEqual(evaluate(.jira, input), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    /// The order after `ready`: needsSource(.jiraBoards) and needsDigests
+    /// (#575, disjoint features, so both hold in one evaluation) beat
+    /// daemonStopped; off, needsSource and ready beat them.
+    func testJiraBoardsAndDigestsGapsOrder() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.connected = ConnectedSources(slack: true, jira: true)
+        input.jiraBoardsSelected = false
+        input.disabledFeatureIDs = ["slack-digests"]
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-3600)
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        XCTAssertEqual(evaluate(.tracks, input), .needsDigests)
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsDigests)
+        XCTAssertEqual(evaluate(.ideas, input), .daemonStopped)
+        XCTAssertTrue(ReadinessFeature.allCases.filter(\.runsOnlyWithDigests).allSatisfy { $0.source != .jira })
+
+        input.contentPresent = [.jira, .tracks]
+        XCTAssertEqual(evaluate(.jira, input), .ready)
+        XCTAssertEqual(evaluate(.tracks, input), .ready)
+        input.disabledFeatureIDs = ["slack-digests", "people-cards"]
+        XCTAssertEqual(evaluate(.peopleCards, input), .off)
+        input.connected = ConnectedSources(jira: true)
+        XCTAssertEqual(evaluate(.peopleCards, input), .off)
+        input.disabledFeatureIDs = ["slack-digests"]
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsSource(.slack))
+    }
+
+    func testJiraBoardsGapKeepsNotConnectedAndContentFirst() {
+        var input = inputs(now: today(10))
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jira))
+        input.connected = ConnectedSources(jira: true)
+        input.contentPresent = [.jira]
+        XCTAssertEqual(evaluate(.jira, input), .ready)
+    }
+
+    /// Picking boards is the owner's fix whether or not the daemon runs, so
+    /// it wins over "Watchtower isn't running".
+    func testJiraBoardsGapWinsOverDaemonStopped() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.connected = ConnectedSources(jira: true)
+        input.jiraBoardsSelected = false
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-120)
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        input.jiraBoardsSelected = true
+        XCTAssertEqual(evaluate(.jira, input), .daemonStopped)
+    }
+
+    func testSourceActionTitles() {
+        XCTAssertEqual(ReadinessSource.jira.actionTitle, "Connect Jira")
+        XCTAssertEqual(ReadinessSource.jiraBoards.actionTitle, "Choose Jira boards")
+        XCTAssertTrue(ReadinessSource.jiraBoards.isConnected(in: ConnectedSources(jira: true)))
+        XCTAssertFalse(ReadinessSource.jiraBoards.isOwnerIdentity)
+    }
 }

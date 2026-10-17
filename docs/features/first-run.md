@@ -26,7 +26,20 @@ until the next morning's hour.
      (`ReadinessSource.isConnected`, `Readiness.swift:77`);
   3. `ready` — the feature's content table has any row; content wins even while
      a new run is going;
-  3a. `needsDigests` (#575) — no content, the feature `runsOnlyWithDigests`
+  3a. `needsSource(.jiraBoards)` — Jira's features only (`source == .jira`):
+     a site is connected but no board is selected on a non-removed site
+     (`ReadinessQueries.jiraBoardsSelected`, `jira_boards` is in the observed
+     region). The daemon's Jira sync skips an account with no selected board
+     (`internal/jira/sync.go`), so an ETA would never come true (#572). The
+     line is "Choose Jira boards to get this" (`ReadinessSource.actionTitle`),
+     and the action (`performEmptyStateAction(.connect(.jiraBoards))`, Home's
+     Getting ready card) opens the **Boards** tab, not Settings. Stream
+     Digests (`jiraOrMail`) waits on boards only while mail is not connected.
+     Only enabled, not removed sites count, and v1 is install-wide (one
+     site with a picked board counts for all; Go skips per account). On Home
+     it is a waiting card, never a source row, so it keeps the Getting ready
+     zone open (`GettingReadyPolicy.entries`);
+  3b. `needsDigests` (#575, after 3a; the two never meet: their features are disjoint) — no content, the feature `runsOnlyWithDigests`
      (tracks, people cards) and `slack-digests` is in `disabledFeatureIDs`.
      Dual path with the daemon's compound gates (`phaseTracksAndRollups`,
      `phaseCustomTrackScan`, `phasePeopleCards` in `internal/daemon/daemon.go`,

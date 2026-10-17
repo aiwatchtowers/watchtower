@@ -29,6 +29,7 @@ Targets, Workbench and Automations have no status line: they stay empty until yo
 1. Read the status line.
    - **Off — Turn on:** press **Turn on**.
    - **Connect Slack to get this** (or a calendar, Jira, a source): connect it in **Settings → Connections**.
+   - **Choose Jira boards to get this:** Jira is connected but no board is picked. Press **Choose Jira boards** and switch boards on in **Boards**.
    - **Needs Slack Digests** (Tracks, People): press **Turn on Slack Digests**; Tracks and People Cards run only with it.
    - **Watchtower isn't running:** the background sync has been stopped for at least 30 seconds, so nothing new arrives. Press **Start** on the banner at the top of the window; it says "Starting Watchtower…" until the sync is up, which can take up to a minute after an update. If you stopped it on purpose, **Dismiss** hides the banner until the next time it stops. If it does not start, the banner says why, with **Retry** and **Open Logs**; see [Sync is stuck or slow](sync-stuck-or-slow.md).
    - **Waiting for history to load** (Memory): a source is loading its first month; before its first run, Memory waits for it at most a day.
