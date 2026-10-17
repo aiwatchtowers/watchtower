@@ -188,6 +188,16 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 				idle.Stop()
 			}
 		case <-idle.C:
+			// A change that raced the timer (a client just connected)
+			// restarts the wait instead of ending it.
+			select {
+			case <-s.changed:
+				if s.isIdle() {
+					idle.Reset(s.opts.IdleExit)
+				}
+				continue
+			default:
+			}
 			if s.isIdle() {
 				s.shutdown(l)
 				return nil
