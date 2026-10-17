@@ -70,9 +70,15 @@ final class PasteClassifierTests: XCTestCase {
                        .insertText(offerAsFile: false))
     }
 
-    func testRemovingPastedTakesTheLastOccurrence() {
-        XCTAssertEqual(PasteClassifier.removingPasted("log", from: "see log: log"), "see log: ")
-        XCTAssertNil(PasteClassifier.removingPasted("gone", from: "edited text"))
-        XCTAssertNil(PasteClassifier.removingPasted("", from: "x"))
+    func testALinkBesideAPDFPastesAsTheLink() {
+        XCTAssertEqual(PasteClassifier.classify(types: [string, pdf], fileURLs: [],
+                                                text: "https://example.com/doc"), .insertText(offerAsFile: false))
+    }
+
+    func testAnyImageTypeCounts() {
+        XCTAssertEqual(PasteClassifier.classify(types: ["com.microsoft.bmp"], fileURLs: [], text: nil), .attachImage)
+        XCTAssertEqual(PasteClassifier.classify(types: ["public.jpeg-2000"], fileURLs: [], text: nil), .attachImage)
+        XCTAssertFalse(PasteClassifier.isImageType(pdf))
+        XCTAssertFalse(PasteClassifier.isImageType(string))
     }
 }

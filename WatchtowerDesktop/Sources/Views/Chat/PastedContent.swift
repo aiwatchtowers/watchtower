@@ -16,22 +16,36 @@ enum PastedContent {
         return PasteClassifier.classify(types: types, fileURLs: urls, text: pasteboard.string(forType: .string))
     }
 
-    /// PNG bytes of the pasteboard's image: PNG data as is, any other image
-    /// type (TIFF from a screenshot, JPEG, HEIC) converted; downscaled when
-    /// over the image limit. nil when no image can be read.
-    static func pngData(from pasteboard: NSPasteboard,
-                        limit: Int = Int(AttachmentValidator.imageLimit)) -> Data? {
-        let png: Data
-        if let data = pasteboard.data(forType: .png) {
-            png = data
-        } else {
-            guard let image = NSImage(pasteboard: pasteboard),
-                  let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let converted = rep.representation(using: .png, properties: [:]) else { return nil }
-            png = converted
+    /// Image types the validator accepts byte-for-byte, with their stored
+    /// extension, in the order they are tried.
+    private static let nativeTypes: [(NSPasteboard.PasteboardType, String)] = [
+        (.png, "png"),
+        (NSPasteboard.PasteboardType("public.jpeg"), "jpg"),
+        (NSPasteboard.PasteboardType("com.compuserve.gif"), "gif"),
+        (NSPasteboard.PasteboardType("org.webmproject.webp"), "webp")
+    ]
+
+    /// The pasteboard's image as an attachment: PNG/JPEG/GIF/WebP bytes the
+    /// validator accepts and that fit the limit go as is; anything else
+    /// (TIFF from a screenshot, HEIC, BMP, an oversized image) becomes a PNG,
+    /// downscaled when over the limit. nil when no image can be read.
+    static func imageAttachment(from pasteboard: NSPasteboard,
+                                limit: Int = Int(AttachmentValidator.imageLimit)) -> (data: Data, name: String)? {
+        for (type, ext) in nativeTypes {
+            guard let data = pasteboard.data(forType: type), data.count <= limit else { continue }
+            let name = "Pasted image.\(ext)"
+            if case .success(.image) = AttachmentValidator.validate(data: data, fileName: name) { return (data, name) }
         }
-        return downscaled(png, toFit: limit)
+        guard let png = pngData(from: pasteboard) else { return nil }
+        return (downscaled(png, toFit: limit), imageName)
+    }
+
+    private static func pngData(from pasteboard: NSPasteboard) -> Data? {
+        if let png = pasteboard.data(forType: .png) { return png }
+        guard let image = NSImage(pasteboard: pasteboard),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 
     static func pdfData(from pasteboard: NSPasteboard) -> Data? {

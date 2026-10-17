@@ -91,7 +91,7 @@ struct ChatComposerFieldContent: View {
     @State private var inputHeight: CGFloat = 22
     /// The text of a long paste the field offers to attach as a file
     /// instead; nil once acted on, or once the field no longer holds it.
-    @State private var longPaste: String?
+    @State private var longPaste: LongPaste?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -106,13 +106,13 @@ struct ChatComposerFieldContent: View {
                     .padding(.horizontal, 12)
             }
             if let longPaste, onPasteData != nil {
-                LongPasteOffer(characterCount: longPaste.count, onAttach: attachLongPaste) { self.longPaste = nil }
+                LongPasteOffer(characterCount: longPaste.text.count, onAttach: attachLongPaste) { self.longPaste = nil }
                     .padding(.horizontal, 16)
             }
             row
         }
-        .onChange(of: text) { _, new in
-            if let longPaste, !new.contains(longPaste) { self.longPaste = nil }
+        .onChange(of: text) {
+            if let longPaste, !longPaste.isIntact() { self.longPaste = nil }
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let onAttachFiles else { return false }
@@ -214,17 +214,14 @@ struct ChatComposerFieldContent: View {
         }
     }
 
-    private func offerLongPaste(_ pasted: String) {
-        longPaste = pasted
+    private func offerLongPaste(_ paste: LongPaste) {
+        longPaste = paste
     }
 
-    /// "Attach as File": the pasted text leaves the field only once it is
-    /// attached — a refusal keeps it and shows the reason.
     private func attachLongPaste() {
         defer { longPaste = nil }
-        guard let pasted = longPaste, let onPasteData,
-              let remaining = PasteClassifier.removingPasted(pasted, from: text) else { return }
-        if onPasteData(Data(pasted.utf8), PasteClassifier.pastedTextName) { text = remaining }
+        guard let longPaste, let onPasteData else { return }
+        longPaste.attach(using: onPasteData)
     }
 
     /// A message may carry only attachments, or only pending quotes (no text).
@@ -253,7 +250,7 @@ struct ExpandingTextInput: NSViewRepresentable {
     /// Files copied in Finder (the drop/paperclip path).
     var onAttachFiles: (([URL]) -> Void)?
     /// A long text paste, after it was inserted: the inserted text.
-    var onLongTextPaste: ((String) -> Void)?
+    var onLongTextPaste: ((LongPaste) -> Void)?
     /// The @/ pickers' input (Task 25/26): full text + caret on every change.
     var onCursorChange: ((String, Int) -> Void)?
     /// Offered Up/Down/Enter/Tab/Esc first while a picker may be open.
@@ -415,67 +412,6 @@ struct ExpandingTextInput: NSViewRepresentable {
         @objc func frameDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             recalculateHeight(textView)
-        }
-    }
-}
-
-/// Routes a user-initiated ⌘V (board #534): Finder files, images and PDF
-/// data become attachments; text inserts as always, and a long one is
-/// reported so the composer can offer to attach it instead.
-private final class PastingTextView: NSTextView {
-    var onPasteData: ((Data, String) -> Bool)?
-    var onAttachFiles: (([URL]) -> Void)?
-    var onLongTextPaste: ((String) -> Void)?
-
-    override func paste(_ sender: Any?) {
-        guard let onPasteData else {
-            super.paste(sender)
-            return
-        }
-        let pasteboard = NSPasteboard.general
-        switch PastedContent.action(from: pasteboard) {
-        case .attachFiles(let urls):
-            guard let onAttachFiles else { break }
-            onAttachFiles(urls)
-            return
-        case .attachImage:
-            guard let png = PastedContent.pngData(from: pasteboard) else { break }
-            _ = onPasteData(png, PastedContent.imageName)
-            return
-        case .attachPDF:
-            guard let pdf = PastedContent.pdfData(from: pasteboard) else { break }
-            _ = onPasteData(pdf, PastedContent.pdfName)
-            return
-        case .insertText(let offerAsFile):
-            let start = selectedRange().location
-            super.paste(sender)
-            let end = selectedRange().location
-            if offerAsFile, end > start {
-                onLongTextPaste?((string as NSString).substring(with: NSRange(location: start, length: end - start)))
-            }
-            return
-        }
-        super.paste(sender)
-    }
-}
-
-/// The non-modal offer under a long text paste.
-struct LongPasteOffer: View {
-    let characterCount: Int
-    let onAttach: () -> Void
-    let onKeep: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text("Long paste: \(characterCount.formatted()) characters")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("Attach as File", action: onAttach)
-                .buttonStyle(.link)
-                .font(.caption)
-            Button("Keep as Text", action: onKeep)
-                .buttonStyle(.link)
-                .font(.caption)
         }
     }
 }
