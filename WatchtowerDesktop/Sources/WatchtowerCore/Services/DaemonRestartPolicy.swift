@@ -26,11 +26,12 @@ package protocol DaemonRestarting: Sendable {
     func restartLogging() async
 }
 
-/// Production `DaemonRestarting`: `DaemonManager.restartLogging()`.
+/// Production `DaemonRestarting`: `DaemonManager.restartLoggingQueued()`,
+/// on the app's one daemon start queue.
 package struct LiveDaemonRestarter: DaemonRestarting {
     package init() {}
 
     package func restartLogging() async {
-        await DaemonManager.restartLogging()
+        await DaemonManager.restartLoggingQueued()
     }
 }

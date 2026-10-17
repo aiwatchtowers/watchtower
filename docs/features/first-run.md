@@ -93,39 +93,53 @@ until the next morning's hour.
 ### The daemon banner (#577)
 
 One banner over every tab (`MainNavigationView`'s top inset,
-`DaemonBannerView`, `AppState.daemonBanner` → `DaemonBanner.current`):
+`DaemonBannerView`, `AppState.daemonBanner` → `DaemonBanner.current`), first
+match wins:
 
-- `failed(reason)` — `AppState.daemonStartFailure`: a start that exited
-  non-zero ("The background sync did not start: <reason>.") or a daemon gone
-  again `daemonStartVerifyDelay` (3 s) after a start that exited 0
-  (`daemonDiedAfterStartText`). **Retry**, **Open Logs** (the Logs window),
-  **Dismiss**. It wins over `stopped`, and goes when the status poll sees a
-  daemon (`DaemonManager.onRunningChanged`).
+- `starting` — the banner's Start is waiting for the daemon
+  (`AppState.isStartingDaemon`): "Starting Watchtower…" with a spinner, no
+  buttons; a second Start meanwhile is ignored.
+- `failed(reason)` — `AppState.daemonStartFailure`, stored on the start queue
+  (`DaemonStartQueue.failure`) so restarts made outside AppState land here too:
+  a start that exited non-zero ("The background sync did not start:
+  <reason>."), a detach that exited 0 but no daemon within
+  `daemonStartWaitBound` (60 s, polled every second — a first start after an
+  update runs migrations first; `daemonDiedAfterStartText`), a background
+  restart that failed (`DaemonManager.restartLoggingQueued`), the launch start
+  failing, or a queue item timing out. **Retry**, **Open Logs** (the Logs
+  window), **Dismiss**. Any status read that finds the daemon running clears it
+  (`DaemonManager.onRunningChanged` fires on every running read).
 - `stopped` — `ReadinessCenter.daemonDown`, the same
   `FeatureReadiness.isDaemonDown` rule as the readiness state (30 s grace):
   "Watchtower isn't running, so nothing new arrives." with **Start** and
-  **Dismiss**. Dismiss hides it for this down stretch only
-  (`stoppedBannerDismissedFor` = `DaemonManager.notRunningSince`): a start and
-  a new stop bring it back. A stretch that began with the app's own
-  `DaemonManager.stopDaemon` (`stoppedOnPurpose`, cleared when the daemon runs)
-  never shows it. A stop from outside the app (`watchtower sync stop`) shows it,
-  and Dismiss is the way to keep it away.
+  **Dismiss**.
+
+Dismiss hides both at once: it clears the failure and records this down
+stretch (`stoppedBannerDismissedFor` = `DaemonManager.notRunningSince`); a
+start and a new stop bring "isn't running" back. That is also how an owner who
+stopped sync on purpose (`watchtower sync stop`) keeps it away; there is no
+separate "stopped on purpose" state.
 
 Start and Retry run `AppState.startDaemonFromBanner`: a daemon already running
-is not a failure; otherwise `startDetached`, then the alive check.
+is not a failure; otherwise `startDetached`, then the wait above.
 
-**One start chain.** Every daemon start or restart from the app — the launch
-`ensureDaemonRunning`, onboarding's and Run setup again's
-`bringUpDaemonInBackground`, the banner, the Calendar tab's restart, the Google
-reconnect restart and Settings → Slack disconnect's stop/start — goes through
-`AppState.enqueueDaemonStart`, which runs each after the previous one
-(`daemonStartChain`). So do a tab's Turn on and the feature offer
-(`restartOnChain`), and the Slack/Google/Jira account view models'
-Add/Remove/re-login restarts (`ChainedDaemonRestarter`), so a restart never
-lands inside a banner Start's alive check. Reset LLM data still stops and
-restarts on its own after awaiting the chain. The Calendar tab's own "sync isn't running" banner and
-its Start Sync are gone: the app-wide banner covers it, and a failed Calendar
-restart still shows its reason there.
+**One start queue.** Every daemon start, stop-then-start and restart the app
+makes runs on `DaemonStartQueue` (`AppState.enqueueDaemonStart` /
+`DaemonManager.restartQueued` / `restartLoggingQueued`), one item at a time:
+the launch `ensureDaemonRunning`, onboarding's and Run setup again's
+`bringUpDaemonInBackground`, the banner, a tab's Turn on and the feature offer
+(`restartOnChain`), the Calendar tab's restart, every account and grant change
+(`LiveDaemonRestarter`, Email/Calendar accounts, `GoogleAuthService`,
+`GoogleConnectFlow`), Settings → Features and Confluence spaces, the Inbox
+action strip, Reset LLM data (stop, wipe and restart as one item), Settings →
+Slack disconnect (stop, disconnect, start as one item) and the full reset's
+stop. Each item has a 90 s timeout (`itemTimeout`): a hung CLI call fails
+visibly on the banner and the queue moves on (the item keeps running,
+unobserved). An item never enqueues onto the queue and awaits it. Outside it:
+the launch-time CLI-store stop and the quit stop. The Google reconnect alert
+no longer restarts on its own (a successful connect already does). The
+Calendar tab has no message of its own while the daemon is down: the app-wide
+banner says it.
 
 ### Fresh-install rule — Go ↔ Swift dual path
 

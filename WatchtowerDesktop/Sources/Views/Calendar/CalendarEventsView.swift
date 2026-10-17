@@ -147,7 +147,7 @@ struct CalendarEventsView: View {
             } catch {
                 return error
             }
-        }.value
+        }.value ?? DaemonRestartError.timedOut
         if let error = failure {
             NSLog("CalendarEventsView: sync restart failed: %@", error.localizedDescription)
             restartError = "Couldn't restart the sync: \(error.localizedDescription)"
@@ -755,14 +755,9 @@ struct CalendarEventsView: View {
                 reconnectButton(account)
             }
         case .daemonStopped:
-            // The app-wide banner says the daemon isn't running and starts
-            // it: one control, one start path. A restart that failed here
-            // still shows its reason.
-            if let restartError {
-                healthBanner(icon: "exclamationmark.triangle", text: "The sync didn't restart.", error: restartError) {
-                    EmptyView()
-                }
-            }
+            // The app-wide banner says the daemon isn't running (or why it
+            // did not restart) and starts it: one message, one control.
+            EmptyView()
         }
     }
 

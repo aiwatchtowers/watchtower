@@ -169,15 +169,19 @@ struct SlackConnectionDetail: View {
             // removed, then restart it — without a token it skips the Slack
             // phase. Synced data is kept (non-destructive, matches `slack
             // remove` / `auth logout` semantics).
-            // Stop and start on the app's one start chain.
-            await appState.enqueueDaemonStart { await flow.daemonManager.stopDaemon() }.value
-            if await slackAuth.disconnect() {
+            // Stop, disconnect and start as one item on the app's start queue.
+            let disconnected = await appState.enqueueDaemonStart { () -> Bool in
+                await flow.daemonManager.stopDaemon()
+                let done = await slackAuth.disconnect()
+                await flow.daemonManager.startDaemon()
+                return done
+            }.value ?? false
+            if disconnected {
                 config.reload()
                 flow.reconnectResult = nil
                 // `auth logout` removed a row: reload the Workspaces list too.
                 await appState.slackAccountsViewModel?.refreshAsync()
             }
-            await appState.enqueueDaemonStart { await flow.daemonManager.startDaemon() }.value
             flow.disconnecting = false
         }
     }

@@ -32,6 +32,7 @@ extension AppState {
             onboardingGoals: onboardingGoals?(defaults)
         )
         appState.daemonControlOverride = FakeDaemon()
+        appState.daemonStartQueue = DaemonStartQueue()
         appState.wireAppDatabaseOverride = { _ in }
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()
         appState.homeDefaultsOverride = defaults
@@ -63,6 +64,10 @@ final class FakeDaemon: DaemonControl {
     var diesAfterStart = false
     /// A restart reports the daemon down while it runs (its stop half).
     var stopsDuringRestart = false
+    /// After a start, this many `daemonIsRunning()` reads still say no (a
+    /// slow pid file).
+    var runningAfterChecks = 0
+    private var pendingChecks = 0
     var restartError: Error?
     var holdRestart = false
     /// The stopped daemon's process never goes.
@@ -75,11 +80,18 @@ final class FakeDaemon: DaemonControl {
 
     var isRestartParked: Bool { parked != nil }
 
-    func daemonIsRunning() -> Bool { running }
+    func daemonIsRunning() -> Bool {
+        guard pendingChecks == 0 else {
+            pendingChecks -= 1
+            return false
+        }
+        return running
+    }
 
     func startDetached() async -> Bool {
         starts += 1
         running = startSucceeds && !diesAfterStart
+        if startSucceeds { pendingChecks = runningAfterChecks }
         return startSucceeds
     }
 

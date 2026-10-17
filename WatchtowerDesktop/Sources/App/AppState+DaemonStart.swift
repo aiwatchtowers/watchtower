@@ -2,23 +2,28 @@ import Foundation
 import WatchtowerCore
 
 extension AppState {
-    /// Runs `operation` after every earlier daemon start or restart: one
-    /// chain for launch, onboarding, the banner, the Calendar tab and
-    /// Settings, so two never overlap (an overlap reads as a failed start, or
-    /// leaves two daemons). Enqueued synchronously; await `.value` for the result.
+    /// The daemon start chain's last item, for tests to await.
+    var daemonStartChain: Task<Void, Never>? { daemonStartQueue.tail }
+
+    /// A start or restart's failure: the app-wide banner shows it with Retry.
+    /// Lives on the queue, so restarts made outside AppState (account and
+    /// grant changes, Settings) land in the same banner.
+    var daemonStartFailure: String? {
+        get { daemonStartQueue.failure }
+        set { daemonStartQueue.failure = newValue }
+    }
+
+    /// Runs `operation` on the one daemon start queue (`DaemonStartQueue`):
+    /// after every earlier start or restart, bounded by the queue's item
+    /// timeout (nil = timed out, already shown on the banner). Enqueued
+    /// synchronously; await `.value` for the result.
     @discardableResult
-    func enqueueDaemonStart<T: Sendable>(_ operation: @escaping @MainActor () async -> T) -> Task<T, Never> {
-        let previous = daemonStartChain
-        let task = Task { @MainActor in
-            await previous?.value
-            return await operation()
-        }
-        daemonStartChain = Task { _ = await task.value }
-        return task
+    func enqueueDaemonStart<T: Sendable>(_ operation: @escaping @MainActor () async -> T) -> Task<T?, Never> {
+        daemonStartQueue.enqueue(operation)
     }
 
     /// Starts (or, with `startOnly` false, restarts) the daemon in the
-    /// background, on the start chain.
+    /// background, on the start queue.
     func bringUpDaemonInBackground(startOnly: Bool) {
         let daemon = daemonControl
         enqueueDaemonStart { [weak self] in
@@ -30,13 +35,19 @@ extension AppState {
         }
     }
 
-    /// The banner's Start and Retry: a daemon already running is not a
-    /// failure; a start that exits non-zero, or a daemon gone again
-    /// `daemonStartVerifyDelay` later, shows the failure banner.
+    /// The banner's Start and Retry. A daemon already running is not a
+    /// failure. After a detach that exited 0 it waits (up to
+    /// `daemonStartWaitBound`) for the daemon to show up; only a daemon still
+    /// absent then reads "started but stopped again". The banner says
+    /// "Starting…" meanwhile, and a second Start is ignored.
     func startDaemonFromBanner() {
+        guard !isStartingDaemon else { return }
+        isStartingDaemon = true
         let daemon = daemonControl
-        let delay = daemonStartVerifyDelay
+        let bound = daemonStartWaitBound
+        let interval = daemonStartPollInterval
         enqueueDaemonStart { [weak self] in
+            defer { self?.isStartingDaemon = false }
             guard !daemon.daemonIsRunning() else {
                 self?.daemonStartFailure = nil
                 return
@@ -46,39 +57,42 @@ extension AppState {
                 daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
                 return
             }
-            try? await Task.sleep(for: delay)
-            self?.daemonStartFailure = daemon.daemonIsRunning() ? nil : Self.daemonDiedAfterStartText
+            let up = await Self.waitUntilRunning(daemon, bound: bound, interval: interval)
+            self?.daemonStartFailure = up ? nil : Self.daemonDiedAfterStartText
         }
     }
 
-    /// Dismiss: a failure goes; "isn't running" stays hidden for this down
-    /// stretch only (a start, then a new stop, brings it back).
+    private static func waitUntilRunning(
+        _ daemon: any DaemonControl, bound: Duration, interval: Duration
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + bound
+        while !daemon.daemonIsRunning() {
+            guard clock.now < deadline else { return false }
+            try? await Task.sleep(for: interval)
+        }
+        return true
+    }
+
+    /// Dismiss hides both: the failure, and "isn't running" for this down
+    /// stretch (a start, then a new stop, brings it back).
     func dismissDaemonBanner() {
-        if daemonStartFailure != nil {
-            daemonStartFailure = nil
-        } else {
-            stoppedBannerDismissedFor = daemonManager.notRunningSince
-        }
+        daemonStartFailure = nil
+        stoppedBannerDismissedFor = daemonManager.notRunningSince
     }
 
-    /// The restart a Turn on or a feature offer needs, on the start chain:
-    /// never in the middle of a banner Start's alive check.
+    /// The restart a Turn on or a feature offer needs, on the start queue:
+    /// never in the middle of a banner Start's wait.
     func restartOnChain(_ daemon: any DaemonControl) async throws {
-        try await enqueueDaemonStart { () -> Result<Void, any Error> in
+        let result = await enqueueDaemonStart { () -> Result<Void, any Error> in
             do {
                 try await daemon.restartWaiting()
                 return .success(())
             } catch {
                 return .failure(error)
             }
-        }.value.get()
-    }
-
-    /// The account view models' Add/Remove/re-login restarts, on the start chain.
-    var chainedAccountRestarter: any DaemonRestarting {
-        ChainedDaemonRestarter(inner: LiveDaemonRestarter()) { [weak self] operation in
-            await self?.enqueueDaemonStart { await operation() }.value
-        }
+        }.value
+        try (result ?? .failure(DaemonRestartError.timedOut)).get()
     }
 
     static func daemonStartFailureText(_ detail: String?) -> String {
@@ -88,25 +102,16 @@ extension AppState {
 
     static let daemonDiedAfterStartText = "The background sync started but stopped again. The logs say why."
 
-    /// What the app-wide banner shows: a failure first (it carries the
-    /// reason), else "isn't running" once readiness saw the daemon down past
-    /// the grace — unless the app stopped it on purpose, or the owner
+    /// What the app-wide banner shows: "Starting…" while the banner's Start
+    /// waits, a failure (it carries the reason), else "isn't running" once
+    /// readiness saw the daemon down past the grace — unless the owner
     /// dismissed this down stretch.
     var daemonBanner: DaemonBanner? {
-        let manager = daemonManager
-        let dismissed = manager.notRunningSince != nil && manager.notRunningSince == stoppedBannerDismissedFor
-        let quiet = manager.stoppedOnPurpose || dismissed
-        return DaemonBanner.current(failure: daemonStartFailure, daemonDown: readinessCenter.daemonDown && !quiet)
-    }
-}
-
-/// A `DaemonRestarting` that runs the restart on `AppState`'s start chain.
-struct ChainedDaemonRestarter: DaemonRestarting {
-    let inner: any DaemonRestarting
-    let enqueue: @Sendable @MainActor (@escaping @Sendable () async -> Void) async -> Void
-
-    func restartLogging() async {
-        let inner = inner
-        await enqueue { await inner.restartLogging() }
+        let since = daemonManager.notRunningSince
+        let dismissed = since != nil && since == stoppedBannerDismissedFor
+        return DaemonBanner.current(
+            failure: daemonStartFailure,
+            daemonDown: readinessCenter.daemonDown && !dismissed,
+            starting: isStartingDaemon)
     }
 }

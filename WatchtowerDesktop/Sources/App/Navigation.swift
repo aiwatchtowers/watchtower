@@ -235,13 +235,8 @@ struct MainNavigationView: View {
             while googleAuth.isAuthenticating {
                 try? await Task.sleep(for: .milliseconds(250))
             }
-            guard googleAuth.isConnected else { return }
-            // On the app's one start chain; a stopped daemon is the banner's.
-            let daemon = appState.daemonControl
-            await appState.enqueueDaemonStart {
-                guard daemon.daemonIsRunning() else { return }
-                try? await daemon.restartWaiting()
-            }.value
+            // A successful connect restarts the daemon itself
+            // (`GoogleAuthService`, on the start queue).
         }
     }
 

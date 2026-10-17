@@ -58,7 +58,7 @@ struct FeaturesSettings: View {
                 // touched the Feature Manager.
                 let hadPendingChanges = !appState.featureManager.pending.isEmpty
                 await appState.featureManager.apply {
-                    try await DaemonManager.restart()
+                    try await DaemonManager.restartQueued()
                 }
                 // The CLI calls apply() just made are the single writer of
                 // the feature on/off keys, so the shared ConfigService

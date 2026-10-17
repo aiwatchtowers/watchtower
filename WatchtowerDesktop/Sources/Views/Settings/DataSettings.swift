@@ -213,14 +213,16 @@ struct DataSettings: View {
     private func performReset() async {
         isResetting = true
 
-        // 1. Stop daemon
-        let daemon = DaemonManager()
-        daemon.resolvePathIfNeeded()
-        if DaemonManager.checkDaemonRunning() {
-            await daemon.stopDaemon()
-            // Give it a moment to stop
-            try? await Task.sleep(for: .milliseconds(500))
-        }
+        // 1. Stop daemon, on the app's start queue (no start lands in between)
+        await DaemonStartQueue.shared.enqueue {
+            let daemon = DaemonManager()
+            daemon.resolvePathIfNeeded()
+            if DaemonManager.checkDaemonRunning() {
+                await daemon.stopDaemon()
+                // Give it a moment to stop
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }.value
 
         // 2. Remove config & database
         let fm = FileManager.default

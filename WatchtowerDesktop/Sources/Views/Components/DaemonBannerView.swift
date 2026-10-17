@@ -14,6 +14,10 @@ struct DaemonBannerView: View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             switch banner {
+            case .starting:
+                Text("Starting Watchtower…").font(.callout)
+                Spacer()
+                ProgressView().controlSize(.small)
             case .stopped:
                 Text("Watchtower isn't running, so nothing new arrives.").font(.callout).lineLimit(2)
                 Spacer()

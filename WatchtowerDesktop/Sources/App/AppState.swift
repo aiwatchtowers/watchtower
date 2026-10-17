@@ -1080,17 +1080,15 @@ final class AppState {
         }
     }
 
-    /// Every daemon start or restart (launch, onboarding, the banner's Start
-    /// and Retry, the Calendar tab, Settings) runs on this one chain
-    /// (`enqueueDaemonStart`, AppState+DaemonStart.swift); held so tests can
-    /// await it.
-    @ObservationIgnored var daemonStartChain: Task<Void, Never>?
-    /// How long the banner's Start waits before checking the daemon stayed up.
-    @ObservationIgnored var daemonStartVerifyDelay: Duration = .seconds(3)
-
-    /// The background sync did not come up, or died right after a start:
-    /// the app-wide banner shows it with Retry.
-    var daemonStartFailure: String?
+    /// Every daemon start or restart the app makes runs on this queue
+    /// (`enqueueDaemonStart`, AppState+DaemonStart.swift); tests get their own.
+    @ObservationIgnored var daemonStartQueue = DaemonStartQueue.shared
+    /// How long the banner's Start waits for the daemon to show up, and how
+    /// often it looks (a first start after an update runs migrations first).
+    @ObservationIgnored var daemonStartWaitBound: Duration = .seconds(60)
+    @ObservationIgnored var daemonStartPollInterval: Duration = .seconds(1)
+    /// The banner's Start is waiting for the daemon (no second Start).
+    var isStartingDaemon = false
     /// The down stretch (`DaemonManager.notRunningSince`) whose "isn't
     /// running" banner the owner dismissed.
     var stoppedBannerDismissedFor: Date?
@@ -1463,12 +1461,19 @@ final class AppState {
     /// A failed restart is thrown for the Settings error line.
     func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
         guard let db = databaseManager else { return }
-
-        // 1. Stop the daemon so nothing writes while the tables are wiped —
-        // after a finish still bringing one up, and only once its process is
-        // really gone (a timeout wipes nothing).
-        await daemonStartChain?.value
         let daemon = daemonControl
+        // One item on the start queue: no other start lands mid-wipe.
+        let failure = await enqueueDaemonStart { () -> (any Error)? in
+            await Self.stopWipeRestart(daemon: daemon, db: db, workspaceDir: workspaceDir)
+        }.value ?? DaemonRestartError.timedOut
+        if let failure { throw failure }
+    }
+
+    private static func stopWipeRestart(
+        daemon: any DaemonControl, db: DatabaseManager, workspaceDir: String?
+    ) async -> (any Error)? {
+        // 1. Stop the daemon so nothing writes while the tables are wiped —
+        // only once its process is really gone (a timeout wipes nothing).
         if daemon.daemonIsRunning() {
             await daemon.stopDaemonNow()
         }
@@ -1491,7 +1496,7 @@ final class AppState {
         } catch {
             failure = failure ?? error
         }
-        if let failure { throw failure }
+        return failure
     }
 
     /// Ensure the daemon is running against the current CLI binary.
@@ -1501,14 +1506,17 @@ final class AppState {
     private func ensureDaemonRunning() {
         let daemon = daemonControl
         let manager = daemonManager
-        ensureDaemonTask = enqueueDaemonStart {
+        let item = enqueueDaemonStart {
             manager.resolvePathIfNeeded()
             if daemon.daemonIsRunning() {
                 await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            _ = await daemon.startDetached()
+            if !(await daemon.startDetached()) {
+                self.daemonStartFailure = Self.daemonStartFailureText(manager.errorMessage)
+            }
         }
+        ensureDaemonTask = Task { _ = await item.value }
     }
 
     /// What onboarding's steps need once the database is open: the database
@@ -1649,7 +1657,7 @@ final class AppState {
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {
-        let vm = SlackAccountsViewModel(dbPool: dbPool, daemon: chainedAccountRestarter)
+        let vm = SlackAccountsViewModel(dbPool: dbPool)
         vm.onAccountsChanged = { [weak self, weak vm] in
             if let vm { self?.slackAccountsDidChange(vm.accounts) }
             await self?.accountsChanged()
@@ -1703,7 +1711,7 @@ final class AppState {
     }
 
     func initJiraAccounts(dbPool: DatabasePool) {
-        let vm = JiraAccountsViewModel(dbPool: dbPool, daemon: chainedAccountRestarter)
+        let vm = JiraAccountsViewModel(dbPool: dbPool)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         jiraAccountsViewModel = vm
@@ -1982,7 +1990,7 @@ final class AppState {
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
-        let vm = GoogleAccountsViewModel(dbPool: dbPool, daemon: chainedAccountRestarter)
+        let vm = GoogleAccountsViewModel(dbPool: dbPool)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         googleAccountsViewModel = vm

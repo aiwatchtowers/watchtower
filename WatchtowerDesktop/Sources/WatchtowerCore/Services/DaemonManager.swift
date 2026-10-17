@@ -16,6 +16,8 @@ package enum DaemonRestartError: LocalizedError, Equatable {
     /// No `watchtower` binary was resolvable at all — `restart()` did
     /// nothing, which must not read as a quiet success.
     case cliNotFound
+    /// The start queue's item timeout passed (`DaemonStartQueue`).
+    case timedOut
 
     package var errorDescription: String? {
         switch self {
@@ -27,6 +29,8 @@ package enum DaemonRestartError: LocalizedError, Equatable {
             return DaemonManager.startFailureMessage(status: status, stderr: stderr)
         case .cliNotFound:
             return "watchtower binary not found in PATH"
+        case .timedOut:
+            return "the restart did not finish in time"
         }
     }
 }
@@ -46,11 +50,10 @@ package final class DaemonManager {
         didSet {
             if isRunning {
                 if notRunningSince != nil { notRunningSince = nil }
-                if stoppedOnPurpose { stoppedOnPurpose = false }
             } else if notRunningSince == nil {
                 notRunningSince = Date()
             }
-            if isRunning != oldValue { onRunningChanged?(isRunning) }
+            if isRunning != oldValue || isRunning { onRunningChanged?(isRunning) }
         }
     }
     /// Since when the daemon has been seen down: set by the first status
@@ -59,10 +62,8 @@ package final class DaemonManager {
     /// anything was checked. Readiness waits `FeatureReadiness.daemonDownGrace`
     /// on it, so a restart does not flicker.
     package private(set) var notRunningSince: Date?
-    /// This down stretch began with the app's own `stopDaemon`: the "isn't
-    /// running" banner stays away for it. Cleared when the daemon runs again.
-    package private(set) var stoppedOnPurpose = false
-    /// Called when `isRunning` flips (the status poll included).
+    /// Called when `isRunning` flips, and on every read that finds it
+    /// running (the status poll included).
     @ObservationIgnored package var onRunningChanged: (@MainActor (Bool) -> Void)?
     /// The daemon's live sync heartbeat, refreshed by `checkStatus()`. nil when
     /// no heartbeat file exists yet (no sync has run since the daemon shipped
@@ -185,7 +186,6 @@ package final class DaemonManager {
             let status = try await Self.runProcess(path: path, arguments: ["sync", "stop"])
             if status == 0 {
                 isRunning = false
-                stoppedOnPurpose = true
                 errorMessage = nil
             } else {
                 errorMessage = "Failed to stop daemon (exit code \(status))"
@@ -294,18 +294,6 @@ package final class DaemonManager {
         let result = try await runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
         if result.status != 0 {
             throw DaemonRestartError.startFailed(status: result.status, stderr: result.stderr)
-        }
-    }
-
-    /// Fire-and-forget convenience for the many call sites that kick off a
-    /// restart after a background account change (a new Slack/Google/Jira
-    /// connection, an account removal) and cannot usefully react to its
-    /// result beyond making sure a failure is never silent.
-    package nonisolated static func restartLogging() async {
-        do {
-            try await restart()
-        } catch {
-            NSLog("DaemonManager: restart failed: %@", error.localizedDescription)
         }
     }
 
