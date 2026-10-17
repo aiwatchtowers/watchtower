@@ -374,9 +374,6 @@ struct WatchtowerApp: App {
             .frame(minWidth: 800, minHeight: 600)
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
             .modifier(RunAutomationPaletteHost(appState: appState))
-            // ⌘/ "Ask Watchtower" over every destination; the Workbench tab
-            // lives in this same window, so this one host covers it.
-            .modifier(AskPanelHost(appState: appState))
             .background(OpaqueWindowBackground())
             // `.environment` must wrap the overlay too: the overlay attaches as a
             // sibling outside any environment applied deeper on NavigationRoot, so
@@ -387,7 +384,7 @@ struct WatchtowerApp: App {
             // inside the overlays too (the recording indicator's panel,
             // the meeting banner), so the scheme gate has to wrap them.
             // It also opens in-app screen links (`watchtower-nav://`) from
-            // the Ask panel and AI Chat.
+            // AI Chat and its ⌘/ popup.
             .environment(\.openURL, appState.mainWindowOpenURL)
             // Screen links render only for the screens visible right now.
             .environment(\.markdownNavScreens, appState.visibleHelpScreenIDs)

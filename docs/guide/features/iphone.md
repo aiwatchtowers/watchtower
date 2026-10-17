@@ -56,24 +56,9 @@ Open a running session without the typing switch and its bottom bar says so, wit
 
 A running session's status shows how long it has been in that state, for example **Working · 12m** or **Needs approval · 40m**, so a session stuck at a prompt is easy to spot.
 
-### Answer a permission prompt
+### Answer prompts and interrupt agents
 
-A Claude Code session at a permission prompt shows a card with the tool and what it will run, plus **Allow once** and **Deny**. **Allow once** approves that one call, never a rule (a shell command asks first). Nothing is typed into the session.
-
-Two kinds of prompt offer only **Deny** on the phone, so you answer them on the Mac to allow:
-
-- one too long to show in full, which says **Shortened — answer on the Mac to allow**;
-- a file edit that changes Claude Code's, an agent's, git or shell settings (a `.claude`, `.codex` or `.agents` folder, `.git/hooks`, `.git/config`, `.watchtower/workflow.md`, or a file such as `.zshrc`, `.bash_profile`, `.mcp.json`, `.envrc` or `.gitconfig`), which says **Changes Watchtower or shell settings — answer on the Mac to allow**.
-
-The prompt stays open on the Mac too, and the first answer wins. If you already answered on the Mac, the phone's answer usually comes back **Answered on the Mac**. Once the Mac takes a phone answer, the card says **Sent to the session**.
-
-If you allowed a long-running command on the Mac, the phone keeps showing the prompt until the command ends. Answering it then does nothing; to stop the command, use the Mac.
-
-Prompts show in **Now** under **Waiting for you** and in the Workbench badge, with no push alert. Codex sessions keep **Needs approval on the Mac**.
-
-### Interrupt a working agent
-
-**Interrupt**, next to **Stop** in a session's menu, sends the agent an Esc. It needs **Type into sessions from this phone** and shows only while a Claude Code session is **Working** with no prompt open. One that reaches the Mac over two minutes late is dropped.
+Answering a Claude Code permission prompt and interrupting a working agent from the phone have their own page: [iPhone: permission prompts and interrupts](iphone-agent-prompts.md).
 
 ### Link another Mac, or unlink
 
@@ -100,6 +85,7 @@ Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not
 
 ## Related
 
+- [iPhone: permission prompts and interrupts](iphone-agent-prompts.md)
 - [Menu bar and updates](menu-bar-and-updates.md) for keeping the Mac side awake and running.
 
 For developers: [docs/features/mobile-companion.md](../../features/mobile-companion.md)

@@ -328,6 +328,14 @@ func TestSearch_IndexNoteWhileSlackBackfills(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "slack 49% indexed; index last updated 2026-09-26T12:00:00Z", res.IndexNote)
 
+	// The guide, reconciled daily even with Knowledge search off, never
+	// hides a frozen owner index.
+	exec(t, d, `INSERT INTO kb_sources (source, updated_at) VALUES ('guide', '2026-09-27T12:30:00Z')
+		ON CONFLICT(source) DO UPDATE SET updated_at = excluded.updated_at`)
+	res, err = Search(ctx, d, Request{Queries: []string{"стейдж"}, Now: testNow().Add(25 * time.Hour)})
+	require.NoError(t, err)
+	assert.Equal(t, "slack 49% indexed; index last updated 2026-09-26T12:00:00Z", res.IndexNote)
+
 	// Behind by exactly one range or less (ordinary sync lag between
 	// cycles): no note, although `kb status` still shows the exact figure.
 	exec(t, d, `UPDATE kb_sources SET cursor = '20000' WHERE source = 'slack'`)
@@ -347,6 +355,20 @@ func TestSearch_IndexNoteWhileSlackBackfills(t *testing.T) {
 	empty, err := Search(ctx, db.OpenTestDB(t), Request{Queries: []string{"x"}, Now: testNow()})
 	require.NoError(t, err)
 	assert.Contains(t, empty.IndexNote, "knowledge index is empty")
+
+	// The embedded guide alone is not owner data: still reads as empty.
+	onlyGuide := db.OpenTestDB(t)
+	_, err = Run(ctx, onlyGuide, Options{Now: testNow(), Sources: []string{GuideSource}})
+	require.NoError(t, err)
+	res, err = Search(ctx, onlyGuide, Request{Queries: []string{"inbox"}, Now: testNow()})
+	require.NoError(t, err)
+	assert.Contains(t, res.IndexNote, "knowledge index is empty")
+
+	// A guide-only search gets no owner-index note: it would contradict its hits.
+	res, err = Search(ctx, onlyGuide, Request{Queries: []string{"inbox"}, Sources: []string{GuideSource}, Now: testNow()})
+	require.NoError(t, err)
+	assert.NotEmpty(t, res.Hits)
+	assert.Equal(t, "", res.IndexNote)
 }
 
 func TestGetDocument(t *testing.T) {
