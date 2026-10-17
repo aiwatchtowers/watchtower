@@ -125,6 +125,20 @@ names carry it — so a dev or corp build never attaches to the release build's
 sessions. A row whose session lives in another build's host reads as stopped
 in this build.
 
+> **Note (2026-10-17, final review of #496):** as built, the socket is derived
+> from the literal `Constants.bundleID` (`com.watchtower.desktop`), which every
+> build carries, so all builds share one host; the paragraph above does not
+> hold. A dev build on the same workspace contends for the same runs: the
+> newer attach wins, the old connection gets `Error{"message":"taken over"}`
+> before it closes, and that pane says "Another Watchtower window took this
+> session over." with no reattach and no exit report. The idle exit counts
+> only sessions and connections bound to one — the app's permanent control
+> connection does not keep the host alive — so the host exits 60 s after its
+> last session and attached terminal are gone, and an update's new host
+> binary takes over then. The local-PTY fallback applies only when the host is
+> unreachable at app launch; a host lost mid-run is respawned by the next
+> launch, and a failed respawn ends that launch with the reason in the pane.
+
 ### 4.3 App side
 
 - A second `TerminalSessionProcess` implementation, `HostedTerminalSession`:

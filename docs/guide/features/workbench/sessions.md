@@ -38,15 +38,17 @@ When no helper has reported for 30 minutes, Watchtower asks Claude Code whether 
 
 Sessions run in a small background helper, not inside the Watchtower window. An update leaves them running: the agent keeps working, and its helper agents and background jobs (a dev server, a build) keep going. When Watchtower comes back, each session shows its live terminal again.
 
-When you quit with sessions running, Watchtower asks:
+An update, log-out or restart never asks about sessions; it still asks first while a recording runs or an ask answer is unsent. When you quit yourself with sessions running, Watchtower asks:
 
 - **Keep Sessions and Quit** leaves them running.
 - **Stop Sessions and Quit** stops them.
 - **Cancel** stays in the app.
 
-**Reset All Data** (Settings → System) always stops them. A session that could not start in the helper says "This session stops when Watchtower quits." under its terminal, and the quit alert counts it as "unprotected".
+**Reset All Data** (Settings → System) always stops them. If the helper cannot be reached when Watchtower starts, sessions run in the window instead: each says "This session stops when Watchtower quits." under its terminal, and the quit alert counts it as "unprotected". If the helper stops later, the next session start restarts it; if that fails, the terminal shows **[Watchtower] the session host is not running**.
 
-Sessions do not survive a Mac restart or log-out; use **Resume** after one. While Watchtower is closed, sessions send no notices and your phone sees no updates, though the agent's asks still reach the database. A session that exited meanwhile shows as exited when you return.
+Sessions do not survive a Mac restart or log-out; use **Resume** after one. While Watchtower is closed, sessions send no notices and your phone sees no updates, though the agent's asks still reach the database. A session that exited meanwhile shows its last output and reads as exited when you return.
+
+Every Watchtower build on your Mac shares one helper. Two copies open on the same workspace compete for its sessions, and the one that loses a session shows **Another Watchtower window took this session over.** The helper quits a minute after its last session ends; an update's new helper takes over from then.
 
 ### Where the agent works
 
