@@ -38,6 +38,7 @@ linters:
     - unused
     - wastedassign
     - nolintlint
+    - unparam
 
     # Style & consistency
     - misspell
@@ -112,6 +113,16 @@ linters:
       - path: internal/mcp/
         linters:
           - nilerr
+      # unparam: test fixtures keep knobs a single test happens to pin.
+      - path: _test\.go
+        linters:
+          - unparam
+      # unparam: the code index refiners share one dispatch-table signature,
+      # so a refiner that never renames still returns the empty name.
+      - path: internal/codeindex/
+        text: 'result 1 \(string\) is always ""'
+        linters:
+          - unparam
 
 issues:
   max-issues-per-linter: 0

@@ -137,7 +137,7 @@ func TestRunEmailDigests_InsertsRowAndAdvancesFloor(t *testing.T) {
 	}}
 
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background(), time.Time{})
+	err := p.runEmailDigests(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, gen.calls)
 
@@ -166,7 +166,7 @@ func TestIdeas01_EmailGeneratorErrorNoRowFloorUnchanged(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("boom") }}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background(), time.Time{})
+	err := p.runEmailDigests(context.Background())
 	require.Error(t, err)
 
 	digests, err := d.ListStreamDigestsAfter(0, "")
@@ -193,7 +193,7 @@ func TestIdeas01_EmailNoNewMessagesCleanNoOp(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background(), time.Time{})
+	err := p.runEmailDigests(context.Background())
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 
@@ -221,7 +221,7 @@ func TestRunEmailDigests_FloorZero_InitializesAndSkips(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background(), time.Time{})
+	err := p.runEmailDigests(context.Background())
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 
@@ -257,7 +257,7 @@ func TestIdeas02_EmailHallucinatedRefDropped(t *testing.T) {
 		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"invented","author":"Ann","ref":"gmail:999:fake-thread"}],"decisions":[]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background(), time.Time{})
+	err := p.runEmailDigests(context.Background())
 	require.NoError(t, err)
 
 	assertNoStreamDigestCites(t, d, "gmail:999:fake-thread")
@@ -285,7 +285,7 @@ func TestIdeas01_EmailEmptyTopics_NoRowFloorAdvances(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{"topics":[]}`, nil }}
 	p := New(d, testCfg(), gen, testLogger())
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 	require.Equal(t, 1, gen.calls)
 
 	digests, err := d.ListStreamDigestsAfter(0, "")
@@ -333,7 +333,7 @@ func TestRunEmailDigests_LogsRejectedRefs(t *testing.T) {
 			gen := &fakeGen{reply: func(string) (string, error) { return tc.reply(acctID), nil }}
 			var logBuf bytes.Buffer
 			p := New(d, testCfg(), gen, log.New(&logBuf, "", 0))
-			require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+			require.NoError(t, p.runEmailDigests(context.Background()))
 
 			if tc.wantLog == "" {
 				assert.NotContains(t, logBuf.String(), "dropped")
@@ -373,7 +373,7 @@ func TestIdeas01_EmailFloorStopsAtBudgetDroppedThread(t *testing.T) {
 			fmt.Sprintf("gmail:%d:thr-1", acctID)), nil
 	}}
 	p := New(d, testCfgWithBudget(budget), gen, testLogger())
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 	require.Equal(t, 1, gen.calls)
 	require.NotContains(t, seenBlock, "thr-2", "the second thread must not have been rendered")
 
@@ -426,7 +426,7 @@ func TestIdeas01_EmailTieAtBudgetCut_DrainedNotBuried(t *testing.T) {
 			fmt.Sprintf("gmail:%d:thr-1", acctID)), nil
 	}}
 	p := New(d, testCfgWithBudget(budget), gen, testLogger())
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 	require.Equal(t, 1, gen.calls)
 
 	assert.Contains(t, seenBlock, "thr-2",
@@ -481,7 +481,7 @@ func TestIdeas01_EmailTieGroupBeyondCeiling_BoundedAndFloorAdvances(t *testing.T
 		return `{"topics":[]}`, nil
 	}}
 	p := New(d, testCfgWithBudget(1), gen, log.New(&logged, "", 0))
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 	require.Equal(t, 1, gen.calls)
 
 	assert.Equal(t, wantRendered, strings.Count(seenBlock, "gmail:"),
@@ -552,7 +552,7 @@ func TestIdeas01_EmailTieDrainStopsAtByteCeiling(t *testing.T) {
 	// Budget 1: every thread overshoots, so the drain — not the ordinary
 	// budget loop — decides everything after the first.
 	p := New(d, testCfgWithBudget(1), gen, log.New(&logged, "", 0))
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 	require.Equal(t, 1, gen.calls)
 
 	const ceiling = tieDrainCharCeiling
@@ -603,7 +603,7 @@ func TestIdeas01_RaisedPromptBudgetDoesNotRaiseTheDrainCeiling(t *testing.T) {
 		return `{"topics":[]}`, nil
 	}}
 	p := New(d, testCfgWithBudget(120000), gen, testLogger())
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 	require.Equal(t, 1, gen.calls)
 
 	assert.LessOrEqual(t, len(seenBlock), tieDrainCharCeiling,
@@ -646,7 +646,7 @@ func TestIdeas01_EmailCappedThreadTail_StaysAboveTheFloor(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{"topics":[]}`, nil }}
 	p := New(d, testCfg(), gen, testLogger())
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 	require.Equal(t, 1, gen.calls)
 
 	floor, err := d.IdeasEmailFloor(acctID)
@@ -684,7 +684,7 @@ func TestIdeas01_EmailOversizedThread_RenderedAnywayFloorAdvances(t *testing.T) 
 	}}
 	const budget = 1
 	p := New(d, testCfgWithBudget(budget), gen, log.New(&logged, "", 0))
-	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runEmailDigests(context.Background()))
 
 	require.Equal(t, 1, gen.calls, "the oversized thread must still be mined")
 	assert.Contains(t, seenBlock, "thr-1", "the one oversized thread must be rendered")
@@ -723,7 +723,7 @@ func TestRunEmailDigests_DisabledAccount_Skipped(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err = p.runEmailDigests(context.Background(), time.Time{})
+	err = p.runEmailDigests(context.Background())
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 }

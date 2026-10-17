@@ -351,7 +351,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			lookup := newBatchResultLookup(batch, results)
 
 			// Distribute tokens evenly across batch users for progress reporting.
-			inTokPer, outTokPer, costPer := 0, 0, 0.0
+			inTokPer, outTokPer := 0, 0
 			if usage != nil && len(batch) > 0 {
 				inTokPer = usage.InputTokens / len(batch)
 				outTokPer = usage.OutputTokens / len(batch)
@@ -365,7 +365,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
 						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
 					}
-				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer, costPer); serr != nil {
+				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
 					aiFailures++
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
 				} else {
@@ -432,7 +432,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 
 			lookup := newBatchResultLookup(batch, results)
 
-			inTokPer, outTokPer, costPer := 0, 0, 0.0
+			inTokPer, outTokPer := 0, 0
 			if usage != nil && len(batch) > 0 {
 				inTokPer = usage.InputTokens / len(batch)
 				outTokPer = usage.OutputTokens / len(batch)
@@ -448,7 +448,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 					} else {
 						aiCards++
 					}
-				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer, costPer); serr != nil {
+				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
 					aiFailures++
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
 				} else {
@@ -661,7 +661,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 }
 
 // storeBatchCard converts a BatchCardResult to a db.PeopleCard and stores it.
-func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int, cost float64) error {
+func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int) error {
 	redFlags, _ := json.Marshal(result.RedFlags)
 	highlights, _ := json.Marshal(result.Highlights)
 	accomplishments, _ := json.Marshal(result.Accomplishments)

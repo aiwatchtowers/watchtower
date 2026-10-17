@@ -1884,3 +1884,12 @@ Entry format:
 - rule-gap (candidate, review process): *the panel diff is always three-dot (`origin/main...HEAD`), and a reconciliation or merge branch reports whether its tip is on the PR head and whether CI's Swift lane ran on it.*
 - rule-gap (candidate, dim 8): *a source that is exempted from one aggregate over a shared table (count, empty-check) is checked against every sibling aggregate over the same table (MAX(updated_at) staleness, progress).*
 - outcome: TBD
+
+## 2026-10-18 — chore/unparam-nilnil-bugs PR #376 (enable unparam with `_test.go` + codeindex refiner exclusions, ~34 unused params / always-nil results dropped, two `nil, nil` deref fixes in `loadSourceContext` and `jira.SyncBoard` with regression tests, side fixes; panel: prosecutor (3) + codex (0), 3 specialists DOWN (not installed); judge verified against 7bbc10967 by reading, grep, `go vet` + cached `go test` of memory/tools/jira/inbox; judge synthesis, round 1) — verdict: approve
+
+- contested (held minor, prosecutor F1, fixed): unparam flagged `requireText`'s trimmed-string result as unused because every Validate discarded it. A test named "stores the trimmed description" was written to prove that Execute trims, but it passed with the new trim reverted, because `db.UpdateWorkbenchDescription` already trims. The fix dropped the duplicate trim and kept the test as a contract naming the DB layer. **When unparam removes a result that looked meaningful (a cleaned value), check which layer actually applies the transformation before adding it back anywhere.** [6/7]
+- false-positive: none dismissed. The prosecutor showed that both regression tests fail on a mechanical revert, which is the evidence a nil-guard fix needs.
+- miss: none lane-only. Unparam surfaced two real `nil, nil` derefs. That is the dim-6 value of a "lint-only" PR: an always-nil or ignored result is a hint to audit the callers, not just to delete the result.
+- weak-dimension: 8/docs. A skill file (`.claude/skills/add-pipeline/SKILL.md`) still showed a removed parameter. Signature removals must also be grepped across `.claude/skills/` and `docs/`, not only Go callers.
+- rule-gap (candidate, dim 2/8): *a signature change greps every `.md` under `.claude/skills/` and `docs/` for the old call shape; also, a reflection or summary prompt whose user message now names its window from data (`since <date>`) should be checked against the system prompt's fixed wording ("last seven days") — consistent here only because `reflectWindowDays` is 7.*
+- outcome: TBD

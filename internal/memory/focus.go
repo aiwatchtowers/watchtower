@@ -239,6 +239,10 @@ func sortedSet(m map[string]bool) []string {
 	return out
 }
 
+// focusStep is the focus step's row number: focus is Run step 1b, the first
+// step row.
+const focusStep = 1
+
 // runFocus is the focus-salience step (behind memory.focus.enabled): parse
 // focus.md, ALWAYS re-resolve its bullets against the live index
 // (final-review Fix 2 — matchFocus runs on every gated call, not just when
@@ -260,8 +264,8 @@ func sortedSet(m map[string]bool) []string {
 // recorded (0 when the resolved set is unchanged — no step row at all,
 // mirroring "nothing to do" elsewhere in this package) and an error that is
 // logged by the caller but never fails the run (source-isolation precedent).
-func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, error) {
-	step := stepOffset + 1
+func (p *Pipeline) runFocus(runID int64, stats *RunStats) (int, error) {
+	step := focusStep
 
 	raw, err := p.readFocusFile()
 	if err != nil {
@@ -288,7 +292,7 @@ func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, 
 		return 0, nil
 	}
 
-	return p.applyFocusState(runID, stepOffset, "focus", now, cooled, fp, stats, time.Now())
+	return p.applyFocusState(runID, "focus", now, cooled, fp, stats, time.Now())
 }
 
 // sweepFocusImportance recomputes and persists importance_score for EVERY
@@ -356,8 +360,8 @@ func (p *Pipeline) sweepFocusImportance() (swept, failed int, err error) {
 // failure discipline as runFocus, so a failed or partially-failed sweep
 // leaves the fingerprint non-empty and the next run retries the
 // neutralization instead of silently losing residual state.
-func (p *Pipeline) runFocusDisable(runID int64, stepOffset int, stats *RunStats) (int, error) {
-	step := stepOffset + 1
+func (p *Pipeline) runFocusDisable(runID int64, stats *RunStats) (int, error) {
+	step := focusStep
 
 	fp, err := p.db.FocusFingerprint()
 	if err != nil {
@@ -368,7 +372,7 @@ func (p *Pipeline) runFocusDisable(runID int64, stepOffset int, stats *RunStats)
 		return 0, nil
 	}
 
-	return p.applyFocusState(runID, stepOffset, "focus-disable", nil, nil, "", stats, time.Now())
+	return p.applyFocusState(runID, "focus-disable", nil, nil, "", stats, time.Now())
 }
 
 // applyFocusState performs the ReplaceFocusMatches → sweep →
@@ -383,8 +387,8 @@ func (p *Pipeline) runFocusDisable(runID int64, stepOffset int, stats *RunStats)
 // the failed>0 case (only the applied-fingerprint advance waits for a clean
 // sweep, so the next run's fingerprint comparison retries the sweep, not the
 // already-correct match set).
-func (p *Pipeline) applyFocusState(runID int64, stepOffset int, stepName string, now, cooled []string, fp string, stats *RunStats, start time.Time) (int, error) {
-	step := stepOffset + 1
+func (p *Pipeline) applyFocusState(runID int64, stepName string, now, cooled []string, fp string, stats *RunStats, start time.Time) (int, error) {
+	step := focusStep
 
 	if err := p.db.ReplaceFocusMatches(now, cooled); err != nil {
 		p.recordSemanticStep(runID, &step, stepName, "error", nil, start)

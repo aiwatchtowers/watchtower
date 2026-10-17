@@ -302,7 +302,7 @@ func (s *Sandbox) Run() (any, error) {
 	case r := <-results:
 		return s.outcome(r.v, r.err)
 	case <-grace.C:
-		return s.abandon(results)
+		return nil, s.abandon(results)
 	}
 }
 
@@ -327,8 +327,10 @@ func (s *Sandbox) execute() (r runResult) {
 }
 
 // abandon leaves a script goroutine stuck past the grace behind; it counts
-// in AbandonedRuns until it ends.
-func (s *Sandbox) abandon(results <-chan runResult) (any, error) {
+// in AbandonedRuns until it ends. The error is the run's: a memory
+// interrupt for a script stopped for memory, else the fatal SDK error, else
+// a *RunInterrupted marked Abandoned.
+func (s *Sandbox) abandon(results <-chan runResult) error {
 	abandonedRuns.Add(1)
 	go func() {
 		<-results
@@ -341,11 +343,11 @@ func (s *Sandbox) abandon(results <-chan runResult) (any, error) {
 	switch {
 	case errors.As(fatal, &se) && se.Message == errTooMuchMemory().Message:
 		// stopped for memory, then stuck in a native call: a runaway
-		return nil, &RunInterrupted{Reason: InterruptMemory, Abandoned: true}
+		return &RunInterrupted{Reason: InterruptMemory, Abandoned: true}
 	case fatal != nil:
-		return nil, fatal
+		return fatal
 	}
-	return nil, &RunInterrupted{Reason: reason, Abandoned: true}
+	return &RunInterrupted{Reason: reason, Abandoned: true}
 }
 
 func (s *Sandbox) outcome(_ goja.Value, runErr error) (any, error) {
