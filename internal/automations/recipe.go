@@ -79,6 +79,7 @@ var EventTypes = []string{
 	"jira.issue_changed",
 	"calendar.event_changed",
 	"confluence.page_changed",
+	SlackReactionAdded,
 }
 
 // MissedPolicy is what the scheduler does with a missed schedule.
