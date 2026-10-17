@@ -67,10 +67,11 @@ type Catalog interface {
 	Lookup(serverToken, tool string) (Annotations, bool)
 }
 
-// Policy is the per-session input of the decision table. A nil Catalog asks
-// for every connector call (the gate always passes one), a nil PathCheck denies every path, a nil
-// OwnArtifact asks before updating any existing artifact and a nil OwnDoc
-// asks before any Claude Docs write to an existing doc. Disabled is the
+// Policy is the per-session input of the decision table. A nil Catalog
+// lists no connector (every connector call is denied), a nil PathCheck
+// denies every path, a nil OwnArtifact asks before updating any existing
+// artifact and a nil OwnDoc asks before any Claude Docs write to an
+// existing doc. Disabled is the
 // one field whose nil value allows: it means nothing is switched off, so the
 // caller must not pass nil when it failed to load the owner's switches.
 type Policy struct {
@@ -110,7 +111,7 @@ func (p Policy) Decide(c Call) Decision {
 	if p.Disabled[server] {
 		return deny("%s is switched off in Settings → AI", name)
 	}
-	if p.Catalog != nil && !p.Catalog.Connector(server) {
+	if p.Catalog == nil || !p.Catalog.Connector(server) {
 		return deny("%s is not one of this account's claude.ai connectors", c.Server)
 	}
 	if tool == "authenticate" || tool == "complete_authentication" {
@@ -119,11 +120,8 @@ func (p Policy) Decide(c Call) Decision {
 	if row, ok := findOverride(server, tool); ok {
 		return p.decideOverride(row, c.Input)
 	}
-	if p.Catalog != nil {
-		if ann, ok := p.Catalog.Lookup(server, tool); ok &&
-			isTrue(ann.ReadOnly) && !isTrue(ann.Destructive) {
-			return Decision{Verdict: Allow, Reason: "read-only connector tool"}
-		}
+	if ann, ok := p.Catalog.Lookup(server, tool); ok && isTrue(ann.ReadOnly) && !isTrue(ann.Destructive) {
+		return Decision{Verdict: Allow, Reason: "read-only connector tool"}
 	}
 	return Decision{Verdict: Ask, Reason: "connector tool that may change data"}
 }

@@ -162,10 +162,9 @@ while IFS= read -r line; do
       ;;
     *'"type":"user"'*)
       n=$((n+1))
-      if [ -n "$FAKE_API_KEY_SOURCE" ]; then
-        printf '{"type":"system","subtype":"init","session_id":"%s","apiKeySource":"%s"}\n' "${FAKE_INIT_SID:-sess-fake}" "$FAKE_API_KEY_SOURCE"
-      elif [ -n "$FAKE_INIT_SID" ]; then
-        printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$FAKE_INIT_SID"
+      if [ -n "$FAKE_INIT_SID$FAKE_API_KEY_SOURCE" ]; then
+        auth=""; [ -n "$FAKE_API_KEY_SOURCE" ] && auth=",\"apiKeySource\":\"$FAKE_API_KEY_SOURCE\""
+        printf '{"type":"system","subtype":"init","session_id":"%s"%s}\n' "${FAKE_INIT_SID:-sess-fake}" "$auth"
       fi
       case "$FAKE_MODE" in
         crash_once)

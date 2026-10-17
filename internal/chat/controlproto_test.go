@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -401,7 +402,15 @@ func TestControlProto_PolicyCallMatchesConnectorPolicy(t *testing.T) {
 		}
 		return errors.New("outside")
 	}
-	policy := connectorpolicy.Policy{Disabled: map[string]bool{}, PathCheck: inCwd, PublishDir: "/tmp/probe/cwd"}
+	// The catalog the recorded settled mcp_status answer makes.
+	status := readFixture(t, "claude_ai_mcp_status.jsonl")
+	servers, ok, err := parseMCPStatusResponse([]byte(status[3]), "status_1")
+	require.True(t, ok)
+	require.NoError(t, err)
+	require.True(t, connectorsSettled(servers), "the recorded settled answer")
+	require.False(t, connectorsSettled([]MCPServerStatus{}), "the recorded answer right after spawn")
+	policy := connectorpolicy.Policy{Disabled: map[string]bool{}, PathCheck: inCwd, PublishDir: "/tmp/probe/cwd",
+		Catalog: newConnectorSnapshot(time.Now(), servers, nil)}
 	decide := func(line string) connectorpolicy.Decision {
 		req, ok := parseControlRequest([]byte(line))
 		require.True(t, ok)

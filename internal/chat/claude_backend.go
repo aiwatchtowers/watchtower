@@ -238,8 +238,9 @@ func NewClaudeBackend(opts ClaudeOptions) Backend {
 	if opts.ClaudeAI.On {
 		b.statusWaits = map[string]chan mcpStatusAnswer{}
 		b.connPoll, b.connSettle, b.connAnswer = connectorsPollInterval, connectorsSettleWindow, connectorsAnswerWait
-		b.catalog = newConnectorCatalog()
-		if b.gate != nil {
+		if b.gate == nil {
+			b.catalog = newConnectorCatalog()
+		} else {
 			b.catalog = b.gate.catalog
 			if opts.ClaudeAI.Connectors {
 				// Off, the CLI lists none: a refresh would only
@@ -625,7 +626,7 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 		if f.sessionID != "" {
 			b.noteSessionID(p, f.sessionID)
 		}
-		if f.apiKeySource != "" {
+		if f.init {
 			b.noteAPIKeySource(f.apiKeySource)
 		}
 		for _, r := range f.results {
@@ -1216,7 +1217,9 @@ func (b *claudeBackend) Close() error {
 			b.watchers.Wait()
 			close(watched)
 		}()
-		waitClosed(watched, gateStopWait)
+		if !waitClosed(watched, gateStopWait) {
+			fmt.Fprintf(b.warn(), "chat: a claude.ai connector watch did not stop within %v\n", gateStopWait)
+		}
 		b.gate.shutdown()
 		for _, f := range []string{b.promptFile, b.mcpFile} {
 			if f != "" {

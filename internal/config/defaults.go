@@ -7,6 +7,10 @@ import (
 	"github.com/spf13/viper"
 )
 
+// DefaultClaudeAIConnectors loads the account's claude.ai connectors into the
+// main chat unless the owner switches them off (ask #236).
+const DefaultClaudeAIConnectors = true
+
 const (
 	DefaultActiveWorkspace = ""
 	DefaultAIProvider      = "claude"
@@ -17,10 +21,7 @@ const (
 	DefaultOllamaURL       = "http://localhost:11434"
 	DefaultAIContextBudget = 150000
 	DefaultAIWorkers       = 5
-	// DefaultClaudeAIConnectors loads the account's claude.ai connectors
-	// into the main chat unless the owner switches them off (ask #236).
-	DefaultClaudeAIConnectors = true
-	DefaultSyncWorkers        = 1
+	DefaultSyncWorkers     = 1
 	// DefaultInitialHistDays bounds the Slack search-sync window on a true
 	// first run only (an account with no search_last_date watermark yet).
 	// Once a watermark exists, catch-up depth is governed by

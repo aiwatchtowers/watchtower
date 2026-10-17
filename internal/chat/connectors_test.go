@@ -120,7 +120,7 @@ func TestConnectors_GivesUpAfter10s(t *testing.T) {
 
 	waitUntil(t, "the sidecar", func() bool { return readSidecar(t, path) != nil })
 	assert.Equal(t, ConnectorPending, sidecarStatuses(t, path)["claude.ai Gmail"], "written as it stands")
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(time.Second) // far past the 150 ms window: the watch has ended
 	sent := mcpStatusRequests(t, fx)
 	assert.LessOrEqual(t, sent, 12, "bounded by the settle window")
 
@@ -128,6 +128,133 @@ func TestConnectors_GivesUpAfter10s(t *testing.T) {
 	h.next(EventTurnDone)
 	require.NoError(t, h.finish())
 	assert.Equal(t, sent, mcpStatusRequests(t, fx), "the chat went on; no more polling")
+}
+
+func localServerJSON(status string) string {
+	return `{"name":"watchtower","status":"` + status + `","source":"dynamic","config":{"type":"stdio"}}`
+}
+
+// The session's own --mcp-config servers are listed at once, the account's
+// connectors only later: a list of local servers alone is not settled.
+func TestConnectors_LocalServersAloneAreNotSettled(t *testing.T) {
+	fx, path := sidecarFixture(t)
+	fx.setStatus(t, `[`+localServerJSON("pending")+`]`, `[`+localServerJSON("connected")+`]`,
+		`[`+localServerJSON("connected")+`,`+connectorJSON("Gmail", "pending")+`]`,
+		`[`+localServerJSON("connected")+`,`+connectorJSON("Gmail", "connected")+`]`)
+	h := startSession(t, fastWatch(NewClaudeBackend(fx.opts), 20*time.Millisecond, 5*time.Second), nil)
+	h.next(EventSessionReady)
+	waitUntil(t, "the settled sidecar", func() bool {
+		return readSidecar(t, path) != nil && sidecarStatuses(t, path)["claude.ai Gmail"] == ConnectorConnected
+	})
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, h.finish())
+	assert.Equal(t, 4, mcpStatusRequests(t, fx))
+	assert.Equal(t, map[string]string{"claude.ai Gmail": ConnectorConnected}, sidecarStatuses(t, path),
+		"local servers never reach the sidecar")
+}
+
+// No readable answer within the window: the sidecar says so instead of
+// keeping a previous session's list.
+func TestConnectors_UnreadableStatusIsReported(t *testing.T) {
+	fx, path := sidecarFixture(t)
+	require.NoError(t, WriteConnectorsFile(path, fixtureSnapshot()))
+	fx.setStatus(t, `null`)
+	h := startSession(t, fastWatch(NewClaudeBackend(fx.opts), 20*time.Millisecond, 100*time.Millisecond), nil)
+	h.next(EventSessionReady)
+	waitUntil(t, "the sidecar rewrite", func() bool { return readSidecar(t, path)["available"] == false })
+	require.NoError(t, h.finish())
+	m := readSidecar(t, path)
+	assert.Contains(t, m["unavailable_reason"], "could not be read")
+	assert.Equal(t, []any{}, m["servers"])
+}
+
+// With every connector off, a sidecar that cannot be read is left alone:
+// the owner's list is not replaced by an empty one.
+func TestConnectors_AllOffLeavesAnUnreadableSidecarAlone(t *testing.T) {
+	fx, path := sidecarFixture(t)
+	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
+	fx.opts.ClaudeAI.Connectors = false
+	h := startSession(t, NewClaudeBackend(fx.opts), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "{not json", string(data))
+}
+
+func TestConnectors_StatusQueryGetsItsAnswer(t *testing.T) {
+	b := NewClaudeBackend(ClaudeOptions{Binary: "claude", ClaudeAI: ClaudeAIMode{On: true, Connectors: true}}).(*claudeBackend)
+	p, r := pipeProc(t)
+	type result struct {
+		servers []MCPServerStatus
+		err     error
+	}
+	ask := func() (string, chan result) {
+		done := make(chan result, 1)
+		go func() {
+			s, err := b.queryMCPStatus(p)
+			done <- result{s, err}
+		}()
+		line := readLine(t, r)
+		var req struct {
+			RequestID string `json:"request_id"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &req))
+		return req.RequestID, done
+	}
+
+	id, done := ask()
+	answer := `{"type":"control_response","response":{"subtype":"success","request_id":"` + id +
+		`","response":{"mcpServers":[` + connectorJSON("Gmail", "connected") + `]}}}`
+	require.True(t, b.routeStatusAnswer([]byte(answer)))
+	got := <-done
+	require.NoError(t, got.err)
+	require.Len(t, got.servers, 1)
+	assert.Equal(t, "claude.ai Gmail", got.servers[0].Name)
+	assert.False(t, b.routeStatusAnswer([]byte(answer)), "a late answer has no query left")
+
+	id, done = ask()
+	require.True(t, b.routeStatusAnswer([]byte(`{"type":"control_response","response":{"subtype":"error","request_id":"`+
+		id+`","error":"boom"}}`)))
+	got = <-done
+	assert.ErrorContains(t, got.err, "boom")
+}
+
+// A withdrawal that lands during the refresh is honoured: nothing is
+// answered and nothing runs.
+func TestConnectors_WithdrawnDuringTheRefreshIsNotAllowed(t *testing.T) {
+	sink := newFakeSink()
+	g, p, r := unitGate(t, sink)
+	g.refresh = func(*claudeProc) {
+		// The refresh finds the new read-only tool — and the CLI withdraws
+		// the request meanwhile.
+		snap := testCatalog(t)
+		for i := range snap.Servers {
+			if snap.Servers[i].Name == "claude.ai Gmail" {
+				snap.Servers[i].Tools = append(snap.Servers[i].Tools, MCPToolInfo{Name: "labels", ReadOnly: boolp(true)})
+			}
+		}
+		g.catalog.set(snap)
+		g.withdraw("r1")
+	}
+	req, ok := parseControlRequest([]byte(canUseTool("r1", "tu1", "mcp__claude_ai_Gmail__labels", "claude.ai Gmail", `{}`)))
+	require.True(t, ok)
+	g.dispatch(p, req)
+	g.wg.Wait()
+	got := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := r.Read(buf)
+		got <- string(buf[:n])
+	}()
+	select {
+	case line := <-got:
+		t.Fatalf("answered after the withdrawal: %s", line)
+	case <-time.After(100 * time.Millisecond):
+	}
+	assert.Zero(t, sink.count())
 }
 
 func TestConnectors_SidecarIs0600AndAtomic(t *testing.T) {
@@ -288,16 +415,37 @@ func TestConnectors_APIKeySourceSwitchesThemOff(t *testing.T) {
 	answers := fx.controlAnswers(t)["r1"]
 	require.Len(t, answers, 1)
 	assert.Equal(t, "deny", behavior(t, answers[0]))
+	assert.Contains(t, denyMessage(t, answers[0]), "apiKeyHelper", "the model hears the real reason")
+	assert.Equal(t, 1, mcpStatusRequests(t, fx), "the watch's one answer; no refresh once switched off")
 	m := readSidecar(t, path)
 	assert.Equal(t, false, m["available"])
 	assert.Contains(t, m["unavailable_reason"], "apiKeyHelper")
 	assert.Equal(t, []any{}, m["servers"])
 }
 
-func TestConnectors_APIKeySourceNoneKeepsThemOn(t *testing.T) {
+func TestConnectors_OnlyAPIKeySourceNoneConfirmsTheLogin(t *testing.T) {
 	assert.Empty(t, apiKeyUnavailableReason("none"))
-	assert.Empty(t, apiKeyUnavailableReason(""))
-	assert.NotEmpty(t, apiKeyUnavailableReason("ANTHROPIC_API_KEY"))
+	assert.Contains(t, apiKeyUnavailableReason(""), "did not report", "a missing field fails closed")
+	assert.Contains(t, apiKeyUnavailableReason("ANTHROPIC_API_KEY"), "ANTHROPIC_API_KEY")
+}
+
+// A CLI whose init event carries no apiKeySource does not confirm the
+// login: the tools go off rather than on.
+func TestConnectors_InitWithoutAPIKeySourceSwitchesThemOff(t *testing.T) {
+	fx, path := sidecarFixture(t)
+	fx.setRequests(t, canUseTool("r1", "tu1", "mcp__claude_ai_Gmail__search", "claude.ai Gmail", `{}`))
+	fx.opts.Env = append(fx.opts.Env, "FAKE_INIT_SID=sess-init")
+	h := startSession(t, NewClaudeBackend(fx.opts), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "search"})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+
+	answers := fx.controlAnswers(t)["r1"]
+	require.Len(t, answers, 1)
+	assert.Equal(t, "deny", behavior(t, answers[0]))
+	assert.Contains(t, denyMessage(t, answers[0]), "did not report")
+	assert.Equal(t, false, readSidecar(t, path)["available"])
 }
 
 func TestConnectors_SwitchedOffServerIsMarkedDisabled(t *testing.T) {

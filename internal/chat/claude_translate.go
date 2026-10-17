@@ -105,7 +105,9 @@ type fedLine struct {
 	events    []Event
 	sessionID string
 	results   []toolResult
-	// apiKeySource is an init line's auth source ("" on other lines).
+	// init marks a system/init line; apiKeySource is its auth source ("" when
+	// the line has none).
+	init         bool
 	apiKeySource string
 }
 
@@ -203,7 +205,7 @@ func (t *ClaudeTranslator) feed(line []byte) (fedLine, error) {
 		f.events = t.result(l)
 	case "system":
 		if l.Subtype == "init" {
-			f.apiKeySource = l.APIKeySource
+			f.init, f.apiKeySource = true, l.APIKeySource
 		}
 	}
 	return f, nil

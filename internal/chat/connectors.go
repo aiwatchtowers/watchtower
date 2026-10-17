@@ -125,11 +125,18 @@ func (s ConnectorSnapshot) Lookup(serverToken, tool string) (connectorpolicy.Ann
 	return connectorpolicy.Annotations{}, false
 }
 
-// settled reports whether an mcp_status answer is final enough to keep: the
-// list is filled (it is empty right after spawn) and no account connector
-// is still pending.
+// hasAccountConnector reports whether an mcp_status answer lists any
+// account connector: the local servers of --mcp-config are listed at once,
+// the account's connectors only once their async fetch lands.
+func hasAccountConnector(servers []MCPServerStatus) bool {
+	return slices.ContainsFunc(servers, isAccountConnector)
+}
+
+// connectorsSettled reports whether an mcp_status answer is final enough to
+// keep: the account's connectors arrived (right after the spawn the list is
+// empty or holds only local servers) and none is still pending.
 func connectorsSettled(servers []MCPServerStatus) bool {
-	if len(servers) == 0 {
+	if !hasAccountConnector(servers) {
 		return false
 	}
 	for _, s := range servers {
@@ -299,7 +306,7 @@ func DisabledToolTokens(disabled []string, last ConnectorSnapshot) []string {
 		set["mcp__"+token] = true
 	}
 	for _, s := range last.Servers {
-		token := connectorpolicy.ServerToken(connectorServerName(strings.TrimPrefix(s.Name, claudeAIServerPrefix)))
+		token := connectorpolicy.ServerToken(connectorServerName(s.Name))
 		set["mcp__"+token+"__authenticate"] = true
 		set["mcp__"+token+"__complete_authentication"] = true
 	}
@@ -382,6 +389,12 @@ func (c *connectorCatalog) isUnavailable() bool {
 	return c.unavailable != ""
 }
 
+// unavailableReason is why the catalog lists nothing ("" when it is
+// available, or simply not filled yet).
+func (c *connectorCatalog) unavailableReason() string {
+	return c.get().UnavailableReason
+}
+
 // Connector implements connectorpolicy.Catalog.
 func (c *connectorCatalog) Connector(serverToken string) bool {
 	return c.get().Connector(serverToken)
@@ -403,14 +416,19 @@ func (c *connectorCatalog) knows(toolName string) bool {
 	return known
 }
 
-// apiKeyUnavailableReason is the reason of a child whose init event shows
-// it does not run on the claude.ai login; "" when it does or the field is
-// absent.
+// apiKeyUnavailableReason is the reason of a child whose init event does not
+// confirm the claude.ai login: apiKeySource "none" (probe answer 9)
+// confirms it, anything else — a key source, or no field at all from a CLI
+// that changed its init event — switches the tools off; "" when confirmed.
 func apiKeyUnavailableReason(apiKeySource string) string {
-	if apiKeySource == "" || apiKeySource == "none" {
+	switch apiKeySource {
+	case "none":
 		return ""
+	case "":
+		return "claude.ai tools need a claude.ai login; the CLI did not report which login this chat uses."
+	default:
+		return "claude.ai tools need a claude.ai login; this chat uses an API key (" + apiKeySource + ")."
 	}
-	return "claude.ai tools need a claude.ai login; this chat uses an API key (" + apiKeySource + ")."
 }
 
 // The connector watch bounds (spec D2): mcp_status is re-sent every second
@@ -444,7 +462,10 @@ func (b *claudeBackend) queryMCPStatus(p *claudeProc) ([]MCPServerStatus, error)
 		b.statusMu.Unlock()
 	}()
 	if err := p.write(mcpStatusRequestLine(id)); err != nil {
-		return nil, errChildGone
+		if childGone(p) {
+			return nil, errChildGone
+		}
+		return nil, fmt.Errorf("mcp_status: sending the request: %w", err)
 	}
 	select {
 	case a := <-ch:
@@ -476,7 +497,10 @@ func (b *claudeBackend) routeStatusAnswer(line []byte) bool {
 	if ch == nil {
 		return false
 	}
-	servers, _, err := parseMCPStatusResponse(line, id)
+	servers, ok, err := parseMCPStatusResponse(line, id)
+	if !ok && err == nil {
+		err = fmt.Errorf("mcp_status: the answer to %s could not be read", id)
+	}
 	select {
 	case ch <- mcpStatusAnswer{servers: servers, err: err}:
 	default: // a duplicate answer: the first one counts
@@ -485,35 +509,40 @@ func (b *claudeBackend) routeStatusAnswer(line []byte) bool {
 }
 
 // watchConnectors builds the connector catalog of a freshly spawned child:
-// mcp_status until the list settles (it is empty right after the spawn and
-// lists connectors pending for a second or two), for at most connSettle;
-// then the chat goes on with whatever it has. With the connectors switched
-// off the CLI lists none, and the sidecar keeps the last known list as
-// disabled instead.
+// mcp_status until the account's connectors arrived and none is pending,
+// for at most connSettle; then the chat goes on with whatever it has. An
+// answer listing no account connector is kept only as the last one. With
+// no answer at all the sidecar says the list could not be read. With the
+// connectors switched off the CLI lists none, and the sidecar keeps the
+// last known list as disabled instead.
 func (b *claudeBackend) watchConnectors(p *claudeProc) {
 	defer b.watchers.Done()
 	if !b.opts.ClaudeAI.Connectors {
-		// The file only: the catalog stays empty, so a connector call —
-		// none should come — is denied.
-		if !b.catalog.isUnavailable() {
-			b.writeConnectorsFile(carriedOverSnapshot(time.Now(), b.lastConnectors()))
-		}
+		b.carryOverConnectors()
 		return
 	}
 	deadline := time.Now().Add(b.connSettle)
+	var lastErr error
+	stored := false
 	for {
 		servers, err := b.queryMCPStatus(p)
 		if errors.Is(err, errChildGone) {
 			return
 		}
 		if err != nil {
+			lastErr = err
 			fmt.Fprintf(b.warn(), "chat: reading the claude.ai connectors: %v\n", err)
 		}
 		final := (err == nil && connectorsSettled(servers)) || !time.Now().Before(deadline)
-		if err == nil && (len(servers) > 0 || final) {
+		if err == nil && (hasAccountConnector(servers) || final) {
 			b.storeConnectors(servers)
+			stored = true
 		}
 		if final {
+			if !stored {
+				b.publishConnectors(UnavailableConnectors(time.Now(),
+					"The claude.ai connector list could not be read ("+lastErr.Error()+")."))
+			}
 			return
 		}
 		select {
@@ -526,17 +555,39 @@ func (b *claudeBackend) watchConnectors(p *claudeProc) {
 	}
 }
 
-// refreshConnectors is the gate's one re-read of the catalog before it
-// decides a connector call the catalog does not list.
-func (b *claudeBackend) refreshConnectors(p *claudeProc) {
-	servers, err := b.queryMCPStatus(p)
-	if err != nil {
-		if !errors.Is(err, errChildGone) {
-			fmt.Fprintf(b.warn(), "chat: refreshing the claude.ai connectors: %v\n", err)
-		}
+// carryOverConnectors rewrites the sidecar of a session whose connectors
+// are all off: the last known list, every server disabled. The catalog
+// stays empty, so a connector call — none should come — is denied. A
+// sidecar that cannot be read is left alone rather than replaced by an
+// empty list.
+func (b *claudeBackend) carryOverConnectors() {
+	if b.opts.ConnectorsFile == "" {
 		return
 	}
-	b.storeConnectors(servers)
+	last, err := ReadConnectorsFile(b.opts.ConnectorsFile)
+	if err != nil {
+		fmt.Fprintf(b.warn(), "chat: %v; left as it is\n", err)
+		return
+	}
+	b.fileMu.Lock()
+	defer b.fileMu.Unlock()
+	if !b.catalog.isUnavailable() {
+		b.writeConnectorsFileLocked(carriedOverSnapshot(time.Now(), last))
+	}
+}
+
+// refreshConnectors is the gate's one re-read of the catalog before it
+// decides a connector call the catalog does not list. An answer listing no
+// account connector (a transient one) does not replace the catalog.
+func (b *claudeBackend) refreshConnectors(p *claudeProc) {
+	servers, err := b.queryMCPStatus(p)
+	switch {
+	case errors.Is(err, errChildGone):
+	case err != nil:
+		fmt.Fprintf(b.warn(), "chat: refreshing the claude.ai connectors: %v\n", err)
+	case hasAccountConnector(servers):
+		b.storeConnectors(servers)
+	}
 }
 
 // storeConnectors makes an mcp_status answer the session's catalog, the
@@ -550,45 +601,37 @@ func (b *claudeBackend) storeConnectors(servers []MCPServerStatus) {
 	b.publishConnectors(newConnectorSnapshot(time.Now(), servers, disabled))
 }
 
+// publishConnectors stores s and writes what the catalog then holds, under
+// one lock: the sidecar's writes land in the catalog's order.
 func (b *claudeBackend) publishConnectors(s ConnectorSnapshot) {
-	b.writeConnectorsFile(b.catalog.set(s))
+	b.fileMu.Lock()
+	defer b.fileMu.Unlock()
+	b.writeConnectorsFileLocked(b.catalog.set(s))
 }
 
-// noteAPIKeySource switches the catalog off for good when the child's init
-// event shows it does not run on the claude.ai login (an apiKeyHelper or a
-// key the environment markers did not reveal): no connector call is then
-// allowed, and the sidecar says why.
+// noteAPIKeySource switches the catalog off for good unless the child's
+// init event confirms the claude.ai login (an apiKeyHelper or a key the
+// environment markers did not reveal): no connector call is then allowed,
+// and the sidecar says why.
 func (b *claudeBackend) noteAPIKeySource(source string) {
 	reason := apiKeyUnavailableReason(source)
 	if b.catalog == nil || reason == "" {
 		return
 	}
+	b.fileMu.Lock()
+	defer b.fileMu.Unlock()
 	if s, changed := b.catalog.markUnavailable(time.Now(), reason); changed {
 		fmt.Fprintf(b.warn(), "chat: %s\n", reason)
-		b.writeConnectorsFile(s)
+		b.writeConnectorsFileLocked(s)
 	}
 }
 
-func (b *claudeBackend) writeConnectorsFile(s ConnectorSnapshot) {
+// writeConnectorsFileLocked writes the sidecar; the caller holds fileMu.
+func (b *claudeBackend) writeConnectorsFileLocked(s ConnectorSnapshot) {
 	if b.opts.ConnectorsFile == "" {
 		return
 	}
-	b.fileMu.Lock()
-	defer b.fileMu.Unlock()
 	if err := WriteConnectorsFile(b.opts.ConnectorsFile, s); err != nil {
 		fmt.Fprintf(b.warn(), "chat: %v\n", err)
 	}
-}
-
-// lastConnectors is the sidecar as the previous session left it (empty when
-// there is none or it cannot be read).
-func (b *claudeBackend) lastConnectors() ConnectorSnapshot {
-	if b.opts.ConnectorsFile == "" {
-		return ConnectorSnapshot{}
-	}
-	s, err := ReadConnectorsFile(b.opts.ConnectorsFile)
-	if err != nil {
-		fmt.Fprintf(b.warn(), "chat: %v\n", err)
-	}
-	return s
 }

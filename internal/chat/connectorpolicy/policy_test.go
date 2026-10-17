@@ -360,7 +360,7 @@ func TestPolicy_FailsClosedWithoutSessionState(t *testing.T) {
 		{name: "artifact publish", call: builtin("Artifact", `{"file_path":"/work/publish/7/a"}`), want: Deny},
 		{name: "artifact read", call: builtin("Artifact", `{"action":"read","url":"`+ownURL+`"}`), want: Deny},
 		{name: "artifact update", call: builtin("Artifact", `{"url":"`+ownURL+`"}`), want: Ask},
-		{name: "readonly connector", call: gmail("search"), want: Ask},
+		{name: "readonly connector", call: gmail("search"), want: Deny}, // no catalog lists no connector
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -386,7 +386,7 @@ func TestPolicy_UnknownCatalogEntryAsks(t *testing.T) {
 }
 
 // A server the catalog does not list as an account connector is denied,
-// whatever its name says (spec D1/D3): only a nil catalog asks.
+// whatever its name says (spec D1/D3); a nil catalog lists none.
 func TestPolicy_UnlistedServerIsDenied(t *testing.T) {
 	p := testPolicy()
 	p.Catalog = fakeCatalog{"claude_ai_Gmail": {}}
@@ -400,8 +400,8 @@ func TestPolicy_UnlistedServerIsDenied(t *testing.T) {
 		}
 	}
 	p.Catalog = nil
-	if got := p.Decide(gmail("send")); got.Verdict != Ask {
-		t.Errorf("nil catalog: %v, want ask", got.Verdict)
+	if got := p.Decide(gmail("search")); got.Verdict != Deny {
+		t.Errorf("nil catalog: %v, want deny", got.Verdict)
 	}
 }
 

@@ -264,10 +264,22 @@ func (g *gate) handle(p *claudeProc, req permissionRequest, w *gateWait) {
 	// A connector or tool that appeared after the last mcp_status (the
 	// owner connected it on claude.ai mid-session) gets one refresh; still
 	// unlisted, the policy denies the server or asks for the tool.
-	if g.refresh != nil && req.MCPServerSource == "claudeai" && !g.catalog.knows(call.Tool) {
+	connector := req.MCPServerSource == "claudeai"
+	if g.refresh != nil && connector && !g.catalog.isUnavailable() && !g.catalog.knows(call.Tool) {
 		g.refresh(p)
+		// The refresh took up to 2 s: a Stop or the CLI's withdrawal in
+		// that time is honoured before anything is allowed.
+		if stop, why := g.stopRequested(w); stop {
+			if why == stopByOwner {
+				g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
+			}
+			return
+		}
 	}
 	d := g.policy.Decide(call)
+	if reason := g.catalog.unavailableReason(); connector && d.Verdict == connectorpolicy.Deny && reason != "" {
+		d.Reason = reason // why no connector is listed, not "not one of this account's"
+	}
 	switch d.Verdict {
 	case connectorpolicy.Allow:
 		input := req.Input
