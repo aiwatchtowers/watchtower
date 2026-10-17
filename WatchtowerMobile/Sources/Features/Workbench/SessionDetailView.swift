@@ -57,7 +57,7 @@ struct SessionDetailView: View {
                         SessionInputSender.sendKey(viewModel.sessionID)
                     )) { text in await send(text) }
                 } else if let hint = input.typingHint {
-                    TypingHintBar(hint: hint, error: env.deviceSettings.lastError) {
+                    TypingHintBar(hint: hint, error: env.deviceSettings.typingError) {
                         Task { await env.deviceSettings.setTypingRequested(true) }
                     }
                 }
