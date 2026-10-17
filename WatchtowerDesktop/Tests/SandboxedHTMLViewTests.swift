@@ -38,6 +38,8 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let webView = try host(.page(page))
         let title = try await settledTitle(webView)
         XCTAssertEqual(title, "blocked", "the script ran and its fetch was refused")
+        // A grace for a late image/socket attempt; a slow runner can only
+        // make this pass vacuously, never fail it.
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(counter.hits, 0, "no fetch, image or WebSocket reached the listener")
         XCTAssertFalse(webView.configuration.websiteDataStore.isPersistent)
@@ -70,18 +72,26 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let page = """
         <html><head><title>page</title></head><body>
         <form id="f" method="get" action="\(base)/form"><input name="q" value="secret"></form>
-        <script>
-        setTimeout(() => { location = "\(base)/nav?d=secret" }, 50);
-        setTimeout(() => { document.getElementById("f").submit() }, 150);
-        setTimeout(() => { location = "file:///etc/hosts" }, 250);
-        </script></body></html>
+        </body></html>
         """
         let webView = try host(.page(page))
-        try await Task.sleep(for: .milliseconds(1200))
+        // The page is loaded before anything is attempted.
+        let loaded = try await waitForTitle(webView) { $0 == "page" }
+        XCTAssertEqual(loaded, "page")
+        // One attempt at a time, each in its own turn: a later navigation
+        // would otherwise replace an earlier one before its policy check.
+        for attempt in ["location = \"\(base)/nav?d=secret\"", "document.getElementById(\"f\").submit()",
+                        "location = \"file:///etc/hosts\""] {
+            let marker = try await webView.evaluateJavaScript("\(attempt); \"attempted\"") as? String
+            XCTAssertEqual(marker, "attempted", attempt)
+            // The policy decision runs after the script; give it a turn.
+            // A navigation that went through would replace the document.
+            try await Task.sleep(for: .milliseconds(300))
+            let title = try? await webView.evaluateJavaScript("document.title") as? String
+            XCTAssertEqual(title, "page", "still on the page after: \(attempt)")
+            XCTAssertEqual(webView.url?.absoluteString, "about:blank", attempt)
+        }
         XCTAssertEqual(counter.hits, 0)
-        XCTAssertEqual(webView.url?.absoluteString, "about:blank")
-        let title = try await webView.evaluateJavaScript("document.title") as? String
-        XCTAssertEqual(title, "page")
     }
 
     func testAFilePreviewLoadsItsSiblingsButNotTheNetwork() async throws {
@@ -106,12 +116,10 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let file = folder.appendingPathComponent("index.html")
         try index.write(to: file, atomically: true, encoding: .utf8)
         let webView = try host(.file(file, folder: folder))
-        var title = ""
-        for _ in 0..<60 where !title.contains("|") {
-            try await Task.sleep(for: .milliseconds(50))
-            title = (try? await webView.evaluateJavaScript("document.title") as? String) ?? ""
-        }
+        let title = try await waitForTitle(webView) { $0.contains("|") }
         XCTAssertEqual(title, "rgb(1, 2, 3)|1", "the sibling css and image load")
+        // The page tries `location = "other.html"` 50 ms after load; this
+        // grace can only make the checks below pass vacuously, never fail.
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(counter.hits, 0, "no http image or fetch reached the listener")
         XCTAssertEqual(webView.url?.lastPathComponent, "index.html", "a link to another file opens nothing")
@@ -127,14 +135,24 @@ final class SandboxedHTMLViewTests: XCTestCase {
         return try XCTUnwrap(Self.findWebView(in: host))
     }
 
-    private func settledTitle(_ webView: WKWebView) async throws -> String {
+    /// The page's title once `done` accepts it, or the last one read after
+    /// `timeout` (generous: CI runners are slow to start a web process).
+    private func waitForTitle(
+        _ webView: WKWebView, timeout: Duration = .seconds(10), until done: (String) -> Bool
+    ) async throws -> String {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
         var title = ""
-        for _ in 0..<100 {
-            try await Task.sleep(for: .milliseconds(50))
+        while clock.now < deadline {
             title = (try? await webView.evaluateJavaScript("document.title") as? String) ?? ""
-            if title == "blocked" || title.hasPrefix("leak:") { break }
+            if done(title) { break }
+            try await Task.sleep(for: .milliseconds(50))
         }
         return title
+    }
+
+    private func settledTitle(_ webView: WKWebView) async throws -> String {
+        try await waitForTitle(webView) { $0 == "blocked" || $0.hasPrefix("leak:") }
     }
 
     private static func findWebView(in view: NSView) -> WKWebView? {
