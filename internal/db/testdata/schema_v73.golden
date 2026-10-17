@@ -576,7 +576,7 @@ error TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 decided_at TEXT NOT NULL DEFAULT '',
 applied_at TEXT NOT NULL DEFAULT ''
-)
+, session_token TEXT NOT NULL DEFAULT '')
 
 table	agent_log_events
 CREATE TABLE agent_log_events (
@@ -3495,6 +3495,7 @@ GROUP BY up.ancestor
 14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 15	decided_at	TEXT	notnull=1	dflt=''	pk=0
 16	applied_at	TEXT	notnull=1	dflt=''	pk=0
+17	session_token	TEXT	notnull=1	dflt=''	pk=0
 
 ## agent_log_events
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

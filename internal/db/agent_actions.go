@@ -29,6 +29,9 @@ type AgentAction struct {
 	CreatedAt      string
 	DecidedAt      string
 	AppliedAt      string
+	// SessionToken is the chat-session process a session-applied row belongs
+	// to (claude_ai_connector_call); "" for every other row.
+	SessionToken string
 }
 
 // AgentActionFilter narrows ListAgentActions; zero values mean "any".
@@ -40,13 +43,13 @@ type AgentActionFilter struct {
 
 const agentActionColumns = `id, tool, external, args_json, reason, surface, conversation_id,
 	context_type, context_id, turn_id, status, trust_at_create, result_json, error,
-	created_at, decided_at, applied_at`
+	created_at, decided_at, applied_at, session_token`
 
 func scanAgentAction(row interface{ Scan(dest ...any) error }) (*AgentAction, error) {
 	var a AgentAction
 	err := row.Scan(&a.ID, &a.Tool, &a.External, &a.ArgsJSON, &a.Reason, &a.Surface, &a.ConversationID,
 		&a.ContextType, &a.ContextID, &a.TurnID, &a.Status, &a.TrustAtCreate, &a.ResultJSON, &a.Error,
-		&a.CreatedAt, &a.DecidedAt, &a.AppliedAt)
+		&a.CreatedAt, &a.DecidedAt, &a.AppliedAt, &a.SessionToken)
 	if err != nil {
 		return nil, err
 	}
@@ -65,10 +68,10 @@ func (db *DB) InsertAgentAction(a AgentAction) (int64, error) {
 	}
 	res, err := db.Exec(`INSERT INTO agent_actions
 		(tool, external, args_json, reason, surface, conversation_id, context_type, context_id,
-		 turn_id, status, trust_at_create)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 turn_id, status, trust_at_create, session_token)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Tool, a.External, a.ArgsJSON, a.Reason, a.Surface, a.ConversationID, a.ContextType, a.ContextID,
-		a.TurnID, a.Status, a.TrustAtCreate)
+		a.TurnID, a.Status, a.TrustAtCreate, a.SessionToken)
 	if err != nil {
 		return 0, fmt.Errorf("inserting agent action: %w", err)
 	}
