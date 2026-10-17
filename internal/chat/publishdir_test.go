@@ -1,9 +1,11 @@
 package chat
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,58 +31,60 @@ func TestPublishDir_Check(t *testing.T) {
 	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "linkdir")))
 	require.NoError(t, os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(dir, "link.html")))
 	require.NoError(t, os.Link(filepath.Join(outside, "secret.txt"), filepath.Join(dir, "hard.html")))
+	require.NoError(t, syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o600))
+	// APFS (the macOS default) is case-insensitive: LINKDIR is the planted link.
+	caseInsensitive := pathExists(filepath.Join(dir, "SUB"))
+	var caseVariantWant error
+	if caseInsensitive {
+		caseVariantWant = ErrUnsafePublishPath
+	}
 	other, err := NewPublishDir(workDir, 43)
 	require.NoError(t, err)
 
 	cases := []struct {
-		name string
-		path string
-		want error // nil = allowed
+		name    string
+		path    string
+		want    error  // nil = allowed
+		wantMsg string // also required in the refusal, when set
 	}{
-		{"new file inside", filepath.Join(dir, "deck.html"), nil},
-		{"nested new path", filepath.Join(dir, "a", "b", "deck.html"), nil},
-		{"existing file inside", filepath.Join(dir, "sub", "page.html"), nil},
-		{"the dir itself", dir, nil},
-		{"trailing slash and dot", dir + "/./sub/", nil},
-		{"relative under the work dir", filepath.Join("publish", "42", "a.html"), nil},
-		{"relative bare name resolves to the work dir", "a.html", ErrOutsidePublishDir},
-		{"relative dot-slash", "./publish/42/a.html", nil},
-		{"dot-dot out", dir + "/../43/x.html", ErrOutsidePublishDir},
-		{"dot-dot that cleans back inside", dir + "/sub/../x.html", ErrOutsidePublishDir},
-		{"relative dot-dot", "../x", ErrOutsidePublishDir},
-		{"absolute outside", filepath.Join(outside, "secret.txt"), ErrOutsidePublishDir},
-		{"documents", "/Users/someone/Documents/x.html", ErrOutsidePublishDir},
-		{"tilde", "~/Documents/x.html", ErrOutsidePublishDir},
-		{"tilde user", "~root/x", ErrOutsidePublishDir},
-		{"work dir itself", workDir, ErrOutsidePublishDir},
-		{"publish parent", filepath.Dir(dir), ErrOutsidePublishDir},
-		{"sibling conversation", filepath.Join(other.Path(), "x.html"), ErrOutsidePublishDir},
-		{"sibling sharing the id prefix", dir + "0/x.html", ErrOutsidePublishDir},
-		{"case variant of the dir", strings.ToUpper(dir) + "/x.html", ErrOutsidePublishDir},
-		{"empty", "", ErrOutsidePublishDir},
-		{"nul byte", filepath.Join(dir, "a\x00b"), ErrOutsidePublishDir},
-		{"symlink dir inside pointing out", filepath.Join(dir, "linkdir", "secret.txt"), ErrUnsafePublishPath},
-		{"symlink file inside pointing out", filepath.Join(dir, "link.html"), ErrUnsafePublishPath},
-		{"case variant of a symlink inside", filepath.Join(dir, "LINKDIR", "secret.txt"), nil}, // see below
-		{"hard link to an outside file", filepath.Join(dir, "hard.html"), ErrUnsafePublishPath},
-		{"file used as a folder", filepath.Join(dir, "sub", "page.html", "x"), ErrUnsafePublishPath},
+		{"new file inside", filepath.Join(dir, "deck.html"), nil, ""},
+		{"nested new path", filepath.Join(dir, "a", "b", "deck.html"), nil, ""},
+		{"existing file inside", filepath.Join(dir, "sub", "page.html"), nil, ""},
+		{"the dir itself", dir, nil, ""},
+		{"trailing slash and dot", dir + "/./sub/", nil, ""},
+		{"relative under the work dir", filepath.Join("publish", "42", "a.html"), nil, ""},
+		{"relative bare name resolves to the work dir", "a.html", ErrOutsidePublishDir, ""},
+		{"relative dot-slash", "./publish/42/a.html", nil, ""},
+		{"dot-dot out", dir + "/../43/x.html", ErrOutsidePublishDir, ""},
+		{"dot-dot that cleans back inside", dir + "/sub/../x.html", ErrOutsidePublishDir, ""},
+		{"relative dot-dot", "../x", ErrOutsidePublishDir, ""},
+		{"absolute outside", filepath.Join(outside, "secret.txt"), ErrOutsidePublishDir, ""},
+		{"documents", "/Users/someone/Documents/x.html", ErrOutsidePublishDir, ""},
+		{"tilde", "~/Documents/x.html", ErrOutsidePublishDir, ""},
+		{"tilde user", "~root/x", ErrOutsidePublishDir, ""},
+		{"work dir itself", workDir, ErrOutsidePublishDir, ""},
+		{"publish parent", filepath.Dir(dir), ErrOutsidePublishDir, ""},
+		{"sibling conversation", filepath.Join(other.Path(), "x.html"), ErrOutsidePublishDir, ""},
+		{"sibling sharing the id prefix", dir + "0/x.html", ErrOutsidePublishDir, ""},
+		{"case variant of the dir", strings.ToUpper(dir) + "/x.html", ErrOutsidePublishDir, ""},
+		{"empty", "", ErrOutsidePublishDir, ""},
+		{"nul byte", filepath.Join(dir, "a\x00b"), ErrOutsidePublishDir, ""},
+		{"symlink dir inside pointing out", filepath.Join(dir, "linkdir", "secret.txt"), ErrUnsafePublishPath, "is a symlink"},
+		{"symlink file inside pointing out", filepath.Join(dir, "link.html"), ErrUnsafePublishPath, "is a symlink"},
+		{"case variant of a symlink inside", filepath.Join(dir, "LINKDIR", "secret.txt"), caseVariantWant, ""},
+		{"hard link to an outside file", filepath.Join(dir, "hard.html"), ErrUnsafePublishPath, "is hard-linked"},
+		{"fifo", filepath.Join(dir, "fifo"), ErrUnsafePublishPath, "is not a regular file"},
+		{"file used as a folder", filepath.Join(dir, "sub", "page.html", "x"), ErrUnsafePublishPath, ""},
 	}
-	caseInsensitive := pathExists(filepath.Join(dir, "SUB"))
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			want := tc.want
-			if tc.name == "case variant of a symlink inside" && caseInsensitive {
-				want = ErrUnsafePublishPath // APFS default: LINKDIR is the planted link
-			}
 			err := d.Check(tc.path)
-			if want == nil {
+			if tc.want == nil {
 				assert.NoError(t, err)
 				return
 			}
-			require.ErrorIs(t, err, want)
-			if strings.Contains(tc.name, "symlink") {
-				assert.Contains(t, err.Error(), "is a symlink")
-			}
+			require.ErrorIs(t, err, tc.want)
+			assert.Contains(t, err.Error(), tc.wantMsg)
 		})
 	}
 }
@@ -140,8 +144,10 @@ func TestPublishDir_NeverTouchesOutsidePaths(t *testing.T) {
 
 	require.NoError(t, d.Check(filepath.Join(d.Path(), "a", "b.html")))
 	require.NotEmpty(t, seen)
+	workDir, parent := filepath.Dir(filepath.Dir(d.Path())), filepath.Dir(d.Path())
 	for _, p := range seen {
-		assert.True(t, p == d.Path() || strings.HasPrefix(p, d.Path()+"/"), "stat'ed %s", p)
+		own := p == workDir || p == parent || p == d.Path() || strings.HasPrefix(p, d.Path()+"/")
+		assert.True(t, own, "stat'ed %s", p)
 	}
 }
 
@@ -213,6 +219,44 @@ func TestPublishDir_CheckRefusesAReplacedDir(t *testing.T) {
 	require.NoError(t, os.Remove(d.Path()))
 	require.NoError(t, os.Mkdir(d.Path(), 0o700))
 	assert.ErrorIs(t, d.Check(filepath.Join(d.Path(), "x.html")), ErrUnsafePublishPath, "a new dir is not the one created")
+}
+
+// A lookup error other than "missing" (unreadable, I/O) refuses: only a
+// missing tail is allowed.
+func TestPublishDir_CheckRefusesOnLookupErrors(t *testing.T) {
+	_, d := newTestPublishDir(t)
+	for _, failing := range []string{d.Path(), filepath.Join(d.Path(), "a")} {
+		d.lstat = func(p string) (os.FileInfo, error) {
+			if p == failing {
+				return nil, &fs.PathError{Op: "lstat", Path: p, Err: syscall.EACCES}
+			}
+			return os.Lstat(p)
+		}
+		assert.ErrorIs(t, d.Check(filepath.Join(d.Path(), "a", "b.html")), ErrUnsafePublishPath, failing)
+	}
+}
+
+// publish/ swapped for a symlink to a folder outside: Check refuses without
+// looking inside the target, and Remove deletes nothing there.
+func TestPublishDir_AncestorSwappedForASymlink(t *testing.T) {
+	workDir, d := newTestPublishDir(t)
+	target := t.TempDir()
+	victim := filepath.Join(target, "42")
+	require.NoError(t, os.Mkdir(victim, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(victim, "keep.txt"), nil, 0o600))
+	parent := filepath.Join(workDir, "publish")
+	require.NoError(t, os.Rename(parent, parent+".old"))
+	require.NoError(t, os.Symlink(target, parent))
+
+	var seen []string
+	d.lstat = func(p string) (os.FileInfo, error) {
+		seen = append(seen, p)
+		return os.Lstat(p)
+	}
+	assert.ErrorIs(t, d.Check(filepath.Join(d.Path(), "x.html")), ErrUnsafePublishPath)
+	assert.NotContains(t, seen, d.Path(), "never looked up through the swapped level")
+	require.ErrorIs(t, d.Remove(), ErrUnsafePublishPath)
+	assert.FileExists(t, filepath.Join(victim, "keep.txt"))
 }
 
 // Removing one conversation's dir leaves another's intact, and a symlink

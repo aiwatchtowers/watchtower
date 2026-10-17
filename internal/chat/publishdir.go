@@ -34,8 +34,10 @@ type PublishDir struct {
 	// realPath is path with its ancestors' symlinks resolved (macOS: /var →
 	// /private/var), the spelling the CLI's cwd has; "" when it equals path.
 	realPath string
-	dev, ino uint64 // the directory Check confines to, so a swap is refused
-	lstat    func(string) (os.FileInfo, error)
+	// levels are the work dir, publish/ and the publish dir as created, so a
+	// level swapped since (for a symlink or another folder) is refused.
+	levels [3]os.FileInfo
+	lstat  func(string) (os.FileInfo, error)
 }
 
 // NewPublishDir creates <workDir>/publish/<conversationID> (0700, parents
@@ -67,15 +69,18 @@ func NewPublishDir(workDir string, conversationID int64) (*PublishDir, error) {
 			return nil, err
 		}
 	}
-	var st syscall.Stat_t
-	if err := syscall.Lstat(dir, &st); err != nil {
-		return nil, fmt.Errorf("inspecting publish folder %s: %w", dir, err)
+	d := &PublishDir{workDir: workDir, path: dir, lstat: os.Lstat}
+	for i, level := range []string{workDir, parent, dir} {
+		info, err := os.Lstat(level)
+		if err != nil {
+			return nil, fmt.Errorf("inspecting publish folder %s: %w", level, err)
+		}
+		d.levels[i] = info
 	}
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving publish folder %s: %w", dir, err)
 	}
-	d := &PublishDir{workDir: workDir, path: dir, dev: uint64(st.Dev), ino: st.Ino, lstat: os.Lstat}
 	if resolved != dir {
 		d.realPath = resolved
 	}
@@ -95,6 +100,9 @@ func (d *PublishDir) Path() string { return d.path }
 // every existing component from the dir downward is Lstat'ed: a symlink,
 // another user's entry, a special file or a hard-linked file refuses; a
 // missing tail is fine (Write creates it).
+//
+// Any non-nil error means deny. Check is point-in-time: it holds only while
+// the child has no tool that creates links or changes its cwd (no Bash).
 func (d *PublishDir) Check(p string) error {
 	if p == "" || strings.ContainsRune(p, 0) {
 		return fmt.Errorf("%q: %w", p, ErrOutsidePublishDir)
@@ -151,15 +159,19 @@ func (d *PublishDir) within(abs string) (base string, rel []string, ok bool) {
 }
 
 // checkDirItself refuses a publish dir that is no longer the directory
-// NewPublishDir created (removed, or swapped for a symlink or another dir).
+// NewPublishDir created: the work dir, publish/ and the dir itself are
+// Lstat'ed top-down, so each lookup only passes through levels already
+// proven to be the real folders created (a level swapped for a symlink is
+// never followed out of the work dir) and must be that same folder.
 func (d *PublishDir) checkDirItself(base string) error {
-	info, err := d.lstat(base)
-	if err != nil {
-		return fmt.Errorf("%w (%w)", ErrUnsafePublishPath, err)
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !info.IsDir() || !ok || uint64(st.Dev) != d.dev || st.Ino != d.ino {
-		return fmt.Errorf("%w: the publish folder was replaced", ErrUnsafePublishPath)
+	for i, level := range []string{filepath.Dir(filepath.Dir(base)), filepath.Dir(base), base} {
+		info, err := d.lstat(level)
+		if err != nil {
+			return fmt.Errorf("%w (%w)", ErrUnsafePublishPath, err)
+		}
+		if !info.IsDir() || !os.SameFile(info, d.levels[i]) {
+			return fmt.Errorf("%w: the publish folder was replaced", ErrUnsafePublishPath)
+		}
 	}
 	return nil
 }
@@ -185,8 +197,17 @@ func checkPublishEntry(info os.FileInfo) error {
 }
 
 // Remove deletes the publish dir and everything in it (symlinks inside are
-// removed, never followed). Other conversations' dirs are untouched.
+// removed, never followed). Other conversations' dirs are untouched, and a
+// dir that is no longer the one created is left alone (an error), so a
+// level swapped for a symlink never steers the delete out of the work dir.
+// A dir already gone is not an error.
 func (d *PublishDir) Remove() error {
+	if err := d.checkDirItself(d.path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("removing publish folder %s: %w", d.path, err)
+	}
 	if err := os.RemoveAll(d.path); err != nil {
 		return fmt.Errorf("removing publish folder %s: %w", d.path, err)
 	}
