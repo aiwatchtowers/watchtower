@@ -285,7 +285,7 @@ var idempotentPrefixes = []string{
 // transaction).
 func idempotentStatements(up string) []string {
 	var stmts []string
-	for _, s := range strings.Split(up, ";") {
+	for s := range strings.SplitSeq(up, ";") {
 		s = strings.TrimSpace(s)
 		if s == "" {
 			continue

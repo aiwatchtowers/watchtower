@@ -301,7 +301,9 @@ code or permissions the owner did not see.
 **Observable:** One fresh goja runtime per run. No `require`, `console`,
 filesystem, network, timers or promises: `async`/`await`/`Promise`/
 `setTimeout`/`setInterval` are refused before the run ("the script API is
-synchronous"); `eval`, `Function` and every function prototype's
+synchronous"), and so is a BigInt literal ("BigInt is not available in
+automations"; `BigInt`, the BigInt typed arrays and DataView's BigInt
+accessors are absent, ask #331); `eval`, `Function` and every function prototype's
 `.constructor` are unavailable (no code from strings); a script that breaks
 out of its wrapper function is a parse error. SDK results reach the script as
 plain JSON values (never a Go object), and no SDK result carries a token, a
@@ -313,6 +315,7 @@ the script outside it.
 
 **Test guards:**
 - `internal/automations/sandbox_test.go` — `TestAuto07_NoRequireFsNetTimers`, `TestRecipe_AsyncScriptRefused`, `TestSandbox_PreParseRefusesAsync`
+- `internal/automations/sandbox_bombs_test.go` — `TestSandbox_BigIntNotAvailable` (ask #331)
 - `internal/automations/sandbox_hardening_test.go` — `TestAuto07_NoCodeFromStrings`, `TestSandbox_WrapperBreakoutRefused`, `TestSandbox_SDKResultsArePlainJSValues`
 - P6: `cmd/automations_agent_test.go` — `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` (an `agent()` CLI child gets only PATH, HOME, LANG, USER, the run marker and, when the daemon has them set, the proxy variables (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`ALL_PROXY` and lowercase forms), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `TMPDIR` (ask #185), plus a scrubbed `CODEX_HOME` on codex; no API key, token, secret or Quick Connection reaches it); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_RefusesWithoutMatchingMarkerOrRunningRun`, `TestAgentMCPServer_RefusedInsideATerminalSession` (refused with `WATCHTOWER_TERMINAL_SESSION_ID` set)
 
@@ -330,7 +333,20 @@ waits ≤ `pause_timeout_hours` (→ `expired`). There is no token cap across ru
 cancel interrupts cannot be caught by the script's `catch`. A script stuck in
 a native builtin past `AbandonGrace` (2 s) after an interrupt is abandoned:
 its run ends, and its automation is disabled ("runaway script — check and
-re-enable"). Every run reaches exactly one terminal status, including after a
+re-enable"). Deep or huge data cannot end the daemon process through the
+builtins the sandbox caps (the Hardening list in `docs/features/automations.md`:
+nesting deeper than 1000 in `JSON.parse`, `JSON.stringify` and `flat`, a bound
+name past 10 000 characters, and one capped call past 16 Mi characters or
+elements): each throws a
+`RangeError` the script can catch, and nothing is disabled for it. A run
+whose live heap grows past `RunHeapBudget` (1 GiB over its baseline; not
+read while it waits, re-based when it resumes or another run starts or ends,
+by at most one budget in all, so never more than 2 GiB past its start)
+ends with "the automation used too much memory", failed, also without a
+disable; it is stopped within about one 10 ms poll of its live heap passing
+that limit (a GC is forced when the heap's objects pass it first), plus one
+native step still running.
+Every run reaches exactly one terminal status, including after a
 daemon restart: on start the executor ends every `running`/`waiting` run
 `failed`/`interrupted` — except a live CLI dry run, which is swept only past
 its deadline plus one minute; a stop mid-run ends it `failed`/`interrupted`.
@@ -343,6 +359,7 @@ model quota.
 **Test guards:**
 - `internal/automations/sandbox_test.go` — `TestAuto08_InterruptOnTimeout`, `TestSandbox_InterruptIsNotCatchable`
 - `internal/automations/sandbox_hardening_test.go` — `TestSandbox_CatastrophicRegexEndsWithinDeadline`, `TestSandbox_StuckNativeIsAbandonedAfterGrace`
+- `internal/automations/sandbox_bombs_test.go` — `TestSandbox_NativeBombsEndTheRunNotTheProcess` (each bomb of security review #5 runs in the test process: Go-stack recursion in `JSON.parse`/reviver/`flat`, unbounded `replace`/`replaceAll`/`@@replace`/`JSON.stringify`/`toLocaleString`/`flat`/`flatMap` results, `bind` chains)
 - `internal/automations/executor_test.go` — `TestAuto08_InterruptOnBudget`, `TestAuto08_CatchAllLoopStillEndsOnBudget`, `TestAuto08_NoDailyCapAcrossRuns`, `TestAuto08_RestartMarksInterrupted`, `TestBudget_EstimatesTokensWhenUsageMissing`, `TestWaiter_PauseTimeoutExpires`, `TestExecutor_DaemonStopMidRunEndsInterrupted`, `TestExecutor_AbandonedRunDisablesAutomation`, `TestExecutor_SweepsStaleDryRuns`, `TestExecutor_StartSparesLiveCLIDryRun`
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_BudgetBound`
 - P6 (`agent()`): `internal/automations/sdk_agent_test.go` — `TestAgent_BudgetCarvedFromRun`, `TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded` (a spent carved minutes deadline throws a catchable `BudgetExceeded`; the run's own deadline stays uncatchable), `TestAgent_ResultUsageDebitedOnce`; `cmd/automations_agent_test.go` — `TestAgent_RunBudgetCrossedInterruptsRun`, `TestAgent_LocalBudgetSpentThrowsCatchable`, `TestAgent_IterationsCapped12`, `TestAgent_CLIUsageDebitedOrEstimated`, `TestAgent_CancelKillsCLIChild` (the whole process group dies); `internal/ai/client_child_test.go` — `TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace` (`ai.GroupKillGrace` = 1 s, inside the 2 s `AbandonGrace`)
@@ -436,14 +453,24 @@ script did; a call missing from it is an action nobody can audit.
 ## AUTO-12 — Dry run writes nothing outside its journal
 
 **Status:** Enforced (P1: no `agent_actions` row, no output, no state
-change; P5: no `shell()` process, no session, no ask)
+change; P5: no `shell()` process, no session, no ask; ask #326: a draft calls
+no Quick Connection)
 
 **Observable:** A dry run makes no `agent_actions` row, no output, no state
 change, starts no session and runs no `shell()`: `output.*` and `state.set`
 steps record `status='dry_run'` and nothing is committed; `llm` and read
 tools run for real and their tokens count on the run. The in-memory dry run (`DryRunInMemory`, P3's `draft_automation`)
 writes no row of any table, not even a run row, and does not execute
-`agent()` (its step closes `dry_run` with a note, no child, no tokens). The
+`agent()` (its step closes `dry_run` with a note, no child, no tokens) or
+call a Quick Connection through `mcp()`: after the manifest check (a tool the
+draft does not declare is still `PermissionDenied`) the first `mcp()` call
+closes its step `dry_run` with a note and ends the draft with status
+`stopped` (`automations.DryRunStopped`, not a failure; the steps before it
+are kept) — the server is never reached, because a draft's script is
+chat-written and a read tool's arguments still carry data out (ask #326).
+`automations.Env.InMemoryDraft` is the one test for "this is a draft" that
+`agent()` and `mcp()` share. A dry run of a saved recipe (the card's **Dry run**) calls `mcp()` for
+real, QC-02 reads only. The
 editor's draft cache (`<workspace>/automation-drafts/<conversation id>.jsonl`,
 P3) is a UI cache of the tool's own result written by `draft_automation`
 itself, not by the script, and no database row.
@@ -458,8 +485,8 @@ would make checking as dangerous as running.
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_P2KindsDryRun` (P2: `output.briefing`/`target`/`slack` in a dry run commit nothing and propose nothing)
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
-- P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_WritesNothing` (a draft whose script calls `output.*`, `state.set` and a write tool writes no row); `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_AgentIsNotRun`
-- P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a dry run, QC-02 reads only); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
+- P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_WritesNothing` (a draft whose script calls `output.*`, `state.set` and a write tool writes no row); `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_AgentIsNotRun`, `TestDryRunInMemory_MCPIsNotCalled` (ask #326: a draft's `mcp()` never reaches the caller and stops the draft cleanly), `TestDryRunInMemory_MCPOutsideManifestIsDenied` (the manifest check precedes the stop)
+- P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a saved recipe's dry run, QC-02 reads only, and never called in a draft); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
 - `internal/automations/sdk_shell_test.go` — `TestShell_DryRunStartsNoProcess` (P5: a dry-run `shell()` returns `{status:"dry_run"}`, journals a `dry_run` step and starts no process)
 - `internal/automations/sdk_session_test.go` — `TestSession_DryRunWaitsForNothing` (P5: a dry-run `session()` returns `{status:"dry_run"}` and asks the Desktop for nothing); `internal/automations/sdk_ask_test.go` — `TestAsk_DryRunCreatesNoRow`
 - `internal/automations/templates_e2e_test.go` — `TestTemplates_DryRunE2E` (P6: every gallery template — the personal ones and each workbench recipe — installed and dry-run, journals its outputs, state writes, `shell()` and `session()` calls `dry_run` while reads and `llm()` run for real; each recipe's journal is pinned step by step, so an empty journal fails)
@@ -516,6 +543,9 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-17 (board #561, **owner decision ask #331**): **AUTO-07 narrowed — BigInt is removed from the sandbox.** Its `**` and `<<` operators computed results of any size in one native step (an OOM kill of the daemon no wrapper can prevent). A BigInt literal is refused when the script compiles (an AST walk, so no lexical trick hides one) with "BigInt is not available in automations"; `BigInt`, `BigInt64Array`, `BigUint64Array` and DataView's BigInt accessors are deleted. Guard `TestState_RejectsUnserialisableValues` (AUTO-04) loses its `10n` case, which can no longer run, and instead asserts that `state.set("k", 10n)` is refused by `PreParse` — the guarantee (no BigInt reaches state) is unchanged. Guard added: `TestSandbox_BigIntNotAvailable`.
+- 2026-10-17 (board #561, security review #5; owner decision ask #304 q3 — "a clear error instead of a daemon crash"): **AUTO-08 strengthened** — deep or huge data can no longer end the daemon through the capped builtins (goja's `JSON.parse`/`flat` overflowed the Go stack, an unrecoverable fatal error, and several builtins allocated without bound, so the abandon net never ran and the daemon crash-looped). Each limit throws a catchable `RangeError`, like the caps before it; no automation is disabled for it. Guards added: `TestSandbox_NativeBombsEndTheRunNotTheProcess`, `TestSandbox_HeapBudgetStopsTheRun`, `TestSandbox_HeapBudgetSparesSiblingRuns`, `TestSandbox_HeapBudgetSparesAWaitingRun`, `TestSandbox_MemoryStopThenStuckIsAbandoned` (the per-run memory budget), `TestSandbox_HeapBudgetForgivenessIsCapped`, `TestSandbox_ExecCallsAreTimed`, `TestSandbox_ExecRewriteSkipsSuperAndOptionalChains`, `TestSandbox_DeletedExecIsATypeError`. No guard relaxed.
+- 2026-10-17 (**owner decision, ask #326**; board #557, security review F4): strengthening, no guard relaxed. AUTO-12: `draft_automation`'s in-memory dry run (run id 0) no longer calls a Quick Connection — after the manifest check the first `mcp()` call closes its step `dry_run` with the note "Stopped at mcp(): external calls are not made in a draft; dry-run the saved recipe from its card to see the rest" and ends the draft with status `stopped` (not a failure, earlier steps kept; the Desktop Draft panel shows the note). Closes a no-click exfiltration path: a chat-written draft could pass synced text as a QC-02 read tool's arguments. A saved recipe's card dry run and real runs are unchanged. Guards added: `TestDryRunInMemory_MCPIsNotCalled`, `TestDryRunInMemory_MCPOutsideManifestIsDenied`.
 - 2026-10-17 (Automations P4, board #753; spec §8): **the event half of AUTO-09 flips from Planned to Enforced** — the one P4 status flip. Observable gains the event bus: `Flush` (once per sync cycle, cycle id = `syncStart` in RFC 3339 UTC, called right after `phaseExternalSync`) only inserts `queued` rows, one per automation per cycle, and merges into a still-queued event run; event runs carry ids, labels, enums and counts only. Guards added: `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (`internal/automations/bus_test.go`), `TestBus_EventsCarryNoContent` (`internal/automations/events_test.go`). Module list gains `internal/automations/bus.go`, `internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`, `internal/db/automation_event_sources.go`. No new AUTO number; no AGENT/STRIP/REACT entry touched (reaction commands are not an event source). No guard relaxed.
 - 2026-10-16 (Automations P5 part 2, board #753; spec §12.4, §13.1, §13.3, §13.4, §14.6): P5 part 2 — workbench saves (PROJ-03 amended, ask #272, `docs/inventory/workbench.md`), the Desktop session launch center (`AutomationSessionCenter`), header buttons, automation asks in the Desktop, rescans on page open and on recipe-folder changes. **AUTO-09's Desktop guard for the header buttons is in place** (`testAuto09_HeaderButtonOnlyQueues`, Task 11, listed under AUTO-09); no status flip — the event half stays Planned for P4. Change in words is on for workbench recipes (R-P3-5 lifted for the editor chat too); an automation's closed asks get their own "⚙ Automations" line instead of "Outside the app". No guard relaxed.
 - 2026-10-16 — agent() child env adds proxy, CA and TMPDIR variables (owner, ask #185). AUTO-07's guard `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` is extended, not relaxed: it still proves no API key, token or `CLAUDECODE` reaches the child. `shell()`'s env is unchanged.

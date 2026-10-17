@@ -73,3 +73,73 @@ struct SearchViewModelHelperTests {
         #expect(vm.results.isEmpty)
     }
 }
+
+@Suite("SearchViewModel guide hits")
+@MainActor
+struct SearchViewModelGuideTests {
+    private func makeVM() async throws -> SearchViewModel {
+        let (manager, _) = try TestDatabase.createDatabaseManager()
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO kb_documents (id, source, title, chunk_count)
+                VALUES ('guide:features/inbox.md', 'guide', 'Inbox', 1)
+                """)
+            try db.execute(sql: """
+                INSERT INTO kb_chunks (doc_id, idx, title, body, anchor)
+                VALUES ('guide:features/inbox.md', 0, 'Inbox', 'Why use it\nThe inbox gathers items.', 'why-use-it')
+                """)
+        }
+        return SearchViewModel(dbManager: manager)
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+    }
+
+    @Test("guideHits follow the query and clear on an empty one")
+    func guideHitsFollowQuery() async throws {
+        let vm = try await makeVM()
+        vm.query = "inbox"
+        vm.search()
+        await waitUntil { !vm.guideHits.isEmpty }
+        #expect(!vm.guideHits.isEmpty)
+        vm.query = ""
+        vm.search()
+        #expect(vm.guideHits.isEmpty)
+    }
+
+    @Test("clearing the query while a search is in flight leaves nothing stale")
+    func clearedQueryDuringSearch() async throws {
+        let vm = try await makeVM()
+        vm.query = "inbox"
+        vm.search()
+        try await Task.sleep(for: .milliseconds(310)) // past the debounce, reads in flight
+        vm.query = ""
+        vm.search()
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(vm.guideHits.isEmpty)
+        #expect(vm.results.isEmpty)
+        #expect(!vm.isSearching)
+    }
+
+    @Test("FTS-hostile queries neither throw nor crash")
+    func hostileQueries() async throws {
+        let vm = try await makeVM()
+        for q in ["\"", "*", "-", "AND", "\"inbox", "inbox -*"] {
+            vm.query = q
+            vm.search()
+            await waitUntil { !vm.isSearching && vm.query == q }
+            try await Task.sleep(for: .milliseconds(400))
+            #expect(vm.errorMessage == nil)
+        }
+    }
+
+    @Test("prefill keeps an existing draft")
+    func prefillMerge() {
+        #expect(HelpChatPrefill.merge(draft: "", prefill: "q") == "q")
+        #expect(HelpChatPrefill.merge(draft: "  ", prefill: "q") == "q")
+        #expect(HelpChatPrefill.merge(draft: "q", prefill: "q") == "q")
+        #expect(HelpChatPrefill.merge(draft: "mine", prefill: "q") == "mine\nq")
+    }
+}

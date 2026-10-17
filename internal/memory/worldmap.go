@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -361,10 +362,7 @@ func capMapBytes(s string) string {
 		return s
 	}
 	const note = "\n\n_(truncated — see index.md)_\n"
-	budget := mapByteCap - len(note)
-	if budget < 0 {
-		budget = 0
-	}
+	budget := max(mapByteCap-len(note), 0)
 	cut := s[:budget]
 	if i := strings.LastIndexByte(cut, '\n'); i >= 0 {
 		cut = cut[:i]
@@ -428,10 +426,8 @@ func classifyEntity(n Node) string {
 	if strings.HasPrefix(n.Title, "#") {
 		return "channels"
 	}
-	for _, a := range n.Aliases {
-		if slackChannelAliasRe.MatchString(a) {
-			return "channels"
-		}
+	if slices.ContainsFunc(n.Aliases, slackChannelAliasRe.MatchString) {
+		return "channels"
 	}
 	return "other"
 }

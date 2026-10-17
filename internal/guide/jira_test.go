@@ -100,7 +100,7 @@ func TestGatherJiraDelivery_MaxAccomplishments(t *testing.T) {
 	cfg.Jira.Features.MyIssuesInBriefing = true
 
 	// Insert 15 resolved issues.
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		key := "PROJ-" + string(rune('A'+i))
 		err := database.UpsertJiraIssue(db.JiraIssue{
 			AccountID:       accountID,

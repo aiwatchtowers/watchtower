@@ -13,7 +13,7 @@ One briefing is made per calendar day, by the background sync. It is generated a
 | Condition | Why |
 |---|---|
 | **Daily Briefing** is on in Settings → Features | The switch for the whole feature |
-| An account that tells Watchtower who you are | Slack account #1, else your first Google account, else the first Jira site with a known owner, else the first Linear workspace |
+| An account that tells Watchtower who you are | Slack account #1, else your first Google account, else the first Jira site with a known owner, else the first Linear workspace, else the address of your first email (IMAP or Outlook) account |
 | Something to summarise | Channel digests or the daily rollup, tracks, your targets, attention items, Workbench activity or automation notes |
 | Fewer than three failed attempts today | After three failures it gives up until tomorrow |
 
@@ -40,7 +40,7 @@ Rules you teach through [Catch Up](catch-up.md) feedback are applied to the brie
 
 The empty tab says "No briefings yet" and "Generated once a day at or after 08:00" (your hour), then a status line.
 
-- **Connect Slack, Google, Jira or Linear so Watchtower knows who you are.** There is no owner yet. Click **Open Connections** and connect one. A freshly connected Jira site can show this for a moment while your identity is read.
+- **Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are.** There is no owner yet. Click **Open Connections** and connect one. A freshly connected Jira site or Linear workspace can show this for a moment while your identity is read; Home then says "Waiting for your Jira identity…" (or Linear).
 - **Off — Turn on.** Click **Turn on**.
 - **Connect a source to get this.** Connect any one source.
 - **Preparing now.** The briefing is being written; wait a minute.

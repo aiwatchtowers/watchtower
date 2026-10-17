@@ -84,6 +84,28 @@ final class LocalPreviewServerTests: XCTestCase {
         XCTAssertEqual(String(bytes: percentData, encoding: .utf8), "<h1>percent</h1>", "not the file named with a space")
     }
 
+    /// A streamed reply (#563): HEAD gets the length and no body, an empty
+    /// file arrives empty, and a file bigger than one chunk arrives whole.
+    func testHeadEmptyAndMultiChunkFilesOverTheWire() async throws {
+        let body = Data((0..<(700 * 1024)).map { UInt8($0 % 251) })
+        try body.write(to: folder.appendingPathComponent("chunks.bin"))
+        try write("", "empty.txt")
+        let server = LocalPreviewServer()
+        defer { server.stop() }
+        let url = try await server.url(forFile: "chunks.bin", inFolder: folder, within: folder, id: "folder:d")
+        var head = URLRequest(url: url)
+        head.httpMethod = "HEAD"
+        let (headData, headResponse) = try await session.data(for: head)
+        XCTAssertEqual((headResponse as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Length"), String(body.count))
+        XCTAssertTrue(headData.isEmpty)
+        let (data, _) = try await session.data(from: url)
+        XCTAssertEqual(data, body, "every chunk, in order")
+        let empty = try await server.url(forFile: "empty.txt", inFolder: folder, within: folder, id: "folder:d")
+        let (emptyData, emptyResponse) = try await session.data(from: empty)
+        XCTAssertEqual((emptyResponse as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertTrue(emptyData.isEmpty)
+    }
+
     /// The send is not under the header timeout, and a big reply goes out
     /// whole while another request is answered.
     func testABigFileArrivesWholeAndDoesNotBlockAnotherRequest() async throws {

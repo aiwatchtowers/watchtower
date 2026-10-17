@@ -1,6 +1,7 @@
 import GRDB
 
-/// Swift twin of internal/db/owner.go (ResolveOwner) — a deliberate dual path; change both together. Ladder: Slack #1 → Google #1 → Jira #1 → Linear #1.
+/// Swift twin of internal/db/owner.go (ResolveOwner) — a deliberate dual path; change both together.
+/// Ladder: Slack #1 → Google #1 → Jira #1 → Linear #1 → email (IMAP/Outlook) #1.
 ///
 /// Every owner-identity read in the Desktop goes through `resolve` (OWNER-01,
 /// pinned by `OwnerQueriesTests.testOwner01NoRawOwnerQueriesOutsideResolver`).
@@ -30,30 +31,63 @@ package enum OwnerQueries {
         let email: String
     }
 
-    /// The one owner identity of this install: Slack account #1 → Google
-    /// account #1 → Jira account #1 → Linear account #1. Every field is enriched from every
-    /// source, independent of which rung produced `id`. No connected identity
-    /// → `Owner.unknown`, never an error.
-    package static func resolve(_ db: Database) throws -> Owner {
-        let slackID = try ownerSlackID(db)
-        let google = try ownerGoogleEmail(db)
-        let jira = try ownerJiraAccount(db)
-        let linear = try ownerLinearAccount(db)
+    /// Every rung's row, read once per `resolve` (Go: `ownerRungs`).
+    private struct OwnerRungs {
+        let slackID: String
+        let googleEmail: String
+        let jira: OwnerJira
+        let linear: OwnerLinear
+        let mailbox: String
 
-        let id: String
-        let source: OwnerSource
-        if !slackID.isEmpty {
-            (id, source) = (slackID, .slack)
-        } else if !google.isEmpty {
-            (id, source) = ("google:" + google.lowercased(), .google)
-        } else if !jira.accountID.isEmpty {
-            (id, source) = ("jira:" + jira.accountID, .jira)
-        } else if !linear.userID.isEmpty {
-            (id, source) = ("linear:" + linear.userID, .linear)
-        } else {
-            return .unknown
+        /// The first rung that matched: its owner id and source; nil when none did.
+        var winner: (id: String, source: OwnerSource)? {
+            if !slackID.isEmpty { return (slackID, .slack) }
+            if !googleEmail.isEmpty { return ("google:" + googleEmail.lowercased(), .google) }
+            if !jira.accountID.isEmpty { return ("jira:" + jira.accountID, .jira) }
+            if !linear.userID.isEmpty { return ("linear:" + linear.userID, .linear) }
+            if !mailbox.isEmpty { return ("email:" + mailbox.lowercased(), .email) }
+            return nil
         }
-        return try enrich(db, id: id, source: source, slackID: slackID, googleEmail: google, jira: jira, linear: linear)
+    }
+
+    /// The one owner identity of this install: Slack account #1 → Google
+    /// account #1 → Jira account #1 → Linear account #1 → email account #1.
+    /// Every field is enriched from every source, independent of which rung
+    /// produced `id`. No connected identity → `Owner.unknown`, never an error.
+    package static func resolve(_ db: Database) throws -> Owner {
+        let rungs = OwnerRungs(
+            slackID: try ownerSlackID(db),
+            googleEmail: try ownerGoogleEmail(db),
+            jira: try ownerJiraAccount(db),
+            linear: try ownerLinearAccount(db),
+            mailbox: try ownerMailbox(db)
+        )
+        guard let winner = rungs.winner else { return .unknown }
+        return try enrich(db, id: winner.id, source: winner.source, rungs: rungs)
+    }
+
+    /// `resolve`, plus `pendingIdentitySource` when the owner is unknown.
+    package static func resolveWithPending(_ db: Database) throws -> (Owner, String?) {
+        let owner = try resolve(db)
+        return (owner, owner.isKnown ? nil : try pendingIdentitySource(db))
+    }
+
+    /// With the owner unknown: the connected source that will name the owner
+    /// once it reports who connected it — an enabled, healthy (`status = 'ok'`)
+    /// Jira or Linear account whose owner id is still empty (Jira fills it at
+    /// connect or lazily at daemon start). A revoked or failing account will
+    /// not report anything, so it never counts: the owner needs a (re)connect.
+    /// "Jira" before "Linear"; nil when neither.
+    /// Only meaningful while `resolve` returns `Owner.unknown`.
+    package static func pendingIdentitySource(_ db: Database) throws -> String? {
+        for (name, table, column) in [("Jira", "jira_accounts", "owner_account_id"),
+                                      ("Linear", "linear_accounts", "owner_user_id")] {
+            let sql = """
+                SELECT EXISTS(SELECT 1 FROM \(table) WHERE enabled = 1 AND status = 'ok' AND \(column) = '')
+                """
+            if try Bool.fetchOne(db, sql: sql) == true { return name }
+        }
+        return nil
     }
 
     // MARK: - Rungs
@@ -102,6 +136,16 @@ package enum OwnerQueries {
         )
     }
 
+    /// The address of the first connected IMAP/Outlook mailbox whose address
+    /// looks like one (an '@' after at least one character; a bare login
+    /// identifies no one), as stored (lower-cased for the id only). Below
+    /// every other rung, so no existing install's owner id changes.
+    private static func ownerMailbox(_ db: Database) throws -> String {
+        try String.fetchOne(db, sql: """
+            SELECT email_address FROM email_accounts WHERE instr(email_address, '@') > 1 ORDER BY id LIMIT 1
+            """) ?? ""
+    }
+
     /// The owner's Linear user id on every enabled, non-removed account (one
     /// per workspace), by account id. Empty when none.
     private static func ownerLinearUserIDs(_ db: Database) throws -> [String] {
@@ -117,18 +161,17 @@ package enum OwnerQueries {
         _ db: Database,
         id: String,
         source: OwnerSource,
-        slackID: String,
-        googleEmail: String,
-        jira: OwnerJira,
-        linear: OwnerLinear
+        rungs: OwnerRungs
     ) throws -> Owner {
+        let slackID = rungs.slackID
         let slackUser = slackID.isEmpty ? nil : try fetchSlackUser(db, id: slackID)
-        let email = ownerEmail(slackUser, googleEmail: googleEmail, jira: jira, linear: linear)
-        let jiraID = jira.accountID.isEmpty ? try ownerJiraFromUserMap(db, slackUserID: slackID) : jira.accountID
+        let email = ownerEmail(slackUser, rungs)
+        let jiraID = rungs.jira.accountID.isEmpty
+            ? try ownerJiraFromUserMap(db, slackUserID: slackID) : rungs.jira.accountID
         return Owner(
             id: id, source: source, slackUserID: slackID, email: email,
             jiraAccountID: jiraID,
-            displayName: ownerDisplayName(slackUser, jira: jira, linear: linear, email: email),
+            displayName: ownerDisplayName(slackUser, jira: rungs.jira, linear: rungs.linear, email: email),
             linearUserIDs: try ownerLinearUserIDs(db)
         )
     }
@@ -142,12 +185,11 @@ package enum OwnerQueries {
         )
     }
 
-    /// The Slack user's email, else the Google email, else the Jira owner email, else the Linear one.
-    private static func ownerEmail(_ slackUser: OwnerSlackUser?, googleEmail: String, jira: OwnerJira, linear: OwnerLinear) -> String {
+    /// The Slack user's email, else the Google email, else the Jira owner
+    /// email, else the Linear one, else the mailbox address.
+    private static func ownerEmail(_ slackUser: OwnerSlackUser?, _ rungs: OwnerRungs) -> String {
         if let email = slackUser?.email, !email.isEmpty { return email }
-        if !googleEmail.isEmpty { return googleEmail }
-        if !jira.email.isEmpty { return jira.email }
-        return linear.email
+        return [rungs.googleEmail, rungs.jira.email, rungs.linear.email].first { !$0.isEmpty } ?? rungs.mailbox
     }
 
     /// The Slack user's display name (else real name), else the Jira owner

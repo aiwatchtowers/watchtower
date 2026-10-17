@@ -116,7 +116,7 @@ func (transcriptSource) Build(ctx context.Context, q Queryer, key string) (*Doc,
 	// indexed by its title; only a NULL/invalid/empty list falls back to the
 	// flat text.
 	if len(segments) == 0 {
-		for _, line := range strings.Split(text, "\n") {
+		for line := range strings.SplitSeq(text, "\n") {
 			if line = strings.TrimSpace(line); line != "" {
 				doc.Sections = append(doc.Sections, Section{Text: line})
 			}
@@ -386,17 +386,21 @@ func (streamDigestSource) Build(ctx context.Context, q Queryer, key string) (*Do
 	}
 	_ = json.Unmarshal(entry, &head) // a non-object entry simply has no title
 	title := strings.TrimSpace(head.Title)
+	name := source
+	if source == "imap" { // an IMAP/Outlook mailbox; scope carries its address
+		name = "Email"
+	}
 
 	doc := &Doc{
 		ID:     key,
 		Source: "stream_digest",
 		Title:  title,
-		Meta:   strings.TrimSpace(source + " " + scope),
+		Meta:   strings.TrimSpace(name + " " + scope),
 		Time:   parseTime(periodTo),
 		Anchor: map[string]string{"stream_digest_id": id, "idx": idxStr, "source": source},
 	}
 	if doc.Title == "" {
-		doc.Title = source + " digest"
+		doc.Title = name + " digest"
 	}
 	skippedTitle := title == ""
 	for _, s := range jsonTexts(string(entry)) {

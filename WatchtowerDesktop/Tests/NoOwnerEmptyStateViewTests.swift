@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import ViewInspector
 import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 /// OWNER-02 on the Desktop: with no owner identity, Day Plan and Briefings
@@ -14,7 +15,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     private static let known = Owner(
         id: "1:U1", source: .slack, slackUserID: "1:U1", email: "", jiraAccountID: "", displayName: "Me"
     )
-    private static let message = "Connect Slack, Google, Jira or Linear so Watchtower knows who you are"
+    private static let message = "Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are"
 
     // MARK: - NoOwnerEmptyState
 
@@ -78,7 +79,37 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         XCTAssertFalse(DayPlanEmptyState.showsNoOwnerState(owner: Self.known, hasPlan: true))
     }
 
+    // MARK: - Inbox
+
+    /// The daemon skips the inbox without an owner, so the empty strip says
+    /// why (it used to show nothing at all) and opens Connections.
+    func testOwner02InboxUnknownOwnerShowsEmptyState() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        var opened = false
+        let unknown = makeInboxEmpty(vm, ownerKnown: false) { opened = true }
+
+        XCTAssertNoThrow(try unknown.inspect().find(text: Self.message))
+        try unknown.inspect().find(button: "Open Connections").tap()
+        XCTAssertTrue(opened)
+        XCTAssertNoThrow(try unknown.inspect().find(ReactionCheatSheetView.self), "the cheat sheet stays")
+
+        let known = makeInboxEmpty(vm, ownerKnown: true) {}
+        XCTAssertThrowsError(try known.inspect().find(text: Self.message))
+    }
+
     // MARK: - Helpers
+
+    private func makeInboxEmpty(
+        _ vm: ActionStripViewModel, ownerKnown: Bool, onOpenConnections: @escaping () -> Void
+    ) -> ActionStripActionsView {
+        ActionStripActionsView(
+            vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
+            onEnable: {}, onOpenSettings: {}, onOpen: { _ in },
+            onOpenConnections: onOpenConnections, ownerKnown: ownerKnown
+        )
+    }
 
     private func makeBriefingsEmpty(owner: Owner, onGenerate: @escaping () -> Void = {}) -> BriefingsEmptyState {
         BriefingsEmptyState(

@@ -144,7 +144,7 @@ func TestWorkload_WithJiraAndSlack(t *testing.T) {
 
 	// Insert Jira issues for two users.
 	// U1: overload scenario (3 overdue).
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
 			AccountID: 1,
 			Key:       "P-" + string(rune('A'+i)), ProjectKey: "P", Summary: "Overdue task",
@@ -179,11 +179,11 @@ func TestWorkload_WithJiraAndSlack(t *testing.T) {
 	from := time.Date(2026, 4, 8, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 4, 9, 0, 0, 0, 0, time.UTC)
 	baseTS := from.Unix()
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		ts := float64(baseTS + int64(i*60)) // 1 minute apart
 		tsStr := fmt.Sprintf("%d.%06d", int64(ts), i)
 		require.NoError(t, d.UpsertMessage(db.Message{
-			ChannelID: "C1", TS: tsStr, UserID: "U2", Text: "msg", RawJSON: "{}",
+			ChannelID: "C1", TS: tsStr, UserID: "U2", Text: "msg",
 		}))
 	}
 
@@ -211,7 +211,7 @@ func TestWorkload_SortOrder(t *testing.T) {
 	to := time.Date(2026, 4, 9, 0, 0, 0, 0, time.UTC)
 
 	// U1: normal (3 open, some slack messages)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
 			AccountID: 1,
 			Key:       "N-" + string(rune('A'+i)), ProjectKey: "P", Summary: "Normal",
@@ -223,10 +223,10 @@ func TestWorkload_SortOrder(t *testing.T) {
 	}
 	// Insert messages for U1 to avoid "low" signal.
 	baseTS := from.Unix()
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		tsStr := fmt.Sprintf("%d.%06d", baseTS+int64(i*60), i)
 		require.NoError(t, d.UpsertMessage(db.Message{
-			ChannelID: "C1", TS: tsStr, UserID: "U1", Text: "msg", RawJSON: "{}",
+			ChannelID: "C1", TS: tsStr, UserID: "U1", Text: "msg",
 		}))
 	}
 
@@ -321,10 +321,10 @@ func TestWorkload_WithMeetingHours(t *testing.T) {
 
 	// Add some slack messages to avoid "low".
 	baseTS := from.Unix()
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		tsStr := fmt.Sprintf("%d.%06d", baseTS+int64(i*60), i)
 		require.NoError(t, d.UpsertMessage(db.Message{
-			ChannelID: "C1", TS: tsStr, UserID: "U1", Text: "msg", RawJSON: "{}",
+			ChannelID: "C1", TS: tsStr, UserID: "U1", Text: "msg",
 		}))
 	}
 

@@ -361,14 +361,12 @@ func TestBus_PublishIsSafeForConcurrentCallers(t *testing.T) {
 	f.begin(t)
 	var wg sync.WaitGroup
 	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for j := range 20 {
 				f.bus.Publish(slackEvent("releases", i*20+j))
 			}
 			_ = f.bus.Wants("slack.new_messages")
-		}()
+		})
 	}
 	wg.Wait()
 	f.flush(t, busCycleA)

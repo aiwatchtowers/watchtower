@@ -39,7 +39,7 @@ func TestListCatchupDigests_WindowOverlapAndTopics(t *testing.T) {
 func TestListCatchupDigests_CapTruncates(t *testing.T) {
 	d := openTestDB(t)
 	const limit = 3
-	for i := 0; i < limit+2; i++ {
+	for i := range limit + 2 {
 		_, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'channel', 'x')`,
 			1000+i, 1100+i)
 		require.NoError(t, err)
@@ -78,6 +78,21 @@ func TestListCatchupStreams(t *testing.T) {
 	assert.Equal(t, "streams", items[0].Area)
 	assert.Equal(t, "jira · PROJ", items[0].Title)
 	assert.Contains(t, items[0].Body, "Bug bash: 12 fixed")
+}
+
+// #615: an IMAP/Outlook mailbox's stream digest reads "Email · <address>",
+// not the raw 'imap' source.
+func TestListCatchupStreams_ImapTitledEmailWithAddress(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO stream_digests (source, account_id, scope, period_from, period_to)
+		VALUES ('imap', 2, 'me@example.com', '1970-01-01T00:20:00Z', '1970-01-01T00:30:00Z')`)
+	require.NoError(t, err)
+
+	items, err := d.ListCatchupStreams(1000, 2000, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Email · me@example.com", items[0].Title)
+	assert.Contains(t, items[0].Meta, "Email account 2")
 }
 
 func TestListCatchupMeetings_RecapAndAdHoc(t *testing.T) {
@@ -199,6 +214,7 @@ func TestListCatchupInbox_ActionablePendingInWindow(t *testing.T) {
 	assert.Contains(t, items[0].Meta, "#eng")
 	assert.Equal(t, "1:C1", items[0].ChannelID)
 	assert.Equal(t, "1:U1", items[0].SenderID)
+	assert.NotContains(t, items[0].Meta, "messages", "a one-message item names no count")
 }
 
 func TestListCatchupTracksAndTargets(t *testing.T) {
@@ -241,7 +257,7 @@ func TestListCatchupTargets_InWindowOutranksOverdue(t *testing.T) {
 	d := openTestDB(t)
 	const limit = 3
 	// The window unix 1000..2000 is 00:16..00:33 UTC.
-	for i := 0; i < limit+1; i++ {
+	for i := range limit + 1 {
 		_, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, status, priority, due_date)
 			VALUES (?, '1969-12-31', '1969-12-31', 'todo', 'high', ?)`,
 			fmt.Sprintf("Overdue %d", i), fmt.Sprintf("1969-12-31T0%d:00", i))

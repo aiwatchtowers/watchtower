@@ -132,12 +132,13 @@ type WorkbenchInstallReport struct {
 // StateForeign. CurrentMCP and LegacyMCP say which registration MCP stands
 // for, so a report can name each one that is there.
 type WorkbenchStatus struct {
-	Skill        SkillStatus
-	Hook         bool // the SessionStart hook (the brief)
-	StopHook     bool // the Stop hook (the board drift check, PROJ-07)
-	StateHooks   bool // every session state hook (UserPromptSubmit, Notification, PostToolUse, StopFailure)
-	AskGuard     bool // the Stop command hook sending a plain-text request to ask_owner (PROJ-13); an old marker prompt alone is false
-	AskToolBlock bool // the PreToolUse hook denying AskUserQuestion (PROJ-13)
+	Skill          SkillStatus
+	Hook           bool // the SessionStart hook (the brief)
+	StopHook       bool // the Stop hook (the board drift check, PROJ-07)
+	StateHooks     bool // every session state hook (UserPromptSubmit, Notification, PostToolUse, StopFailure)
+	AskGuard       bool // the Stop command hook sending a plain-text request to ask_owner (PROJ-13); an old marker prompt alone is false
+	PermissionWait bool // the PermissionRequest hook holding a dialog for the phone (#517)
+	AskToolBlock   bool // the PreToolUse hook denying AskUserQuestion (PROJ-13)
 	// CleanupPermission: the permissions.allow rule letting the agent run
 	// `watchtower workbench cleanup` (PROJ-04, session cleanup §10).
 	CleanupPermission bool
@@ -149,6 +150,11 @@ type WorkbenchStatus struct {
 	LegacyHooks bool
 	CurrentMCP  bool // watchtower-workbench is registered
 	LegacyMCP   bool // watchtower-project is registered
+
+	// GroupPrompt: the skill a Claude Code session here reads — the
+	// current one, else the old one in a legacy folder — knows the
+	// group first prompt (skillKnowsGroupPrompt).
+	GroupPrompt bool
 }
 
 // WorkbenchSkill returns the embedded watchtower-workbench skill.
@@ -436,7 +442,31 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	}
 	ps.MCP = ps.CurrentMCP || ps.LegacyMCP
 	ps.Legacy = ps.LegacyMCP || ps.LegacyHooks || ps.LegacySkill.State == StateUnchanged
+	ps.GroupPrompt = skillKnowsGroupPrompt(ps.Skill.Path)
+	// The old skill is the one read only while the folder is legacy and has
+	// nothing newer — the Swift twin is WorkbenchInstallStatus.vocabulary.
+	if ps.Skill.State == StateMissing && ps.Legacy && ps.LegacySkill.State != StateMissing {
+		ps.GroupPrompt = skillKnowsGroupPrompt(ps.LegacySkill.Path)
+	}
 	return ps, errors.Join(errs...)
+}
+
+// groupPromptMarker is the wording the Desktop's group first prompt starts
+// with — Swift twin `TerminalLaunch.workOnGroupPrompt`, both sides pinned by
+// a test (TestSkillKnowsGroupPrompt_ReadsTheContent, TerminalLaunchTests
+// testPromptsNameTheFoldersSkill): a skill that names it has rules for it.
+const groupPromptMarker = "Work on group #"
+
+// skillKnowsGroupPrompt reports whether the skill file at path names the
+// group first prompt, so the Desktop may send it (board #476). It checks the
+// content, not the pack version: an owner-edited copy (PROJ-04) knows what it
+// says, and the rules' heading moved to the methodology preset in v10 while
+// the prompt stayed in the core skill. A missing file knows nothing (the
+// Desktop then sends the target prompt); an unreadable one has already
+// failed the status in statusSkill, which reports it.
+func skillKnowsGroupPrompt(path string) bool {
+	b, err := os.ReadFile(path)
+	return err == nil && bytes.Contains(b, []byte(groupPromptMarker))
 }
 
 // statusHooks fills ps's hook fields; a malformed settings file is one
@@ -457,6 +487,9 @@ func statusHooks(o WorkbenchInstallOptions, ps *WorkbenchStatus) []error {
 		errs = append(errs, err)
 	}
 	if ps.AskToolBlock, err = HasAskToolBlockHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	if ps.PermissionWait, err = HasPermissionWaitHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
 	if ps.CleanupPermission, err = HasCleanupPermission(o.Folder); err != nil && !bothMalformed(startErr, err) {

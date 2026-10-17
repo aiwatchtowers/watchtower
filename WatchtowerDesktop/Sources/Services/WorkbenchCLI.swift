@@ -339,6 +339,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// them until a Repair.
     let askGuard: Bool
     let askToolBlock: Bool
+    /// The `PermissionRequest` hook holding a permission dialog for an
+    /// answer from the phone (#517). A workbench installed before it lacks
+    /// it until a Repair; an older CLI without the key has nothing to install.
+    let permissionWait: Bool
     /// The `permissions.allow` entry letting the session's agent run
     /// `watchtower workbench cleanup` (board #535, PROJ-04). A folder set
     /// up before it lacks it until a Repair; a CLI that does not send the
@@ -361,6 +365,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// old one. A CLI that does not send the key gets `mcp`, which keeps the
     /// pre-`current_mcp` repair rule.
     let currentMCP: Bool
+    /// The skill a Claude Code session here reads names the group first
+    /// prompt (`group_prompt`, board #476), checked by its content. A CLI
+    /// that does not send the key ships a skill that knows it: true.
+    let groupPrompt: Bool
     /// The codex part (board #399, spec §4.5); nil from a CLI older than
     /// Codex support, which has no codex part to repair.
     let codex: Codex?
@@ -384,6 +392,9 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         /// answer, did not list every hook, or could not be resolved); nil
         /// when it could, or from a CLI that does not send the key.
         let trustError: String?
+        /// The skill copy names the group first prompt (`group_prompt`);
+        /// true from a CLI that does not send the key.
+        let groupPrompt: Bool
 
         init(
             found: Bool,
@@ -391,8 +402,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             hooksTrusted: Bool?, // swiftlint:disable:this discouraged_optional_boolean
             importedDuplicates: Bool = false,
             trustError: String? = nil,
-            skillState: String? = nil
+            skillState: String? = nil,
+            groupPrompt: Bool = true
         ) {
+            self.groupPrompt = groupPrompt
             self.found = found
             self.skill = skill
             self.skillState = skillState
@@ -407,6 +420,18 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             case hooksTrusted = "hooks_trusted"
             case importedDuplicates = "imported_duplicates"
             case trustError = "trust_error"
+            case groupPrompt = "group_prompt"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            found = try c.decode(Bool.self, forKey: .found)
+            skill = try c.decode(Bool.self, forKey: .skill)
+            skillState = try c.decodeIfPresent(String.self, forKey: .skillState)
+            hooksTrusted = try c.decodeIfPresent(Bool.self, forKey: .hooksTrusted)
+            importedDuplicates = try c.decode(Bool.self, forKey: .importedDuplicates)
+            trustError = try c.decodeIfPresent(String.self, forKey: .trustError)
+            groupPrompt = try c.decodeIfPresent(Bool.self, forKey: .groupPrompt) ?? true
         }
 
         /// The Codex part's state, for the page header: nothing without
@@ -455,10 +480,12 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         case stateHooks = "state_hooks"
         case askGuard = "ask_guard"
         case askToolBlock = "ask_tool_block"
+        case permissionWait = "permission_wait"
         case cleanupPermission = "cleanup_permission"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
         case currentMCP = "current_mcp"
+        case groupPrompt = "group_prompt"
     }
 
     /// Without `currentMCP`: the current registration is taken to be `mcp`,
@@ -470,16 +497,19 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         stateHooks: Bool = true,
         askGuard: Bool = true,
         askToolBlock: Bool = true,
+        permissionWait: Bool = true,
         cleanupPermission: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = "",
+        groupPrompt: Bool = true,
         codex: Codex? = nil
     ) {
         self.init(skill: skill, hook: hook, stopHook: stopHook, stateHooks: stateHooks,
-                  askGuard: askGuard, askToolBlock: askToolBlock, cleanupPermission: cleanupPermission, mcp: mcp,
-                  claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp, codex: codex)
+                  askGuard: askGuard, askToolBlock: askToolBlock, permissionWait: permissionWait, cleanupPermission: cleanupPermission, mcp: mcp,
+                  claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp,
+                  groupPrompt: groupPrompt, codex: codex)
     }
 
     init(
@@ -489,15 +519,18 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         stateHooks: Bool = true,
         askGuard: Bool = true,
         askToolBlock: Bool = true,
+        permissionWait: Bool = true,
         cleanupPermission: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = "",
         currentMCP: Bool,
+        groupPrompt: Bool = true,
         codex: Codex? = nil
     ) {
         self.codex = codex
+        self.groupPrompt = groupPrompt
         self.legacy = legacy
         self.currentMCP = currentMCP
         self.legacySkill = legacySkill
@@ -507,6 +540,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         self.stateHooks = stateHooks
         self.askGuard = askGuard
         self.askToolBlock = askToolBlock
+        self.permissionWait = permissionWait
         self.cleanupPermission = cleanupPermission
         self.mcp = mcp
         self.claudeFound = claudeFound
@@ -523,6 +557,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         // Nor one without the ask guard.
         askGuard = try c.decodeIfPresent(Bool.self, forKey: .askGuard) ?? true
         askToolBlock = try c.decodeIfPresent(Bool.self, forKey: .askToolBlock) ?? true
+        permissionWait = try c.decodeIfPresent(Bool.self, forKey: .permissionWait) ?? true
         // Nor one without the cleanup permission (board #535).
         cleanupPermission = try c.decodeIfPresent(Bool.self, forKey: .cleanupPermission) ?? true
         mcp = try c.decode(Bool.self, forKey: .mcp)
@@ -533,6 +568,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
         // A CLI older than `current_mcp`: fall back to `mcp`, so needsRepair keeps the old rule.
         currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP) ?? mcp
+        // A CLI older than the key ships a skill that knows the group prompt.
+        groupPrompt = try c.decodeIfPresent(Bool.self, forKey: .groupPrompt) ?? true
         // A CLI older than Codex support has no codex part.
         codex = try c.decodeIfPresent(Codex.self, forKey: .codex)
     }
@@ -555,6 +592,16 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// icon.
     var codexNeedsSetup: Bool {
         codex?.state == .notSetUp
+    }
+
+    /// Whether the skill the agent's session reads knows the group first
+    /// prompt (board #476): Claude Code's `group_prompt`, or the codex
+    /// part's; a CLI without a codex part ships a skill that knows it.
+    func skillKnowsGroupPrompt(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: groupPrompt
+        case .codex: codex?.groupPrompt ?? true
+        }
     }
 
     /// Whether the agent's CLI is there to launch: `claude_found`, or the
@@ -590,7 +637,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// `legacy` sees only those files, so one Repair settles them.
     var claudeNeedsRepair: Bool {
         legacy || skill == "missing" || skill == "updated" || !hook || !stopHook || !stateHooks
-            || !askGuard || !askToolBlock || !cleanupPermission
+            || !askGuard || !askToolBlock || !permissionWait || !cleanupPermission
             || (claudeFound && (!mcp || missesCurrentMCP))
     }
 
@@ -801,8 +848,11 @@ struct WorkbenchCLI {
     /// The two LLM calls (overview, lessons) run under Go's 5-minute budget; the Desktop waits a little longer.
     static let reviewAITimeout: TimeInterval = 330
 
-    func reviewOverview(projectID: Int64, roundID: Int64) async throws -> ReviewEnvelope {
-        try await review(["overview", "--workbench", String(projectID), "--round", String(roundID)], timeout: Self.reviewAITimeout)
+    /// `cachedOnly` reads only a cached overview and never calls the model (Quick mode, board #585).
+    func reviewOverview(projectID: Int64, roundID: Int64, cachedOnly: Bool = false) async throws -> ReviewEnvelope {
+        let args = ["overview", "--workbench", String(projectID), "--round", String(roundID)]
+        if cachedOnly { return try await review(args + ["--cached-only"]) }
+        return try await review(args, timeout: Self.reviewAITimeout)
     }
 
     /// Undoes one hunk of the round's diff in the working tree (never the index).

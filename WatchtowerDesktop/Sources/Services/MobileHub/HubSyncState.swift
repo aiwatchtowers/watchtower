@@ -134,8 +134,17 @@ final class HubSyncState: Sendable {
             }
             // A sidecar created before the Mac kept the phone's typing
             // request gains it, unrequested.
-            if try !db.columns(in: "devices").contains(where: { $0.name == "typing_requested" }) {
-                try db.execute(sql: "ALTER TABLE devices ADD COLUMN typing_requested INTEGER NOT NULL DEFAULT 0")
+            // ... and, from before #517, the separate "answer permission
+            // prompts" grant and request: off, unrequested.
+            // ... and, from before #565, the owner's start-sessions grant:
+            // off. A phone linked earlier keeps its link; its starts wait
+            // for the owner's one Allow in Settings → Mobile (until then
+            // `start_sessions_allowed`, the phone's own toggle, was the only
+            // say).
+            let deviceColumns = Set(try db.columns(in: "devices").map(\.name))
+            for name in ["typing_requested", "permissions_allowed", "permissions_requested", "start_sessions_granted"]
+            where !deviceColumns.contains(name) {
+                try db.execute(sql: "ALTER TABLE devices ADD COLUMN \(name) INTEGER NOT NULL DEFAULT 0")
             }
             return .commit
         }
@@ -158,9 +167,13 @@ final class HubSyncState: Sendable {
                     user_record_name TEXT NOT NULL,
                     linked_at REAL NOT NULL,
                     typing_allowed INTEGER NOT NULL DEFAULT 0,
+                    -- The phone's own toggle (its opt-out); start_sessions_granted is the owner's grant (#565).
                     start_sessions_allowed INTEGER NOT NULL DEFAULT 1,
                     decided_at REAL,
-                    typing_requested INTEGER NOT NULL DEFAULT 0
+                    typing_requested INTEGER NOT NULL DEFAULT 0,
+                    permissions_allowed INTEGER NOT NULL DEFAULT 0,
+                    permissions_requested INTEGER NOT NULL DEFAULT 0,
+                    start_sessions_granted INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS link_refusals (
                     device_id TEXT PRIMARY KEY,

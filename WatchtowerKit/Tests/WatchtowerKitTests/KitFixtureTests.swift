@@ -39,12 +39,12 @@ final class KitFixtureTests: XCTestCase {
         )
     }
 
-    /// The 15 branch kinds, then `probe`, then the 12 workbench kinds
+    /// The 15 branch kinds, then `probe`, then the 14 workbench kinds
     /// (pinned in WorkbenchMirrorFixtureTests).
     func testActionKindsKeepTheBranchKindsPlusProbe() {
         XCTAssertEqual(ActionKind.probe.rawValue, "probe")
         XCTAssertEqual(ActionKind.allCases.firstIndex(of: .probe), 15)
-        XCTAssertEqual(ActionKind.allCases.count, 28)
+        XCTAssertEqual(ActionKind.allCases.count, 30)
     }
 
     func testReasonCodesAreExactlyTheSpecList() {
@@ -56,7 +56,8 @@ final class KitFixtureTests: XCTestCase {
                 "needs_approval", "prompt_has_text",
                 "state_unknown", "cannot_type", "claude_not_found", "codex_not_found",
                 "expired", "cancelled", "outcome_unknown",
-                "unsupported_in_poc", "wrong_hub", "write_failed"
+                "unsupported_in_poc", "wrong_hub", "write_failed", "not_pending", "not_working",
+                "answer_on_mac"
             ]
         )
     }
@@ -324,6 +325,52 @@ final class KitFixtureTests: XCTestCase {
         let device = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: Data(json.utf8))
         XCTAssertEqual(device.scope.rawValue, "family")
         XCTAssertFalse(device.scope.isKnown)
+    }
+
+    /// #517: the permission fields are written only when true and read as false when absent, so a peer
+    /// without them interoperates and existing bytes do not change.
+    func testPermissionFlagsDefaultFalseAndRoundTripWhenTrue() throws {
+        // swiftlint:disable:next line_length
+        let oldGrant = #"{"device_id":"D2","hub_id":"hub-1","linked":false,"name":"iPhone","scope":"private","start_sessions_allowed":true,"typing_allowed":false}"#
+        let grant = try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: Data(oldGrant.utf8))
+        XCTAssertFalse(grant.permissionsAllowed)
+        // swiftlint:disable:next line_length
+        let oldDevice = #"{"app_version":"0.16.0","device_id":"D2","model":"iPhone16,1","name":"iPhone","scope":"private","start_sessions":true,"typing_requested":false,"updated_at":1700000000,"user_record_name":"_owner"}"#
+        let device = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: Data(oldDevice.utf8))
+        XCTAssertFalse(device.permissionsRequested)
+        // false is never written: the bytes stay the older peers'.
+        try assertFixture(
+            DeviceGrant(
+                deviceID: "D2", hubID: "hub-1", name: "iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true
+            ),
+            oldGrant
+        )
+        try assertFixture(
+            DevicePayload(
+                deviceID: "D2", name: "iPhone", model: "iPhone16,1", appVersion: "0.16.0", scope: .private,
+                userRecordName: "_owner", typingRequested: false, startSessions: true, updatedAt: t0
+            ),
+            oldDevice
+        )
+
+        try assertFixture(
+            DeviceGrant(
+                deviceID: "D2", hubID: "hub-1", name: "iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true
+            ),
+            // swiftlint:disable:next line_length
+            #"{"device_id":"D2","hub_id":"hub-1","linked":false,"name":"iPhone","permissions_allowed":true,"scope":"private","start_sessions_allowed":true,"typing_allowed":false}"#
+        )
+        try assertFixture(
+            DevicePayload(
+                deviceID: "D2", name: "iPhone", model: "iPhone16,1", appVersion: "0.16.0", scope: .private,
+                userRecordName: "_owner", typingRequested: false, startSessions: true,
+                permissionsRequested: true, updatedAt: t0
+            ),
+            // swiftlint:disable:next line_length
+            #"{"app_version":"0.16.0","device_id":"D2","model":"iPhone16,1","name":"iPhone","permissions_requested":true,"scope":"private","start_sessions":true,"typing_requested":false,"updated_at":1700000000,"user_record_name":"_owner"}"#
+        )
     }
 
     func testLinkRefusalAndScopeAreFrozen() {

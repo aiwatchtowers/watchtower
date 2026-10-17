@@ -28,7 +28,7 @@ const (
 func seedSlackAccounts(t *testing.T, d *db.DB, n int) []int64 {
 	t.Helper()
 	ids := make([]int64, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id, err := d.CreateSlackAccount(db.SlackAccount{TeamID: "T" + string(rune('A'+i)), TeamName: "acme"})
 		require.NoError(t, err)
 		ids = append(ids, id)
@@ -44,8 +44,8 @@ func seedAccountSlack(t *testing.T, d *db.DB, acct int64, tag string) {
 	require.NoError(t, d.UpsertUser(db.User{ID: alice, Name: "alice", RealName: "Alice Smith"}))
 	require.NoError(t, d.UpsertUser(db.User{ID: bob, Name: "bob", RealName: "Bob Jones"}))
 	require.NoError(t, d.UpsertChannel(db.Channel{ID: general, Name: "general", Type: "public"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: general, TS: "1700000001.0001", UserID: alice, Text: "alice says " + tag, RawJSON: "{}"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: general, TS: "1700000002.0001", UserID: bob, Text: "bob says " + tag, RawJSON: "{}"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: general, TS: "1700000001.0001", UserID: alice, Text: "alice says " + tag}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: general, TS: "1700000002.0001", UserID: bob, Text: "bob says " + tag}))
 }
 
 func TestListMessages_PersonRawIDMatchesNamespacedRows(t *testing.T) {

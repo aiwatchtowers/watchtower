@@ -74,13 +74,13 @@ func TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags(t *testing.T) {
 			messages: []db.GmailExtractMessage{{BodyText: strings.Repeat("y ", 400)}}},
 	}
 
-	full, fullTags := renderEmailBlock(7, threads, 100000, 0)
+	full, fullTags := renderEmailBlock(gmailBox(7), threads, 100000, 0)
 	require.Contains(t, full, "thr-1")
 	require.Contains(t, full, "thr-2")
 	require.Len(t, fullTags, 2)
 
 	firstLineLen := strings.Index(full, "\n") + 1
-	bounded, tags := renderEmailBlock(7, threads, firstLineLen, 0)
+	bounded, tags := renderEmailBlock(gmailBox(7), threads, firstLineLen, 0)
 	assert.Contains(t, bounded, "thr-1")
 	assert.NotContains(t, bounded, "thr-2")
 	assert.LessOrEqual(t, len(bounded), firstLineLen)
@@ -102,7 +102,7 @@ func TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags(t *testing.T) {
 func TestRenderJiraBlock_CapsCommentsPerIssue(t *testing.T) {
 	issues := []db.JiraIssue{{Key: "WT-1", ProjectKey: "WT", Summary: "s", Status: "Open"}}
 	var comments []db.JiraComment
-	for i := 0; i < maxCommentsPerIssue+10; i++ {
+	for i := range maxCommentsPerIssue + 10 {
 		comments = append(comments, db.JiraComment{IssueKey: "WT-1", Author: "Ann", BodyText: fmt.Sprintf("comment-%02d", i)})
 	}
 

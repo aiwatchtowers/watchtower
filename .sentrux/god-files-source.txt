@@ -3,6 +3,7 @@ WatchtowerDesktop/Sources/App/Navigation.swift
 WatchtowerDesktop/Sources/Database/DatabaseManager.swift
 WatchtowerDesktop/Sources/Services/MobileHub/HubKeyring.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/OwnerAskSlice.swift
+WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice.swift
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Panel.swift
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift
 WatchtowerDesktop/Sources/Views/Automations/AutomationFormView.swift
@@ -10,12 +11,10 @@ WatchtowerDesktop/Sources/Views/Automations/AutomationsView.swift
 WatchtowerDesktop/Sources/Views/Automations/RunAutomationPalette.swift
 WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
 WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailView.swift
-WatchtowerDesktop/Sources/Views/Chat/ChatQuestionCardView.swift
 WatchtowerDesktop/Sources/Views/Chat/ChatThreadView.swift
 WatchtowerDesktop/Sources/Views/Chat/ChatView.swift
 WatchtowerDesktop/Sources/Views/DayPlan/DayPlanView.swift
 WatchtowerDesktop/Sources/Views/Digests/DigestListView.swift
-WatchtowerDesktop/Sources/Views/Help/AskPanel.swift
 WatchtowerDesktop/Sources/Views/Ideas/IdeasView.swift
 WatchtowerDesktop/Sources/Views/Inbox/ActionStripView.swift
 WatchtowerDesktop/Sources/Views/Jira/EpicCardView.swift

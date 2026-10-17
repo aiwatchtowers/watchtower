@@ -125,7 +125,152 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(webView.url?.lastPathComponent, "index.html", "a link to another file opens nothing")
     }
 
+    /// WebRTC is off in the preferences themselves (#563), not only by the
+    /// page script: a plain view with just these preferences has no WebRTC
+    /// in its page or in a fresh iframe.
+    func testWebRTCIsOffInThePreferencesForEveryFrame() async throws {
+        let config = WKWebViewConfiguration()
+        XCTAssertNil(SandboxedHTMLView.lockDown(config.preferences), "this WebKit can turn WebRTC off — a WebKit change shows here")
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
+        webView.loadHTMLString("<html><head><title>p</title></head><body></body></html>", baseURL: nil)
+        _ = try await waitForTitle(webView) { $0 == "p" }
+        let types = try await webView.evaluateJavaScript("""
+        (() => {
+          const frame = document.createElement("iframe");
+          document.body.appendChild(frame);
+          return [typeof RTCPeerConnection, typeof webkitRTCPeerConnection,
+                  typeof frame.contentWindow.RTCPeerConnection, typeof frame.contentWindow.webkitRTCPeerConnection].join();
+        })()
+        """) as? String
+        XCTAssertEqual(types, "undefined,undefined,undefined,undefined")
+    }
+
+    /// A WebKit without the private preference: `lockDown` says why instead
+    /// of raising, and the view still shows the page with the WebRTC globals
+    /// removed by its script.
+    func testLockDownFallsBackWithAReasonOnAMissingSelector() async throws {
+        let config = WKWebViewConfiguration()
+        var selectors = SandboxedHTMLView.LockDownSelectors()
+        selectors.setPeerConnection = "_setNoSuchPreference:"
+        XCTAssertEqual(SandboxedHTMLView.lockDown(config.preferences, selectors: selectors), "WKPreferences has no _setNoSuchPreference:")
+        selectors = SandboxedHTMLView.LockDownSelectors()
+        selectors.peerConnection = "_noSuchGetter"
+        XCTAssertEqual(SandboxedHTMLView.lockDown(config.preferences, selectors: selectors), "WKPreferences has no _noSuchGetter")
+
+        let webView = try host(.page("<html><head><title>page</title></head><body></body></html>"))
+        let title = try await waitForTitle(webView) { $0 == "page" }
+        XCTAssertEqual(title, "page")
+        let rtc = try await webView.evaluateJavaScript("typeof RTCPeerConnection") as? String
+        XCTAssertEqual(rtc, "undefined")
+    }
+
+    /// Without the content rules nothing of the page is ever loaded: the
+    /// view shows a fixed message with the reason (the rules are the
+    /// network barrier).
+    func testAPageNeverLoadsWhenTheRulesFail() async throws {
+        struct Broken: LocalizedError {
+            var errorDescription: String? { "rules broke" }
+        }
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let coordinator = SandboxedHTMLView.Coordinator()
+        coordinator.webView = webView
+        coordinator.rules = { _ in throw Broken() }
+        coordinator.show(.page("<html><head><title>secret page</title></head><body><img src=\"\(counter.base)/x.png\"></body></html>"),
+                         token: 0)
+        let text = try await waitForText(webView) { $0.contains("could not be prepared") }
+        XCTAssertEqual(text, "The preview could not be prepared: rules broke")
+        let title = try await webView.evaluateJavaScript("document.title") as? String
+        XCTAssertEqual(title, "", "the page itself never loaded")
+        XCTAssertEqual(counter.hits, 0)
+    }
+
+    /// A file preview (#563) loads its folder's visible files only — no
+    /// dotfile as a script or in a frame, none through a symlink with a
+    /// visible name (`notes.js` → `.secrets/config.js`, a folder link to
+    /// `.git`) — and nothing from a host off the CDN allowlist, even over
+    /// https; its folder may sit in a hidden one.
+    func testAFilePreviewLoadsNoDotfileAndNoHostOffTheAllowlist() async throws {
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("sandbox-\(UUID().uuidString)")
+        let folder = base.appendingPathComponent(".claude/worktrees/deck")
+        try manager.createDirectory(at: folder.appendingPathComponent(".secrets"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: folder.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: base) }
+        try "body { color: rgb(1, 2, 3); }".write(to: folder.appendingPathComponent("style.css"), atomically: true, encoding: .utf8)
+        try "window.leaked = 1;".write(to: folder.appendingPathComponent(".secrets/config.js"), atomically: true, encoding: .utf8)
+        try "window.gitLeaked = 1;".write(to: folder.appendingPathComponent(".git/hook.js"), atomically: true, encoding: .utf8)
+        try manager.createSymbolicLink(atPath: folder.appendingPathComponent("notes.js").path, withDestinationPath: ".secrets/config.js")
+        try manager.createSymbolicLink(atPath: folder.appendingPathComponent("x").path, withDestinationPath: ".git")
+        try "<script>parent.postMessage(\"hidden\", \"*\")</script>"
+            .write(to: folder.appendingPathComponent(".hidden.html"), atomically: true, encoding: .utf8)
+        // A framed own page renders with its folder's style sheet, in an
+        // opaque origin (#563).
+        try """
+        <html><head><link rel="stylesheet" href="style.css"></head><body><script>
+        window.onload = () => parent.postMessage("ok:" + getComputedStyle(document.body).color, "*");
+        </script></body></html>
+        """.write(to: folder.appendingPathComponent("ok.html"), atomically: true, encoding: .utf8)
+        try "TOPSECRET".write(to: folder.appendingPathComponent("secret.txt"), atomically: true, encoding: .utf8)
+        try #"{"key":"TOPSECRET"}"#.write(to: folder.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        // A sibling's data as a JSON module: static, dynamic and through an
+        // import map — none loads (#563).
+        let modules = """
+        <script type="importmap">{"imports":{"cfg":"./config.json"}}</script>
+        <script type="module">import j from "./config.json" with { type: "json" }; window.jsonStatic = j.key;</script>
+        <script type="module">
+        import("./config.json", { with: { type: "json" } }).then(m => { window.jsonDynamic = m.default.key })
+          .catch(() => { window.jsonDynamic = "blocked" });
+        import("cfg", { with: { type: "json" } }).then(m => { window.jsonMapped = m.default.key })
+          .catch(() => { window.jsonMapped = "blocked" });
+        </script>
+        """
+        let index = """
+        <html><head>\(modules)<link rel="stylesheet" href="style.css"><script src=".secrets/config.js"></script>
+        <script src="notes.js"></script><script src="x/hook.js"></script></head><body>
+        <img src="https://\(counter.hostPort)/net.png"><iframe src=".hidden.html"></iframe><iframe id="ok" src="ok.html"></iframe>
+        <iframe id="secret" src="secret.txt"></iframe>
+        <script>
+        const readable = (id) => {
+          try { const doc = document.getElementById(id).contentDocument; return doc ? "read:" + doc.body.innerText : "opaque" }
+          catch (e) { return "opaque" }
+        };
+        const framed = [];
+        let fetched = "pending";
+        let evaluated = "off";
+        try { evaluated = String(new Function("return 6 * 7")()) } catch (e) {}
+        window.addEventListener("message", (e) => { framed.push(e.data) });
+        fetch("style.css").then(r => r.text()).then(() => { fetched = "read" }).catch(() => { fetched = "blocked" });
+        window.onload = () => setTimeout(() => {
+          document.title = [getComputedStyle(document.body).color, window.leaked || 0, window.gitLeaked || 0,
+                            framed.sort().join("+"), fetched, evaluated, readable("secret"), readable("ok"),
+                            window.jsonStatic || "blocked", window.jsonDynamic || "pending", window.jsonMapped || "pending"].join("|");
+        }, 500);
+        </script></body></html>
+        """
+        let file = folder.appendingPathComponent("index.html")
+        try index.write(to: file, atomically: true, encoding: .utf8)
+        let webView = try host(.file(file, folder: folder))
+        let title = try await waitForTitle(webView) { $0.contains("|") }
+        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok:rgb(1, 2, 3)|blocked|42|opaque|opaque|blocked|blocked|blocked",
+                       "visible siblings load and frame (with their own style sheet); no dotfile does, directly or by a link; "
+                           + "no script reads a file as text, by fetch or through a frame; new Function runs")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(counter.hits, 0, "an https image off the allowlist never connects")
+    }
+
     // MARK: helpers
+
+    private func waitForText(_ webView: WKWebView, until done: (String) -> Bool) async throws -> String {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(10)
+        var text = ""
+        while clock.now < deadline {
+            text = (try? await webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String) ?? ""
+            if done(text) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return text
+    }
 
     private func host(_ content: SandboxedHTMLContent) throws -> WKWebView {
         let host = NSHostingView(rootView: SandboxedHTMLView(content: content).frame(width: 400, height: 300))

@@ -122,27 +122,32 @@ private struct AutomationFormContent: View {
     private var saveState: AutomationEditorCenter.SaveState? { editor.saving[id] }
     private var isBusy: Bool { saveState == .saving || saveState == .validating }
     /// The controls write the frontmatter only while the form describes it.
-    private var controlsEnabled: Bool { !form.frontmatterEditedInRecipe }
+    private var controlsEnabled: Bool { !form.paused }
+    /// The script section's scroll id: "Open in editor" scrolls there.
+    private static let recipeEditorID = "recipe-editor"
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    notes
-                    Group {
-                        nameField
-                        runsSection
-                        spendSection
-                        mayDoSection
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        header
+                        notes(proxy)
+                        Group {
+                            nameField
+                            runsSection
+                            spendSection
+                            mayDoSection
+                        }
+                        .disabled(!controlsEnabled || isBusy)
+                        if !form.detail.isNewRecipe { stateSection }
+                        scriptSection
+                            .id(Self.recipeEditorID)
+                        messages
                     }
-                    .disabled(!controlsEnabled || isBusy)
-                    if !form.detail.isNewRecipe { stateSection }
-                    scriptSection
-                    messages
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
             footer
@@ -150,6 +155,13 @@ private struct AutomationFormContent: View {
         }
         .frame(width: 760, height: 820)
         .onAppear(perform: syncSchedule)
+        .task(id: form.recipeUnparsed ? form.buffer.text : "") {
+            // A paused, unreadable recipe: re-check it once typing pauses.
+            guard form.recipeUnparsed else { return }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            await editor.recheckParse(id)
+        }
         .onChange(of: schedule) { old, new in
             // Only the owner's picks write: the picker reading the recipe's
             // cron (on appear) must not rewrite it.
@@ -182,7 +194,16 @@ private struct AutomationFormContent: View {
         }
     }
 
-    @ViewBuilder private var notes: some View {
+    @ViewBuilder private func notes(_ proxy: ScrollViewProxy) -> some View {
+        if let coverage = vm.installCoverage[id] {
+            Label(coverage, systemImage: "checklist")
+                .foregroundStyle(.secondary)
+        }
+        if form.recipeUnparsed {
+            // #582: the fields are column defaults, not the file's settings;
+            // the form stays off so it never writes them over the recipe.
+            unparsedNote(proxy)
+        }
         if form.lostFormEdit {
             Label("Your last change in the form did not land: the recipe below was edited at the same moment. The "
                 + "form is paused; save, or discard to use the form again.", systemImage: "exclamationmark.triangle")
@@ -191,6 +212,26 @@ private struct AutomationFormContent: View {
             Label("The settings were changed in the recipe below, so the form is paused. Save, or discard to use "
                 + "the form again.", systemImage: "info.circle")
                 .foregroundStyle(.orange)
+        }
+    }
+
+    /// The loaded recipe does not parse: its error as re-checked now, or that
+    /// the fixed text reads (the form stays off until it is saved).
+    @ViewBuilder private func unparsedNote(_ proxy: ScrollViewProxy) -> some View {
+        if form.currentParseError.isEmpty {
+            Label("The recipe reads now. Save it; the form's controls stay off until then.",
+                  systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("The recipe can't be read, so the form is off: \(form.currentParseError)",
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                Button("Open in editor") {
+                    withAnimation { proxy.scrollTo(Self.recipeEditorID, anchor: .top) }
+                }
+            }
         }
     }
 
@@ -498,6 +539,12 @@ private struct AutomationFormContent: View {
                     .toggleStyle(.checkbox)
                     .disabled(form.detail.needsConfirmation)
                     .help(form.detail.needsConfirmation ? "Confirm the recipe first" : "")
+                }
+                if let line = AutomationLLMWarning.line(
+                    feedsSourcesToLLM: form.detail.feedsSourcesToLLM,
+                    tools: form.detail.autoTools.filter { $0.external && !$0.alwaysAsks }.map(\.tool)
+                ) {
+                    LLMWarningLabel(text: line)
                 }
                 if let error = editor.autoErrors[id] {
                     Text(error).font(.caption).foregroundStyle(.red)

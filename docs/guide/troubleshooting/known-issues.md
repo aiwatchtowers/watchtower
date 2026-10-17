@@ -6,7 +6,7 @@ Places where Watchtower does something other than what its own screen says. Each
 
 **Known issue.** The confirmation for removing a Google, Email or Calendar (CalDAV, ICS) account says already-synced messages or events are kept. The mail and events synced from that account are deleted from your Mac (a Google account keeps events tied to a recording or recap). Digests, briefings and other results built from them stay. Slack and Jira removal really keeps its data.
 
-Workaround: before removing, read or export what you need. Slack and Jira rows have an **Enabled** switch that pauses an account without removing it; Google, Email and Calendar rows have none, so leave the account connected if you want to keep its data. After you add the account again, recent mail and events sync back and older mail returns through [history backfill](../concepts/history-backfill.md). See [Sources and accounts](../concepts/sources-and-accounts.md).
+Workaround: before removing, read or export what you need. Slack and Jira rows have an **Enabled** switch that stops syncing an account without removing it (turning it back on does not resume a month of history that was still loading); Google, Email and Calendar rows have none, so leave the account connected if you want to keep its data. After you add the account again, recent mail and events sync back and older mail returns through [history backfill](../concepts/history-backfill.md). See [Sources and accounts](../concepts/sources-and-accounts.md).
 
 ## Briefing Hour 00:00 runs at 08:00
 

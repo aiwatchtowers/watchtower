@@ -26,13 +26,33 @@ extension HubSyncState {
         let userRecordName: String
         let linkedAt: Date
         var typingAllowed = false
+        /// The phone's own "Start sessions" toggle, mirrored from its
+        /// `device` record: the phone's opt-out, never a grant (#565).
         var startSessionsAllowed = true
+        /// The owner's Allow of starting sessions from this phone (#565,
+        /// `start_sessions_granted`): off until allowed in Settings →
+        /// Mobile. It counts only with typing allowed (`mayStartSessions`).
+        var startSessionsGranted = false
         /// When the owner last changed a grant; nil while undecided.
         var decidedAt: Date?
         /// The phone's own "Type into sessions" toggle (its `device`
         /// record's `typing_requested`): Settings → Mobile asks the owner to
         /// Allow it. Never a grant by itself.
         var typingRequested = false
+        /// The owner's separate grant to answer Claude Code permission
+        /// prompts from this phone (#517, spec §5.1): never implied by
+        /// typing, and it does not imply typing.
+        var permissionsAllowed = false
+        /// The phone's own "Answer permission prompts from this phone"
+        /// toggle (its `device` record's `permissions_requested`): Settings →
+        /// Mobile asks the owner to Allow it. Never a grant by itself.
+        var permissionsRequested = false
+
+        /// Whether a `session_start` from this phone may go (#565): the
+        /// owner allowed starting sessions and typing (a started agent reads
+        /// the target text the phone wrote), and the phone has not turned
+        /// its own toggle off.
+        var mayStartSessions: Bool { startSessionsGranted && typingAllowed && startSessionsAllowed }
 
         /// The device gate's creator check (spec §5.2 rule 4): in `shared`
         /// scope a record must be written by the phone's own iCloud user.
@@ -213,7 +233,10 @@ extension HubSyncState {
     /// A grant the owner decides per phone (spec §10).
     enum DeviceGrantKind: String {
         case typing = "typing_allowed"
+        /// The phone's own toggle, mirrored (not the owner's decision).
         case startSessions = "start_sessions_allowed"
+        case startSessionsGrant = "start_sessions_granted"
+        case permissions = "permissions_allowed"
     }
 
     /// Sets one grant of a linked device and stamps `decided_at`. False
@@ -234,6 +257,22 @@ extension HubSyncState {
         try queue.write { db in
             try db.execute(
                 sql: "UPDATE devices SET typing_requested = ? WHERE device_id = ? COLLATE NOCASE AND typing_requested != ?",
+                arguments: [requested, deviceID, requested]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    /// Stores the phone's request to answer permission prompts (not a
+    /// grant, no `decided_at`). False when the device is not linked or the
+    /// value did not change.
+    func setPermissionsRequested(_ requested: Bool, deviceID: String) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE devices SET permissions_requested = ?
+                    WHERE device_id = ? COLLATE NOCASE AND permissions_requested != ?
+                    """,
                 arguments: [requested, deviceID, requested]
             )
             return db.changesCount > 0
@@ -330,8 +369,11 @@ extension HubSyncState {
             linkedAt: Date(timeIntervalSince1970: row["linked_at"]),
             typingAllowed: row["typing_allowed"],
             startSessionsAllowed: row["start_sessions_allowed"],
+            startSessionsGranted: row["start_sessions_granted"],
             decidedAt: (row["decided_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
-            typingRequested: row["typing_requested"]
+            typingRequested: row["typing_requested"],
+            permissionsAllowed: row["permissions_allowed"],
+            permissionsRequested: row["permissions_requested"]
         )
     }
 }

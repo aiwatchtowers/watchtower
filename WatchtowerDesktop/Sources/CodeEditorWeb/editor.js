@@ -10,10 +10,11 @@
   require.config({ paths: { vs: "vs" } });
   require(["vs/editor/editor.main"], function () {
     registerExtraLanguages();
+    registerTextMateGrammars();
 
     // The TypeScript worker is trimmed from the bundle (fetch-monaco.sh):
     // switch the TS/JS language service off so nothing asks for it.
-    // Highlighting comes from the Monarch grammars and stays.
+    // Highlighting (TextMate grammars, textmate.js) does not need it.
     var ts = (monaco.typescript || (monaco.languages && monaco.languages.typescript));
     if (ts) {
       var off = { completionItems: false, hovers: false, documentSymbols: false, definitions: false,
@@ -387,6 +388,13 @@
         }).filter(function (edit) { return models[edit.id]; });
       },
       focus: function () { editor.focus(); },
+      // ⌘/ from the menu: false when the editor text does not have the keyboard.
+      toggleComment: function () {
+        var action = editor.getAction("editor.action.commentLine");
+        if (!action || !editor.hasTextFocus()) { return false; }
+        action.run();
+        return true;
+      },
       setReadOnly: function (flag) { editor.updateOptions({ readOnly: !!flag }); },
       definitionAtCursor: function () {
         var position = editor.getPosition();

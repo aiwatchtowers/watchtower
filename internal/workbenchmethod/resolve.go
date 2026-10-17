@@ -2,6 +2,7 @@ package workbenchmethod
 
 import (
 	"errors"
+	"time"
 
 	"watchtower/internal/db"
 )
@@ -54,24 +55,100 @@ func Defaults() Effective {
 	}
 }
 
-// Combine applies the precedence (spec §3): a valid personal value, else the
-// file's (only a file read without error counts), else the default.
+// Combine applies the precedence (spec §3). The preset: a valid personal
+// value, else the file's (only a file read without error counts), else the
+// default. The ask guard and the finish check: a valid personal value, else
+// the default — never the file's (board #558): the folder file is repo
+// content that any clone, a pulled branch or the agent's own worktree edit
+// can change, so it never weakens a check. FileIgnored names what it asked for.
 func Combine(personal db.WorkbenchMethodology, f File) Effective {
 	e := Defaults()
 	e.File = f
-	fileOK := f.Present && f.Err == nil
-	pick := func(key, mine, theirs string, value *string, src *Source) {
-		switch {
-		case Valid(key, mine):
-			*value, *src = mine, SourcePersonal
-		case fileOK && Valid(key, theirs):
-			*value, *src = theirs, SourceFile
+	if Valid("preset", personal.Preset) {
+		e.Preset, e.Sources.Preset = personal.Preset, SourcePersonal
+	} else if f.Present && f.Err == nil && Valid("preset", f.Preset) {
+		e.Preset, e.Sources.Preset = f.Preset, SourceFile
+	}
+	if Valid("ask_guard", personal.AskGuard) {
+		e.AskGuard, e.Sources.AskGuard = personal.AskGuard, SourcePersonal
+	}
+	if Valid("finish_check", personal.FinishCheck) {
+		e.FinishCheck, e.Sources.FinishCheck = personal.FinishCheck, SourcePersonal
+	}
+	return e
+}
+
+// checkValue is one frontmatter key ("ask_guard", "finish_check") and its value.
+type checkValue struct{ key, value string }
+
+// weakerChecks is f's check settings that are weaker than the defaults;
+// empty for a refused file or one that asks for nothing weaker.
+func weakerChecks(f File) (out []checkValue) {
+	if !f.Present || f.Err != nil {
+		return nil
+	}
+	if Valid("ask_guard", f.AskGuard) && f.AskGuard != AskGuardStrict {
+		out = append(out, checkValue{"ask_guard", f.AskGuard})
+	}
+	if Valid("finish_check", f.FinishCheck) && f.FinishCheck != FinishOn {
+		out = append(out, checkValue{"finish_check", f.FinishCheck})
+	}
+	return out
+}
+
+// FileIgnored lists, as "key: value" ("ask_guard: off"), the folder file's
+// check settings that would weaken a check the owner has no personal value
+// for, and so were ignored (board #558); with a personal value the file
+// would not have applied anyway, so it is not listed. Never nil.
+func (e Effective) FileIgnored() []string {
+	out := []string{}
+	for _, c := range weakerChecks(e.File) {
+		src := e.Sources.AskGuard
+		if c.key == "finish_check" {
+			src = e.Sources.FinishCheck
+		}
+		if src != SourcePersonal {
+			out = append(out, c.key+": "+c.value)
 		}
 	}
-	pick("preset", personal.Preset, f.Preset, &e.Preset, &e.Sources.Preset)
-	pick("ask_guard", personal.AskGuard, f.AskGuard, &e.AskGuard, &e.Sources.AskGuard)
-	pick("finish_check", personal.FinishCheck, f.FinishCheck, &e.FinishCheck, &e.Sources.FinishCheck)
-	return e
+	return out
+}
+
+// CarryOverFileChecks is the one-time upgrade step of board #558: for each
+// workbench that existed at migration 00133 and is still carry-pending, a
+// check its folder's workflow.md sets weaker than the default becomes the
+// owner's personal setting where none is set, so a setup that worked before
+// the file stopped counting keeps working, and the mark is cleared
+// (db.CarryWorkflowChecks: one statement, so a value the owner sets meanwhile
+// is never overwritten). Workbenches created later, and a fresh install,
+// have no mark: their files are never copied. The file is read before the
+// write, outside any transaction. It returns the ids it processed; an error
+// stops it, and the next run picks up the rest.
+func CarryOverFileChecks(database *db.DB, now time.Time) ([]int64, error) {
+	pending, err := database.ListWorkbenchesCarryPending()
+	if err != nil {
+		return nil, err
+	}
+	stamp := now.UTC().Format(time.RFC3339)
+	var done []int64
+	for _, w := range pending {
+		var askGuard, finishCheck string
+		for _, c := range weakerChecks(ReadFile(w.FolderPath)) {
+			if c.key == "ask_guard" {
+				askGuard = c.value
+			} else {
+				finishCheck = c.value
+			}
+		}
+		ok, err := database.CarryWorkflowChecks(w.ID, askGuard, finishCheck, stamp)
+		if err != nil {
+			return done, err
+		}
+		if ok {
+			done = append(done, w.ID)
+		}
+	}
+	return done, nil
 }
 
 // Resolve is workbench workbenchID's effective methodology with folder's

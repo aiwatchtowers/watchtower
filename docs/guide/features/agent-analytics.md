@@ -1,6 +1,6 @@
 # Agent analytics
 
-Agent analytics reads the history of the Claude Code sessions that ran in a workbench folder and totals their tokens, cost, tools and errors. It is for the person who wants to know what their agents cost and did. The workbench page's **Analytics** view shows it (see [Sessions](workbench/sessions.md#read-the-analytics-view)), and the `watchtower agents` commands print it.
+Agent analytics reads the history of the Claude Code sessions that ran in a workbench folder and totals their tokens, cost, tools and errors. It is for the person who wants to know what their agents cost and did. The workbench page's **Analytics** view shows it (see [Session report and analytics](workbench/session-report.md#read-the-analytics-view)), and the `watchtower agents` commands print it.
 
 ## Why use it
 
@@ -16,7 +16,7 @@ Cost is computed when a call is stored, from a built-in price table. A model the
 
 When the table changes, older rows are re-priced from their stored tokens. Claude Code's own cost figure is kept per session so you can compare.
 
-Once on, the background daemon keeps the numbers current: each cycle it reads only new lines, for up to 30 seconds.
+Once on, the background daemon keeps the numbers current: each cycle it reads only new lines, for up to 30 seconds. It stores them in small portions, so live sessions on the board keep their states while a long history loads. A very long session can show partly until the next cycle reads the rest.
 
 The history already on disk is loaded when you turn the feature on. Turning it off keeps what was stored. Deleting the workbench keeps it too, and a new workbench on the same folder picks it up again.
 

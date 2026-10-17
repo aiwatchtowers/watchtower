@@ -165,9 +165,9 @@ func TestADFDocument_ParagraphsAndText(t *testing.T) {
 	require.Len(t, content, 2)
 	assert.Equal(t, "paragraph", content[0]["type"])
 	assert.Equal(t, "line one\nline two", content[0]["content"].([]map[string]any)[0]["text"])
-	assert.Equal(t, "second para", DescriptionText(map[string]interface{}{
-		"type": "doc", "content": []interface{}{map[string]interface{}{"type": "paragraph",
-			"content": []interface{}{map[string]interface{}{"type": "text", "text": "second para"}}}},
+	assert.Equal(t, "second para", DescriptionText(map[string]any{
+		"type": "doc", "content": []any{map[string]any{"type": "paragraph",
+			"content": []any{map[string]any{"type": "text", "text": "second para"}}}},
 	}))
 }
 

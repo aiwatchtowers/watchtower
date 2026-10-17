@@ -61,8 +61,8 @@ func TestRun_LongOneLineFileIsLinear(t *testing.T) {
 		if _, err := fmt.Sscanf(last.Name, "é%d", &name); err != nil {
 			t.Fatalf("%s: symbol %+v", tc.rel, last)
 		}
-		prefix := string(tc.src[:bytes.Index(tc.src, []byte(fmt.Sprintf(tc.unit, name)))])
-		want := len([]rune(prefix)) + bytes.IndexRune([]byte(fmt.Sprintf(tc.unit, name)), 'é') + 1
+		prefix := string(tc.src[:bytes.Index(tc.src, fmt.Appendf(nil, tc.unit, name))])
+		want := len([]rune(prefix)) + bytes.IndexRune(fmt.Appendf(nil, tc.unit, name), 'é') + 1
 		if last.Line != 1 || last.Col != want {
 			t.Errorf("%s: %s at %d:%d, want 1:%d", tc.rel, last.Name, last.Line, last.Col, want)
 		}

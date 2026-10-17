@@ -7,14 +7,15 @@ package enum OwnerSource: String, Sendable {
     case google
     case jira
     case linear
+    case email
 }
 
 /// The one person this install belongs to — the Swift mirror of Go's
 /// `db.Owner` (internal/db/owner.go). `id` is the stable key owner-scoped rows
 /// (`user_profile`, day plans, …) are stored under; its shape depends on the
 /// rung that produced it: the namespaced Slack user id (`"1:U123"`),
-/// `"google:<lower-cased email>"`, or `"jira:<atlassian account id>"`, or `"linear:<linear user id>"`. The
-/// other fields are enriched from every connected source.
+/// `"google:<lower-cased email>"`, `"jira:<atlassian account id>"`, `"linear:<linear user id>"`, or
+/// `"email:<lower-cased mailbox address>"`. The other fields are enriched from every connected source.
 package struct Owner: Equatable, Sendable {
     package let id: String
     package let source: OwnerSource
@@ -58,7 +59,7 @@ package enum OwnerError: LocalizedError, Equatable {
 
     package var errorDescription: String? {
         switch self {
-        case .noOwner: "no owner identity: connect Slack, Google, Jira or Linear first"
+        case .noOwner: "no owner identity: connect Slack, Google, Jira, Linear or an email account first"
         }
     }
 }

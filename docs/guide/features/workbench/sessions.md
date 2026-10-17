@@ -10,7 +10,9 @@ With several sessions running, the terminals tell you nothing until you open eac
 
 A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs.
 
-Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](#updates-and-quitting).
+Copying from inside the terminal works as in your own terminal: when Claude Code, vim or tmux copies text, it lands on your clipboard. The terminal no longer answers clipboard-read requests hidden in program output, so a file or tool output shown there cannot pull in what you copied. Programs you run can still read the clipboard their own way (for example `pbpaste`), as in any terminal. Paste with ⌘V as usual.
+
+Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](updates-and-quitting.md).
 
 ### Session states
 
@@ -34,22 +36,6 @@ Two limits matter. Pressing Esc or Ctrl+C to interrupt the agent reports nothing
 
 When no helper has reported for 30 minutes, Watchtower asks Claude Code whether the session is still at work, then every 30 minutes. It shows **Stopped** once the answer is no, or after the check fails twice in a row.
 
-### Updates and quitting
-
-Sessions run in a small background helper, not inside the Watchtower window. An update leaves them running: the agent keeps working, and its helper agents and background jobs (a dev server, a build) keep going. When Watchtower comes back, each session shows its live terminal again.
-
-An update, log-out or restart never asks about sessions (only about a running recording or unsent ask answers). When you quit yourself with sessions running, Watchtower asks:
-
-- **Keep Sessions and Quit** leaves them running.
-- **Stop Sessions and Quit** stops them.
-- **Cancel** stays in the app.
-
-**Reset All Data** (Settings → System) always stops them. If the helper cannot be reached when Watchtower starts, sessions run in the window instead: each says "This session stops when Watchtower quits." under its terminal, and the quit alert counts it as "unprotected". If the helper stops later, the next session start restarts it; if that fails, the terminal shows **[Watchtower] the session host is not running**.
-
-Sessions do not survive a Mac restart or log-out; use **Resume** after one. While Watchtower is closed, sessions send no notices and your phone sees no updates. A session that exited meanwhile shows its last output and reads as exited when you return.
-
-Every Watchtower build on your Mac shares one helper. Two copies open on the same workspace compete for its sessions: the loser shows **Another Watchtower window took this session over.**, and restarting the session there starts a second agent. The helper quits a minute after its last session ends, and an update's new helper takes over then.
-
 ### Where the agent works
 
 A line under the caption shows the agent's place: **main folder · main**, or **⑂ name · branch** when it moved into a git worktree, or **worktree removed** when that worktree is gone. Until Watchtower knows where a session works, it shows the main folder.
@@ -59,12 +45,6 @@ A line under the caption shows the agent's place: **main folder · main**, or **
 A workbench automation can start an agent session to do part of its work, such as a review round. It appears in SESSIONS like any other, titled "⚙ <name> · run #N", and starts in the background so it does not take the page from you. You can watch it, type into it, stop it or resume it.
 
 The run waits until the session finishes. If you stop it or its process ends, the run carries on knowing the session stopped. If Watchtower was not open when the automation asked, the session starts the next time it is.
-
-### The session report
-
-Under the caption, Watchtower shows a progress line once it has read the report: for example "#314 · 14/15 · PR #147 open" for the target the session works on, its done tasks and its pull requests. The line refreshes every 15 seconds while the Workbench tab is on screen. If a refresh fails, the last line stays with "· stale" at the end.
-
-Pull request details need the GitHub CLI (`gh`). Without it, only whether a branch is merged is known.
 
 ## Using it
 
@@ -82,33 +62,18 @@ Pull request details need the GitHub CLI (`gh`). Without it, only whether a bran
 - The workbench name at the top of the panel is a switcher with **Find workbench**. ⌘[ goes back to the workbench list.
 - ⌥⌘S hides and shows the sessions panel.
 
-### Read the Session view
-
-The **Session** button in the page header shows the report of one Claude Code session next to its terminal:
-
-- **On you**: the session's open asks, each with **Open**.
-- **Now**: tasks in progress, in review or blocked.
-- **Pull requests**: each one's state and size, or "no PR yet" or "not checked".
-- **Done**: one line per phase.
-- **Agent's last word**: the summary the agent wrote when it finished. It becomes **Previous summary** once you send a new prompt.
-
-It refreshes every 30 seconds while on screen, and when the session's state changes. With nothing to show it says "Pick a session".
-
-### Read the Analytics view
-
-The **Analytics** button in the page header (or **Analytics** in a pane's title menu) shows where this folder's Claude Code sessions spent their time and money:
-
-- Pick **7 days**, **30 days** or **All**. The first time, press **Turn On** to load the history.
-- The hints say what would save the most. Each links to its session or board target.
-- Click a session to see its timeline: one lane for the main agent and one per subagent.
-
 ### Tidy up the list
 
 - A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers whether it is open. A session you are looking at never jumps.
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.
 - Hover a session that is finished, stopped, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session (working, agents working, ready to check, waiting, asking for a permission, or running with no state yet) needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
+- If you quit before the bar goes away, the delete still happens. When the database is busy this can hold the quit for a few seconds, with a small "Finishing session deletes…" window.
 - When you delete a workbench session the dialog first checks what it left behind and may offer **Delete and Clean Up**. See [Worktrees and cleanup](worktrees-and-cleanup.md).
+
+### Read a session's report and analytics
+
+The progress line under the caption, the **Session** view and the **Analytics** view have their own page: [Session report and analytics](session-report.md).
 
 ### Get notified
 
@@ -126,5 +91,6 @@ Session not reporting a state? See [A Workbench session or ask is stuck](../../t
 ## Related
 
 - [Asks](asks.md), [Board and targets](board-and-targets.md)
+- [Session report and analytics](session-report.md), [Updates and quitting](updates-and-quitting.md)
 
 For developers: [docs/features/workbench.md](../../../features/workbench.md)

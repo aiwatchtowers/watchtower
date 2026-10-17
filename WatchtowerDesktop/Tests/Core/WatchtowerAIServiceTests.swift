@@ -134,16 +134,6 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertFalse(args.contains("--tools"))
     }
 
-    /// The help chat runs `ai query --no-tools`, with no tool mode.
-    func testBuildArgsNoTools() {
-        let args = WatchtowerAIService.buildArgs(
-            sessionID: nil, dbPath: nil, model: "m",
-            provider: "claude", toolMode: nil, noTools: true
-        )
-        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--model", "m", "--provider", "claude",
-                              "--no-tools"])
-    }
-
     /// Without a folder (every other chat) the argv is what it was.
     func testBuildArgsWithoutReadFolderIsUnchanged() {
         let args = WatchtowerAIService.buildArgs(

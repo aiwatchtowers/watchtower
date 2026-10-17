@@ -166,7 +166,7 @@ func TestGetTargets_FilterByLevel(t *testing.T) {
 func TestGetTargets_Limit(t *testing.T) {
 	db := openTestDB(t)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, err := db.CreateTarget(makeTarget(fmt.Sprintf("T%d", i), "todo", "medium"))
 		require.NoError(t, err)
 	}

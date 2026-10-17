@@ -11,7 +11,7 @@
 A daily job runs at or after its hour (08:00 unless you changed it) and only when all of these hold:
 
 - The feature is on (**Settings → Features**: **Daily Briefing**, **Day Plan**).
-- Watchtower knows who you are: a connected Slack, Google, Jira or Linear account. Without one the tab says "Connect Slack, Google, Jira or Linear so Watchtower knows who you are".
+- Watchtower knows who you are: a connected Slack, Google, Jira, Linear or email account. Without one the tab says "Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".
 - The sync ran after the hour. A Mac that slept or was off at 08:00 produces it on the first cycle after waking.
 - It has not failed three times today. After three failures it waits until tomorrow.
 

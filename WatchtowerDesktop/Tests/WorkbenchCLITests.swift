@@ -93,6 +93,23 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(older.needsRepair)
     }
 
+    /// #517: a workbench missing the permission-wait hook is offered Repair;
+    /// an older CLI without the key has nothing to install.
+    func testMissingPermissionWaitNeedsRepair() throws {
+        let base = #""skill":"unchanged","hook":true,"stop_hook":true,"state_hooks":true,"mcp":true"#
+        let missing = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"permission_wait\":false}".utf8))
+        XCTAssertFalse(missing.permissionWait)
+        XCTAssertTrue(missing.repairHelp.contains("permission wait missing"), missing.repairHelp)
+        XCTAssertTrue(missing.needsRepair)
+        let present = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"permission_wait\":true}".utf8))
+        XCTAssertFalse(present.needsRepair)
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data("{\(base)}".utf8))
+        XCTAssertTrue(older.permissionWait)
+        XCTAssertFalse(older.needsRepair)
+    }
+
     /// Board #535: a folder set up before the cleanup permission is offered
     /// Repair (the Claude Code part); an older CLI without the key has
     /// nothing to install.
@@ -491,6 +508,34 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertTrue(current.agentFound(.codex))
         XCTAssertFalse(current.needsRepair)
         XCTAssertTrue(current.repairHelp.contains("Codex: skill on · hooks trusted"), current.repairHelp)
+    }
+
+    /// Board #476: `group_prompt` per agent; a CLI without the key (or
+    /// without a codex part) ships a skill that knows the group prompt.
+    func testSkillKnowsGroupPromptPerAgent() throws {
+        let older = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertTrue(older.skillKnowsGroupPrompt(.claude))
+        XCTAssertTrue(older.skillKnowsGroupPrompt(.codex))
+        XCTAssertTrue(try status(nil).skillKnowsGroupPrompt(.codex))
+
+        let json = #"{"skill":"drifted","hook":true,"mcp":true,"group_prompt":false,"codex":"#
+            + #"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false,"group_prompt":true}}"#
+        let mixed = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(json.utf8))
+        XCTAssertFalse(mixed.skillKnowsGroupPrompt(.claude), "an owner's copy without the group rules")
+        XCTAssertTrue(mixed.skillKnowsGroupPrompt(.codex))
+        XCTAssertFalse(mixed.needsRepair, "not knowing groups is no repair")
+        XCTAssertEqual(mixed.groupRulesNote,
+                       "The Claude Code skill here has no group rules, so Work on It starts a group as a single target")
+        XCTAssertTrue(mixed.repairHelp.hasSuffix("\n" + (mixed.groupRulesNote ?? "")), mixed.repairHelp)
+        XCTAssertNil(older.groupRulesNote)
+
+        let codexLacks = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false,"group_prompt":false}"#)
+        XCTAssertEqual(codexLacks.groupRulesNote,
+                       "The Codex skill here has no group rules, so Work on It starts a group as a single target")
+        // No skill at all: nothing to name (Repair covers it).
+        let none = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            #"{"skill":"missing","hook":true,"mcp":true,"group_prompt":false}"#.utf8))
+        XCTAssertNil(none.groupRulesNote)
     }
 
     func testNeedsRepairWhenCodexUntrustedOrSkillMissing() throws {

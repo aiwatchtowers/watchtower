@@ -249,7 +249,7 @@ func (fd *FieldDiscovery) MapFieldsForBoard(ctx context.Context, board db.JiraBo
 	// 3. Sample issues from the board's project
 	type issueResponse struct {
 		Issues []struct {
-			Fields map[string]interface{} `json:"fields"`
+			Fields map[string]any `json:"fields"`
 		} `json:"issues"`
 	}
 
@@ -276,12 +276,12 @@ func (fd *FieldDiscovery) MapFieldsForBoard(ctx context.Context, board db.JiraBo
 
 	// 4. Analyze which fields have non-null values and collect sample values
 	type fieldSample struct {
-		ID      string        `json:"id"`
-		Name    string        `json:"name"`
-		Type    string        `json:"type"`
-		Hint    string        `json:"hint"`
-		NonNull int           `json:"non_null_count"`
-		Samples []interface{} `json:"sample_values"`
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+		Hint    string `json:"hint"`
+		NonNull int    `json:"non_null_count"`
+		Samples []any  `json:"sample_values"`
 	}
 
 	fieldStats := make(map[string]*fieldSample)
@@ -357,7 +357,7 @@ Available roles:
 Only include fields that are actually valuable for understanding this board's workflow and team dynamics.
 Consider the sample values to determine the correct role.`
 
-	dataJSON, _ := json.Marshal(map[string]interface{}{
+	dataJSON, _ := json.Marshal(map[string]any{
 		"board":                board.Name,
 		"project":              board.ProjectKey,
 		"board_type":           board.BoardType,

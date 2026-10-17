@@ -768,6 +768,48 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(try HubSyncState(path: path).linkedDevice("phone-a")).typingRequested)
     }
 
+    /// A sidecar from before #517 (no `permissions_allowed`, no
+    /// `permissions_requested`) gains both in place, off: a linked phone
+    /// keeps its other grants and its typing request.
+    func testASidecarWithoutThePermissionColumnsGainsThem() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("RelayLedger-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("hubstate.db").path
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE devices (
+                    device_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    user_record_name TEXT NOT NULL,
+                    linked_at REAL NOT NULL,
+                    typing_allowed INTEGER NOT NULL DEFAULT 0,
+                    start_sessions_allowed INTEGER NOT NULL DEFAULT 1,
+                    decided_at REAL,
+                    typing_requested INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO devices (device_id, name, scope, user_record_name, linked_at, typing_allowed, typing_requested)
+                VALUES ('phone-a', 'iPhone', 'private', '_owner-acme', 1, 1, 1);
+                """)
+        }
+
+        let reopened = try HubSyncState(path: path)
+
+        var device = try XCTUnwrap(try reopened.linkedDevice("phone-a"))
+        XCTAssertTrue(device.typingAllowed)
+        XCTAssertTrue(device.typingRequested)
+        XCTAssertFalse(device.permissionsAllowed)
+        XCTAssertFalse(device.permissionsRequested)
+        XCTAssertTrue(try reopened.setPermissionsRequested(true, deviceID: "phone-a"))
+        XCTAssertTrue(try reopened.setDeviceGrant(.permissions, true, deviceID: "phone-a", at: Date()))
+        device = try XCTUnwrap(try reopened.linkedDevice("phone-a"))
+        XCTAssertTrue(device.permissionsRequested)
+        XCTAssertTrue(device.permissionsAllowed)
+        // A second open over the migrated file is a no-op.
+        XCTAssertTrue(try XCTUnwrap(try HubSyncState(path: path).linkedDevice("phone-a")).permissionsAllowed)
+    }
+
     /// Two instances opening an old file at once (a relaunch overlap) both
     /// open: the upgrade runs in an IMMEDIATE transaction.
     func testConcurrentOpensOfAnOldSidecarAllSucceed() throws {

@@ -147,7 +147,8 @@ func drainCeilings(blockChars int) string {
 		maxTieDrainUnits, tieDrainCharCeiling, blockChars)
 }
 
-// emailThread is one Gmail thread grouped for the ideas email pre-digest — a
+// emailThread is one email thread grouped for the ideas email pre-digest (an
+// IMAP message is a thread of its own, IMAP stores no thread id) — a
 // local, deliberately independent copy of the shape
 // internal/memory/gmail_extract.go's groupGmailThreads builds: the ideas
 // registry mines topics, memory mines episodes, and the two packages must
@@ -223,18 +224,149 @@ func senderLabel(name, email string) string {
 // emailExcerptBytes caps each message's rendered excerpt.
 const emailExcerptBytes = 240
 
-// emailThreadTag is the one place the Gmail stage-1 ref format is spelled
-// out: renderEmailBlock stamps it into the block and the tag set, and
-// renderedEmailWindow reads it back to decide which messages this run may
-// claim. Both must agree, or the floor would advance over material the model
-// was never shown.
-func emailThreadTag(accountID int64, threadID string) string {
-	return fmt.Sprintf("gmail:%d:%s", accountID, threadID)
+// mailbox is one source the email pre-digest mines: a Gmail-enabled Google
+// account (source "gmail", a google_accounts row) or a connected IMAP/Outlook
+// mailbox (source "imap", an email_accounts row). source is both the
+// stream_digests.source value and the ref-tag prefix. Both kinds run the same
+// pass — same rendering, floor rules and backfill — and differ only in where
+// their messages and floor live (the Pipeline mail* methods below).
+type mailbox struct {
+	source string
+	id     int64
+}
+
+func gmailBox(id int64) mailbox { return mailbox{source: "gmail", id: id} }
+func imapBox(id int64) mailbox  { return mailbox{source: "imap", id: id} }
+
+// mailScope is the stream_digests.scope a mailbox's row carries: "" for Gmail
+// (as before), the mailbox's address — or its label when the login is not an
+// address — for IMAP/Outlook, so two mailboxes' "Email" digests read apart.
+func (p *Pipeline) mailScope(mb mailbox) (string, error) {
+	if mb.source != "imap" {
+		return "", nil
+	}
+	a, err := p.db.GetEmailAccount(mb.id)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", mb.what(), err)
+	}
+	if strings.Contains(a.EmailAddress, "@") {
+		return a.EmailAddress, nil
+	}
+	return a.Label, nil
+}
+
+// refPrefix is the start of every ref tag this mailbox's lines carry.
+func (mb mailbox) refPrefix() string { return mb.source + ":" }
+
+// what labels the mailbox in log lines and errors.
+func (mb mailbox) what() string {
+	if mb.source == "imap" {
+		return fmt.Sprintf("imap mailbox %d", mb.id)
+	}
+	return fmt.Sprintf("email account %d", mb.id)
+}
+
+// mailboxes lists every mailbox the email pre-digest mines: each Gmail-enabled
+// Google account, then each connected IMAP/Outlook mailbox, oldest first. An
+// IMAP/Outlook mailbox whose address is already mined — as a Gmail account or
+// an earlier mailbox (the same Gmail inbox connected over IMAP too) — is
+// skipped and logged, so the same mail is never paid for twice.
+func (p *Pipeline) mailboxes() ([]mailbox, error) {
+	google, err := p.db.ListGoogleAccounts()
+	if err != nil {
+		return nil, fmt.Errorf("listing google accounts: %w", err)
+	}
+	imap, err := p.db.ListEmailAccounts()
+	if err != nil {
+		return nil, fmt.Errorf("listing email accounts: %w", err)
+	}
+	var out []mailbox
+	seen := map[string]bool{}
+	for _, a := range google {
+		if a.GmailEnabled {
+			out = append(out, gmailBox(a.ID))
+			seen[mailAddress(a.Email)] = true
+		}
+	}
+	for _, a := range imap {
+		addr := mailAddress(a.EmailAddress)
+		if addr != "" && seen[addr] {
+			p.logf("ideas: imap mailbox %d skipped: its address is already mined as another mailbox", a.ID)
+			continue
+		}
+		seen[addr] = addr != ""
+		out = append(out, imapBox(a.ID))
+	}
+	return out, nil
+}
+
+// mailAddress normalises a mailbox address for the duplicate check.
+func mailAddress(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+// mines reports whether mb is one of the mailboxes the email pre-digest mines
+// (see mailboxes): a duplicate-address mailbox is not.
+func (p *Pipeline) mines(mb mailbox) (bool, error) {
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return false, err
+	}
+	for _, b := range boxes {
+		if b == mb {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// mailFloor reads the mailbox's stored ideas floor.
+func (p *Pipeline) mailFloor(mb mailbox) (float64, error) {
+	if mb.source == "imap" {
+		return p.db.IdeasImapFloor(mb.id)
+	}
+	return p.db.IdeasEmailFloor(mb.id)
+}
+
+// setMailFloor writes the mailbox's stored ideas floor.
+func (p *Pipeline) setMailFloor(mb mailbox, ts float64) error {
+	if mb.source == "imap" {
+		return p.db.SetIdeasImapFloor(mb.id, ts)
+	}
+	return p.db.SetIdeasEmailFloor(mb.id, ts)
+}
+
+// mailNewestTS returns the time of the mailbox's newest synced message (unix
+// seconds, 0 = none yet): Gmail's sync watermark, or the newest stored IMAP
+// message's date (the IMAP sync watermark is a UID, not a time).
+func (p *Pipeline) mailNewestTS(mb mailbox) (float64, error) {
+	if mb.source == "imap" {
+		return p.db.ImapNewestMessageTS(mb.id)
+	}
+	return p.db.GetGmailAccountWatermark(mb.id)
+}
+
+// listMail loads the mailbox's messages above floor (bounded by beforeTS when
+// non-zero), oldest first. An IMAP message is its own thread (IMAP stores no
+// thread id).
+func (p *Pipeline) listMail(mb mailbox, floor, beforeTS float64, limit int) ([]db.GmailExtractMessage, error) {
+	if mb.source == "imap" {
+		return p.db.ListImapMessagesForExtract(mb.id, floor, beforeTS, limit)
+	}
+	return p.db.ListGmailThreadsForExtract(mb.id, floor, beforeTS, limit)
+}
+
+// emailThreadTag is the one place the email stage-1 ref format is spelled
+// out — "gmail:<accountID>:<threadID>", or "imap:<accountID>:<uidvalidity>-<uid>"
+// for an IMAP message: renderEmailBlock stamps it into the block and the tag
+// set, and renderedEmailWindow reads it back to decide which messages this run
+// may claim. Both must agree, or the floor would advance over material the
+// model was never shown.
+func emailThreadTag(mb mailbox, threadID string) string {
+	return fmt.Sprintf("%s:%d:%s", mb.source, mb.id, threadID)
 }
 
 // renderEmailBlock renders one numbered line per thread — "[n] <subject>
-// (gmail:<accountID>:<threadID>): <participants> — <excerpts>" — and returns
-// the set of "gmail:<accountID>:<threadID>" tags a candidate's ref must copy
+// (<tag>): <participants> — <excerpts>" — and returns the set of
+// emailThreadTag tags a candidate's ref must copy
 // exactly to survive validateRefs. Threads are appended whole until maxChars
 // is spent; a thread that doesn't fit is left out of BOTH the block and the
 // tag set, so a candidate can never validate against material the model was
@@ -251,14 +383,14 @@ func emailThreadTag(accountID int64, threadID string) string {
 // thread whose OLDEST message carries that timestamp is rendered regardless of
 // the budget, up to maxTieDrainUnits of them, so the floor can pass that whole
 // timestamp. See renderEmailWindow.
-func renderEmailBlock(accountID int64, threads []emailThread, maxChars int, drainThrough float64) (string, map[string]bool) {
+func renderEmailBlock(mb mailbox, threads []emailThread, maxChars int, drainThrough float64) (string, map[string]bool) {
 	var b strings.Builder
 	tags := make(map[string]bool, len(threads))
 	budget := maxChars
 	drained := 0
 	n := 0
 	for _, th := range threads {
-		tag := emailThreadTag(accountID, th.threadID)
+		tag := emailThreadTag(mb, th.threadID)
 		n++
 		line := renderEmailThread(n, tag, th)
 		tie := drainThrough != 0 && th.messages[0].TSUnix == drainThrough &&
@@ -302,10 +434,10 @@ func renderEmailThread(n int, tag string, th emailThread) string {
 // the ones that survived the maxMessagesPerThread cap (groupThreads has
 // already trimmed each thread's slice). Message-level, not thread-level: a
 // capped thread's tail was never shown, so the floor may not pass it either.
-func renderedEmailMessages(accountID int64, threads []emailThread, renderedTags map[string]bool) map[string]bool {
+func renderedEmailMessages(mb mailbox, threads []emailThread, renderedTags map[string]bool) map[string]bool {
 	ids := make(map[string]bool, len(threads))
 	for _, th := range threads {
-		if !renderedTags[emailThreadTag(accountID, th.threadID)] {
+		if !renderedTags[emailThreadTag(mb, th.threadID)] {
 			continue
 		}
 		for _, m := range th.messages {
@@ -319,10 +451,10 @@ func renderedEmailMessages(accountID int64, threads []emailThread, renderedTags 
 // ceiling left out — the material the floor is about to pass over, reported in
 // the fault log so the loss is a number the owner can see rather than an
 // inference.
-func countUnrenderedEmailTies(accountID int64, threads []emailThread, renderedTags map[string]bool, boundaryTS float64) int {
+func countUnrenderedEmailTies(mb mailbox, threads []emailThread, renderedTags map[string]bool, boundaryTS float64) int {
 	n := 0
 	for _, th := range threads {
-		if th.messages[0].TSUnix == boundaryTS && !renderedTags[emailThreadTag(accountID, th.threadID)] {
+		if th.messages[0].TSUnix == boundaryTS && !renderedTags[emailThreadTag(mb, th.threadID)] {
 			n++
 		}
 	}
@@ -388,9 +520,18 @@ func renderedEmailWindow(msgs []db.GmailExtractMessage, renderedIDs map[string]b
 // returns an error, so the caller writes no row and leaves its floor untouched
 // (IDEA-01). Shared by the Gmail and Jira passes, which differ only in their
 // prompt and their tag vocabulary. what labels the account in the log.
-func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, what, block string, renderedTags map[string]bool) ([]streamTopic, error) {
+//
+// refPrefix ("" = none) is a ref-tag prefix the pass needs the model to copy.
+// A stored template that never mentions it — a customized or pre-v3
+// ideas.digest_email, written when only "gmail:" tags existed — gets a short
+// ref instruction appended, so an IMAP mailbox's candidates are not all
+// rejected for refs the template told the model to write in another shape.
+func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, what, block, refPrefix string, renderedTags map[string]bool) ([]streamTopic, error) {
 	tmpl, _ := p.getPrompt(promptID)
 	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
+	if refPrefix != "" && !strings.Contains(tmpl, refPrefix) {
+		system += fmt.Sprintf("\n\nRef tags in this input start with %q: copy the tag in parentheses on the numbered line EXACTLY as the ref.", refPrefix)
+	}
 
 	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, promptID), system, block, "")
 	p.accumulateUsage(usage)
@@ -450,9 +591,10 @@ func (p *Pipeline) insertStreamTopics(row db.StreamDigest, topics []streamTopic,
 	return nil
 }
 
-// runEmailDigests is the ideas registry's Gmail pre-digest pass: one Generate
-// call per connected, Gmail-enabled Google account, over the thread window
-// newer than that account's google_accounts.ideas_email_floor. A nil
+// runEmailDigests is the ideas registry's email pre-digest pass: one Generate
+// call per mailbox (each Gmail-enabled Google account and each connected
+// IMAP/Outlook mailbox), over the thread window newer than that mailbox's
+// ideas floor (google_accounts / email_accounts .ideas_email_floor). A nil
 // generator is a clean no-op (the inbox pipeline.go:253 pattern). Per-account
 // errors are logged and the loop continues to the next account; the first
 // error encountered is returned once every account has had a turn. bound is
@@ -463,17 +605,14 @@ func (p *Pipeline) runEmailDigests(ctx context.Context, bound time.Time) error {
 	if p.generator == nil {
 		return nil
 	}
-	accounts, err := p.db.ListGoogleAccounts()
+	boxes, err := p.mailboxes()
 	if err != nil {
-		return fmt.Errorf("ideas: listing google accounts: %w", err)
+		return fmt.Errorf("ideas: %w", err)
 	}
 	var firstErr error
-	for _, acct := range accounts {
-		if !acct.GmailEnabled {
-			continue
-		}
-		if err := p.runEmailDigestAccount(ctx, acct, bound); err != nil {
-			p.logf("ideas: email digest account %d: %v", acct.ID, err)
+	for _, mb := range boxes {
+		if err := p.runEmailDigestAccount(ctx, mb, bound); err != nil {
+			p.logf("ideas: email digest %s: %v", mb.what(), err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -487,14 +626,14 @@ func (p *Pipeline) runEmailDigests(ctx context.Context, bound time.Time) error {
 // single timestamp. Both escapes are logged: they are the only two ways a
 // stage-1 prompt exceeds ideas.max_prompt_chars, and an operator who set the
 // cap too low should be able to see why.
-func (p *Pipeline) renderEmailWindow(accountID int64, msgs []db.GmailExtractMessage, budget int) (string, map[string]bool, emailWindow) {
+func (p *Pipeline) renderEmailWindow(mb mailbox, msgs []db.GmailExtractMessage, budget int) (string, map[string]bool, emailWindow) {
 	threads := groupThreads(msgs)
-	block, tags := renderEmailBlock(accountID, threads, budget, 0)
+	block, tags := renderEmailBlock(mb, threads, budget, 0)
 	if len(block) > budget {
-		p.logf("ideas: email account %d: thread %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
-			accountID, emailThreadTag(accountID, threads[0].threadID), len(block), budget)
+		p.logf("ideas: %s: thread %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
+			mb.what(), emailThreadTag(mb, threads[0].threadID), len(block), budget)
 	}
-	win := renderedEmailWindow(msgs, renderedEmailMessages(accountID, threads, tags))
+	win := renderedEmailWindow(msgs, renderedEmailMessages(mb, threads, tags))
 	if win.ok {
 		return block, tags, win
 	}
@@ -503,11 +642,11 @@ func (p *Pipeline) renderEmailWindow(accountID int64, msgs []db.GmailExtractMess
 	// second-granular, so several threads sharing a second is ordinary. No
 	// floor below that second is claimable, so render the whole group rather
 	// than stall — the loader already drains its own LIMIT cut this way.
-	block, tags = renderEmailBlock(accountID, threads, budget, win.boundaryTS)
-	p.logf("ideas: email account %d: the %d-char ideas.max_prompt_chars cap cut inside second %.0f — rendered that whole group (%d chars) so the floor can pass it",
-		accountID, budget, win.boundaryTS, len(block))
+	block, tags = renderEmailBlock(mb, threads, budget, win.boundaryTS)
+	p.logf("ideas: %s: the %d-char ideas.max_prompt_chars cap cut inside second %.0f — rendered that whole group (%d chars) so the floor can pass it",
+		mb.what(), budget, win.boundaryTS, len(block))
 
-	drained := renderedEmailWindow(msgs, renderedEmailMessages(accountID, threads, tags))
+	drained := renderedEmailWindow(msgs, renderedEmailMessages(mb, threads, tags))
 	if drained.ok {
 		return block, tags, drained
 	}
@@ -515,29 +654,30 @@ func (p *Pipeline) renderEmailWindow(accountID int64, msgs []db.GmailExtractMess
 	// anyway — the alternative is a pass that can never move — so this is the
 	// one branch where material is genuinely lost, and it is a fault, not a
 	// statistic: the ceiling is sized so ordinary traffic cannot reach it.
-	p.logf("ideas: ERROR: gmail account %d: %d thread(s) sharing second %.0f were NOT rendered — the boundary drain stopped at %s; the floor passes that second, so they will not be mined",
-		accountID, countUnrenderedEmailTies(accountID, threads, tags, win.boundaryTS), win.boundaryTS,
+	p.logf("ideas: ERROR: %s account %d: %d thread(s) sharing second %.0f were NOT rendered — the boundary drain stopped at %s; the floor passes that second, so they will not be mined",
+		mb.source, mb.id, countUnrenderedEmailTies(mb, threads, tags, win.boundaryTS), win.boundaryTS,
 		drainCeilings(len(block)))
 	return block, tags, emailWindow{minTS: msgs[0].TSUnix, maxTS: win.boundaryTS, ok: true}
 }
 
-// initEmailFloor stamps a never-initialized account's ideas floor at its
-// current Gmail sync watermark and mines nothing — no backfill, the memory
-// jira_ingest.go:80 precedent. gmail_last_internal_date IS the newest synced
-// message's internal_date for this account, so no extra query is needed. No
-// synced mail yet leaves the floor at 0 for the next run to initialize.
-func (p *Pipeline) initEmailFloor(acct db.GoogleAccount) error {
-	maxTS, err := p.db.GetGmailAccountWatermark(acct.ID)
+// initEmailFloor stamps a never-initialized mailbox's ideas floor at its
+// newest synced message's time and mines nothing — no backfill, the memory
+// jira_ingest.go:80 precedent. For Gmail that is gmail_last_internal_date (the
+// newest synced message's internal_date), for IMAP the newest stored
+// message's date. No synced mail yet leaves the floor at 0 for the next run
+// to initialize.
+func (p *Pipeline) initEmailFloor(mb mailbox) error {
+	maxTS, err := p.mailNewestTS(mb)
 	if err != nil {
-		return fmt.Errorf("getting gmail sync watermark: %w", err)
+		return fmt.Errorf("getting newest synced mail time: %w", err)
 	}
 	if maxTS == 0 {
 		return nil
 	}
-	if err := p.db.SetIdeasEmailFloor(acct.ID, maxTS); err != nil {
+	if err := p.setMailFloor(mb, maxTS); err != nil {
 		return fmt.Errorf("initializing ideas email floor: %w", err)
 	}
-	p.logf("ideas: email account %d floor initialized at %v, no backfill", acct.ID, maxTS)
+	p.logf("ideas: %s floor initialized at %v, no backfill", mb.what(), maxTS)
 	return nil
 }
 
@@ -547,60 +687,77 @@ func (p *Pipeline) initEmailFloor(acct db.GoogleAccount) error {
 // only advance over threads the model actually saw (IDEA-01), which is why a
 // thread too big for the whole prompt budget is rendered anyway rather than
 // leaving the pass with nothing to claim and no way forward.
-func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAccount, bound time.Time) error {
-	floor, err := p.db.IdeasEmailFloor(acct.ID)
+func (p *Pipeline) runEmailDigestAccount(ctx context.Context, mb mailbox, bound time.Time) error {
+	floor, err := p.mailFloor(mb)
 	if err != nil {
 		return fmt.Errorf("getting ideas email floor: %w", err)
 	}
 	if floor == 0 {
-		return p.initEmailFloor(acct)
+		return p.initEmailFloor(mb)
 	}
+	reached, err := p.emailDigestPass(ctx, mb, floor, bound)
+	if err != nil || reached == floor {
+		return err
+	}
+	if err := p.setMailFloor(mb, reached); err != nil {
+		return fmt.Errorf("advancing ideas email floor: %w", err)
+	}
+	return nil
+}
 
+// emailDigestPass mines one window of the account's mail above floor
+// (bounded by bound when non-zero) and returns the floor the pass reached —
+// floor itself when there was nothing to mine. It reads and writes no
+// stored floor: runEmailDigestAccount persists the result, and the history
+// backfill's drain keeps its own lowered floor in memory, so a process killed
+// mid-drain never leaves the live floor weeks back.
+func (p *Pipeline) emailDigestPass(ctx context.Context, mb mailbox, floor float64, bound time.Time) (float64, error) {
 	var beforeTS float64
 	if !bound.IsZero() {
 		beforeTS = float64(bound.Unix())
 	}
-	msgs, err := p.db.ListGmailThreadsForExtract(acct.ID, floor, beforeTS, 500)
+	msgs, err := p.listMail(mb, floor, beforeTS, 500)
 	if err != nil {
-		return fmt.Errorf("listing gmail threads: %w", err)
+		return floor, fmt.Errorf("listing %s threads: %w", mb.source, err)
 	}
 	if len(msgs) == 0 {
-		return nil
+		return floor, nil
 	}
 
 	budget := p.maxPromptChars()
-	block, tags, win := p.renderEmailWindow(acct.ID, msgs, budget)
+	block, tags, win := p.renderEmailWindow(mb, msgs, budget)
 	if !win.ok {
 		// Unreachable: the drain leaves every message at the boundary
 		// timestamp rendered, so a non-empty msgs always yields a window. Fail
 		// loudly rather than claim a floor from a zero value if that contract
 		// is ever broken.
-		return fmt.Errorf("no thread rendered from %d gmail messages", len(msgs))
+		return floor, fmt.Errorf("no thread rendered from %d %s messages", len(msgs), mb.source)
 	}
 	minTS, maxTS := win.minTS, win.maxTS
 
-	what := fmt.Sprintf("email account %d", acct.ID)
-	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", what, block, tags)
+	what := mb.what()
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", what, block, mb.refPrefix(), tags)
 	if err != nil {
-		return err
+		return floor, err
 	}
 
+	scope, err := p.mailScope(mb)
+	if err != nil {
+		return floor, err
+	}
 	if err := p.insertStreamTopics(db.StreamDigest{
-		Source:     "gmail",
-		AccountID:  acct.ID,
-		Scope:      "",
+		Source:     mb.source,
+		AccountID:  mb.id,
+		Scope:      scope,
 		PeriodFrom: time.Unix(int64(minTS), 0).UTC().Format(time.RFC3339),
 		PeriodTo:   time.Unix(int64(maxTS), 0).UTC().Format(time.RFC3339),
 	}, topics, what); err != nil {
-		return err
+		return floor, err
 	}
 
 	// maxTS is the newest RENDERED message, never the newest loaded one: a
 	// thread the budget dropped stays above the floor and is mined next run.
-	if err := p.db.SetIdeasEmailFloor(acct.ID, maxTS); err != nil {
-		return fmt.Errorf("advancing ideas email floor: %w", err)
-	}
-	return nil
+	return maxTS, nil
 }
 
 // oneLine collapses a body of text to a single line for a compact excerpt.

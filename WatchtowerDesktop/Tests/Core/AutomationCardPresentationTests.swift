@@ -257,4 +257,9 @@ final class AutomationCardPresentationTests: XCTestCase {
                                                       permission: "jira:read@OPS")),
                        "⊘ list_jira_issues — needs jira:read@OPS")
     }
+
+    func testShellWarningOnlyWithShellEntries() {
+        XCTAssertNil(ACP.shellWarning(permissions: ["llm:light", "gmail:read@*"]))
+        XCTAssertNotNil(ACP.shellWarning(permissions: ["llm:light", #"shell:"make test""#]))
+    }
 }

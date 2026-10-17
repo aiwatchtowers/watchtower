@@ -26,22 +26,6 @@ package final class DatabaseObserver: Sendable {
         .publisher(in: dbPool, scheduling: .async(onQueue: .main))
     }
 
-    package func observeMessages(channelID: String, limit: Int = 50) -> some Publisher<[Message], any Error> {
-        ValueObservation.tracking { db in
-            try Message.fetchAll(
-                db,
-                sql: """
-                    SELECT * FROM messages
-                    WHERE channel_id = ?
-                    ORDER BY ts_unix DESC
-                    LIMIT ?
-                    """,
-                arguments: [channelID, limit]
-            )
-        }
-        .publisher(in: dbPool, scheduling: .async(onQueue: .main))
-    }
-
     package func observeDigests(type: String? = nil, limit: Int = 50) -> some Publisher<[Digest], any Error> {
         ValueObservation.tracking { db in
             if let type {

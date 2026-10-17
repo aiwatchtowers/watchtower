@@ -2,6 +2,7 @@ package agentlog
 
 import (
 	"encoding/json"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,9 +16,7 @@ func toolUse(id, name string, input map[string]any) map[string]any {
 func toolResultLine(t *testing.T, sid, uuid, id, content string, isErr bool, extra map[string]any) string {
 	m := map[string]any{"type": "user", "sessionId": sid, "uuid": uuid, "timestamp": "2026-10-01T10:00:03.000Z",
 		"message": map[string]any{"role": "user", "content": []map[string]any{{"type": "tool_result", "tool_use_id": id, "content": content, "is_error": isErr}}}}
-	for k, v := range extra {
-		m[k] = v
-	}
+	maps.Copy(m, extra)
 	return line(t, m)
 }
 
@@ -195,4 +194,29 @@ func TestToolTarget_WorkbenchTargetID(t *testing.T) {
 	assert.Equal(t, "", tt("mcp__watchtower-workbench__ask_owner", `{"question":"SENTINEL"}`))
 	assert.Equal(t, "", tt("mcp__watchtower-workbench__list_targets", `{"target_id":3}`))
 	assert.Equal(t, "", tt("mcp__other__update_target", `{"target_id":3}`))
+}
+
+// #571: the listings before an incremental read's offset are loaded only
+// when a slash command needs them, never on a plain scan.
+func TestParseClaude_PriorSkillsLoadedOnlyForUnknownSlashCommand(t *testing.T) {
+	loads := 0
+	prior := func() ([]string, error) { loads++; return []string{"review"}, nil }
+	plain := line(t, assistant("s1", "u1", "m1", "r1", 5))
+	parse(t, plain, ParseOptions{PriorSkills: prior})
+	assert.Zero(t, loads)
+
+	slash := func(uuid, name string) string {
+		return line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": uuid,
+			"message": map[string]any{"role": "user", "content": "<command-name>/" + name + "</command-name>"}})
+	}
+	r := parse(t, slash("o1", "review")+slash("o2", "nope")+slash("o3", "nope"), ParseOptions{PriorSkills: prior})
+	assert.Equal(t, 1, loads)
+	var skills []string
+	for _, e := range r.Events {
+		if e.Kind == "skill" {
+			skills = append(skills, e.Name)
+		}
+	}
+	assert.Equal(t, []string{"review"}, skills)
+	assert.Equal(t, []string{"review"}, r.Skills)
 }

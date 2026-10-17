@@ -25,7 +25,7 @@ func (db *DB) SearchMessages(query string, opts SearchOpts) ([]Message, error) {
 
 	sqlQuery := `
 		SELECT m.channel_id, m.ts, m.user_id, m.text, m.thread_ts, m.reply_count,
-			m.is_edited, m.is_deleted, m.subtype, m.permalink, m.ts_unix, m.raw_json
+			m.is_edited, m.is_deleted, m.subtype, m.permalink, m.ts_unix
 		FROM messages_fts fts
 		JOIN messages m ON m.channel_id = fts.channel_id AND m.ts = fts.ts`
 

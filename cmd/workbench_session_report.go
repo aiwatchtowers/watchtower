@@ -207,7 +207,7 @@ func printReportLastWord(w io.Writer, s sessionreport.Session) {
 		fmt.Fprintln(w, "  (the agent has not finished)")
 		return
 	}
-	for _, line := range strings.Split(s.FinishSummary, "\n") {
+	for line := range strings.SplitSeq(s.FinishSummary, "\n") {
 		fmt.Fprintln(w, "  "+line)
 	}
 }

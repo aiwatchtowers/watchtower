@@ -215,10 +215,14 @@ extension AutomationsCLI {
         package let permissions: [String]
         package let outputs: [String]
         package let widening: [String]
+        /// Whether the validated text feeds its sources to `llm()`
+        /// (`feeds_sources_to_llm`, #559); false from an older CLI.
+        package let feedsSourcesToLLM: Bool
 
         enum CodingKeys: String, CodingKey {
             case ok, errors, slug, name, scope, permissions, outputs, widening
             case approvalHash = "approval_hash", contentHash = "content_hash"
+            case feedsSourcesToLLM = "feeds_sources_to_llm"
         }
 
         package init(from decoder: Decoder) throws {
@@ -233,6 +237,7 @@ extension AutomationsCLI {
             permissions = try c.decodeIfPresent([String].self, forKey: .permissions) ?? []
             outputs = try c.decodeIfPresent([String].self, forKey: .outputs) ?? []
             widening = try c.decodeIfPresent([String].self, forKey: .widening) ?? []
+            feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
         }
     }
 
@@ -252,9 +257,19 @@ extension AutomationsCLI {
     package struct InstallResult: Decodable, Equatable, Sendable {
         package let automationID: Int64
         package let path: String
+        /// Each param's values as installed, given or chosen by the CLI
+        /// (#582); empty from an older CLI.
+        package let params: [String: [String]]
 
         enum CodingKeys: String, CodingKey {
-            case automationID = "automation_id", path
+            case automationID = "automation_id", path, params
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            automationID = try c.decode(Int64.self, forKey: .automationID)
+            path = try c.decode(String.self, forKey: .path)
+            params = try c.decodeIfPresent([String: [String]].self, forKey: .params) ?? [:]
         }
     }
 }
@@ -274,18 +289,28 @@ package struct AutomationChange: Decodable, Equatable, Sendable {
 }
 
 /// One write tool the recipe's manifest admits (`show --json` `auto_tools`):
-/// the edit form's Auto toggle, or an "Always asks" row when `alwaysAsks`.
+/// the edit form's Auto toggle, or an "Always asks" row when `alwaysAsks`;
+/// `external` marks a write outside Watchtower (#559, false from an older CLI).
 package struct AutomationAutoTool: Decodable, Equatable, Sendable {
     package let tool: String
     package let alwaysAsks: Bool
+    package let external: Bool
 
-    package init(tool: String, alwaysAsks: Bool) {
+    package init(tool: String, alwaysAsks: Bool, external: Bool = false) {
         self.tool = tool
         self.alwaysAsks = alwaysAsks
+        self.external = external
     }
 
     enum CodingKeys: String, CodingKey {
-        case tool, alwaysAsks = "always_asks"
+        case tool, external, alwaysAsks = "always_asks"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tool = try c.decode(String.self, forKey: .tool)
+        alwaysAsks = try c.decode(Bool.self, forKey: .alwaysAsks)
+        external = try c.decodeIfPresent(Bool.self, forKey: .external) ?? false
     }
 }
 
@@ -323,6 +348,13 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
     package let changedBy: String
     package let changedAt: Date?
     package let autoTools: [AutomationAutoTool]
+    /// External tools with an auto grant (active or paused) of a recipe that
+    /// feeds its sources to `llm()` (`llm_auto_writes`, #559): the
+    /// confirmation sheet warns about them. `[]` from an older CLI.
+    package let llmAutoWrites: [String]
+    /// Whether the indexed recipe feeds its sources to `llm()`
+    /// (`feeds_sources_to_llm`, #559): the edit form's Auto warning.
+    package let feedsSourcesToLLM: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, slug, scope, path, name, description, script, permissions, outputs, concurrency, enabled
@@ -333,6 +365,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         case needsConfirmation = "needs_confirmation", parseError = "parse_error", contentHash = "content_hash"
         case approvalHash = "approval_hash", confirmedHash = "confirmed_hash", changesKnown = "changes_known"
         case changedBy = "changed_by", changedAt = "changed_at", autoTools = "auto_tools"
+        case llmAutoWrites = "llm_auto_writes", feedsSourcesToLLM = "feeds_sources_to_llm"
     }
 
     package init(from decoder: Decoder) throws {
@@ -367,6 +400,8 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
         changedBy = try c.decodeIfPresent(String.self, forKey: .changedBy) ?? ""
         autoTools = try c.decodeIfPresent([AutomationAutoTool].self, forKey: .autoTools) ?? []
+        llmAutoWrites = try c.decodeIfPresent([String].self, forKey: .llmAutoWrites) ?? []
+        feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
         if let text = try c.decodeIfPresent(String.self, forKey: .changedAt) {
             guard let date = AutomationDates.parse(text) else {
                 throw DecodingError.dataCorruptedError(forKey: .changedAt, in: c,

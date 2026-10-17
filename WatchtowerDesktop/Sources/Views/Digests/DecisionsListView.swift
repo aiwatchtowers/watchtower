@@ -224,7 +224,7 @@ struct DecisionsListView: View {
                 Image(systemName: sourceGlyph(source))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    .help(source.capitalized)
+                    .help(IdeaMention.Source(rawValue: source)?.label ?? source.capitalized)
             }
         }
     }
@@ -233,7 +233,7 @@ struct DecisionsListView: View {
         switch IdeaMention.Source(rawValue: source) ?? .owner {
         case .slack: "number"
         case .meeting: "video"
-        case .gmail: "envelope"
+        case .gmail, .imap: "envelope"
         case .jira: "ticket"
         case .owner: "person.fill"
         }

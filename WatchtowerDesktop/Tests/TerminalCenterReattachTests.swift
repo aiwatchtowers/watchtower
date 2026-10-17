@@ -155,8 +155,11 @@ final class TerminalCenterReattachTests: XCTestCase {
                 return transport
             })
         }
+        XCTAssertFalse(center.hostRunsSettled)
         vm.startHostReattach()
         await vm.open(row)
+        await vm.hostReattach?.value
+        XCTAssertTrue(center.hostRunsSettled, "#517: the phone's permission expiry may judge liveness now")
         XCTAssertNotNil(center.sessionHost)
         XCTAssertEqual(center.states[row.id], .running)
         let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)

@@ -60,7 +60,33 @@ struct MobileSettingsView: View {
             Button("Allow") { model.confirmAllow() }
             Button("Cancel", role: .cancel) { model.pendingAllow = nil }
         } message: {
-            Text("The phone can then send text to sessions running on this Mac. Revoke turns it off again.")
+            Text(MobileSettingsViewModel.allowMessage(model.pendingAllow))
+        }
+        .confirmationDialog(
+            MobileSettingsViewModel.startSessionsQuestion(name: model.pendingStartSessionsAllow?.name ?? "this phone"),
+            isPresented: Binding(
+                get: { model.pendingStartSessionsAllow != nil },
+                set: { if !$0 { model.pendingStartSessionsAllow = nil } }
+            )
+        ) {
+            Button("Allow") { model.confirmStartSessionsAllow() }
+            Button("Cancel", role: .cancel) { model.pendingStartSessionsAllow = nil }
+        } message: {
+            Text("The phone can then start a session on a board target, and the agent reads that target's text. "
+                + "Revoke turns it off again.")
+        }
+        .confirmationDialog(
+            MobileSettingsViewModel.permissionsQuestion(name: model.pendingPermissionsAllow?.name ?? "this phone"),
+            isPresented: Binding(
+                get: { model.pendingPermissionsAllow != nil },
+                set: { if !$0 { model.pendingPermissionsAllow = nil } }
+            )
+        ) {
+            Button("Allow") { model.confirmPermissionsAllow() }
+            Button("Cancel", role: .cancel) { model.pendingPermissionsAllow = nil }
+        } message: {
+            Text("The phone can then allow or deny a Claude Code permission prompt, one call at a time. "
+                + "Revoke turns it off again.")
         }
     }
 
@@ -133,6 +159,10 @@ struct MobileSettingsView: View {
                     device: device,
                     onAllow: { model.requestAllow(device) },
                     onRevoke: { model.revoke(device) },
+                    onAllowStartSessions: { model.requestStartSessionsAllow(device) },
+                    onRevokeStartSessions: { model.revokeStartSessions(device) },
+                    onAllowPermissions: { model.requestPermissionsAllow(device) },
+                    onRevokePermissions: { model.revokePermissions(device) },
                     onRemove: { model.requestRemove(device) }
                 )
             }
@@ -156,12 +186,18 @@ struct MobileSettingsView: View {
     }
 }
 
-/// One linked phone: name, Apple ID scope, link date and typing state, with
-/// Allow… / Revoke and Remove.
+/// One linked phone: name, Apple ID scope and link date, then one line per
+/// grant (typing, starting sessions, answering permission prompts) with its
+/// own Allow… / Revoke, and Remove. Starting sessions can be allowed only
+/// while typing is (#565).
 private struct MobilePhoneRow: View {
     let device: HubSyncState.LinkedDevice
     let onAllow: () -> Void
     let onRevoke: () -> Void
+    let onAllowStartSessions: () -> Void
+    let onRevokeStartSessions: () -> Void
+    let onAllowPermissions: () -> Void
+    let onRevokePermissions: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
@@ -171,20 +207,51 @@ private struct MobilePhoneRow: View {
                 HStack(spacing: 6) {
                     Text(MobileSettingsViewModel.scopeLabel(device.scope))
                     Text("Linked \(device.linkedAt.formatted(date: .abbreviated, time: .shortened))")
-                    Text(MobileSettingsViewModel.typingLabel(device))
-                        .foregroundStyle(device.typingRequested && !device.typingAllowed ? Color.accentColor : Color.secondary)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                grantLine(
+                    MobileSettingsViewModel.typingLabel(device), requested: device.typingRequested,
+                    allowed: device.typingAllowed, onAllow: onAllow, onRevoke: onRevoke
+                )
+                grantLine(
+                    MobileSettingsViewModel.startSessionsLabel(device), requested: false,
+                    // Allow… waits for typing; a Revoke always works.
+                    allowed: device.startSessionsGranted, enabled: device.typingAllowed || device.startSessionsGranted,
+                    onAllow: onAllowStartSessions, onRevoke: onRevokeStartSessions
+                )
+                grantLine(
+                    MobileSettingsViewModel.permissionsLabel(device), requested: device.permissionsRequested,
+                    allowed: device.permissionsAllowed, onAllow: onAllowPermissions, onRevoke: onRevokePermissions
+                )
             }
             Spacer()
-            if device.typingAllowed {
+            Button("Remove…", role: .destructive, action: onRemove)
+        }
+    }
+
+    /// A grant's state (a pending request in the accent colour) and its
+    /// Allow… or Revoke.
+    private func grantLine(
+        _ label: String,
+        requested: Bool,
+        allowed: Bool,
+        enabled: Bool = true,
+        onAllow: @escaping () -> Void,
+        onRevoke: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(requested && !allowed ? Color.accentColor : Color.secondary)
+            if allowed {
                 Button("Revoke", action: onRevoke)
             } else {
                 Button("Allow…", action: onAllow)
             }
-            Button("Remove…", role: .destructive, action: onRemove)
         }
+        .disabled(!enabled)
+        .controlSize(.small)
     }
 }
 

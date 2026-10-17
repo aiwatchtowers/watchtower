@@ -265,10 +265,7 @@ func buildIncrementalJQL(projectKey, lastSyncedAt string, now time.Time) string 
 		return fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
 	}
 	// Minutes since the watermark, plus a 2-minute overlap for indexing lag.
-	minutes := int(now.Sub(t).Minutes()) + 2
-	if minutes < 0 {
-		minutes = 0
-	}
+	minutes := max(int(now.Sub(t).Minutes())+2, 0)
 	return fmt.Sprintf("project = %s AND updated >= -%dm ORDER BY updated ASC", projectKey, minutes)
 }
 
@@ -394,7 +391,12 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 			s.logger.Printf("sync: project %s has no watermark, running a full scan", projectKey)
 		}
 	}
-	jql := buildIncrementalJQL(projectKey, lastSyncedAt, time.Now().UTC())
+	// The watermark is the moment this pass STARTED, not when it finished:
+	// the issue reader, the changelog and the comment pass can take longer
+	// than the JQL's 2-minute overlap, and an issue updated after the reader's
+	// last page but before a finish-time stamp would never be asked for again.
+	passStart := time.Now().UTC()
+	jql := buildIncrementalJQL(projectKey, lastSyncedAt, passStart)
 
 	n, changedKeys, err := s.syncWithJQL(ctx, jql, boardID)
 	if err != nil {
@@ -429,7 +431,7 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 		return n, nil
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := passStart.Format(time.RFC3339)
 	issuesSynced := n
 	if syncState != nil {
 		issuesSynced += syncState.IssuesSynced
@@ -466,6 +468,7 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 			continue
 		}
 
+		passStart := time.Now().UTC() // the watermark, as in syncProject
 		jql := fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
 		// Comments are not backfilled during the initial load — only the
 		// daemon's regular incremental Sync fetches comments, keeping the
@@ -477,8 +480,7 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 		}
 		total += n
 
-		now := time.Now().UTC().Format(time.RFC3339)
-		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, n)
+		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, passStart.Format(time.RFC3339), n)
 	}
 
 	if err := s.SyncSprints(ctx); err != nil {
@@ -752,7 +754,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 
 	// Extract the board's mapped custom field values.
 	var storyPoints *float64
-	customFieldsMap := make(map[string]interface{})
+	customFieldsMap := make(map[string]any)
 
 	for _, fm := range fieldMap {
 		rawVal, ok := issue.CustomFields[fm.FieldID]
@@ -771,7 +773,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 			// YYYY-MM-DD, so a datetime field keeps only its date part and a
 			// value that is not a date is ignored.
 			if dueDate == "" {
-				var val interface{}
+				var val any
 				if err := json.Unmarshal(rawVal, &val); err == nil {
 					if dateStr := extractDisplayValue(val); len(dateStr) >= 10 {
 						if _, perr := time.Parse("2006-01-02", dateStr[:10]); perr == nil {
@@ -782,7 +784,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 			}
 		default:
 			// For other roles, extract a display value.
-			var val interface{}
+			var val any
 			if err := json.Unmarshal(rawVal, &val); err == nil {
 				displayVal := extractDisplayValue(val)
 				if displayVal != "" {
@@ -985,7 +987,7 @@ func (s *Syncer) fetchBoardSprints(ctx context.Context, boardID int, state strin
 	path := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint", boardID)
 	var all []Sprint
 	startAt := 0
-	for page := 0; page < maxSprintPages; page++ {
+	for range maxSprintPages {
 		params := url.Values{
 			"state":      {state},
 			"startAt":    {strconv.Itoa(startAt)},
@@ -1122,7 +1124,7 @@ func (s *Syncer) normalizeTime(key, field, v string) string {
 
 // extractDisplayValue gets a human-readable value from a Jira field value.
 // Jira fields can be strings, numbers, objects with "name" or "displayName", or arrays thereof.
-func extractDisplayValue(val interface{}) string {
+func extractDisplayValue(val any) string {
 	switch v := val.(type) {
 	case string:
 		return v
@@ -1136,7 +1138,7 @@ func extractDisplayValue(val interface{}) string {
 			return "true"
 		}
 		return "false"
-	case map[string]interface{}:
+	case map[string]any:
 		// Jira objects often have "name", "displayName", or "value"
 		if name, ok := v["name"].(string); ok && name != "" {
 			return name
@@ -1148,7 +1150,7 @@ func extractDisplayValue(val interface{}) string {
 			return val
 		}
 		return ""
-	case []interface{}:
+	case []any:
 		var parts []string
 		for _, item := range v {
 			if s := extractDisplayValue(item); s != "" {
@@ -1197,14 +1199,14 @@ func isBug(issueTypeName string) bool {
 }
 
 // extractDescriptionText extracts plain text from ADF or returns plain string.
-func extractDescriptionText(desc interface{}) string {
+func extractDescriptionText(desc any) string {
 	if desc == nil {
 		return ""
 	}
 	switch v := desc.(type) {
 	case string:
 		return v
-	case map[string]interface{}:
+	case map[string]any:
 		// Atlassian Document Format — extract text nodes recursively.
 		return extractADFText(v)
 	default:
@@ -1212,16 +1214,16 @@ func extractDescriptionText(desc interface{}) string {
 	}
 }
 
-func extractADFText(node map[string]interface{}) string {
+func extractADFText(node map[string]any) string {
 	var parts []string
 
 	if text, ok := node["text"].(string); ok {
 		parts = append(parts, text)
 	}
 
-	if content, ok := node["content"].([]interface{}); ok {
+	if content, ok := node["content"].([]any); ok {
 		for _, child := range content {
-			if childMap, ok := child.(map[string]interface{}); ok {
+			if childMap, ok := child.(map[string]any); ok {
 				parts = append(parts, extractADFText(childMap))
 			}
 		}

@@ -243,7 +243,7 @@ func TestRunRotatesAfterBudgetCut(t *testing.T) {
 	ops := addSource(t, d, src.JiraAccountID, "OPS")
 	f := newFake()
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		f.addPage(fmt.Sprintf("p%d", i), 1, base.Add(time.Duration(i)*time.Hour))
 	}
 	clock := &stepClock{t: base, step: time.Minute}

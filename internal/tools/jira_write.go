@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 	"time"
@@ -87,9 +88,7 @@ func mergeJSON(raw json.RawMessage, patch map[string]any) (json.RawMessage, erro
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, fmt.Errorf("normalize: decoding args: %w", err)
 	}
-	for k, v := range patch {
-		m[k] = v
-	}
+	maps.Copy(m, patch)
 	out, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("normalize: encoding args: %w", err)

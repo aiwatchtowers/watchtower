@@ -3,7 +3,6 @@ package sync
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -334,12 +333,6 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 			// search.messages doesn't return thread_ts or reply_count,
 			// but permalink contains thread_ts for threaded replies:
 			//   ...p1234567890123456?thread_ts=1234567890.123456
-			rawJSON, err := json.Marshal(msg)
-			if err != nil {
-				o.logger.Printf("warning: failed to marshal search message %s: %v", msg.Timestamp, err)
-				rawJSON = []byte("{}")
-			}
-
 			threadTS := extractThreadTSFromPermalink(msg.Permalink)
 
 			dbMsgs = append(dbMsgs, db.Message{
@@ -353,7 +346,6 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 				IsDeleted:  false,
 				Subtype:    "",
 				Permalink:  msg.Permalink,
-				RawJSON:    string(rawJSON),
 			})
 		}
 
@@ -394,11 +386,11 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 // Permalink format: https://...slack.com/archives/C.../p1234?thread_ts=1234567890.123456
 func extractThreadTSFromPermalink(permalink string) sql.NullString {
 	const marker = "thread_ts="
-	idx := strings.Index(permalink, marker)
-	if idx < 0 {
+	_, after, ok := strings.Cut(permalink, marker)
+	if !ok {
 		return sql.NullString{}
 	}
-	ts := permalink[idx+len(marker):]
+	ts := after
 	// Trim any trailing query params
 	if ampIdx := strings.IndexByte(ts, '&'); ampIdx >= 0 {
 		ts = ts[:ampIdx]

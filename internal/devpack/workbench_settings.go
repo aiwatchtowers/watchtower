@@ -182,8 +182,18 @@ var (
 	// exits 0.
 	askToolBlockSpec = hookSpec{event: "PreToolUse", subcommand: "workbench ask-guard --workbench",
 		flags: " --pre-tool-use", timeoutSec: 5, matcher: "AskUserQuestion"}
+	// permissionWaitSpec: the synchronous PermissionRequest hook that holds a
+	// permission dialog open for an answer from the phone (#517). Claude only;
+	// 86400 s holds past the 600 s default (probe on Claude Code 2.1.302).
+	// Installed and removed with the state hooks but not one of them, so it
+	// does not count in HasStateHooks / HasCoreStateHooks; status reports it
+	// on its own (HasPermissionWaitHook).
+	permissionWaitSpec = hookSpec{event: "PermissionRequest", subcommand: "workbench permission-wait --workbench",
+		timeoutSec: 86400, matcher: "*"}
 	// ownedHookSpecs is every event the workbench install owns an entry in.
-	ownedHookSpecs = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec}, stateHookSpecs...)
+	// installedStateSpecs: what InstallStateHooks writes and RemoveStateHooks takes out.
+	installedStateSpecs = append([]hookSpec{permissionWaitSpec}, stateHookSpecs...)
+	ownedHookSpecs      = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec}, installedStateSpecs...)
 )
 
 // askGuardMarkerTemplate opens the Stop prompt hook an install from before
@@ -257,7 +267,7 @@ func InstallStopHook(dir, command string, workbenchID int64) (bool, error) {
 // reported once and none is attempted.
 func InstallStateHooks(dir, bin string, workbenchID int64) (bool, error) {
 	changed := false
-	for _, spec := range stateHookSpecs {
+	for _, spec := range installedStateSpecs {
 		c, err := installHook(dir, spec, spec.command(bin, workbenchID), workbenchID)
 		if err != nil {
 			return changed, err
@@ -339,7 +349,7 @@ func RemoveStopHook(dir string, workbenchID int64) (bool, error) {
 // (PROJ-02/04); the owner's own entries under those events stay.
 func RemoveStateHooks(dir string, workbenchID int64) (bool, error) {
 	changed := false
-	for _, spec := range stateHookSpecs {
+	for _, spec := range installedStateSpecs {
 		c, err := removeHook(dir, spec, workbenchID)
 		if err != nil {
 			return changed, err
@@ -459,6 +469,12 @@ func HasAskGuardHook(dir string, workbenchID int64) (bool, error) {
 // AskUserQuestion is installed.
 func HasAskToolBlockHook(dir string, workbenchID int64) (bool, error) {
 	return hasHook(dir, askToolBlockSpec, workbenchID)
+}
+
+// HasPermissionWaitHook reports whether workbenchID's PermissionRequest
+// hook is installed.
+func HasPermissionWaitHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, permissionWaitSpec, workbenchID)
 }
 
 func hasHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
@@ -782,9 +798,7 @@ func upsertOurHook(groups []any, spec hookSpec, workbenchID int64, command strin
 // keys are kept.
 func withOurCommand(hm map[string]any, command string) map[string]any {
 	cp := make(map[string]any, len(hm))
-	for k, v := range hm {
-		cp[k] = v
-	}
+	maps.Copy(cp, hm)
 	cp["command"] = command
 	return cp
 }
@@ -863,9 +877,7 @@ func newOurHookGroup(spec hookSpec, command string) map[string]any {
 // the group's other keys (its matcher among them) are kept.
 func groupWithHooks(m map[string]any, rest []any) map[string]any {
 	cp := make(map[string]any, len(m))
-	for k, v := range m {
-		cp[k] = v
-	}
+	maps.Copy(cp, m)
 	cp["hooks"] = rest
 	return cp
 }

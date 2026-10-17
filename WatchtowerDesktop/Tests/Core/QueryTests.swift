@@ -73,38 +73,6 @@ final class ChannelQueryTests: XCTestCase {
 
 final class MessageQueryTests: XCTestCase {
 
-    func testFetchByChannel() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertChannel(db, id: "C001")
-            for i in 0..<5 {
-                try TestDatabase.insertMessage(db, channelID: "C001", ts: "170000000\(i).000100", text: "Message \(i)")
-            }
-        }
-        let messages = try db.read { try MessageQueries.fetchByChannel($0, channelID: "C001", limit: 3) }
-        XCTAssertEqual(messages.count, 3)
-        // Should be ordered by ts_unix ASC (display order)
-        XCTAssertTrue(messages[0].tsUnix <= messages[1].tsUnix)
-    }
-
-    func testFetchByChannelOffset() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertChannel(db, id: "C001")
-            for i in 0..<10 {
-                try TestDatabase.insertMessage(db, channelID: "C001", ts: "170000000\(i).000100")
-            }
-        }
-        let page1 = try db.read { try MessageQueries.fetchByChannel($0, channelID: "C001", limit: 5, offset: 0) }
-        let page2 = try db.read { try MessageQueries.fetchByChannel($0, channelID: "C001", limit: 5, offset: 5) }
-        XCTAssertEqual(page1.count, 5)
-        XCTAssertEqual(page2.count, 5)
-        // Pages should not overlap
-        let ids1 = Set(page1.map(\.ts))
-        let ids2 = Set(page2.map(\.ts))
-        XCTAssertTrue(ids1.isDisjoint(with: ids2))
-    }
-
     func testFetchByTimeRange() throws {
         let db = try TestDatabase.create()
         try db.write { db in
@@ -118,22 +86,6 @@ final class MessageQueryTests: XCTestCase {
         }
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages[0].text, "During")
-    }
-
-    func testFetchThreadReplies() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertChannel(db, id: "C001")
-            try TestDatabase.insertMessage(db, channelID: "C001", ts: "1700000000.000100", text: "Parent", threadTS: nil, replyCount: 2)
-            try TestDatabase.insertMessage(db, channelID: "C001", ts: "1700000001.000100", text: "Reply 1", threadTS: "1700000000.000100")
-            try TestDatabase.insertMessage(db, channelID: "C001", ts: "1700000002.000100", text: "Reply 2", threadTS: "1700000000.000100")
-        }
-        let replies = try db.read {
-            try MessageQueries.fetchThreadReplies($0, channelID: "C001", threadTS: "1700000000.000100")
-        }
-        XCTAssertEqual(replies.count, 2)
-        XCTAssertEqual(replies[0].text, "Reply 1")
-        XCTAssertEqual(replies[1].text, "Reply 2")
     }
 
     func testCountByChannel() throws {

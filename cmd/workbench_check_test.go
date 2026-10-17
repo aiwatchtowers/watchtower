@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,7 +198,7 @@ func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
 	pid, tid := driftWorkbench(t, database, folder, "merged")
-	brief := loadWorkbenchBrief(pid)
+	brief := loadWorkbenchBrief(pid, io.Discard)
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [in_progress]: branch merged is merged into main`)
 	assert.LessOrEqual(t, len([]rune(brief)), briefMaxChars)
@@ -245,7 +246,7 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 
 func TestStopHookReason_CapsAndClips(t *testing.T) {
 	var findings []workbenchcheck.Finding
-	for i := 0; i < stopHookMaxFindings+5; i++ {
+	for i := range stopHookMaxFindings + 5 {
 		findings = append(findings, workbenchcheck.Finding{TargetID: i + 1, Title: strings.Repeat("x", 600), Status: "in_progress",
 			Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"})
 	}

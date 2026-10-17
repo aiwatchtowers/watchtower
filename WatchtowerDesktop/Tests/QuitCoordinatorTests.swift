@@ -135,6 +135,41 @@ final class QuitCoordinatorTests: XCTestCase {
         XCTAssertEqual(reply, .terminateCancel)
     }
 
+    /// Board #588 (PROJ-17): the Undo batch's deletes run alongside the
+    /// other quit steps — the daemon stop here waits until they started, so
+    /// a serial run would never reply — and the reply waits for them; on a
+    /// quit that keeps the sessions (Keep Sessions and Quit, an update's
+    /// relaunch) as on one that stops them.
+    func testPendingDeletesRunAlongsideTheQuitAndBeforeTheReply() async {
+        for keeps in [false, true] {
+            var order: [String] = []
+            let (started, didStart) = AsyncStream<Void>.makeStream()
+            let (finish, letFinish) = AsyncStream<Void>.makeStream()
+            let replied = expectation(description: "replied")
+            _ = QuitCoordinator.shouldTerminate(
+                hasBlockingWork: false,
+                confirmQuit: { .cancel },
+                keepsSessions: keeps,
+                closeTerminals: { order.append("close") },
+                detachTerminals: { order.append("detach") },
+                stopDaemon: {
+                    var iterator = started.makeAsyncIterator()
+                    _ = await iterator.next()
+                    order.append("daemon")
+                    letFinish.yield()
+                },
+                finishPendingDeletes: {
+                    didStart.yield()
+                    var iterator = finish.makeAsyncIterator()
+                    _ = await iterator.next()
+                    order.append("deletes")
+                },
+                reply: { _ in order.append("reply"); replied.fulfill() })
+            await fulfillment(of: [replied], timeout: 5)
+            XCTAssertEqual(order, [keeps ? "detach" : "close", "daemon", "deletes", "reply"])
+        }
+    }
+
     /// Unasked, a quit that keeps sessions (an update, a logout) detaches.
     func testUnaskedQuitThatKeepsSessionsDetaches() async {
         var order: [String] = []

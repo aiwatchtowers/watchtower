@@ -17,10 +17,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath,
-               model: model, provider: provider, toolMode: toolMode, readFolder: nil, noTools: false)
+               model: model, provider: provider, toolMode: toolMode, readFolder: nil)
     }
 
-    // swiftlint:disable:next function_parameter_count
     package func stream(
         prompt: String,
         systemPrompt: String?,
@@ -29,8 +28,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
-        readFolder: String?,
-        noTools: Bool
+        readFolder: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let processHandle = WatchtowerProcessHandle()
         return AsyncThrowingStream { continuation in
@@ -48,7 +46,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                         provider: provider,
                         toolMode: toolMode,
                         readFolder: readFolder,
-                        noTools: noTools,
                         processHandle: processHandle,
                         continuation: continuation
                     )
@@ -114,16 +111,14 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     ///
     /// `readFolder` adds `--read-folder DIR` (a workbench folder the CLI
     /// resolves, or refuses with exit 2); it never comes with a tool mode —
-    /// the CLI refuses the pair. `noTools` adds `--no-tools` (no tool, no MCP
-    /// server); the CLI refuses it with a tool mode or a read folder too.
+    /// the CLI refuses the pair.
     package static func buildArgs(
         sessionID: String?,
         dbPath: String?,
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
-        readFolder: String? = nil,
-        noTools: Bool = false
+        readFolder: String? = nil
     ) -> [String] {
         var args = ["ai", "query", "--prompt-stdin"]
 
@@ -144,9 +139,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
         if let readFolder, !readFolder.isEmpty {
             args += ["--read-folder", readFolder]
-        }
-        if noTools {
-            args += ["--no-tools"]
         }
         return args
     }
@@ -197,7 +189,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?,
-        noTools: Bool,
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
@@ -209,8 +200,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             model: model,
             provider: provider,
             toolMode: toolMode,
-            readFolder: readFolder,
-            noTools: noTools
+            readFolder: readFolder
         )
 
         let process = Process()

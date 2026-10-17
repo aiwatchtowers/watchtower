@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -56,7 +57,7 @@ type consolidateResult struct {
 
 // consolidateInput is the gathered, budget-capped stage-1 material for one
 // consolidate cycle: the rendered "=== NEW MATERIAL ===" body, the set of
-// refs it actually contains (ref -> source, "slack"|"meeting"|"gmail"|
+// refs it actually contains (ref -> source, "slack"|"meeting"|"gmail"|"imap"|
 // "jira"), and the per-source floor each should advance to — the highest id
 // among the units this run actually consumed, never past a unit that was
 // left out for lack of budget (IDEA-01). The start* fields hold the floors as
@@ -68,6 +69,34 @@ type consolidateInput struct {
 	validRefs                                      map[string]string
 	block                                          string
 	included                                       int
+	// memFloors, when set (Backfill), holds the floors this run started from
+	// and is advanced in their place: the run then writes no stored floor.
+	memFloors *workspaceFloors
+}
+
+// workspaceFloors is the three workspace floors (ideas_digest_floor,
+// ideas_stream_digest_floor, ideas_transcript_floor) as Backfill keeps them
+// in memory, so a killed backfill never leaves a lowered floor in the DB.
+type workspaceFloors struct {
+	topic, stream, transcript int64
+}
+
+// advanceFloors moves the run's floors to what it consumed: the stored ones
+// inside tx, or the in-memory ones of a Backfill run (only once the caller's
+// commit succeeded — see commitMemFloors).
+func (in *consolidateInput) advanceFloors(database *db.DB, tx *sql.Tx) error {
+	if in.memFloors != nil {
+		return nil
+	}
+	return database.SetIdeasFloorsTx(tx, in.maxTopicID, in.maxStreamID, in.maxTranscriptID)
+}
+
+// commitMemFloors advances a Backfill run's in-memory floors after its apply
+// committed; a no-op on the ordinary path.
+func (in *consolidateInput) commitMemFloors() {
+	if in.memFloors != nil {
+		*in.memFloors = workspaceFloors{topic: in.maxTopicID, stream: in.maxStreamID, transcript: in.maxTranscriptID}
+	}
 }
 
 // floorsAdvanced reports whether this run consumed any unit at all — whether
@@ -112,11 +141,19 @@ type transcriptRecap struct {
 // backfill engine's drain loop watches the latter to know when re-mining an
 // already-mined window has stopped finding anything new.
 func (p *Pipeline) runConsolidate(ctx context.Context, from, to time.Time) (proposed, mentionsDeduped int, err error) {
+	return p.consolidate(ctx, from, to, nil)
+}
+
+// consolidate is runConsolidate with an optional in-memory floor set: nil
+// reads and advances the stored floors; Backfill passes its own, which the
+// run starts from and advances instead (after a committed apply), writing no
+// stored floor.
+func (p *Pipeline) consolidate(ctx context.Context, from, to time.Time, mem *workspaceFloors) (proposed, mentionsDeduped int, err error) {
 	if p.generator == nil {
 		return 0, 0, nil
 	}
 
-	in, err := p.gatherConsolidateInput(p.maxPromptChars(), from, to)
+	in, err := p.gatherConsolidateInput(p.maxPromptChars(), from, to, mem)
 	if err != nil {
 		return 0, 0, fmt.Errorf("gathering consolidate input: %w", err)
 	}
@@ -125,7 +162,11 @@ func (p *Pipeline) runConsolidate(ctx context.Context, from, to time.Time) (prop
 		// CONSUMED (empty stage-1 rows, stale recap-less transcripts, a unit
 		// too big to ever fit): their floors have to land, or every future
 		// run re-reads the same inert material forever.
-		return 0, 0, persistFloorsOnly(p.db, in)
+		if err := persistFloorsOnly(p.db, in); err != nil {
+			return 0, 0, err
+		}
+		in.commitMemFloors()
+		return 0, 0, nil
 	}
 
 	registry, err := p.db.ListIdeasForPrompt()
@@ -169,6 +210,7 @@ func (p *Pipeline) runConsolidate(ctx context.Context, from, to time.Time) (prop
 	if err != nil {
 		return 0, 0, err
 	}
+	in.commitMemFloors()
 	if refsRejected > 0 {
 		p.refsRejected += refsRejected
 		p.logf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
@@ -198,11 +240,18 @@ func (p *Pipeline) maxPromptChars() int {
 // consumption stops entirely (no smaller later unit is smuggled in out of
 // order), so each source's floor advances only past the units this run
 // actually included; a source that contributed nothing keeps its old floor
-// (IDEA-01).
-func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time) (*consolidateInput, error) {
-	topicFloor, streamFloor, transcriptFloor, err := p.db.GetIdeasFloors()
-	if err != nil {
-		return nil, fmt.Errorf("getting ideas floors: %w", err)
+// (IDEA-01). mem, when non-nil (Backfill), replaces the stored floors as the
+// starting point and is what the run advances.
+func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time, mem *workspaceFloors) (*consolidateInput, error) {
+	var topicFloor, streamFloor, transcriptFloor int64
+	if mem != nil {
+		topicFloor, streamFloor, transcriptFloor = mem.topic, mem.stream, mem.transcript
+	} else {
+		var err error
+		topicFloor, streamFloor, transcriptFloor, err = p.db.GetIdeasFloors()
+		if err != nil {
+			return nil, fmt.Errorf("getting ideas floors: %w", err)
+		}
 	}
 	fromUnix, toUnix, toISO := consolidateWindowBounds(from, to)
 
@@ -222,7 +271,7 @@ func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time) (*co
 	in := &consolidateInput{
 		startTopicID: topicFloor, startStreamID: streamFloor, startTranscriptID: transcriptFloor,
 		maxTopicID: topicFloor, maxStreamID: streamFloor, maxTranscriptID: transcriptFloor,
-		validRefs: map[string]string{},
+		validRefs: map[string]string{}, memFloors: mem,
 	}
 	m := newMaterialAssembler(p, in, maxChars)
 	if err := m.addTopics(topics); err != nil {
@@ -299,9 +348,7 @@ func (m *materialAssembler) include(id, unit string, refs map[string]string) boo
 	m.b.WriteString(unit)
 	m.budget -= len(unit)
 	m.in.included++
-	for ref, src := range refs {
-		m.in.validRefs[ref] = src
-	}
+	maps.Copy(m.in.validRefs, refs)
 	return true
 }
 
@@ -362,7 +409,7 @@ func (m *materialAssembler) addTranscripts(transcripts []db.TranscriptForIdeas) 
 // same empty stream-digest rows and stale recap-less transcripts are re-read on
 // every single run, forever. A run that consumed nothing writes nothing.
 func persistFloorsOnly(database *db.DB, in *consolidateInput) error {
-	if !in.floorsAdvanced() {
+	if !in.floorsAdvanced() || in.memFloors != nil { // a Backfill run advances its in-memory floors instead
 		return nil
 	}
 	tx, err := database.Begin()
@@ -465,9 +512,10 @@ func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string
 	return b.String(), refs, nil
 }
 
-// renderStreamUnit renders one stream_digests row's (Gmail or Jira) already
+// renderStreamUnit renders one stream_digests row's (Gmail, IMAP or Jira) already
 // stage-1-validated candidates, one line each. Refs come verbatim from
-// topics_json (gmail:<acct>:<thread> or a bare Jira key) — no reconstruction.
+// topics_json (gmail:<acct>:<thread>, imap:<acct>:<uidvalidity>-<uid> or a
+// bare Jira key) — no reconstruction.
 // topics_json holds a bare JSON array of streamTopic (see
 // runEmailDigestAccount/runJiraDigestAccount's json.Marshal(topics) — not
 // wrapped in a streamTopics envelope). Returns "" for a row whose candidates
@@ -621,7 +669,7 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 		}
 	}
 
-	if err := database.SetIdeasFloorsTx(tx, in.maxTopicID, in.maxStreamID, in.maxTranscriptID); err != nil {
+	if err := in.advanceFloors(database, tx); err != nil {
 		return proposed, refsRejected, mentionsDeduped, fmt.Errorf("advancing ideas floors: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

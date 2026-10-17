@@ -241,12 +241,13 @@ final class MobileLinkCenterTests: XCTestCase {
         name: String = "iPhone",
         unlinked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         typingRequested: Bool = false,
-        startSessions: Bool = true
+        startSessions: Bool = true,
+        permissionsRequested: Bool = false
     ) -> DevicePayload {
         DevicePayload(
             deviceID: deviceID, name: name, model: "iPhone18,1", appVersion: "0.0.0-test", scope: scope,
             userRecordName: user, linkNonce: nonce, unlinked: unlinked, typingRequested: typingRequested,
-            startSessions: startSessions, updatedAt: clock.now
+            startSessions: startSessions, permissionsRequested: permissionsRequested, updatedAt: clock.now
         )
     }
 
@@ -260,11 +261,12 @@ final class MobileLinkCenterTests: XCTestCase {
         name: String = "iPhone",
         unlinked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         typingRequested: Bool = false,
-        startSessions: Bool = true
+        startSessions: Bool = true,
+        permissionsRequested: Bool = false
     ) throws -> CloudRecord {
         let payload = devicePayload(
             deviceID, nonce: nonce, scope: scope, user: user, name: name, unlinked: unlinked,
-            typingRequested: typingRequested, startSessions: startSessions)
+            typingRequested: typingRequested, startSessions: startSessions, permissionsRequested: permissionsRequested)
         let record = try CloudRecordFactory.record(for: payload, modifiedAt: clock.now)
         return CloudRecord(
             recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
@@ -714,7 +716,8 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(grant.hubID, code.hubID)
         XCTAssertEqual(grant.scope, .private)
         XCTAssertFalse(grant.typingAllowed, "typing needs the owner's Allow")
-        XCTAssertTrue(grant.startSessionsAllowed)
+        XCTAssertTrue(grant.startSessionsAllowed, "the phone's own toggle, as an older phone reads it")
+        XCTAssertFalse(grant.mayStartSessions, "starting sessions needs the owner's Allow (#565)")
         XCTAssertEqual(try sidecar.linkCode(code.nonce)?.usedByDevice, phoneA)
         XCTAssertTrue(nudges.contains([.deviceGrant]))
         XCTAssertNil(center.openCode, "the code is used")
@@ -1470,6 +1473,10 @@ final class MobileLinkCenterTests: XCTestCase {
     func testAllowAndRevokeSetTheGrantsTheSessionHandlersRead() async throws {
         let code = try await center.issueCode()
         try await link(try hello(identityA, nonce: code.nonce))
+        // Linked with the defaults (nothing allowed yet), not a missing row read as `denied`.
+        let linked = try XCTUnwrap(try sidecar.linkedDevice(phoneA), "the phone is linked")
+        XCTAssertFalse(linked.typingAllowed || linked.startSessionsGranted || linked.permissionsAllowed)
+        XCTAssertTrue(linked.startSessionsAllowed, "the phone's own toggle defaults on")
         XCTAssertEqual(MobileLinkCenter.sessionGrant(sidecar, deviceID: phoneA), .specDefaults)
         clock.advance(10)
 
@@ -1701,9 +1708,9 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(try grants()[phoneA]?.linkRefused, .expiredCode)
     }
 
-    /// #3: the phone's start-sessions toggle (a nonce-less rewrite) reaches
-    /// the grant; its typing request is stored (PROJ-16) and is never a
-    /// grant.
+    /// #3: the phone's start-sessions toggle (a nonce-less rewrite) is
+    /// mirrored as its opt-out (#565: never a grant); its typing request is
+    /// stored (PROJ-16) and is never a grant.
     func testALinkedPhonesStartSessionsToggleIsMirroredAndATypingRequestIsStoredNotGranted() async throws {
         let code = try await center.issueCode()
         try await link(try hello(identityA, nonce: code.nonce))

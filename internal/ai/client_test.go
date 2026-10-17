@@ -880,7 +880,7 @@ func TestBuildArgs_ExternalToolsAllowedPerTool(t *testing.T) {
 	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello__list_boards,mcp__trello__get_card_Bash")
 	assertFlagValue(t, args, "--disallowedTools", DisallowedTools+",mcp__trello__create_card")
 
-	for _, a := range strings.Split(flagValue(t, args, "--allowedTools"), ",") {
+	for a := range strings.SplitSeq(flagValue(t, args, "--allowedTools"), ",") {
 		assert.NotEqual(t, "mcp__trello", a, "the whole server must never be granted")
 	}
 }
@@ -1091,28 +1091,4 @@ printf '{"type":"result","result":"ok"}'`)
 	assert.Contains(t, err.Error(), "writing system prompt file")
 	_, statErr := os.Stat(ran)
 	assert.True(t, os.IsNotExist(statErr), "the CLI must not run without its system prompt")
-}
-
-// A no-tools run (`ai query --no-tools`, the ⌘/ help chat) mounts no MCP
-// server even with a database path, allows no tool and hides every built-in.
-func TestBuildArgs_NoToolsMountsNothing(t *testing.T) {
-	c := NewClient("claude-haiku", "/tmp/test.db", "")
-	c.SetNoTools()
-	args, _, err := buildArgsT(t, c, "system prompt", "user message", "stream-json", "")
-	require.NoError(t, err)
-
-	assert.NotContains(t, args, "--mcp-config")
-	assert.NotContains(t, args, "--allowedTools")
-	assertFlagValue(t, args, "--tools", "")
-	assert.Contains(t, args, "--strict-mcp-config", "no server the CLI would load on its own")
-	assert.Contains(t, args, "--disallowedTools", "the deny list stays as defence in depth")
-	for _, a := range args {
-		assert.NotContains(t, a, "/tmp/test.db")
-		assert.NotContains(t, a, "mcp__watchtower")
-	}
-	// ArgsForTest is buildArgs' argv; an empty system prompt keeps the
-	// comparison free of the per-call temp file path.
-	noPrompt, _, err := buildArgsT(t, c, "", "user message", "stream-json", "")
-	require.NoError(t, err)
-	assert.Equal(t, noPrompt, c.ArgsForTest("", "user message"))
 }

@@ -196,7 +196,7 @@ func (b *Bus) flushOne(cycleID string, p pending) (flushOutcome, error) {
 	}
 	req := db.EnqueueRequest{AutomationID: p.automationID, Trigger: db.TriggerEvent, EventCycle: cycleID,
 		EventJSON: string(payload), Now: b.clock.Now()}
-	for attempt := 0; attempt < 2; attempt++ {
+	for range 2 {
 		runID, coalesced, err := b.db.EnqueueAutomationRun(req)
 		if err != nil {
 			return 0, err
