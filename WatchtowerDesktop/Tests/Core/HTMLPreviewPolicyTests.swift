@@ -3,23 +3,21 @@ import XCTest
 @testable import WatchtowerCore
 
 final class HTMLPreviewPolicyTests: XCTestCase {
-    private let folder = URL(fileURLWithPath: "/tmp/deck")
-    private var page: URL { folder.appendingPathComponent("index.html") }
+    private let page = URL(string: "wtpreview://preview/index.html")!
 
     func testContentRulesBlockEverythingButLocalSchemes() throws {
-        for previewFolder in [nil, folder] {
-            let json = HTMLPreviewPolicy.contentRules(folder: previewFolder)
+        for allowFiles in [false, true] {
+            let json = HTMLPreviewPolicy.contentRules(allowFiles: allowFiles)
             let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: [String: Any]]])
             XCTAssertEqual(rules.first?["trigger"]?["url-filter"] as? String, ".*")
             XCTAssertEqual(rules.first?["action"]?["type"] as? String, "block")
             let allowed = rules.dropFirst().compactMap { $0["trigger"]?["url-filter"] as? String }
             let cdns = HTMLPreviewPolicy.cdnHosts.map { "^https://" + HTMLPreviewPolicy.regexEscaped($0) + "/" }
-            let files = previewFolder.map { [HTMLPreviewPolicy.visibleFilesFilter(under: $0)] } ?? []
-            XCTAssertEqual(Set(allowed), Set(["^about:", "^data:", "^blob:"] + files + (previewFolder == nil ? [] : cdns)))
+            XCTAssertEqual(Set(allowed), Set(["^about:", "^data:", "^blob:"] + (allowFiles ? ["^wtpreview:"] + cdns : [])))
             XCTAssertTrue(rules.dropFirst().allSatisfy { $0["action"]?["type"] as? String == "ignore-previous-rules" })
             XCTAssertFalse(allowed.contains("^https:"), "never any https host (#563)")
-            XCTAssertFalse(allowed.contains("^file:"), "never every file")
-            if previewFolder != nil {
+            XCTAssertFalse(allowed.contains("^file:"), "never file: — the folder goes through the scheme handler (#563)")
+            if allowFiles {
                 // The allowlisted CDNs only for subresources, never fetch/XHR, sockets, media or documents.
                 for cdn in cdns {
                     let rule = try XCTUnwrap(rules.first { $0["trigger"]?["url-filter"] as? String == cdn }, cdn)
@@ -27,7 +25,7 @@ final class HTMLPreviewPolicyTests: XCTestCase {
                 }
             } else {
                 XCTAssertFalse(json.contains("http"), "a chat artifact never gets a network scheme back")
-                XCTAssertFalse(json.contains("file"), "nor a file")
+                XCTAssertFalse(json.contains("wtpreview"), "nor a file")
             }
         }
     }
@@ -37,25 +35,6 @@ final class HTMLPreviewPolicyTests: XCTestCase {
                        ["cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com", "fonts.googleapis.com", "fonts.gstatic.com"])
     }
 
-    /// Files under the folder load unless a component below it is hidden;
-    /// the folder itself may sit in a hidden folder (a session worktree).
-    func testTheFileFilterAllowsVisibleFilesUnderTheFolderOnly() throws {
-        let worktree = URL(fileURLWithPath: "/tmp/repo/.claude/worktrees/my deck")
-        let regex = try NSRegularExpression(pattern: HTMLPreviewPolicy.visibleFilesFilter(under: worktree), options: [.caseInsensitive])
-        let matches = { (raw: String) in
-            regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)) != nil
-        }
-        let base = "file:///tmp/repo/.claude/worktrees/my%20deck/"
-        for raw in ["index.html", "style.css", "img/logo.png", "a/b/c.js", "index.html#/2", "x.js?v=1"] {
-            XCTAssertTrue(matches(base + raw), raw)
-        }
-        for raw in [".env", ".git/config", "sub/.secrets/config.js", "sub/.hidden.html", "../other/index.html"] {
-            XCTAssertFalse(matches(base + raw), raw)
-        }
-        XCTAssertFalse(matches("file:///tmp/repo/.claude/worktrees/my%20deckish/index.html"))
-        XCTAssertFalse(matches("file:///etc/hosts"))
-    }
-
     /// The view fails closed when the rules do not compile: they must.
     @MainActor
     func testContentRulesCompileInWebKit() async throws {
@@ -63,84 +42,100 @@ final class HTMLPreviewPolicyTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = try XCTUnwrap(WKContentRuleListStore(url: folder))
-        let weird = URL(fileURLWithPath: "/tmp/a (b) [c] {d} +e$f^g.h|i/.claude/deck")
-        for (index, previewFolder) in [nil, self.folder, weird].enumerated() {
+        for allowFiles in [false, true] {
             let list = try await store.compileContentRuleList(
-                forIdentifier: "test.\(index)", encodedContentRuleList: HTMLPreviewPolicy.contentRules(folder: previewFolder)
+                forIdentifier: "test.\(allowFiles)", encodedContentRuleList: HTMLPreviewPolicy.contentRules(allowFiles: allowFiles)
             )
             XCTAssertNotNil(list)
         }
     }
 
-    // MARK: blocked resources banner
+    // MARK: the preview scheme (#563)
 
-    func testBlockedResourcesNameEveryHostOffTheAllowlist() {
-        let html = """
-        <html><head>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js/dist/reveal.css">
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">
-        <link rel="stylesheet" href='https://evil.example/a.css'>
-        <script src=https://tracker.example/t.js></script>
-        <style>body { background: url("https://evil.example/bg.png") } @import "http://cdn.jsdelivr.net/x.css";</style>
-        </head><body>
-        <img src="logo.png"><img src="data:image/png;base64,AAAA"><img src="//third.example/p.gif">
-        <img srcset="small.png 1x, https://fourth.example/big.png 2x">
-        <img src="https://evil.example/a.css">
-        <a href="https://linked.example/">a link is not a resource</a>
-        <form action="https://form.example/"></form>
-        </body></html>
-        """
-        let blocked = HTMLPreviewPolicy.blockedResources(in: html)
-        XCTAssertEqual(blocked.hosts, ["evil.example", "tracker.example", "third.example", "fourth.example", "cdn.jsdelivr.net"])
-        XCTAssertEqual(blocked.total, 6, "distinct URLs: a.css twice counts once; http to an allowlisted host is blocked")
-        XCTAssertEqual(blocked.banner(), "Blocked 6 external resources: evil.example, tracker.example, third.example…")
+    func testPageURLsEncodeEachSegmentUnderTheFolder() {
+        let folder = URL(fileURLWithPath: "/tmp/repo/.claude/worktrees/Презентация deck")
+        XCTAssertEqual(HTMLPreviewPolicy.pageURL(file: folder.appendingPathComponent("index.html"), folder: folder)?.absoluteString,
+                       "wtpreview://preview/index.html")
+        XCTAssertEqual(HTMLPreviewPolicy.pageURL(file: folder.appendingPathComponent("my deck%20#1.html"), folder: folder)?.absoluteString,
+                       "wtpreview://preview/my%20deck%2520%231.html")
+        XCTAssertEqual(HTMLPreviewPolicy.pageURL(file: folder.appendingPathComponent("sub/a.html"), folder: folder)?.absoluteString,
+                       "wtpreview://preview/sub/a.html")
+        XCTAssertNil(HTMLPreviewPolicy.pageURL(file: URL(fileURLWithPath: "/etc/hosts"), folder: folder))
     }
 
-    func testNoBannerWhenEverythingIsLocalOrAllowlisted() {
-        let html = #"<script src="https://unpkg.com/x.js"></script><img src="a.png"><a href="https://x.example">x</a>"#
-        XCTAssertEqual(HTMLPreviewPolicy.blockedResources(in: html), .init(total: 0, hosts: []))
-        XCTAssertNil(HTMLPreviewPolicy.blockedResources(in: html).banner())
-        XCTAssertEqual(HTMLPreviewPolicy.blockedResources(in: #"<img src="https://a.example/1.png">"#).banner(),
-                       "Blocked 1 external resource: a.example")
+    func testPreviewFilesResolveRealPathsAndRefuseHiddenOnes() throws {
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("preview-\(UUID().uuidString)")
+        // The folder itself may sit in a hidden folder (a session worktree).
+        let folder = base.appendingPathComponent(".claude/worktrees/Презентация deck")
+        defer { try? manager.removeItem(at: base) }
+        try manager.createDirectory(at: folder.appendingPathComponent(".secrets"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: folder.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: folder.appendingPathComponent("img"), withIntermediateDirectories: true)
+        for name in ["index.html", ".env", ".secrets/config.js", ".git/config", "img/a b.png", "my deck%20.html"] {
+            try "x".write(to: folder.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+        try "outside".write(to: base.appendingPathComponent("outside.txt"), atomically: true, encoding: .utf8)
+        try manager.createSymbolicLink(atPath: folder.appendingPathComponent("notes.js").path, withDestinationPath: ".secrets/config.js")
+        try manager.createSymbolicLink(atPath: folder.appendingPathComponent("x").path, withDestinationPath: ".git")
+        try manager.createSymbolicLink(atPath: folder.appendingPathComponent("up.txt").path, withDestinationPath: "../../../outside.txt")
+        let file = { (raw: String) in
+            // swiftlint:disable:next force_unwrapping
+            HTMLPreviewPolicy.previewFile(for: URL(string: "wtpreview://preview/" + raw)!, folder: folder)
+        }
+        XCTAssertEqual(file("index.html")?.lastPathComponent, "index.html")
+        XCTAssertEqual(file("index.html?v=1#s2")?.lastPathComponent, "index.html")
+        XCTAssertEqual(file("img/a%20b.png")?.lastPathComponent, "a b.png")
+        XCTAssertEqual(file("my%20deck%2520.html")?.lastPathComponent, "my deck%20.html")
+        for raw in [".env", "%2Eenv", ".secrets/config.js", ".git/config", "notes.js", "x/config", "up.txt",
+                    "../outside.txt", "%2E%2E/outside.txt", "img/", "img", "missing.html", ""] {
+            XCTAssertNil(file(raw), raw)
+        }
+        XCTAssertNil(HTMLPreviewPolicy.previewFile(for: URL(string: "wtpreview://other/index.html")!, folder: folder))
+        XCTAssertNil(HTMLPreviewPolicy.previewFile(for: folder.appendingPathComponent("index.html"), folder: folder), "file: is not served")
     }
+
+    func testByteRanges() {
+        XCTAssertNil(HTMLPreviewPolicy.byteRange(nil, length: 10))
+        XCTAssertEqual(HTMLPreviewPolicy.byteRange("bytes=0-1", length: 10), 0..<2)
+        XCTAssertEqual(HTMLPreviewPolicy.byteRange("bytes=4-", length: 10), 4..<10)
+        XCTAssertEqual(HTMLPreviewPolicy.byteRange("bytes=-3", length: 10), 7..<10)
+        XCTAssertEqual(HTMLPreviewPolicy.byteRange("bytes=8-100", length: 10), 8..<10)
+        for header in ["bytes=10-", "bytes=5-2", "bytes=0-1,4-5", "items=0-1", "bytes=a-b", "bytes=-0"] {
+            XCTAssertNil(HTMLPreviewPolicy.byteRange(header, length: 10), header)
+        }
+    }
+
+    // MARK: navigation
 
     func testAnInMemoryPageStaysOnItself() {
-        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "about:blank"), isMainFrame: true, page: nil, folder: nil))
-        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "about:blank#s2"), isMainFrame: true, page: nil, folder: nil))
-        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "about:srcdoc"), isMainFrame: false, page: nil, folder: nil))
+        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "about:blank"), isMainFrame: true, page: nil))
+        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "about:blank#s2"), isMainFrame: true, page: nil))
+        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "about:srcdoc"), isMainFrame: false, page: nil))
         for raw in ["https://example.com", "http://127.0.0.1:8080/", "file:///etc/hosts", "data:text/html,x", "javascript:alert(1)",
-                    "mailto:a@example.com"] {
-            XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: URL(string: raw), isMainFrame: true, page: nil, folder: nil), raw)
+                    "mailto:a@example.com", "wtpreview://preview/index.html"] {
+            XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: URL(string: raw), isMainFrame: true, page: nil), raw)
+            XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: URL(string: raw), isMainFrame: false, page: nil), raw)
         }
-        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: nil, isMainFrame: true, page: nil, folder: nil))
+        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: nil, isMainFrame: true, page: nil))
     }
 
     func testAFilePreviewAllowsItsPageAndFramesFromItsFolderOnly() {
         let allows = { (raw: String, main: Bool) in
-            HTMLPreviewPolicy.allowsNavigation(to: URL(string: raw), isMainFrame: main, page: self.page, folder: self.folder)
+            HTMLPreviewPolicy.allowsNavigation(to: URL(string: raw), isMainFrame: main, page: self.page)
         }
-        XCTAssertTrue(allows("file:///tmp/deck/index.html", true))
-        XCTAssertTrue(allows("file:///tmp/deck/index.html#/3", true))
-        XCTAssertFalse(allows("file:///tmp/deck/other.html", true), "a link to another file opens nothing")
-        XCTAssertTrue(allows("file:///tmp/deck/slides/one.html", false))
-        XCTAssertFalse(allows("file:///tmp/deck/../secret.html", false))
-        XCTAssertFalse(allows("file:///tmp/deckish/one.html", false))
+        XCTAssertTrue(allows("wtpreview://preview/index.html", true))
+        XCTAssertTrue(allows("wtpreview://preview/index.html#/3", true))
+        XCTAssertFalse(allows("wtpreview://preview/other.html", true), "a link to another file opens nothing")
+        XCTAssertTrue(allows("wtpreview://preview/slides/one.html", false))
+        XCTAssertFalse(allows("file:///tmp/deck/slides/one.html", false), "never file:")
+        XCTAssertFalse(allows("wtpreview://elsewhere/one.html", false))
         XCTAssertFalse(allows("https://example.com/", false))
-        // No dotfile in a frame (#563).
-        XCTAssertFalse(allows("file:///tmp/deck/.env", false))
-        XCTAssertFalse(allows("file:///tmp/deck/.git/config", false))
-        XCTAssertFalse(allows("file:///tmp/deck/slides/.secret.html", false))
-    }
-
-    func testAFolderInsideAHiddenFolderStillFramesItsVisibleFiles() {
-        let worktree = URL(fileURLWithPath: "/tmp/repo/.claude/worktrees/wt")
-        let page = worktree.appendingPathComponent("index.html")
-        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(
-            to: URL(string: "file:///tmp/repo/.claude/worktrees/wt/slides/one.html"), isMainFrame: false, page: page, folder: worktree
-        ))
-        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(
-            to: URL(string: "file:///tmp/repo/.claude/worktrees/wt/.env"), isMainFrame: false, page: page, folder: worktree
-        ))
+        // No dotfile in a frame (#563); the handler refuses links into one.
+        XCTAssertFalse(allows("wtpreview://preview/.env", false))
+        XCTAssertFalse(allows("wtpreview://preview/%2Eenv", false))
+        XCTAssertFalse(allows("wtpreview://preview/.git/config", false))
+        XCTAssertFalse(allows("wtpreview://preview/slides/.secret.html", false))
     }
 
     func testHTMLFiles() {

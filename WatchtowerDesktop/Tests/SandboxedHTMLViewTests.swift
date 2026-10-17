@@ -130,7 +130,7 @@ final class SandboxedHTMLViewTests: XCTestCase {
     /// in its page or in a fresh iframe.
     func testWebRTCIsOffInThePreferencesForEveryFrame() async throws {
         let config = WKWebViewConfiguration()
-        XCTAssertTrue(SandboxedHTMLView.lockDown(config.preferences), "this WebKit can turn WebRTC off")
+        XCTAssertNil(SandboxedHTMLView.lockDown(config.preferences), "this WebKit can turn WebRTC off — a WebKit change shows here")
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), configuration: config)
         webView.loadHTMLString("<html><head><title>p</title></head><body></body></html>", baseURL: nil)
         _ = try await waitForTitle(webView) { $0 == "p" }
@@ -145,26 +145,76 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(types, "undefined,undefined,undefined,undefined")
     }
 
+    /// A WebKit without the private preference: `lockDown` says why instead
+    /// of raising, and the view still shows the page with the WebRTC globals
+    /// removed by its script.
+    func testLockDownFallsBackWithAReasonOnAMissingSelector() async throws {
+        let config = WKWebViewConfiguration()
+        var selectors = SandboxedHTMLView.LockDownSelectors()
+        selectors.setPeerConnection = "_setNoSuchPreference:"
+        XCTAssertEqual(SandboxedHTMLView.lockDown(config.preferences, selectors: selectors), "WKPreferences has no _setNoSuchPreference:")
+        selectors = SandboxedHTMLView.LockDownSelectors()
+        selectors.peerConnection = "_noSuchGetter"
+        XCTAssertEqual(SandboxedHTMLView.lockDown(config.preferences, selectors: selectors), "WKPreferences has no _noSuchGetter")
+
+        let webView = try host(.page("<html><head><title>page</title></head><body></body></html>"))
+        let title = try await waitForTitle(webView) { $0 == "page" }
+        XCTAssertEqual(title, "page")
+        let rtc = try await webView.evaluateJavaScript("typeof RTCPeerConnection") as? String
+        XCTAssertEqual(rtc, "undefined")
+    }
+
+    /// Without the content rules nothing of the page is ever loaded: the
+    /// view shows a fixed message with the reason (the rules are the
+    /// network barrier).
+    func testAPageNeverLoadsWhenTheRulesFail() async throws {
+        struct Broken: LocalizedError {
+            var errorDescription: String? { "rules broke" }
+        }
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let coordinator = SandboxedHTMLView.Coordinator()
+        coordinator.webView = webView
+        coordinator.rules = { _ in throw Broken() }
+        coordinator.show(.page("<html><head><title>secret page</title></head><body><img src=\"\(counter.base)/x.png\"></body></html>"),
+                         token: 0)
+        let text = try await waitForText(webView) { $0.contains("could not be prepared") }
+        XCTAssertEqual(text, "The preview could not be prepared: rules broke")
+        let title = try await webView.evaluateJavaScript("document.title") as? String
+        XCTAssertEqual(title, "", "the page itself never loaded")
+        XCTAssertEqual(counter.hits, 0)
+    }
+
     /// A file preview (#563) loads its folder's visible files only — no
-    /// dotfile as a script or in a frame — and nothing from a host off the
-    /// CDN allowlist, even over https; its folder may sit in a hidden one.
+    /// dotfile as a script or in a frame, none through a symlink with a
+    /// visible name (`notes.js` → `.secrets/config.js`, a folder link to
+    /// `.git`) — and nothing from a host off the CDN allowlist, even over
+    /// https; its folder may sit in a hidden one.
     func testAFilePreviewLoadsNoDotfileAndNoHostOffTheAllowlist() async throws {
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent("sandbox-\(UUID().uuidString)")
+        let manager = FileManager.default
+        let base = manager.temporaryDirectory.appendingPathComponent("sandbox-\(UUID().uuidString)")
         let folder = base.appendingPathComponent(".claude/worktrees/deck")
-        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".secrets"), withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: base) }
+        try manager.createDirectory(at: folder.appendingPathComponent(".secrets"), withIntermediateDirectories: true)
+        try manager.createDirectory(at: folder.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: base) }
         try "body { color: rgb(1, 2, 3); }".write(to: folder.appendingPathComponent("style.css"), atomically: true, encoding: .utf8)
         try "window.leaked = 1;".write(to: folder.appendingPathComponent(".secrets/config.js"), atomically: true, encoding: .utf8)
-        try "<script>parent.postMessage(\"framed\", \"*\")</script>"
+        try "window.gitLeaked = 1;".write(to: folder.appendingPathComponent(".git/hook.js"), atomically: true, encoding: .utf8)
+        try manager.createSymbolicLink(atPath: folder.appendingPathComponent("notes.js").path, withDestinationPath: ".secrets/config.js")
+        try manager.createSymbolicLink(atPath: folder.appendingPathComponent("x").path, withDestinationPath: ".git")
+        try "<script>parent.postMessage(\"hidden\", \"*\")</script>"
             .write(to: folder.appendingPathComponent(".hidden.html"), atomically: true, encoding: .utf8)
+        try "<script>parent.postMessage(\"ok\", \"*\")</script>"
+            .write(to: folder.appendingPathComponent("ok.html"), atomically: true, encoding: .utf8)
         let index = """
-        <html><head><link rel="stylesheet" href="style.css"><script src=".secrets/config.js"></script></head><body>
-        <img src="https://\(counter.hostPort)/net.png"><iframe src=".hidden.html"></iframe>
+        <html><head><link rel="stylesheet" href="style.css"><script src=".secrets/config.js"></script>
+        <script src="notes.js"></script><script src="x/hook.js"></script></head><body>
+        <img src="https://\(counter.hostPort)/net.png"><iframe src=".hidden.html"></iframe><iframe src="ok.html"></iframe>
         <script>
-        let framed = 0;
-        window.addEventListener("message", () => { framed = 1 });
+        const framed = [];
+        window.addEventListener("message", (e) => { framed.push(e.data) });
         window.onload = () => setTimeout(() => {
-          document.title = getComputedStyle(document.body).color + "|" + (window.leaked || 0) + "|" + framed;
+          document.title = [getComputedStyle(document.body).color, window.leaked || 0, window.gitLeaked || 0,
+                            framed.sort().join("+")].join("|");
         }, 300);
         </script></body></html>
         """
@@ -172,12 +222,24 @@ final class SandboxedHTMLViewTests: XCTestCase {
         try index.write(to: file, atomically: true, encoding: .utf8)
         let webView = try host(.file(file, folder: folder))
         let title = try await waitForTitle(webView) { $0.contains("|") }
-        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0", "the visible sibling loads; the dotfile script and frame do not")
+        XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok", "visible siblings load and frame; no dotfile does, directly or by a link")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(counter.hits, 0, "an https image off the allowlist never connects")
     }
 
     // MARK: helpers
+
+    private func waitForText(_ webView: WKWebView, until done: (String) -> Bool) async throws -> String {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(10)
+        var text = ""
+        while clock.now < deadline {
+            text = (try? await webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String) ?? ""
+            if done(text) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return text
+    }
 
     private func host(_ content: SandboxedHTMLContent) throws -> WKWebView {
         let host = NSHostingView(rootView: SandboxedHTMLView(content: content).frame(width: 400, height: 300))

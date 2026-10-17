@@ -14,11 +14,26 @@ struct CodeHTMLPreviewBar: View {
     @Binding var isOn: Bool
     @Binding var reload: Int
     @State private var notice: String?
+    /// The blocked-resources line, while Preview is on (#563).
+    @State private var blocked: String?
 
     var body: some View {
         VStack(spacing: 0) {
             row
-            CodeHTMLBlockedBanner(html: buffer.diskText)
+            if isOn, let blocked {
+                CodeHTMLBlockedBanner(text: blocked)
+            }
+        }
+        // Scanned off the main thread, once per disk version of the file,
+        // and only while Preview is on.
+        .task(id: isOn ? buffer.diskText : nil) {
+            guard isOn else {
+                blocked = nil
+                return
+            }
+            let html = buffer.diskText
+            let banner = await Task.detached(priority: .utility) { HTMLBlockedResources.scan(html).banner() }.value
+            if !Task.isCancelled { blocked = banner }
         }
     }
 
@@ -61,25 +76,22 @@ struct CodeHTMLPreviewBar: View {
     }
 }
 
-/// "Blocked N external resources: host1, host2…" under the bar (#563): what
-/// the file's markup names outside the CDN allowlist, which neither the
-/// preview nor the browser loads. Nothing when everything is local or on
-/// the allowlist.
+/// "Blocked N external resources: host1, host2… · 1 hidden file" under the
+/// bar (#563): what the file's markup asks to load that neither the preview
+/// nor the browser loads (`HTMLBlockedResources`).
 private struct CodeHTMLBlockedBanner: View {
-    let html: String
+    let text: String
 
     var body: some View {
-        if let banner = HTMLPreviewPolicy.blockedResources(in: html).banner() {
-            Label(banner, systemImage: "shield.lefthalf.filled")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help("\(banner). Only \(HTMLPreviewPolicy.cdnHosts.joined(separator: ", ")) are allowed.")
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 8)
-                .padding(.bottom, 3)
-        }
+        Label(text, systemImage: "shield.lefthalf.filled")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help("\(text). Only \(HTMLPreviewPolicy.cdnHosts.joined(separator: ", ")) are allowed, and no hidden file.")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 3)
     }
 }
 
@@ -98,8 +110,8 @@ struct CodeHTMLPreviewPane: View {
 }
 
 enum CodeHTMLPreview {
-    /// Standardized, so the page's own URL starts with the folder URL the
-    /// content rules allow (`HTMLPreviewPolicy.visibleFilesFilter`).
+    /// Standardized, so the file lies under its folder for the preview URL
+    /// (`HTMLPreviewPolicy.pageURL`).
     static func content(_ file: URL) -> SandboxedHTMLContent {
         let file = file.standardizedFileURL
         return .file(file, folder: file.deletingLastPathComponent())
