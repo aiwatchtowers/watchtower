@@ -24,7 +24,6 @@ package enum SessionHostFrameType: UInt8, Sendable {
 package enum SessionHostFrameError: Error, Equatable, Sendable {
     /// The declared payload is over `SessionHostFrame.maxPayload`.
     case tooLarge(Int)
-    case unknownType(UInt8)
 }
 
 package struct SessionHostFrame: Equatable, Sendable {
@@ -39,7 +38,9 @@ package struct SessionHostFrame: Equatable, Sendable {
         self.payload = payload
     }
 
+    /// Callers split an `input` larger than `maxPayload` into several frames.
     package func encoded() -> [UInt8] {
+        precondition(payload.count <= Self.maxPayload, "session host frame payload over 1 MiB")
         let length = UInt32(payload.count)
         return [type.rawValue,
                 UInt8(truncatingIfNeeded: length >> 24), UInt8(truncatingIfNeeded: length >> 16),
@@ -47,8 +48,10 @@ package struct SessionHostFrame: Equatable, Sendable {
     }
 }
 
-/// Reassembles frames from a byte stream. After a throw the stream is
-/// corrupt: the caller closes the connection.
+/// Reassembles frames from a byte stream. A frame of an unknown type is
+/// skipped whole (the protocol only grows additively and the app and the
+/// host are separate binaries). After a throw the stream is corrupt: the
+/// caller closes the connection.
 package struct SessionHostFrameDecoder: Sendable {
     private var buffer: [UInt8] = []
 
@@ -61,12 +64,11 @@ package struct SessionHostFrameDecoder: Sendable {
         while buffer.count - offset >= SessionHostFrame.headerSize {
             let length = buffer[(offset + 1)...(offset + 4)].reduce(0) { ($0 << 8) | Int($1) }
             guard length <= SessionHostFrame.maxPayload else { throw SessionHostFrameError.tooLarge(length) }
-            guard let type = SessionHostFrameType(rawValue: buffer[offset]) else {
-                throw SessionHostFrameError.unknownType(buffer[offset])
-            }
             let end = offset + SessionHostFrame.headerSize + length
             guard buffer.count >= end else { break }
-            frames.append(SessionHostFrame(type: type, payload: Array(buffer[(offset + SessionHostFrame.headerSize)..<end])))
+            if let type = SessionHostFrameType(rawValue: buffer[offset]) {
+                frames.append(SessionHostFrame(type: type, payload: Array(buffer[(offset + SessionHostFrame.headerSize)..<end])))
+            }
             offset = end
         }
         buffer.removeFirst(offset)

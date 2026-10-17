@@ -41,4 +41,24 @@ final class SessionHostFrameTests: XCTestCase {
         XCTAssertLessThanOrEqual(path.utf8.count, 103)
         XCTAssertNotEqual(path, SessionHostPaths.socketPath(bundleID: "com.example.other", tempDir: tmp))
     }
+
+    func testDecoderSkipsUnknownType() throws {
+        let a = SessionHostFrame(type: .output, payload: [1])
+        let b = SessionHostFrame(type: .exit, payload: [2, 3])
+        var decoder = SessionHostFrameDecoder()
+        let bytes = a.encoded() + [0x7E, 0, 0, 0, 2, 9, 9] + b.encoded()
+        XCTAssertEqual(try decoder.append(bytes), [a, b])
+    }
+
+    func testFrameAtMaxPayloadDecodes() throws {
+        let frame = SessionHostFrame(type: .input, payload: [UInt8](repeating: 7, count: SessionHostFrame.maxPayload))
+        var decoder = SessionHostFrameDecoder()
+        XCTAssertEqual(try decoder.append(frame.encoded()), [frame])
+    }
+
+    func testLaunchRequestJSONKeys() throws {
+        let req = SessionHostLaunchRequest(row: 1, run: "r", executable: "/bin/sh", args: ["-l"], env: ["A=b"], cwd: "/", cols: 80, rows: 24)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["row", "run", "executable", "args", "env", "cwd", "cols", "rows"])
+    }
 }
