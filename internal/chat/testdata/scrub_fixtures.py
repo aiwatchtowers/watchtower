@@ -121,7 +121,9 @@ class ClaudeAIScrubber:
         if d.get("type") == "system" and d.get("subtype") == "init":
             out = {k: d[k] for k in INIT_KEEP_AI if k in d}
             out["cwd"] = d.get("cwd")
-            out["tools"] = [t for t in d.get("tools", []) if not t.startswith("mcp__") or t.startswith("mcp__claude_ai_")]
+            # Built-ins and Claude Docs only: another connector's tool names
+            # could name a company or a workspace.
+            out["tools"] = [t for t in d.get("tools", []) if not t.startswith("mcp__") or t.startswith("mcp__claude_ai_Claude_Docs__")]
             out["mcp_servers"] = [self.server(s) for s in d.get("mcp_servers", [])]
             d = out
         elif d.get("type") == "control_response" and "mcpServers" in d["response"].get("response", {}):

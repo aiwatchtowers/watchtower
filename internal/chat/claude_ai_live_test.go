@@ -493,6 +493,8 @@ func newProbeRecorder(t *testing.T) *probeRecorder {
 	}
 	r := &probeRecorder{w: f}
 	t.Cleanup(func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 		if err := f.Close(); err != nil && r.err == nil {
 			r.err = err
 		}
@@ -585,7 +587,7 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH(),
 		"CLAUDE_CODE_ARTIFACT=1", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN=0"), extraEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.WaitDelay = 5 * time.Second // a grandchild holding stdout cannot stall Wait
+	cmd.WaitDelay = 5 * time.Second // bounds the stderr copy if a grandchild keeps it open
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
@@ -633,10 +635,12 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 		case <-time.After(5 * time.Second):
 		}
 		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		_ = stdout.Close() // unblocks the reader if a process outside the group holds stdout
 		select {
 		case <-waited:
 		case <-time.After(10 * time.Second):
 			t.Errorf("%s: claude (pgid %d) not reaped", scenario, pgid)
+			return // stderr may still be written to
 		}
 		if t.Failed() && stderr.Len() > 0 {
 			t.Logf("%s stderr: %.2000s", scenario, stderr.String())
@@ -718,7 +722,11 @@ func (p *liveProbe) turn(text string, decide func(map[string]any) probeReply, to
 func (p *liveProbe) inBase(req map[string]any) bool {
 	in, _ := req["input"].(map[string]any)
 	path, ok := in["file_path"].(string)
-	return !ok || strings.HasPrefix(path, p.base+"/")
+	if !ok {
+		return true
+	}
+	rel, err := filepath.Rel(p.base, filepath.Clean(path))
+	return filepath.IsAbs(path) && err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
 // mcpStatus sends one mcp_status control request and returns mcpServers.
