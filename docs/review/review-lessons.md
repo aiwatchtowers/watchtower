@@ -1710,3 +1710,12 @@ Entry format:
 - weak-dimension: 6. The two widening/consent paths (the form's `validate --against` and the assistant's `ConfirmedRecipe`) were each reviewed per task, but nobody compared them until the final panel.
 - rule-gap (candidate, dim 6): *when a change adds a second consent path for the same act (a form sheet and an assistant card both confirming a recipe), both compute "what's new" from one shared baseline helper, and a test runs the same unconfirmed hand edit through both and asserts that they agree.*
 - outcome: TBD
+
+## 2026-10-17 — docs/481-system-session-poc (PR #314: docs-only POC research note, board #481 "system session" channel; the owner had already decided "don't build", and the recommendation was out of scope; panel: prosecutor + code-reviewer + codex (default review only, no findings), test/silent lanes N/A; judge verified by reading and grep, no runs; judge synthesis, round 1) — verdict: approve
+
+- contested: prosecutor F1 ("a held Notification becomes Needs approval") was raised as major. It is true that it is unverified: `agentStateFor` maps only permission_prompt/elicitation_dialog, and no fixture captured the held notification's type. I cut it to minor because the claim was inherited from an earlier approved appendix and is not decisive for the recommendation. **When a research doc restates an earlier doc's claim about how our own code reacts, check the claim against the code; an approved appendix is not evidence.** [6]
+- false-positive: F4 (the receiver was a child session, undisclosed). §3.3 and §7 already disclosed it. Before flagging "not stated", check the whole doc for the caveat. [6]
+- miss: codex gave no findings because 0.159.2 refuses `--base` with a custom prompt, so a docs fact-check got no codex coverage at all. The code-reviewer alone found the D1/D3 gap (the mode skip relies on a hook report that a fresh run may not have made yet). [2]
+- weak-dimension: 6. The overclaims ("three hazards did not arise", "no shared prompt") sat next to their own narrower caveat. Only reading every summary sentence against its test table catches them.
+- rule-gap (candidate, docs): *a research or POC doc's summary and findings sections claim only what its experiment tables show; anything extrapolated or untested says so in place, not only in a later caveat.*
+- outcome: TBD

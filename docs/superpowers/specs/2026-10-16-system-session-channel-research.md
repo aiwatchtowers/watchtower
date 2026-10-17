@@ -4,13 +4,14 @@
 **Date:** 2026-10-16. **Claude Code:** 2.1.301 (macOS, arm64).
 **Builds on:** Appendix B of `2026-10-10-session-background-agents-design.md` (the peer socket protocol
 captured on 2.1.295 for board #411) and its fixtures in `internal/claudesession/testdata/peer_*`.
-**Contracts read:** PROJ-11, PROJ-12, PROJ-13 in `docs/inventory/workbench.md`.
+**Contracts read:** PROJ-11, PROJ-12, PROJ-13 in `docs/inventory/workbench.md`; REVIEW-04 in
+`docs/inventory/review.md`.
 
 ## 0. Recommendation
 
 **Don't build the system session.** It would be a second, always-on Claude Code process that sends the same
-kind of socket frame Watchtower could send itself (plus an `auth` line, a `from` and its mode), but with a model turn in the middle of every message,
-a public presence in every
+kind of socket frame Watchtower could send itself (plus an `auth` line, a `from` address and the sender's
+permission mode), but with a model turn in the middle of every message, a public presence in every
 session's `ListAgents`, an inbound injection surface into a Watchtower-owned agent, and no help at all for
 Codex sessions. Its one real gain — a message that never types into the terminal — is a property of the
 **receiving** side of the peer channel, not of the sender; the experiments below measured it with a frame
@@ -22,8 +23,9 @@ Claude Code sessions in a prompting mode, with today's typed delivery kept as th
 reuses an undocumented Claude Code internal and needs its own owner ruling and PROJ-12 amendment; it is
 sketched, not proposed as decided.
 
-`notify_when_idle` should **not** replace anything: Watchtower does not poll agents for idleness — the
-PROJ-11 hooks push every state change, and the registry `status` answers the rest without a model.
+`notify_when_idle` should **not** replace anything: the PROJ-11 hooks push every state change, and the one
+poll Watchtower runs — the #411 registry probe (`workbench session-probe`, every 30 minutes, for stale
+background counts) — reads the registry `status` without a model (§4.4).
 
 ## 1. What was asked
 
@@ -45,13 +47,15 @@ internal socket protocol. The POC questions:
 Cross-session messaging is a local peer channel built into Claude Code:
 
 - Every running session writes a registry entry `~/.claude/sessions/<pid>.json` (Watchtower already reads it
-  for the #411 probe, `internal/claudesession`) with `messagingSocketPath` (`/tmp/cc-socks/<pid>.sock`, an
-  `AF_UNIX` stream socket), `peerProtocol: 1`, `peerFeatures: [notify_idle, reply_across_default_dirs,
+  for the #411 probe, `internal/claudesession`) with `messagingSocketPath` (typically `/tmp/cc-socks/<pid>.sock`;
+  Appendix B lists the per-user fallbacks; an `AF_UNIX` stream socket), `peerProtocol: 1`, `peerFeatures: [notify_idle, reply_across_default_dirs,
   artifact_yield]`, `name`, `kind` (`interactive`/`bg`), `entrypoint` (`cli`, or `sdk-cli` for a headless
   `-p` run) and `status` (`idle`/`busy`/`shell`/`waiting`). Unchanged from 2.1.295 to 2.1.301 on every entry
   on this machine.
 - `ListAgents` is that registry rendered for the model. `SendMessage` to a name writes one newline-delimited
-  JSON `user` frame to the receiver's socket (plus an `auth` line and a `from` address for receipts).
+  JSON `user` frame to the receiver's socket (plus an `auth` line, a `from` address for receipts and the
+  sender's permission mode — implied by Appendix B's `no-mode-asserted` receipt; its wire shape was not
+  observed, since the captured `peer_request.bin` carries no mode).
 - The receiver accepts any same-uid connection on macOS (the token matters only on Windows, Appendix B),
   wraps the text in a `<cross-session-message>` envelope with a fixed preamble, and queues it as a turn
   (`priority: next`). Receipts (`held`/`denied`/`expired`/`delivered`/…) go back only to a `from` socket.
@@ -124,8 +128,9 @@ Receiver: an interactive `claude` in `manual` (prompting) mode in a pty.
 | B. Owner's half-typed text in the prompt (not submitted) | The message is answered as its own turn; **the draft stays in the prompt, untouched and unsubmitted.** |
 | C. A Bash permission dialog open | **The dialog is untouched** (no option chosen, the file not created); the message is queued. After the owner answered the dialog (No), the queued message ran. |
 
-These are exactly the three hazards PROJ-12's gates exist for (a Return into a permission dialog, a Return
-over a draft, two lines in one prompt). On the peer channel they did not arise: nothing is typed. Which PROJ-12 gates a peer path would still keep
+PROJ-12's gates exist for three hazards (a Return into a permission dialog, a Return over a draft, two lines
+in one prompt). On the peer channel the first two did not arise: nothing is typed. The third was not tested
+(no back-to-back sends; queue order is an open measurement, §6). Which PROJ-12 gates a peer path would still keep
 is the amendment's central decision (§6, D3); this POC only shows the draft and dialog hazards are absent on
 the receiving side in `manual` mode.
 
@@ -139,7 +144,9 @@ message" in their own terminal for an answer they gave, which needs a wording de
 
 - Direct frame (no mode asserted), Appendix B, measured on 2.1.295 (on 2.1.301 only `manual` was re-run, §3.4): accepted in `manual`, `acceptEdits`, `plan`,
   `auto`, `dontAsk`; **held** in `bypassPermissions` (Deny/Deliver prompt in the owner's terminal, registry
-  `waiting`, a Notification hook — which PROJ-11 turns into Needs approval and a macOS notice).
+  `waiting`, a Notification hook). The hook's `notification_type` was not captured; PROJ-11
+  (`agentStateFor`, `cmd/workbench_session_state.go`) turns it into Needs approval and a macOS notice only
+  if it arrives as `permission_prompt` or `elicitation_dialog`, and records nothing for an unknown type.
 - The documented rule (Claude Code docs, "Cross-session messaging", read 2026-10-16; doc reading, not
   measured here) has two classes, not one per mode: sessions that bypass permission prompts, and all others.
   A prompting receiver delivers a message and holds it only if the sender claims bypass; a bypassing
@@ -150,7 +157,7 @@ message" in their own terminal for an answer they gave, which needs a wording de
   mode") is looser than the docs.
 - So **a system session in a prompting mode has the same holds as the direct frame**: none in prompting
   receivers, a hold in every `bypassPermissions` receiver (an owner prompt they did not ask for, `waiting`,
-  and a Notification that PROJ-11 shows as Needs approval). Permission modes do not separate the two
+  and a Notification that PROJ-11 may show as Needs approval). Permission modes do not separate the two
   options.
 - A session can set `crossSessionInbound` to `accept` (no holds) or `refuse` (no inbound messages), or deny
   `SendMessage`/`ListAgents`; a refusal is not reported to a sender without `from`.
@@ -168,20 +175,24 @@ message" in their own terminal for an answer they gave, which needs a wording de
 
 ## 4. Findings per question
 
-1. **Persistent or on demand.** For sending, a cold `-p` per message works (≈4–5 s, ~$0.002 on haiku). For
+1. **Persistent or on demand.** For sending, a cold `-p` per message would do (an estimated ≈4–5 s,
+   ~$0.002 on haiku — extrapolated in §3.2, not run as a `SendMessage`, §3.3). For
    `notify_when_idle`, a persistent session is required: the notice arrives as a turn into the subscriber,
    and a `-p` run has exited by then. Either way it is a Claude Code process Watchtower must launch from a
    clean environment, supervise and respawn on CLI updates.
 2. **Latency and cost.** Cost is negligible; latency is seconds per message against under 0.15 s for the
    direct frame, and the model in the loop makes the fixed line non-deterministic.
 3. **Ask answer as a message.** On the receiving side it is clearly better than typing: no Return into a
-   dialog, no submit over a draft, no shared prompt (§3.4). But the gain comes from the peer channel, not the
+   dialog, no submit over a draft (§3.4); no shared prompt is expected but was not measured. But the gain comes from the peer channel, not the
    system session; both are held the same way by a `bypassPermissions` receiver (§3.5).
    Codex has no peer channel, so typed delivery stays regardless — a dual path either way.
 4. **`notify_when_idle` instead of polling.** Nothing to replace: idleness is pushed by the PROJ-11 hooks
    (Stop, Notification, SubagentStop, …) into `terminal_sessions`, and the registry `status` (`idle`/`busy`/
-   `shell`/`waiting`) is readable without a model. A notice would cost a model turn in the system session and
-   then still have to be relayed to Watchtower by parsing its stream output. One-shot per wait, too.
+   `shell`/`waiting`) is readable without a model. The only idleness poll, the #411 registry probe
+   (`SessionBackgroundProber` running `workbench session-probe` every 30 minutes for stale background
+   counts), is a plain file read; a `notify_when_idle` is one-shot per target and per wait, so covering every
+   session would need a live subscription each, re-armed after every notice. A notice would cost a model turn in the system session and
+   then still have to be relayed to Watchtower by parsing its stream output.
 5. **Another permission mode.** Not a differentiator: by the documented two-class rule, a prompting system
    session and the direct frame are both held only by `bypassPermissions` receivers (§3.5). Either way
    Watchtower must skip those sessions, which the hook inputs' `permission_mode` would allow (best-effort: a
@@ -197,7 +208,7 @@ message" in their own terminal for an answer they gave, which needs a wording de
 ## 5. Risks if the system session were built anyway
 
 - **Bypass holds**, same as the direct frame: a `bypassPermissions` receiver shows the owner a prompt and PROJ-11
-  a false Needs approval (§3.5).
+  possibly a false Needs approval (§3.5).
 - **Inbound steering** of a privileged sender (§4.7) unless it runs with `crossSessionInbound: refuse`; the
   receiving preamble says peers grant no escalation, but the system session's job is precisely to send.
 - **Non-deterministic fixed lines** — breaks the pinned `DeliveryLine` dual path (PROJ-12 guards).
@@ -217,9 +228,10 @@ Only if the owner wants the receiving-side gain. Not a commitment.
 **Decisions to take:**
 - D1. For a Claude Code session whose registry entry matches (`peerProtocol: 1`, the three known
   `peerFeatures`, live pid, `sessionId` = the row's Claude session id) and whose last hook-reported
-  `permission_mode` is not `bypassPermissions` (the hook inputs carry it; Watchtower does not store it today,
-  so this needs a column), the Desktop (or `watchtower workbench deliver`, Go owning
-  the write) sends the fixed PROJ-12 line as one peer frame (`type: user`, `priority: next`, no `auth`, no
+  `permission_mode` **in the current run** is not `bypassPermissions` (the hook inputs carry it; Watchtower
+  does not store it today, so this needs a column; a session with no hook-reported mode in this run — a fresh
+  launch or resume before its first hook, or a folder without the state hooks — gets typed delivery), the
+  Desktop (or a new `watchtower workbench deliver` subcommand, not built, Go owning the write) sends the fixed PROJ-12 line as one peer frame (`type: user`, `priority: next`, no `auth`, no
   `from`, `session_id` set so a stale socket drops it — the drop is described in Appendix B, not tested)
   instead of typing it.
 - D2. Acknowledgement is the turn's hook trail (UserPromptSubmit/Stop for that run), as in the #411 design;
@@ -229,28 +241,29 @@ Only if the owner wants the receiving-side gain. Not a commitment.
   queued line going nowhere once its session stopped or started a new run, `delivered` set only by
   `get_ask`; Codex and any unmatched Claude session use today's typed delivery unchanged. Proposed to drop
   for the peer path only, each a named amendment item for the owner: the no-draft gate, the
-  `needsApproval` hold (§3.4 cases B and C) and the "hooks reported this run" Return gate (there is no
-  Return; the registry match replaces it).
+  `needsApproval` hold (§3.4 cases B and C) and the "hooks reported this run" gate as a Return gate (there
+  is no Return). It survives as D1's mode check: the registry match proves a live session, not its mode.
 - D4. The owner-facing wording: the receiver's banner says "Another Claude session sent a message"; the
   line could start with "Watchtower:" (as the #411 ping did) so the owner recognises it.
 - D5. Windows (token auth) stays out of scope; the `.key` file is never read.
 
 **Contracts touched:** PROJ-12 (a second delivery path and its gates — amendment with owner approval, guard
-tests added, none weakened); PROJ-11 (a held frame raises a Notification → Needs approval; the mode skip
-must keep that from happening); `internal/claudesession` (a sender beside the registry reader); the
+tests added, none weakened); PROJ-11 (a held frame raises a Notification, possibly Needs approval; the
+mode skip must keep that from happening); `internal/claudesession` (a sender beside the registry reader); the
 Desktop `SessionLineDelivery`; REVIEW-04 in `docs/inventory/review.md` (the diff reviewer's round line "goes
 only through PROJ-12's gates", so it changes with them); `docs/features/workbench.md`.
 
 **Open measurement before a spec:** the per-mode acceptance table re-run on the current CLI (only `manual`
 was re-run on 2.1.301); the `session_id` mismatch drop; a frame sent while the agent is mid-turn and while a
-background subagent runs (queue order with `priority: next`); the hold on a mode switch to or from bypass
+background subagent runs, and two frames back to back (queue order with `priority: next`, the
+shared-prompt hazard); the held frame's Notification `notification_type`; the hold on a mode switch to or from bypass
 between the last hook and the send; and, for completeness, the documented two-class rule for a `SendMessage`
 from a standalone sender.
 
 ## 7. Reproduction notes
 
-- Registry and socket shape: read `~/.claude/sessions/<pid>.json` of a session you started; the socket is
-  `/tmp/cc-socks/<pid>.sock`.
+- Registry and socket shape: read `~/.claude/sessions/<pid>.json` of a session you started; the socket is the
+  entry's `messagingSocketPath` (typically `/tmp/cc-socks/<pid>.sock`).
 - Direct frame: the one-line JSON in `internal/claudesession/testdata/peer_request.bin`, written to the
   socket, then the write side closed; the response is 0 bytes.
 - Receivers were driven over a pty with bracketed paste for typed text; a child receiver (started from
