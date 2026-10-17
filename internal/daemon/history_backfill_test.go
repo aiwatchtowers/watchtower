@@ -522,6 +522,7 @@ func TestHistoryBackfill_TransientErrorsAreHolds(t *testing.T) {
 		"dns":             fmt.Errorf("x: %w", &net.DNSError{Err: "no such host", Name: "imap.example.com"}),
 		"url timeout":     &url.Error{Op: "Get", URL: "https://example.com", Err: timeoutErr{}},
 		"url reset":       &url.Error{Op: "Get", URL: "https://example.com", Err: syscall.ECONNRESET},
+		"url EOF":         fmt.Errorf("gmail GET /users/me/messages: %w", &url.Error{Op: "Get", URL: "https://example.com", Err: io.EOF}),
 		"cut body":        fmt.Errorf("reading response: %w", io.ErrUnexpectedEOF),
 		"busy db":         fmt.Errorf("upsert m1: %w", busy),
 		"gmail 503":       fmt.Errorf("x: %w", &gmail.StatusError{Op: "gmail GET /users/me/messages", Code: 503}),

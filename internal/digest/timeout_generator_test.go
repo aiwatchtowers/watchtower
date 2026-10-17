@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os/exec"
@@ -67,6 +68,15 @@ func TestWithCallTimeout_TransportFailureIsAnAICallError(t *testing.T) {
 		"rate limit":       errors.New("codex error: rate_limit_error: slow down"),
 		"timed out":        errors.New("claude returned error (subtype=success): Request timed out."),
 		"codex 502":        WithCause(errors.New("codex CLI failed (exit 1): unexpected status code 502 Bad Gateway"), exited),
+		"ollama 503":       errors.New("ollama returned HTTP 503: model is loading"),
+		"ollama 429":       errors.New("ollama returned HTTP 429: too many requests"),
+		"url EOF": fmt.Errorf("ollama request failed: %w", &url.Error{Op: "Post", URL: "http://localhost:11434",
+			Err: io.EOF}),
+		// Login or key problems say nothing about the chunk either.
+		"invalid key":   errors.New("claude returned error (subtype=success): Invalid API key · Please run /login"),
+		"not logged in": WithCause(errors.New("codex CLI failed (exit 1): Not logged in"), exited),
+		"expired":       errors.New("claude returned error (subtype=success): OAuth token has expired"),
+		"auth error":    errors.New(`claude returned error (subtype=success): API Error: 401 {"type":"authentication_error"}`),
 	}
 	for name, err := range outage {
 		assert.ErrorIs(t, gen(err), ErrAICall, name)
@@ -78,7 +88,7 @@ func TestWithCallTimeout_TransportFailureIsAnAICallError(t *testing.T) {
 		"exit 1":    WithCause(errors.New("claude CLI failed (exit 1): API Error: 400 prompt is too long"), exited),
 		"bad cert": fmt.Errorf("ollama request failed: %w", &url.Error{Op: "Post", URL: "https://ollama.example.com",
 			Err: errors.New("x509: certificate signed by unknown authority")}),
-		"auth": errors.New("claude returned error (subtype=success): Invalid API key"),
+		"ollama 400": errors.New("ollama returned HTTP 400: bad request"),
 	}
 	for name, err := range reply {
 		assert.NotErrorIs(t, gen(err), ErrAICall, name)

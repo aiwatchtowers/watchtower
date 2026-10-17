@@ -98,7 +98,7 @@ func TestHistoryBackfill_SetLastErrorAfterAdvance(t *testing.T) {
 	assert.Empty(t, rows[0].LastError, "the next successful chunk clears the trace")
 }
 
-// #580: a hold records when it began and why; release and advance clear it.
+// #580: a hold records when it began and why; only a release clears it.
 func TestHistoryBackfill_HoldAndRelease(t *testing.T) {
 	d := OpenTestDB(t)
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
@@ -122,6 +122,6 @@ func TestHistoryBackfill_HoldAndRelease(t *testing.T) {
 	require.NoError(t, d.HoldHistoryBackfill(id, "held: again", now))
 	require.NoError(t, d.AdvanceHistoryBackfill(id, 300, now))
 	rows, _ = d.ListHistoryBackfills()
-	assert.Nil(t, rows[0].HeldSince, "advance clears the hold")
+	assert.NotNil(t, rows[0].HeldSince, "the hold belongs to the row: an advance (a skip too) keeps it")
 	assert.Empty(t, rows[0].LastError)
 }

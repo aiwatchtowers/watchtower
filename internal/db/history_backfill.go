@@ -21,7 +21,7 @@ type HistoryBackfill struct {
 	StartedAt     time.Time
 	UpdatedAt     time.Time
 	DoneAt        *time.Time
-	HeldSince     *time.Time // when a transient failure began holding the chunk; nil = not held (#580)
+	HeldSince     *time.Time // when transient failures began holding the row; nil = not held (#580)
 }
 
 // StartHistoryBackfill creates the source's row; a second call is a no-op so
@@ -90,11 +90,12 @@ func (db *DB) ListHistoryBackfills() ([]HistoryBackfill, error) {
 }
 
 // AdvanceHistoryBackfill moves reached_ts, clears failures, error and the
-// waiting flag, and marks the row done once reached_ts is at or below the floor.
+// waiting flag (held_since stays: the runner clears it on a successful Process,
+// #580), and marks the row done once reached_ts is at or below the floor.
 func (db *DB) AdvanceHistoryBackfill(id int64, reachedTS float64, now time.Time) error {
 	ts := planTime(now)
 	_, err := db.Exec(`UPDATE history_backfill SET
-		reached_ts = ?, chunk_failures = 0, last_error = '', waiting = '', held_since = NULL, updated_at = ?,
+		reached_ts = ?, chunk_failures = 0, last_error = '', waiting = '', updated_at = ?,
 		status  = CASE WHEN ? <= floor_ts THEN 'done' ELSE status END,
 		done_at = CASE WHEN ? <= floor_ts THEN ? ELSE done_at END
 		WHERE id = ?`, reachedTS, ts, reachedTS, reachedTS, ts, id)

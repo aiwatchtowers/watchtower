@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"syscall"
@@ -78,9 +80,10 @@ func (g *timeoutGenerator) Generate(ctx context.Context, systemPrompt, userMessa
 	return result, usage, newSessionID, err
 }
 
-// ErrAICall marks a transport-level failure of an AI call: the call timed
-// out, its process could not start or was killed, the network to the
-// provider failed, or the provider reported an outage (providerOutage). The
+// ErrAICall marks a failure of an AI call that says nothing about the
+// request: the call timed out, its process could not start or was killed,
+// the network to the provider failed, the provider reported an outage, or
+// the CLI's login or key is not usable (aiUnavailable). The
 // history backfill retries those instead of counting a strike against the
 // chunk (docs/features/history-backfill.md). Any other reply — an error
 // envelope such as error_max_turns, an empty result, output the parser
@@ -97,7 +100,7 @@ func aiTransportFailure(err error) bool {
 		errors.As(err, &execErr) || errors.As(err, &pathErr) ||
 		(errors.As(err, &exitErr) && !exitErr.Exited()) || // killed by a signal
 		NetworkFailure(err) ||
-		providerOutage.MatchString(err.Error())
+		aiUnavailable.MatchString(err.Error())
 }
 
 // NetworkFailure reports a connection-level failure: a timeout, a dial/
@@ -111,18 +114,26 @@ func NetworkFailure(err error) bool {
 	}
 	var opErr *net.OpError
 	var dnsErr *net.DNSError
+	var urlErr *url.Error
 	return errors.As(err, &opErr) || errors.As(err, &dnsErr) ||
+		// The server closed the connection mid-request ("Get …: EOF").
+		(errors.As(err, &urlErr) && (errors.Is(urlErr.Err, io.EOF) || errors.Is(urlErr.Err, io.ErrUnexpectedEOF))) ||
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
-// providerOutage matches the provider-side outages the claude and codex CLIs
-// report inside an error envelope or their stderr: a connection error, an
-// overloaded API, a 5xx or 429 status, a rate limit or a request timeout. The
-// request itself was fine, so they are transport failures. The list is
-// explicit and narrow: error_max_turns, an empty result or unreadable output
-// stay reply errors.
-var providerOutage = regexp.MustCompile(`(?i)api error: (connection error|5\d\d\b|429\b)|overloaded_error|\boverloaded\b|rate_limit_error|request timed out|status code (5\d\d|429)\b`)
+// aiUnavailable matches what the claude, codex and Ollama generators report,
+// inside an error envelope or on stderr, when the provider cannot serve any
+// request right now: a connection error, an overloaded API, a 5xx or 429
+// status, a rate limit, a request timeout, or a login or API key that is
+// missing, invalid or expired. None of them is about the request, so they
+// are transport failures. The list is explicit and narrow: error_max_turns,
+// an empty result or unreadable output stay reply errors.
+var aiUnavailable = regexp.MustCompile(`(?i)` +
+	`api error: (connection error|5\d\d\b|429\b)|overloaded_error|\boverloaded\b|rate_limit_error|` +
+	`request timed out|status code (5\d\d|429)\b|ollama returned http (5\d\d|429)\b|` +
+	`invalid api key|authentication_error|not logged in|please run /login|` +
+	`(oauth token|login|session|credentials?) (has )?expired`)
 
 // WithCause returns an error with err's message that also matches cause in
 // errors.Is and errors.As, so a generator can keep its readable message and
