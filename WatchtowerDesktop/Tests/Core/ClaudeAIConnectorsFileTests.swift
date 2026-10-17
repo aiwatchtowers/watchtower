@@ -126,6 +126,7 @@ final class ClaudeAIConnectorsFileTests: XCTestCase {
         let weak: [String: ClaudeAIConnectorSwitches] = [
             "ai:\n  claude_ai:\n    connectors: \"false\"\n": .init(connectors: false),
             "ai:\n  claude_ai:\n    connectors: 0\n": .init(connectors: false),
+            "ai:\n  claude_ai:\n    connectors: \"\"\n": .init(connectors: false),
             "ai:\n  claude_ai:\n    connectors: \"T\"\n": .init(connectors: true),
             "ai:\n  claude_ai:\n    disabled_connectors: 42\n": .init(disabled: ["42"])
         ]

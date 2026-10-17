@@ -95,14 +95,15 @@ package struct ClaudeAIConnectorSwitches: Equatable, Sendable {
     }
 
     /// viper decodes weakly (`WeaklyTypedInput`): a number is true unless
-    /// 0, a string is read by Go's `strconv.ParseBool`; anything else fails Go's load.
+    /// 0, "" is false, another string is read by Go's `strconv.ParseBool`;
+    /// anything else fails Go's load.
     private static func weakBool(_ value: Any) throws -> Bool {
         switch value {
         case let bool as Bool: return bool
         case let int as Int: return int != 0
         case let double as Double: return double != 0
         case let text as String where ["1", "t", "T", "TRUE", "true", "True"].contains(text): return true
-        case let text as String where ["0", "f", "F", "FALSE", "false", "False"].contains(text): return false
+        case let text as String where ["", "0", "f", "F", "FALSE", "false", "False"].contains(text): return false
         default: throw failure("ai.claude_ai.connectors in config.yaml is not true or false")
         }
     }
