@@ -20,7 +20,7 @@ final class SliceKindTests: XCTestCase {
                 "slack_account", "google_account", "jira_account",
                 "heartbeat", "device_grant", "recording_job",
                 "workbench", "workbench_target", "workbench_comment", "terminal_session",
-                "owner_ask", "session_report", "session_timeline", "ask_alert"
+                "owner_ask", "session_report", "session_timeline", "ask_alert", "permission_request"
             ]
         )
     }

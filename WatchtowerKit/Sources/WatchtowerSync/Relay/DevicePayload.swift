@@ -41,6 +41,8 @@ public struct DevicePayload: Codable, Equatable, Sendable {
     public let typingRequested: Bool
     /// The phone asks to start sessions (the Mac decides).
     public let startSessions: Bool
+    /// The phone asks to answer permission prompts (the Mac decides). Absent reads false; false is not written.
+    public let permissionsRequested: Bool
     public let updatedAt: Date
 
     public var recordName: String { "device-\(deviceID)" }
@@ -58,6 +60,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         case unlinked
         case typingRequested
         case startSessions
+        case permissionsRequested
         case updatedAt
     }
 
@@ -72,6 +75,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         unlinked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         typingRequested: Bool,
         startSessions: Bool,
+        permissionsRequested: Bool = false,
         updatedAt: Date
     ) {
         self.deviceID = deviceID
@@ -84,6 +88,39 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         self.unlinked = unlinked
         self.typingRequested = typingRequested
         self.startSessions = startSessions
+        self.permissionsRequested = permissionsRequested
         self.updatedAt = updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceID = try c.decode(String.self, forKey: .deviceID)
+        name = try c.decode(String.self, forKey: .name)
+        model = try c.decode(String.self, forKey: .model)
+        appVersion = try c.decode(String.self, forKey: .appVersion)
+        scope = try c.decode(DeviceScope.self, forKey: .scope)
+        userRecordName = try c.decode(String.self, forKey: .userRecordName)
+        linkNonce = try c.decodeIfPresent(String.self, forKey: .linkNonce)
+        unlinked = try c.decodeIfPresent(Bool.self, forKey: .unlinked)
+        typingRequested = try c.decode(Bool.self, forKey: .typingRequested)
+        startSessions = try c.decode(Bool.self, forKey: .startSessions)
+        permissionsRequested = try c.decodeIfPresent(Bool.self, forKey: .permissionsRequested) ?? false
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(deviceID, forKey: .deviceID)
+        try c.encode(name, forKey: .name)
+        try c.encode(model, forKey: .model)
+        try c.encode(appVersion, forKey: .appVersion)
+        try c.encode(scope, forKey: .scope)
+        try c.encode(userRecordName, forKey: .userRecordName)
+        try c.encodeIfPresent(linkNonce, forKey: .linkNonce)
+        try c.encodeIfPresent(unlinked, forKey: .unlinked)
+        try c.encode(typingRequested, forKey: .typingRequested)
+        try c.encode(startSessions, forKey: .startSessions)
+        if permissionsRequested { try c.encode(true, forKey: .permissionsRequested) }
+        try c.encode(updatedAt, forKey: .updatedAt)
     }
 }

@@ -45,7 +45,7 @@ final class RelayPayloadTests: XCTestCase {
                 "ask_answer", "board_target_status", "board_target_priority",
                 "board_comment_add", "board_comment_reply", "board_target_create",
                 "session_start", "session_input", "session_input_cancel",
-                "session_finish_request", "session_stop", "session_report_request"
+                "session_finish_request", "session_stop", "session_report_request", "permission_answer", "session_interrupt"
             ]
         )
     }

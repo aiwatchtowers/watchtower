@@ -175,6 +175,7 @@ final class DeviceSettings {
             unlinked: unlinked ? true : nil,
             typingRequested: typingRequested,
             startSessions: startSessions,
+            permissionsRequested: false,
             updatedAt: now
         )
     }

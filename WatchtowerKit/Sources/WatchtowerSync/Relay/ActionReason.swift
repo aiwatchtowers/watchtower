@@ -29,4 +29,8 @@ public enum ActionReason: String, Codable, CaseIterable, Sendable {
     /// The record names another hub (multi-hub spec §3.5).
     case wrongHub = "wrong_hub"
     case writeFailed = "write_failed"
+    /// A permission answer for a request that is no longer pending (answered on the Mac, or closed).
+    case notPending = "not_pending"
+    /// An interrupt for a session that is not Working.
+    case notWorking = "not_working"
 }

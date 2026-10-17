@@ -40,6 +40,9 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public let typingAllowed: Bool
     /// Default true.
     public let startSessionsAllowed: Bool
+    /// Answering permission prompts from the phone needs its own allow, never implied by typing. Default false;
+    /// absent on the wire reads false, and false is not written, so older peers' bytes stay as they were.
+    public let permissionsAllowed: Bool
     /// nil while the hub has not decided yet.
     public let decidedAt: Date?
     /// The hub read the hello and waits for the owner; absent otherwise.
@@ -67,6 +70,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         case linkedAt
         case typingAllowed
         case startSessionsAllowed
+        case permissionsAllowed
         case decidedAt
         case awaitingConfirmation
         case confirmNonce
@@ -84,6 +88,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         linkedAt: Date? = nil,
         typingAllowed: Bool,
         startSessionsAllowed: Bool,
+        permissionsAllowed: Bool = false,
         decidedAt: Date? = nil,
         awaitingConfirmation: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         confirmNonce: String? = nil,
@@ -99,10 +104,49 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         self.linkedAt = linkedAt
         self.typingAllowed = typingAllowed
         self.startSessionsAllowed = startSessionsAllowed
+        self.permissionsAllowed = permissionsAllowed
         self.decidedAt = decidedAt
         self.awaitingConfirmation = awaitingConfirmation
         self.confirmNonce = confirmNonce
         self.linkCodeTag = linkCodeTag
         self.revoked = revoked
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceID = try c.decode(String.self, forKey: .deviceID)
+        hubID = try c.decode(String.self, forKey: .hubID)
+        name = try c.decode(String.self, forKey: .name)
+        scope = try c.decode(DeviceScope.self, forKey: .scope)
+        linked = try c.decode(Bool.self, forKey: .linked)
+        linkRefused = try c.decodeIfPresent(LinkRefusal.self, forKey: .linkRefused)
+        linkedAt = try c.decodeIfPresent(Date.self, forKey: .linkedAt)
+        typingAllowed = try c.decode(Bool.self, forKey: .typingAllowed)
+        startSessionsAllowed = try c.decode(Bool.self, forKey: .startSessionsAllowed)
+        permissionsAllowed = try c.decodeIfPresent(Bool.self, forKey: .permissionsAllowed) ?? false
+        decidedAt = try c.decodeIfPresent(Date.self, forKey: .decidedAt)
+        awaitingConfirmation = try c.decodeIfPresent(Bool.self, forKey: .awaitingConfirmation)
+        confirmNonce = try c.decodeIfPresent(String.self, forKey: .confirmNonce)
+        linkCodeTag = try c.decodeIfPresent(String.self, forKey: .linkCodeTag)
+        revoked = try c.decodeIfPresent(Bool.self, forKey: .revoked)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(deviceID, forKey: .deviceID)
+        try c.encode(hubID, forKey: .hubID)
+        try c.encode(name, forKey: .name)
+        try c.encode(scope, forKey: .scope)
+        try c.encode(linked, forKey: .linked)
+        try c.encodeIfPresent(linkRefused, forKey: .linkRefused)
+        try c.encodeIfPresent(linkedAt, forKey: .linkedAt)
+        try c.encode(typingAllowed, forKey: .typingAllowed)
+        try c.encode(startSessionsAllowed, forKey: .startSessionsAllowed)
+        if permissionsAllowed { try c.encode(true, forKey: .permissionsAllowed) }
+        try c.encodeIfPresent(decidedAt, forKey: .decidedAt)
+        try c.encodeIfPresent(awaitingConfirmation, forKey: .awaitingConfirmation)
+        try c.encodeIfPresent(confirmNonce, forKey: .confirmNonce)
+        try c.encodeIfPresent(linkCodeTag, forKey: .linkCodeTag)
+        try c.encodeIfPresent(revoked, forKey: .revoked)
     }
 }
