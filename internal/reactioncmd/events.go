@@ -46,8 +46,8 @@ func (l *reactionList) get(ctx context.Context) ([]slack.ReactedItem, error) {
 	return l.items, l.err
 }
 
-// resetEventSeeds clears every account's reaction-events stamp while nobody
-// listens, so the next wanted poll records what was placed meanwhile as
+// resetEventSeeds clears every account's reaction-events stamp while the bus
+// has no listener for reaction events, so the next wanted poll records what was placed meanwhile as
 // history instead of firing for it. Best-effort: an error is logged.
 func (p *Pipeline) resetEventSeeds() {
 	if err := p.db.ResetReactionEventsSeeded(); err != nil {
@@ -82,8 +82,14 @@ func (p *Pipeline) publishReactionEvents(ctx context.Context, list *reactionList
 	if err != nil {
 		return err
 	}
+	// Filter with a read first: a steady-state poll lists ~2000 reactions it
+	// has all seen, and writing each one would churn the write lock.
+	unseen, err := p.db.FilterUnseenReactionEvents(accountID, reactions)
+	if err != nil {
+		return err
+	}
 	var events []automations.Event
-	for _, r := range reactions {
+	for _, r := range unseen {
 		inserted, err := p.db.InsertReactionEvent(r)
 		if err != nil {
 			p.logf("reaction-commands: account #%d: skipping the event for :%s: on %s@%s: %v", accountID, r.Emoji, r.ChannelID, r.MessageTS, err)

@@ -265,6 +265,8 @@ func TestRun_EmptyDictionaryStillPublishes(t *testing.T) {
 	assert.Len(t, sink.events, 1)
 }
 
+// TestRun_NilSinkKeepsTodayBehaviour: a nil sink leaves the event state
+// alone — no seeding, no reset, no ledger rows, no publish.
 func TestRun_NilSinkKeepsTodayBehaviour(t *testing.T) {
 	lister := &countingLister{}
 	lister.set(eyesItem("111.1"))
@@ -273,10 +275,55 @@ func TestRun_NilSinkKeepsTodayBehaviour(t *testing.T) {
 	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Zero(t, n)
-	assert.Equal(t, 0, countRows(t, database, "reaction_events"), "no subscriber, no event ledger writes")
+	assert.Equal(t, 0, countRows(t, database, "reaction_events"), "a nil sink seeds nothing")
 	seeded, err := database.ReactionEventsSeeded(1)
 	require.NoError(t, err)
 	assert.False(t, seeded)
+
+	seedEvents(t, p)
+	lister.set(eyesItem("111.1"), eyesItem("222.2"))
+	_, err = p.Run(context.Background(), nil)
+	require.NoError(t, err)
+	seeded, err = database.ReactionEventsSeeded(1)
+	require.NoError(t, err)
+	assert.True(t, seeded, "a nil sink does not clear the stamp")
+	assert.Equal(t, 1, countRows(t, database, "reaction_events"), "a nil sink records nothing")
+
+	sink := &recordingSink{wants: true}
+	_, err = p.Run(context.Background(), sink)
+	require.NoError(t, err)
+	require.Len(t, sink.events, 1, "the stamp survived, so the next wanted poll publishes the new reaction")
+	assert.Equal(t, "222.2", sink.events[0].Fields["message_ts"])
+}
+
+// TestRun_SteadyStatePollIssuesNoInsert counts every INSERT attempt on
+// reaction_events with a BEFORE INSERT trigger, which fires even for an
+// INSERT OR IGNORE that turns out to be a duplicate: a poll whose reactions
+// are all seen must attempt none, and a poll with one new reaction exactly one.
+func TestRun_SteadyStatePollIssuesNoInsert(t *testing.T) {
+	lister := &countingLister{}
+	lister.set(eyesItem("111.1"), eyesItem("222.2"))
+	p, database := eventTestPipeline(t, lister, nil)
+	clearDictionary(t, database)
+	seedEvents(t, p)
+
+	_, err := database.Exec(`CREATE TABLE ev_insert_attempts (n INTEGER)`)
+	require.NoError(t, err)
+	_, err = database.Exec(`CREATE TRIGGER count_ev_inserts BEFORE INSERT ON reaction_events
+		BEGIN INSERT INTO ev_insert_attempts VALUES (1); END`)
+	require.NoError(t, err)
+
+	sink := &recordingSink{wants: true}
+	_, err = p.Run(context.Background(), sink)
+	require.NoError(t, err)
+	assert.Empty(t, sink.events)
+	assert.Equal(t, 0, countRows(t, database, "ev_insert_attempts"), "a steady-state poll attempts no insert")
+
+	lister.set(eyesItem("111.1"), eyesItem("222.2"), eyesItem("333.3"))
+	_, err = p.Run(context.Background(), sink)
+	require.NoError(t, err)
+	assert.Len(t, sink.events, 1)
+	assert.Equal(t, 1, countRows(t, database, "ev_insert_attempts"), "only the new reaction is inserted")
 }
 
 func TestRun_EventCarriesNoText(t *testing.T) {

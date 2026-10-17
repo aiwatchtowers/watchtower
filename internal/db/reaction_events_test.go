@@ -67,3 +67,39 @@ func TestReactionEventsSeeded_MissingAccount(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, seeded)
 }
+
+func TestFilterUnseenReactionEvents(t *testing.T) {
+	d := openTestDB(t)
+	seen := OwnerReaction{AccountID: 1, ChannelID: "1:C1", MessageTS: "100.1", Emoji: "eyes"}
+	other := OwnerReaction{AccountID: 2, ChannelID: "2:C1", MessageTS: "100.1", Emoji: "eyes"}
+	fresh := OwnerReaction{AccountID: 1, ChannelID: "1:C1", MessageTS: "100.1", Emoji: "tada"}
+	_, err := d.InsertReactionEvent(seen)
+	require.NoError(t, err)
+	_, err = d.InsertReactionEvent(other)
+	require.NoError(t, err)
+
+	sameKeyOnAccount1 := other
+	sameKeyOnAccount1.AccountID = 1
+	sameKeyOnAccount1.ChannelID = "1:C2"
+	got, err := d.FilterUnseenReactionEvents(1, []OwnerReaction{fresh, seen, sameKeyOnAccount1})
+	require.NoError(t, err)
+	assert.Equal(t, []OwnerReaction{fresh, sameKeyOnAccount1}, got)
+
+	got, err = d.FilterUnseenReactionEvents(1, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+// TestResetReactionEventsSeeded_NoStampNoWrite proves the reset takes no
+// write when no stamp is set: on a query_only handle a write fails, so the
+// reset only succeeds there if it never issued one.
+func TestResetReactionEventsSeeded_NoStampNoWrite(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.CreateSlackAccount(SlackAccount{Label: "A"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetReadOnly())
+	_, err = d.Exec(`UPDATE slack_accounts SET reaction_events_seeded_at = '' WHERE reaction_events_seeded_at != ''`)
+	require.Error(t, err, "query_only must refuse even a no-match UPDATE, or this test proves nothing")
+
+	require.NoError(t, d.ResetReactionEventsSeeded())
+}

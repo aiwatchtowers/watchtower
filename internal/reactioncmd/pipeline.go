@@ -107,15 +107,20 @@ func (p *Pipeline) SetPromptStore(s *prompts.Store) { p.promptStore = s }
 // Run polls every connected account's reactions.list and dispatches new
 // commands, returning the count dispatched (tool dispatches only; published
 // events are not counted). With events wanting slack.reaction_added it also
-// publishes one event per new owner reaction; events may be nil. One
+// publishes one event per new owner reaction; events may be nil, which
+// leaves the reaction-event state untouched. One
 // account's failure never blocks the others (the sync-wiring fan-out
 // precedent); the first error is returned for the daemon's run stats after
 // every account has been tried.
 func (p *Pipeline) Run(ctx context.Context, events EventSink) (int, error) {
+	// A nil sink leaves the event state alone (the manual CLI poll); a sink
+	// nobody listens on clears the seed stamps.
 	wants := events != nil && events.Wants(automations.SlackReactionAdded)
+	if events != nil && !wants {
+		p.resetEventSeeds()
+	}
 	if !wants {
 		events = nil
-		p.resetEventSeeds()
 	}
 	dict, err := p.db.ListReactionCommandMap()
 	if err != nil {

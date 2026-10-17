@@ -26,6 +26,41 @@ func (db *DB) InsertReactionEvent(r OwnerReaction) (inserted bool, err error) {
 	return n > 0, nil
 }
 
+// FilterUnseenReactionEvents returns the reactions of rs that accountID's
+// reaction_events ledger has not recorded, in their order. Read-only, so a
+// steady-state poll takes no write lock.
+func (db *DB) FilterUnseenReactionEvents(accountID int64, rs []OwnerReaction) ([]OwnerReaction, error) {
+	if len(rs) == 0 {
+		return nil, nil
+	}
+	rows, err := db.Query(`SELECT channel_id, message_ts, emoji FROM reaction_events
+		WHERE account_id = ?`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("loading reaction events ledger: %w", err)
+	}
+	defer rows.Close()
+
+	seen := map[string]bool{}
+	for rows.Next() {
+		var ch, ts, emoji string
+		if err := rows.Scan(&ch, &ts, &emoji); err != nil {
+			return nil, fmt.Errorf("scanning reaction event key: %w", err)
+		}
+		seen[ch+"\x00"+ts+"\x00"+emoji] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating reaction events ledger: %w", err)
+	}
+
+	var out []OwnerReaction
+	for _, r := range rs {
+		if !seen[r.ChannelID+"\x00"+r.MessageTS+"\x00"+r.Emoji] {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
 // SeedReactionEvents records rs as seen without firing and stamps
 // accountID's reaction_events_seeded_at, in one transaction. It errors when
 // the account row is missing.
@@ -71,8 +106,16 @@ func (db *DB) ReactionEventsSeeded(accountID int64) (bool, error) {
 
 // ResetReactionEventsSeeded clears every account's seed stamp (rows are
 // kept), so the next wanted poll reseeds instead of firing for reactions
-// placed while nobody listened.
+// placed while nobody listened. It reads first and writes only when some
+// stamp is set, so a poll nobody listens to takes no write lock.
 func (db *DB) ResetReactionEventsSeeded() error {
+	var anySet bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM slack_accounts WHERE reaction_events_seeded_at != '')`).Scan(&anySet); err != nil {
+		return fmt.Errorf("reading reaction events seed stamps: %w", err)
+	}
+	if !anySet {
+		return nil
+	}
 	if _, err := db.Exec(`UPDATE slack_accounts SET reaction_events_seeded_at = '' WHERE reaction_events_seeded_at != ''`); err != nil {
 		return fmt.Errorf("resetting reaction events seed stamps: %w", err)
 	}
