@@ -6,26 +6,46 @@ import WatchtowerCore
 /// are sample offsets relative to `samples`, sorted, non-overlapping and
 /// already padded. Stateless across calls — the same samples always give the
 /// same ranges — which is what keeps the live and batch paths equivalent:
-/// both ask on identical window samples.
+/// both ask on identical window samples. (A model that is not loaded yet
+/// breaks that for the windows it misses; see `SpeechDetectorNotReady`.)
 protocol SpeechDetector: Sendable {
     func speechRanges(in samples: [Float]) async throws -> [Range<Int>]
+    /// The same, waiting at most `modelWait` for a model still loading
+    /// before throwing `SpeechDetectorNotReady` (`.zero` = only if loaded,
+    /// nil = until it loads). Detectors without a model keep the default.
+    func speechRanges(in samples: [Float], modelWait: Duration?) async throws -> [Range<Int>]
+}
+
+extension SpeechDetector {
+    func speechRanges(in samples: [Float], modelWait: Duration?) async throws -> [Range<Int>] {
+        try await speechRanges(in: samples)
+    }
 }
 
 extension EnergySpeechDetector: SpeechDetector {}
 
-/// The detector's model is still loading (or downloading): the gate decides
-/// this window with the energy detector and asks the model again on the next
-/// one (board #564).
+/// The detector's model is still loading (or downloading), or a failed load
+/// is not due for another attempt yet: the gate decides this window with the
+/// energy detector and asks again, without waiting, on the next one (board
+/// #564).
 struct SpeechDetectorNotReady: Error {}
+
+/// The detector's model failed to load. Wrapped so nothing the load throws
+/// (a `CancellationError` included) reads as the caller's own cancel.
+struct SpeechDetectorLoadFailed: Error {
+    let underlying: Error
+}
 
 /// The production detector: FluidAudio's Silero VAD (CoreML) and its
 /// segmentation. The model loads on the first window, downloading on first
 /// use like the diarizer, and stays loaded. The load runs in the background
-/// and a window waits for it at most `loadWait`: past that it throws
-/// `SpeechDetectorNotReady` and the load goes on, so a slow download never
-/// stalls the live loop. A load failure is not remembered: the gate moves
-/// that recording to the energy fallback, and the next recording tries the
-/// model again.
+/// (`BackgroundLoad`): a caller waits for it at most its `modelWait` — the
+/// gate pays one bounded wait per run (`WindowSpeechGate.liveModelWait` /
+/// `batchModelWait`) and polls without waiting after that — and past it gets
+/// `SpeechDetectorNotReady` while the load goes on. A failed load throws
+/// `SpeechDetectorLoadFailed` to the windows waiting on it (logged when none
+/// is) and is not remembered: a later window starts a new attempt, at most
+/// one a minute.
 actor SileroSpeechDetector: SpeechDetector {
     /// Model probability that opens speech. FluidAudio's 0.85 is tuned for
     /// ASR chunking and drops quiet speech.
@@ -44,32 +64,44 @@ actor SileroSpeechDetector: SpeechDetector {
     static let defaultMinSpeechSec = 0.3
     static let defaultMinSilenceSec = 0.5
     static let defaultPaddingSec = 0.3
-    /// How long one window waits for the model before the energy detector
-    /// decides it. Loading from disk (with a cold CoreML compile) fits well
-    /// inside; a download does not, and goes on in the background.
-    static let defaultLoadWait: Duration = .seconds(5)
 
-    private let segmentation: VadSegmentationConfig
-    private let manager: BackgroundLoad<VadManager>
-    private let loadWait: Duration?
+    /// A segmentation pass over one window with the loaded model.
+    typealias Segmenter = @Sendable (_ samples: [Float]) async throws -> [Range<Int>]
 
-    /// The parameters are for the corpus tuning bench (which waits for the
-    /// model: `loadWait` nil); production uses the defaults.
+    private let model: BackgroundLoad<Segmenter>
+
+    /// The parameters are for the corpus tuning bench; production uses the defaults.
     init(
         threshold: Float = defaultThreshold,
         minSpeechSec: Double = defaultMinSpeechSec,
         minSilenceSec: Double = defaultMinSilenceSec,
-        paddingSec: Double = defaultPaddingSec,
-        loadWait: Duration? = defaultLoadWait
+        paddingSec: Double = defaultPaddingSec
     ) {
-        manager = BackgroundLoad { try await VadManager(config: VadConfig(defaultThreshold: threshold)) }
-        self.loadWait = loadWait
-        segmentation = VadSegmentationConfig(
+        let segmentation = VadSegmentationConfig(
             minSpeechDuration: minSpeechSec,
             minSilenceDuration: minSilenceSec,
             maxSpeechDuration: .infinity,
             speechPadding: paddingSec
         )
+        self.init(model: BackgroundLoad(onUnobservedFailure: Self.logUnobservedFailure) {
+            do {
+                let manager = try await VadManager(config: VadConfig(defaultThreshold: threshold))
+                return { samples in
+                    let rate = TranscriptionConfig.sampleRate
+                    return SpeechGate.merged(try await manager.segmentSpeech(samples, config: segmentation).map {
+                        let start = min(max(0, $0.startSample(sampleRate: rate)), samples.count)
+                        return start..<min(max(start, $0.endSample(sampleRate: rate)), samples.count)
+                    })
+                }
+            } catch {
+                throw SpeechDetectorLoadFailed(underlying: error)
+            }
+        })
+    }
+
+    /// `model` replaces the Silero load (tests).
+    init(model: BackgroundLoad<Segmenter>) {
+        self.model = model
     }
 
     /// Fetches the model ahead of a recording (Settings/Calendar warmup).
@@ -77,13 +109,19 @@ actor SileroSpeechDetector: SpeechDetector {
         _ = try await VadManager(config: VadConfig(defaultThreshold: defaultThreshold))
     }
 
+    /// Waits for the model until it loads (the bench).
     func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
-        guard let manager = try await manager.value(waitingUpTo: loadWait) else { throw SpeechDetectorNotReady() }
-        let segments = try await manager.segmentSpeech(samples, config: segmentation)
-        let rate = TranscriptionConfig.sampleRate
-        return SpeechGate.merged(segments.map {
-            let start = min(max(0, $0.startSample(sampleRate: rate)), samples.count)
-            return start..<min(max(start, $0.endSample(sampleRate: rate)), samples.count)
-        })
+        try await speechRanges(in: samples, modelWait: nil)
+    }
+
+    func speechRanges(in samples: [Float], modelWait: Duration?) async throws -> [Range<Int>] {
+        guard let segment = try await model.value(waitingUpTo: modelWait) else { throw SpeechDetectorNotReady() }
+        return try await segment(samples)
+    }
+
+    @Sendable private static func logUnobservedFailure(_ error: Error) {
+        let cause = (error as? SpeechDetectorLoadFailed)?.underlying ?? error
+        NSLog("SpeechGate: speech detector model failed to load (%@) — a later window tries again",
+              String(describing: type(of: cause)))
     }
 }

@@ -116,10 +116,11 @@ final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
         self.decode = decode
     }
 
-    private func windower(config: TranscriptionConfig) -> Qwen3Windower {
+    private func windower(config: TranscriptionConfig, modelWait: Duration) -> Qwen3Windower {
         let decode = self.decode
         let forced = config.forcedLanguage
-        return Qwen3Windower(config: config, speechDetector: detectors.detector(for: config)) { window in
+        return Qwen3Windower(config: config, speechDetector: detectors.detector(for: config),
+                             modelWait: modelWait) { window in
             try decode(window, forced)
         }
     }
@@ -135,12 +136,12 @@ final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
             continuation.yield(samples)
             continuation.finish()
         }
-        return try await windower(config: config)
+        return try await windower(config: config, modelWait: WindowSpeechGate.batchModelWait)
             .run(samples: stream, windowTotal: total, progress: progress) { _ in }
     }
 
     func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? {
-        Qwen3LiveSession(windower: windower(config: config))
+        Qwen3LiveSession(windower: windower(config: config, modelWait: WindowSpeechGate.liveModelWait))
     }
 }
 

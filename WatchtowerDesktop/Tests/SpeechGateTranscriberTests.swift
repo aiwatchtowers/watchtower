@@ -126,42 +126,98 @@ final class SpeechGateTranscriberTests: XCTestCase {
         XCTAssertEqual(output.text, "spoken")
     }
 
-    func testModelNotReadyFallsBackPerWindowAndAsksAgain() async throws {
-        // Board #564: a model still downloading decides that window by energy
-        // and is asked again on the next one, never pinned off for the recording.
-        final class LoadingDetector: SpeechDetector, @unchecked Sendable {
-            let ready = FakeSpeechDetector()
-            private let lock = NSLock()
-            private var asked = 0
-            var calls: Int { lock.withLock { asked } }
-            func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
-                let call = lock.withLock { asked += 1; return asked }
-                if call == 1 { throw SpeechDetectorNotReady() }
-                return try await ready.speechRanges(in: samples)
-            }
+    /// A detector whose model is not there for its first `missing` calls
+    /// (throwing `failure`, `SpeechDetectorNotReady` by default), then
+    /// answers like `FakeSpeechDetector`; records the wait of every call.
+    private final class LoadingDetector: SpeechDetector, @unchecked Sendable {
+        let ready = FakeSpeechDetector()
+        var missing: Int
+        var failure: Error = SpeechDetectorNotReady()
+        private let lock = NSLock()
+        private var asked: [Duration?] = []
+        var waits: [Duration?] { lock.withLock { asked } }
+        init(missing: Int) { self.missing = missing }
+        func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
+            try await speechRanges(in: samples, modelWait: nil)
         }
-        let engine = SegmentEngine()
-        engine.script = [.success([segment("one", 0, 1)]), .success([segment("three", 0, 1)])]
-        let detector = LoadingDetector()
-        let output = try await WindowedTranscriber(engine: engine, config: config(), speechDetector: detector)
-            .transcribe(samples: audio([0.1...0.6, nil, 0.2...0.8])) { _, _ in }
-        XCTAssertEqual(detector.calls, 3, "the model is asked for every window")
-        XCTAssertEqual(detector.ready.calls, 2, "window 1 was decided by the energy fallback")
-        XCTAssertEqual(output.text, "one\nthree")
+        func speechRanges(in samples: [Float], modelWait: Duration?) async throws -> [Range<Int>] {
+            let call = lock.withLock { asked.append(modelWait); return asked.count }
+            if call <= missing { throw failure }
+            return try await ready.speechRanges(in: samples)
+        }
     }
 
-    func testCancellationIsNotADetectorFailure() async throws {
-        // A cancelled detector call must not switch the recording to the
-        // energy fallback (nor log a failure) and must not open the window.
+    func testModelNotReadyCostsOneWaitPerRunAndIsTakenBackWhenItLoads() async throws {
+        // Board #564: a model still downloading decides those windows by
+        // energy; the run waits for it once and then only looks, and the
+        // window the model arrives in is back on it.
+        let samples = audio([0.1...0.6, nil, 0.2...0.8, 0.1...0.9])
         let engine = SegmentEngine()
-        engine.script = [.success([segment("spoken", 0, 1)]), .success([segment("spoken", 0, 1)])]
+        engine.script = [.success([segment("one", 0, 1)]), .success([segment("three", 0, 1)]),
+                         .success([segment("four", 0, 1)])]
+        let batchDetector = LoadingDetector(missing: 2)
+        let batch = try await WindowedTranscriber(engine: engine, config: config(), speechDetector: batchDetector)
+            .transcribe(samples: samples) { _, _ in }
+        XCTAssertEqual(batchDetector.waits, [WindowSpeechGate.batchModelWait, .zero, .zero, .zero],
+                       "one bounded wait, then zero-wait polling")
+        XCTAssertEqual(batchDetector.ready.calls, 2, "windows 1–2 were decided by the energy fallback")
+        XCTAssertEqual(batch.text, "one\nthree\nfour")
+
+        let liveDetector = LoadingDetector(missing: 2)
+        _ = try await StreamingTranscriber(engine: SegmentEngine(), config: config(), speechDetector: liveDetector)
+            .run(samples: stream(samples)) { _ in }
+        XCTAssertEqual(liveDetector.waits, [WindowSpeechGate.liveModelWait, .zero, .zero, .zero])
+
+        let loadedDetector = LoadingDetector(missing: 0)
+        _ = try await WindowedTranscriber(engine: SegmentEngine(), config: config(), speechDetector: loadedDetector)
+            .transcribe(samples: samples) { _, _ in }
+        XCTAssertEqual(loadedDetector.waits, Array(repeating: WindowSpeechGate.batchModelWait, count: 4),
+                       "a loaded model costs no wait, so nothing switches to polling")
+    }
+
+    func testFailedModelLoadIsPolledAndTakenBackLater() async throws {
+        // A model that failed to load is asked again (its loader throttles
+        // the retries) and the run moves back to it once a retry loads.
+        let detector = LoadingDetector(missing: 2)
+        detector.failure = SpeechDetectorLoadFailed(underlying: SegmentEngine.EngineError())
+        var gate = WindowSpeechGate(detector: detector, config: config(), modelWait: .seconds(1))
+        for _ in 0..<3 { _ = await gate.check(audio([0.1...0.9])) }
+        XCTAssertEqual(detector.waits, [.seconds(1), .zero, .zero])
+        XCTAssertEqual(detector.ready.calls, 1, "window 3 is back on the model")
+        _ = await gate.check(audio([nil]))
+        XCTAssertEqual(gate.summary(), "SpeechGate: dropped vad=1 window(s), outside_speech=0, confidence=0, "
+                       + "phrase=0 segment(s), 0 chars; energy fallback for 0 window(s) while the model loaded, "
+                       + "2 after a detector failure")
+    }
+
+    func testCallersCancelIsNotADetectorFailure() async throws {
+        // A cancelled run must not switch to the energy fallback (nor log a
+        // failure) and must not open the window.
+        final class CancellingDetector: SpeechDetector, @unchecked Sendable {
+            func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw CancellationError()
+            }
+        }
+        let verdict = await Task { () -> (WindowSpeech, String?) in
+            var gate = WindowSpeechGate(detector: CancellingDetector(), config: config(), modelWait: .zero)
+            let verdict = await gate.check(audio([0.1...0.9]))
+            return (verdict, gate.summary())
+        }.value
+        XCTAssertEqual(verdict.0, .silent)
+        XCTAssertNil(verdict.1, "no fallback window, no failure counted")
+    }
+
+    func testCancellationErrorWithoutACancelIsAFailure() async throws {
+        // Only the caller's own cancel counts: a CancellationError the
+        // caller did not ask for is a detector failure (energy fallback).
         let detector = FakeSpeechDetector()
         detector.error = CancellationError()
+        let engine = SegmentEngine()
+        engine.script = [.success([segment("spoken", 0, 1)])]
         let output = try await WindowedTranscriber(engine: engine, config: config(), speechDetector: detector)
-            .transcribe(samples: audio([0.1...0.9, 0.1...0.9])) { _, _ in }
-        XCTAssertEqual(detector.calls, 2, "no switch to the fallback: the detector is asked for every window")
-        XCTAssertEqual(engine.decodedWindowSizes, [])
-        XCTAssertEqual(output.text, "")
+            .transcribe(samples: audio([0.1...0.9])) { _, _ in }
+        XCTAssertEqual(output.text, "spoken", "the energy fallback opened the window")
     }
 
     func testCancelledBatchThrowsInsteadOfReturningSilence() async {
@@ -340,8 +396,8 @@ final class SpeechGateTranscriberTests: XCTestCase {
                             WindowDropCounts(confidence: 0, phrase: 3, droppedChars: 9),
                             WindowDropCounts(confidence: 2, phrase: 0, droppedChars: 6)]
         let window = audio([0.1...0.9])
-        var live = WindowSpeechGate(detector: FakeSpeechDetector(), config: config())
-        var batch = WindowSpeechGate(detector: FakeSpeechDetector(), config: config())
+        var live = WindowSpeechGate(detector: FakeSpeechDetector(), config: config(), modelWait: .zero)
+        var batch = WindowSpeechGate(detector: FakeSpeechDetector(), config: config(), modelWait: .zero)
         for gate in [0, 1, 0] {
             if gate == 0 {
                 _ = await decodeGatedWindow(window, gate: &live, previousLanguage: nil, promptText: nil,
@@ -352,8 +408,10 @@ final class SpeechGateTranscriberTests: XCTestCase {
             }
         }
         XCTAssertEqual(live.summary(), "SpeechGate: dropped vad=0 window(s), outside_speech=0, confidence=3, "
-                       + "phrase=0 segment(s), 10 chars; 0 window(s) on the energy fallback")
+                       + "phrase=0 segment(s), 10 chars; energy fallback for 0 window(s) while the model loaded, "
+                       + "0 after a detector failure")
         XCTAssertEqual(batch.summary(), "SpeechGate: dropped vad=0 window(s), outside_speech=0, confidence=0, "
-                       + "phrase=3 segment(s), 9 chars; 0 window(s) on the energy fallback")
+                       + "phrase=3 segment(s), 9 chars; energy fallback for 0 window(s) while the model loaded, "
+                       + "0 after a detector failure")
     }
 }

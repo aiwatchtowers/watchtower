@@ -18,62 +18,110 @@ enum WindowSpeech: Equatable {
 /// by `speechOnlyBuffer` for the whole-buffer engines, so the loops cannot
 /// drift — the same rule as `liftWindowSegments`.
 ///
-/// The first detector error moves the rest of the recording to
-/// `EnergySpeechDetector` — never "no gate", so a broken model cannot quietly
-/// restore the hallucinating path, and no per-window retry of a model that
-/// failed to load. The gate lives for one transcribe/run call, so the next
-/// recording tries the detector again. A detector whose model is still
-/// loading (`SpeechDetectorNotReady`) is not a failure: that window goes to
-/// the energy detector and the next window asks the model again (board
-/// #564). The switch is logged once and the gate's counts once at the end,
-/// never text.
+/// A window the detector cannot decide goes to `EnergySpeechDetector` —
+/// never "no gate", so a broken model cannot quietly restore the
+/// hallucinating path. The detector's model may still be loading (board
+/// #564): the run waits for it once, at most `modelWait` (live 5 s, batch
+/// 120 s), and after that asks without waiting, so a slow download costs a
+/// run one bounded wait, not one per window; the window the model arrives
+/// in is back on the model. A model that failed to load is asked the same
+/// way (its loader retries at most once a minute). Any other detector error
+/// moves the rest of the run to the energy fallback. The gate lives for one
+/// transcribe/run call, so the next recording asks the detector afresh.
+/// Each switch is logged once and the gate's counts once at the end, never
+/// text.
 struct WindowSpeechGate {
+    /// The one wait a live run pays for a model still loading: the first
+    /// window's decode is late by at most this.
+    static let liveModelWait: Duration = .seconds(5)
+    /// The one wait a batch run pays: long enough for a model download on
+    /// most connections, where nobody watches a live panel.
+    static let batchModelWait: Duration = .seconds(120)
+
     private let detector: SpeechDetector?
     private let fallback = EnergySpeechDetector()
+    /// How long the next detector call waits for its model: the run's one
+    /// wait until the model is first missed, `.zero` after.
+    private var modelWait: Duration
     private var detectorFailed = false
+    private var loadFailed = false
+    private var missedModel = false
     private var notReadyLogged = false
+    private var loadFailureLogged = false
     private var silentWindows = 0
-    private var fallbackWindows = 0
+    private var loadingWindows = 0
+    private var failedWindows = 0
     private var droppedSegments = 0
     private var droppedChars = 0
     /// What the engine dropped itself in this run's decodes (L3, phrase filter).
     private var engineDrops = WindowDropCounts()
 
-    init(detector: SpeechDetector?, config: TranscriptionConfig) {
+    init(detector: SpeechDetector?, config: TranscriptionConfig, modelWait: Duration) {
         self.detector = config.speechGate ? detector : nil
+        self.modelWait = modelWait
     }
 
     mutating func check(_ window: [Float]) async -> WindowSpeech {
         guard let detector else { return .ungated }
         var ranges: [Range<Int>]?
-        if !detectorFailed {
+        if detectorFailed {
+            failedWindows += 1
+        } else {
             do {
-                ranges = try await detector.speechRanges(in: window)
+                ranges = try await detector.speechRanges(in: window, modelWait: modelWait)
+                if missedModel {
+                    missedModel = false
+                    NSLog("SpeechGate: speech detector model loaded — back on the model after %d window(s) "
+                          + "on the energy fallback", loadingWindows + failedWindows)
+                }
             } catch {
                 // A cancelled run is not a detector failure: the window is
                 // not decoded and the caller's cancel check ends the run —
                 // batch and the whole-buffer engines throw CancellationError,
                 // the live loops return their partial output (discarded).
-                if error is CancellationError || Task.isCancelled { return .silent }
-                if error is SpeechDetectorNotReady {
-                    if !notReadyLogged {
-                        notReadyLogged = true
-                        NSLog("SpeechGate: speech detector model not ready — energy fallback until it loads")
-                    }
-                } else {
-                    detectorFailed = true
-                    NSLog("SpeechGate: speech detector failed (%@) — energy fallback for this recording",
-                          String(describing: type(of: error)))
-                }
+                // Only the caller's own cancel counts: a model load's errors
+                // come wrapped (`SpeechDetectorLoadFailed`).
+                if Task.isCancelled { return .silent }
+                missed(error)
             }
         }
-        if ranges == nil { fallbackWindows += 1 }
         let found = ranges ?? fallback.speechRanges(in: window)
         guard !SpeechGate.isSilent(found, sampleRate: TranscriptionConfig.sampleRate) else {
             silentWindows += 1
             return .silent
         }
         return .speech(found)
+    }
+
+    /// Books a window the detector could not decide (the energy fallback
+    /// decides it) and logs the first of each kind.
+    private mutating func missed(_ error: Error) {
+        modelWait = .zero
+        missedModel = true
+        switch error {
+        case is SpeechDetectorNotReady where !loadFailed:
+            loadingWindows += 1
+            if !notReadyLogged {
+                notReadyLogged = true
+                NSLog("SpeechGate: speech detector model not loaded yet — energy fallback until it is")
+            }
+        case is SpeechDetectorNotReady:
+            failedWindows += 1
+        case let failure as SpeechDetectorLoadFailed:
+            loadFailed = true
+            failedWindows += 1
+            if !loadFailureLogged {
+                loadFailureLogged = true
+                NSLog("SpeechGate: speech detector model failed to load (%@) — energy fallback, the model is "
+                      + "retried at most once a minute", String(describing: type(of: failure.underlying)))
+            }
+        default:
+            detectorFailed = true
+            missedModel = false
+            failedWindows += 1
+            NSLog("SpeechGate: speech detector failed (%@) — energy fallback for this recording",
+                  String(describing: type(of: error)))
+        }
     }
 
     /// L2: the decoded segments of a speech window that overlap its speech.
@@ -105,12 +153,14 @@ struct WindowSpeechGate {
     func summary(callerDrops: WindowDropCounts = WindowDropCounts()) -> String? {
         var drops = engineDrops
         drops.add(callerDrops)
-        let total = silentWindows + fallbackWindows + droppedSegments + drops.confidence + drops.phrase
+        let total = silentWindows + loadingWindows + failedWindows + droppedSegments + drops.confidence
+            + drops.phrase
         guard total > 0 else { return nil }
         return String(format: "SpeechGate: dropped vad=%d window(s), outside_speech=%d, confidence=%d, phrase=%d "
-                      + "segment(s), %d chars; %d window(s) on the energy fallback",
+                      + "segment(s), %d chars; energy fallback for %d window(s) while the model loaded, "
+                      + "%d after a detector failure",
                       silentWindows, droppedSegments, drops.confidence, drops.phrase,
-                      droppedChars + drops.droppedChars, fallbackWindows)
+                      droppedChars + drops.droppedChars, loadingWindows, failedWindows)
     }
 }
 
@@ -211,27 +261,29 @@ let wholeBufferChunkOverlapSec = 2.0
 
 /// L5 (spec D5) for engines that decode the whole recording in one call
 /// (Parakeet, Apple): the detector runs over the recording in 30 s chunks
-/// with the window gate's rules (minimum speech, per-recording energy
-/// fallback), and every sample outside the padded speech is to be set to 0
-/// (`SpeechOnlyAudio`). Neighbouring chunks overlap by
+/// with the window gate's rules (minimum speech, the batch model wait, the
+/// energy fallback), and every sample outside the padded speech is to be set
+/// to 0 (`SpeechOnlyAudio`). Neighbouring chunks overlap by
 /// `wholeBufferChunkOverlapSec` and their speech is joined, so a word cut by
 /// a chunk seam — two pieces each under the detector's minimum speech — is
-/// still found whole in the next chunk (board #564). Returns the audio to
-/// decode — nothing to mute when the gate is off or the speech covers the
-/// whole recording, nil when the recording holds no speech at all (nothing
-/// to decode) — and the gate, whose counts the caller logs once the text is
-/// filtered.
+/// still found whole in the next chunk (board #564); the gate's summary
+/// counts chunks, so its `vad=` figure here counts overlapping chunks, not
+/// unique audio. Returns the audio to decode — nothing to mute when the gate
+/// is off or the speech covers the whole recording, nil when the recording
+/// holds no speech at all (nothing to decode) — and the gate, whose counts
+/// the caller logs once the text is filtered.
 func speechOnlyBuffer(
     _ samples: [Float],
     detector: SpeechDetector?,
     config: TranscriptionConfig
 ) async -> (audio: SpeechOnlyAudio?, gate: WindowSpeechGate) {
-    var gate = WindowSpeechGate(detector: detector, config: config)
+    var gate = WindowSpeechGate(detector: detector, config: config, modelWait: WindowSpeechGate.batchModelWait)
     guard detector != nil, config.speechGate else { return (SpeechOnlyAudio(samples: samples, speech: nil), gate) }
     let chunk = 30 * TranscriptionConfig.sampleRate
     let overlap = Int(wholeBufferChunkOverlapSec * Double(TranscriptionConfig.sampleRate))
     var speech: [Range<Int>] = []
     for start in stride(from: 0, to: samples.count, by: chunk - overlap) {
+        if Task.isCancelled { break } // the caller's cancel check ends the run
         let end = min(start + chunk, samples.count)
         if case let .speech(ranges) = await gate.check(Array(samples[start..<end])) {
             speech += ranges.map { (start + $0.lowerBound)..<(start + $0.upperBound) }
