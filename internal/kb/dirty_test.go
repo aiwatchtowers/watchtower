@@ -218,9 +218,9 @@ func TestDrainDirty_BudgetStopsAfterABatch(t *testing.T) {
 	assert.Zero(t, dirtyCount(t, d))
 }
 
-// TestKBDirtyTriggerKeysMatchSourceKeys pins the Go-to-SQL dual path: the
+// TestSRCDEL03_TriggerKeysMatchSourceKeys pins the Go-to-SQL dual path: the
 // keys the migration's triggers write are the keys the sources use.
-func TestKBDirtyTriggerKeysMatchSourceKeys(t *testing.T) {
+func TestSRCDEL03_TriggerKeysMatchSourceKeys(t *testing.T) {
 	ctx := context.Background()
 	d := db.OpenTestDB(t)
 	seedSlack(t, d)

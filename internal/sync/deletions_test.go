@@ -200,7 +200,7 @@ func TestLiveDiff_LeavesRowsOutsideItsScope(t *testing.T) {
 	assert.Equal(t, 1, countTombstones(t, ts.db))
 }
 
-func TestLiveDiff_ReturningMessageHeals(t *testing.T) {
+func TestSRCDEL02_ReturningMessageHeals(t *testing.T) {
 	ts, s := newLiveDiffSetup(t)
 	stored := seedLive(t, ts, 10)
 	s.set(append([]string{}, stored[:9]...), -1)

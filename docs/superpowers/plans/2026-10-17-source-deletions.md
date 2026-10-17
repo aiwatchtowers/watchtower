@@ -26,7 +26,7 @@
 ## Review Focus
 
 1. **Slack search silently truncated** (`search.messages` stops at 100 pages, so a window over 10 000 matches reports `pages` ≤ 100 and "completes"): no tombstone may come from it. Pinned in Task 7 (`TestLiveDiff_SkipsWhenTotalExceedsMatched`).
-2. **A wrong tombstone heals**: the next search that returns the message restores text and `is_deleted = 0`, and the KB document gets the text back. Pinned in Task 7 (`TestLiveDiff_ReturningMessageHeals`) and Task 4 (`TestDrainDirty_HealedMessageReturnsToIndex`).
+2. **A wrong tombstone heals**: the next search that returns the message restores text and `is_deleted = 0`, and the KB document gets the text back. Pinned in Task 7 (`TestSRCDEL02_ReturningMessageHeals`) and Task 4 (`TestDrainDirty_HealedMessageReturnsToIndex`).
 3. **Rows the listing cannot see are never touched**: the last 2 h, rows with a subtype, rows of another Slack account, rows outside the swept day. Pinned in Task 7 (`TestLiveDiff_LeavesRowsOutsideItsScope`) and Task 8 (`TestSweep_DiffsOnlyTheSweptDay`).
 4. **Jira returns an empty comment page while reporting `total > 0`**: today that is a silent "no comments", and with set-replace it would wipe the issue's comments. Pinned in Task 5 (`TestSyncComments_IncompleteListingDeletesNothing`).
 5. **Mail that arrives between the stored-set read and the listing** must not be deleted, and **IMAP rows under the current UIDVALIDITY** must never be hit by the old-epoch cleanup. Pinned in Task 9 (`TestCheckDeletions_ReadsStoredSetBeforeListing`) and Task 6 (`TestSync_UIDValidityCleanupKeepsCurrentEpoch`).
@@ -222,7 +222,7 @@ DROP TABLE IF EXISTS kb_dirty;
   - `TestDrainDirty_GmailPartialThreadDelete`: index a two-message thread, delete one row, `Run`. The thread document lacks the deleted body.
   - `TestDrainDirty_HealedMessageReturnsToIndex`: tombstone, `Run`, re-upsert the original text with `IsDeleted: false`, `Run`. The text is searchable again through `kb.Search`.
   - `TestDrainDirty_ReMarkDuringRenderSurvives`: use a test `runner` with a stub `Source` named `slack` whose `Build` bumps its own key's `gen` once (`INSERT ... ON CONFLICT DO UPDATE SET gen = gen + 1`) and returns nil. After `run`, `kb_dirty` still holds the key.
-  - `TestKBDirtyTriggerKeysMatchSourceKeys`: for a reply, a top-level message, a threaded and a threadless Gmail row, and a Jira comment, the key the trigger writes equals `SlackDocRef(...)`, a key in `gmailSource{}.Keys(...)`, and a key in `jiraSource{}.Keys(...)` respectively. This test pins the Go↔SQL dual path.
+  - `TestSRCDEL03_TriggerKeysMatchSourceKeys`: for a reply, a top-level message, a threaded and a threadless Gmail row, and a Jira comment, the key the trigger writes equals `SlackDocRef(...)`, a key in `gmailSource{}.Keys(...)`, and a key in `jiraSource{}.Keys(...)` respectively. This test pins the Go↔SQL dual path.
 - [ ] **Step 2:** `go test ./internal/kb -run 'TestDrainDirty|TestKBDirtyTriggerKeys'`. Expected FAIL on the first five.
 - [ ] **Step 3:** Implement `drainDirty` and wire it into `run`.
 - [ ] **Step 4:** `go test ./internal/kb` passes, `TestKB01_IncrementalEqualsRebuild` / `TestKB03_*` unchanged and green. `TestRun_RendersOutsideTheWriteLock` stays green: the drain renders before its transaction. Run `make lint-diff`.
@@ -346,7 +346,7 @@ DROP TABLE IF EXISTS kb_dirty;
     - `TestLiveDiff_SkipsWhenTotalExceedsMatched`: page 1 of 1 with `total: 500` and 9 matches. Nothing is tombstoned.
     - `TestLiveDiff_SkipsIncompletePages`: page 2 fails non-fatally. Nothing is tombstoned.
     - `TestLiveDiff_LeavesRowsOutsideItsScope`: a row at 14:00Z (last 2 h), a `channel_join` row, a row from yesterday, and a row of account 2. None returned by search, and all survive.
-    - `TestLiveDiff_ReturningMessageHeals`: tombstoned in run 1, returned by search in run 2. Text is back and `is_deleted = 0`.
+    - `TestSRCDEL02_ReturningMessageHeals`: tombstoned in run 1, returned by search in run 2. Text is back and `is_deleted = 0`.
     - `TestBackfillSearch_NeverTombstones`: `BackfillSearch` over a range whose stored rows search does not return leaves them live.
 - [ ] **Step 2:** `go test ./internal/db -run 'TombstoneSlackMessages|LiveSlackMessageKeys'` and `go test ./internal/sync -run 'TestLiveDiff|TestBackfillSearch_NeverTombstones'`. Expected FAIL.
 - [ ] **Step 3:** Implement. `searchAndSave` adds each converted message's `{namespacedChannelID, msg.Timestamp}` to `listing.seen`, adds `len(result.Messages)` to `matched`, and records `total` on page 1.
@@ -436,7 +436,7 @@ DROP TABLE IF EXISTS kb_dirty;
 **Depends on:** Tasks 1–9
 
 **Files:**
-- Create: `docs/features/source-deletions.md`. Cover what each source detects, and at what cadence: Slack live window per cycle plus one swept day per cycle; Gmail daily; IMAP per cycle; Jira on refetch. Cover the tombstone shape and self-heal, the shared guard and its floors, the matched ≥ total rule, `kb_dirty` and its triggers (the key expressions are a Go↔SQL dual path, pinned by `TestKBDirtyTriggerKeysMatchSourceKeys`), and the corrections listed above. v1 limits:
+- Create: `docs/features/source-deletions.md`. Cover what each source detects, and at what cadence: Slack live window per cycle plus one swept day per cycle; Gmail daily; IMAP per cycle; Jira on refetch. Cover the tombstone shape and self-heal, the shared guard and its floors, the matched ≥ total rule, `kb_dirty` and its triggers (the key expressions are a Go↔SQL dual path, pinned by `TestSRCDEL03_TriggerKeysMatchSourceKeys`), and the corrections listed above. v1 limits:
   - A Slack day with more than 1000 searchable messages is skipped by the sweep.
   - A message moved out of the synced IMAP folder, or out of a Slack channel the token can no longer search, counts as deleted (4a).
   - AI-derived text and `inbox_items` snippets are not touched (3a, see Open questions).
@@ -465,7 +465,7 @@ DROP TABLE IF EXISTS kb_dirty;
 - **P2 — new `docs/inventory/source-deletions.md`:**
   - **SRCDEL-01 — no deletion from a bad listing.** A diff deletes only after a complete listing (no error, every page, Slack matched ≥ total, Jira `complete`) that passes `sourcediff.Check`. Guards: `TestSourceDel01_` renames of Task 2's `TestCheck` and of the skip tests in Tasks 5–9.
   - **SRCDEL-02 — a Slack deletion is a self-healing tombstone.** The row, ts, user and thread_ts are kept. Text and raw_json are blanked, and reactions and files are dropped. A later fetch restores the message. Guards: Task 7's tombstone and heal tests.
-  - **SRCDEL-03 — every deletion and edit reaches the KB in the same write.** Triggers write `kb_dirty`, and the indexer drains it with gen compare-and-delete. Guards: Task 1's trigger tests, `TestKBDirtyTriggerKeysMatchSourceKeys`, `TestDrainDirty_ReMarkDuringRenderSurvives`.
+  - **SRCDEL-03 — every deletion and edit reaches the KB in the same write.** Triggers write `kb_dirty`, and the indexer drains it with gen compare-and-delete. Guards: Task 1's trigger tests, `TestSRCDEL03_TriggerKeysMatchSourceKeys`, `TestDrainDirty_ReMarkDuringRenderSurvives`.
 
   If approved, the tests are renamed into the `TestSourceDel0N_` convention in the same commit as the inventory file.
 - **Awareness, no contract change:**

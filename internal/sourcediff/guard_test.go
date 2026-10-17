@@ -2,7 +2,7 @@ package sourcediff
 
 import "testing"
 
-func TestCheck(t *testing.T) {
+func TestSRCDEL01_GuardRefusesBadListings(t *testing.T) {
 	tests := []struct {
 		name                    string
 		stored, listed, missing int
