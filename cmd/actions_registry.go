@@ -184,6 +184,10 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	// writes nothing, save an AlwaysAsk write — Save is the owner's Approve.
 	authoringDeps := automationAuthoringDeps(cfg, database)
 	regTools = append(regTools, authoring.NewDraftAutomation(authoringDeps), authoring.NewSaveAutomation(authoringDeps))
+	// A claude.ai connector write held by the main chat's permission gate
+	// (#737): recorded and run only by that chat session, never listed on any
+	// surface (Tool.AppliedBySession).
+	regTools = append(regTools, tools.NewClaudeAIConnectorCall())
 	// The workbench tools (surface "project" only, spec 2026-10-02 A1):
 	// mounted by `mcp --workbench N`, which applies them directly under
 	// Binding.DirectApply (DEV-06).
