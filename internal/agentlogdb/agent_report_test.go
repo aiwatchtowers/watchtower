@@ -1,6 +1,7 @@
 package agentlogdb
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -110,6 +111,14 @@ func TestAgentReportSessions_FactsFlag(t *testing.T) {
 	d := openTestDB(t)
 	applyFactsFile(t, d, "/x/v2.jsonl", "v2", 2, nil)
 	applyFactsFile(t, d, "/x/v3.jsonl", "v3", 3, nil)
+	applyFactsFile(t, d, "/x/mix2.jsonl", "other", 2, nil)
+	applyFactsFile(t, d, "/x/mix3.jsonl", "mix", 3, func(b *AgentLogBatch) {
+		b.Events = []AgentLogEvent{{SessionUUID: "mix", Key: "mix:m1", Kind: "api_call", TS: "2026-10-01T10:00:01.000Z",
+			Name: "m", SrcPath: "/x/mix2.jsonl", SrcOffset: 1}}
+	})
+	applyFactsFile(t, d, "/x/nofile.jsonl", "nofile", 3, nil)
+	_, err := d.Exec(`DELETE FROM agent_log_files WHERE path = '/x/nofile.jsonl'`)
+	require.NoError(t, err)
 	got, err := d.AgentReportSessions(testWorkbenchID, "2026-09-01T00:00:00.000Z")
 	require.NoError(t, err)
 	byID := map[string]AgentReportSession{}
@@ -119,6 +128,28 @@ func TestAgentReportSessions_FactsFlag(t *testing.T) {
 	assert.False(t, byID["v2"].Facts)
 	assert.True(t, byID["v3"].Facts)
 	assert.False(t, byID["v2"].OldFormat)
+	assert.False(t, byID["mix"].Facts, "an event source file below v3 clears Facts")
+	assert.False(t, byID["nofile"].Facts, "no file row: not measured")
+}
+
+func TestAgentReportContextParts_ChunkedIDs(t *testing.T) {
+	d := openTestDB(t)
+	applyFactsFile(t, d, "/x/a.jsonl", "a", 3, func(b *AgentLogBatch) {
+		b.ContextParts = []AgentContextPart{{SessionUUID: "a", Part: "system", Bytes: 5}}
+	})
+	applyFactsFile(t, d, "/x/z.jsonl", "z", 3, func(b *AgentLogBatch) {
+		b.ContextParts = []AgentContextPart{{SessionUUID: "z", Part: "system", Bytes: 6}}
+	})
+	ids := []string{"z"}
+	for i := 0; i < agentReportChunk+10; i++ {
+		ids = append(ids, fmt.Sprintf("filler-%04d", i))
+	}
+	ids = append(ids, "a")
+	got, err := d.AgentReportContextParts(ids)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "a", got[0].SessionUUID)
+	assert.Equal(t, "z", got[1].SessionUUID)
 }
 
 func TestAgentReportContextParts(t *testing.T) {

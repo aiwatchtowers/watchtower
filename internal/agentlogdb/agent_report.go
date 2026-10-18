@@ -56,7 +56,8 @@ func (d *DB) AgentReportSessions(projectID int64, since string) ([]AgentReportSe
 		SELECT s.session_uuid, s.started_at, s.ended_at, s.model, s.git_branch,
 			EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid
 				AND files.parser_version < ?),
-			NOT EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid
+			EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid)
+				AND NOT EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid
 				AND files.parser_version < ?)
 		FROM agent_log_sessions s
 		WHERE s.project_id = ? AND (s.started_at >= ? OR s.ended_at >= ?)
