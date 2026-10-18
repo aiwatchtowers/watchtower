@@ -250,6 +250,10 @@ func (s *Sandbox) wrap(path string, fn SDKFunc) func(goja.FunctionCall) goja.Val
 			s.abort(fmt.Errorf("%s: %w", path, err))
 			return goja.Undefined()
 		}
+		if errors.Is(err, errStepCap) { // the run's step cap: it ends here
+			s.abort(errTooManySteps())
+			return goja.Undefined()
+		}
 		if err != nil {
 			return s.throw(err)
 		}

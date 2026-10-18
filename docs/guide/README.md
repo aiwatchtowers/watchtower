@@ -31,6 +31,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [A Workbench session or ask is stuck](troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
 - [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
 - [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — Claude plan warnings, rate limits and how to spend fewer tokens
+- [An automation run stopped at a limit](troubleshooting/automation-run-limits.md) — what the per-run call, output and session limits mean and what to do when a run cannot finish
 - [Known issues](troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
 
 ## Focus

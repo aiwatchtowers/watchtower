@@ -14,6 +14,7 @@ Find what you see on the screen in the first column; the second column opens the
 | An answer to an ask does not reach the agent, or a session shows only a green dot | [A Workbench session or ask is stuck](workbench-session-or-ask-stuck.md) |
 | The iPhone shows "Mac offline", never finds the Mac, or the code will not link | [The iPhone is not syncing](iphone-not-syncing.md) |
 | "Claude plan limit", "rate-limiting requests", or the AI costs more than you expect | [Plan limits and high cost](plan-limits-or-high-cost.md) |
+| An automation run says "more than 2000 SDK calls", "already started 10 sessions", "journal is incomplete" or "could not be finished" | [An automation run stopped at a limit](automation-run-limits.md) |
 | The app does something other than what its own screen says | [Known issues](known-issues.md) |
 
 Nothing here? Run `watchtower status` and `watchtower logs` in a terminal ([Command line](../reference/cli.md)) and read the last lines for the failing step.
