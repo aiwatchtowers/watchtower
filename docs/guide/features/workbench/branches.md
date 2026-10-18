@@ -34,7 +34,7 @@ Watchtower's fetch never asks you for a password or key passphrase, and never to
 
 ## When it's empty or wrong
 
-- **"Couldn't fetch origin: … the automatic fetch uses no ssh agent".** Your ssh key lives in your agent. Press ↻ to fetch with it.
+- **"Couldn't fetch origin: … the automatic fetch uses no ssh agent".** Your ssh key lives in your agent, or origin is reached through a jump host. Press ↻ to fetch with them.
 - **"Couldn't fetch origin: … never asks for a key passphrase".** Origin's ssh wants a key that is not in your ssh agent, or a host key confirmation. Add the key with `ssh-add`, or connect once from a terminal to accept the host key.
 - **"Couldn't fetch origin: … uses no credential helper".** Origin is https and needs a login, which Watchtower's fetch never asks for. Fetch from a terminal, or switch origin to an ssh URL.
 - **"Couldn't fetch origin: … transport 'file' not allowed".** Origin is a folder path. Watchtower fetches network remotes only.

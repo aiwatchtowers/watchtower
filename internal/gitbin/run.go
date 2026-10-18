@@ -178,20 +178,27 @@ func FetchArgs(args ...string) []string {
 // any folder on the Mac — one macOS guards would raise a privacy prompt
 // attributed to Watchtower.
 var fetchEnv = []string{
-	"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10",
+	"GIT_SSH_COMMAND=" + batchSSH,
 	"GIT_ASKPASS=", "SSH_ASKPASS=", "SSH_ASKPASS_REQUIRE=never",
 	"GIT_PROXY_COMMAND=",
 	"GIT_ALLOW_PROTOCOL=git:http:https:ssh",
 }
 
+// batchSSH is every fetch's ssh: no prompt of its own, a connect timeout.
+const batchSSH = "ssh -o BatchMode=yes -o ConnectTimeout=10"
+
 // unattendedSSH is the ssh of a fetch nobody asked for (the Desktop's
 // automatic one): no ssh agent — a password manager's agent or `ssh-add -c`
-// shows its own approval prompt when asked to sign — and, on Apple's ssh,
-// no Keychain lookup of a key's passphrase. Only an unencrypted key on disk
-// can sign in.
+// shows its own approval prompt when asked to sign —, on Apple's ssh no
+// Keychain lookup of a key's passphrase, and no jump host or proxy command
+// from ~/.ssh/config (that hop is a second ssh, or any program, that our
+// options never reach). Only an unencrypted key on disk can sign in, to a
+// directly reachable host. Command-line options win over ~/.ssh/config;
+// IgnoreUnknown=* (quoted: git runs the command through sh) keeps a non-Apple ssh, and a config listing keywords it
+// does not know, working.
 var unattendedSSH = []string{
-	"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityAgent=none" +
-		" -o IgnoreUnknown=UseKeychain -o UseKeychain=no",
+	"GIT_SSH_COMMAND=" + batchSSH + " -o IdentityAgent=none -o ProxyJump=none -o ProxyCommand=none" +
+		" -o 'IgnoreUnknown=*' -o UseKeychain=no",
 	"SSH_AUTH_SOCK=",
 }
 

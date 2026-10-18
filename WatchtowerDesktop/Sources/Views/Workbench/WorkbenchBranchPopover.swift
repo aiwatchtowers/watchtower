@@ -147,7 +147,7 @@ struct WorkbenchBranchPopover: View {
                                 .font(.caption)
                         }
                         .buttonStyle(.borderless)
-                        .help("Fetch origin (git fetch --prune origin) — never asks for a password")
+                        .help("Fetch origin (git fetch --prune origin) — no password prompt; may use your ssh agent")
                         .accessibilityLabel("Fetch origin")
                     }
                 }

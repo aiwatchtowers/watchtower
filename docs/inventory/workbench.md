@@ -945,9 +945,12 @@ Since 2026-10-16 (board #563, owner approved 2026-10-12, ask #175):
   (`~/.ssh/config` still is). The automatic fetch (`--unattended`, the
   Desktop's background one) also keeps ssh away from the owner's ssh agent
   and the Keychain (`SSH_AUTH_SOCK=` and `-o IdentityAgent=none -o
-  IgnoreUnknown=UseKeychain -o UseKeychain=no`), so an agent set up to
-  approve each use (a password manager's agent, `ssh-add -c`) is never asked
-  and never shows its prompt; only a fetch the owner starts (the Fetch
+  ProxyJump=none -o ProxyCommand=none -o IgnoreUnknown=* -o UseKeychain=no`;
+  command-line options outrank `~/.ssh/config`, and no jump-host ssh or
+  proxy program from it runs), so an agent set up to approve each use (a
+  password manager's agent, `ssh-add -c`) is never asked and never shows its
+  prompt — an origin reachable only through a jump host then fetches from
+  the Fetch button only; only a fetch the owner starts (the Fetch
   button) may use the agent, whose approval the owner then expects. A remote that needs a password, a locked key or
   a host-key confirmation fails with git's words in `error`; the Desktop
   shows a quiet "Couldn't fetch origin: …" in the popover and the branch list

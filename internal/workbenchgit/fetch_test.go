@@ -180,6 +180,7 @@ func TestFetch_SSHRunsInBatchModeWithNoAskpass(t *testing.T) {
 		if unattended {
 			assert.Contains(t, got, "-o IdentityAgent=none")
 			assert.Contains(t, got, "-o UseKeychain=no")
+			assert.Contains(t, got, "-o ProxyJump=none -o ProxyCommand=none", "no jump host or proxy program")
 			assert.Contains(t, got, "|\n", "no agent socket")
 		} else {
 			assert.NotContains(t, got, "IdentityAgent")

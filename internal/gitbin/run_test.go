@@ -257,7 +257,8 @@ func TestExecFetch_NoPromptEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityAgent=none -o IgnoreUnknown=UseKeychain -o UseKeychain=no|"
+	want = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityAgent=none -o ProxyJump=none -o ProxyCommand=none" +
+		" -o 'IgnoreUnknown=*' -o UseKeychain=no|"
 	if got := string(out); got != want {
 		t.Fatalf("unattended env = %q, want %q (no ssh agent, no Keychain)", got, want)
 	}
