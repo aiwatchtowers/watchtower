@@ -15,6 +15,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Quick Connections) wit
 - **Slack** — **Reconnect** also grants a newly needed permission, such as sending messages from chat. The emoji-to-action list used by the [Inbox](../features/inbox.md) action strip is edited in **Automations**, **Reactions** ([Reactions and tracks in Automations](../features/automations-rules.md)); here **Open** takes you there.
 - **Google** — **Add Google Account** grants Calendar and/or Gmail per account. **Sync days ahead** for Calendar: 2, 3, 5, 7 or 14. See [Calendar](../features/calendar-and-meeting-prep.md) and [Mail](../features/mail.md).
 - **Jira** — **Manage Boards** selects boards, shows board profiles and user mapping. See [Jira and Linear](../features/jira-and-linear.md).
+- **Linear** — workspaces (browser sign-in or API key), **Enabled**, **Re-login**, **Remove**, and the **Teams** to sync per workspace. See [Jira and Linear](../features/jira-and-linear.md).
 - **Confluence** (under each Jira site) — pick spaces to sync into search. **Grant Confluence access** and **Allow editing** are extra sign-ins; switching a space off removes its synced content. See [Search and knowledge](../features/search-and-knowledge.md).
 - **Quick Connections** — outside tool servers the assistant may read from; write tools never reach the chat. See [Quick Connections](../features/quick-connections.md).
 

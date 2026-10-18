@@ -100,6 +100,13 @@ until the next morning's hour.
   7. `waitingForSync(detail)` — the feature reads synced data, **Slack is
      connected** and `lastSyncTime == nil` (R7);
   8. `scheduled(Eta)` — the next run time from the feature's gate.
+- **Linear (`ReadinessFeature.linear`, 2026-10-18).** No switch, no
+  pipeline run (`phaseLinearSync` writes no `pipeline_runs` row), content
+  `linear_issues`, source `ReadinessSource.linear`; `.anySource` counts a
+  Linear workspace. Home never shows a Connect Linear row (the Jira row is the
+  tracker prompt), only a card once Linear is connected. Blockers reads both
+  trackers, so its `.jira` empty-state row is evaluated through
+  `FeatureReadiness.trackerReadiness(jira:linear:)`.
 - **`lastSyncTime` means "the first Slack sync finished".** It is the mtime of
   `last_sync.json` (`DaemonManager.readLastSyncTime`,
   `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift:95`), which only the Slack sync paths

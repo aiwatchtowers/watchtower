@@ -1,6 +1,6 @@
 # Jira and Linear
 
-Watchtower copies the Jira boards you pick onto your Mac and turns them into four overview tabs: **Project Map**, **Releases**, **Blockers** and **Workload**. It is for anyone who wants to see what is stuck, late or overloaded without opening Jira. Linear is connected and synced from the command line; no tab shows it.
+Watchtower copies the Jira boards you pick onto your Mac and turns them into four overview tabs: **Project Map**, **Releases**, **Blockers** and **Workload**. It is for anyone who wants to see what is stuck, late or overloaded without opening Jira. Linear workspaces connect in **Settings** too, and their issues show in **Blockers** and the weekly digest's progress next to Jira's.
 
 ## Why use it
 
@@ -10,7 +10,8 @@ Jira shows one board at a time. Here the same data is read across every connecte
 
 The background sync pulls issues from the boards you selected every 15 minutes (`jira.sync_interval_mins`), one pass per connected Jira site. Nothing is written back to Jira from the tabs. The four tabs read the local copy, so they show what the last sync saw.
 
-- **Blockers** lists two kinds of issue. *Blocked* means the status name contains "block" and the issue is not done. *Stale* means it is in progress and its status category has not changed for more than 7 days.
+- **Blockers** lists Jira and Linear issues of two kinds. *Blocked* means a Jira status name contains "block", or a Linear issue is blocked by another one that is not done; done issues never count. *Stale* means it is in progress and its status category has not changed for more than 7 days.
+- A **weekly digest** of a Jira or Linear install shows **Epic & Project Progress** (Jira epics and Linear projects with 3 or more issues) and **Active Sprints & Cycles**.
 - **Workload** has one row per Jira assignee matched to a Slack user, by email first and then by a close name match, even when they have nothing open.
 - **Workload** signals: **Overload** when someone has more than 2 late issues, more than 3 blocked or more than 15 open. **Watch** above 0 late, above 1 blocked or above 10 open. **Low** when they have nothing open (the command-line dashboard also requires fewer than 5 Slack messages).
 - **Releases** shows fix versions that are not released and not archived, with an **At Risk** badge when more than 30% of the issues are blocked, or less than 7 days remain and under 80% is done.
@@ -20,9 +21,10 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 
 ### Linear
 
-- **Connect:** `watchtower linear add` signs in with Linear, then `watchtower linear teams` and `select` pick the teams. Connecting (or signing in again) switches `linear.enabled` on for you.
+- **Connect:** **Settings** → **Connections** → **Linear** → **Add Linear Workspace**, with **Sign in with Linear** (browser) or **API key**. Setup's Linear card opens the same sheet. Connecting switches `linear.enabled` on for you.
+- **Teams:** tick the teams to sync under **Teams** in that pane. They appear after the first sync.
 - **Sync:** the daemon syncs the selected teams every 15 minutes (`linear.sync_interval_mins`). The first pass loads every open issue and everything updated in the last 90 days.
-- **API key instead of the browser:** `watchtower linear add --api-key` asks for a personal API key (create one in Linear under Settings, Security & access) and reads it from standard input. A key never expires and is not refreshed. If Linear rejects it, the account shows **revoked**: run `watchtower linear login --api-key` with a new key. Removing the account does not delete the key at Linear; revoke it there. `watchtower linear accounts` shows `oauth` or `api_key` in the `auth` column (`error` if the saved credential cannot be read: sign in again with `watchtower linear login`).
+- **API key:** create one in Linear under Settings, Security & access. It never expires. If Linear rejects it, the workspace shows **Re-login**, which asks for a new key. **Remove** does not delete the key at Linear; revoke it there.
 - **What reads it:** the data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it. Two things use it: the assistant, and automations (below). A connected Linear workspace can also identify you for the briefing and the day plan.
 
 ### Linear in the assistant
@@ -49,7 +51,8 @@ An issue or epic key on any tab opens in Jira.
 - **Workload is empty though Jira has issues.** No Jira user is matched to a Slack user. Connect Slack, then press **Resolve** in **User Mapping**.
 - **A comment deleted in Jira is still shown.** It disappears the next time that issue is synced.
 - **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Settings** → **Connections** → **Jira**.
-- **Blockers misses an issue you call blocked.** An issue is listed as blocked only when its status name contains "block"; a flag or label is not read. Issue links only build the chain shown under a listed issue.
+- **Blockers misses an issue you call blocked.** A Jira issue is listed as blocked only when its status name contains "block"; a flag or label is not read. A Linear issue needs an open "blocked by" relation. Links only build the chain shown under a listed issue.
+- **A Linear workspace shows no teams.** Its first sync has not finished yet; the list fills after it.
 
 Site needs **Re-login**? See [An account needs attention](../troubleshooting/account-needs-attention.md).
 

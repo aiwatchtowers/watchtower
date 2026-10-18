@@ -19,7 +19,8 @@ A tab shows what a background job wrote. It stays empty until its feature is on,
 | Inbox | Attention detection | Any source, and Watchtower knows who you are |
 | Memory | Memory (off by default) | Any source |
 | Calendar | none | A calendar |
-| Workload, Blockers, Project map, Releases, Boards | none | Jira |
+| Workload, Project map, Releases, Boards | none | Jira |
+| Blockers | none | Jira or Linear |
 | Statistics | none | Slack (the tab also shows with only mail connected, but stays empty) |
 
 Targets, Workbench and Automations have no status line: they stay empty until you add something.

@@ -9,7 +9,7 @@ Each goal turns on a fixed set of features; the goals are not permissions. All f
 | Goal | Turns on | Connect step offers |
 |---|---|---|
 | **Work communication** | Slack Digests, Tracks, People Cards, Daily Briefing, Day Plan, Ideas & Decisions, Reaction Commands, Memory | Slack, Google |
-| **Tasks & Jira** | Stream Digests, Next Step Suggestions | Jira |
+| **Tasks & Jira** | Stream Digests, Next Step Suggestions | Jira or Linear |
 | **Meetings** | Daily Briefing (meeting prep rides on it) | Google |
 | **Development in Workbench** | nothing, because Workbench, the chat and Targets need no switch | nothing |
 
@@ -27,9 +27,9 @@ If the check fails, a box shows the install command and three helpers: **Check a
 
 ## What the Connect step shows
 
-Only the sources your goals need, as cards: Slack, Google ("Mail and calendar") and Jira.
+Only the sources your goals need, as cards: Slack, Google ("Mail and calendar"), Jira and Linear.
 
-A Google account always brings mail and calendar together here. **Connect** opens the same sheet as **Settings → Connections**, and a connected card shows a check mark and the account name. The Jira sheet's **Also connect Confluence** box (ticked) adds Confluence to the same sign-in and selects up to five spaces you wrote in or viewed lately. After Jira connects, the sheet asks which boards to sync (**Choose Boards**); only those boards sync, and **Skip** leaves Jira's tabs saying "Choose Jira boards to get this" until you pick some. The step says "You can continue without any" and **Continue** is on even with nothing connected.
+A Google account always brings mail and calendar together here. **Connect** opens the same sheet as **Settings → Connections**, and a connected card shows a check mark and the account name. The Jira sheet's **Also connect Confluence** box (ticked) adds Confluence to the same sign-in and selects up to five spaces you wrote in or viewed lately. After Jira connects, the sheet asks which boards to sync (**Choose Boards**); only those boards sync, and **Skip** leaves Jira's tabs saying "Choose Jira boards to get this" until you pick some. The Linear sheet signs in with Linear in the browser or takes a personal API key. The step says "You can continue without any" and **Continue** is on even with nothing connected.
 
 After Slack connects, Watchtower loads its people list in the background ("Loading people… N") so Day Plan, Inbox and People know who is who. If your goals need no source (Workbench only), this step is skipped.
 
