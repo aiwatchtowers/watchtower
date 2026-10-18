@@ -15,7 +15,7 @@ The app is MVVM over GRDB: **Model → Queries → ViewModel → View**, reading
 
 3. **ViewModel** — `Sources/ViewModels/<Feature>ViewModel.swift`. `@MainActor @Observable final class`, inject `DatabasePool`. `startObserving()` streams `observation.values(in: dbPool)` in a stored `Task`; writes via `await dbPool.write { db in ... }`. Plain `var` properties (no `@Published`).
 
-4. **View(s)** — `Sources/Views/<Feature>/<Feature>View.swift` (+ optional `…Row`, `…DetailView`). `@Bindable var vm`, `.onAppear { vm.startObserving() }`, `navigationTitle` on the content (not inside a `@ViewBuilder` branch). Master-detail → `HSplitView`.
+4. **View(s)** — `Sources/Views/<Feature>/<Feature>View.swift` (+ optional `…Row`, `…DetailView`). `@Bindable var vm`, `.onAppear { vm.startObserving() }`, `navigationTitle` on the content (not inside a `@ViewBuilder` branch). Master-detail → `HSplitView`. Build views from `Sources/Views/DesignSystem/` (tokens, button styles, `SettingsSection`, `PanelSplit`…) and read `docs/design/desktop-style-guide.md` first; stock `Form`, `GroupBox`, `.bordered` and raw numbers fail lint.
 
 5. **Navigation wiring** (4 spots):
    - `Sources/App/SidebarDestination.swift` — add the `case`, its `title`, `icon` (SF Symbol), and include it in `mainItems`.
@@ -25,7 +25,9 @@ The app is MVVM over GRDB: **Model → Queries → ViewModel → View**, reading
 
 6. **Tests** — `Tests/<Feature>Tests.swift`, using `TestDatabase.createDatabaseManager()` (file-based pool, not `:memory:`); insert fixtures, `@MainActor` when driving a VM, `TestDatabase.cleanup(path:)` in teardown.
 
-7. **Verify:** `cd WatchtowerDesktop && swift build && swift test`, plus `make lint-swift`.
+6a. **See it** — register the screen in `DesignShotCatalog` (`Tests/DesignShots/`) on fixture data, run `make desktop-shots`, and look at both the light and dark PNGs before asking for review. A new window goes to the owner as a review ask with its shots.
+
+7. **Verify:** `cd WatchtowerDesktop && swift build && swift test`, plus `make lint-swift` and `make desktop-shots`.
 
 ## Gotchas
 
