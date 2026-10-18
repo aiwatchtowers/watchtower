@@ -188,8 +188,11 @@ func runTracks(cmd *cobra.Command, args []string) error {
 		channelIDFilter = ch.ID
 	}
 
-	// The track_linking toggle governs Jira and Linear links alike (spec 3.5).
-	jiraEnabled := jira.TrackerFeatureEnabled(cfg, "track_linking")
+	// The track_linking toggle governs Jira and Linear links alike (spec 3.5),
+	// each only while its tracker is enabled.
+	linkScope, jiraEnabled := jira.TrackerFeatureScope(cfg, "track_linking")
+	jiraLinks := jiraEnabled && jira.ScopeCovers(linkScope, "jira")
+	linearLinks := jiraEnabled && jira.ScopeCovers(linkScope, "linear")
 
 	if (tracksFlagJira || tracksFlagNoJira) && !jiraEnabled {
 		fmt.Fprintln(out, "Jira track linking is not enabled. Ignoring --jira/--no-jira flags.")
@@ -206,6 +209,7 @@ func runTracks(cmd *cobra.Command, args []string) error {
 		f.HasUpdates = &v
 	}
 	if jiraEnabled {
+		f.LinkTracker = linkScope
 		if tracksFlagJira {
 			v := true
 			f.HasJira = &v
@@ -227,13 +231,15 @@ func runTracks(cmd *cobra.Command, args []string) error {
 
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "## Tracks (%d)\n\n", len(items))
-	printTracks(&buf, items, database, jiraEnabled)
+	printTracks(&buf, items, database, jiraLinks, linearLinks)
 
 	fmt.Fprint(out, ui.RenderMarkdown(buf.String()))
 	return nil
 }
 
-func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled bool) {
+// printTracks renders the list; jiraLinks/linearLinks turn on each tracker's
+// linked-issue badges (only for an enabled tracker with track_linking on).
+func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraLinks, linearLinks bool) {
 	priorityIcon := map[string]string{
 		"high":   "!",
 		"medium": "-",
@@ -246,14 +252,14 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled boo
 		"watching":  "[watching]",
 	}
 
-	// Batch-load all Jira issues for tracks in a single query.
+	// Batch-load each enabled tracker's linked issues in a single query.
+	trackIDs := make([]int, len(items))
+	for i, item := range items {
+		trackIDs[i] = item.ID
+	}
 	var jiraByTrack map[int][]db.JiraIssue
 	var linearByTrack map[int][]db.LinkedLinearIssue
-	if jiraEnabled {
-		trackIDs := make([]int, len(items))
-		for i, item := range items {
-			trackIDs[i] = item.ID
-		}
+	if jiraLinks {
 		var jiraErr error
 		jiraByTrack, jiraErr = database.GetJiraIssuesForTracks(trackIDs)
 		if jiraErr != nil {
@@ -262,6 +268,8 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled boo
 		if jiraByTrack == nil {
 			jiraByTrack = make(map[int][]db.JiraIssue)
 		}
+	}
+	if linearLinks {
 		var linearErr error
 		linearByTrack, linearErr = database.GetLinearIssuesForTracks(trackIDs)
 		if linearErr != nil {
@@ -297,7 +305,7 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled boo
 
 		// Jira badges
 		jiraBadges := ""
-		if jiraEnabled {
+		if jiraLinks || linearLinks {
 			if issues := jiraByTrack[item.ID]; len(issues) > 0 {
 				var badges []string
 				for _, issue := range issues {
@@ -886,7 +894,7 @@ func setTrackEnabled(cmd *cobra.Command, args []string, enabled bool) error {
 // printTrackLinkedLinearIssues lists the Linear issues a track links to
 // (issue_slack_links, tracker 'linear'), under the same track_linking toggle.
 func printTrackLinkedLinearIssues(out io.Writer, database *db.DB, cfg *config.Config, track *db.Track) {
-	if !jira.TrackerFeatureEnabled(cfg, "track_linking") {
+	if scope, ok := jira.TrackerFeatureScope(cfg, "track_linking"); !ok || !jira.ScopeCovers(scope, "linear") {
 		return
 	}
 	byTrack, err := database.GetLinearIssuesForTracks([]int{track.ID})

@@ -27,10 +27,32 @@ func linearTaskContext(d *db.DB, lin *db.LinearIssueDossier) taskContext {
 	} else {
 		out.Threads, out.Notes = threadsFromLinks(d, links, people, out.Notes)
 	}
-	out.Meetings, out.Notes = collectTaskMeetings(d, lin.Key, out.Notes)
+	out.Meetings, out.Notes = collectLinearTaskMeetings(d, lin.Keys(), out.Notes)
 	out.Decisions, out.Notes = collectTaskDecisions(d, "linear", lin.Keys(), out.Notes)
 	out.People = people.list()
 	return out
+}
+
+// collectLinearTaskMeetings searches the transcripts for every key the issue
+// has had (a meeting before a team move names the old key), deduped by
+// transcript and capped at taskContextMaxMeetings.
+func collectLinearTaskMeetings(d *db.DB, keys []string, notes []string) ([]taskMeeting, []string) {
+	var out []taskMeeting
+	seen := map[int64]bool{}
+	for _, key := range keys {
+		hits, err := d.SearchTranscripts(key, taskContextMaxMeetings)
+		if err != nil {
+			return nil, append(notes, "meeting search unavailable: "+err.Error())
+		}
+		for _, h := range hits {
+			if seen[h.ID] || len(out) >= taskContextMaxMeetings {
+				continue
+			}
+			seen[h.ID] = true
+			out = append(out, taskMeeting{TranscriptID: h.ID, Title: h.Title, CreatedAt: h.CreatedAt, Snippet: h.Snippet})
+		}
+	}
+	return out, notes
 }
 
 // collectLinearTaskComments returns the issue's oldest taskContextMaxComments

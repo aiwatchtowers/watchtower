@@ -36,6 +36,8 @@ func seedLinearTaskFixture(t *testing.T, d *db.DB) int64 {
 	require.NoError(t, d.UpsertIssueSlackLink(db.IssueSlackLink{Tracker: "linear", IssueKey: "ENG-7", ChannelID: "C010", MessageTS: "1690000000.000100", LinkType: "mention"}))
 	_, err := d.InsertMeetingTranscript(db.MeetingTranscript{Title: "Billing sync", TranscriptText: "OPS-3 ships next week behind the flag."})
 	require.NoError(t, err)
+	_, err = d.InsertMeetingTranscript(db.MeetingTranscript{Title: "Old billing sync", TranscriptText: "ENG-7 needs a feature flag first."})
+	require.NoError(t, err)
 
 	tx, err := d.Begin()
 	require.NoError(t, err)
@@ -63,7 +65,7 @@ func TestGetTaskContext_LinearIssueByCurrentOrPreviousKey(t *testing.T) {
 		assert.Equal(t, "watch the retry storm", got.Comments[0].Body)
 		require.Len(t, got.Threads, 1, "the thread linked under the old key is found")
 		assert.Len(t, got.Threads[0].Messages, 2)
-		require.Len(t, got.Meetings, 1)
+		require.Len(t, got.Meetings, 2, "meetings under the old key count too")
 		require.Len(t, got.Decisions, 1, "the mention citing the old key is found")
 		assert.Equal(t, "Billing ships behind a flag", got.Decisions[0].Title)
 		assert.Subset(t, got.People, []string{"Ann", "Bob", "Cat"})

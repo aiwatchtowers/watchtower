@@ -281,4 +281,34 @@ final class JiraQueriesTests: XCTestCase {
         XCTAssertEqual(rows.first?.channelName, "unlinked")
         XCTAssertEqual(rows.first?.digestCount, 1)
     }
+
+    // MARK: - Linear links are not Jira links (migration 00144)
+
+    /// issue_slack_links also holds Linear links (`tracker = 'linear'`). The
+    /// Jira readers must ignore them even when the key matches a Jira issue.
+    func testJiraLinkReadersIgnoreLinearLinks() throws {
+        let queue = try TestDatabase.create()
+        let since = daysAgo(14)
+        try queue.write { db in
+            let acct = try TestDatabase.insertJiraAccount(db)
+            try issue(db, acct, "PROJ-1")
+            try TestDatabase.insertChannel(db, id: "C1", name: "linear-only")
+            let recent = Date().timeIntervalSince1970 - 86400
+            try TestDatabase.insertDigest(db, channelID: "C1", periodFrom: recent, periodTo: recent + 3600)
+            try TestDatabase.insertMessage(db, channelID: "C1", ts: "1700000000.000100", text: "Linear thread on PROJ-1")
+            try db.execute(sql: """
+                INSERT INTO issue_slack_links (tracker, issue_key, channel_id, message_ts, digest_id, link_type) VALUES
+                    ('linear', 'PROJ-1', 'C1', '1700000000.000100', NULL, 'mention'),
+                    ('linear', 'PROJ-1', 'C1', '', 7, 'decision')
+                """)
+        }
+
+        try queue.read { db in
+            XCTAssertEqual(try JiraQueries.fetchChannelsWithoutJira(db, since: since).map(\.channelID), ["C1"],
+                           "a channel with only a Linear link is still without Jira")
+            XCTAssertTrue(try JiraQueries.fetchIssuesForDigest(db, digestID: 7).isEmpty)
+            XCTAssertNil(try JiraQueries.fetchSlackContextForIssue(db, issueKey: "PROJ-1"))
+            XCTAssertTrue(try JiraQueries.fetchSlackLinksForIssueKeys(db, keys: ["PROJ-1"]).isEmpty)
+        }
+    }
 }

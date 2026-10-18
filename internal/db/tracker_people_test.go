@@ -36,4 +36,8 @@ func TestTrackerDeliveryQueriesUseAssigneeIndexes(t *testing.T) {
 		assert.Contains(t, plan, "SEARCH ji USING INDEX idx_jira_issues_assignee", plan)
 		assert.Contains(t, plan, "SEARCH li USING INDEX idx_linear_issues_assignee_status", plan)
 	}
+	// A single-tracker scope keeps the index on the branch it reads.
+	plan := trackerPeopleQueryPlan(t, d, `SELECT COUNT(*) FROM tracker_issues WHERE assignee_slack_id = ? AND status_category = 'done'
+		AND resolved_at >= ? AND resolved_at <= ? AND is_deleted = 0 AND tracker = ?`, "1:U1", "a", "b", "linear")
+	assert.Contains(t, plan, "SEARCH li USING INDEX idx_linear_issues_assignee_status", plan)
 }

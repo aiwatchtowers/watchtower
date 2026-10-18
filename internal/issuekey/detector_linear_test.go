@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"testing"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -108,15 +109,49 @@ func TestKeyDetector_LinearIssueTeamKeyIsKnown(t *testing.T) {
 	assert.Equal(t, []string{"OPS-4"}, d.DetectKeys("OPS-4"))
 }
 
-// A failed Linear key load keeps the detector fail-closed, like a Jira one.
-func TestKeyDetector_LinearKeyLoadFailureDetectsNothing(t *testing.T) {
+// Each tracker's prefixes load on their own: a failing Linear table is logged
+// and leaves the Jira keys detected; a Linear key stays unknown (fail-closed for
+// the tracker that failed). After a TTL reload whose Linear half fails, the
+// last good Linear set is kept.
+func TestKeyDetector_LinearLoadFailureKeepsJiraKeys(t *testing.T) {
 	database := openTestDB(t)
 	seedProjectKey(t, database, "PROJ")
+	seedLinearTeam(t, database, "ENG")
+	d := NewKeyDetector(database)
+	var buf bytes.Buffer
+	d.SetLogger(log.New(&buf, "", 0))
+	clock := time.Now()
+	d.now = func() time.Time { return clock }
+
+	require.Equal(t, []string{"PROJ-1", "ENG-2"}, d.DetectKeys("PROJ-1 ENG-2"))
+
 	_, err := database.Exec(`DROP TABLE linear_teams`)
 	require.NoError(t, err)
-	d := NewKeyDetector(database)
+	clock = clock.Add(knownKeysTTL + time.Minute)
+	assert.Equal(t, []string{"PROJ-1", "ENG-2"}, d.DetectKeys("PROJ-1 ENG-2"), "the stale Linear set survives a failed reload")
+	assert.Contains(t, buf.String(), "failed to load known linear issue-key prefixes")
 
-	assert.Nil(t, d.DetectKeys("PROJ-1"), "a partial load is no load: unknown means no")
+	fresh := NewKeyDetector(database)
+	fresh.SetLogger(log.New(&buf, "", 0))
+	assert.Equal(t, []string{"PROJ-1"}, fresh.DetectKeys("PROJ-1 ENG-2"), "never loaded: Linear unknown, Jira still detected")
+}
+
+// Only enabled trackers' prefixes load: with Jira off a stored Jira project key
+// links nothing, with Linear off a stored Linear team key links nothing.
+func TestNewKeyDetectorIfEnabled_LoadsOnlyEnabledTrackers(t *testing.T) {
+	database := openTestDB(t)
+	seedProjectKey(t, database, "PROJ")
+	seedLinearTeam(t, database, "ENG")
+
+	linearOnly := NewKeyDetectorIfEnabled(&config.Config{Linear: config.LinearConfig{Enabled: true}}, database)
+	assert.Equal(t, []string{"ENG-2"}, linearOnly.DetectKeys("PROJ-1 ENG-2"))
+	n, err := linearOnly.ProcessMessage("1:C1", "1.1", "PROJ-1 ENG-2")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Empty(t, linksFor(t, database, "jira", "PROJ-1"), "Jira off: no Jira link")
+
+	jiraOnly := NewKeyDetectorIfEnabled(&config.Config{Jira: config.JiraConfig{Enabled: true}}, database)
+	assert.Equal(t, []string{"PROJ-1"}, jiraOnly.DetectKeys("PROJ-1 ENG-2"))
 }
 
 // The daemon routes the detector's output into its own rotated watchtower.log
@@ -131,5 +166,5 @@ func TestKeyDetector_SetLoggerReceivesOutput(t *testing.T) {
 	// A closed database makes the known-key load fail, which the detector logs.
 	_ = database.Close()
 	assert.Empty(t, d.DetectKeys("see PROJ-1"))
-	assert.Contains(t, buf.String(), "failed to load known issue-key prefixes")
+	assert.Contains(t, buf.String(), "failed to load known jira issue-key prefixes")
 }

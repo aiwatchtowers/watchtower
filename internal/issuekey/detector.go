@@ -41,9 +41,15 @@ const (
 // KeyDetector detects issue keys in text and links them to Slack messages,
 // tracks and digest decisions.
 type KeyDetector struct {
-	db        *db.DB
-	logger    *log.Logger
-	knownKeys map[string][]string // prefix -> trackers that own it
+	db     *db.DB
+	logger *log.Logger
+	// trackers are the trackers whose prefixes load (and so whose keys link),
+	// in link order: only the enabled ones (NewKeyDetectorIfEnabled).
+	trackers []string
+	// prefixes holds each tracker's last successfully loaded prefix set; a
+	// tracker whose reload fails keeps its previous set.
+	prefixes  map[string]map[string]bool
+	knownKeys map[string][]string // prefix -> trackers that own it (built from prefixes)
 	loadedAt  time.Time
 	mu        sync.RWMutex
 
@@ -53,11 +59,16 @@ type KeyDetector struct {
 	now func() time.Time
 }
 
-// NewKeyDetector creates a new KeyDetector.
+// NewKeyDetector creates a KeyDetector over both trackers.
 func NewKeyDetector(database *db.DB) *KeyDetector {
+	return newKeyDetector(database, []string{trackerJira, trackerLinear})
+}
+
+func newKeyDetector(database *db.DB, trackers []string) *KeyDetector {
 	return &KeyDetector{
-		db:     database,
-		logger: log.New(os.Stderr, "[issue-keys] ", log.LstdFlags),
+		db:       database,
+		logger:   log.New(os.Stderr, "[issue-keys] ", log.LstdFlags),
+		trackers: trackers,
 	}
 }
 
@@ -83,6 +94,8 @@ func (d *KeyDetector) SetLogger(l *log.Logger) {
 // false by default and flipped true by `jira add`/`jira login` and `linear
 // add`, so the detector runs on exactly the installs that have a tracker
 // connected — which is also the only state in which a key prefix can be known.
+// It loads prefixes only for the enabled trackers, so a switched-off tracker's
+// stored teams or projects never turn a token into a link.
 // Deliberately NOT one of the jira.features.* toggles: this step collects the
 // data every tracker surface reads (--jira/--no-jira, the Desktop "Linked Jira
 // Issues" badges, get_task_context, find_experts, who-to-ping), and putting it
@@ -91,10 +104,17 @@ func (d *KeyDetector) SetLogger(l *log.Logger) {
 // Callers must nil-check rather than pass the result straight to a
 // Set…Detector: a typed nil stored in an interface field is not nil.
 func NewKeyDetectorIfEnabled(cfg *config.Config, database *db.DB) *KeyDetector {
-	if !cfg.Jira.Enabled && !cfg.Linear.Enabled {
+	var trackers []string
+	if cfg.Jira.Enabled {
+		trackers = append(trackers, trackerJira)
+	}
+	if cfg.Linear.Enabled {
+		trackers = append(trackers, trackerLinear)
+	}
+	if len(trackers) == 0 {
 		return nil
 	}
-	return NewKeyDetector(database)
+	return newKeyDetector(database, trackers)
 }
 
 // hit is one detected key and the tracker it is linked to.
@@ -151,11 +171,10 @@ func (d *KeyDetector) DetectKeys(text string) []string {
 // still empty or has gone past knownKeysTTL. Only a non-empty result is ever
 // memoized: a daemon that starts before the first tracker sync would otherwise
 // cache the empty set for its whole lifetime and never detect a key again.
-// Reloading is a few SELECT DISTINCTs over small tables. A load error leaves
-// whatever was cached before untouched (nil if nothing ever loaded
-// successfully, or the previous — now stale — set on a TTL-triggered reload
-// that failed) rather than wiping a good set on a transient DB hiccup; unknown
-// still means no, never yes.
+// Reloading is a few SELECT DISTINCTs over small tables. Each tracker loads on
+// its own: a load error leaves that tracker's previous set untouched (empty if
+// it never loaded) rather than wiping a good set on a transient DB hiccup, and
+// never costs the other tracker its keys; unknown still means no, never yes.
 func (d *KeyDetector) knownPrefixes() map[string][]string {
 	d.mu.RLock()
 	known := d.knownKeys
@@ -165,8 +184,7 @@ func (d *KeyDetector) knownPrefixes() map[string][]string {
 		return known
 	}
 
-	if err := d.refreshKnownKeys(); err != nil {
-		d.logger.Printf("failed to load known issue-key prefixes: %v", err)
+	if !d.refreshKnownKeys() {
 		return known
 	}
 
@@ -267,36 +285,62 @@ func (d *KeyDetector) ProcessDigestDecision(digestID int, channelID string, deci
 	}))
 }
 
-// refreshKnownKeys loads the known Jira project keys and Linear team keys. A
-// failure of either keeps the previous set (see knownPrefixes).
-func (d *KeyDetector) refreshKnownKeys() error {
-	jiraKeys, err := d.db.GetKnownProjectKeys()
-	if err != nil {
-		return err
+// refreshKnownKeys reloads each enabled tracker's prefixes independently: a
+// tracker that fails is logged and keeps its previous set, so a broken Linear
+// table never stops Jira keys from linking (and vice versa). Reports whether
+// any tracker loaded; when none did, nothing changes and the next call retries.
+func (d *KeyDetector) refreshKnownKeys() bool {
+	d.mu.RLock()
+	prev := d.prefixes
+	d.mu.RUnlock()
+
+	sets := make(map[string]map[string]bool, len(d.trackers))
+	loaded := false
+	for _, tracker := range d.trackers {
+		keys, err := d.loadPrefixes(tracker)
+		if err != nil {
+			d.logger.Printf("failed to load known %s issue-key prefixes: %v", tracker, err)
+			sets[tracker] = prev[tracker]
+			continue
+		}
+		loaded = true
+		set := make(map[string]bool, len(keys))
+		for _, k := range keys {
+			set[k] = true
+		}
+		sets[tracker] = set
 	}
-	linearKeys, err := d.db.GetKnownLinearTeamKeys()
-	if err != nil {
-		return err
+	if !loaded {
+		return false
 	}
 
-	known := make(map[string][]string, len(jiraKeys)+len(linearKeys))
-	for _, k := range jiraKeys {
-		known[k] = append(known[k], trackerJira)
+	known := map[string][]string{}
+	for _, tracker := range d.trackers {
+		for k := range sets[tracker] {
+			known[k] = append(known[k], tracker)
+		}
 	}
-	for _, k := range linearKeys {
-		known[k] = append(known[k], trackerLinear)
-	}
-
 	d.mu.Lock()
+	d.prefixes = sets
 	d.knownKeys = known
 	d.loadedAt = d.clockNow()
 	d.mu.Unlock()
-	return nil
+	return true
+}
+
+// loadPrefixes reads one tracker's known prefixes: Jira project keys or Linear
+// team keys.
+func (d *KeyDetector) loadPrefixes(tracker string) ([]string, error) {
+	if tracker == trackerJira {
+		return d.db.GetKnownProjectKeys()
+	}
+	return d.db.GetKnownLinearTeamKeys()
 }
 
 // ResetCache clears the known prefix cache, forcing a reload on next use.
 func (d *KeyDetector) ResetCache() {
 	d.mu.Lock()
+	d.prefixes = nil
 	d.knownKeys = nil
 	d.loadedAt = time.Time{}
 	d.mu.Unlock()

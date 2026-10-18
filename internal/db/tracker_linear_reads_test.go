@@ -77,6 +77,19 @@ func TestLinearIssueExists_CurrentAndPreviousKeysNotDeleted(t *testing.T) {
 	}
 }
 
+// The per-ref memory lookup (and the dossier lookup that shares it) hits
+// idx_linear_issues_key for the current key; previous_keys is only the
+// fallback half, run on a miss.
+func TestLinearCurrentKeyLookupUsesTheKeyIndex(t *testing.T) {
+	d := openTestDB(t)
+	plan := trackerPeopleQueryPlan(t, d, `SELECT 1 FROM linear_issues WHERE is_deleted = 0 AND `+linearByCurrentKey+` LIMIT 1`, "ENG-1")
+	assert.Contains(t, plan, "USING INDEX idx_linear_issues_key", plan)
+	links := trackerPeopleQueryPlan(t, d, `SELECT li.id FROM issue_slack_links l
+		JOIN linear_issues li ON li.key = l.issue_key AND li.is_deleted = 0
+		WHERE l.tracker = 'linear' AND l.track_id IN (?)`, 1)
+	assert.Contains(t, links, "USING INDEX idx_linear_issues_key", links)
+}
+
 // A failing selected team is reported by its last successful sync; an
 // unselected or never-synced one is not.
 func TestOldestFailingLinearTeamSync(t *testing.T) {

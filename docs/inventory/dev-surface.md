@@ -158,9 +158,9 @@ inside an agent session) cannot afford.
 **Observable:** `find_experts` never asserts that someone is an expert.
 Every candidate carries an `Evidence []expertEvidence` list where each entry
 has a `kind`, a `count`, and a resolvable `ref` (a Slack `channel|ts` pair, a
-Jira key, or an email) — never a bare score with no way to check it. The
+Jira or Linear issue key — kind `jira` or `linear` — or an email) — never a bare score with no way to check it. The
 response ships `expertWeights` (`internal/tools/experts.go`'s package-level
-map: `messages: 1.0`, `thread: 1.5`, `jira: 2.0`, `code: 2.5`) so the caller
+map: `messages: 1.0`, `thread: 1.5`, `jira: 2.0`, `linear: 2.0`, `code: 2.5`) so the caller
 can see exactly what produced the ranking, not just trust it. An unmatched
 git author passed via the `emails` argument is returned in
 `UnmatchedEmails`, never silently dropped from the response.

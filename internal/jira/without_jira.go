@@ -38,7 +38,7 @@ const minMessageCount = 10
 //  2. Query channel-level digests since `since`, aggregating per channel:
 //     distinct digest dates (days_discussed), total message_count,
 //     first/last created_at.
-//  3. Exclude channels that have any Jira issue_slack_links in the period.
+//  3. Exclude channels that have any Jira link (issue_slack_links, tracker jira) in the period.
 //  4. Apply thresholds: days_discussed >= 3 AND message_count >= 10.
 //  5. Resolve channel names and sort by days_discussed DESC, message_count DESC.
 func DetectWithoutJira(d *db.DB, cfg *config.Config, since time.Time) ([]WithoutJiraWarning, error) {
@@ -95,7 +95,7 @@ func DetectWithoutJira(d *db.DB, cfg *config.Config, since time.Time) ([]Without
 		return nil, nil
 	}
 
-	// Step 2: Batch-check which channels have Jira issue_slack_links in the period.
+	// Step 2: Batch-check which channels have a Jira link (issue_slack_links, tracker jira) in the period.
 	channelIDs := make([]string, len(candidates))
 	for i, c := range candidates {
 		channelIDs[i] = c.channelID

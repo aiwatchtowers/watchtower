@@ -93,6 +93,9 @@ func TestLookupDisplayName(t *testing.T) {
 	assert.Equal(t, "U99", lookupDisplayName(attendees, "U99"), "fallback for unknown id")
 }
 
+// p1ID is the identity key of the untyped fixture issue P-1.
+var p1ID = issueIdentity(db.TrackerIssue{Key: "P-1"})
+
 func TestIndexIssuesAndReporters_AddsReporterRole(t *testing.T) {
 	attendees := []attendeeJira{
 		{slackID: "U1", issues: []db.TrackerIssue{
@@ -101,13 +104,13 @@ func TestIndexIssuesAndReporters_AddsReporterRole(t *testing.T) {
 	}
 	idSet := map[string]bool{"U1": true, "U2": true}
 	parts := map[string][]issueRole{
-		"P-1": {{slackID: "U1", role: "assignee"}},
+		p1ID: {{slackID: "U1", role: "assignee"}},
 	}
 	allIssues := indexIssuesAndReporters(attendees, idSet, parts)
-	assert.Contains(t, allIssues, "P-1")
+	assert.Contains(t, allIssues, p1ID)
 
 	// Reporter role added because U2 is also an attendee.
-	roles := parts["P-1"]
+	roles := parts[p1ID]
 	require := false
 	for _, r := range roles {
 		if r.role == "reporter" && r.slackID == "U2" {
@@ -125,10 +128,10 @@ func TestIndexIssuesAndReporters_SkipsSelfReporter(t *testing.T) {
 		}},
 	}
 	idSet := map[string]bool{"U1": true}
-	parts := map[string][]issueRole{"P-1": {{slackID: "U1", role: "assignee"}}}
+	parts := map[string][]issueRole{p1ID: {{slackID: "U1", role: "assignee"}}}
 
 	indexIssuesAndReporters(attendees, idSet, parts)
-	assert.Len(t, parts["P-1"], 1, "no duplicate reporter for self-reported issue")
+	assert.Len(t, parts[p1ID], 1, "no duplicate reporter for self-reported issue")
 }
 
 func TestIndexIssuesAndReporters_SkipsNonAttendeeReporter(t *testing.T) {
@@ -138,10 +141,10 @@ func TestIndexIssuesAndReporters_SkipsNonAttendeeReporter(t *testing.T) {
 		}},
 	}
 	idSet := map[string]bool{"U1": true}
-	parts := map[string][]issueRole{"P-1": {{slackID: "U1", role: "assignee"}}}
+	parts := map[string][]issueRole{p1ID: {{slackID: "U1", role: "assignee"}}}
 
 	indexIssuesAndReporters(attendees, idSet, parts)
-	assert.Len(t, parts["P-1"], 1)
+	assert.Len(t, parts[p1ID], 1)
 }
 
 func TestFormatAttendeeSections_TruncatesIssueList(t *testing.T) {

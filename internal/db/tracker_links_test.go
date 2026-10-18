@@ -32,3 +32,23 @@ func TestGetLinearIssuesForTracks(t *testing.T) {
 	assert.Equal(t, "OPS-3", got[t1][0].Key)
 	assert.Empty(t, got[t2], "a Jira link is not a Linear issue")
 }
+
+// TrackFilter.LinkTracker narrows the has-ticket filter to one tracker's links.
+func TestTrackFilterLinkTracker(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.UpsertTrack(Track{Text: "t", ChannelIDs: `[]`})
+	require.NoError(t, err)
+	tid := int(id)
+	require.NoError(t, d.UpsertIssueSlackLink(IssueSlackLink{Tracker: "linear", IssueKey: "ENG-1", TrackID: &tid, LinkType: "track"}))
+	yes, no := true, false
+
+	got, err := d.GetTracks(TrackFilter{HasJira: &yes, LinkTracker: "jira"})
+	require.NoError(t, err)
+	assert.Empty(t, got, "a Linear link does not count when only Jira is enabled")
+	got, err = d.GetTracks(TrackFilter{HasJira: &no, LinkTracker: "jira"})
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+	got, err = d.GetTracks(TrackFilter{HasJira: &yes, LinkTracker: "linear"})
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+}

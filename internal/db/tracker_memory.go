@@ -45,19 +45,30 @@ func (db *DB) SetMemoryLinearWatermark(accountID int64, ts float64) error {
 // carries that key now or carried it before a team move (previous_keys), so a
 // ref minted before the move still resolves. linear_issues is
 // migration-guaranteed, so a lookup failure is a genuine error.
+//
+// The current key is an indexed lookup (idx_linear_issues_key, the per-ref
+// query memory runs for every Linear episode); previous_keys is only scanned
+// when that misses.
 func (db *DB) LinearIssueExists(key string) (bool, error) {
-	var one int
-	err := db.QueryRow(`SELECT 1 FROM linear_issues
-		WHERE is_deleted = 0 AND (key = ? OR EXISTS (SELECT 1 FROM json_each(linear_issues.previous_keys) WHERE value = ?))
-		LIMIT 1`, key, key).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+	for _, where := range []string{linearByCurrentKey, linearByPreviousKey} {
+		var one int
+		err := db.QueryRow(`SELECT 1 FROM linear_issues WHERE is_deleted = 0 AND `+where+` LIMIT 1`, key).Scan(&one)
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("checking linear issue %s: %w", key, err)
+		}
 	}
-	if err != nil {
-		return false, fmt.Errorf("checking linear issue %s: %w", key, err)
-	}
-	return true, nil
+	return false, nil
 }
+
+// The two halves of a Linear key lookup (one ? each): the indexed current key
+// first, the previous_keys scan only on a miss.
+const (
+	linearByCurrentKey  = `linear_issues.key = ?`
+	linearByPreviousKey = `EXISTS (SELECT 1 FROM json_each(linear_issues.previous_keys) WHERE value = ?)`
+)
 
 // LinearExtractIssue is one linear_issues row projected for the mechanical
 // issue → episode builder.

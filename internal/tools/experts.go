@@ -283,14 +283,9 @@ func aggregateCommentAuthors(comments []db.JiraComment) map[string]*commentAgg {
 	return byAuthor
 }
 
-func collectIssueEvidence(d *db.DB, key string, acc *expertAccumulator, notes []string) []string {
-	issue, err := d.GetJiraIssueByKey(key)
-	if err != nil {
-		return append(notes, "issue lookup unavailable: "+err.Error())
-	}
-	if issue == nil {
-		return append(notes, "no issue with key "+key)
-	}
+// collectIssueEvidence scores a Jira issue's assignee, reporter and commenters
+// (the issue already looked up by collectIssueKeyEvidence).
+func collectIssueEvidence(d *db.DB, key string, issue *db.JiraIssue, acc *expertAccumulator, notes []string) []string {
 	issueTS, issueLastSeen, issueDated := jiraEvidenceTime(issue.UpdatedAt)
 	if issue.AssigneeSlackID != "" {
 		acc.add(issue.AssigneeSlackID, expertEvidence{

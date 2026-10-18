@@ -231,8 +231,8 @@ func TestMemory12_LinearSchemeRegisteredAndResolved(t *testing.T) {
 	if _, registered, _ := p.registry.Validate(episodeRef{ChannelID: "linear:ENG-1", TS: "x"}); !registered {
 		t.Error("linear scheme not registered in the pipeline registry")
 	}
-	if _, registered, _ := newProvenanceRegistry(messageResolver{d}).Validate(episodeRef{ChannelID: "linear:ENG-1", TS: "x"}); registered {
-		t.Error("linear scheme must not be accepted by a message-only registry")
+	if _, registered, _ := extractorRegistry(d).Validate(episodeRef{ChannelID: "linear:ENG-1", TS: "x"}); registered {
+		t.Error("linear scheme must not be accepted by the Slack extractor's registry")
 	}
 }
 

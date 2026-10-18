@@ -23,16 +23,18 @@ If JIRA DELIVERY data is provided above, include a Delivery section in the peopl
 - List resolved issues as concrete accomplishments.`
 
 // gatherJiraDelivery collects issue-tracker delivery context (Jira and Linear,
-// from tracker_issues) for a single user; the section keeps its JIRA header.
+// from tracker_issues, enabled trackers only) for a single user; the section
+// keeps its JIRA header.
 // Returns an empty string (no error) when no tracker is connected, the
 // my_issues toggle is off, or the user has no tracker activity. The caller can
 // safely append the result to the AI prompt.
 func gatherJiraDelivery(database *db.DB, cfg *config.Config, userSlackID, from, to string) (string, error) {
-	if !jira.TrackerFeatureEnabled(cfg, "my_issues") {
+	scope, ok := jira.TrackerFeatureScope(cfg, "my_issues")
+	if !ok {
 		return "", nil
 	}
 
-	stats, err := database.GetTrackerDeliveryStats(userSlackID, from, to)
+	stats, err := database.GetTrackerDeliveryStats(scope, userSlackID, from, to)
 	if err != nil {
 		return "", fmt.Errorf("jira delivery stats for %s: %w", userSlackID, err)
 	}
@@ -61,7 +63,7 @@ func gatherJiraDelivery(database *db.DB, cfg *config.Config, userSlackID, from, 
 	}
 
 	// Recent accomplishments: resolved issues within the period (bounded query).
-	accomplishments, err := database.GetTrackerResolvedIssuesForUser(userSlackID, from, to, maxAccomplishments)
+	accomplishments, err := database.GetTrackerResolvedIssuesForUser(scope, userSlackID, from, to, maxAccomplishments)
 	if err == nil && len(accomplishments) > 0 {
 		b.WriteString("\nRecent accomplishments:\n")
 		for _, issue := range accomplishments {

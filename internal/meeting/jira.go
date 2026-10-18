@@ -7,6 +7,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/jira"
 )
 
 // attendeeJira aggregates issue-tracker workload (Jira and Linear, from
@@ -28,13 +29,15 @@ type issueRole struct {
 }
 
 // gatherJiraMeetingContext builds the issue-tracker context section for the
-// meeting prep prompt, over both trackers (spec 2026-10-15 §6: assignee load
-// from tracker_issues; the section keeps its JIRA headers).
+// meeting prep prompt over the enabled trackers only (jira.TrackerScope: spec
+// 2026-10-15 §6 assignee load from tracker_issues; the section keeps its JIRA
+// headers).
 // It loads open issues for each attendee, computes workload stats, and finds shared issues.
 // Returns empty string if no tracker is connected or no attendees have issues;
 // a failed per-attendee read is skipped, never an error.
 func gatherJiraMeetingContext(database *db.DB, cfg *config.Config, attendeeSlackIDs []string) string {
-	if cfg == nil || (!cfg.Jira.Enabled && !cfg.Linear.Enabled) || len(attendeeSlackIDs) == 0 {
+	scope, ok := jira.TrackerScope(cfg)
+	if !ok || len(attendeeSlackIDs) == 0 {
 		return ""
 	}
 	idSet, ids := dedupAttendeeIDs(attendeeSlackIDs)
@@ -45,7 +48,7 @@ func gatherJiraMeetingContext(database *db.DB, cfg *config.Config, attendeeSlack
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
-	attendees, issueParticipants := loadAttendeeJira(database, ids, today)
+	attendees, issueParticipants := loadAttendeeJira(database, scope, ids, today)
 	allIssues := indexIssuesAndReporters(attendees, idSet, issueParticipants)
 
 	if !attendeesHaveData(attendees) {
@@ -75,12 +78,12 @@ func dedupAttendeeIDs(attendeeSlackIDs []string) (map[string]bool, []string) {
 // loadAttendeeJira fetches open issues per attendee and computes per-attendee
 // workload stats (story points, blocked count, overdue count). Also seeds
 // issueParticipants with the assignee role for each issue.
-func loadAttendeeJira(database *db.DB, ids []string, today time.Time) ([]attendeeJira, map[string][]issueRole) {
+func loadAttendeeJira(database *db.DB, scope string, ids []string, today time.Time) ([]attendeeJira, map[string][]issueRole) {
 	attendees := make([]attendeeJira, 0, len(ids))
 	issueParticipants := make(map[string][]issueRole)
 
 	for _, slackID := range ids {
-		issues, err := database.ListTrackerIssues(db.TrackerIssueFilter{AssigneeSlackID: slackID, OpenOnly: true})
+		issues, err := database.ListTrackerIssues(db.TrackerIssueFilter{Tracker: scope, AssigneeSlackID: slackID, OpenOnly: true})
 		if err != nil {
 			continue // non-fatal: skip this attendee
 		}
@@ -101,7 +104,8 @@ func loadAttendeeJira(database *db.DB, ids []string, today time.Time) ([]attende
 			if isOverdue(iss, today) {
 				aj.overdue++
 			}
-			issueParticipants[iss.Key] = append(issueParticipants[iss.Key], issueRole{slackID: slackID, role: "assignee"})
+			id := issueIdentity(iss)
+			issueParticipants[id] = append(issueParticipants[id], issueRole{slackID: slackID, role: "assignee"})
 		}
 		attendees = append(attendees, aj)
 	}
@@ -134,11 +138,12 @@ func indexIssuesAndReporters(attendees []attendeeJira, idSet map[string]bool, is
 	allIssues := make(map[string]db.TrackerIssue)
 	for _, aj := range attendees {
 		for _, iss := range aj.issues {
-			allIssues[iss.Key] = iss
+			id := issueIdentity(iss)
+			allIssues[id] = iss
 			if iss.ReporterSlackID == "" || !idSet[iss.ReporterSlackID] || iss.ReporterSlackID == aj.slackID {
 				continue
 			}
-			roles := issueParticipants[iss.Key]
+			roles := issueParticipants[id]
 			hasReporter := false
 			for _, r := range roles {
 				if r.slackID == iss.ReporterSlackID && r.role == "reporter" {
@@ -147,7 +152,7 @@ func indexIssuesAndReporters(attendees []attendeeJira, idSet map[string]bool, is
 				}
 			}
 			if !hasReporter {
-				issueParticipants[iss.Key] = append(roles, issueRole{slackID: iss.ReporterSlackID, role: "reporter"})
+				issueParticipants[id] = append(roles, issueRole{slackID: iss.ReporterSlackID, role: "reporter"})
 			}
 		}
 	}
@@ -220,6 +225,13 @@ func formatSharedIssues(sb *strings.Builder, attendees []attendeeJira, allIssues
 		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
+}
+
+// issueIdentity keys an issue across trackers and workspaces: the same key
+// ("ABC-1") may exist on Jira and on Linear, or on two sites, and those are
+// different issues. The display key stays iss.Key.
+func issueIdentity(iss db.TrackerIssue) string {
+	return fmt.Sprintf("%s|%d|%s", iss.Tracker, iss.AccountID, iss.Key)
 }
 
 // lookupDisplayName returns the display name for slackID across attendees,

@@ -32,30 +32,33 @@ func (d LinearIssueDossier) Keys() []string {
 	return append([]string{d.Key}, d.PreviousKeys...)
 }
 
-// GetLinearIssueDossier finds a non-deleted Linear issue by its current key or
-// a previous one (lowest account, then id, when two workspaces share a key),
-// reading its neutral fields from tracker_issues. (nil, nil) when none.
+// GetLinearIssueDossier finds a non-deleted Linear issue by its current key
+// (indexed) or, only when that misses, a previous one (lowest account, then id,
+// when two workspaces share a key), reading its neutral fields from
+// tracker_issues. (nil, nil) when none.
 func (db *DB) GetLinearIssueDossier(key string) (*LinearIssueDossier, error) {
-	var d LinearIssueDossier
-	var prev string
-	err := db.QueryRow(`SELECT ti.account_id, ti.issue_id, ti.key, li.previous_keys, ti.title, ti.description_text,
-			ti.status, ti.priority, ti.assignee_display_name, ti.assignee_slack_id,
-			ti.reporter_display_name, ti.reporter_slack_id, ti.iteration_name, ti.updated_at
-		FROM linear_issues li
-		JOIN tracker_issues ti ON ti.tracker = 'linear' AND ti.account_id = li.account_id AND ti.issue_id = li.id
-		WHERE li.is_deleted = 0
-		  AND (li.key = ? OR EXISTS (SELECT 1 FROM json_each(li.previous_keys) WHERE value = ?))
-		ORDER BY li.account_id, li.id LIMIT 1`, key, key).
-		Scan(&d.AccountID, &d.IssueID, &d.Key, &prev, &d.Title, &d.Description, &d.Status, &d.Priority,
-			&d.AssigneeName, &d.AssigneeSlackID, &d.ReporterName, &d.ReporterSlackID, &d.IterationName, &d.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+	for _, where := range []string{linearByCurrentKey, linearByPreviousKey} {
+		var d LinearIssueDossier
+		var prev string
+		err := db.QueryRow(`SELECT ti.account_id, ti.issue_id, ti.key, linear_issues.previous_keys, ti.title, ti.description_text,
+				ti.status, ti.priority, ti.assignee_display_name, ti.assignee_slack_id,
+				ti.reporter_display_name, ti.reporter_slack_id, ti.iteration_name, ti.updated_at
+			FROM linear_issues
+			JOIN tracker_issues ti ON ti.tracker = 'linear' AND ti.account_id = linear_issues.account_id AND ti.issue_id = linear_issues.id
+			WHERE linear_issues.is_deleted = 0 AND `+where+`
+			ORDER BY linear_issues.account_id, linear_issues.id LIMIT 1`, key).
+			Scan(&d.AccountID, &d.IssueID, &d.Key, &prev, &d.Title, &d.Description, &d.Status, &d.Priority,
+				&d.AssigneeName, &d.AssigneeSlackID, &d.ReporterName, &d.ReporterSlackID, &d.IterationName, &d.UpdatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // current key missed: try the previous keys
+		}
+		if err != nil {
+			return nil, fmt.Errorf("getting linear issue dossier %s: %w", key, err)
+		}
+		d.PreviousKeys = parseJSONList(prev)
+		return &d, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("getting linear issue dossier %s: %w", key, err)
-	}
-	d.PreviousKeys = parseJSONList(prev)
-	return &d, nil
+	return nil, nil
 }
 
 // GetTrackerPersonSlackID maps a tracker user id (an Atlassian account id or a

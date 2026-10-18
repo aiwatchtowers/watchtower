@@ -13,18 +13,33 @@ import (
 // work both count. A Linear issue's resolved_at is its completed (or canceled)
 // time, its points its estimate.
 
+// trackerClause returns " AND tracker = ?" and its arg for a single-tracker
+// scope ("jira" | "linear"), nothing for "" (both trackers).
+func trackerClause(tracker string) (string, []any) {
+	if tracker == "" {
+		return "", nil
+	}
+	return " AND tracker = ?", []any{tracker}
+}
+
 // GetTrackerDeliveryStats returns delivery metrics for a Slack user in a date
-// range, across both trackers — the GetJiraDeliveryStats twin. Components are
-// Jira-only (Linear has none) and still read from jira_issues.
-func (db *DB) GetTrackerDeliveryStats(slackID string, from, to string) (*DeliveryStats, error) {
+// range — the GetJiraDeliveryStats twin over tracker_issues. tracker scopes the
+// read ("jira", "linear", or "" for both: the caller passes the enabled
+// trackers, so a switched-off tracker's stored rows never count). Components
+// are Jira-only (Linear has none), read from jira_issues and only when the
+// scope covers Jira.
+func (db *DB) GetTrackerDeliveryStats(tracker, slackID string, from, to string) (*DeliveryStats, error) {
 	stats := &DeliveryStats{}
-	const closed = `assignee_slack_id = ? AND status_category = 'done' AND resolved_at >= ? AND resolved_at <= ? AND is_deleted = 0`
+	trk, trkArgs := trackerClause(tracker)
+	const closedBase = `assignee_slack_id = ? AND status_category = 'done' AND resolved_at >= ? AND resolved_at <= ? AND is_deleted = 0`
+	closed := closedBase + trk
+	closedArgs := append([]any{slackID, from, to}, trkArgs...)
 
 	var avgCycle, points sql.NullFloat64
 	err := db.QueryRow(`SELECT COUNT(*),
 			AVG(CASE WHEN resolved_at != '' THEN julianday(resolved_at) - julianday(created_at) END),
 			COALESCE(SUM(points), 0)
-		FROM tracker_issues WHERE `+closed, slackID, from, to).Scan(&stats.IssuesClosed, &avgCycle, &points)
+		FROM tracker_issues WHERE `+closed, closedArgs...).Scan(&stats.IssuesClosed, &avgCycle, &points)
 	if err != nil {
 		return nil, fmt.Errorf("tracker delivery: closed issues: %w", err)
 	}
@@ -38,19 +53,21 @@ func (db *DB) GetTrackerDeliveryStats(slackID string, from, to string) (*Deliver
 	today := time.Now().Format("2006-01-02")
 	err = db.QueryRow(`SELECT COUNT(*),
 			COUNT(CASE WHEN due_date != '' AND due_date < ? THEN 1 END)
-		FROM tracker_issues WHERE assignee_slack_id = ? AND status_category != 'done' AND is_deleted = 0`,
-		today, slackID).Scan(&stats.OpenIssues, &stats.OverdueIssues)
+		FROM tracker_issues WHERE assignee_slack_id = ? AND status_category != 'done' AND is_deleted = 0`+trk,
+		append([]any{today, slackID}, trkArgs...)...).Scan(&stats.OpenIssues, &stats.OverdueIssues)
 	if err != nil {
 		return nil, fmt.Errorf("tracker delivery: open issues: %w", err)
 	}
 
-	stats.Components, err = db.distinctJSONValues(`SELECT DISTINCT components FROM jira_issues
-		WHERE `+closed+` AND components != '[]'`, slackID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracker delivery: components: %w", err)
+	if tracker == "" || tracker == "jira" {
+		stats.Components, err = db.distinctJSONValues(`SELECT DISTINCT components FROM jira_issues
+			WHERE `+closedBase+` AND components != '[]'`, slackID, from, to)
+		if err != nil {
+			return nil, fmt.Errorf("tracker delivery: components: %w", err)
+		}
 	}
 	stats.Labels, err = db.distinctJSONValues(`SELECT DISTINCT labels FROM tracker_issues
-		WHERE `+closed+` AND labels != '[]'`, slackID, from, to)
+		WHERE `+closed+` AND labels != '[]'`, closedArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("tracker delivery: labels: %w", err)
 	}
@@ -93,13 +110,16 @@ type DeliveredIssue struct {
 }
 
 // GetTrackerResolvedIssuesForUser returns a Slack user's issues resolved in
-// [from, to], newest first, at most limit — both trackers.
-func (db *DB) GetTrackerResolvedIssuesForUser(slackID, from, to string, limit int) ([]DeliveredIssue, error) {
+// [from, to], newest first, at most limit, within the tracker scope ("" =
+// both; see GetTrackerDeliveryStats).
+func (db *DB) GetTrackerResolvedIssuesForUser(tracker, slackID, from, to string, limit int) ([]DeliveredIssue, error) {
+	trk, trkArgs := trackerClause(tracker)
+	args := append(append([]any{slackID, from, to}, trkArgs...), limit)
 	rows, err := db.Query(`SELECT tracker, key, title, resolved_at FROM tracker_issues
 		WHERE assignee_slack_id = ? AND status_category = 'done' AND is_deleted = 0
-			AND resolved_at >= ? AND resolved_at <= ?
+			AND resolved_at >= ? AND resolved_at <= ?`+trk+`
 		ORDER BY resolved_at DESC
-		LIMIT ?`, slackID, from, to, limit)
+		LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying resolved tracker issues for user %s: %w", slackID, err)
 	}

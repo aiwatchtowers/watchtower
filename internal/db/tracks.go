@@ -192,7 +192,8 @@ type TrackFilter struct {
 	Priority         string // "" = any
 	Ownership        string // "" = any
 	HasUpdates       *bool  // nil = any
-	HasJira          *bool  // nil = any, true = only with issue links (Jira or Linear), false = only without
+	HasJira          *bool  // nil = any, true = only with issue links, false = only without
+	LinkTracker      string // with HasJira: count only this tracker's links ("jira" | "linear"); "" = both
 	ChannelID        string // "" = any, filter via JSON LIKE
 	IncludeDismissed bool   // false = exclude dismissed (default)
 	Limit            int    // 0 = no limit
@@ -224,11 +225,18 @@ func (db *DB) GetTracks(f TrackFilter) ([]Track, error) {
 		}
 	}
 	if f.HasJira != nil {
-		if *f.HasJira {
-			conditions = append(conditions, `EXISTS (SELECT 1 FROM issue_slack_links WHERE issue_slack_links.track_id = tracks.id)`)
-		} else {
-			conditions = append(conditions, `NOT EXISTS (SELECT 1 FROM issue_slack_links WHERE issue_slack_links.track_id = tracks.id)`)
+		link := `EXISTS (SELECT 1 FROM issue_slack_links WHERE issue_slack_links.track_id = tracks.id`
+		var linkArgs []any
+		if f.LinkTracker != "" {
+			link += ` AND issue_slack_links.tracker = ?`
+			linkArgs = append(linkArgs, f.LinkTracker)
 		}
+		link += `)`
+		if !*f.HasJira {
+			link = `NOT ` + link
+		}
+		conditions = append(conditions, link)
+		args = append(args, linkArgs...)
 	}
 	if f.ChannelID != "" {
 		conditions = append(conditions, `channel_ids LIKE ?`)

@@ -16,17 +16,28 @@ func (db *DB) GetLinearIssuesForTracks(trackIDs []int) (map[int][]LinkedLinearIs
 	if len(trackIDs) == 0 {
 		return nil, nil
 	}
-	args := make([]any, len(trackIDs))
-	for i, id := range trackIDs {
-		args[i] = id
+	// The id list is bound twice: once per UNION arm.
+	args := make([]any, 0, 2*len(trackIDs))
+	for range 2 {
+		for _, id := range trackIDs {
+			args = append(args, id)
+		}
 	}
-	rows, err := db.Query(`SELECT DISTINCT l.track_id, li.id, li.key, li.title, li.state_name, li.status_category,
-			li.assignee_display_name, li.due_date, li.url, li.updated_at
-		FROM issue_slack_links l
+	// The current key joins through idx_linear_issues_key; only a link whose
+	// key no stored issue carries now falls back to the previous_keys scan.
+	const cols = `l.track_id, li.id, li.key, li.title, li.state_name, li.status_category,
+			li.assignee_display_name, li.due_date, li.url, li.updated_at`
+	in := sqlPlaceholders(len(trackIDs))
+	rows, err := db.Query(`SELECT `+cols+` FROM issue_slack_links l
+		JOIN linear_issues li ON li.key = l.issue_key AND li.is_deleted = 0
+		WHERE l.tracker = 'linear' AND l.track_id IN (`+in+`)
+		UNION
+		SELECT `+cols+` FROM issue_slack_links l
 		JOIN linear_issues li ON li.is_deleted = 0
-		  AND (li.key = l.issue_key OR EXISTS (SELECT 1 FROM json_each(li.previous_keys) WHERE value = l.issue_key))
-		WHERE l.tracker = 'linear' AND l.track_id IN (`+sqlPlaceholders(len(trackIDs))+`)
-		ORDER BY l.track_id, li.updated_at DESC`, args...)
+		  AND EXISTS (SELECT 1 FROM json_each(li.previous_keys) WHERE value = l.issue_key)
+		WHERE l.tracker = 'linear' AND l.track_id IN (`+in+`)
+		  AND NOT EXISTS (SELECT 1 FROM linear_issues cur WHERE cur.key = l.issue_key)
+		ORDER BY 1, 10 DESC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying linear issues for tracks: %w", err)
 	}

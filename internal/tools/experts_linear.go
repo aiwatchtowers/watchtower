@@ -13,7 +13,12 @@ import (
 // 2026-10-15-linear-integration-design §6), cited by kind "linear".
 func collectIssueKeyEvidence(d *db.DB, key string, acc *expertAccumulator, notes []string) []string {
 	issue, err := d.GetJiraIssueByKey(key)
-	if err == nil && issue == nil {
+	switch {
+	case err != nil:
+		notes = append(notes, "issue lookup unavailable: "+err.Error())
+	case issue != nil:
+		notes = collectIssueEvidence(d, key, issue, acc, notes)
+	default:
 		lin, lerr := d.GetLinearIssueDossier(key)
 		if lerr != nil {
 			return append(notes, "issue lookup unavailable: "+lerr.Error())
@@ -21,8 +26,10 @@ func collectIssueKeyEvidence(d *db.DB, key string, acc *expertAccumulator, notes
 		if lin != nil {
 			return collectLinearIssueEvidence(d, lin, acc, notes)
 		}
+		notes = append(notes, "no issue with key "+key)
 	}
-	notes = collectIssueEvidence(d, key, acc, notes)
+	// The Jira linked-thread evidence runs even when the issue row is missing
+	// or unreadable, as before.
 	return collectLinkedThreadEvidence(d, key, acc, notes)
 }
 
