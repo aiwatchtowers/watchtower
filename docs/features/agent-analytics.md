@@ -1,6 +1,6 @@
-# Agent analytics — ingest core (2026-10-15), history analytics (2026-10-16), own database file (2026-10-18)
+# Agent analytics — ingest core (2026-10-15), history analytics (2026-10-16), own database file (2026-10-18), actionable analytics v2 (2026-10-19)
 
-Board #296 (initiative), #297 (ingest core), #298 (history analytics, the sections from "Parser v2" on), #849 (the rows move to `agentlog.db`, owner decision ask #348, contract amendments ask #350). Specs: `docs/superpowers/specs/2026-10-15-agent-analytics-core-design.md`, `docs/superpowers/specs/2026-10-16-agent-analytics-history-design.md`, `docs/superpowers/specs/2026-10-18-agentlog-db-design.md`; plans in `docs/superpowers/plans/`. Contracts: `docs/inventory/agent-analytics.md`.
+Board #296 (initiative), #297 (ingest core), #298 (history analytics, the sections from "Parser v2" on), #849 (the rows move to `agentlog.db`, owner decision ask #348, contract amendments ask #350), #709 (v2: parser v3 facts, the Context, Skills and Trouble blocks, hints C1–C3/S1/T1–T3, fix buttons, the main-thing pane; "Parser v3" and the sections after "Hints"). Specs: `docs/superpowers/specs/2026-10-15-agent-analytics-core-design.md`, `docs/superpowers/specs/2026-10-16-agent-analytics-history-design.md`, `docs/superpowers/specs/2026-10-18-agentlog-db-design.md`; plans in `docs/superpowers/plans/`. Contracts: `docs/inventory/agent-analytics.md`.
 
 ## Purpose and the #296 roadmap
 
@@ -10,6 +10,7 @@ Turn analytics on for a workbench and see the history of every agent session run
 |---|---|---|
 | #297 | Ingest core, Claude Code first (Codex is its follow-up step) | 1 |
 | #298 | History analytics: time model, tasks, hints, Analytics pane, session timeline (shipped; commit linking beyond `pr_link` not built) | 2 |
+| #709 | Actionable analytics v2: context weight, skills, trouble, one next step per hint (shipped) | 2b |
 | #299 | Skill lab: with/without-skill evals, trigger precision/recall | 3 |
 | #300 | Debug mode: OTel, verbose capture, LLM judge | 4 |
 
@@ -32,6 +33,7 @@ The rows live in `<workspace>/agentlog.db`, next to `watchtower.db` (#849): a bu
 - `agent_log_session_totals` — a view summing the events; nothing is kept in sync by hand.
 - `agent_log_meta` — `moved_from_main` = when the one-time move finished (RFC 3339 UTC).
 - `agent_log_import` — per workbench: `complete`, `files_stored`, `updated_at` of its last scan (import progress, below).
+- v2 facts (`agentlogdb` migration `00002`, own goose Provider; byte counts, token counts and enum classes only, AGENTLOG-01): `agent_log_events.result_bytes` (tool result text size), `thinking_tokens`, `pre_tokens`/`post_tokens` (compaction); `agent_log_context_parts` (per session and lane `agent_id`, `part`, `bytes`: what the lane's first API call carried), `agent_log_skill_listing` (per session and skill, listing `bytes`), `agent_log_subagents` (per session and `agent_id`: `agent_type`, `depth`, `finished`). `NULL` `result_bytes`/`pre_tokens`/`post_tokens` mean "not measured" (parser-v2 rows, image or tool-reference results). The view `agent_log_session_totals` is rebuilt: `owner_turns` excludes `notification`, `hook` and `interrupt` triggers; new `owner_interrupts`.
 
 **The one-time move** (`agentlogdb.MoveFromMain`). Migrations `00116`/`00125` still create the `agent_log_*` tables in `watchtower.db` (migration history is not edited), and installs from before #849 hold their rows there. The daemon, as an upgrade step before it starts (its own workspace's database only; a failure is logged, and the analytics phase retries it every cycle), and the writing `agents` subcommands (`enable`, `scan`) copy those rows once into `agentlog.db` — files, then sessions, then events, read in read-only transactions and written in transactions of 5,000 rows with `INSERT … ON CONFLICT DO NOTHING` (only a row whose key is already there is skipped; any other constraint failure aborts the move before the marker, nothing deleted), the marker set with the last chunk — and then delete them from `watchtower.db` in id slices of 5,000 rows, one short write transaction each. An exclusive flock on `agentlog.db.move.lock` serializes two movers; an interrupted move resumes without duplicates. Until the marker is set, scans refuse to run (`agentlogdb.ErrNotMoved`: scanning into an empty `agent_log_files` would reparse every transcript from 0); `agents report` and `agents stats` never move and answer from `agentlog.db` as it is. A fresh install's move finds empty tables and only sets the marker.
 
@@ -79,6 +81,17 @@ Migration 00125 is a Go migration (#667, ask #361) so it tolerates the two colum
 - **Workbench MCP targets**: calls of `update_target`, `add_comment`, `ask_owner`, `get_target`, `list_comments`, `finish_session` store `target = #<id>` from `target_id`; `create_targets` stores the first `parent_id` of its items. The server name is read with a hyphen or an underscore (Claude / Codex spelling). This is the conversation to board-target link the task view uses; only the id is read from the input.
 - **Reparse refresh** (`upsertAgentLogEvent`): on conflict a non-empty `target` and `trigger` replace the stored ones and `background` takes the larger value, so a v1 to v2 reparse upgrades existing rows instead of keeping `cd`.
 
+## Parser v3 (#709, `ParserVersion` 3, `agentlogdb` migration 00002)
+
+The bump reparses every present file from 0; the next scan fills the v2 facts for old sessions (a session counts in `facts_sessions` once every one of its source files is at parser 3+).
+
+- **Tool results**: `result_bytes` = the text size of the `tool_result` content (a string, or the sum of its text blocks); a result with no text (an image, a `tool_reference`) stores `NULL`. The text itself is dropped.
+- **Error classes** (`errorClass`, derived in memory from the result text, which is dropped): specific first — `isolation_block`, `input_invalid`, `no_such_tool`, `unknown_agent`, `too_large`, `edit_no_match`, `edit_multi_match`, `stale_read`, `sleep_blocked`, `agent_limit` — then the generic `exit_code`, `not_found`, `timeout`, `other`. A denied call stores its denial kind as the class: `automode-blocked`, `automode-unavailable`, `permission-rule`, `user-rejected` (a record with no kind), anything else `other`.
+- **Thinking tokens** from `usage.thinking_tokens`; **compaction** `pre_tokens`/`post_tokens` from `compactMetadata`; an owner interrupt is an `owner_turn` with trigger `interrupt`.
+- **Baseline parts**: until a lane's first API call, `api-request-shape` records add `system` and `tools` bytes and attachments add `instructions`, `skills` (the skill listing), `agents`, `mcp`, `deferred_tools`, `hooks` (`hook_*`) or `other`, taken from the attachment's rendered text length. Only a read that starts at offset 0 tracks parts, and a lane whose first call is not in that read stores none (its baseline is incomplete).
+- **Skill listing**: each listed name gets the listing's bytes divided by the number of names.
+- **Subagent meta**: the `agent-<id>.meta.json` beside a subagent transcript gives `agentType`, `spawnDepth` (`depth`, 0 = unknown) and `finished` (`NULL` when absent); nothing else is decoded, and the write happens only when the row changed.
+
 ## The time model (`internal/agentreport`, pure; the caller loads rows)
 
 Go owns every rule and hands JSON to the Desktop; there is no Swift twin.
@@ -92,7 +105,7 @@ Go owns every rule and hands JSON to the Desktop; there is no Swift twin.
 
 ## Tasks (board targets)
 
-`Tasks` reads each target's `target_status_history`. Calendar time runs from the first `in_progress` to the last close (`done` and `dismissed` both close; an open target counts to now) and is split into `in_progress`, `in_review`, `blocked`, `todo`. Sessions are the ones that called a workbench tool naming the target (`#<id>`) or a sub-target. Agent time and cost are the session time inside the target's `in_progress`/`in_review` windows; with no window, or when the session's calls on the target lie outside every window, the fallback is the span from that session's first to last call naming it (a single call is a zero-length span). When one session has several targets open in the same window the stretch is split equally and the row is `shared` (a group is shared if any leaf is). Only leaves accumulate; a group sums its leaves, and a call naming a group only adds the session to its list. Cost counts the `api_call`s of every lane (subagents included), time uses the main lane. Time per task is a `TimeSplit` (`agent_ms` = its active time).
+`Tasks` (the overview keeps only the `touched` rows — targets with agent time, cost or a session naming them in the period, costliest first — so a board of hundreds of idle targets is not listed) reads each target's `target_status_history`. Calendar time runs from the first `in_progress` to the last close (`done` and `dismissed` both close; an open target counts to now) and is split into `in_progress`, `in_review`, `blocked`, `todo`. Sessions are the ones that called a workbench tool naming the target (`#<id>`) or a sub-target. Agent time and cost are the session time inside the target's `in_progress`/`in_review` windows; with no window, or when the session's calls on the target lie outside every window, the fallback is the span from that session's first to last call naming it (a single call is a zero-length span). When one session has several targets open in the same window the stretch is split equally and the row is `shared` (a group is shared if any leaf is). Only leaves accumulate; a group sums its leaves, and a call naming a group only adds the session to its list. Cost counts the `api_call`s of every lane (subagents included), time uses the main lane. Time per task is a `TimeSplit` (`agent_ms` = its active time).
 
 ## Cost, models, commands
 
@@ -100,7 +113,9 @@ Cost is `cost_usd` as stored; `cost_estimated_calls` counts calls with `cost_est
 
 ## Hints (rule-based, no LLM; thresholds are named constants at the top of `hints.go`)
 
-Every hint has an id, a finding, an action, evidence items (`session` uuid, `target` `#<id>`, `command` verb, or `skill` name) and an estimate in ms (`estimate_ms`), USD (`estimate_usd`) or context tokens (`estimate_tokens`); the list is ranked by estimate — time, then money, then tokens — and a hint without an estimate is dropped. A `fix` is one of `copy_allow_rules`, `open_asks`, `open_session` (`ref` = session uuid) or `open_file` (`ref` = a path relative to the workbench folder).
+**Language.** Finding, action and label sentences follow `digest.language` (`LangOf`: Russian, else English), from the catalog in `internal/agentreport/i18n.go` (`msgs`, `{English, Russian}` per key, same verbs and format arguments in both; `TestMessages_SameVerbs`). The pane's own labels stay English. Ids, kinds, refs and numbers do not change with the language.
+
+Every hint has an id, a finding, an action (what to change, one sentence), an optional `fix`, evidence items (`session` uuid, `target` `#<id>`, `command` verb, or `skill` name) and an estimate in ms (`estimate_ms`), USD (`estimate_usd`) or context tokens (`estimate_tokens`); the list is ranked by estimate — time, then money, then tokens — and a hint without an estimate is dropped. A `fix` (`kind`, `ref`, `rules`) is the one step the pane's button takes: `copy_allow_rules` (`rules` = the `permissions.allow` lines to copy), `open_asks` (the Waiting-for-you stack), `open_session` (`ref` = session uuid) or `open_file` (`ref` = a path relative to the workbench folder); an unknown kind shows no button.
 
 | Id | Fires when | Estimate |
 |---|---|---|
@@ -158,13 +173,26 @@ Built by `agentreport.Trouble` from the sessions with the v2 facts (`facts_sessi
 
 - **Off:** an empty state with **Turn On** (`turnOn` runs `agents enable`, which returns at once, then reloads the overview).
 - **Loading history:** while `import.state` is not `done`, "Loading history — N files so far" sits above the overview, which shows whatever is already loaded; the 60 s overview poll refreshes it.
-- **Overview:** tiles (active, away, cost, sessions), the subagent line, the time bar with the tool-class sub-line and the note "Tool time includes permission prompts.", hints, tasks (a click selects the target on the board; `shared` rows are labelled), sessions, models. "Older sessions — time not analysed: N" when `old_format_sessions` > 0.
+- **Overview (v2 layout, top to bottom):** header (period picker, On, **Discuss in Chat**, which opens the assistant with the report as context via `AppState.askWatchtower`), tiles (Cost, Sessions, Active, Cache hit), the **main thing** card (the first hint: finding, action, fix button and a **Where** disclosure of its evidence with "and N more"), **Context** (baseline bar by part, growth bar by source, top sources, repeated reads, compactions line, disk line), **Skills** (used/listed line, top 10 rows with **Show all**, the never-used list), **Trouble** (class rows with count and the top session link, denials, interrupts and rejections, unfinished subagents, rate limits), **What else would save** (the remaining hints: finding, action and fix button visible, a chevron reveals the evidence) and a collapsed **Time** section (the time bar with the tool-class sub-line and "Tool time includes permission prompts.", subagent line, tasks top 10, sessions top 5, commands, tokens and cost; **Show all** on the lists; a task click selects the target on the board, `shared` rows are labelled). Pane labels are English; the hint sentences come from Go in the assistant language. "Older sessions — time not analysed: N" when `old_format_sessions` > 0.
+- **Fix buttons** (`AgentHintFixAction.make`, pure): **Copy rules** puts the rules on the pasteboard as a JSON array fragment, one quoted rule per line; **Open session** opens that session's analytics; **Open Waiting for you** opens the asks stack; **Open file** opens the file in the Files pane. An unknown kind shows no button.
+- **Not measured:** a block whose `facts_sessions` is 0 shows "Not measured for sessions before this update — they fill in as new sessions run." Rows from parser v2 are never shown as zero.
+- **Quiet refresh:** `AgentAnalyticsCenter` skips an overview equal to the one on screen, so the 60 s poll does not redraw an unchanged pane.
 - **Period label rule:** the heading comes from the report's own `since`/`until`, never from the picker; when they differ from the picker (a rerun is in flight or failed) a loading note shows, so numbers never sit under a wrong period.
 - **No summed savings:** the pane never shows a total across hints, because hints can cite the same time or money (H1/H5, H6/H7).
 - **Session detail:** breakdown, subagent figures, hints and a timeline (Swift Charts): one lane for the main agent and one per subagent, segments coloured by category ("You" is brown, apart from the orange of the pane's error lines), hover shows category, tool class and verb, duration.
 - **Session report line:** the workbench session report shows "Agent time 27m · $12.50 · Analytics" for the terminal session's current `claude` conversation (from the loaded overview; hidden when there is no row or the row is old-format), linking to the session's analytics.
 - Swift decodes the Go structs (`WatchtowerCore/Models/AgentReport.swift`); no rule is reimplemented in Swift. The decoding fixtures (`Tests/Core/Fixtures/agent-report-*.json`) are written by the Go builders: `TestDesktopReportFixtures` (`internal/agentreport`) seeds a placeholder database, runs `BuildOverview` and `BuildSession` at a fixed `now` and compares the JSON; `go test ./internal/agentreport -run TestDesktopReportFixtures -update` rewrites them.
 - The pane's appear/disappear/period hooks sit on a stable `ZStack`, so moving between the overview and a session detail neither hides the center nor reruns the overview.
+
+## v1 limits (#709)
+
+- Parser-v2 rows have none of the v2 facts: sessions parsed before the update are "not measured" in Context, Skills and Trouble until the next scan reparses them (`facts_sessions` counts those at parser 3+); the transcript must still exist for that, and Claude Code deletes them after about 30 days, so the window of measured history is about 30 days.
+- Image and `tool_reference` tool results have no text, so their size is not measured (`result_bytes` `NULL`) and they add nothing to context growth by source; the growth then goes to `reminders` or `owner`.
+- `Read` with an offset or limit is stored as a read of the file, not of a range, so paged reads of one big file can look like repeated reads (C3).
+- A scan from offset 0 that ends before a lane's first API call stores no baseline parts for that lane; the lane falls back to 2.6 bytes a token for its growth and is missing from the baseline median.
+- Subagent `depth` 0 means unknown (no meta file or no `spawnDepth`), not the main agent.
+- Bytes become tokens by each lane's first-call ratio; per-source token figures are estimates, not the provider's count.
+- No cross-session total of savings: hints can cite the same time or money.
 
 ## v1 limits (#849)
 
@@ -177,7 +205,7 @@ Built by `agentreport.Trouble` from the sessions with the v2 facts (`facts_sessi
 
 - Tool time includes the time the owner takes to answer a permission prompt; the transcript does not separate it. The pane says so and H2 flags where it likely matters; the exact split needs hooks (#300).
 - Claude Code only; Codex rows are not analysed yet (the views must not break when they arrive). `~/.claude` only.
-- Paged reads of one file (`Read` with offset/limit) count as repeated reads: the parser does not store the read range, so C3 cannot tell them from re-reads (#709).
+- Paged reads of one file (`Read` with offset/limit) count as repeated reads: the parser does not store the read range, so C3 cannot tell them from re-reads (see "v1 limits (#709)").
 - "Waiting for you" is capped at 30 min per wait; everything past it is `away` and outside active time. Parallelism is per session only: several sessions in one folder and machine load are not measured.
 
 ## Contracts
