@@ -12,6 +12,29 @@ extension DemoSeed {
         }
     }
 
+    /// A `session_chat` record for the working demo session (placeholder
+    /// text), so the simulator shows the chat screen.
+    static func sessionChatRecords(now: Date) throws -> [CloudRecord] {
+        [try record(kind: .sessionChat, id: 11, json: sessionChatPayload(now: now), modifiedAt: now)]
+    }
+
+    static func sessionChatPayload(now: Date) -> [String: Any] {
+        let ago: (TimeInterval) -> Int = { JSON.stamp(now.addingTimeInterval(-$0)) }
+        let entries: [[String: Any]] = [
+            ["id": "e1", "kind": "owner", "at": ago(1_800), "text": "Add an Archive Closed Targets Now item to the header menu."],
+            ["id": "e2", "kind": "agent", "at": ago(1_700), "text": "On it. I will add the menu item and an undo."],
+            [
+                "id": "e3", "kind": "ask_answer", "at": ago(900), "ask_id": 109, "title": "Which menu wording?",
+                "text": "Archive Closed Targets Now", "via": "watchtower"
+            ],
+            ["id": "e4", "kind": "subagent", "at": ago(600), "text": "", "subagent": [
+                "agent_id": "demo-1", "type": "Explore", "description": "Find the archive view", "status": "finished"
+            ]],
+            ["id": "e5", "kind": "agent", "at": ago(120), "text": "The menu item is in. Running the tests now."]
+        ]
+        return ["session_id": 11, "updated_at": JSON.stamp(now), "live": true, "entries_more": 0, "entries": entries]
+    }
+
     /// `(kind, session id, payload)` per record. A report carries Go's UTC
     /// datetime strings; a timeline Unix seconds, as the hub writes them.
     static func sessionDetailSlices(now: Date) -> [(SliceKind, Int64, [String: Any])] {

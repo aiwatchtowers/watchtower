@@ -6,7 +6,7 @@ import WatchtowerSync
 /// dialog of a workbench session (owner, agent text, ask answers, Watchtower
 /// lines), newest 300 entries, oldest first. Written only while a phone
 /// watches it.
-public struct SessionChat: SliceMirror {
+public struct SessionChat: SliceMirror, Equatable {
     public static let sliceKind = SliceKind.sessionChat
 
     public struct Entry: Hashable, Sendable, Decodable, Identifiable {

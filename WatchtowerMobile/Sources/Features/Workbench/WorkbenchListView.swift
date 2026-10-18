@@ -31,6 +31,9 @@ struct WorkbenchListView: View {
                 .navigationDestination(for: SessionRoute.self) { route in
                     SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
                 }
+                .navigationDestination(for: SessionChatRoute.self) { route in
+                    SessionChatView(replica: replica, route: route, store: env.store, requester: env.chatRequests)
+                }
                 .navigationDestination(for: AskRoute.self) { route in
                     AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)
                 }

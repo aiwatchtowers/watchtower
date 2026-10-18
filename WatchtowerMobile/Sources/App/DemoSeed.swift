@@ -111,6 +111,10 @@ enum DemoSeed {
             try keyboxRecord(for: grant, modifiedAt: now)
         ]
         guard hub.hubID == primary.hubID else { return common + (try secondaryWorkbenchRecords(now: now)) }
-        return common + (try workbenchRecords(now: now)) + (try sessionDetailRecords(now: now)) + (try calendarRecords(now: now))
+        return common
+            + (try workbenchRecords(now: now))
+            + (try sessionDetailRecords(now: now))
+            + (try sessionChatRecords(now: now))
+            + (try calendarRecords(now: now))
     }
 }

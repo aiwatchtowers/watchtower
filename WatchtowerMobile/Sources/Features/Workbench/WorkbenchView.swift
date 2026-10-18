@@ -67,6 +67,9 @@ struct WorkbenchView: View {
         .navigationDestination(item: $openSession) { route in
             SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
         }
+        .navigationDestination(for: SessionChatRoute.self) { route in
+            SessionChatView(replica: replica, route: route, store: env.store, requester: env.chatRequests)
+        }
     }
 
     private var switcher: some View {
