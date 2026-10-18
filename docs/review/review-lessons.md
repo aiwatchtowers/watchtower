@@ -1920,3 +1920,12 @@ Entry format:
 - weak-dimension: 6. The overclaims ("three hazards did not arise", "no shared prompt") sat next to their own narrower caveat. Only reading every summary sentence against its test table catches them.
 - rule-gap (candidate, docs): *a research or POC doc's summary and findings sections claim only what its experiment tables show; anything extrapolated or untested says so in place, not only in a later caveat.*
 - outcome: TBD
+
+## 2026-10-18 — feature/automations-always-on (board #671, asks #366/#372: the `automations` feature switch removed — `internal/features`, config, FEAT-03 hook, CLI/authoring/Desktop gates — plus a one-time daemon upgrade step that pauses enabled recipes in every workspace DB when `automations.enabled: false` or a legacy digest-off install, then deletes the key, failing closed; 76 files +783/−628; panel: prosecutor (7) + codex (1, fixed in d36520b6f), 3 specialists DOWN (not installed); judge verified against d36520b6f by reading and grep, no runs; judge synthesis, round 1) — verdict: approve
+
+- contested (cut from major to minor + Needs human, prosecutor F1): with no per-database completion record, a DB that keeps failing makes every restart re-pause recipes the owner re-enabled in the DBs that already succeeded, and it keeps automations unwired in every workspace. The spec asks for exactly this (retry on the next start, fail closed). The code comment "pausing twice is harmless" is what is wrong: it ignores the owner's re-enables. **A retry-until-done migration over N stores that also overwrites owner-editable state needs a per-store done marker, or a doc line that admits the override.** [6/8]
+- false-positive: none dismissed. All 7 prosecutor findings held at their stated severity or lower.
+- miss: codex alone caught the case mismatch between viper (case-insensitive) and the YAML node edit (exact match). Left unfixed, it would have re-paused recipes on every start. **Whenever a viper-read key is edited through a yaml.Node, the edit must match keys with EqualFold.** [6]
+- weak-dimension: 8/docs. A guide concepts table (`how-watchtower-works.md`) still listed "Automations on" because the spec's docs list did not name that page. A switch removal should grep `docs/guide/` for the switch's display name, not only for the pages the spec lists.
+- rule-gap (candidate, dim 7): *an AST "wiring" guard for a fail-closed gate must check that the call sits under the gate's condition, not just the call order.*
+- outcome: TBD
