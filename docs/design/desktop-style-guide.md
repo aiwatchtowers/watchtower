@@ -40,27 +40,29 @@ Shadows exist only on floating buttons (`FloatingButtonLabel`).
 | `.kitQuiet` | `.borderless`, `.plain` text buttons | low-emphasis text actions |
 | `.kitDestructive` | red bordered buttons | delete, discard; confirm first |
 | `.kitIcon(isOn:)` | icon buttons | header and toolbar icon buttons, toggled or not |
-| `SegmentedToggleStyle` | `Picker` with `.segmented` | 2 to 5 mutually exclusive options |
+| `SegmentedToggleStyle` | `Picker` with `.segmented` | a capsule of `Toggle`s, one per segment, via `.toggleStyle(SegmentedToggleStyle(...))` (the Workbench header's view buttons); you manage the selection yourself |
 | `Chip`, `CountBadge`, `OutlineTag` | hand-drawn capsules | status or priority chip; count badge; outlined tag. Four recipes kept apart on purpose (merging would change pixels) |
 | `MenuLabel` | default `Menu` chrome | the label of a menu or read-only value in a panel |
 | `SectionHeader` | bold `Text` plus `Divider()` | the title of a section, with optional count |
 | `.card(selected:)` | `GroupBox`, ad-hoc rounded backgrounds | a group on a soft fill with a hairline or selection outline |
 | `.kitRow(isSelected:)` | rows separated by dividers | list rows: hover fill, selection fill, row radius |
-| `.textFieldStyle(.kit)` | `.roundedBorder` | text fields |
+| `.textFieldStyle(.kit)` | `.roundedBorder` | text fields. The `.kit` field ignores `controlSize` (always body size) |
 | `SettingsSection`, `SettingRow` | `Form`, `LabeledContent`, bare `Toggle` | settings blocks of new windows; toggles become small switches |
-| `PanelSplit` | sheets and pop-ups for detail | main content plus a resizable side panel |
+| `PanelSplit` (with `PanelSplitWidth`; `PanelResizeHandle` is its drag handle) | sheets and pop-ups for detail | main content plus a resizable side panel, side by side (not the Workbench's overlay panel) |
 | `panelSurface()`, `panelListStyle()`, `panelTab(isSelected:)` | stock list chrome | side-panel lists and tabs |
 | `.popoverSurface()` | custom popover backgrounds | the body of a popover |
 | `FloatingButtonLabel` | one-off shadows | "Jump to latest" style floating buttons |
 
-<!-- shot: buttons -->
-<!-- shot: workbench-header -->
-<!-- shot: workbench-panel-parts -->
-<!-- shot: workbench-board-cards -->
-<!-- shot: sessions-panel -->
-<!-- shot: chat-rows -->
-<!-- shot: calendar-rows -->
-<!-- shot: kit-new-components -->
+![gallery](shots/gallery.png)
+
+![buttons](shots/buttons.png)
+![workbench-header](shots/workbench-header.png)
+![workbench-panel-parts](shots/workbench-panel-parts.png)
+![workbench-board-cards](shots/workbench-board-cards.png)
+![sessions-panel](shots/sessions-panel.png)
+![chat-rows](shots/chat-rows.png)
+![calendar-rows](shots/calendar-rows.png)
+![kit-new-components](shots/kit-new-components.png)
 
 The gallery shows every token and component in light and dark. In a dev build (`make app-dev`) open it from Help, Design Gallery.
 
@@ -73,7 +75,7 @@ New code under `Sources/Views/` and `Sources/App/` (not `DesignSystem/`) fails `
 | `kit_no_form` | `Form { }` | stock grouped forms look foreign; use `SettingsSection` / `SettingRow` |
 | `kit_no_groupbox` | `GroupBox` | hard stock chrome; use `.card()` or `SettingsSection` |
 | `kit_no_stock_buttons` | `.buttonStyle(.bordered)`, `.borderedProminent` | clumsy next to the app; use the `.kit*` styles |
-| `kit_no_segmented_picker` | `.pickerStyle(.segmented)` | use `SegmentedToggleStyle` |
+| `kit_no_segmented_picker` | `.pickerStyle(.segmented)` | build segments from `Toggle`s with `SegmentedToggleStyle`, or use a menu `Picker` |
 | `kit_no_rounded_field` | `.textFieldStyle(.roundedBorder)` | use `.textFieldStyle(.kit)` |
 | `kit_no_raw_metrics` | numeric literals in `.padding`, `spacing:`, `cornerRadius:`, `.font(.system(size:))` | eleven paddings and ten radii is how screens drift; use `Spacing`, `Radius`, `IconSize` |
 | `kit_no_color_opacity` | `Color.x.opacity(0.n)` fills and tints | use `Fill` and `ChipTint` (the view `.opacity` for dimming is fine) |
@@ -89,3 +91,5 @@ Every new screen is looked at before it merges.
 2. Run `make desktop-shots DESKTOP_SHOTS=<dir>`. It writes `<name>-light.png` and `<name>-dark.png`.
 3. Open both PNGs and look: soft fills, no hard borders, nothing stock-looking, nothing clipped.
 4. Attach them to the PR. A new window also goes to the owner as a review ask with its shots before merge.
+
+PNGs can be produced without a dev build via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift`, only when absorbing legacy code, never to hide new violations.
