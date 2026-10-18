@@ -203,7 +203,7 @@ struct SessionChatEntryRow: View {
     }
 
     private func subagentRow(_ subagent: SessionChat.Entry.Subagent) -> some View {
-        NavigationLink(value: SessionChatRoute(sessionID: sessionID, agentID: subagent.agentID)) {
+        NavigationLink(value: Self.route(for: subagent, sessionID: sessionID)) {
             HStack(spacing: 8) {
                 Image(systemName: "person.2").foregroundStyle(.secondary).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
@@ -223,6 +223,10 @@ struct SessionChatEntryRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Subagent \(subagent.type) \(subagent.description)")
+    }
+
+    static func route(for subagent: SessionChat.Entry.Subagent, sessionID: Int64) -> SessionChatRoute {
+        SessionChatRoute(sessionID: sessionID, agentID: subagent.agentID)
     }
 
     static func statusText(_ status: String) -> String {

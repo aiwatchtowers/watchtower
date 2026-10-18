@@ -49,12 +49,46 @@ final class SessionChatWiringTests: XCTestCase {
         let requester = SessionChatRequester.sending(through: outbox)
         requester.start(sessionID: 11, agentID: "demo-1")
         try await poll({ ((try? store.pendingActions()) ?? []).count == 1 }, "no action queued")
-        requester.stop()
+        requester.stop(sessionID: 11, agentID: "demo-1")
         let action = try XCTUnwrap(store.pendingActions().first)
         XCTAssertEqual(action.action.kind, .sessionChatRequest)
         XCTAssertEqual(action.entityRecordName, "terminal_session-11")
         XCTAssertEqual(action.action.params["session_id"], .integer(11))
         XCTAssertEqual(action.action.params["subagent_id"], .string("demo-1"))
+    }
+
+    func testAStaleStopDoesNotKillTheSuccessor() async throws {
+        for (first, second) in [(nil, "b"), ("b", nil)] as [(String?, String?)] {
+            let spy = Spy()
+            let requester = requester(spy)
+            requester.start(sessionID: 11, agentID: first)
+            requester.start(sessionID: 11, agentID: second)
+            try await poll({ spy.sent.count == 2 }, "no requests")
+            requester.stop(sessionID: 11, agentID: first)
+            spy.tick?.yield()
+            try await poll({ spy.sent.count == 3 }, "the stale stop killed the running loop")
+            XCTAssertEqual(spy.sent.last, "11/\(second ?? "-")")
+            requester.stop(sessionID: 11, agentID: second)
+        }
+    }
+
+    func testReopeningAnExpiredChatAsksAgain() async throws {
+        let spy = Spy()
+        var releases: [CheckedContinuation<Void, Never>] = []
+        let model = SessionChatViewModel(
+            sessionID: 17, agentID: nil, store: try await demoStore(), requester: requester(spy),
+            sleep: { _ in await withCheckedContinuation { releases.append($0) } } // swiftlint:disable:this trailing_closure
+        )
+        model.appeared()
+        try await poll({ releases.count == 1 }, "the wait never began")
+        releases[0].resume()
+        try await poll({ model.waitingTooLong }, "never waited too long")
+        model.disappeared()
+        model.appeared()
+        XCTAssertFalse(model.waitingTooLong, "back to Asking your Mac…")
+        try await poll({ releases.count == 2 }, "the wait did not restart")
+        model.disappeared()
+        releases[1].resume()
     }
 
     func testStopsOnDisappear() async throws {
@@ -101,7 +135,7 @@ final class SessionChatWiringTests: XCTestCase {
     func testSubagentRowPushesSubagentRoute() throws {
         let chat = try demoChat()
         let subagent = try XCTUnwrap(chat.entries.first { $0.kind == .subagent }?.subagent)
-        let route = SessionChatRoute(sessionID: chat.sessionID, agentID: subagent.agentID)
+        let route = SessionChatEntryRow.route(for: subagent, sessionID: chat.sessionID)
         XCTAssertEqual(route, SessionChatRoute(sessionID: 11, agentID: "demo-1"))
         XCTAssertEqual(SessionChat.recordName(sessionID: route.sessionID, agentID: route.agentID), "session_chat-11-demo-1")
         XCTAssertEqual(SessionChatEntryRow.statusText("running"), "Running")

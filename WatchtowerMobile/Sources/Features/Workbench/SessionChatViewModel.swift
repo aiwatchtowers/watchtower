@@ -24,6 +24,7 @@ final class SessionChatRequester {
     private let send: (Int64, String?) async throws -> Void
     private let ticks: () -> AsyncStream<Void>
     private var loop: Task<Void, Never>?
+    private var running: SessionChatRoute?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SessionChatRequester")
 
     /// `ticks` yields once per repeat; the default waits `interval` between
@@ -64,7 +65,8 @@ final class SessionChatRequester {
 
     /// Starts (or restarts) the requests for one chat.
     func start(sessionID: Int64, agentID: String?) {
-        stop()
+        cancel()
+        running = SessionChatRoute(sessionID: sessionID, agentID: agentID)
         let send = send
         let stream = ticks()
         loop = Task {
@@ -76,9 +78,18 @@ final class SessionChatRequester {
         }
     }
 
-    func stop() {
+    /// Stops the requests for one chat; a no-op unless it is the one
+    /// running, so a screen leaving after its successor started (SwiftUI
+    /// does not order the two) cannot stop the successor.
+    func stop(sessionID: Int64, agentID: String?) {
+        guard running == SessionChatRoute(sessionID: sessionID, agentID: agentID) else { return }
+        cancel()
+    }
+
+    private func cancel() {
         loop?.cancel()
         loop = nil
+        running = nil
     }
 
     nonisolated private static func request(_ send: (Int64, String?) async throws -> Void, _ sessionID: Int64, _ agentID: String?) async {
@@ -138,7 +149,10 @@ final class SessionChatViewModel {
     func appeared() {
         observe()
         requester.start(sessionID: sessionID, agentID: agentID)
-        if chat == nil, patience == nil {
+        patience?.cancel()
+        patience = nil
+        waitingTooLong = false
+        if chat == nil {
             let limit = Self.waitLimit
             let sleep = sleep
             patience = Task { [weak self] in
@@ -151,7 +165,7 @@ final class SessionChatViewModel {
 
     /// The screen went away: stop asking.
     func disappeared() {
-        requester.stop()
+        requester.stop(sessionID: sessionID, agentID: agentID)
         patience?.cancel()
         patience = nil
     }
