@@ -48,7 +48,8 @@ func TestTrouble_ClassesBySessions(t *testing.T) {
 	assert.Equal(t, 2, r.FactsSessions)
 	require.Len(t, r.Classes, 3)
 	assert.Equal(t, ErrorClassRow{Class: "edit_no_match", Tool: "Edit", Count: 6,
-		Sessions: []SessionCount{{"s1", 3}, {"s2", 3}}, ms: ms(9 * sec), nSessions: 2}, r.Classes[0])
+		Sessions: []SessionCount{{"s1", 3}, {"s2", 3}}, ms: ms(15 * sec), nSessions: 2}, r.Classes[0],
+		"s1: 2s, 2s, then 8s to the next event; s2: 1s each")
 	assert.Equal(t, "exit_code", r.Classes[1].Class)
 	assert.Equal(t, "other", r.Classes[2].Class)
 	assert.Equal(t, "Bash", r.Classes[2].Tool)
@@ -98,13 +99,13 @@ func TestTrouble_UnfinishedSubagents(t *testing.T) {
 	subs := []agentlogdb.AgentSubagent{
 		{SessionUUID: "s1", AgentID: "a", Finished: &yes},
 		{SessionUUID: "s1", AgentID: "b", Finished: &no},
-		{SessionUUID: "s1", AgentID: "c"}, // unknown, the session ended 2h ago: unfinished
-		{SessionUUID: "s2", AgentID: "d"}, // unknown, the session ended 10m ago: may still run
-		{SessionUUID: "s2", AgentID: "e", Finished: &no},
+		{SessionUUID: "s1", AgentID: "c"},                // unknown, the session ended 2h ago: unfinished
+		{SessionUUID: "s2", AgentID: "d"},                // unknown, the session ended 10m ago: may still run
+		{SessionUUID: "s2", AgentID: "e", Finished: &no}, // not yet, the session ended 10m ago: may still run
 		{SessionUUID: "s9", AgentID: "f", Finished: &no}, // not a session of the period
 	}
 	r := Trouble(sessions, evset{}, subs, now)
-	assert.Equal(t, 3, r.UnfinishedSubagents)
+	assert.Equal(t, 2, r.UnfinishedSubagents, "b and c")
 }
 
 func TestTrouble_RateLimited(t *testing.T) {
@@ -139,18 +140,19 @@ func TestHintT1_PerClassAction(t *testing.T) {
 	add("s1", "Bash", "other", 7, sec)          // no action
 	add("s1", "Read", "not_found", 8, sec)      // no action
 	add("s1", "Agent", "input_invalid", 4, sec) // under ClassMin
-	add("s1", "Agent", "agent_limit", 5, -1)    // no duration: no estimate
+	add("s1", "Agent", "agent_limit", 5, -1)    // no duration: the time to the next event
 
 	hs := hintsOf(Hints(troubleInput(s)), "T1")
-	require.Len(t, hs, 2)
-	edit, large := hs[0], hs[1]
+	require.Len(t, hs, 3)
+	edit, large, limit := hs[0], hs[1], hs[2]
 	assert.Equal(t, ms(10*sec), edit.EstimateMS)
 	assert.Equal(t, "Re-read before editing; give more context in old_string.", edit.Action)
 	assert.Equal(t, &Fix{Kind: FixOpenSession, Ref: "s2"}, edit.Fix)
 	assert.Equal(t, []string{"s2", "s1"}, evidence(edit, "session"))
-	assert.Equal(t, "Edit found no match for old_string: 5 times, mostly in Edit, in 2 sessions; the failed calls took 10s", edit.Finding)
+	assert.Equal(t, "Edit found no match for old_string: 5 times, mostly from Edit, in 2 sessions; the failed calls took 10s", edit.Finding)
 	assert.Equal(t, ms(6*sec), large.EstimateMS)
 	assert.Equal(t, "Read large files with offset/limit.", large.Action)
+	assert.Equal(t, ms(4*sec), limit.EstimateMS, "four calls 1s before the next, the last has no next and no duration")
 
 	for class, action := range map[string]string{
 		"isolation_block":  "Add the rule to the folder's workflow so agents stay in their worktree.",
@@ -158,6 +160,7 @@ func TestHintT1_PerClassAction(t *testing.T) {
 		"no_such_tool":     "Fix the skill or agent definition that names it.",
 		"input_invalid":    "The tool's arguments are wrong — check the skill that calls it.",
 		"edit_multi_match": "Re-read before editing; give more context in old_string.",
+		"stale_read":       "Re-read before editing; give more context in old_string.",
 		"sleep_blocked":    "Use background tasks and notifications instead of sleep.",
 		"agent_limit":      "Start fewer subagents at once.",
 	} {
@@ -173,11 +176,17 @@ func TestHintT1_PerClassAction(t *testing.T) {
 
 func TestHintT2_CopyRules(t *testing.T) {
 	s := evset{}
-	s.add("s1", 0, denied("Bash", "rm", "automode-blocked", sec))
-	s.add("s1", sec, denied("Bash", "rm", "automode-blocked", sec))
-	s.add("s2", 0, denied("Bash", "rm", "permission-rule", sec)) // 3 for rm over both kinds
+	for i := range 3 {
+		s.add("s1", time.Duration(i)*10*sec, denied("Bash", "go test", "automode-blocked", sec)) // 10s, 10s, then 1s: 21s
+	}
+	for i := range 3 {
+		s.add("s2", time.Duration(i)*sec, denied("mcp__srv__q", "q", "permission-rule", sec))
+	}
+	for i := range 3 {
+		s.add("s2", time.Duration(i+3)*sec, denied("Bash", "rm", "automode-blocked", sec))
+	}
 	for i := range 4 {
-		s.add("s2", time.Duration(i+1)*sec, denied("Bash", "", "permission-rule", 2*sec))
+		s.add("s2", time.Duration(i+6)*sec, denied("Bash", "", "permission-rule", 2*sec))
 	}
 	for i := range 5 {
 		s.add("s3", time.Duration(i)*sec, denied("WebFetch", "", "automode-unavailable", sec)) // not a rule's to fix
@@ -188,12 +197,47 @@ func TestHintT2_CopyRules(t *testing.T) {
 	hs := hintsOf(Hints(troubleInput(s)), "T2")
 	require.Len(t, hs, 1, "one hint")
 	h := hs[0]
-	assert.Equal(t, &Fix{Kind: FixCopyAllowRules, Rules: []string{"Bash", "Bash(rm:*)"}}, h.Fix)
-	assert.Equal(t, ms(11*sec), h.EstimateMS)
+	assert.Equal(t, &Fix{Kind: FixCopyAllowRules, Rules: []string{"Bash(go test:*)", "mcp__srv__q"}}, h.Fix,
+		"no rule for a bare Bash or for rm")
+	assert.Equal(t, ms(35*sec), h.EstimateMS)
 	assert.Equal(t, "Allow them in .claude/settings.json.", h.Action)
-	assert.Equal(t, []string{"Bash", "rm"}, evidence(h, "command"))
-	assert.Equal(t, []string{"s2", "s1"}, evidence(h, "session"))
-	assert.Equal(t, "Auto mode or a permission rule blocked 7 calls of 2 commands, 11s in all: Bash, rm", h.Finding)
+	assert.Equal(t, []string{"Bash", "go test", "mcp__srv__q", "rm"}, evidence(h, "command"))
+	assert.Equal(t, []string{"s2"}, evidence(h, "session"), "cut to evidenceMax")
+	assert.Equal(t, 1, h.MoreEvidence)
+	assert.Equal(t, "Auto mode or a permission rule blocked 13 calls of 4 commands, 35s in all: Bash, go test, mcp__srv__q, rm", h.Finding)
+}
+
+// A Bash denial with no target and an rm denial get no allow rule: the hint
+// has no fix and asks to review them.
+func TestHintT2_NoRuleForUnsafeCommands(t *testing.T) {
+	s := evset{}
+	for i := range 3 {
+		s.add("s1", time.Duration(2*i)*sec, denied("Bash", "", "permission-rule", sec))
+		s.add("s1", time.Duration(2*i+1)*sec, denied("Bash", "rm", "automode-blocked", sec))
+	}
+	hs := hintsOf(Hints(troubleInput(s)), "T2")
+	require.Len(t, hs, 1)
+	assert.Nil(t, hs[0].Fix)
+	assert.Equal(t, "Review the blocked commands: change how the agent runs them, or allow the safe ones in .claude/settings.json yourself.",
+		hs[0].Action)
+	assert.Equal(t, []string{"Bash", "rm"}, evidence(hs[0], "command"))
+}
+
+// Failed edits of a T1 class are T1's, not an H5 loop; rows with no class
+// (parser v2) still make one.
+func TestHintT1_NotAnH5Loop(t *testing.T) {
+	for _, tc := range []struct {
+		class  string
+		t1, h5 int
+	}{{"edit_no_match", 1, 0}, {"", 0, 1}} {
+		s := evset{}
+		for i := range 5 {
+			s.add("s1", time.Duration(i)*sec, failed("Edit", "a.go", tc.class, sec))
+		}
+		hs := Hints(troubleInput(s))
+		assert.Len(t, hintsOf(hs, "T1"), tc.t1, tc.class)
+		assert.Len(t, hintsOf(hs, "H5"), tc.h5, tc.class)
+	}
 }
 
 func TestHintT3_Interrupts(t *testing.T) {
@@ -254,12 +298,11 @@ func TestHintsT_CiteEvidence(t *testing.T) {
 // troubleRulesInput fires T1–T3 once each.
 func troubleRulesInput() HintInput {
 	s := evset{}
-	for i := range ClassMin { // an ok edit in between: no H5 streak
-		s.add("s1", time.Duration(2*i)*sec, failed("Edit", "a.go", "edit_no_match", sec))
-		s.add("s1", time.Duration(2*i+1)*sec, tl("Edit", "a.go", sec, "ok"))
+	for i := range ClassMin {
+		s.add("s1", time.Duration(i)*sec, failed("Edit", "a.go", "edit_no_match", sec))
 	}
 	for i := range DenialMin {
-		s.add("s1", time.Duration(10+i)*sec, denied("Bash", "rm", "automode-blocked", sec))
+		s.add("s1", time.Duration(10+i)*sec, denied("Bash", "go test", "automode-blocked", sec))
 	}
 	for i := range InterruptMin {
 		s.add("s2", time.Duration(i+1)*mn, interrupt())

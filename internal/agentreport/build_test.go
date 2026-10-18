@@ -286,7 +286,7 @@ func TestBuildOverview_Trouble(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(2*time.Hour), English)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ov.Trouble.FactsSessions)
 	assert.Equal(t, 3, ov.Trouble.Interrupts)

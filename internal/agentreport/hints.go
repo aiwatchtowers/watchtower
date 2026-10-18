@@ -33,8 +33,8 @@ const (
 	SourceShareMin       = 0.10            // C2: a source above this share of the growth ...
 	SourceTokensMin      = 50_000          // C2: ... and above this many tokens
 	RepeatTokensMin      = 20_000          // C3: the repeated reads added more than this many tokens
-	ClassMin             = 5               // T1: failed calls of one error class
-	DenialMin            = 3               // T2: denied calls of one command
+	ClassMin             = 5               // T1: failed calls of one error class (estimate: each call to its lane's next event)
+	DenialMin            = 3               // T2: denied calls of one command (estimate as T1's)
 	InterruptMin         = 3               // T3: interrupts and rejections in one session
 	evidenceMax          = 5               // evidence items a hint lists; the rest are counted in MoreEvidence
 )
@@ -425,7 +425,7 @@ func ownerShare(in HintInput, sessions []string) []Hint {
 
 // H5: one verb failing FailLoop+ times in a row in one agent lane of a
 // session: a successful run of that verb breaks the streak, calls of other
-// verbs in between do not.
+// verbs in between do not. Failures of a class T1 has an action for are T1's.
 func failingLoops(in HintInput, sessions []string) []Hint {
 	type lane struct{ agent, verb string }
 	var out []Hint
@@ -443,6 +443,9 @@ func failingLoops(in HintInput, sessions []string) []Hint {
 			delete(streak, l)
 		}
 		for _, e := range sortEvents(in.Events[sid], func(e agentlogdb.AgentReportEvent) bool { return e.Kind == "tool" }) {
+			if _, ok := t1Actions[e.ErrorClass]; ok && e.Outcome == "error" {
+				continue // T1's
+			}
 			l := lane{e.AgentID, verb(e.AgentReportEvent)}
 			if e.Outcome == "error" {
 				streak[l] = append(streak[l], durMS(e.AgentReportEvent))

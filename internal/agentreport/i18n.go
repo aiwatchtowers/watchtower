@@ -94,8 +94,9 @@ var msgs = map[string][2]string{
 	"c3.action": {"Read the file once and keep notes, or read only the range you need.",
 		"Прочитай файл один раз и запиши заметки или читай только нужный диапазон."},
 
-	"t1.finding": {"%s: %s, mostly in %s, in %s; the failed calls took %s",
-		"%s: %s, чаще всего в %s, в %s; неудачные вызовы заняли %s"},
+	"t1.finding": {"%s: %s, mostly from %s, in %s; the failed calls took %s",
+		"%s: %s, чаще всего у %s, в %s; неудачные вызовы заняли %s"},
+	"t1.class.stale_read":       {"Edits of a file changed since it was read", "Правки файла, изменённого после чтения"},
 	"t1.class.isolation_block":  {"Writes outside the session's worktree were blocked", "Запись вне worktree сессии заблокирована"},
 	"t1.class.unknown_agent":    {"Subagents of an unknown type", "Субагенты неизвестного типа"},
 	"t1.class.no_such_tool":     {"Calls of a tool that does not exist", "Вызовы несуществующего инструмента"},
@@ -121,6 +122,8 @@ var msgs = map[string][2]string{
 	"t2.finding": {"Auto mode or a permission rule blocked %s of %s, %s in all: %s",
 		"Auto mode или правило разрешений заблокировали %s %s, всего %s: %s"},
 	"t2.action": {"Allow them in .claude/settings.json.", "Разреши их в .claude/settings.json."},
+	"t2.action.review": {"Review the blocked commands: change how the agent runs them, or allow the safe ones in .claude/settings.json yourself.",
+		"Проверь заблокированные команды: измени то, как агент их запускает, или сам разреши безопасные в .claude/settings.json."},
 
 	"t3.label": {"%s, %s stopped", "%s, остановлено %s"},
 	"t3.finding": {"You stopped or rejected the agent %d+ times in %s (%s in all); the stopped work took %s",

@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	// UnfinishedAfter is how long after its session ended a subagent with no
-	// finished flag counts as unfinished (before that it may still run).
+	// UnfinishedAfter is how long after its session ended a subagent not
+	// marked finished counts as unfinished (before that it may still run).
 	UnfinishedAfter = time.Hour
 	troubleTopRows  = 10 // rows of denials and interrupt_sessions
 	classSessions   = 5  // sessions an error class lists
@@ -52,7 +52,7 @@ type ErrorClassRow struct {
 	Count    int            `json:"count"`
 	Sessions []SessionCount `json:"sessions"`
 
-	ms        int64 // the failed calls' summed duration (T1's estimate)
+	ms        int64 // the failed calls' lost time (see Trouble; T1's estimate)
 	nSessions int   // sessions with the class, Sessions is cut
 }
 
@@ -73,7 +73,8 @@ type DenialRow struct {
 type denialAgg struct {
 	DenialRow
 	verb     string         // what an allow rule names: the shell verb, else the tool
-	ms       int64          // the denied calls' summed duration
+	safe     bool           // T2 may suggest an allow rule for verb
+	ms       int64          // the denied calls' lost time (see Trouble)
 	sessions map[string]int // denied calls per session
 }
 
@@ -86,15 +87,19 @@ type sessionTrouble struct {
 }
 
 type classAgg struct {
-	ms       int64
+	ms       int64 // the failed calls' lost time
 	tools    map[string]int
 	sessions map[string]int
 }
 
 // Trouble measures the period's trouble from the sessions' events (keyed by
 // uuid, in AgentReportEvents order: by ts) and their subagents as of now. Sessions without the v2 facts are
-// skipped. A subagent counts as unfinished when its meta says so, or when it
-// has no finished flag and its session ended over UnfinishedAfter before now.
+// skipped. A subagent counts as unfinished when its meta does not say it
+// finished and its session ended over UnfinishedAfter before now.
+//
+// A failed or denied call loses the time from its start to its lane's next
+// event, or its own duration when that is longer (or there is no next event):
+// the agent reads the failure and tries again only then.
 //
 // The work an interrupt stopped runs from the lane's last owner turn (or its
 // first event) to the interrupt; a rejected call stops the work since then up
@@ -112,29 +117,36 @@ func Trouble(sessions []agentlogdb.AgentReportSession, events map[string][]agent
 		r.FactsSessions++
 		ended[s.SessionUUID] = s.EndedAt
 		st := sessionTrouble{sid: s.SessionUUID}
-		turn := map[string]time.Time{} // per lane: when the current turn started
+		turn := map[string]time.Time{}        // per lane: when the current turn started
+		pending := map[string][]pendingCall{} // per lane: failed and denied calls waiting for the next event
 		for _, e := range events[s.SessionUUID] {
+			at := tsOf(e)
 			if _, ok := turn[e.AgentID]; !ok {
-				turn[e.AgentID] = parseTS(e.TS)
+				turn[e.AgentID] = at
+			}
+			if p := pending[e.AgentID]; len(p) > 0 && !at.IsZero() {
+				settle(p, at)
+				pending[e.AgentID] = p[:0]
 			}
 			switch e.Kind {
 			case "tool":
 				switch e.Outcome {
 				case "error":
-					addClass(classes, s.SessionUUID, e)
+					c := addClass(classes, s.SessionUUID, e)
+					pending[e.AgentID] = append(pending[e.AgentID], pendingCall{&c.ms, at, durMS(e)})
 				case "denied":
 					if e.ErrorClass == DenialRejected {
 						r.Rejections++
 						st.count++
-						end := parseTS(e.TS).Add(time.Duration(durMS(e)) * time.Millisecond)
+						end := at.Add(time.Duration(durMS(e)) * time.Millisecond)
 						st.ms += since(turn[e.AgentID], end)
 						turn[e.AgentID] = end
 						continue
 					}
-					addDenial(denials, s.SessionUUID, e)
+					d := addDenial(denials, s.SessionUUID, e)
+					pending[e.AgentID] = append(pending[e.AgentID], pendingCall{&d.ms, at, durMS(e)})
 				}
 			case "owner_turn":
-				at := parseTS(e.TS)
 				if e.Trigger == "interrupt" {
 					r.Interrupts++
 					st.count++
@@ -146,6 +158,9 @@ func Trouble(sessions []agentlogdb.AgentReportSession, events map[string][]agent
 					r.RateLimited++
 				}
 			}
+		}
+		for _, p := range pending {
+			settle(p, time.Time{})
 		}
 		if st.count > 0 {
 			r.interrupts = append(r.interrupts, st)
@@ -166,10 +181,26 @@ func Trouble(sessions []agentlogdb.AgentReportSession, events map[string][]agent
 	return r
 }
 
-// parseTS is ts as a time, zero when it does not parse.
-func parseTS(ts string) time.Time {
-	at, _ := time.Parse(time.RFC3339Nano, ts)
+// tsOf is the event's time, zero when its ts does not parse.
+func tsOf(e agentlogdb.AgentReportEvent) time.Time {
+	at, _ := parseAt(e.TS)
 	return at
+}
+
+// pendingCall is a failed or denied call whose lost time runs to its lane's
+// next event: ms is the aggregate it adds to.
+type pendingCall struct {
+	ms  *int64
+	at  time.Time
+	dur int64
+}
+
+// settle adds each pending call's lost time to its aggregate: the larger of
+// the time to next (zero = no next event) and the call's own duration.
+func settle(pending []pendingCall, next time.Time) {
+	for _, p := range pending {
+		*p.ms += max(since(p.at, next), p.dur)
+	}
 }
 
 // since is the ms from start to end, 0 when either is unknown or end is first.
@@ -180,28 +211,45 @@ func since(start, end time.Time) int64 {
 	return max(end.Sub(start).Milliseconds(), 0)
 }
 
-func addClass(classes map[string]*classAgg, sid string, e agentlogdb.AgentReportEvent) {
+func addClass(classes map[string]*classAgg, sid string, e agentlogdb.AgentReportEvent) *classAgg {
 	class := cmp.Or(e.ErrorClass, agentlog.ClassOther)
 	c := classes[class]
 	if c == nil {
 		c = &classAgg{tools: map[string]int{}, sessions: map[string]int{}}
 		classes[class] = c
 	}
-	c.ms += durMS(e)
 	c.tools[e.Name]++
 	c.sessions[sid]++
+	return c
 }
 
-func addDenial(denials map[DenialRow]*denialAgg, sid string, e agentlogdb.AgentReportEvent) {
+func addDenial(denials map[DenialRow]*denialAgg, sid string, e agentlogdb.AgentReportEvent) *denialAgg {
 	k := DenialRow{Kind: e.ErrorClass, Tool: e.Name, Target: e.Target}
 	d := denials[k]
 	if d == nil {
-		d = &denialAgg{DenialRow: k, verb: cmp.Or(verb(e), e.Name), sessions: map[string]int{}}
+		d = &denialAgg{DenialRow: k, verb: cmp.Or(verb(e), e.Name), safe: safeToAllow(e), sessions: map[string]int{}}
 		denials[k] = d
 	}
 	d.Count++
-	d.ms += durMS(e)
 	d.sessions[sid]++
+	return d
+}
+
+// safeToAllow is whether T2 may suggest an allow rule for the call: a tool
+// other than Bash (MCP tools included), or a shell verb of the read & search
+// or build & test class; never a bare "Bash" and never another shell verb.
+func safeToAllow(e agentlogdb.AgentReportEvent) bool {
+	if e.Name != "Bash" {
+		return true
+	}
+	if e.Target == "" {
+		return false
+	}
+	switch ToolClass(e.Name, e.Target) {
+	case ClassReadSearch, ClassBuildTest:
+		return true
+	}
+	return false
 }
 
 // unfinished counts the subagents of the measured sessions (ended: uuid →
@@ -210,16 +258,11 @@ func unfinished(subagents []agentlogdb.AgentSubagent, ended map[string]string, n
 	n := 0
 	for _, a := range subagents {
 		end, ok := ended[a.SessionUUID]
-		switch {
-		case !ok:
-		case a.Finished != nil:
-			if !*a.Finished {
-				n++
-			}
-		default:
-			if at, err := time.Parse(time.RFC3339Nano, end); err == nil && now.Sub(at) > UnfinishedAfter {
-				n++
-			}
+		if !ok || a.Finished != nil && *a.Finished {
+			continue
+		}
+		if at, ok := parseAt(end); ok && now.Sub(at) > UnfinishedAfter {
+			n++
 		}
 	}
 	return n
@@ -260,7 +303,8 @@ func denialRows(denials map[DenialRow]*denialAgg) []denialAgg {
 }
 
 // t1Actions names T1's action per error class; a class not here (exit_code is
-// H5's, other and the classes with no known fix) gets no hint.
+// H5's, other and the classes with no known fix) gets no hint, and H5 skips
+// the failures of a class here.
 var t1Actions = map[string]string{
 	agentlog.ClassIsolation:      "t1.action.isolation",
 	agentlog.ClassUnknownAgent:   "t1.action.definition",
@@ -269,6 +313,7 @@ var t1Actions = map[string]string{
 	agentlog.ClassTooLarge:       "t1.action.large",
 	agentlog.ClassEditNoMatch:    "t1.action.edit",
 	agentlog.ClassEditMultiMatch: "t1.action.edit",
+	agentlog.ClassStaleRead:      "t1.action.edit",
 	agentlog.ClassSleepBlocked:   "t1.action.sleep",
 	agentlog.ClassAgentLimit:     "t1.action.agents",
 }
@@ -296,15 +341,18 @@ func failedClasses(in HintInput) []Hint {
 }
 
 // T2: the commands denied DenialMin+ times by auto mode or a permission rule,
-// in one hint whose fix copies their allow rules; the estimate is the denied
-// calls' time.
+// in one hint whose fix copies the allow rules of the safe ones (safeToAllow);
+// with none safe there is no fix and the action asks to review them. The
+// estimate is the denied calls' lost time.
 func deniedCalls(in HintInput) []Hint {
 	count := map[string]int{}
+	safe := map[string]bool{}
 	var ms int64
 	sessions := map[string]int{}
 	for _, d := range in.Trouble.denials {
 		if d.Kind == DenialAutoBlocked || d.Kind == DenialRule {
 			count[d.verb] += d.Count
+			safe[d.verb] = d.safe
 		}
 	}
 	verbs := slices.DeleteFunc(byCount(count), func(v string) bool { return count[v] < DenialMin })
@@ -322,10 +370,15 @@ func deniedCalls(in HintInput) []Hint {
 		}
 	}
 	l := in.Lang
-	h := Hint{ID: "T2", EstimateMS: ms, Action: l.f("t2.action"), Fix: &Fix{Kind: FixCopyAllowRules},
+	h := Hint{ID: "T2", EstimateMS: ms, Action: l.f("t2.action.review"),
 		Finding: l.f("t2.finding", l.count(n, "call"), l.count(len(verbs), "command.of"), l.dur(ms), strings.Join(verbs, ", "))}
 	for _, v := range verbs {
-		h.Fix.Rules = append(h.Fix.Rules, allowRule(v))
+		if safe[v] {
+			if h.Fix == nil {
+				h.Fix, h.Action = &Fix{Kind: FixCopyAllowRules}, l.f("t2.action")
+			}
+			h.Fix.Rules = append(h.Fix.Rules, allowRule(v))
+		}
 		h.Evidence = append(h.Evidence, Evidence{Kind: "command", Ref: v, Label: l.count(count[v], "denial")})
 	}
 	for _, sid := range byCount(sessions) {
