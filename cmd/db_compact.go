@@ -35,7 +35,10 @@ Exit codes: 0 compacted or not due, 1 error, 2 not enough disk space,
 3 the daemon is running, 4 interrupted, 5 migrations pending
 (run 'watchtower db migrate'). With --json the result is the last stdout line.`,
 	Args: cobra.NoArgs,
-	RunE: runDBCompact,
+	// Not the root's ensureSchemaFormat: compaction never migrates or
+	// upgrades, and --check writes nothing — the config included.
+	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	RunE:              runDBCompact,
 }
 
 // daemonRunningForCompact reports whether the daemon runs, through the pid
@@ -197,7 +200,7 @@ func compactSkipMessage(name, skipped string) string {
 	case "daemon_running":
 		return fmt.Sprintf("not compacting %s: the daemon is running; stop it with 'watchtower sync stop' (or pass --force)", name)
 	case "interrupted":
-		return fmt.Sprintf("compacting %s was interrupted; the database is unchanged", name)
+		return fmt.Sprintf("compacting %s was interrupted; it will be retried on the next launch", name)
 	case "schema_pending":
 		return fmt.Sprintf("not compacting %s: migrations are pending; run 'watchtower db migrate' first", name)
 	}

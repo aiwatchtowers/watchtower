@@ -86,7 +86,7 @@ func CheckCompaction(dbPath, version string) (CompactCheck, error) {
 	if err != nil {
 		return CompactCheck{}, fmt.Errorf("checking database %s: %w", dbPath, err)
 	}
-	c := CompactCheck{DBBytes: info.Size(), NeedsDiskBytes: 2 * info.Size()}
+	c := CompactCheck{DBBytes: info.Size(), NeedsDiskBytes: needsDiskBytes(info.Size())}
 	if wal, err := os.Stat(dbPath + "-wal"); err == nil {
 		c.WALBytes = wal.Size()
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -139,6 +139,11 @@ func CheckCompaction(dbPath, version string) (CompactCheck, error) {
 	}
 	return c, nil
 }
+
+// needsDiskBytes is the free space a compaction of a size-byte file asks
+// for: VACUUM writes a full copy beside the original, and in WAL mode the
+// copy passes through the WAL first.
+func needsDiskBytes(size int64) int64 { return 2 * size }
 
 // freelistDue is the free-pages rule: the free pages hold more than
 // compactFreelistMinBytes and are more than compactFreelistMinRatio of the file.
@@ -244,6 +249,9 @@ type CompactResult struct {
 	Error       string `json:"error,omitempty"`
 	Failures    int    `json:"failures,omitempty"`
 	GaveUp      bool   `json:"gave_up,omitempty"`
+	// CheckpointBusy: the final checkpoint could not pass a reader's
+	// snapshot, so part of the space is reclaimed at the next checkpoint.
+	CheckpointBusy bool `json:"checkpoint_busy,omitempty"`
 }
 
 // compactVacuumHook, nil in production, runs right before the VACUUM Exec
@@ -269,7 +277,10 @@ var compactRecord = recordCompaction
 // Skips return (result, nil); a VACUUM or I/O failure — including reading
 // the size or recording the compaction after a VACUUM that succeeded —
 // returns (result, err) with Error, Failures and GaveUp filled, after
-// counting it in compact_failures for opts.Version.
+// counting it in compact_failures for opts.Version. A VACUUM or checkpoint
+// that gives up on another process's lock (SQLITE_BUSY/LOCKED) returns
+// (result, err) with Error saying busy and is not counted: the file is fine,
+// the next launch tries again.
 func Compact(ctx context.Context, dbPath string, opts CompactOptions) (CompactResult, error) {
 	res := CompactResult{Reason: opts.Reason}
 	if !opts.Force {
@@ -281,7 +292,7 @@ func Compact(ctx context.Context, dbPath string, opts CompactOptions) (CompactRe
 		if err != nil {
 			return res, fmt.Errorf("checking free disk space: %w", err)
 		}
-		if free < 2*info.Size() {
+		if free < needsDiskBytes(info.Size()) {
 			res.Skipped = "disk"
 			return res, nil
 		}
@@ -305,13 +316,20 @@ func Compact(ctx context.Context, dbPath string, opts CompactOptions) (CompactRe
 	if res.BytesBefore, err = fileSize(dbPath); err != nil {
 		return res, err
 	}
-	if err := vacuumWithCheckpoints(ctx, d); err != nil {
+	checkpointBusy, err := vacuumWithCheckpoints(ctx, d)
+	if err != nil {
 		if ctx.Err() != nil {
 			res.Skipped = "interrupted"
 			return res, nil
 		}
+		if IsBusy(err) {
+			err = fmt.Errorf("the database is busy (another process holds its lock); not counted as a failure: %w", err)
+			res.Error = err.Error()
+			return res, err
+		}
 		return res, compactFailed(d, opts.Version, &res, err)
 	}
+	res.CheckpointBusy = checkpointBusy
 	if res.BytesAfter, err = fileSize(dbPath); err != nil {
 		return res, compactFailed(d, opts.Version, &res, err)
 	}
@@ -326,26 +344,30 @@ func Compact(ctx context.Context, dbPath string, opts CompactOptions) (CompactRe
 // vacuumWithCheckpoints runs checkpoint, VACUUM, checkpoint. The first two
 // honour ctx (the VACUUM through sqlite3_interrupt); the last runs to the
 // end once the VACUUM has committed. A checkpoint that reports busy (a
-// reader still on an older snapshot) is not an error.
-func vacuumWithCheckpoints(ctx context.Context, d *DB) error {
-	if err := walCheckpointTruncate(ctx, d); err != nil {
-		return err
+// reader still on an older snapshot) is not an error; the final one's busy
+// is returned, since the file then keeps part of its size until the next
+// checkpoint.
+func vacuumWithCheckpoints(ctx context.Context, d *DB) (checkpointBusy bool, err error) {
+	if _, err := walCheckpointTruncate(ctx, d); err != nil {
+		return false, err
 	}
 	if compactVacuumHook != nil {
 		compactVacuumHook()
 	}
 	if _, err := d.ExecContext(ctx, compactVacuumSQL); err != nil {
-		return fmt.Errorf("vacuum: %w", err)
+		return false, fmt.Errorf("vacuum: %w", err)
 	}
 	return walCheckpointTruncate(context.WithoutCancel(ctx), d)
 }
 
-func walCheckpointTruncate(ctx context.Context, d *DB) error {
-	var busy, logFrames, checkpointed int64
-	if err := d.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
-		return fmt.Errorf("wal checkpoint: %w", err)
+// walCheckpointTruncate runs PRAGMA wal_checkpoint(TRUNCATE) and reports
+// whether it was blocked from completing (its busy column).
+func walCheckpointTruncate(ctx context.Context, d *DB) (busy bool, err error) {
+	var busyCol, logFrames, checkpointed int64
+	if err := d.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busyCol, &logFrames, &checkpointed); err != nil {
+		return false, fmt.Errorf("wal checkpoint: %w", err)
 	}
-	return nil
+	return busyCol != 0, nil
 }
 
 func fileSize(path string) (int64, error) {

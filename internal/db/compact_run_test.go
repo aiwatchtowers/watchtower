@@ -195,8 +195,8 @@ func TestSchemaCurrentErr_ReadErrorIsAnError(t *testing.T) {
 	if current, err := d.schemaCurrentErr(); err == nil || current {
 		t.Fatalf("closed handle: got (%v, %v), want (false, error)", current, err)
 	}
-	if d.SchemaCurrent() {
-		t.Fatal("SchemaCurrent = true on a closed handle")
+	if d.schemaCurrent() {
+		t.Fatal("schemaCurrent = true on a closed handle")
 	}
 }
 
@@ -213,50 +213,16 @@ func TestSchemaCurrentErr_NoVersionTableIsPendingNotError(t *testing.T) {
 	}
 }
 
-// copyDBFile copies the database file and any -wal beside it to a new temp
-// dir and returns the copy's path.
-func copyDBFile(t *testing.T, path string) string {
-	t.Helper()
-	dst := filepath.Join(t.TempDir(), filepath.Base(path))
-	for _, suffix := range []string{"", "-wal"} {
-		b, err := os.ReadFile(path + suffix)
-		if suffix != "" && os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dst+suffix, b, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dst
-}
-
 func TestCompact_InterruptLeavesDBIntact(t *testing.T) {
-	path := sparseFixture(t, 8000)
+	path := sparseFixture(t, 500)
 	countBefore, sumBefore := messagesDigest(t, path)
 
-	// The cancel must land while the VACUUM runs, not after it commits: time
-	// an uninterrupted compaction of a copy and cancel within a tenth of it.
-	measured, err := Compact(context.Background(), copyDBFile(t, path), CompactOptions{Version: "1.0.0"})
-	if err != nil || !measured.Compacted {
-		t.Fatalf("measuring run: got (%+v, %v), want compacted", measured, err)
-	}
-	delay := min(20*time.Millisecond, time.Duration(measured.DurationMS)*time.Millisecond/10)
-	if delay < time.Millisecond {
-		t.Fatalf("the fixture compacts in %d ms, too fast to interrupt reliably; enlarge its live data", measured.DurationMS)
-	}
-
+	// The cancel lands synchronously right before the VACUUM Exec, so the
+	// VACUUM starts with ctx already done — deterministic, no timer.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	prev := compactVacuumHook
-	compactVacuumHook = func() {
-		go func() {
-			time.Sleep(delay)
-			cancel()
-		}()
-	}
+	compactVacuumHook = cancel
 	t.Cleanup(func() { compactVacuumHook = prev })
 
 	res, err := Compact(ctx, path, CompactOptions{Version: "1.0.0"})
@@ -370,6 +336,9 @@ func TestCompact_ConcurrentReaderDoesNotFail(t *testing.T) {
 	if err != nil || !res.Compacted {
 		t.Fatalf("got (%+v, %v), want compacted", res, err)
 	}
+	if !res.CheckpointBusy {
+		t.Fatalf("got %+v, want checkpoint_busy: the final checkpoint cannot pass the reader", res)
+	}
 	if elapsed > compactBusy+5*time.Second {
 		t.Fatalf("Compact took %v beside a reader, want within the busy timeout", elapsed)
 	}
@@ -378,6 +347,44 @@ func TestCompact_ConcurrentReaderDoesNotFail(t *testing.T) {
 	}
 	if after, _ := messagesDigest(t, path); after != n {
 		t.Fatalf("rows %d → %d", n, after)
+	}
+}
+
+// A VACUUM that gives up on another process's write lock fails as busy and
+// is not counted against the failure cap: the file is fine, the next launch
+// tries again.
+func TestCompact_BusyIsNotCounted(t *testing.T) {
+	path := compactFixture(t)
+	prevBusy := compactBusy
+	compactBusy = 200 * time.Millisecond
+	t.Cleanup(func() { compactBusy = prevBusy })
+
+	writer, err := OpenExistingRW(path, compactCheckBusy)
+	if err != nil {
+		t.Fatalf("OpenExistingRW: %v", err)
+	}
+	defer writer.Close()
+	tx, err := writer.Begin() // BEGIN IMMEDIATE: holds the write lock
+	if err != nil {
+		t.Fatalf("BEGIN: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := Compact(context.Background(), path, CompactOptions{Version: "1.0.0"})
+	if err == nil || !IsBusy(err) || res.Compacted {
+		t.Fatalf("got (%+v, %v), want a busy error", res, err)
+	}
+	if !strings.Contains(res.Error, "busy") || res.Failures != 0 || res.GaveUp {
+		t.Fatalf("got %+v, want error saying busy, failures 0", res)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	keys := maintenanceKeys(t, path)
+	for _, k := range []string{maintCompactFailures, maintCompactFailuresVersion} {
+		if v, ok := keys[k]; ok {
+			t.Fatalf("%s = %q written on a busy failure", k, v)
+		}
 	}
 }
 

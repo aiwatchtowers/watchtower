@@ -300,20 +300,57 @@ func TestDBCompact_SetupErrorsPrintJSON(t *testing.T) {
 		assert.NotEmpty(t, res.Error, "%v", args)
 	}
 
-	// A config that does not load fails the root pre-run before any command
-	// when run through rootCmd; runDBCompact's own load is reached directly.
+	// A config that does not load: db compact skips the root pre-run, so
+	// runDBCompact's own load reports it.
 	prev := flagConfig
 	flagConfig = filepath.Join(t.TempDir(), "config.yaml")
 	t.Cleanup(func() { flagConfig = prev })
 	require.NoError(t, os.WriteFile(flagConfig, []byte("workspaces: [not, a, map\n"), 0o600))
+	_, line, code := execDBCompact(t, "--check", "--json")
+	assert.Equal(t, 1, code)
+	assert.Contains(t, decodeCompactResult(t, line).Error, "loading config")
+}
+
+// db compact skips the root's ensureSchemaFormat: with a stale
+// schema_format, --check leaves the config file and goose_db_version as
+// they were.
+func TestDBCompact_SkipsRootSchemaFormatPreRun(t *testing.T) {
+	cfg := setupCompactTestEnv(t)
+	configBytes, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+	configBytes = append(configBytes, []byte("db:\n  schema_format: 1\n")...)
+	require.NoError(t, os.WriteFile(flagConfig, configBytes, 0o600))
+	gooseBefore := compactTableRows(t, cfg.DBPath(), "goose_db_version")
+
+	_, line, code := execDBCompact(t, "--check", "--json")
+	require.Equal(t, 0, code, line)
+
+	after, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+	assert.Equal(t, string(configBytes), string(after), "db compact --check rewrote the config")
+	assert.Equal(t, gooseBefore, compactTableRows(t, cfg.DBPath(), "goose_db_version"))
+}
+
+// The Desktop decodes these lines by key: pin the exact key sets.
+func TestDBCompact_WireKeys(t *testing.T) {
+	setupCompactTestEnv(t)
+	_, line, code := execDBCompact(t, "--check", "--json")
+	require.Equal(t, 0, code, line)
+	assert.Equal(t, []string{"db_bytes", "disk_ok", "due", "free_disk_bytes", "needs_disk_bytes", "reason", "wal_bytes"}, jsonKeys(t, line))
+
 	prevJSON := dbCompactFlagJSON
 	dbCompactFlagJSON = true
 	t.Cleanup(func() { dbCompactFlagJSON = prevJSON })
 	var out bytes.Buffer
-	cmd := &cobra.Command{}
-	cmd.SetOut(&out)
-	require.Error(t, runDBCompact(cmd, nil))
-	assert.Contains(t, decodeCompactResult(t, strings.TrimSpace(out.String())).Error, "loading config")
+	failed := db.CompactResult{Reason: "migration:134", BytesBefore: 4096, Error: "vacuum: disk I/O error", Failures: 3, GaveUp: true}
+	err := reportCompact(&out, "watchtower.db", failed, errors.New(failed.Error))
+	require.Error(t, err)
+	assert.Equal(t, []string{"bytes_before", "compacted", "error", "failures", "gave_up", "reason"}, jsonKeys(t, strings.TrimSpace(out.String())))
+
+	out.Reset()
+	full := db.CompactResult{Compacted: true, Skipped: "x", Reason: "r", BytesBefore: 1, BytesAfter: 1, DurationMS: 1, Error: "e", Failures: 1, GaveUp: true, CheckpointBusy: true}
+	_ = reportCompact(&out, "watchtower.db", full, nil)
+	assert.Equal(t, []string{"bytes_after", "bytes_before", "checkpoint_busy", "compacted", "duration_ms", "error", "failures", "gave_up", "reason", "skipped"}, jsonKeys(t, strings.TrimSpace(out.String())))
 }
 
 func TestDBCompact_NoDatabase(t *testing.T) {
