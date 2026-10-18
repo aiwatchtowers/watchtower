@@ -59,8 +59,6 @@ The marking lowers the risk but does not remove it. If such a recipe also has au
 
 On the card, **Run now** starts a run the same way, without the notice; **Dry run** works even before you confirm. **History** lists runs and their steps; a failed run offers **Rerun**, an active one **Cancel**.
 
-In the list, each automation's line names its trigger and then its state: running, waiting, the last failure, else the next scheduled run. An event recipe shows when it last ran, or "no runs yet".
-
 ### When a run fails
 
 A scheduled or event run that fails brings "<name> failed", at most once per automation a day; several at once share one notice. A run cut short by a restart brings none. A recipe disabled because its script got stuck always brings "<name> was disabled".
