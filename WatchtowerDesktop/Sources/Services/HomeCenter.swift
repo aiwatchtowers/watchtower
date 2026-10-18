@@ -15,6 +15,8 @@ protocol HomeEnvironment: AnyObject {
     var firstSync: FirstSyncLine? { get }
     /// `AppState.homeTodayCardsAllowed`.
     var allowedTodayCards: Set<TodayCardKind> { get }
+    /// `AppState.homeFeedSourcesAllowed`.
+    var feedSourcesAllowed: Set<FeedSource> { get }
 }
 
 /// The Getting ready memory, per install: `home.gettingReady.hidden` (Bool),
@@ -62,11 +64,11 @@ final class GettingReadyStore {
 }
 
 /// The Home snapshot, app-wide so it survives tab switches, and the only
-/// writer of the Getting ready memory. It re-reads the Today tables on a GRDB
-/// observation (this process' writes) and on a 30 s tick (the daemon's writes
-/// from another process, which an observation never sees, and the meeting
-/// eyebrow's minutes); a readiness or environment change rebuilds from the
-/// last read without touching the DB.
+/// writer of the Getting ready memory. It re-reads the Today and feed tables
+/// on a GRDB observation (this process' writes) and on a 30 s tick (the
+/// daemon's writes from another process, which an observation never sees,
+/// and the feed's NOW line); a readiness or environment change rebuilds from
+/// the last read without touching the DB.
 @MainActor
 @Observable
 final class HomeCenter {
@@ -78,11 +80,13 @@ final class HomeCenter {
     @ObservationIgnored private let store: GettingReadyStore
     @ObservationIgnored private let tickInterval: Duration
     @ObservationIgnored private var data: HomeTodayData?
+    /// The feed read, landed with `data`.
+    @ObservationIgnored private var feedData = HomeFeedData()
     /// The pool `beginReading` reads, for `rereadNow`; nil while stopped.
     @ObservationIgnored private var pool: DatabasePool?
     /// The zone showed unready cards during this launch (`GettingReadyPolicy`).
     @ObservationIgnored private var sawUnready = false
-    /// Today reads issued; tests check a rebuild did not read.
+    /// Today + feed reads issued; tests check a rebuild did not read.
     @ObservationIgnored private(set) var todayReads = 0
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
@@ -106,7 +110,7 @@ final class HomeCenter {
         self.tickInterval = tickInterval
     }
 
-    /// Observes the Today tables that exist in this DB (a table missing
+    /// Observes the Today and feed tables that exist in this DB (a table missing
     /// mid-migration is left out of the region; the tick still re-reads it)
     /// and starts the tick. A second call restarts both.
     func beginReading(pool: DatabasePool) {
@@ -118,7 +122,8 @@ final class HomeCenter {
                 let tables = try await pool.read { db in
                     try Set(String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'"))
                 }
-                let regions: [any DatabaseRegionConvertible] = HomeQueries.observedTables
+                let observed = Set(HomeQueries.observedTables + HomeFeedQueries.observedTables)
+                let regions: [any DatabaseRegionConvertible] = observed
                     .filter(tables.contains)
                     .map { Table($0) }
                 // A change signal only: the read itself takes `now` from the
@@ -131,7 +136,7 @@ final class HomeCenter {
             } catch {
                 guard !Task.isCancelled else { return }
                 // The last snapshot stays; the tick re-reads the DB.
-                NSLog("HomeCenter: observing the Today tables: %@", error.localizedDescription)
+                NSLog("HomeCenter: observing the Home tables: %@", error.localizedDescription)
             }
         }
         let interval = tickInterval
@@ -144,10 +149,11 @@ final class HomeCenter {
         }
     }
 
-    /// One Today read. Each card's failure is caught inside `HomeQueries.today`;
-    /// what lands here is the pool itself failing: every card is marked
-    /// failed (keeping the last read's content), so Home shows the read error
-    /// and Getting ready instead of a spinner, and never an all-clear.
+    /// One Today + feed read, in one `pool.read`. Each card's and source's
+    /// failure is caught inside `HomeQueries.today` / `HomeFeedQueries.read`;
+    /// what lands here is the pool itself failing: every card and source is
+    /// marked failed (keeping the last read's content), so Home shows the read
+    /// error and Getting ready instead of a spinner, and never an all-clear.
     private func reread(_ pool: DatabasePool, generation current: Int) async {
         readToken += 1
         todayReads += 1
@@ -155,16 +161,24 @@ final class HomeCenter {
         let now = environment.now
         let calendar = environment.calendar
         let value: HomeTodayData
+        let feedValue: HomeFeedData
         do {
-            value = try await pool.read { db in HomeQueries.today(db, now: now, calendar: calendar) }
+            (value, feedValue) = try await pool.read { db in
+                (HomeQueries.today(db, now: now, calendar: calendar),
+                 HomeFeedQueries.read(db, now: now, calendar: calendar))
+            }
         } catch {
-            NSLog("HomeCenter: reading Today: %@", error.localizedDescription)
+            NSLog("HomeCenter: reading Home: %@", error.localizedDescription)
             var failed = data ?? HomeTodayData()
             failed.failed = Set(TodayCardKind.allCases)
             value = failed
+            var failedFeed = feedData
+            failedFeed.failed = Set(FeedSource.allCases)
+            feedValue = failedFeed
         }
         guard generation == current, readToken == token else { return }
         data = value
+        feedData = feedValue
         rebuildSnapshot()
     }
 
@@ -184,10 +198,11 @@ final class HomeCenter {
         tickTask?.cancel()
         tickTask = nil
         data = nil
+        feedData = HomeFeedData()
     }
 
-    /// Rebuilds from the last Today read and the current readiness, owner,
-    /// allowed cards and first-sync line, and follows those inputs. A no-op
+    /// Rebuilds from the last read and the current readiness, owner, allowed
+    /// cards and feed sources and first-sync line, and follows those inputs. A no-op
     /// until the first read, and after `endReading()`.
     func rebuildSnapshot() {
         guard let data else { return }
@@ -201,7 +216,8 @@ final class HomeCenter {
                 ownerKnown: environment.ownerKnown,
                 ownerPendingSource: environment.ownerPendingSource,
                 firstSync: environment.firstSync,
-                allowed: environment.allowedTodayCards
+                allowed: environment.allowedTodayCards,
+                feedSources: environment.feedSourcesAllowed
             )
         } onChange: { [weak self] in
             Task { @MainActor in
@@ -209,7 +225,7 @@ final class HomeCenter {
                 self.rebuildSnapshot()
             }
         }
-        let next = makeSnapshot(data, inputs, now: environment.now, calendar: environment.calendar)
+        let next = makeSnapshot(data, feedData, inputs, now: environment.now, calendar: environment.calendar)
         if next != snapshot { snapshot = next }
     }
 
@@ -229,11 +245,14 @@ final class HomeCenter {
         let ownerPendingSource: String?
         let firstSync: FirstSyncLine?
         let allowed: Set<TodayCardKind>
+        let feedSources: Set<FeedSource>
     }
 
     /// Steps the Getting ready policy (persisting what it changed) and builds
-    /// the Today cards.
-    private func makeSnapshot(_ data: HomeTodayData, _ inputs: Inputs, now: Date, calendar: Calendar) -> HomeSnapshot {
+    /// the Today cards and the feed.
+    private func makeSnapshot(
+        _ data: HomeTodayData, _ feedData: HomeFeedData, _ inputs: Inputs, now: Date, calendar: Calendar
+    ) -> HomeSnapshot {
         let memory = store.memory
         let step = GettingReadyPolicy.step(
             readiness: inputs.readiness, ownerKnown: inputs.ownerKnown, ownerPendingSource: inputs.ownerPendingSource,
@@ -247,8 +266,28 @@ final class HomeCenter {
             firstSync: inputs.firstSync,
             today: HomeTodayBuilder.cards(data, allowed: inputs.allowed, now: now, calendar: calendar),
             todayReadFailed: !inputs.allowed.isEmpty && inputs.allowed.isSubset(of: failed),
-            todayFailed: failed
+            todayFailed: failed,
+            feed: makeFeed(feedData, sources: inputs.feedSources, now: now, calendar: calendar)
         )
+    }
+
+    /// The one feed build: a source Home may not show leaves no row and no
+    /// failure behind.
+    private func makeFeed(_ data: HomeFeedData, sources: Set<FeedSource>, now: Date, calendar: Calendar) -> HomeFeed {
+        var data = data
+        if !sources.contains(.inbox) { data.inbox = [] }
+        if !sources.contains(.reminders) {
+            data.dueReminders = []
+            data.laterReminders = []
+        }
+        if !sources.contains(.proposals) { data.proposals = [] }
+        if !sources.contains(.targets) { data.targets = [] }
+        if !sources.contains(.calendar) {
+            data.events = []
+            data.prepEventIDs = []
+        }
+        data.failed.formIntersection(sources)
+        return HomeFeedBuilder.feed(data, now: now, calendar: calendar, expanded: false, hidden: [])
     }
 }
 
@@ -268,4 +307,5 @@ final class LiveHomeEnvironment: HomeEnvironment {
     var ownerPendingSource: String? { appState?.ownerPendingSource }
     var firstSync: FirstSyncLine? { appState?.firstSyncLine }
     var allowedTodayCards: Set<TodayCardKind> { appState?.homeTodayCardsAllowed ?? AppState.homeAlwaysAllowed }
+    var feedSourcesAllowed: Set<FeedSource> { appState?.homeFeedSourcesAllowed ?? AppState.homeFeedAlwaysAllowed }
 }

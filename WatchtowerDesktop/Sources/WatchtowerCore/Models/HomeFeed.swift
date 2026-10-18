@@ -100,7 +100,7 @@ package struct FeedEvent: Equatable, Identifiable, Sendable {
 }
 
 /// A feed source, for naming the ones whose read failed.
-package enum FeedSource: Hashable, Sendable {
+package enum FeedSource: CaseIterable, Hashable, Sendable {
     case inbox, reminders, proposals, targets, calendar
 }
 

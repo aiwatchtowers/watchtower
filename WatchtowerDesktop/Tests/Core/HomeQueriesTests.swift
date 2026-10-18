@@ -237,13 +237,7 @@ final class HomeQueriesTests: XCTestCase {
 
     func testTodayEmptyDatabaseReadsNoContent() throws {
         let data = try db.read { HomeQueries.today($0, now: Date(), calendar: .current) }
-        XCTAssertEqual(data.awaitingCount, 0)
-        XCTAssertTrue(data.actions.isEmpty)
-        XCTAssertTrue(data.reminders.isEmpty)
-        XCTAssertNil(data.nextEvent)
-        XCTAssertFalse(data.nextEventHasPrep)
         XCTAssertNil(data.briefing)
-        XCTAssertTrue(data.targets.isEmpty)
         XCTAssertTrue(data.asks.rows.isEmpty && data.asks.unreadableIDs.isEmpty)
         XCTAssertNil(data.pendingRecap)
         XCTAssertTrue(data.failed.isEmpty)
@@ -252,27 +246,14 @@ final class HomeQueriesTests: XCTestCase {
     func testTodayReadsEverySource() throws {
         let now = Date()
         let data = try db.write { d in
-            try TestDatabase.insertAgentAction(d, turnID: "pending", createdAt: self.stampAgo(minutesAgo: 3))
-            try d.execute(sql: "INSERT INTO reminders (note, remind_at) VALUES ('Call back', ?)",
-                          arguments: [self.stampAgo(minutesAgo: 1)])
-            try TestDatabase.insertCalendarEvent(d, id: "evt-home", startTime: self.stampAgo(minutesAgo: -60),
-                                                 endTime: self.stampAgo(minutesAgo: -90))
-            try TestDatabase.insertMeetingPrep(d, eventID: "evt-home", resultJSON: #"{"talking_points":[]}"#)
             try TestDatabase.insertBriefing(d, date: self.day(0), attention: #"[{"text":"Reply to acme"}]"#)
-            try self.insertTarget(d, "Due today", dueDate: self.day(0) + "T15:00")
             let workbench = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
             try TestDatabase.insertOwnerAsk(d, projectID: workbench)
             try d.execute(sql: "INSERT INTO catchup_recaps (period_from, period_to, status, tldr) VALUES (?, ?, 'ready', 'All quiet')",
                           arguments: [now.timeIntervalSince1970 - 3600, now.timeIntervalSince1970])
             return HomeQueries.today(d, now: now, calendar: .current)
         }
-        XCTAssertEqual(data.awaitingCount, 1)
-        XCTAssertEqual(data.actions.map(\.turnID), ["pending"])
-        XCTAssertEqual(data.reminders.map(\.note), ["Call back"])
-        XCTAssertEqual(data.nextEvent?.id, "evt-home")
-        XCTAssertTrue(data.nextEventHasPrep)
         XCTAssertEqual(data.briefing?.date, try day(0))
-        XCTAssertEqual(data.targets.map(\.text), ["Due today"])
         XCTAssertEqual(data.asks.rows.map(\.workbenchName), ["acme"])
         XCTAssertEqual(data.pendingRecap?.tldr, "All quiet")
         XCTAssertTrue(data.failed.isEmpty)
@@ -282,8 +263,8 @@ final class HomeQueriesTests: XCTestCase {
     /// hides only itself; a table missing mid-migration is no content.
     func testOneFailingCardKeepsTheOthers() throws {
         let data = try db.write { d in
-            try self.insertTarget(d, "Due today", dueDate: self.day(0) + "T15:00")
             try TestDatabase.insertBriefing(d, date: self.day(0), attention: #"[{"text":"Reply to acme"}]"#)
+            try d.execute(sql: "INSERT INTO catchup_recaps (period_from, period_to, status, tldr) VALUES (0, 1, 'ready', 'All quiet')")
             try d.execute(sql: "DROP TABLE owner_asks")
             // The table-recreate dance with `date` renamed: the read's column is gone.
             try d.execute(sql: """
@@ -297,7 +278,7 @@ final class HomeQueriesTests: XCTestCase {
         XCTAssertEqual(data.failed, [.briefing])
         XCTAssertNil(data.briefing)
         XCTAssertTrue(data.asks.rows.isEmpty)
-        XCTAssertEqual(data.targets.map(\.text), ["Due today"])
+        XCTAssertEqual(data.pendingRecap?.tldr, "All quiet")
     }
 
     /// The Catch-Up badge's recap: a newer building or failed recap (or an
@@ -335,9 +316,16 @@ final class HomeQueriesTests: XCTestCase {
     }
 
     func testObservedTablesCoverEveryRead() {
-        for table in ["agent_actions", "reminders", "calendar_events", "meeting_prep_cache", "briefings",
-                      "targets", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"] {
+        for table in ["briefings", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"] {
             XCTAssertTrue(HomeQueries.observedTables.contains(table), table)
+        }
+    }
+
+    /// The feed owns the inbox, reminder, proposal, target and calendar
+    /// tables; the Today read no longer reads them.
+    func testTodayNoLongerObservesTheFeedTables() {
+        for table in ["agent_actions", "reminders", "targets", "calendar_events", "meeting_prep_cache"] {
+            XCTAssertFalse(HomeQueries.observedTables.contains(table), table)
         }
     }
 

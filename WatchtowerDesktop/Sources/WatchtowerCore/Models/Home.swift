@@ -83,9 +83,10 @@ package struct GettingReadyStep: Equatable, Sendable {
 
 // MARK: - Today
 
-/// A Today card, in its fixed order (owner ask #308).
+/// A Today card, in its fixed order (owner ask #308). The next meeting,
+/// what waits on the owner and their targets are in the feed instead.
 package enum TodayCardKind: CaseIterable, Sendable {
-    case sinceYouWereAway, nextMeeting, waitingOnYou, briefing, myTargets, agentsWaiting, instructionSuggestion
+    case sinceYouWereAway, briefing, agentsWaiting, instructionSuggestion
 }
 
 /// The open instruction suggestion Home offers (`instruction_suggestions`).
@@ -180,17 +181,8 @@ package struct TodayCard: Equatable, Sendable {
 
 /// Every Today source as one read (`HomeQueries.today`) left it.
 package struct HomeTodayData: Equatable, Sendable {
-    package var awaitingCount: Int
-    /// `awaitingOwner(limit: 3)`.
-    package var actions: [AgentAction]
-    /// `fetchDue`.
-    package var reminders: [Reminder]
-    package var nextEvent: CalendarEvent?
-    package var nextEventHasPrep: Bool
     /// Today's.
     package var briefing: Briefing?
-    /// `homeSummary`.
-    package var targets: [Target]
     package var asks: WorkbenchAskRows
     /// `newestUnacknowledgedReady`: the newest ready recap not yet acknowledged.
     package var pendingRecap: CatchUpRecap?
@@ -200,25 +192,13 @@ package struct HomeTodayData: Equatable, Sendable {
     package var failed: Set<TodayCardKind>
 
     package init(
-        awaitingCount: Int = 0,
-        actions: [AgentAction] = [],
-        reminders: [Reminder] = [],
-        nextEvent: CalendarEvent? = nil,
-        nextEventHasPrep: Bool = false,
         briefing: Briefing? = nil,
-        targets: [Target] = [],
         asks: WorkbenchAskRows = WorkbenchAskRows(rows: [], unreadableIDs: []),
         pendingRecap: CatchUpRecap? = nil,
         suggestion: HomeInstructionSuggestion? = nil,
         failed: Set<TodayCardKind> = []
     ) {
-        self.awaitingCount = awaitingCount
-        self.actions = actions
-        self.reminders = reminders
-        self.nextEvent = nextEvent
-        self.nextEventHasPrep = nextEventHasPrep
         self.briefing = briefing
-        self.targets = targets
         self.asks = asks
         self.pendingRecap = pendingRecap
         self.suggestion = suggestion
@@ -247,19 +227,24 @@ package struct HomeSnapshot: Equatable, Sendable {
     /// The allowed cards whose read failed (`HomeTodayData.failed ∩ allowed`);
     /// any one of them rules out the all-clear (Review Focus 3).
     package let todayFailed: Set<TodayCardKind>
+    /// The left column: what waits, NOW and what follows. Its own empty line
+    /// comes from it; the card fields above stay the right column's.
+    package let feed: HomeFeed
 
     package init(
         gettingReady: GettingReadyZone,
         firstSync: FirstSyncLine?,
         today: [TodayCard],
         todayReadFailed: Bool,
-        todayFailed: Set<TodayCardKind> = []
+        todayFailed: Set<TodayCardKind> = [],
+        feed: HomeFeed
     ) {
         self.gettingReady = gettingReady
         self.firstSync = firstSync
         self.today = today
         self.todayReadFailed = todayReadFailed
         self.todayFailed = todayFailed
+        self.feed = feed
     }
 
     /// No card to show, and at least one allowed card's read failed: Home
@@ -269,7 +254,8 @@ package struct HomeSnapshot: Equatable, Sendable {
     }
 
     /// "Nothing needs you right now.": no card, no failed read (not even
-    /// one), and no Getting ready zone still asking for attention.
+    /// one), and no Getting ready zone still asking for attention. The
+    /// right column's line; the feed's is its own.
     package var nothingNeedsYou: Bool {
         guard today.isEmpty, !showsReadError else { return false }
         switch gettingReady {

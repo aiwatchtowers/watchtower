@@ -5,7 +5,7 @@ import Observation
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// Home's inputs for tests: the owner known, every Today card allowed.
+/// Home's inputs for tests: the owner known, every Today card and feed source allowed.
 @MainActor
 @Observable
 final class FakeHomeEnvironment: HomeEnvironment {
@@ -15,6 +15,7 @@ final class FakeHomeEnvironment: HomeEnvironment {
     var ownerPendingSource: String?
     var firstSync: FirstSyncLine?
     var allowedTodayCards = Set(TodayCardKind.allCases)
+    var feedSourcesAllowed = Set(FeedSource.allCases)
 }
 
 @MainActor
@@ -82,7 +83,21 @@ final class HomeCenterTests: XCTestCase {
         let today = HomeTodayBuilder.dayString(Date(), calendar: .current)
         try pool.write { db in
             try TestDatabase.insertTarget(db, text: text, level: "day", periodStart: today, periodEnd: today,
-                                          dueDate: today + "T15:00")
+                                          dueDate: today)
+        }
+    }
+
+    /// A Slack mention a minute old: one feed row.
+    private func insertMention(_ pool: DatabasePool) throws {
+        try pool.write { db in
+            try TestDatabase.insertInboxItem(db)
+        }
+    }
+
+    private func insertAsk(_ pool: DatabasePool) throws {
+        try pool.write { db in
+            let workbench = try TestDatabase.insertWorkbench(db)
+            try TestDatabase.insertOwnerAsk(db, projectID: workbench)
         }
     }
 
@@ -116,7 +131,7 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(center.snapshot?.nothingNeedsYou, true)
     }
 
-    func testInsertingATargetAddsMyTargets() async throws {
+    func testInsertingATargetAddsAFeedRow() async throws {
         let pool = try makePool()
         let center = makeCenter(defaults: try makeDefaults())
         center.beginReading(pool: pool)
@@ -124,8 +139,58 @@ final class HomeCenterTests: XCTestCase {
         await waitUntil(center) { $0 != nil }
 
         try insertTargetDueToday(pool)
-        await waitUntil(center, snapshotHas(.myTargets))
-        XCTAssertEqual(center.snapshot?.today.first?.items.map(\.title), ["Ship the feature"])
+        await waitUntil(center) { $0?.feed.waiting.count == 1 }
+        XCTAssertEqual(center.snapshot?.feed.waiting.first?.kind, .target)
+        XCTAssertEqual(center.snapshot?.today, [], "targets live in the feed, not in a card")
+    }
+
+    func testFeedIsInTheSnapshot() async throws {
+        let pool = try makePool()
+        try insertMention(pool)
+        let center = makeCenter(defaults: try makeDefaults())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 1)
+        XCTAssertEqual(center.snapshot?.feed.waiting.first?.kind, .slack)
+    }
+
+    /// Attention detection off: no inbox row, and a failed inbox read is not
+    /// named either; the other sources still show.
+    func testInboxRowsFollowAttentionDetection() async throws {
+        let pool = try makePool()
+        try insertMention(pool)
+        try insertTargetDueToday(pool)
+        let environment = FakeHomeEnvironment()
+        environment.feedSourcesAllowed = [.reminders, .proposals, .targets, .calendar]
+        let center = makeCenter(environment: environment, defaults: try makeDefaults())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.feed.waiting.map(\.kind), [.target])
+        let reads = center.todayReads
+
+        environment.feedSourcesAllowed.insert(.inbox)
+        await waitUntil(center) { $0?.feed.waiting.count == 2 }
+        XCTAssertEqual(center.todayReads, reads, "a source change rebuilds from the last read")
+    }
+
+    func testDisallowedSourceFailureIsNotNamed() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "DROP TABLE inbox_items")
+            try db.execute(sql: "CREATE TABLE inbox_items (x INTEGER)")
+        }
+        let environment = FakeHomeEnvironment()
+        let center = makeCenter(environment: environment, defaults: try makeDefaults())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.feed.failed, [.inbox])
+
+        environment.feedSourcesAllowed.remove(.inbox)
+        await waitUntil(center) { $0?.feed.failed.isEmpty == true }
     }
 
     /// The daemon writes from another process, which the ValueObservation
@@ -201,18 +266,18 @@ final class HomeCenterTests: XCTestCase {
     /// without touching the DB.
     func testEnvironmentChangeRebuildsWithoutDBRead() async throws {
         let pool = try makePool()
-        try insertTargetDueToday(pool)
+        try insertAsk(pool)
         let environment = FakeHomeEnvironment()
         let center = makeCenter(environment: environment, defaults: try makeDefaults())
         center.beginReading(pool: pool)
         defer { center.endReading() }
-        await waitUntil(center, snapshotHas(.myTargets))
+        await waitUntil(center, snapshotHas(.agentsWaiting))
         let reads = center.todayReads
 
         let line = FirstSyncLine(title: "Syncing Slack", detail: "12 of 40 channels")
         environment.firstSync = line
         await waitUntil(center) { $0?.firstSync == line }
-        environment.allowedTodayCards = [.agentsWaiting]
+        environment.allowedTodayCards = [.instructionSuggestion]
         await waitUntil(center) { $0?.today.isEmpty == true }
         XCTAssertEqual(center.todayReads, reads)
     }
@@ -259,20 +324,20 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(relaunched.snapshot?.gettingReady, .hidden)
     }
 
-    /// A `targets` table every read of it fails on (Review Focus 3).
-    private func breakTargets(_ pool: DatabasePool) throws {
+    /// A `briefings` table every read of it fails on (Review Focus 3).
+    private func breakBriefings(_ pool: DatabasePool) throws {
         try pool.write { db in
             try db.execute(sql: "PRAGMA foreign_keys = OFF")
-            try db.execute(sql: "DROP TABLE targets")
-            try db.execute(sql: "CREATE TABLE targets (x INTEGER)")
+            try db.execute(sql: "DROP TABLE briefings")
+            try db.execute(sql: "CREATE TABLE briefings (x INTEGER)")
         }
     }
 
     func testAllReadsFailedIsNotAllClear() async throws {
         let pool = try makePool()
-        try breakTargets(pool)
+        try breakBriefings(pool)
         let environment = FakeHomeEnvironment()
-        environment.allowedTodayCards = [.myTargets]
+        environment.allowedTodayCards = [.briefing]
         let center = makeCenter(environment: environment, defaults: try makeDefaults())
         center.beginReading(pool: pool)
         defer { center.endReading() }
@@ -285,13 +350,13 @@ final class HomeCenterTests: XCTestCase {
     /// not the all-clear.
     func testOneFailedReadIsNotAllClear() async throws {
         let pool = try makePool()
-        try breakTargets(pool)
+        try breakBriefings(pool)
         let center = makeCenter(defaults: try makeDefaults())
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
         XCTAssertEqual(center.snapshot?.todayReadFailed, false)
-        XCTAssertEqual(center.snapshot?.todayFailed, [.myTargets])
+        XCTAssertEqual(center.snapshot?.todayFailed, [.briefing])
         XCTAssertEqual(center.snapshot?.showsReadError, true)
         XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
     }
@@ -321,7 +386,7 @@ final class HomeCenterTests: XCTestCase {
     /// A failed card the owner's tabs hide does not count.
     func testFailedReadOutsideAllowedIsIgnored() async throws {
         let pool = try makePool()
-        try breakTargets(pool)
+        try breakBriefings(pool)
         let environment = FakeHomeEnvironment()
         environment.allowedTodayCards = [.agentsWaiting]
         let center = makeCenter(environment: environment, defaults: try makeDefaults())
@@ -374,8 +439,8 @@ final class HomeCenterTests: XCTestCase {
         let witness = makeCenter(defaults: try makeDefaults())
         witness.beginReading(pool: pool)
         defer { witness.endReading() }
-        await waitUntil(witness, snapshotHas(.myTargets))
-        XCTAssertFalse(snapshotHas(.myTargets)(center.snapshot))
+        await waitUntil(witness) { $0?.feed.waiting.count == 1 }
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 0)
         XCTAssertEqual(center.todayReads, reads)
     }
 
@@ -389,9 +454,9 @@ final class HomeCenterTests: XCTestCase {
         let reads = center.todayReads
 
         try insertTargetDueToday(pool, text: "First")
-        await waitUntil(center) { $0?.today.first?.items.count == 1 }
+        await waitUntil(center) { $0?.feed.waiting.count == 1 }
         try insertTargetDueToday(pool, text: "Second")
-        await waitUntil(center) { $0?.today.first?.items.count == 2 }
+        await waitUntil(center) { $0?.feed.waiting.count == 2 }
         XCTAssertEqual(center.todayReads, reads + 2)
     }
 
@@ -416,17 +481,14 @@ final class HomeCenterTests: XCTestCase {
     /// feature at a time.
     func testTodayCardsFollowTheirOwnTab() {
         let appState = AppState.isolated()
-        let always: Set<TodayCardKind> = [.myTargets, .agentsWaiting, .instructionSuggestion]
+        let always: Set<TodayCardKind> = [.agentsWaiting, .instructionSuggestion]
         let rows: [(ConnectedSources, Set<String>, Set<TodayCardKind>)] = [
-            // Briefings has no source gate; Inbox and Catch-Up need any source.
+            // Briefings has no source gate; Catch-Up needs any source.
             (.none, [], always.union([.briefing])),
-            // Calendar fills Calendar, and Inbox and Catch-Up (meeting items).
-            (ConnectedSources(calendar: true), [],
-             always.union([.briefing, .nextMeeting, .waitingOnYou, .sinceYouWereAway])),
-            (ConnectedSources(slack: true), [], always.union([.briefing, .waitingOnYou, .sinceYouWereAway])),
-            (ConnectedSources(jira: true), [], always.union([.briefing, .waitingOnYou, .sinceYouWereAway])),
+            (ConnectedSources(calendar: true), [], always.union([.briefing, .sinceYouWereAway])),
+            (ConnectedSources(slack: true), [], always.union([.briefing, .sinceYouWereAway])),
             (.all, ["briefing"], Set(TodayCardKind.allCases).subtracting([.briefing])),
-            // Catch-Up needs one of its three features; Inbox has no feature gate.
+            // Catch-Up needs one of its three features.
             (.all, ["secretary-inbox", "slack-digests", "stream-digests"],
              Set(TodayCardKind.allCases).subtracting([.sinceYouWereAway]))
         ]
@@ -437,16 +499,35 @@ final class HomeCenterTests: XCTestCase {
         }
     }
 
-    /// Waiting on you, Next meeting, Briefing and Since you were away follow
-    /// their tab; My targets and Agents waiting are always allowed.
+    /// Briefing and Since you were away follow their tab; Agents waiting and
+    /// the instruction suggestion are always allowed.
     func testTodayCardsFollowTabVisibility() {
         let appState = AppState.isolated()
         appState.featureVisibility.connectedSources = .none
         appState.featureVisibility.disabledFeatureIDs = ["briefing"]
-        XCTAssertEqual(appState.homeTodayCardsAllowed, [.myTargets, .agentsWaiting, .instructionSuggestion])
+        XCTAssertEqual(appState.homeTodayCardsAllowed, [.agentsWaiting, .instructionSuggestion])
 
         appState.featureVisibility.connectedSources = .all
         appState.featureVisibility.disabledFeatureIDs = []
         XCTAssertEqual(appState.homeTodayCardsAllowed, Set(TodayCardKind.allCases))
+    }
+
+    /// Inbox rows only while attention detection is on, calendar rows only
+    /// while the Calendar tab is visible; reminders, proposals and targets
+    /// always.
+    func testFeedSourcesFollowAttentionDetectionAndCalendar() {
+        let appState = AppState.isolated()
+        let always: Set<FeedSource> = [.reminders, .proposals, .targets]
+        let rows: [(ConnectedSources, Set<String>, Set<FeedSource>)] = [
+            (.all, [], always.union([.inbox, .calendar])),
+            (.all, ["secretary-inbox"], always.union([.calendar])),
+            (ConnectedSources(slack: true), [], always.union([.inbox])),
+            (.none, ["secretary-inbox"], always)
+        ]
+        for (connected, disabled, expected) in rows {
+            appState.featureVisibility.connectedSources = connected
+            appState.featureVisibility.disabledFeatureIDs = disabled
+            XCTAssertEqual(appState.homeFeedSourcesAllowed, expected, "\(connected) disabled \(disabled)")
+        }
     }
 }
