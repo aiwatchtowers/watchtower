@@ -74,21 +74,33 @@ final class PastingTextViewTests: XCTestCase {
         delegate.undo.endUndoGrouping()
     }
 
-    func testImageIsAttachedAndNoTextInserted() throws {
+    /// `grouped` for an awaited edit (the attach, board #670).
+    private func grouped(_ edit: () async -> Void) async {
+        delegate.undo.beginUndoGrouping()
+        await edit()
+        delegate.undo.endUndoGrouping()
+    }
+
+    func testImageIsAttachedAndNoTextInserted() async throws {
         let png = try onePixelPNG()
         pasteboard.setData(png, forType: .png)
         let view = makeView()
         view.paste(nil)
+        // Handed to the async attach (board #670), which runs right after.
+        let attached = await eventually { !self.pasted.isEmpty }
+        XCTAssertTrue(attached)
         XCTAssertEqual(pasted.map { $0.1 }, ["Pasted image.png"])
         XCTAssertEqual(pasted.first?.0, png)
         XCTAssertEqual(view.string, "")
     }
 
-    func testPDFIsAttachedAndNoTextInserted() {
+    func testPDFIsAttachedAndNoTextInserted() async {
         let pdf = Data("%PDF-1.4\n%fake\n".utf8)
         pasteboard.setData(pdf, forType: .pdf)
         let view = makeView()
         view.paste(nil)
+        let attached = await eventually { !self.pasted.isEmpty }
+        XCTAssertTrue(attached)
         XCTAssertEqual(pasted.map { $0.1 }, [PastedContent.pdfName])
         XCTAssertEqual(view.string, "")
     }
@@ -135,7 +147,7 @@ final class PastingTextViewTests: XCTestCase {
         XCTAssertTrue(paste.isIntact())
     }
 
-    func testAttachRemovesThePasteOnlyOnSuccessAndUndoRestoresIt() throws {
+    func testAttachRemovesThePasteOnlyOnSuccessAndUndoRestoresIt() async throws {
         let long = String(repeating: "y", count: PasteClassifier.longTextThreshold)
         pasteboard.setString(long, forType: .string)
         let view = makeView(undoable: true)
@@ -144,8 +156,8 @@ final class PastingTextViewTests: XCTestCase {
         grouped { view.paste(nil) }
         grouped { view.insertText(" b", replacementRange: NSRange(location: (view.string as NSString).length, length: 0)) }
         let paste = try XCTUnwrap(longPastes.first)
-        grouped {
-            paste.attach { data, name in
+        await grouped {
+            await paste.attach { data, name in
                 XCTAssertEqual(name, PasteClassifier.pastedTextName)
                 XCTAssertEqual(data, Data(long.utf8))
                 return true
@@ -157,17 +169,17 @@ final class PastingTextViewTests: XCTestCase {
         XCTAssertEqual(view.string, "a " + long + " b", "⌘Z puts the attached text back")
     }
 
-    func testRefusedAttachKeepsTheText() throws {
+    func testRefusedAttachKeepsTheText() async throws {
         let long = String(repeating: "z", count: PasteClassifier.longTextThreshold)
         pasteboard.setString(long, forType: .string)
         let view = makeView()
         view.paste(nil)
         let paste = try XCTUnwrap(longPastes.first)
-        paste.attach { _, _ in false }
+        await paste.attach { _, _ in false }
         XCTAssertEqual(view.string, long)
     }
 
-    func testEditingThePastedRangeMakesTheOfferStale() throws {
+    func testEditingThePastedRangeMakesTheOfferStale() async throws {
         let long = String(repeating: "w", count: PasteClassifier.longTextThreshold)
         pasteboard.setString(long, forType: .string)
         let view = makeView()
@@ -176,7 +188,7 @@ final class PastingTextViewTests: XCTestCase {
         view.insertText("!", replacementRange: NSRange(location: 0, length: 0))
         XCTAssertFalse(paste.isIntact(), "text before the paste shifted it: the offer is stale")
         var attachCalls = 0
-        paste.attach { _, _ in
+        await paste.attach { _, _ in
             attachCalls += 1
             return true
         }

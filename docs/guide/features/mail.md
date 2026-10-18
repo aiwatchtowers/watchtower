@@ -30,7 +30,7 @@ Your reply does not close a mail item. Slack, Jira and calendar items resolve wh
 
 1. Open **Settings → Connections**.
 2. For Gmail with Calendar, use **Google** and click **Add Google Account**. Leave **Gmail** switched on and click **Connect**.
-3. For Gmail on its own, Outlook or another IMAP mailbox, use **Email** and click **Add Account**. Choose **Connect Gmail**, **Connect Outlook** or fill in the **IMAP** form (host, username, password, folder) and click **Test and Connect**.
+3. For Gmail on its own, Outlook or another IMAP mailbox, use **Email** and click **Add Account**. Choose **Connect Gmail**, **Connect Outlook** or fill in the **IMAP** form (host, username, password; port, security and folder wait under **Advanced** with the usual 993, SSL and `INBOX`) and click **Test and Connect**.
 4. Wait for the next sync cycle, then check **Catch Up** or the next briefing.
 
 Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** under **Settings → Connections → Google**. Remove one account with **Remove**.
@@ -39,7 +39,7 @@ Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** unde
 
 - **No mail in Catch Up or the briefing:** only messages that name you become items. Check that **Enable Gmail sync** is on and that the account is listed. The first items appear after the first sync.
 - **Missing a newsletter or promotion:** Gmail Promotions and Social are skipped on purpose.
-- **Missing mail from a folder other than Inbox:** Gmail reads the Inbox only, and IMAP reads the single folder from the form.
+- **Missing mail from a folder other than Inbox:** Gmail reads the Inbox only, and IMAP reads the single folder set under **Advanced** in the form.
 - **Account shows an error:** use **Re-login** on the Google account to sign in again. For IMAP, remove the account and add it again.
 - **Old mail is missing:** only the last 7 days sync first. Older mail arrives with the background history backfill.
 

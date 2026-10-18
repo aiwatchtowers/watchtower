@@ -149,7 +149,7 @@ struct WorkbenchPanelDescription: View {
         VStack(alignment: .leading, spacing: 4) {
             CommentTextEditor(text: draft, placeholder: "Describe the target…", focusOnAppear: true,
                               minHeight: 80, maxHeight: 360, onSubmit: save, onCancel: cancel, onEndEditing: endEditing)
-            Text("⌘↩ saves, Esc cancels")
+            Text(vm.isSavingDescription(targetID) ? "Saving…" : "⌘↩ saves, Esc cancels")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -163,7 +163,7 @@ struct WorkbenchPanelDescription: View {
     /// close arrives late, for a target no longer open, and saves nothing
     /// (`saveDescriptionOnFocusLoss`): the move already saved it.
     private func save() {
-        vm.saveDescription(for: targetID)
+        Task { await vm.saveDescription(for: targetID) }
     }
 
     /// Focus loss: saves only while this target is the open one.

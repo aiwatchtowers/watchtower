@@ -15,6 +15,7 @@ struct SuggestLinksSheet: View {
     @State private var applyParent: Bool = true
     @State private var selectedLinks: Set<Int> = []
     @State private var errorMessage: String?
+    @State private var isSaving = false
 
     init(targetID: Int, suggestions: SuggestedLinksResult) {
         self.targetID = targetID
@@ -33,6 +34,7 @@ struct SuggestLinksSheet: View {
             footer
         }
         .frame(width: 480, height: 420)
+        .interactiveDismissDisabled(isSaving)
     }
 
     private var header: some View {
@@ -42,6 +44,7 @@ struct SuggestLinksSheet: View {
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isSaving)
         }
         .padding()
     }
@@ -109,7 +112,7 @@ struct SuggestLinksSheet: View {
             Button("Apply") { apply() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!hasAnythingToApply)
+                .disabled(!hasAnythingToApply || isSaving)
         }
         .padding()
     }
@@ -123,13 +126,18 @@ struct SuggestLinksSheet: View {
             errorMessage = "Database not available"
             return
         }
-        do {
-            try db.dbPool.write { dbConn in
-                if applyParent, let parentID = suggestions.parentID {
+        let targetID = targetID
+        let parentID = applyParent ? suggestions.parentID : nil
+        let links = selectedLinks.sorted().map { suggestions.secondaryLinks[$0] }
+        // Off the main thread: a busy database never freezes the sheet. Apply,
+        // Cancel and Esc wait while the write is pending, so nothing is linked
+        // twice and the sheet never closes on a write still in flight.
+        Task {
+            await ViewWrite.run(db.dbPool, pending: $isSaving, { dbConn in
+                if let parentID {
                     try TargetQueries.updateParent(dbConn, id: targetID, parentID: parentID)
                 }
-                for idx in selectedLinks.sorted() {
-                    let link = suggestions.secondaryLinks[idx]
+                for link in links {
                     // target_links CHECK requires at least one of target_target_id / external_ref.
                     guard link.targetId != nil || !link.externalRef.isEmpty else { continue }
                     try TargetQueries.createLink(
@@ -137,10 +145,7 @@ struct SuggestLinksSheet: View {
                         externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
                     )
                 }
-            }
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
+            }, onSuccess: { dismiss() }, onFailure: { errorMessage = $0.localizedDescription })
         }
     }
 }

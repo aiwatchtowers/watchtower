@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,6 +25,11 @@ const (
 	callbackPath        = "/callback"
 	loginTimeout        = 5 * time.Minute
 )
+
+// ErrScopeRefused is Login's error when Atlassian redirects back with
+// error=invalid_scope: the OAuth app does not offer a requested scope (an
+// app without the Confluence API, asked for the Confluence scopes).
+var ErrScopeRefused = errors.New("atlassian refused the requested scopes")
 
 // Atlassian OAuth endpoints — vars so tests can point at httptest.Server.
 var (
@@ -441,6 +447,9 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 		return nil, fmt.Errorf("%w after %s", oauthpage.ErrLoginTimedOut, loginTimeout)
 	}
 
+	if cb.Err == "invalid_scope" {
+		return nil, fmt.Errorf("jira authorization denied: %s: %w", cb.Err, ErrScopeRefused)
+	}
 	if cb.Err != "" {
 		return nil, fmt.Errorf("jira authorization denied: %s", cb.Err)
 	}

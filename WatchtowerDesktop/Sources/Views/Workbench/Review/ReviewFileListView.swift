@@ -64,7 +64,7 @@ struct ReviewFileListView: View {
             comments: model.comments.filter { $0.path == file.path && $0.status != .resolved }.count,
             risk: model.risk(for: file.path),
             select: { Task { await model.select(file.path) } },
-            toggleViewed: { try? model.toggleViewed(file.path) } // a failure lands in lastError
+            toggleViewed: { Task { try? await model.toggleViewed(file.path) } } // a failure lands in lastError
         )
     }
 }

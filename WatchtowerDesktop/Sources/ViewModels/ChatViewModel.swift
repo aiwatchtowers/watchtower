@@ -157,6 +157,22 @@ final class ChatViewModel {
     /// Cleared at the start of every new turn.
     @ObservationIgnored private var dismissedArtifactKeys: Set<String> = []
 
+    /// An owner turn's rows are being written (board #670): the composer's
+    /// send is refused meanwhile, so one Enter never sends twice.
+    private(set) var isStartingTurn = false
+    /// A turn is running or about to: what the composer and the actions
+    /// that start a turn wait for.
+    var isBusy: Bool { isStreaming || isStartingTurn }
+    /// Every write of this view model, one after another (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
+    /// The composer's conversation being created: one at a time, so a
+    /// keystroke, a paperclip and a send in quick succession make one row.
+    @ObservationIgnored private var creatingConversation: Task<Int64?, Never>?
+    /// Pastes being attached (on the landing, after its conversation).
+    @ObservationIgnored private var pastesInFlight: [UUID: Task<Bool, Never>] = [:]
+    /// A paste is still being attached.
+    var isPasting: Bool { !pastesInFlight.isEmpty }
+
     @ObservationIgnored private let dbManager: DatabaseManager
     @ObservationIgnored private let cliRunner: CLIRunnerProtocol?
     @ObservationIgnored private let makeTurnID: () -> String
@@ -169,6 +185,7 @@ final class ChatViewModel {
         provider: AIProvider = .claude,
         cliRunner: CLIRunnerProtocol? = nil,
         defaults: UserDefaults = .standard,
+        attachmentsRoot: URL? = ChatAttachmentStore.defaultRootDir(),
         makeTurnID: @escaping () -> String = { UUID().uuidString }
     ) {
         self.defaults = defaults
@@ -179,7 +196,7 @@ final class ChatViewModel {
         self.makeTurnID = makeTurnID
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
         self.composerAttachments = ComposerAttachments(
-            store: ChatAttachmentStore.defaultRootDir().map { ChatAttachmentStore(db: dbManager.dbPool, rootDir: $0) }
+            store: attachmentsRoot.map { ChatAttachmentStore(db: dbManager.dbPool, rootDir: $0) }
         )
         let dbPool = dbManager.dbPool
         self.composer = ComposerPickerModel(
@@ -232,9 +249,9 @@ final class ChatViewModel {
     }
 
     @discardableResult
-    func newConversation(projectID: Int64? = nil) -> Int64? {
+    func newConversation(projectID: Int64? = nil) async -> Int64? {
         do {
-            let conv = try dbManager.dbPool.write { db in try ChatConversationQueries.create(db, projectID: projectID) }
+            let conv = try await writeNewConversation(projectID: projectID)
             select(conversationID: conv.id)
             reloadConversations()
             return conv.id
@@ -242,6 +259,18 @@ final class ChatViewModel {
             errorMessage = "Couldn't start a new chat: \(error.localizedDescription)"
             return nil
         }
+    }
+
+    /// A new conversation row, written in this view model's chain.
+    private func writeNewConversation(projectID: Int64?) async throws -> ChatConversation {
+        try await write { db in try ChatConversationQueries.create(db, projectID: projectID) }
+    }
+
+    /// One database write in this view model's chain: it awaits the writer
+    /// (never the main thread) once every write asked for before it finished.
+    private func write<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        let pool = dbManager.dbPool
+        return try await writes.runThrowing { try await pool.write(body) }
     }
 
     /// A conversation is being deleted: close its session; stop showing it
@@ -309,24 +338,40 @@ final class ChatViewModel {
     private func discardLandingDraft(except keep: Int64? = nil) {
         guard let draft = landingDraft, draft.id != keep else { return }
         landingDraft = nil
-        let id = draft.id
-        do {
-            let deleted = try dbManager.dbPool.write {
-                try ChatConversationQueries.deleteIfUntouched($0, id: id, createdAt: draft.createdAt)
+        discardIfUntouched(draft)
+    }
+
+    /// Deletes a conversation nobody wrote into (in the chain; best effort,
+    /// a failure is logged), and its session with it.
+    /// Queued right away: the caller (a selection, the launch cleanup) is
+    /// synchronous.
+    private func discardIfUntouched(_ draft: LandingDraft) {
+        let dbPool = dbManager.dbPool
+        writes.start { [weak self] in
+            do {
+                let deleted = try await dbPool.write { db in
+                    try ChatConversationQueries.deleteIfUntouched(db, id: draft.id, createdAt: draft.createdAt)
+                }
+                guard deleted, let self else { return }
+                self.pool.close(conversationID: draft.id)
+                self.reloadConversations()
+            } catch {
+                NSLog("ChatViewModel: discarding the landing's unused chat failed: %@", error.localizedDescription)
             }
-            guard deleted else { return }
-            pool.close(conversationID: id)
-            reloadConversations()
-        } catch {
-            NSLog("ChatViewModel: discarding the landing's unused chat failed: %@", error.localizedDescription)
         }
+    }
+
+    /// Returns once every write queued so far has landed or failed (tests:
+    /// a synchronous caller queued one, e.g. a landing draft's discard).
+    func writesSettled() async {
+        await writes.idle()
     }
 
     /// The composer's first keystroke: prewarm the session. On the landing
     /// that first needs a conversation, made without leaving the landing.
-    func draftStarted() {
+    func draftStarted() async {
         if conversationID == nil {
-            _ = conversationIDCreatingIfNeeded()
+            _ = await conversationIDCreatingIfNeeded()
         } else {
             prewarm()
         }
@@ -389,9 +434,9 @@ final class ChatViewModel {
     }
 
     @discardableResult
-    func createProject(name: String) -> Int64? {
+    func createProject(name: String) async -> Int64? {
         do {
-            let project = try dbManager.dbPool.write { try ChatProjectQueries.create($0, name: name) }
+            let project = try await write { try ChatProjectQueries.create($0, name: name) }
             reloadProjects()
             openProject(project.id)
             return project.id
@@ -438,9 +483,9 @@ final class ChatViewModel {
     /// session spawned for the new project (`ChatSessionConfig.projectID` is
     /// part of `isCompatible`), and the stored Claude session is dropped so
     /// that turn starts fresh with the new project prompt and replays.
-    func moveConversation(_ conversationID: Int64, toProject projectID: Int64?) {
+    func moveConversation(_ conversationID: Int64, toProject projectID: Int64?) async {
         do {
-            try dbManager.dbPool.write {
+            try await write {
                 try ChatConversationQueries.setProject($0, id: conversationID, projectID: projectID)
             }
             if conversationID == self.conversationID { reload() }
@@ -514,18 +559,18 @@ final class ChatViewModel {
     /// leaves them unsent, a sent message never leaves them open. The button
     /// is disabled while an answer streams; a click that races the stream's
     /// start is refused out loud, never silently.
-    func sendArtifactComments() {
+    func sendArtifactComments() async {
         guard let comments = artifactPanel?.comments, let outgoing = comments.outgoing() else { return }
         // The answer — or the reason it was not sent — shows in the
         // conversation, which an expanded panel covers (#786).
         isInspectorExpanded = false
-        guard !isStreaming else {
+        guard !isBusy else {
             errorMessage = "Wait for the current answer to finish, then send the comments."
             return
         }
         let ids = outgoing.ids
         let sentAt = Date()
-        guard send(text: outgoing.text, alsoWrite: { db in
+        guard await send(text: outgoing.text, alsoWrite: { db in
             try ArtifactCommentQueries.markSent(db, ids: ids, at: sentAt)
         }) else { return }
         comments.reload()
@@ -598,15 +643,25 @@ final class ChatViewModel {
     /// attachments as one owner turn; clears them only when the turn really
     /// started (a failed send keeps them for retry). `screen` is the help
     /// popup's per-turn screen block: sent with the turn, never stored.
-    func sendDraft(screen: ScreenContext? = nil) {
+    ///
+    /// The turn's rows are written off the main thread (board #670), so the
+    /// text leaves the composer at once, as it always did: what is typed
+    /// while they are written is the next message's. A send that fails puts
+    /// its text back ahead of it, and only the files that went out leave
+    /// the composer.
+    func sendDraft(screen: ScreenContext? = nil) async {
+        for paste in pastesInFlight.values { _ = await paste.value }
         let attachments = composerAttachments.pending
         let batchID = conversationID
-        let text = ChatQuoteReply.compose(quotes: pendingQuotes, typed: draft) ?? draft
-        if send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill,
-                screen: screen) {
-            draft = ""
-            _ = composerAttachments.takeForSend()
+        let typed = draft
+        let text = ChatQuoteReply.compose(quotes: pendingQuotes, typed: typed) ?? typed
+        draft = ""
+        if await send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill,
+                      screen: screen) {
+            composerAttachments.removeSent(attachments.map(\.id))
             if let batchID { quoteBatches[batchID] = nil }
+        } else {
+            draft = draft.isEmpty ? typed : "\(typed)\n\(draft)"
         }
     }
 
@@ -641,16 +696,34 @@ final class ChatViewModel {
     }
 
     func attachFiles(_ urls: [URL]) {
-        guard let id = conversationIDCreatingIfNeeded() else { return }
-        composerAttachments.add(urls: urls, conversationID: id)
+        if let conversationID {
+            composerAttachments.add(urls: urls, conversationID: conversationID)
+            return
+        }
+        Task {
+            guard let id = await conversationIDCreatingIfNeeded() else { return }
+            composerAttachments.add(urls: urls, conversationID: id)
+        }
     }
 
     /// A paste the composer turned into a file (screenshot, PDF data, long
-    /// text — board #534); true once attached.
+    /// text — board #534); true once attached. On the landing its
+    /// conversation is written first; a failure there (the chat's error says
+    /// why) attaches nothing and answers false, so a long paste stays in the
+    /// field.
+    ///
+    /// A send waits for the pastes under way (`sendDraft`), so a paste
+    /// followed at once by Enter goes out with that message.
     @discardableResult
-    func attachPasted(_ data: Data, name: String) -> Bool {
-        guard let id = conversationIDCreatingIfNeeded() else { return false }
-        return composerAttachments.addPasted(data, name: name, conversationID: id)
+    func attachPasted(_ data: Data, name: String) async -> Bool {
+        let key = UUID()
+        let paste = Task { [self] () -> Bool in
+            guard let id = await conversationIDCreatingIfNeeded() else { return false }
+            return composerAttachments.addPasted(data, name: name, conversationID: id)
+        }
+        pastesInFlight[key] = paste
+        defer { pastesInFlight[key] = nil }
+        return await paste.value
     }
 
     /// `mentions` are the composer's picked candidates (Task 25); only those
@@ -660,6 +733,9 @@ final class ChatViewModel {
     /// pending mentions/skill once the turn actually starts — unless
     /// `keepsComposer`: a turn sent from elsewhere (a question card's answer)
     /// leaves the owner's half-written draft and its picks alone.
+    ///
+    /// One at a time (`isStartingTurn`): a send while one is being written
+    /// does nothing and returns false.
     @discardableResult
     func send(
         text: String,
@@ -667,24 +743,28 @@ final class ChatViewModel {
         mentions: [MentionCandidate] = [],
         skill: String? = nil,
         keepsComposer: Bool = false,
-        alsoWrite: ((Database) throws -> Void)? = nil,
+        alsoWrite: (@Sendable (Database) throws -> Void)? = nil,
         screen: ScreenContext? = nil
-    ) -> Bool {
+    ) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let live = MentionTokenizer.liveMentions(text: text, mentions: mentions)
         let turnText = ChatTurnComposer.compose(text: text, skill: skill, mentions: live)
         // A message may carry only attachments (no text) — the ChatComposerField canSend twin.
-        guard !turnText.isEmpty || !attachments.isEmpty, !isStreaming else { return false }
+        guard !turnText.isEmpty || !attachments.isEmpty, !isBusy else { return false }
+        isStartingTurn = true
+        defer { isStartingTurn = false }
         let fromLanding = isOnLanding
-        guard let id = conversationIDCreatingIfNeeded() else { return false }
+        guard let id = await conversationIDCreatingIfNeeded() else { return false }
         if !keepsComposer { composer.reset() }
         // The floor is the PREVIOUS owner message, and it alone: codex never
         // emits a session id, so gating on the session would exclude it.
         let outcomes = actionFeed.outcomesBlock(after: thread.last { $0.message.isUser }?.message.createdDate)
-        let started = startTurn(TurnPlan(conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
-                                         reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
-                                         screen: screen, forceReplay: false, titleText: trimmed, alsoWrite: alsoWrite))
-        if started, fromLanding {
+        let started = await startTurn(TurnPlan(
+            conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
+            reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
+            screen: screen, forceReplay: false, titleText: trimmed, alsoWrite: alsoWrite))
+        // The landing's own turn only: a landing left meanwhile is not.
+        if started, fromLanding, isOnLanding, conversationID == id {
             // The landing's first turn: its draft is a real chat now.
             landingDraft = nil
             isOnLanding = false
@@ -696,9 +776,20 @@ final class ChatViewModel {
     /// The conversation a turn/attachment writes into, creating one on first
     /// use (a paperclip click before any text still needs somewhere to land).
     /// Made from the landing, it keeps the landing up until the first turn.
-    private func conversationIDCreatingIfNeeded() -> Int64? {
+    /// One creation at a time: callers meanwhile get the same conversation.
+    private func conversationIDCreatingIfNeeded() async -> Int64? {
         if let conversationID { return conversationID }
-        guard isOnLanding else { return newConversation() }
+        if let creatingConversation { return await creatingConversation.value }
+        let task = Task { [self] in
+            defer { creatingConversation = nil }
+            return await createConversationForComposer()
+        }
+        creatingConversation = task
+        return await task.value
+    }
+
+    private func createConversationForComposer() async -> Int64? {
+        guard isOnLanding else { return await newConversation() }
         // The landing's own earlier draft, still untouched, is reused rather
         // than a second empty row made.
         let reusable: Int64?
@@ -713,17 +804,29 @@ final class ChatViewModel {
             NSLog("ChatViewModel: looking up an untouched chat failed: %@", error.localizedDescription)
             reusable = nil
         }
-        let id: Int64?
+        let id: Int64
         if let reusable {
-            select(conversationID: reusable)
             id = reusable
         } else {
-            id = newConversation()
+            let conv: ChatConversation
+            do {
+                conv = try await writeNewConversation(projectID: nil)
+            } catch {
+                errorMessage = "Couldn't start a new chat: \(error.localizedDescription)"
+                return nil
+            }
+            // The owner left the landing while the row was written: it is
+            // not the landing's draft any more, and nobody wrote into it.
+            guard isOnLanding, conversationID == nil else {
+                discardIfUntouched(LandingDraft(id: conv.id, createdAt: conv.createdAt))
+                return nil
+            }
+            id = conv.id
+            reloadConversations()
         }
-        if id != nil {
-            isOnLanding = true
-            landingDraft = currentConversation.map { LandingDraft(id: $0.id, createdAt: $0.createdAt) }
-        }
+        select(conversationID: id)
+        isOnLanding = true
+        landingDraft = currentConversation.map { LandingDraft(id: $0.id, createdAt: $0.createdAt) }
         return id
     }
 
@@ -731,28 +834,28 @@ final class ChatViewModel {
         pool.client(for: conversationID)?.cancel()
     }
 
-    func retry(messageID: Int64) {
-        regenerate(messageID: messageID)
+    func retry(messageID: Int64) async {
+        await regenerate(messageID: messageID)
     }
 
     /// "Stopped" + Continue: asks the model to carry on from its partial reply.
-    func continueStopped(messageID: Int64) {
+    func continueStopped(messageID: Int64) async {
         guard let last = thread.last?.message, last.id == messageID, last.isAssistant, last.status == "partial" else { return }
-        send(text: "Continue")
+        await send(text: "Continue")
     }
 
     /// A new assistant sibling under the same owner message (spec §2.3). The
     /// provider session's transcript holds the old answer, so it replays.
     /// Replay is text-only, so the owner message's files are sent again with
     /// it — a retried/regenerated turn about an image or PDF still sees it.
-    func regenerate(messageID: Int64) {
-        guard !isStreaming, let id = conversationID,
+    func regenerate(messageID: Int64) async {
+        guard !isBusy, let id = conversationID,
               let index = thread.firstIndex(where: { $0.message.id == messageID }), index > 0,
               thread[index].message.isAssistant, thread[index - 1].message.isUser else { return }
         let owner = thread[index - 1]
-        startTurn(TurnPlan(conversationID: id, historyTipID: owner.message.parentID, userText: owner.message.text,
-                           reuseUserMessageID: owner.message.id, attachments: owner.attachments, outcomes: nil,
-                           screen: nil, forceReplay: true))
+        await startTurnBusy(TurnPlan(conversationID: id, historyTipID: owner.message.parentID,
+                                     userText: owner.message.text, reuseUserMessageID: owner.message.id,
+                                     attachments: owner.attachments, outcomes: nil, screen: nil, forceReplay: true))
     }
 
     /// A new owner sibling under the original's parent, then a fresh reply.
@@ -761,15 +864,15 @@ final class ChatViewModel {
     /// sent again (the edit changes only the text). The attachment rows stay
     /// linked to the original message — the edited sibling does not show them
     /// (v1 limit).
-    func edit(messageID: Int64, newText: String) {
+    func edit(messageID: Int64, newText: String) async {
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isStreaming, let id = conversationID,
+        guard !trimmed.isEmpty, !isBusy, let id = conversationID,
               let item = thread.first(where: { $0.message.id == messageID }), item.message.isUser else { return }
         editingMessageID = nil
         let turnText = ChatTurnComposer.recompose(stored: item.message.text, newBody: trimmed)
-        startTurn(TurnPlan(conversationID: id, historyTipID: item.message.parentID, userText: turnText,
-                           reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil, screen: nil,
-                           forceReplay: true))
+        await startTurnBusy(TurnPlan(conversationID: id, historyTipID: item.message.parentID, userText: turnText,
+                                     reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil,
+                                     screen: nil, forceReplay: true))
     }
 
     /// ↑ in an empty composer (spec §3.5).
@@ -777,23 +880,27 @@ final class ChatViewModel {
         editingMessageID = thread.last { $0.message.isUser }?.message.id
     }
 
-    func selectVariant(messageID: Int64) {
+    func selectVariant(messageID: Int64) async {
         guard let id = conversationID else { return }
         do {
-            try dbManager.dbPool.write { db in try ChatTreeQueries.selectSibling(db, conversationID: id, siblingID: messageID) }
+            try await write { db in try ChatTreeQueries.selectSibling(db, conversationID: id, siblingID: messageID) }
+            // Another chat opened meanwhile keeps its own thread on screen.
+            guard conversationID == id else { return }
             reload()
         } catch {
+            guard conversationID == id else { return }
             errorMessage = "Couldn't switch the variant: \(error.localizedDescription)"
         }
     }
 
     /// ⌘K hit: open the conversation, make the hit's branch active, scroll to it.
-    func open(_ hit: ChatSearchHit) {
+    func open(_ hit: ChatSearchHit) async {
         // The hit shows in the conversation, which an expanded panel covers.
         isInspectorExpanded = false
         select(conversationID: hit.conversationID)
         guard let messageID = hit.messageID else { return }
-        selectVariant(messageID: messageID)
+        await selectVariant(messageID: messageID)
+        guard conversationID == hit.conversationID else { return }
         scrollTarget = messageID
     }
 
@@ -839,7 +946,7 @@ final class ChatViewModel {
         /// Extra rows written in the SAME transaction as the owner message
         /// (CHAT-01) — e.g. artifact comments turning `sent`. New messages
         /// only; regenerate/edit never set it.
-        var alsoWrite: ((Database) throws -> Void)?
+        var alsoWrite: (@Sendable (Database) throws -> Void)?
     }
 
     private struct PersistedTurn {
@@ -851,8 +958,21 @@ final class ChatViewModel {
         let seenTipID: Int64?
     }
 
+    /// `startTurn` for a regenerate or an edit, which `isStartingTurn`
+    /// guards like a send.
     @discardableResult
-    private func startTurn(_ plan: TurnPlan) -> Bool {
+    private func startTurnBusy(_ plan: TurnPlan) async -> Bool {
+        isStartingTurn = true
+        defer { isStartingTurn = false }
+        return await startTurn(plan)
+    }
+
+    /// Writes the turn's rows, then sends it. The write awaits the writer
+    /// (board #670); the turn goes out once its rows exist, whichever chat
+    /// is on screen by then — only the screen's own state (its error, its
+    /// thread) follows the shown conversation.
+    @discardableResult
+    private func startTurn(_ plan: TurnPlan) async -> Bool {
         let config = sessionConfig(conversationID: plan.conversationID)
         let turnID = makeTurnID()
         // An unreadable check only costs a replay, which is always correct.
@@ -860,14 +980,18 @@ final class ChatViewModel {
         let persisted: PersistedTurn
         do {
             // CHAT-01: the owner's text is on disk before anything is sent.
-            persisted = try persistTurnStart(plan, turnID: turnID, config: config)
+            persisted = try await persistTurnStart(plan, turnID: turnID, config: config)
         } catch {
-            errorMessage = "Your message wasn't sent because it couldn't be saved: \(error.localizedDescription)"
+            if conversationID == plan.conversationID {
+                errorMessage = "Your message wasn't sent because it couldn't be saved: \(error.localizedDescription)"
+            }
             return false
         }
-        errorMessage = nil
-        dismissedArtifactKeys = []
-        reload()
+        if conversationID == plan.conversationID {
+            errorMessage = nil
+            dismissedArtifactKeys = []
+            reload()
+        }
         let client = pool.session(for: plan.conversationID, config: config)
         client.adoptInitialContinuity(resumeIsContinuous
             ? ChatContinuity.initialLeaf(resumeSessionID: config.resumeSessionID, activeLeafID: persisted.seenTipID)
@@ -884,9 +1008,11 @@ final class ChatViewModel {
         return true
     }
 
-    private func persistTurnStart(_ plan: TurnPlan, turnID: String, config: ChatSessionConfig) throws -> PersistedTurn {
+    private func persistTurnStart(
+        _ plan: TurnPlan, turnID: String, config: ChatSessionConfig
+    ) async throws -> PersistedTurn {
         let seenTip = thread.last?.message.id
-        return try dbManager.dbPool.write { db in
+        return try await write { db in
             var historyTip = plan.historyTipID
             var answeredTip: Int64?
             let userID: Int64
@@ -917,7 +1043,9 @@ final class ChatViewModel {
     /// persisted a reply only when one streamed) gets an empty `partial`
     /// reply, so the new owner message never sits right under it. Returns
     /// the new row's id, or nil when `messageID` is not an owner message.
-    private static func answerIfOwnerMessage(_ db: Database, messageID: Int64, config: ChatSessionConfig) throws -> Int64? {
+    nonisolated private static func answerIfOwnerMessage(
+        _ db: Database, messageID: Int64, config: ChatSessionConfig
+    ) throws -> Int64? {
         guard let tip = try ChatMessageRecord.fetchOne(db, sql: "SELECT * FROM chat_messages WHERE id = ?",
                                                        arguments: [messageID]),
               tip.isUser else { return nil }

@@ -28,9 +28,9 @@ struct ChatInspectorContent: View {
             if let panel = chatVM.artifactPanel {
                 ArtifactPanelView(
                     model: panel, gmailConnected: chatVM.gmailConnected, slackLinks: chatVM.slackLinks,
-                    canSendComments: !chatVM.isStreaming,
+                    canSendComments: !chatVM.isBusy,
                     expand: expandButton,
-                    onSendComments: { chatVM.sendArtifactComments() },
+                    onSendComments: { Task { await chatVM.sendArtifactComments() } },
                     onClose: { chatVM.closeArtifactPanel() }
                 )
             }

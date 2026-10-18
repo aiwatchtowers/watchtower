@@ -6,7 +6,7 @@ import WatchtowerCore
 /// data become attachments; text inserts as always, and a long one is
 /// reported so the composer can offer to attach it instead.
 final class PastingTextView: NSTextView {
-    var onPasteData: ((Data, String) -> Bool)?
+    var onPasteData: ((Data, String) async -> Bool)?
     var onAttachFiles: (([URL]) -> Void)?
     var onLongTextPaste: ((LongPaste) -> Void)?
     /// Always `.general` in the app; tests pass a private named pasteboard.
@@ -24,11 +24,11 @@ final class PastingTextView: NSTextView {
             return
         case .attachImage:
             guard let image = PastedContent.imageAttachment(from: pasteboard) else { break }
-            _ = onPasteData(image.data, image.name)
+            Task { _ = await onPasteData(image.data, image.name) }
             return
         case .attachPDF:
             guard let pdf = PastedContent.pdfData(from: pasteboard) else { break }
-            _ = onPasteData(pdf, PastedContent.pdfName)
+            Task { _ = await onPasteData(pdf, PastedContent.pdfName) }
             return
         case .insertText(let offerAsFile):
             pasteText(sender, offerAsFile: offerAsFile)
@@ -88,11 +88,12 @@ struct LongPaste {
     let remove: () -> Void
 
     /// "Attach as File": attached only while the paste is intact, and taken
-    /// out of the field only once attached — a refusal keeps it and the
-    /// composer shows the reason.
-    func attach(using onPasteData: (Data, String) -> Bool) {
+    /// out of the field only once attached (the chat's landing may first
+    /// write its conversation) — a refusal keeps it and the composer shows
+    /// the reason; a field edited meanwhile keeps its text too.
+    func attach(using onPasteData: (Data, String) async -> Bool) async {
         guard isIntact() else { return }
-        if onPasteData(Data(text.utf8), PasteClassifier.pastedTextName) { remove() }
+        if await onPasteData(Data(text.utf8), PasteClassifier.pastedTextName), isIntact() { remove() }
     }
 }
 

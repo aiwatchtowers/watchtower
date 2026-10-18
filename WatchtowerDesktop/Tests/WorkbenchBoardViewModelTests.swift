@@ -93,8 +93,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
 
     // MARK: - Status / title edits
 
-    func testSetStatusWritesTheSelectedTargetAndReloads() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testSetStatusWritesTheSelectedTargetAndReloads() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
@@ -102,8 +102,9 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.load()
         vm.select(Int(tid))
         vm.setStatus("in_progress")
+        await vm.writesSettled()
 
-        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(tid)) }
+        let stored = try await dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(tid)) }
         XCTAssertEqual(stored?.status, "in_progress")
         XCTAssertEqual(vm.selectedNode?.target.status, "in_progress")
     }
@@ -122,8 +123,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(stored?.status, "todo")
     }
 
-    func testSetPriorityWritesTheSelectedTargetAndRejectsOthers() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testSetPriorityWritesTheSelectedTargetAndRejectsOthers() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
@@ -131,16 +132,18 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.load()
         vm.select(Int(tid))
         vm.setPriority("high")
+        await vm.writesSettled()
         XCTAssertEqual(vm.selectedNode?.target.priority, "high")
         vm.setPriority("urgent")
+        await vm.writesSettled()
 
-        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(tid)) }
+        let stored = try await dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(tid)) }
         XCTAssertEqual(stored?.priority, "high")
         XCTAssertNil(vm.errorMessage)
     }
 
-    func testRenameTrimsAndIgnoresBlank() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testRenameTrimsAndIgnoresBlank() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Old"))
         }
@@ -148,22 +151,25 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.load()
         vm.select(Int(tid))
         vm.rename("   ")
+        await vm.writesSettled()
         XCTAssertEqual(vm.selectedNode?.target.text, "Old")
         vm.rename("  New title \n")
+        await vm.writesSettled()
         XCTAssertEqual(vm.selectedNode?.target.text, "New title")
     }
 
     // MARK: - Comments
 
-    func testAddCommentCreatesAnOwnerRootOnTheSelectedTarget() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testAddCommentCreatesAnOwnerRootOnTheSelectedTarget() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
         vm.load()
         vm.select(Int(tid))
-        XCTAssertTrue(vm.addComment("  Use the v2 endpoint  "))
+        let added = await vm.addComment("  Use the v2 endpoint  ")
+        XCTAssertTrue(added)
 
         XCTAssertEqual(vm.threads.count, 1)
         XCTAssertEqual(vm.threads.first?.root.author, "owner")
@@ -173,8 +179,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
 
     /// A failed comment write reports `false` so the board composer keeps the
     /// owner's draft, and surfaces the error.
-    func testAddCommentReportsAFailedWriteAndKeepsTheDraft() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testAddCommentReportsAFailedWriteAndKeepsTheDraft() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
@@ -183,14 +189,15 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.load()
         vm.select(Int(tid))
-        try dbManager.dbPool.write { db in
+        try await dbManager.dbPool.write { db in
             try db.execute(sql: """
                 CREATE TRIGGER fail_comment_insert BEFORE INSERT ON project_comments
                 BEGIN SELECT RAISE(ABORT, 'disk full'); END
                 """)
         }
 
-        XCTAssertFalse(vm.addComment("Use the v2 endpoint"), "a failed write must not tell the composer to clear")
+        let added = await vm.addComment("Use the v2 endpoint")
+        XCTAssertFalse(added, "a failed write must not tell the composer to clear")
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertEqual(reported, 0)
         XCTAssertTrue(vm.threads.isEmpty)
@@ -198,8 +205,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
 
     /// Closing the detail card keeps an error raised from it: the board's
     /// banner shows it once the card is gone.
-    func testCloseDetailKeepsTheCardsError() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testCloseDetailKeepsTheCardsError() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Task")
             _ = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Question")
@@ -212,7 +219,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         let vm = makeVM(project: pid)
         vm.load()
         vm.select(Int(tid))
-        XCTAssertFalse(vm.addComment("Reply"))
+        let added = await vm.addComment("Reply")
+        XCTAssertFalse(added)
         let error = try XCTUnwrap(vm.errorMessage)
 
         vm.closeDetail()
@@ -224,8 +232,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.errorMessage, error, "closing the card must not swallow its error")
     }
 
-    func testReplyAndResolveAThread() throws {
-        let (pid, tid, root) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+    func testReplyAndResolveAThread() async throws {
+        let (pid, tid, root) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Task")
             let root = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Which API?")
@@ -234,15 +242,17 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         let vm = makeVM(project: pid)
         vm.load()
         vm.select(Int(tid))
-        vm.reply(to: root, body: "v2")
+        await vm.writesSettled()
+        await vm.reply(to: root, body: "v2")
         vm.setThreadStatus(rootID: root, status: "resolved")
+        await vm.writesSettled()
 
         XCTAssertEqual(vm.threads.first?.replies.map(\.body), ["v2"])
         XCTAssertEqual(vm.threads.first?.root.status, "resolved")
     }
 
-    func testEveryOwnerWriteReportsItsTargetToTheNotificationHook() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testEveryOwnerWriteReportsItsTargetToTheNotificationHook() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
@@ -256,17 +266,19 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.select(Int(tid))
         vm.setStatus("done")
         vm.rename("Renamed")
-        vm.addComment("note")
+        await vm.writesSettled()
+        await vm.addComment("note")
         let root = try XCTUnwrap(vm.threads.first?.root.id)
-        vm.reply(to: root, body: "more")
+        await vm.reply(to: root, body: "more")
         vm.setThreadStatus(rootID: root, status: "resolved")
+        await vm.writesSettled()
 
         XCTAssertEqual(reported, Array(repeating: .target(tid), count: 5),
                        "an owner-set done must never notify as if the agent did it")
     }
 
-    func testAFailedWriteDoesNotReportToTheHook() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testAFailedWriteDoesNotReportToTheHook() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
@@ -275,7 +287,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.load()
         vm.select(Int(tid))
-        let replied = vm.reply(to: 999_999, body: "orphan")   // no such root: WorkbenchQueries.reply throws
+        let replied = await vm.reply(to: 999_999, body: "orphan")   // no such root: WorkbenchQueries.reply throws
         XCTAssertFalse(replied, "a failed reply reports false so the thread keeps the owner's draft")
         XCTAssertEqual(reported, 0)
         XCTAssertNotNil(vm.errorMessage)
@@ -284,8 +296,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     /// PROJ-05: closing the last open child also closes its parents in the
     /// same write (migration 00085). Those parents are the owner's doing, so
     /// the hook names them too and no "target done" notice fires for them.
-    func testStatusWriteReportsTheParentsTheRollupMoved() throws {
-        let (pid, root, mid, leaf) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+    func testStatusWriteReportsTheParentsTheRollupMoved() async throws {
+        let (pid, root, mid, leaf) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             let root = try Self.insertTarget(db, project: pid, text: "Plan")
             let mid = try Self.insertTarget(db, project: pid, text: "Feature", parent: root)
@@ -298,6 +310,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.load()
         vm.select(Int(leaf))
         vm.setStatus("done")
+        await vm.writesSettled()
 
         XCTAssertEqual(mid, root + 1, "fixture: the parents are reported in id order")
         XCTAssertEqual(reported, [.target(leaf), .target(root), .target(mid)])
@@ -308,8 +321,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     /// A move re-rolls the old and the new parent (PROJ-05): the hook names
     /// the moved target and both parents, the new parent is expanded, and a
     /// move the board does not allow writes nothing.
-    func testMoveReportsBothRolledUpParentsAndExpandsTheNewOne() throws {
-        let (pid, from, to, leaf) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+    func testMoveReportsBothRolledUpParentsAndExpandsTheNewOne() async throws {
+        let (pid, from, to, leaf) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             let from = try Self.insertTarget(db, project: pid, text: "From")
             let to = try Self.insertTarget(db, project: pid, text: "To")
@@ -324,7 +337,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.load()
         vm.collapsed = [Int(to)]
 
-        XCTAssertTrue(vm.move(Int(leaf), under: Int(to)))
+        let movedResult = await vm.move(Int(leaf), under: Int(to))
+        XCTAssertTrue(movedResult)
 
         XCTAssertEqual(reported, [.target(leaf), .target(from), .target(to)])
         XCTAssertFalse(vm.collapsed.contains(Int(to)))
@@ -333,15 +347,19 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(WorkbenchBoardOutline.find(Int(from), in: vm.roots)?.target.status, "done")
 
         reported = []
-        XCTAssertFalse(vm.move(Int(to), under: Int(leaf)), "under its own sub-target")
+        let moved2 = await vm.move(Int(to), under: Int(leaf))
+        XCTAssertFalse(moved2, "under its own sub-target")
         XCTAssertNotNil(vm.errorMessage, "a refused drop onto a sub-target says why")
         vm.dismissError()
-        XCTAssertFalse(vm.move(Int(leaf), under: Int(to)), "already there")
-        XCTAssertFalse(vm.move(Int(leaf), under: Int(leaf)), "onto itself")
+        let moved3 = await vm.move(Int(leaf), under: Int(to))
+        XCTAssertFalse(moved3, "already there")
+        let moved4 = await vm.move(Int(leaf), under: Int(leaf))
+        XCTAssertFalse(moved4, "onto itself")
         XCTAssertNil(vm.errorMessage, "a no-op drop stays quiet")
         XCTAssertTrue(reported.isEmpty)
 
-        XCTAssertTrue(vm.move(Int(leaf), under: nil))
+        let moved5 = await vm.move(Int(leaf), under: nil)
+        XCTAssertTrue(moved5)
         XCTAssertNil(WorkbenchBoardOutline.find(Int(leaf), in: vm.roots)?.target.parentId)
     }
 
@@ -349,8 +367,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
 
     /// A kanban drop moves the dragged card, not the selected one; the hook
     /// names the dragged card and the parents its rollup moved.
-    func testSetStatusForANonSelectedTargetWritesItAndReportsIt() throws {
-        let (pid, root, leaf, other) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+    func testSetStatusForANonSelectedTargetWritesItAndReportsIt() async throws {
+        let (pid, root, leaf, other) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             let root = try Self.insertTarget(db, project: pid, text: "Feature")
             let leaf = try Self.insertTarget(db, project: pid, text: "Task", parent: root)
@@ -362,9 +380,10 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.load()
         vm.select(Int(other))
         vm.onOwnerWrite = { _, subject in reported.append(subject) }
-        XCTAssertTrue(vm.setStatus("done", for: Int(leaf)))
+        let wrote = await vm.setStatus("done", for: Int(leaf))
+        XCTAssertTrue(wrote)
 
-        let stored = try dbManager.dbPool.read { db in
+        let stored = try await dbManager.dbPool.read { db in
             (try TargetQueries.fetchByID(db, id: Int(leaf))?.status,
              try TargetQueries.fetchByID(db, id: Int(root))?.status,
              try TargetQueries.fetchByID(db, id: Int(other))?.status)
@@ -376,8 +395,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedTargetID, Int(other), "a drop does not change the selection")
     }
 
-    func testSetStatusToTheCurrentStatusWritesNothing() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testSetStatusToTheCurrentStatusWritesNothing() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task", status: "in_progress"))
         }
@@ -392,7 +411,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
             }
         }
         let before = try historyRows()
-        XCTAssertFalse(vm.setStatus("in_progress", for: Int(tid)))
+        let wrote = await vm.setStatus("in_progress", for: Int(tid))
+        XCTAssertFalse(wrote)
         XCTAssertEqual(try historyRows(), before, "no status write, so no history row")
         XCTAssertEqual(reported, 0)
 
@@ -404,8 +424,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(reported, 0)
     }
 
-    func testSetStatusRefusesATargetOfAnotherProject() throws {
-        let (pid, foreign) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testSetStatusRefusesATargetOfAnotherProject() async throws {
+        let (pid, foreign) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             _ = try Self.insertTarget(db, project: pid, text: "Mine")
             let other = try Self.insertWorkbench(db, name: "other")
@@ -415,20 +435,21 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         var reported = 0
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.load()
-        XCTAssertFalse(vm.setStatus("done", for: Int(foreign)))
+        let wrote = await vm.setStatus("done", for: Int(foreign))
+        XCTAssertFalse(wrote)
 
-        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(foreign)) }
+        let stored = try await dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(foreign)) }
         XCTAssertEqual(stored?.status, "todo")
         XCTAssertEqual(reported, 0)
     }
 
-    func testSetStatusForAnUnknownTargetWritesNothing() throws {
-        let pid = try dbManager.dbPool.write { try Self.insertWorkbench($0) }
+    func testSetStatusForAnUnknownTargetWritesNothing() async throws {
+        let pid = try await dbManager.dbPool.write { try Self.insertWorkbench($0) }
         let vm = makeVM(project: pid)
         var reported = 0
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.load()
-        vm.setStatus("done", for: 999_999)
+        await vm.setStatus("done", for: 999_999)
         XCTAssertEqual(reported, 0)
     }
 
@@ -454,8 +475,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     /// Board #267: a drop on a defined column writes its status and column
     /// together; a drop on its own column writes nothing; an implicit column
     /// is a plain status move (NULL column).
-    func testDropOnColumnMovesStatusAndColumn() throws {
-        let (pid, tid, code) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+    func testDropOnColumnMovesStatusAndColumn() async throws {
+        let (pid, tid, code) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             for (title, position) in [("Spec", 0), ("Code", 1)] {
                 try db.execute(
@@ -479,7 +500,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         let codeColumn = try XCTUnwrap(vm.kanban.columns.first { $0.title == "Code" })
         XCTAssertEqual(codeColumn.columnID, code)
 
-        XCTAssertTrue(vm.moveCard(Int(tid), to: codeColumn))
+        let moved = await vm.moveCard(Int(tid), to: codeColumn)
+        XCTAssertTrue(moved)
 
         let placed = try dbManager.dbPool.read { db in
             try Row.fetchOne(db, sql: "SELECT status, board_column_id FROM targets WHERE id = ?", arguments: [tid])
@@ -489,12 +511,14 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(reported, [.target(tid)])
         XCTAssertEqual(vm.kanban.columns.first { $0.columnID == code }?.cards.map(\.id), [Int(tid)])
 
-        XCTAssertFalse(vm.moveCard(Int(tid), to: try XCTUnwrap(vm.kanban.columns.first { $0.columnID == code })),
+        let moved2 = try await vm.moveCard(Int(tid), to: try XCTUnwrap(vm.kanban.columns.first { $0.columnID == code }))
+        XCTAssertFalse(moved2,
                        "a drop on its own column writes nothing")
         XCTAssertEqual(reported.count, 1)
 
         let done = try XCTUnwrap(vm.kanban.columns.first { $0.status == "done" })
-        XCTAssertTrue(vm.moveCard(Int(tid), to: done))
+        let moved3 = await vm.moveCard(Int(tid), to: done)
+        XCTAssertTrue(moved3)
         let closed = try dbManager.dbPool.read { db in
             try Row.fetchOne(db, sql: "SELECT status, board_column_id FROM targets WHERE id = ?", arguments: [tid])
         }
@@ -504,8 +528,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
 
     // MARK: - Mark read
 
-    func testSelectingATargetMarksItsAgentCommentsRead() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testSelectingATargetMarksItsAgentCommentsRead() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Task")
             _ = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Blocked on keys")
@@ -516,16 +540,17 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.rows.first?.node.unreadForOwner, 1)
 
         vm.select(Int(tid))
+        await vm.writesSettled()
 
-        let unread = try dbManager.dbPool.read { db in
+        let unread = try await dbManager.dbPool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project_comments WHERE author = 'agent' AND read_at = ''")
         }
         XCTAssertEqual(unread, 0)
         XCTAssertEqual(vm.rows.first?.node.unreadForOwner, 0)
     }
 
-    func testMarkReadFailureKeepsTheUnreadBadge() throws {
-        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testMarkReadFailureKeepsTheUnreadBadge() async throws {
+        let (pid, tid) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Task")
             _ = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Question")
@@ -539,6 +564,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         let vm = makeVM(project: pid)
         vm.load()
         vm.select(Int(tid))
+        await vm.writesSettled()
 
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertEqual(vm.rows.first?.node.unreadForOwner, 1, "the badge drops only after the write succeeds")
@@ -663,8 +689,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         )
     }
 
-    func testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne() throws {
-        let (pid, live, old) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+    func testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne() async throws {
+        let (pid, live, old) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             let live = try Self.insertTarget(db, project: pid, text: "Live", status: "done")
             let old = try Self.insertTarget(db, project: pid, text: "Old", status: "done")
@@ -683,7 +709,8 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertTrue(vm.kanban.showsCard(Int(old)))
 
         vm.showArchived = false
-        XCTAssertTrue(vm.setStatus("todo", for: Int(old)), "restoring = reopening")
+        let wrote = await vm.setStatus("todo", for: Int(old))
+        XCTAssertTrue(wrote, "restoring = reopening")
         XCTAssertEqual(vm.archivedCount, 0)
         XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(live), Int(old)])
     }

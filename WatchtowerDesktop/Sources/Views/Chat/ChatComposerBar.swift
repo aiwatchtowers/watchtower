@@ -6,6 +6,9 @@ enum ChatComposerStatus: Equatable {
     case queued
     /// A failure not tied to a message (a send that could not be saved).
     case error(String)
+    /// The reply is in and its changes are being written; it cannot be
+    /// stopped any more.
+    case finishing
 }
 
 /// The composer every chat shares: an optional status line, the input field
@@ -38,6 +41,15 @@ struct ChatComposerBar<Accessory: View>: View {
                 Button("Cancel", action: onCancelQueued)
                     .buttonStyle(.borderless)
                     .font(.caption)
+            }
+            .padding(.horizontal, 16)
+        case .finishing:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Applying the reply’s changes…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
             }
             .padding(.horizontal, 16)
         case .error(let message):

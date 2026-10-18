@@ -814,7 +814,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -2086,6 +2086,14 @@ CREATE TABLE IF NOT EXISTS instruction_suggestions (
     status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
     fingerprint     TEXT NOT NULL UNIQUE,
     decided_at      TEXT NULL
+);
+CREATE TABLE IF NOT EXISTS reaction_events (
+    account_id INTEGER NOT NULL,
+    channel_id TEXT    NOT NULL,
+    message_ts TEXT    NOT NULL,
+    emoji      TEXT    NOT NULL,
+    seen_at    TEXT    NOT NULL,
+    PRIMARY KEY (account_id, channel_id, message_ts, emoji)
 );
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE

@@ -65,6 +65,10 @@ final class TracksViewModel {
     private(set) var workspaceDomain: String?
     private(set) var slackLinks: SlackLinkResolver?
     private let dbManager: DatabaseManager
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
+    /// One pending sub-item write per track (board #670).
+    let pendingWrites = PendingWrites()
     private var observationTask: Task<Void, Never>?
 
     // User name cache for resolving Slack user IDs
@@ -194,9 +198,9 @@ final class TracksViewModel {
         }
     }
 
-    func markRead(_ track: Track) {
+    func markRead(_ track: Track) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try TrackQueries.markRead(db, id: track.id)
             }
             load()
@@ -213,9 +217,9 @@ final class TracksViewModel {
         errorMessage = "Failed to \(what): \(error.localizedDescription)"
     }
 
-    func updatePriority(_ track: Track, to priority: String) {
+    func updatePriority(_ track: Track, to priority: String) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try TrackQueries.updatePriority(db, id: track.id, priority: priority)
             }
             load()
@@ -224,9 +228,9 @@ final class TracksViewModel {
         }
     }
 
-    func updateOwnership(_ track: Track, to ownership: String) {
+    func updateOwnership(_ track: Track, to ownership: String) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try TrackQueries.updateOwnership(db, id: track.id, ownership: ownership)
             }
             load()
@@ -235,23 +239,42 @@ final class TracksViewModel {
         }
     }
 
-    func toggleSubItem(_ track: Track, at index: Int) {
-        var items = track.decodedSubItems
-        guard index >= 0, index < items.count else { return }
-        items[index].status = items[index].isDone ? "open" : "done"
-        do {
-            try dbManager.dbPool.write { db in
-                try TrackQueries.updateSubItems(db, id: track.id, subItems: items)
+    /// Sets the sub-item to the opposite of what the row showed (board #670).
+    /// The write re-reads the row in its own transaction and changes only
+    /// that item, so another item's change landing first is kept. A second
+    /// press on the same item while its write waits does nothing.
+    func toggleSubItem(_ track: Track, at index: Int) async {
+        let shown = track.decodedSubItems
+        guard index >= 0, index < shown.count else { return }
+        let done = !shown[index].isDone
+        let id = track.id
+        await pendingWrites.run(Self.subItemKey(trackID: id, index: index)) {
+            do {
+                try await chained { db in
+                    guard let fresh = try TrackQueries.fetchByID(db, id: id) else {
+                        throw RowNotFoundError(kind: "track", id: id)
+                    }
+                    var items = fresh.decodedSubItems
+                    guard index < items.count else { return }
+                    items[index].status = done ? "done" : "open"
+                    try TrackQueries.updateSubItems(db, id: id, subItems: items)
+                }
+                load()
+            } catch {
+                reportWriteFailure("toggle sub-item", error)
             }
-            load()
-        } catch {
-            reportWriteFailure("toggle sub-item", error)
         }
     }
 
-    func dismissTrack(_ track: Track) {
+    /// The `pendingWrites` key of one sub-item's toggle, for the view to
+    /// disable its checkbox meanwhile.
+    static func subItemKey(trackID: Int, index: Int) -> String {
+        "subItem:\(trackID):\(index)"
+    }
+
+    func dismissTrack(_ track: Track) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try TrackQueries.dismiss(db, id: track.id)
             }
             load()
@@ -298,9 +321,10 @@ final class TracksViewModel {
 
     /// Soft-dismisses `ids` in one write (reversible one by one via Restore)
     /// and leaves selection mode.
-    func dismissTracks(ids: [Int]) {
+    @discardableResult
+    func dismissTracks(ids: [Int]) async -> Bool {
         do {
-            let dismissed = try dbManager.dbPool.write { db in
+            let dismissed = try await chained { db in
                 try TrackQueries.dismissMany(db, ids: ids)
             }
             endSelection()
@@ -308,14 +332,16 @@ final class TracksViewModel {
             if dismissed < ids.count {
                 notice = "Dismissed \(dismissed) of \(ids.count); the rest were already dismissed or gone."
             }
+            return true
         } catch {
             errorMessage = "Failed to dismiss tracks: \(error.localizedDescription)"
+            return false
         }
     }
 
-    func restoreTrack(_ track: Track) {
+    func restoreTrack(_ track: Track) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try TrackQueries.restore(db, id: track.id)
             }
             load()
@@ -365,9 +391,9 @@ final class TracksViewModel {
         return slackLinks?.channelURL(channelID, messageTS: ts)
     }
 
-    func submitFeedback(trackID: Int, rating: Int) {
+    func submitFeedback(trackID: Int, rating: Int) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try FeedbackQueries.addFeedback(
                     db,
                     entityType: "track",
@@ -460,5 +486,11 @@ final class TracksViewModel {
             }
             userNameCache.merge(map) { _, new in new }
         } catch {}
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }

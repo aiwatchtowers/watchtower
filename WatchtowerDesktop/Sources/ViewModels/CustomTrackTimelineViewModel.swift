@@ -15,6 +15,10 @@ import WatchtowerCore
 final class CustomTrackTimelineViewModel {
     let track: Track
     private let dbPool: DatabasePool
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
+    /// One pending apply or dismiss per event (board #670).
+    let pendingWrites = PendingWrites()
     /// Optional: only present (and only usable) when the track is linked to a
     /// target, so a confirmed proposed action has something to mutate.
     private let targetsViewModel: TargetsViewModel?
@@ -180,9 +184,9 @@ final class CustomTrackTimelineViewModel {
         }
     }
 
-    func markRead(_ event: TrackEvent) {
+    func markRead(_ event: TrackEvent) async {
         guard event.isUnread else { return }
-        try? dbPool.write { db in try TrackEventQueries.markRead(db, id: event.id) }
+        try? await chained { db in try TrackEventQueries.markRead(db, id: event.id) }
     }
 
     /// Applies a confirmed proposed action to the LINKED target via the shared
@@ -190,7 +194,17 @@ final class CustomTrackTimelineViewModel {
     /// not re-fire. Standalone tracks (no linked target) are a no-op: there is
     /// nothing to mutate, and the scan prompt suppresses proposed actions for
     /// them, so the event is left untouched.
-    func applyAction(for event: TrackEvent) {
+    /// One apply or dismiss per event at a time (board #670): a second
+    /// press while the first waits would apply the action twice.
+    func applyAction(for event: TrackEvent) async {
+        await pendingWrites.run(event.id) { await applyNow(event) }
+    }
+
+    func dismissAction(for event: TrackEvent) async {
+        await pendingWrites.run(event.id) { await dismissNow(event) }
+    }
+
+    private func applyNow(_ event: TrackEvent) async {
         guard let linkedID = track.linkedTargetID, let targetsViewModel else { return }
         guard let action = event.decodedAction else { return }
         do {
@@ -200,7 +214,7 @@ final class CustomTrackTimelineViewModel {
             // applied since this VM was created (lost update). A missing row
             // means the target was deleted — surface that instead of silently
             // marking the event applied with no effect.
-            let (fresh, eventExists) = try dbPool.read { db in
+            let (fresh, eventExists) = try await dbPool.read { db in
                 (try TargetQueries.fetchByID(db, id: linkedID), try TrackEventQueries.exists(db, id: event.id))
             }
             guard let fresh else {
@@ -214,8 +228,8 @@ final class CustomTrackTimelineViewModel {
                 errorMessage = RowNotFoundError(kind: "track event", id: event.id).localizedDescription
                 return
             }
-            _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
-            try dbPool.write { db in
+            _ = try await TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
+            try await chained { db in
                 try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied")
             }
         } catch {
@@ -223,9 +237,9 @@ final class CustomTrackTimelineViewModel {
         }
     }
 
-    func dismissAction(for event: TrackEvent) {
+    private func dismissNow(_ event: TrackEvent) async {
         do {
-            try dbPool.write { db in
+            try await chained { db in
                 try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed")
             }
         } catch {
@@ -256,5 +270,11 @@ final class CustomTrackTimelineViewModel {
             errorMessage = error.localizedDescription
             return nil
         }
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbPool.write(body) }
     }
 }

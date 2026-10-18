@@ -55,7 +55,7 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
     /// the LINKED target: the executor's sub-item path is a whole-JSON
     /// read-modify-write, so applying against a stale snapshot would clobber the
     /// first write. Ported from ObserverTimelineViewModelTests.
-    func testApplyTwoAddSubItemActions_BothPersistToLinkedTarget() throws {
+    func testApplyTwoAddSubItemActions_BothPersistToLinkedTarget() async throws {
         let (manager, path, track, timeline) = try makeHarness()
         defer { TestDatabase.cleanup(path: path) }
 
@@ -64,18 +64,19 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
         try insertPendingEvent(manager, trackID: track.id, summary: "second",
                                action: #"{"type":"add_sub_item","reason":"r2","text":"second item"}"#)
 
-        let events = try manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
+        let events = try await manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
         XCTAssertEqual(events.count, 2)
 
         // fetchEvents is DESC — apply oldest first to mirror timeline order.
-        timeline.applyAction(for: events[1])
-        timeline.applyAction(for: events[0])
+        await timeline.applyAction(for: events[1])
+        await timeline.applyAction(for: events[0])
 
         XCTAssertNil(timeline.errorMessage)
         let linkedID = try XCTUnwrap(track.linkedTargetID)
-        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: linkedID) })
+        let afterRow = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: linkedID) }
+        let after = try XCTUnwrap(afterRow)
         XCTAssertEqual(after.decodedSubItems.map(\.text).sorted(), ["first item", "second item"])
-        let statuses = try manager.dbPool.read { db in
+        let statuses = try await manager.dbPool.read { db in
             try String.fetchAll(db, sql: "SELECT action_status FROM track_events ORDER BY id")
         }
         XCTAssertEqual(statuses, ["applied", "applied"])
@@ -84,22 +85,22 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
     /// Applying an action after the linked target row was deleted must surface an
     /// error and leave the event pending — silently marking it applied would lose
     /// the mutation with no feedback.
-    func testApplyActionAgainstDeletedTarget_SetsErrorAndLeavesEventPending() throws {
+    func testApplyActionAgainstDeletedTarget_SetsErrorAndLeavesEventPending() async throws {
         let (manager, path, track, timeline) = try makeHarness()
         defer { TestDatabase.cleanup(path: path) }
 
         try insertPendingEvent(manager, trackID: track.id, summary: "stale",
                                action: #"{"type":"add_sub_item","reason":"r","text":"x"}"#)
-        let events = try manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
+        let events = try await manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
         let linkedID = try XCTUnwrap(track.linkedTargetID)
-        try manager.dbPool.write { db in
+        try await manager.dbPool.write { db in
             try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [linkedID])
         }
 
-        timeline.applyAction(for: events[0])
+        await timeline.applyAction(for: events[0])
 
         XCTAssertNotNil(timeline.errorMessage)
-        let status = try manager.dbPool.read { db in
+        let status = try await manager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT action_status FROM track_events")
         }
         XCTAssertEqual(status, "pending", "the event must stay pending when the linked target is gone")
@@ -108,19 +109,19 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
     /// A standalone custom track (no linked target) must not apply proposed
     /// actions: the scan prompt already suppresses them, and there is no target
     /// to mutate. Apply is a no-op that leaves the event pending, without error.
-    func testApplyActionStandaloneTrack_IsNoOp() throws {
+    func testApplyActionStandaloneTrack_IsNoOp() async throws {
         let (manager, path, track, timeline) = try makeHarness(linkToTarget: false)
         defer { TestDatabase.cleanup(path: path) }
         XCTAssertNil(track.linkedTargetID)
 
         try insertPendingEvent(manager, trackID: track.id, summary: "orphan",
                                action: #"{"type":"add_sub_item","reason":"r","text":"x"}"#)
-        let events = try manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
+        let events = try await manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
 
-        timeline.applyAction(for: events[0])
+        await timeline.applyAction(for: events[0])
 
         XCTAssertNil(timeline.errorMessage)
-        let status = try manager.dbPool.read { db in
+        let status = try await manager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT action_status FROM track_events")
         }
         XCTAssertEqual(status, "pending", "standalone tracks must not apply/consume the action")
@@ -197,18 +198,18 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
 
     /// dismissAction records the event's action_status without touching any
     /// target.
-    func testDismissActionSetsDismissed() throws {
+    func testDismissActionSetsDismissed() async throws {
         let (manager, path, track, timeline) = try makeHarness()
         defer { TestDatabase.cleanup(path: path) }
 
         try insertPendingEvent(manager, trackID: track.id, summary: "skip",
                                action: #"{"type":"update_status","reason":"r","status":"done"}"#)
-        let events = try manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
+        let events = try await manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
 
-        timeline.dismissAction(for: events[0])
+        await timeline.dismissAction(for: events[0])
 
         XCTAssertNil(timeline.errorMessage)
-        let status = try manager.dbPool.read { db in
+        let status = try await manager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT action_status FROM track_events")
         }
         XCTAssertEqual(status, "dismissed")

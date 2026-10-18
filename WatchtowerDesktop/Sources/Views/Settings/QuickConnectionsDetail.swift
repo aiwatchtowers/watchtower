@@ -145,9 +145,10 @@ struct QuickConnectionsDetail: View {
     }
 
     /// The row error without Go's bookkeeping prefix ("tools: " from the
-    /// tool policy, "transport: " from the plain-http refusal).
+    /// tool policy, "transport: " from the plain-http refusal, "reserved: "
+    /// from a reserved connection name).
     static func reason(_ error: String) -> String {
-        for prefix in ["tools: ", CleartextRefusal.statusPrefix] where error.hasPrefix(prefix) {
+        for prefix in ["tools: ", CleartextRefusal.statusPrefix, "reserved: "] where error.hasPrefix(prefix) {
             return String(error.dropFirst(prefix.count))
         }
         return error

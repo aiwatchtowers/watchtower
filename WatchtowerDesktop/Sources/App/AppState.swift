@@ -633,7 +633,7 @@ final class AppState {
                 viewModel: TargetsViewModel(dbManager: manager),
                 dbManager: manager
             )
-            return container.activeChat
+            return await container.readyChat()
         }
         targetBriefCenter.targetExists = { [weak self] id in
             guard let manager = self?.databaseManager else { return true }
@@ -1484,7 +1484,7 @@ final class AppState {
         do {
             try await daemon.waitUntilStopped()
             // 2. Wipe LLM-generated tables and the daemon's stamps.
-            try db.wipeLLMData()
+            try await db.wipeLLMData()
             if let workspaceDir {
                 try DaemonStampFiles.clear(in: workspaceDir)
             }
@@ -1840,8 +1840,9 @@ final class AppState {
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
-        workbenchesViewModel?.asks.stop()
+        workbenchesViewModel?.stop()
         workbenchesViewModel = vm
+        workbenchNotificationCenter?.stop()
         workbenchNotificationCenter = notices
         sessionAgentStateCenter?.stop()
         sessionAgentStateCenter = agentStates

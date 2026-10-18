@@ -113,7 +113,7 @@ func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
 	if err != nil {
 		return nil
 	}
-	args, _, promptFile, err := c.buildRunArgs(systemPrompt, userMessage, c.readFolder, m.args)
+	args, _, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
 	if promptFile != "" {
 		_ = os.Remove(promptFile)
 	}
@@ -185,9 +185,19 @@ func (c *Client) execArgs() []string {
 	return append(args, "--sandbox", "read-only", "-c", `web_search="disabled"`)
 }
 
-// runMount is one launch's MCP mount: the -c flags and the environment the
-// mounted servers read their secrets from.
-type runMount struct{ args, env []string }
+// runMount is one launch's MCP mount: the -c flags, the environment the
+// mounted servers read their secrets from and the Quick Connections it
+// mounts (fenced in the system prompt: prompt).
+type runMount struct {
+	args, env []string
+	external  []ai.ExternalMCPServer
+}
+
+// prompt is systemPrompt with the mounted Quick Connections' external-data
+// fence (ai.WithExternalDataRule).
+func (m runMount) prompt(systemPrompt string) string {
+	return ai.WithExternalDataRule(systemPrompt, m.external)
+}
 
 // mount builds the launch's MCP servers in place of the owner's own codex
 // config ones, keeping the owner's CODEX_HOME (sign-in, model provider,
@@ -211,8 +221,14 @@ func (c *Client) mount() (runMount, error) {
 	}
 	// The caller already left out what EnvConflicts refuses; anything the
 	// override still skips is only logged.
-	override, env, _ := mcpOverride(c.dbPath, c.mcpArgs, c.mcpEnvVars, external, owner, base)
-	return runMount{args: []string{"-c", override}, env: env}, nil
+	override, env, skipped := mcpOverride(c.dbPath, c.mcpArgs, c.mcpEnvVars, external, owner, base)
+	var mounted []ai.ExternalMCPServer
+	for _, s := range external {
+		if _, skip := skipped[s.ID]; !skip {
+			mounted = append(mounted, s)
+		}
+	}
+	return runMount{args: []string{"-c", override}, env: env, external: mounted}, nil
 }
 
 // processDir is the subprocess cwd: the read folder, or a TCC-neutral
@@ -243,7 +259,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			errCh <- mountErr
 			return
 		}
-		args, promptStdin, promptFile, buildErr := c.buildRunArgs(systemPrompt, userMessage, c.readFolder, m.args)
+		args, promptStdin, promptFile, buildErr := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
 		if buildErr != nil {
 			errCh <- buildErr
 			return
@@ -278,6 +294,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+		// Top-level "error" events, kept for runError: they explain a run
+		// that exits non-zero without a turn.failed event.
+		var errLines []byte
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
@@ -291,8 +311,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 			if event.Error != nil {
 				_ = cmd.Wait()
-				errCh <- fmt.Errorf("codex error: %s", event.Error.Message)
+				errCh <- turnError(c.model, event.Error.Message)
 				return
+			}
+			if event.Type == "error" {
+				errLines = append(append(errLines, line...), '\n')
 			}
 
 			// A tool call interrupts the turn: signal a boundary so the consumer
@@ -331,7 +354,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 
 		if err := cmd.Wait(); err != nil {
-			errCh <- classifyError(err, stderrBuf.String(), c.codexCmd)
+			errCh <- runError(c.model, errLines, err, stderrBuf.String(), c.codexCmd)
 		}
 
 		// Codex doesn't support session resumption — emit empty session ID.
@@ -348,7 +371,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if mountErr != nil {
 		return "", nil, mountErr
 	}
-	args, promptStdin, promptFile, err := c.buildRunArgs(systemPrompt, userMessage, c.readFolder, m.args)
+	args, promptStdin, promptFile, err := c.buildRunArgs(m.prompt(systemPrompt), userMessage, c.readFolder, m.args)
 	if err != nil {
 		return "", nil, err
 	}
@@ -368,7 +391,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", nil, classifyError(err, stderrBuf.String(), c.codexCmd)
+		return "", nil, runError(c.model, output, err, stderrBuf.String(), c.codexCmd)
 	}
 
 	result, codexUsage, parseErr := parseJSONLOutput(output)

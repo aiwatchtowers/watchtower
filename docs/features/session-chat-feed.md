@@ -49,7 +49,7 @@ Locating transcripts: `LocateAll` lists the workbench's candidate directories (`
 
 ## Entry points in the app
 
-Session row context menu **Show Chat**; the session header **Chat** toggle; the pane picker **Chat**. The pane opens scrolled to the newest message, refreshes every 3 s while shown (`SessionFeedPoller` serializes polls: a refresh asked during a run folds into exactly one more run), and shows `watchtower` entries as the owner's bubble marked "via Watchtower".
+Session row context menu **Show Chat**; the session header **Chat** toggle; the pane picker **Chat**. The pane opens scrolled to the newest message, reads the feed once when shown or when the session's state changes and every 3 s while the agent works or has background subagents (`SessionFeedStore.follow`; `SessionFeedPoller` serializes polls: a refresh asked during a run folds into exactly one more run). Any of these reads — the one on open, the one on a state change, each 3 s tick — is skipped while the main window is hidden, minimised or covered (`isTabOnScreen`), so a pane nobody sees spawns no CLI; when the app's windows come back on screen (`AppState.uiVisibility`, #731) after a skipped read, the feed is read at once (`SessionFeedStore.screenChanged`, `ForegroundRefreshGate`, board #589). The store and its CLI lookup are built once per pane, not on each render. It shows `watchtower` entries as the owner's bubble marked "via Watchtower".
 
 ## v1 limits
 

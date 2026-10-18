@@ -46,7 +46,7 @@ struct ReviewChecklistView: View {
                         get: { state == .checked || state == .commented },
                         set: { checked in
                             // A failure lands in lastError.
-                            try? model.setCheck(chapterKey: chapterKey, lens: lens.id, itemKey: item.key, checked: checked)
+                            Task { try? await model.setCheck(chapterKey: chapterKey, lens: lens.id, itemKey: item.key, checked: checked) }
                         }
                     ))
                     .toggleStyle(.checkbox)
@@ -55,7 +55,7 @@ struct ReviewChecklistView: View {
                     Button(state == .commented ? "Commented" : "Comment…") {
                         let chapter = model.chapters.first { $0.key == chapterKey }?.title ?? chapterKey
                         compose(.init(title: "\(lens.name): comment", prefill: "\(chapter) — \(item.text)") { body, _ in
-                            try model.commentOnCheck(chapterKey: chapterKey, lens: lens.id, item: item, body: body)
+                            try await model.commentOnCheck(chapterKey: chapterKey, lens: lens.id, item: item, body: body)
                         })
                     }
                     .buttonStyle(.borderless)
