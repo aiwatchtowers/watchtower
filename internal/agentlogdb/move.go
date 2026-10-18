@@ -225,7 +225,6 @@ func chunkQuery(t moveTable, paged bool) string {
 	if t.filter != "" {
 		where = append(where, t.filter)
 	}
-	//nolint:gosec // G202: table, column and filter are moveTables' constants; every value is a bound arg.
 	q := `SELECT ` + strings.Join(t.cols, ", ") + ` FROM ` + t.name
 	if len(where) > 0 {
 		q += ` WHERE ` + strings.Join(where, " AND ")
