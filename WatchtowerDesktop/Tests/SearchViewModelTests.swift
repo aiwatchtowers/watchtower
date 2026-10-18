@@ -142,13 +142,17 @@ struct SearchViewModelGuideTests {
     @Test("a search cancelled after its debounce elapsed never turns the spinner on")
     func clearedQueryAfterDebounceElapsed() async throws {
         let vm = try await makeVM()
+        var reachedDebounce = false
+        vm.onSearchStep = { if $0 == .debounce { reachedDebounce = true } }
         vm.query = "inbox"
         vm.search()
         let stale = vm.searchTask
-        // Let the search task start its debounce sleep, then hold the main
-        // actor past the 300 ms: the sleep completes off-main, so the task
-        // resumes without a cancellation error once the main actor is free.
-        await Task.yield()
+        // Let the search task enter its debounce sleep (the hook fires right
+        // before it, with no suspension in between), then hold the main actor
+        // past the 300 ms: the sleep completes off-main, so the task resumes
+        // without a cancellation error once the main actor is free.
+        for _ in 0..<1000 where !reachedDebounce { await Task.yield() }
+        try #require(reachedDebounce)
         Thread.sleep(forTimeInterval: 0.5)
         vm.query = ""
         vm.search()
@@ -156,6 +160,19 @@ struct SearchViewModelGuideTests {
         #expect(!vm.isSearching)
         #expect(vm.guideHits.isEmpty)
         #expect(vm.results.isEmpty)
+    }
+
+    // #682 review: the query moving on without a new search() call (no
+    // cancel, no newer task) must still leave the spinner off at the end.
+    @Test("a search whose query moved on mid-read still turns the spinner off")
+    func queryMovedOnMidRead() async throws {
+        let vm = try await makeVM()
+        vm.onSearchStep = { [weak vm] step in
+            if step == .reading { vm?.query = "moved on" }
+        }
+        await searchAndWait(vm, "inbox")
+        #expect(!vm.isSearching)
+        #expect(vm.guideHits.isEmpty)
     }
 
     @Test("prefill keeps an existing draft")
