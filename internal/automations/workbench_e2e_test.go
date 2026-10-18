@@ -381,3 +381,62 @@ func (w *wbE2E) dryRunStepKinds(t *testing.T, runID int64) map[string]int {
 	}
 	return kinds
 }
+
+// manyPRs is gh's JSON for n open pull requests #1..#n, all updated after
+// lastRound.
+func manyPRs(n int) string {
+	items := make([]string, n)
+	for i := range items {
+		num := strconv.Itoa(i + 1)
+		items[i] = `{"number": ` + num + `, "title": "Change ` + num + `", "url": "https://example.com/acme/pull/` + num +
+			`", "author": {"login": "colleague-a"}, "updatedAt": "2026-10-14T09:00:00Z"}`
+	}
+	return "[" + strings.Join(items, ",") + "]"
+}
+
+// TestPRReviewRounds_MorePRsThanTheSessionCap: a round with more changed
+// pull requests than MaxSessionCalls reviews the first ones and keeps its
+// last_round mark, so the next round reviews the rest — every pull request
+// gets one session, none two (board #562).
+func TestPRReviewRounds_MorePRsThanTheSessionCap(t *testing.T) {
+	total := automations.MaxSessionCalls + 2
+	w := newWbE2E(t, automations.ShellResult{Stdout: manyPRs(total)})
+	a := w.seedRecipe(t, "pr-review-rounds")
+	w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+
+	first := w.enqueue(t, a, db.TriggerSchedule)
+	if r := w.drive(t, first); r.Status != db.RunSucceeded {
+		t.Fatalf("round 1 = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+	}
+	if n := len(w.desk.Launches()); n != automations.MaxSessionCalls {
+		t.Fatalf("round 1 launched %d sessions; want %d", n, automations.MaxSessionCalls)
+	}
+	if got, _ := w.state(t, a)["last_round"].(string); got != lastRound {
+		t.Fatalf("last_round = %q after a round that left pull requests; want it kept at %s", got, lastRound)
+	}
+	mustContain(t, "round 1 report", w.onlyReport(t).Body, "2 more pull requests left for the next round")
+
+	second := w.enqueue(t, a, db.TriggerSchedule)
+	if r := w.drive(t, second); r.Status != db.RunSucceeded {
+		t.Fatalf("round 2 = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+	}
+	seen := map[string]int{}
+	for _, l := range w.desk.Launches() {
+		seen[strings.SplitN(l.Title, " review", 2)[0]]++
+	}
+	if len(seen) != total {
+		t.Fatalf("reviewed %d distinct pull requests over two rounds (%v); want %d", len(seen), seen, total)
+	}
+	for title, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s got %d sessions; want one", title, n)
+		}
+	}
+	st := w.state(t, a)
+	if got, _ := st["last_round"].(string); got == lastRound {
+		t.Fatalf("last_round stayed %s after the round that reviewed the rest; want it advanced", got)
+	}
+	if rev, _ := st["reviewed"].(map[string]any); len(rev) != 0 {
+		t.Fatalf("reviewed = %v; want it cleared once last_round advanced", rev)
+	}
+}

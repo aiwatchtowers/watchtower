@@ -22,7 +22,14 @@ func SetExecutorAbandoned(e *Executor, count func() int) { e.abandoned = count }
 
 // SetExecutorFinishPause replaces the pause before each retry of a failed
 // run finish (tests).
-func SetExecutorFinishPause(e *Executor, pause func(attempt int)) { e.finishPause = pause }
+func SetExecutorFinishPause(e *Executor, pause func(ctx context.Context, attempt int)) {
+	e.finishPause = pause
+}
+
+// ExecutorWriteFinish exposes writeFinish (tests).
+func ExecutorWriteFinish(ctx context.Context, e *Executor, runID int64, f db.RunFinish, c *db.RunCommit) error {
+	return e.writeFinish(ctx, runID, f, c)
+}
 
 // ExecutorReadyWaits is how many ready waits wait for a running slot (tests).
 func ExecutorReadyWaits(e *Executor) int64 { return e.readyWaits.Load() }

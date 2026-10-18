@@ -1,6 +1,8 @@
 package automations_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -55,26 +57,31 @@ func TestOutputs_CapPerRun(t *testing.T) {
 	}
 }
 
-// TestSession_CapPerRun: the session() call past MaxSessionCalls is a
-// ValidationError step; the earlier ones run (dry_run here).
+// TestSession_CapPerRun: a run starts at most MaxSessionCalls sessions;
+// refused or invalid session() calls do not count, and the call past the cap
+// is a ValidationError step (dry_run steps stand for started sessions here).
 func TestSession_CapPerRun(t *testing.T) {
-	rep := sessDryRun(t, []string{"session:start"}, `let out = [];
-		for (let i = 0; i < 4; i++) {
-			try { out.push(session({prompt: "x"}).status) } catch (e) { out.push(e.name) }
-		}
-		return out.join(",")`, sessWorkbenchScope)
-	var got []string
+	rep := sessDryRun(t, []string{"session:start"}, `for (let i = 0; i < 2; i++) { try { session({prompt: ""}) } catch (e) {} }
+		for (let i = 0; i < 12; i++) { try { session({prompt: "x"}) } catch (e) {} }`, sessWorkbenchScope)
+	var started, refused int
+	var last db.AutomationRunStep
 	for _, s := range rep.Steps {
-		if s.Kind == automations.StepKindSession {
-			got = append(got, s.Status)
+		if s.Kind != automations.StepKindSession {
+			continue
+		}
+		last = s
+		switch s.Status {
+		case automations.StepDryRun:
+			started++
+		case automations.StepError:
+			refused++
 		}
 	}
-	want := []string{automations.StepDryRun, automations.StepDryRun, automations.StepDryRun, automations.StepError}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("session steps = %v; want %v", got, want)
+	if started != automations.MaxSessionCalls || refused != 4 {
+		t.Fatalf("session steps: %d started, %d refused; want %d and 4 (2 invalid + 2 past the cap)",
+			started, refused, automations.MaxSessionCalls)
 	}
-	last := rep.Steps[len(rep.Steps)-1]
-	if !strings.Contains(last.Error, "ValidationError") || !strings.Contains(last.Error, fmt.Sprintf("more than %d times", automations.MaxSessionCalls)) {
+	if !strings.Contains(last.Error, "ValidationError") || !strings.Contains(last.Error, fmt.Sprintf("already started %d sessions", automations.MaxSessionCalls)) {
 		t.Fatalf("last step error = %q; want the session cap", last.Error)
 	}
 }
@@ -92,7 +99,7 @@ func TestAuto08_FinishFailureRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	var attempts []int
-	automations.SetExecutorFinishPause(f.e, func(attempt int) {
+	automations.SetExecutorFinishPause(f.e, func(_ context.Context, attempt int) {
 		attempts = append(attempts, attempt)
 		if attempt == 2 {
 			if _, err := f.d.Exec(`DROP TRIGGER test_fail_outputs`); err != nil {
@@ -121,7 +128,7 @@ func TestAuto08_FinishFailureEndsTheRunFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	pauses := 0
-	automations.SetExecutorFinishPause(f.e, func(int) { pauses++ })
+	automations.SetExecutorFinishPause(f.e, func(context.Context, int) { pauses++ })
 	a := f.seed(t, "digest", `output.inbox({title: "t", body: "b"}); state.set("cursor", 7); return 1`, false)
 	id := f.enqueue(t, a, db.TriggerManual)
 	f.step(t, 1)
@@ -161,5 +168,74 @@ func TestAuto04_JournalErrorAfterSuccessStillCommits(t *testing.T) {
 	}
 	if !strings.Contains(f.dump(t), `{"cursor":7}`) {
 		t.Fatalf("state = %s; want the cursor committed", f.dump(t))
+	}
+}
+
+// TestAuto08_FinishFailureWithoutCommitKeepsItsEnd: a refused finish with
+// no commit is retried as it is — its status, error kind and error stay the
+// script's.
+func TestAuto08_FinishFailureWithoutCommitKeepsItsEnd(t *testing.T) {
+	f := newExFixture(t, exOpts{})
+	if _, err := f.d.Exec(`CREATE TRIGGER test_fail_end BEFORE UPDATE OF status ON automation_runs
+		WHEN NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'injected finish failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	automations.SetExecutorFinishPause(f.e, func(context.Context, int) {
+		if _, err := f.d.Exec(`DROP TRIGGER IF EXISTS test_fail_end`); err != nil {
+			t.Error(err)
+		}
+	})
+	id := f.enqueue(t, f.seed(t, "digest", `throw new Error("the script gave up")`, false), db.TriggerManual)
+	f.step(t, 1)
+	if r := f.wantRun(t, id, db.RunFailed, db.ErrKindScript); !strings.Contains(r.Error, "the script gave up") {
+		t.Fatalf("error = %q; want the script's own error", r.Error)
+	}
+}
+
+// claimedRun enqueues and claims a run of a fresh automation (writeFinish
+// tests drive the finish themselves).
+func claimedRun(t *testing.T, f *exFixture) int64 {
+	t.Helper()
+	a := f.seed(t, "digest", `return 1`, false)
+	id := f.enqueue(t, a, db.TriggerManual)
+	if ok, err := f.d.ClaimAutomationRunWithin(id, a.ApprovalHash, a.RecipeText, a.BudgetTokens, a.BudgetMinutes, 0, exStart); err != nil || !ok {
+		t.Fatalf("claim = (%v, %v)", ok, err)
+	}
+	return id
+}
+
+// TestAuto08_FinishSkipsRetriesWhenStopping: once the daemon's ctx is done
+// a refused finish is not retried; a finish with a commit still gets its
+// plain failed end.
+func TestAuto08_FinishSkipsRetriesWhenStopping(t *testing.T) {
+	f := newExFixture(t, exOpts{})
+	id := claimedRun(t, f)
+	if _, err := f.d.Exec(failOutputsTrigger); err != nil {
+		t.Fatal(err)
+	}
+	pauses := 0
+	automations.SetExecutorFinishPause(f.e, func(context.Context, int) { pauses++ })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	commit := &db.RunCommit{Outputs: []db.AutomationOutput{{Kind: "inbox", Title: "t", Body: "b"}}}
+	if err := automations.ExecutorWriteFinish(ctx, f.e, id, db.RunFinish{Status: db.RunSucceeded, Now: exStart}, commit); err != nil {
+		t.Fatalf("writeFinish = %v; want the plain failed end written", err)
+	}
+	if pauses != 0 {
+		t.Fatalf("pauses = %d; want no retry after the ctx ended", pauses)
+	}
+	f.wantRun(t, id, db.RunFailed, db.ErrKindBackend)
+}
+
+// TestAuto08_FinishDoesNotRetryAnInvalidFinish: a finish the database
+// refuses before writing (here a zero time) is not retried.
+func TestAuto08_FinishDoesNotRetryAnInvalidFinish(t *testing.T) {
+	f := newExFixture(t, exOpts{})
+	id := claimedRun(t, f)
+	pauses := 0
+	automations.SetExecutorFinishPause(f.e, func(context.Context, int) { pauses++ })
+	err := automations.ExecutorWriteFinish(context.Background(), f.e, id, db.RunFinish{Status: db.RunSucceeded}, &db.RunCommit{})
+	if !errors.Is(err, db.ErrInvalidRunFinish) || pauses != 0 {
+		t.Fatalf("writeFinish = %v after %d pauses; want ErrInvalidRunFinish, no retry", err, pauses)
 	}
 }

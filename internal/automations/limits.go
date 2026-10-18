@@ -46,9 +46,11 @@ const (
 	// #562 — a looping script cannot churn the write lock for its whole
 	// budget).
 	MaxStepsPerRun = 2000
-	// MaxSessionCalls caps session() calls per run: every session's wait
-	// pauses the minutes budget, so the count is the bound (board #562).
-	MaxSessionCalls = 3
+	// MaxSessionCalls caps the sessions session() starts per run (a refused
+	// or invalid call does not count): every session's wait pauses the
+	// minutes budget, so the count is the bound (board #562). 10 lets the
+	// pr-review-rounds template review a busy repository's round.
+	MaxSessionCalls = 10
 	// MaxOutputsPerRun caps the outputs a run buffers (output.inbox,
 	// output.report, output.briefing); the next one is a ValidationError.
 	MaxOutputsPerRun = 50

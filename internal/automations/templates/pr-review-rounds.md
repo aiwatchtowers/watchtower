@@ -11,7 +11,8 @@ outputs: [report]
 Twice a day on weekdays (10:00 and 16:00), lists the open pull requests of
 this folder's repository with `gh` and opens one review session for each pull
 request updated since the last round. The first round reviews every open pull
-request.
+request. A round starts at most 10 sessions (the limit per run); the pull
+requests left over are reviewed in the next round.
 
 Each session reviews its pull request and files every finding as an ask in
 **Waiting for you**. It posts on the pull request only the comments you
@@ -29,10 +30,18 @@ if (!dryRun && list.exit_code !== 0) {
   throw new Error("gh pr list exited " + list.exit_code + ": " + list.stderr.slice(-2000));
 }
 
+// last_round: when the last round that reviewed every changed pull request
+// ended. reviewed: pull request number -> when its review ended, kept while
+// a round leaves pull requests for the next one.
+const MAX_SESSIONS = 10; // session() starts at most 10 sessions per run
 const since = state.get("last_round");
+const reviewed = state.get("reviewed") || {};
 const prs = dryRun ? [] : JSON.parse(list.stdout);
 const changed = prs
-  .filter((pr) => !since || Date.parse(pr.updatedAt) > Date.parse(since))
+  .filter((pr) => {
+    const mark = reviewed[pr.number] || since;
+    return !mark || Date.parse(pr.updatedAt) > Date.parse(mark);
+  })
   .sort((a, b) => a.number - b.number);
 
 function reviewPrompt(pr) {
@@ -47,23 +56,41 @@ function reviewPrompt(pr) {
 }
 
 const lines = [];
+let started = 0;
+let left = 0;
 for (const pr of changed) {
+  if (started >= MAX_SESSIONS) {
+    left++;
+    continue;
+  }
   let s;
   try {
     s = session({ prompt: reviewPrompt(pr), title: "PR #" + pr.number + " review" });
+    started++;
+    reviewed[pr.number] = new Date().toISOString();
   } catch (e) {
     s = { status: "not started", summary: e.message };
+    left++; // tried again next round
   }
   let line = "- #" + pr.number + " " + pr.title + " (" + pr.url + "): " + s.status;
   if (s.summary) line += " — " + s.summary;
   if (s.error) line += " — " + s.error;
   lines.push(line);
 }
-
-state.set("last_round", new Date().toISOString());
+if (left > 0) {
+  lines.push("- " + left + " more pull request" + (left === 1 ? "" : "s") + " left for the next round.");
+  // last_round stays, so the next round still sees the rest; the marks of
+  // pull requests no longer open are dropped.
+  const open = {};
+  for (const pr of prs) if (reviewed[pr.number]) open[pr.number] = reviewed[pr.number];
+  state.set("reviewed", open);
+} else {
+  state.set("last_round", new Date().toISOString());
+  state.set("reviewed", {});
+}
 output.report({
-  title: "PR review round: " + changed.length + " pull request" + (changed.length === 1 ? "" : "s"),
+  title: "PR review round: " + started + " pull request" + (started === 1 ? "" : "s"),
   body: lines.length ? lines.join("\n") : "No open pull request changed since the last round.",
 });
-return changed.length + " reviewed";
+return started + " reviewed";
 ```

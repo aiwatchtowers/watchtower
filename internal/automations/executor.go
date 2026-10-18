@@ -57,7 +57,7 @@ type Executor struct {
 	abandoned func() int
 	// finishPause waits before finish attempt n+1 (finishRetryPause; tests
 	// replace it).
-	finishPause func(attempt int)
+	finishPause func(ctx context.Context, attempt int)
 
 	gated atomic.Bool // claims refused for abandoned goroutines (logged once per change)
 	// readyWaits counts waits whose ready check passed and that wait for a

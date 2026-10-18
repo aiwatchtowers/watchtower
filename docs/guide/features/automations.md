@@ -16,15 +16,13 @@ A recipe never runs until you confirm it. Watchtower fingerprints everything tha
 
 If any of these changes, the fingerprint changes and the recipe stops until you confirm again. Renaming it or editing its description does not count.
 
-This also covers a file that arrives from outside, such as a recipe pulled in with `git pull`: it shows **Needs your confirmation** and waits.
+A file pulled in from outside (say with `git pull`) also shows **Needs your confirmation** and waits.
 
 A recipe that runs a shell command (`shell:`) is confirmed by the command text only. The scripts or Makefile the command runs are not part of the fingerprint: if they change later, for example when the repository is updated or an agent edits them, the command still runs unattended without asking again. Confirm such a recipe only if you trust that folder's contents; the confirm sheet says this.
 
 ### Budgets
 
 Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. There is no daily cap across runs. At most two runs execute at the same time.
-
-One run can also make at most 2,000 calls (`llm`, `tool`, `state`, `output`, `log` and the rest together), file at most 50 outputs to Inbox, reports or the briefing, and start at most 3 sessions with `session()`.
 
 ### What a run can write
 
@@ -42,7 +40,7 @@ The Save sheet then lists each tool with a "Keep auto for ..." box, unchecked. T
 
 When a recipe passes mail, messages or tickets to `llm()` as `input`, Watchtower marks that text as written by other people, and the model is told never to follow instructions inside it. Pass such text as `input`, not inside the prompt itself, so it gets this marking.
 
-The marking lowers the risk but does not remove it. Suppose such a recipe also has auto on, or paused, for a tool that writes outside Watchtower, such as sending a Slack message or commenting on a Jira issue. A warning then appears next to the Auto checkboxes in the edit form, next to the "Keep auto for ..." boxes in the Save sheet and in the confirmation sheet: text the model writes from other people's messages could go out without asking you.
+The marking lowers the risk but does not remove it. If such a recipe also has auto on, or paused, for a tool that writes outside Watchtower (a Slack message, a Jira comment), a warning appears next to the Auto checkboxes in the edit form, next to the "Keep auto for ..." boxes in the Save sheet and in the confirmation sheet: text the model writes from other people's messages could go out without asking you.
 
 ## Using it
 
@@ -84,14 +82,10 @@ The **Automations** badge counts automations whose last run failed, until you op
 - **Needs your confirmation.** Open **Review…**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
 - **Disabled.** Use **⋯**, then **Enable**.
 - **Nothing ran on schedule.** The recipe must be confirmed and enabled, with the daemon running. Slots missed before you enabled or confirmed it, or before you turned the feature on, are never made up.
-- **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work.
+- **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work. Calls, outputs and sessions are [capped](../troubleshooting/automation-run-limits.md) too.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
 - **Failed with a RangeError about nesting or size.** One step of the script would have built something too large: data nested more than 1000 levels deep, more than about 16 million characters or items, or more than 256 000 entries, pieces or matches from one `JSON.parse`, `Object.entries`, `split` or global `match`. The script can catch these; otherwise handle the data in smaller pieces.
-- **Failed with "more than 2000 SDK calls".** The script called the SDK too often, usually in a loop that never ends. The script cannot catch this error; fix the loop or split the work across runs.
-- **"already made 50 outputs" or "session() was called more than 3 times".** The run hit its limit on outputs or sessions. The script can catch these errors. Put several items in one output, or split the work across runs.
-- **Succeeded with "its journal is incomplete".** The run did its work, but Watchtower could not write one or more of its steps to the run history (usually a busy database). Its results were saved, so the next run does not repeat them.
-- **Failed with "could not be finished".** Watchtower could not save the run's end, even after retrying. Its results were not saved; the next run starts from the previous state.
 - **Failed with "the automation used too much memory".** The run used more than about 1 GB of memory. This error ends the run and the script cannot catch it; keep less data in the script at once. The automation stays enabled.
 - **An event recipe didn't run.** It runs only after a sync that brought something new and matched its `where`. A source's first sync, history backfill and your own Slack messages never count. Jira comment changes count only while Stream Digests is on (Settings, Features). In the edit form, **On an event** picks the event type; a `where` filter is written in the recipe text.
 
