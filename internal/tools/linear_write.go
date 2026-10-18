@@ -577,7 +577,8 @@ func NewAddLinearComment(factory LinearWriteClientFactory) *Tool {
 			if err != nil {
 				return nil, err
 			}
-			if _, err := client.CreateComment(ctx, a.IssueID, a.Body); err != nil {
+			// Validate checked the cap on the trimmed body; send that one.
+			if _, err := client.CreateComment(ctx, a.IssueID, strings.TrimSpace(a.Body)); err != nil {
 				return nil, linearWriteFailed(d, account.ID, err)
 			}
 			return linearIssueResult(ctx, client, a.IssueID, a.Key, linearIssueURL(account, a.Key), "Comment on "+a.Key), nil

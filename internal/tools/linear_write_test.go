@@ -287,6 +287,24 @@ func TestAddLinearComment_BodyRules(t *testing.T) {
 	require.NoError(t, tool.Validate(ctx, d, json.RawMessage(`{"key":"ENG-7","body":"`+strings.Repeat("é", 32000)+`","reason":"r"}`)))
 }
 
+// The 32000-rune cap is checked on the trimmed body, so the trimmed body is
+// the one sent.
+func TestAddLinearComment_SendsTrimmedBody(t *testing.T) {
+	d := openDB(t)
+	seedLinearWorkspace(t, d)
+	fake := &fakeLinearWriter{}
+	tool := NewAddLinearComment(linearWriteFactory(fake))
+	padded := "  " + strings.Repeat("é", 32000) + " \n"
+	raw, err := json.Marshal(map[string]string{"key": "ENG-7", "body": padded, "reason": "r"})
+	require.NoError(t, err)
+	require.NoError(t, tool.Validate(context.Background(), d, raw))
+	pinned := normalized(t, tool, d, raw)
+
+	_, err = tool.Execute(context.Background(), d, Call{Args: pinned})
+	require.NoError(t, err)
+	assert.Equal(t, []string{strings.Repeat("é", 32000)}, fake.comments)
+}
+
 func TestAddLinearComment_RefreshesMirror(t *testing.T) {
 	d := openDB(t)
 	acct := seedLinearWorkspace(t, d)

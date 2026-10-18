@@ -158,13 +158,17 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 // that team and kept as firstErr; ErrAuthRevoked or a cancelled context stops
 // the loop and comes back as abort.
 func (s *Syncer) syncSelectedTeams(ctx context.Context, teams []db.LinearTeam) (total int, firstErr, abort error) {
+	// The workspace labels are mirrored once per pass, by the first team
+	// whose sync succeeds; a failed team leaves them to the next one.
+	workspaceLabelsDone := false
 	for _, t := range teams {
 		if !t.IsSelected {
 			continue
 		}
-		n, err := s.syncTeam(ctx, t)
+		n, err := s.syncTeam(ctx, t, !workspaceLabelsDone)
 		total += n
 		if err == nil {
+			workspaceLabelsDone = true
 			continue
 		}
 		s.logger.Printf("team %s: %v", t.Key, err)
@@ -224,7 +228,7 @@ func (s *Syncer) refreshTeams(ctx context.Context) error {
 
 // syncTeam fetches the team's issues, comments and planning; the watermark
 // moves only when all three succeed.
-func (s *Syncer) syncTeam(ctx context.Context, t db.LinearTeam) (int, error) {
+func (s *Syncer) syncTeam(ctx context.Context, t db.LinearTeam, withWorkspaceLabels bool) (int, error) {
 	st, err := s.db.GetLinearSyncState(s.accountID, t.ID)
 	if err != nil {
 		return 0, err
@@ -249,6 +253,9 @@ func (s *Syncer) syncTeam(ctx context.Context, t db.LinearTeam) (int, error) {
 	}
 	if err := s.syncPlanning(ctx, t); err != nil {
 		return n, fmt.Errorf("syncing planning of linear team %s: %w", t.Key, err)
+	}
+	if err := s.syncStatesAndLabels(ctx, t, withWorkspaceLabels); err != nil {
+		return n, fmt.Errorf("syncing states and labels of linear team %s: %w", t.Key, err)
 	}
 	if err := s.db.RecordLinearSyncSuccess(s.accountID, t.ID, maxUpdated, now.Format(timestampLayout)); err != nil {
 		return n, err
@@ -443,15 +450,13 @@ func (s *Syncer) syncPlanning(ctx context.Context, t db.LinearTeam) error {
 	for _, p := range out.Team.Projects.Nodes {
 		projects = append(projects, mapProject(s.accountID, p))
 	}
-	if err := s.db.UpsertLinearProjects(projects); err != nil {
-		return err
-	}
-	return s.syncStatesAndLabels(ctx, t)
+	return s.db.UpsertLinearProjects(projects)
 }
 
-// syncStatesAndLabels mirrors the team's workflow states and labels; workspace
-// labels (no team) are stored with team_id ”.
-func (s *Syncer) syncStatesAndLabels(ctx context.Context, t db.LinearTeam) error {
+// syncStatesAndLabels mirrors the team's workflow states and labels. With
+// withWorkspace it also mirrors the workspace labels (no team, stored with an
+// empty team_id), which a pass needs once, not once per team.
+func (s *Syncer) syncStatesAndLabels(ctx context.Context, t db.LinearTeam, withWorkspace bool) error {
 	states, err := s.client.FetchTeamStates(ctx, t.ID)
 	if err != nil {
 		return err
@@ -464,23 +469,32 @@ func (s *Syncer) syncStatesAndLabels(ctx context.Context, t db.LinearTeam) error
 	if err := s.db.ReplaceLinearTeamStates(s.accountID, t.ID, rows); err != nil {
 		return err
 	}
-	labels, err := s.client.FetchLabels(ctx, t.ID)
+	labels, err := s.client.fetchTeamLabels(ctx, t.ID)
 	if err != nil {
 		return err
 	}
-	var team, workspace []db.LinearLabel
-	for _, l := range labels {
-		row := db.LinearLabel{AccountID: s.accountID, ID: l.ID, TeamID: l.TeamID, Name: l.Name}
-		if l.TeamID == "" {
-			workspace = append(workspace, row)
-		} else if l.TeamID == t.ID {
-			team = append(team, row)
-		}
-	}
-	if err := s.db.ReplaceLinearLabels(s.accountID, t.ID, team); err != nil {
+	if err := s.db.ReplaceLinearLabels(s.accountID, t.ID, labelRows(s.accountID, labels, t.ID)); err != nil {
 		return err
 	}
-	return s.db.ReplaceLinearLabels(s.accountID, "", workspace)
+	if !withWorkspace {
+		return nil
+	}
+	workspace, err := s.client.fetchWorkspaceLabels(ctx)
+	if err != nil {
+		return err
+	}
+	return s.db.ReplaceLinearLabels(s.accountID, "", labelRows(s.accountID, workspace, ""))
+}
+
+// labelRows keeps the labels whose team is teamID (empty = workspace labels).
+func labelRows(accountID int64, labels []Label, teamID string) []db.LinearLabel {
+	var rows []db.LinearLabel
+	for _, l := range labels {
+		if l.TeamID == teamID {
+			rows = append(rows, db.LinearLabel{AccountID: accountID, ID: l.ID, TeamID: l.TeamID, Name: l.Name})
+		}
+	}
+	return rows
 }
 
 // RefreshIssue re-reads one issue and its comments after a write so the mirror
@@ -495,6 +509,11 @@ func (s *Syncer) RefreshIssue(ctx context.Context, issueID string) error {
 	}
 	if n == 0 {
 		return fmt.Errorf("refreshing linear issue %s: not found", issueID)
+	}
+	// The upsert leaves the Slack ids empty; stamp them as a pass does, so an
+	// approved assign shows its Slack assignee at once.
+	if _, err := s.db.BackfillLinearSlackIDs(s.accountID); err != nil {
+		return fmt.Errorf("refreshing linear issue %s: %w", issueID, err)
 	}
 	filter := map[string]any{"issue": map[string]any{"id": map[string]any{"eq": issueID}}}
 	if err := s.syncCommentsMatching(ctx, filter); err != nil {

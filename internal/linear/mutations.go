@@ -117,6 +117,32 @@ func (c *Client) FetchLabels(ctx context.Context, teamID string) ([]Label, error
 		map[string]any{"team": map[string]any{"id": map[string]any{"eq": teamID}}},
 		map[string]any{"team": map[string]any{"null": true}},
 	}}
+	labels, err := c.fetchLabels(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("fetching linear labels of team %s: %w", teamID, err)
+	}
+	return labels, nil
+}
+
+// fetchTeamLabels lists the team's own labels, without the workspace ones.
+func (c *Client) fetchTeamLabels(ctx context.Context, teamID string) ([]Label, error) {
+	labels, err := c.fetchLabels(ctx, map[string]any{"team": map[string]any{"id": map[string]any{"eq": teamID}}})
+	if err != nil {
+		return nil, fmt.Errorf("fetching linear labels of team %s: %w", teamID, err)
+	}
+	return labels, nil
+}
+
+// fetchWorkspaceLabels lists the workspace labels (no team).
+func (c *Client) fetchWorkspaceLabels(ctx context.Context) ([]Label, error) {
+	labels, err := c.fetchLabels(ctx, map[string]any{"team": map[string]any{"null": true}})
+	if err != nil {
+		return nil, fmt.Errorf("fetching linear workspace labels: %w", err)
+	}
+	return labels, nil
+}
+
+func (c *Client) fetchLabels(ctx context.Context, filter map[string]any) ([]Label, error) {
 	var labels []Label
 	err := paginate(ctx, func(ctx context.Context, after *string) (pageInfo, error) {
 		var out labelsData
@@ -128,10 +154,7 @@ func (c *Client) FetchLabels(ctx context.Context, teamID string) ([]Label, error
 		}
 		return out.IssueLabels.PageInfo, nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("fetching linear labels of team %s: %w", teamID, err)
-	}
-	return labels, nil
+	return labels, err
 }
 
 // FetchUsers lists the workspace members.

@@ -12,7 +12,7 @@ Authorization-code flow with PKCE (no client secret). The client id comes from `
 
 ## API key (2026-10-18, #694)
 
-An alternative to OAuth, for a workspace where the owner prefers a personal API key: `watchtower linear add --api-key` / `login --api-key` read the key from stdin (prompt `Linear API key: `, an empty key is refused). The token file carries `token_type: "api_key"`; the client sends it as a bare `Authorization` value (no `Bearer`), never refreshes it (no refresh lock), and treats a 401 as `ErrAuthRevoked` (the account goes `revoked`, LINEAR-03). `add` identifies the workspace with `FetchViewerWithToken` as for OAuth. `remove` deletes the token file and disables the account but revokes nothing at Linear: the owner revokes the key in Linear's settings. `linear accounts` shows `auth` (`oauth`|`api_key`) in text and `--json`.
+An alternative to OAuth, for a workspace where the owner prefers a personal API key: `watchtower linear add --api-key` / `login --api-key` read the key from stdin (prompt `Linear API key: `, an empty key is refused). The token file carries `token_type: "api_key"`; the client sends it as a bare `Authorization` value (no `Bearer`), never refreshes it (no refresh lock), and treats a 401 as `ErrAuthRevoked` (the account goes `revoked`, LINEAR-03). `add` identifies the workspace with `FetchViewerWithToken` as for OAuth. `remove` deletes the token file and disables the account but revokes nothing at Linear: the owner revokes the key in Linear's settings. `linear accounts` shows `auth` (`oauth`|`api_key`, empty with no token file, `error` for an unreadable or corrupt one) in text and `--json`.
 
 ## Sync
 
@@ -39,7 +39,7 @@ Read the migration for the exact column lists; the owner-open query shape is pin
 
 ## Mirrors for the write tools (migration 00142)
 
-`linear_workflow_states` and `linear_labels` hold each selected team's workflow states and labels. They are refreshed per selected team on every sync pass; a failure fails that team and leaves its watermark unmoved. `Syncer.RefreshIssue` refetches one issue (and its comments) by id and moves no cursor; the write tools call it after a successful write (non-fatal). Contract note: `TestSyncer_MirrorsStatesAndLabelsForSelectedTeams`, `TestSyncer_RefreshIssueNoWatermark`.
+`linear_workflow_states` and `linear_labels` hold each selected team's workflow states and labels. They are refreshed per selected team on every sync pass (the workspace labels once per pass, by the first team that syncs); a failure fails that team and leaves its watermark unmoved (guard `TestLinear01_StatesLabelsFailureHoldsWatermark`). `Syncer.RefreshIssue` refetches one issue (and its comments) by id, stamps the Slack ids (`db.BackfillLinearSlackIDs`) and moves no cursor; the write tools call it after a successful write (non-fatal). Contract note: `TestSyncer_MirrorsStatesAndLabelsForSelectedTeams`, `TestSyncer_WorkspaceLabelsOncePerPass`, `TestSyncer_RefreshIssueNoWatermark`, `TestSyncer_RefreshIssueStampsSlackIDs`.
 
 ## Tools (2026-10-18, #694; spec `docs/superpowers/specs/2026-10-18-linear-automation-tools-design.md`)
 

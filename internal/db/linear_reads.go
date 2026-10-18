@@ -26,11 +26,7 @@ type LinearIssueFilter struct {
 // first. TeamKey is the issue's current team; StateName and AssigneeEmail
 // match case-insensitively.
 func (db *DB) ListLinearIssues(f LinearIssueFilter) ([]LinearIssue, error) {
-	q := `SELECT account_id, id, key, previous_keys, team_id, team_key, title,
-		description_text, state_name, state_type, status_category, state_changed_at, assignee_id, assignee_email,
-		assignee_display_name, creator_id, creator_email, creator_display_name, priority, estimate, due_date,
-		cycle_id, project_id, parent_id, labels, url, created_at, updated_at, completed_at, canceled_at, raw_json,
-		is_deleted
+	q := `SELECT ` + linearIssueColumns + `
 		FROM linear_issues WHERE is_deleted = 0`
 	var args []any
 	if len(f.AccountIDs) > 0 {
@@ -74,23 +70,7 @@ func (db *DB) ListLinearIssues(f LinearIssueFilter) ([]LinearIssue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing linear issues: %w", err)
 	}
-	defer rows.Close()
-	var out []LinearIssue
-	for rows.Next() {
-		var i LinearIssue
-		var prev, labels string
-		if err := rows.Scan(&i.AccountID, &i.ID, &i.Key, &prev, &i.TeamID, &i.TeamKey, &i.Title,
-			&i.DescriptionText, &i.StateName, &i.StateType, &i.StatusCategory, &i.StateChangedAt, &i.AssigneeID, &i.AssigneeEmail,
-			&i.AssigneeDisplayName, &i.CreatorID, &i.CreatorEmail, &i.CreatorDisplayName, &i.Priority, &i.Estimate, &i.DueDate,
-			&i.CycleID, &i.ProjectID, &i.ParentID, &labels, &i.URL, &i.CreatedAt, &i.UpdatedAt, &i.CompletedAt, &i.CanceledAt, &i.RawJSON,
-			&i.IsDeleted); err != nil {
-			return nil, fmt.Errorf("scanning linear issue: %w", err)
-		}
-		i.PreviousKeys = parseJSONList(prev)
-		i.Labels = parseJSONList(labels)
-		out = append(out, i)
-	}
-	return out, rows.Err()
+	return scanLinearIssues(rows)
 }
 
 func sqlPlaceholders(n int) string {

@@ -26,6 +26,24 @@ final class ReactionToolCatalogTests: XCTestCase {
         XCTAssertEqual(ReactionToolCatalog.title(for: "remind_me"), "Remind me")
     }
 
+    /// The five Linear writes are named on approval cards, notifications and
+    /// Home, always ask, and stay out of the reaction dictionary.
+    func testLinearWritesHaveTitlesButAreNotReactionTools() {
+        let tools = ["create_linear_issue", "add_linear_comment", "transition_linear_issue",
+                     "assign_linear_issue", "update_linear_issue"]
+        for tool in tools {
+            guard let info = ReactionToolCatalog.info(for: tool) else {
+                XCTFail("\(tool) has no catalog entry")
+                continue
+            }
+            XCTAssertNotEqual(info.title, tool, "\(tool) must read as words, not the tool id")
+            XCTAssertTrue(info.title.contains("Linear"), tool)
+            XCTAssertEqual(info.destination, "Linear", tool)
+            XCTAssertTrue(info.alwaysAsks, tool)
+            XCTAssertFalse(ReactionDictionaryTools.all.contains(tool), tool)
+        }
+    }
+
     func testUnknownToolFallsBackToItsID() {
         XCTAssertNil(ReactionToolCatalog.info(for: "frobnicate"))
         XCTAssertEqual(ReactionToolCatalog.title(for: "frobnicate"), "frobnicate")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -350,11 +351,31 @@ func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.D
 	return nil
 }
 
-// acquireLinearToken returns the credential for add/login: a personal API key
-// read from stdin with --api-key (hidden prompt on a terminal, one line from a
-// pipe, never argv), otherwise the OAuth browser flow.
-func acquireLinearToken(cmd *cobra.Command) (*linear.Token, error) {
+// linearCredentialFlow is the credential step of add/login, prepared up front
+// so a missing OAuth client id fails before anything else runs.
+type linearCredentialFlow struct {
+	apiKey   bool
+	oauthCfg linear.OAuthConfig
+}
+
+func prepareLinearCredential(cmd *cobra.Command) (linearCredentialFlow, error) {
 	if useKey, _ := cmd.Flags().GetBool("api-key"); useKey {
+		return linearCredentialFlow{apiKey: true}, nil
+	}
+	oauthCfg, err := linearLoginConfig()
+	if err != nil {
+		return linearCredentialFlow{}, err
+	}
+	return linearCredentialFlow{oauthCfg: oauthCfg}, nil
+}
+
+// acquire returns the credential for add/login: a personal API key read from
+// stdin with --api-key (hidden prompt on a terminal, one line from a pipe,
+// never argv), otherwise the OAuth browser flow. Callers open the database
+// and resolve the account first, so a bad --account or a DB failure never
+// costs the owner a consent screen or drops a fresh token unused.
+func (f linearCredentialFlow) acquire(cmd *cobra.Command) (*linear.Token, error) {
+	if f.apiKey {
 		key, err := readSecret(cmd, "Linear API key: ")
 		if err != nil {
 			return nil, fmt.Errorf("reading API key: %w", err)
@@ -364,12 +385,8 @@ func acquireLinearToken(cmd *cobra.Command) (*linear.Token, error) {
 		}
 		return linear.APIKeyToken(key), nil
 	}
-	oauthCfg, err := linearLoginConfig()
-	if err != nil {
-		return nil, err
-	}
 	opts := linearLoginOptionsFromFlags(cmd)
-	token, err := linearLogin(cmd.Context(), oauthCfg, cmd.OutOrStdout(), opts)
+	token, err := linearLogin(cmd.Context(), f.oauthCfg, cmd.OutOrStdout(), opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return nil, fmt.Errorf("linear login: %w", err)
@@ -378,7 +395,7 @@ func acquireLinearToken(cmd *cobra.Command) (*linear.Token, error) {
 }
 
 func runLinearAdd(cmd *cobra.Command, _ []string) error {
-	token, err := acquireLinearToken(cmd)
+	flow, err := prepareLinearCredential(cmd)
 	if err != nil {
 		return err
 	}
@@ -387,6 +404,11 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer database.Close()
+
+	token, err := flow.acquire(cmd)
+	if err != nil {
+		return err
+	}
 
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
@@ -409,7 +431,7 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 }
 
 func runLinearLogin(cmd *cobra.Command, _ []string) error {
-	token, err := acquireLinearToken(cmd)
+	flow, err := prepareLinearCredential(cmd)
 	if err != nil {
 		return err
 	}
@@ -420,6 +442,10 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 
 	account, err := resolveLinearAccount(database, linearFlagAccount)
+	if err != nil {
+		return err
+	}
+	token, err := flow.acquire(cmd)
 	if err != nil {
 		return err
 	}
@@ -476,11 +502,16 @@ type linearAccountJSON struct {
 }
 
 // linearAuthKind reads the credential kind from the account's token file:
-// "oauth", "api_key", or "" when the file is missing or unreadable.
+// "oauth", "api_key", "" when there is no token file, or "error" when the file
+// exists but cannot be read or parsed, so a corrupt credential never shows as
+// a blank one.
 func linearAuthKind(workspaceDir string, accountID int64) string {
 	tok, err := linear.NewTokenStore(workspaceDir, accountID).Load()
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return ""
+	}
+	if err != nil {
+		return "error"
 	}
 	if tok.IsAPIKey() {
 		return linear.TokenTypeAPIKey

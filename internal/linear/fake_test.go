@@ -38,6 +38,8 @@ type fakeLinear struct {
 	failIssueIDs       bool                        // every moved-issue id lookup answers a GraphQL error
 	states             map[string][]map[string]any // team id -> workflow states
 	labels             []map[string]any            // team + workspace labels
+	failStates         bool                        // every workflow-states call answers a GraphQL error
+	failLabels         bool                        // every labels call answers a GraphQL error
 }
 
 type fakeRequest struct {
@@ -129,9 +131,17 @@ func (f *fakeLinear) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		data = map[string]any{"comments": pageAt(f.commentPages, req.Variables["after"])}
 	case "states":
+		if f.failStates {
+			writeGraphQLError(w, "states unavailable")
+			return
+		}
 		team, _ := req.Variables["team"].(string)
 		data = map[string]any{"team": map[string]any{"states": map[string]any{"nodes": orEmpty(f.states[team])}}}
 	case "labels":
+		if f.failLabels {
+			writeGraphQLError(w, "labels unavailable")
+			return
+		}
 		data = map[string]any{"issueLabels": onePage(f.labels)}
 	case "planning":
 		if f.failPlanning {
@@ -306,4 +316,23 @@ func (f *fakeLinear) stateRequestTeams() []string {
 		}
 	}
 	return out
+}
+
+// workspaceLabelRequests counts the labels queries that asked for the
+// workspace labels only (filter team null).
+func (f *fakeLinear) workspaceLabelRequests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.requests {
+		if r.Kind != "labels" {
+			continue
+		}
+		filter, _ := r.Vars["filter"].(map[string]any)
+		team, _ := filter["team"].(map[string]any)
+		if team["null"] == true {
+			n++
+		}
+	}
+	return n
 }

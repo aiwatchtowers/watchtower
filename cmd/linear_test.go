@@ -467,7 +467,7 @@ func TestLinearLogin_APIKeyWrongWorkspaceRefused(t *testing.T) {
 	assert.True(t, tok.IsAPIKey())
 }
 
-func TestLinearAccounts_JSONAuth(t *testing.T) {
+func TestLinear03_AccountsJSONAuth(t *testing.T) {
 	dir := t.TempDir()
 	database := db.OpenTestDB(t)
 	oauthID, err := database.CreateLinearAccount("oauth")
@@ -476,20 +476,24 @@ func TestLinearAccounts_JSONAuth(t *testing.T) {
 	require.NoError(t, err)
 	_, err = database.CreateLinearAccount("nofile")
 	require.NoError(t, err)
+	corruptID, err := database.CreateLinearAccount("corrupt")
+	require.NoError(t, err)
 	require.NoError(t, linear.NewTokenStore(dir, oauthID).Save(&linear.Token{AccessToken: "a", RefreshToken: "r"}))
 	require.NoError(t, linear.NewTokenStore(dir, keyID).Save(linear.APIKeyToken("k")))
+	require.NoError(t, os.WriteFile(linear.NewTokenStore(dir, corruptID).Path(), []byte("{not json"), 0o600))
 
 	var buf bytes.Buffer
 	require.NoError(t, printLinearAccounts(&buf, database, dir, true))
 	var rows []map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
-	require.Len(t, rows, 3)
+	require.Len(t, rows, 4)
 	assert.Equal(t, "oauth", rows[0]["auth"])
 	assert.Equal(t, "api_key", rows[1]["auth"])
-	assert.Equal(t, "", rows[2]["auth"])
+	assert.Equal(t, "", rows[2]["auth"], "no token file")
+	assert.Equal(t, "error", rows[3]["auth"], "a corrupt token file is not shown as blank")
 }
 
-func TestLinearRemove_APIKeySkipsRevoke(t *testing.T) {
+func TestLinear03_RemoveAPIKeySkipsRevoke(t *testing.T) {
 	cfg, database := linearCmdFixture(t)
 	setLinearFlagAccount(t, 0)
 	id, err := database.CreateLinearAccount("Work")
@@ -508,4 +512,56 @@ func TestLinearRemove_APIKeySkipsRevoke(t *testing.T) {
 	assert.False(t, store.Exists())
 	assert.Contains(t, errOut.String(), "revoke it in Linear's settings")
 	assert.NotContains(t, out.String()+errOut.String(), "lin_api_x")
+}
+
+// failingReader fails the test on any read: a credential must not be asked
+// for before the account is resolved.
+type failingReader struct{ t *testing.T }
+
+func (r failingReader) Read([]byte) (int, error) {
+	r.t.Fatal("stdin must not be read before the account is resolved")
+	return 0, io.EOF
+}
+
+func TestLinearLogin_MissingAccountFailsBeforeCredential(t *testing.T) {
+	_, _ = linearCmdFixture(t)
+	setLinearFlagAccount(t, 999)
+	t.Setenv("WATCHTOWER_LINEAR_CLIENT_ID", "client-x")
+	oldLogin := linearLogin
+	t.Cleanup(func() { linearLogin = oldLogin })
+	linearLogin = func(context.Context, linear.OAuthConfig, io.Writer, linear.LoginOptions) (*linear.Token, error) {
+		t.Fatal("the OAuth flow must not start for a missing account")
+		return nil, nil
+	}
+
+	cmd, _, _ := newLinearCmd(context.Background())
+	cmd.Flags().Bool("api-key", false, "")
+	require.Error(t, runLinearLogin(cmd, nil))
+
+	cmd, _, _ = newLinearKeyCmd(t, "")
+	cmd.SetIn(failingReader{t})
+	require.Error(t, runLinearLogin(cmd, nil))
+}
+
+func TestLinearAdd_DBFailureBeforeCredential(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	old := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "config.yaml") // no workspace configured
+	t.Cleanup(func() { flagConfig = old })
+	t.Setenv("WATCHTOWER_LINEAR_CLIENT_ID", "client-x")
+	oldLogin := linearLogin
+	t.Cleanup(func() { linearLogin = oldLogin })
+	linearLogin = func(context.Context, linear.OAuthConfig, io.Writer, linear.LoginOptions) (*linear.Token, error) {
+		t.Fatal("the OAuth flow must not start when the database cannot be opened")
+		return nil, nil
+	}
+
+	cmd, _, _ := newLinearCmd(context.Background())
+	cmd.Flags().Bool("api-key", false, "")
+	cmd.Flags().String("label", "", "")
+	require.Error(t, runLinearAdd(cmd, nil))
+
+	cmd, _, _ = newLinearKeyCmd(t, "")
+	cmd.SetIn(failingReader{t})
+	require.Error(t, runLinearAdd(cmd, nil))
 }

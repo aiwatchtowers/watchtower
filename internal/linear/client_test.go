@@ -255,7 +255,7 @@ func newAPIKeyClient(t *testing.T, gql http.HandlerFunc) (*Client, *atomic.Int32
 	return c, &tokenCalls
 }
 
-func TestClient_APIKeySendsBareAuthorization(t *testing.T) {
+func TestLinear02_APIKeySendsBareAuthorization(t *testing.T) {
 	c, _ := newAPIKeyClient(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "lin_api_x", r.Header.Get("Authorization"))
 		_, _ = w.Write([]byte(`{"data":{}}`))
@@ -263,7 +263,7 @@ func TestClient_APIKeySendsBareAuthorization(t *testing.T) {
 	require.NoError(t, c.Do(context.Background(), `query { viewer { id } }`, nil, &struct{}{}))
 }
 
-func TestClient_APIKeyNeverRefreshes(t *testing.T) {
+func TestLinear02_APIKeyNeverRefreshes(t *testing.T) {
 	c, tokenCalls := newAPIKeyClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"data":{}}`))
 	})
@@ -272,7 +272,7 @@ func TestClient_APIKeyNeverRefreshes(t *testing.T) {
 	assert.Zero(t, tokenCalls.Load())
 }
 
-func TestClient_APIKey401IsAuthRevoked(t *testing.T) {
+func TestLinear03_APIKey401IsAuthRevoked(t *testing.T) {
 	var gqlCalls atomic.Int32
 	c, tokenCalls := newAPIKeyClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		gqlCalls.Add(1)
@@ -284,7 +284,7 @@ func TestClient_APIKey401IsAuthRevoked(t *testing.T) {
 	assert.Equal(t, int32(1), gqlCalls.Load())
 }
 
-func TestTokenStore_APIKeyRoundTrip(t *testing.T) {
+func TestLinear02_APIKeyTokenRoundTrip(t *testing.T) {
 	store := NewTokenStore(t.TempDir(), 7)
 	require.NoError(t, store.Save(APIKeyToken(" lin_api_x ")))
 	got, err := store.Load()
