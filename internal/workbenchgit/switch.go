@@ -115,12 +115,65 @@ func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult
 	case target.Worktree != "":
 		res.Refused, res.RefusedDetail = RefusedCheckedOutElsewhere, target.Worktree
 		return res
+	}
+	res.guardedSwitch(ctx, o, r, st, req, target.Name)
+	return res
+}
+
+// Checkout creates the local branch req.Branch tracking origin's branch of
+// that name — one of ListBranches' RemoteOnly — and switches to it, behind
+// the same guards and confirmations as Switch: git present, an exact
+// remote-only name (no local branch has it), no operation in progress, then
+// uncommitted changes without req.Stash and a running agent without
+// req.ConfirmAgent. It never forces, discards, resets or cleans; nothing is
+// fetched (the remote-tracking ref is the last fetch's).
+func Checkout(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult) {
+	res = SwitchResult{Branch: req.Branch, NeedsConfirmation: []string{}}
+	st, r := readStatus(ctx, o)
+	res.Status, res.Changes = st, st.Changes
+	if !res.start(st) {
+		return res
+	}
+	branches, err := r.branches(ctx, st.TopLevel)
+	if err != nil {
+		res.Error = gitError(err)
+		return res
+	}
+	if _, found := findBranch(branches, req.Branch); found {
+		res.Refused, res.RefusedDetail = RefusedExists, "a local branch is already named "+req.Branch
+		return res
+	}
+	remote, err := r.remoteOnly(ctx, branches)
+	if err != nil {
+		res.Error = gitError(err)
+		return res
+	}
+	target, found := findRemoteBranch(remote, req.Branch)
+	if !found {
+		res.Refused, res.RefusedDetail = RefusedUnknownBranch, "no remote-only branch of "+Remote+" is named "+req.Branch
+		return res
+	}
+	res.guardedSwitch(ctx, o, r, st, req,
+		"--track=direct", "-c", target.Name, "refs/remotes/"+target.Ref)
+	if res.Switched {
+		res.Created = true
+	}
+	return res
+}
+
+// guardedSwitch is the rest of a switch or checkout to the local branch
+// res.Branch: no operation in progress, the owner's confirmations, then the
+// stash and `git switch --no-guess --no-overwrite-ignore <switchArgs>`
+// (without --no-overwrite-ignore git overwrites an ignored file the target
+// branch tracks), putting the stash back when HEAD did not move.
+func (res *SwitchResult) guardedSwitch(ctx context.Context, o Options, r *repo, st Status, req SwitchRequest, switchArgs ...string) {
+	switch {
 	case st.Operation != "":
 		res.Refused, res.RefusedDetail = RefusedOperationInProgress, st.Operation
-		return res
+		return
 	case st.Unmerged > 0:
 		res.Refused, res.RefusedDetail = RefusedOperationInProgress, "unmerged paths"
-		return res
+		return
 	}
 	if st.Dirty && !req.Stash {
 		res.NeedsConfirmation = append(res.NeedsConfirmation, NeedUncommitted)
@@ -129,26 +182,25 @@ func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult
 		res.NeedsConfirmation = append(res.NeedsConfirmation, NeedAgent)
 	}
 	if len(res.NeedsConfirmation) > 0 {
-		return res
+		return
 	}
 	// From here on git may write: the envelope carries the status after.
 	defer func() { res.Status = statusAfter(ctx, o) }()
 	if st.Dirty {
 		if !res.stash(ctx, r, st) {
-			return res
+			return
 		}
 	}
-	// git otherwise overwrites an ignored file the target branch tracks.
-	if _, err := r.git(ctx, "switch", "--no-guess", "--no-overwrite-ignore", target.Name); err != nil {
-		if !r.headIs(ctx, target.Name) {
+	args := append([]string{"switch", "--no-guess", "--no-overwrite-ignore"}, switchArgs...)
+	if _, err := r.git(ctx, args...); err != nil {
+		if !r.headIs(ctx, res.Branch) {
 			res.Error = gitError(err)
 			res.restore(ctx, r)
-			return res
+			return
 		}
 		res.Warning = gitError(err)
 	}
 	res.Switched = true
-	return res
 }
 
 // Create creates the branch name at HEAD and switches to it. Nothing in the
@@ -227,6 +279,20 @@ func findBranch(branches []Branch, name string) (Branch, bool) {
 		}
 	}
 	return Branch{}, false
+}
+
+// findRemoteBranch matches name exactly against the remote-only branches;
+// an option-like name never matches.
+func findRemoteBranch(branches []RemoteBranch, name string) (RemoteBranch, bool) {
+	if name == "" || strings.HasPrefix(name, "-") {
+		return RemoteBranch{}, false
+	}
+	for _, b := range branches {
+		if b.Name == name {
+			return b, true
+		}
+	}
+	return RemoteBranch{}, false
 }
 
 // statusAfter reads the status once git may have written, on its own
