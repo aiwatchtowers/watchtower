@@ -329,7 +329,7 @@ func TestBuildProjectMap_SlackLinks(t *testing.T) {
 
 	// Slack links: 2 mentions, 1 decision.
 	trackID := 42
-	if err := d.UpsertJiraSlackLink(db.JiraSlackLink{
+	if err := d.UpsertIssueSlackLink(db.IssueSlackLink{
 		IssueKey:  "PROJ-30",
 		ChannelID: "C001",
 		MessageTS: "1234.5678",
@@ -338,7 +338,7 @@ func TestBuildProjectMap_SlackLinks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("inserting slack link: %v", err)
 	}
-	if err := d.UpsertJiraSlackLink(db.JiraSlackLink{
+	if err := d.UpsertIssueSlackLink(db.IssueSlackLink{
 		IssueKey:  "PROJ-31",
 		ChannelID: "C002",
 		MessageTS: "2345.6789",

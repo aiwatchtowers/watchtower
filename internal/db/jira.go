@@ -708,167 +708,6 @@ func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
 	return states, rows.Err()
 }
 
-// Each link kind has its own identity and therefore its own conflict target,
-// one per partial unique index from migration 00067: a mention is identified by
-// the message it was found in, a track link by its track, a decision link by its
-// digest. A single shared target made a track link and a decision link for the
-// same issue key and channel the same physical row, because neither of them
-// writes a message_ts. The merge semantics within a kind are unchanged.
-const (
-	upsertJiraSlackLinkMention = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(issue_key, channel_id, message_ts) WHERE link_type = 'mention' DO UPDATE SET
-			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
-			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
-			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
-
-	upsertJiraSlackLinkTrack = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(issue_key, track_id) WHERE link_type = 'track' DO UPDATE SET
-			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
-			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
-			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
-
-	upsertJiraSlackLinkDecision = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(issue_key, digest_id) WHERE link_type = 'decision' DO UPDATE SET
-			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
-			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
-			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
-)
-
-// jiraSlackLinkUpsert resolves a link to the statement matching its kind's own
-// partial unique index, returning the link with its kind normalised.
-//
-// A kind with no identity has no dedup: its rows match no partial index, so
-// every write inserts. An empty LinkType is therefore normalised to "mention"
-// (the column's own default) rather than written through — it is what a caller
-// gets by forgetting a field — and any other value is refused outright instead
-// of growing the table without bound.
-func jiraSlackLinkUpsert(link JiraSlackLink) (JiraSlackLink, string, error) {
-	switch link.LinkType {
-	case "", "mention":
-		link.LinkType = "mention"
-		return link, upsertJiraSlackLinkMention, nil
-	case "track":
-		return link, upsertJiraSlackLinkTrack, nil
-	case "decision":
-		return link, upsertJiraSlackLinkDecision, nil
-	default:
-		return link, "", fmt.Errorf("upserting jira slack link %s: unknown link_type %q", link.IssueKey, link.LinkType)
-	}
-}
-
-// UpsertJiraSlackLink inserts or updates a Jira-Slack link, conflicting on the
-// identity of the link's own kind.
-func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
-	link, query, err := jiraSlackLinkUpsert(link)
-	if err != nil {
-		return err
-	}
-	if _, err := db.Exec(query,
-		link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType); err != nil {
-		return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
-	}
-	return nil
-}
-
-// UpsertJiraSlackLinkBatch writes a batch of Jira-Slack links within an
-// existing transaction, preparing one statement per link kind present (the
-// UpsertMessageBatch shape). Semantics per link are identical to
-// UpsertJiraSlackLink; the difference is that a whole page of links costs one
-// commit instead of one per link. That matters on the message-sync path, where
-// SetMaxOpenConns(1) makes every separate write serialise against the sync's
-// own.
-//
-// Every link is resolved to its kind's statement BEFORE any of them executes,
-// so a batch carrying one unknown link_type is refused whole rather than
-// leaving the links ahead of it written into the caller's transaction — the
-// caller should not have to rely on its own rollback to get that.
-func (db *DB) UpsertJiraSlackLinkBatch(tx *sql.Tx, links []JiraSlackLink) error {
-	if tx == nil {
-		return fmt.Errorf("UpsertJiraSlackLinkBatch: nil transaction")
-	}
-
-	type resolved struct {
-		link  JiraSlackLink
-		query string
-	}
-	pending := make([]resolved, 0, len(links))
-	for _, link := range links {
-		link, query, err := jiraSlackLinkUpsert(link)
-		if err != nil {
-			return err
-		}
-		pending = append(pending, resolved{link: link, query: query})
-	}
-
-	stmts := make(map[string]*sql.Stmt, 3)
-	defer func() {
-		for _, stmt := range stmts {
-			stmt.Close()
-		}
-	}()
-
-	for _, p := range pending {
-		link, query := p.link, p.query
-		stmt, ok := stmts[query]
-		if !ok {
-			prepared, err := tx.Prepare(query)
-			if err != nil {
-				return fmt.Errorf("preparing jira slack link upsert: %w", err)
-			}
-			stmt = prepared
-			stmts[query] = stmt
-		}
-		if _, err := stmt.Exec(
-			link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType); err != nil {
-			return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
-		}
-	}
-	return nil
-}
-
-// GetJiraSlackLinksByIssue returns all Slack links for a given Jira issue key.
-func (db *DB) GetJiraSlackLinksByIssue(issueKey string) ([]JiraSlackLink, error) {
-	rows, err := db.Query(`SELECT id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at
-		FROM jira_slack_links WHERE issue_key = ? ORDER BY detected_at DESC`, issueKey)
-	if err != nil {
-		return nil, fmt.Errorf("querying jira slack links by issue %s: %w", issueKey, err)
-	}
-	defer rows.Close()
-
-	var links []JiraSlackLink
-	for rows.Next() {
-		var l JiraSlackLink
-		if err := rows.Scan(&l.ID, &l.IssueKey, &l.ChannelID, &l.MessageTS, &l.TrackID, &l.DigestID, &l.LinkType, &l.DetectedAt); err != nil {
-			return nil, fmt.Errorf("scanning jira slack link: %w", err)
-		}
-		links = append(links, l)
-	}
-	return links, rows.Err()
-}
-
-// GetJiraSlackLinksByMessage returns all Jira links for a specific Slack message.
-func (db *DB) GetJiraSlackLinksByMessage(channelID, messageTS string) ([]JiraSlackLink, error) {
-	rows, err := db.Query(`SELECT id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at
-		FROM jira_slack_links WHERE channel_id = ? AND message_ts = ? ORDER BY detected_at DESC`, channelID, messageTS)
-	if err != nil {
-		return nil, fmt.Errorf("querying jira slack links by message: %w", err)
-	}
-	defer rows.Close()
-
-	var links []JiraSlackLink
-	for rows.Next() {
-		var l JiraSlackLink
-		if err := rows.Scan(&l.ID, &l.IssueKey, &l.ChannelID, &l.MessageTS, &l.TrackID, &l.DigestID, &l.LinkType, &l.DetectedAt); err != nil {
-			return nil, fmt.Errorf("scanning jira slack link: %w", err)
-		}
-		links = append(links, l)
-	}
-	return links, rows.Err()
-}
-
 // GetKnownProjectKeys returns distinct project keys from jira_issues and jira_boards.
 func (db *DB) GetKnownProjectKeys() ([]string, error) {
 	rows, err := db.Query(`SELECT DISTINCT project_key FROM jira_issues WHERE project_key != ''
@@ -924,12 +763,12 @@ func scanJiraIssue(scanner interface{ Scan(dest ...any) error }) (JiraIssue, err
 	return issue, err
 }
 
-// GetJiraIssuesForTrack returns Jira issues linked to a track via jira_slack_links.
+// GetJiraIssuesForTrack returns Jira issues linked to a track via issue_slack_links.
 func (db *DB) GetJiraIssuesForTrack(trackID int) ([]JiraIssue, error) {
 	rows, err := db.Query(`SELECT DISTINCT `+jiraIssueColumnsQualified+`
 		FROM jira_issues
-		JOIN jira_slack_links ON jira_slack_links.issue_key = jira_issues.key
-		WHERE jira_slack_links.track_id = ?
+		JOIN issue_slack_links ON issue_slack_links.tracker = 'jira' AND issue_slack_links.issue_key = jira_issues.key
+		WHERE issue_slack_links.track_id = ?
 		ORDER BY jira_issues.updated_at DESC`, trackID)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira issues for track %d: %w", trackID, err)
@@ -962,8 +801,8 @@ func (db *DB) GetJiraIssuesForTracks(trackIDs []int) (map[int][]JiraIssue, error
 		args[i] = id
 	}
 
-	linkRows, err := db.Query(`SELECT DISTINCT track_id, issue_key FROM jira_slack_links
-		WHERE track_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	linkRows, err := db.Query(`SELECT DISTINCT track_id, issue_key FROM issue_slack_links
+		WHERE tracker = 'jira' AND track_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira slack links for tracks: %w", err)
 	}
@@ -1011,12 +850,12 @@ func (db *DB) GetJiraIssuesForTracks(trackIDs []int) (map[int][]JiraIssue, error
 	return result, nil
 }
 
-// GetJiraIssuesForDigest returns Jira issues linked to a digest via jira_slack_links.
+// GetJiraIssuesForDigest returns Jira issues linked to a digest via issue_slack_links.
 func (db *DB) GetJiraIssuesForDigest(digestID int) ([]JiraIssue, error) {
 	rows, err := db.Query(`SELECT DISTINCT `+jiraIssueColumnsQualified+`
 		FROM jira_issues
-		JOIN jira_slack_links ON jira_slack_links.issue_key = jira_issues.key
-		WHERE jira_slack_links.digest_id = ?
+		JOIN issue_slack_links ON issue_slack_links.tracker = 'jira' AND issue_slack_links.issue_key = jira_issues.key
+		WHERE issue_slack_links.digest_id = ?
 		ORDER BY jira_issues.updated_at DESC`, digestID)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira issues for digest %d: %w", digestID, err)
@@ -1282,26 +1121,6 @@ func (db *DB) GetJiraResolvedIssuesForUser(slackID, from, to string, limit int) 
 		issues = append(issues, issue)
 	}
 	return issues, rows.Err()
-}
-
-// GetJiraSlackLinksByTrackID returns all Jira-Slack links for a given track ID.
-func (db *DB) GetJiraSlackLinksByTrackID(trackID int) ([]JiraSlackLink, error) {
-	rows, err := db.Query(`SELECT id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at
-		FROM jira_slack_links WHERE track_id = ? ORDER BY detected_at DESC`, trackID)
-	if err != nil {
-		return nil, fmt.Errorf("querying jira slack links by track %d: %w", trackID, err)
-	}
-	defer rows.Close()
-
-	var links []JiraSlackLink
-	for rows.Next() {
-		var l JiraSlackLink
-		if err := rows.Scan(&l.ID, &l.IssueKey, &l.ChannelID, &l.MessageTS, &l.TrackID, &l.DigestID, &l.LinkType, &l.DetectedAt); err != nil {
-			return nil, fmt.Errorf("scanning jira slack link by track: %w", err)
-		}
-		links = append(links, l)
-	}
-	return links, rows.Err()
 }
 
 // GetJiraDeliveryStats returns delivery metrics for a user in a date range.

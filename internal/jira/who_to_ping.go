@@ -66,7 +66,7 @@ func ComputeWhoToPing(d *db.DB, issue db.JiraIssue, chain []string) []PingTarget
 	// 4. Reporter.
 	addTarget(issue.ReporterSlackID, issue.ReporterDisplayName, "reporter")
 
-	// 5. Slack participants from jira_slack_links -> messages.
+	// 5. Slack participants from Jira issue_slack_links -> messages.
 	if len(targets) < maxPingTargets {
 		slackParticipants := fetchSlackParticipants(issue.Key, d)
 		for _, p := range slackParticipants {

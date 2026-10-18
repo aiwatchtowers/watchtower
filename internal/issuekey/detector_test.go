@@ -1,10 +1,9 @@
-package jira
+package issuekey
 
 import (
 	"testing"
 	"time"
 
-	"watchtower/internal/config"
 	"watchtower/internal/db"
 
 	"github.com/stretchr/testify/assert"
@@ -241,7 +240,7 @@ func TestKeyDetector_KnownKeysRefreshOnTTLExpiry(t *testing.T) {
 
 	// Still within the TTL — the stale-but-fresh-enough cached set is served,
 	// so NEW is not yet known.
-	clock = clock.Add(knownProjectKeysTTL - time.Minute)
+	clock = clock.Add(knownKeysTTL - time.Minute)
 	assert.Nil(t, d.DetectKeys("NEW-42"), "within the TTL, no reload happens")
 
 	// Past the TTL — a reload happens without any ResetCache call.
@@ -262,7 +261,7 @@ func TestKeyDetector_TTLReloadFailureKeepsServingStaleSet(t *testing.T) {
 
 	require.Equal(t, []string{"PROJ-1"}, d.DetectKeys("PROJ-1"), "populates the cache")
 
-	clock = clock.Add(knownProjectKeysTTL + time.Minute)
+	clock = clock.Add(knownKeysTTL + time.Minute)
 	_, err := database.Exec(`DROP TABLE jira_issues`)
 	require.NoError(t, err)
 
@@ -304,17 +303,4 @@ func TestKeyDetector_KeyLoadFailureDetectsNothing(t *testing.T) {
 	links, err := database.GetJiraSlackLinksByIssue("PROJ-123")
 	require.NoError(t, err)
 	assert.Empty(t, links, "nothing is written when the known-key set cannot be loaded")
-}
-
-// The gate lives in one place so a new call site cannot invent a different one:
-// cfg.Jira.Enabled and nothing else, false by default and flipped true by
-// `jira add`/`jira login`. Off must be the pre-wiring behaviour exactly — no
-// detector constructed, no key set ever loaded.
-func TestNewKeyDetectorIfEnabled_GatedOnJiraEnabled(t *testing.T) {
-	database := openTestDB(t)
-
-	assert.Nil(t, NewKeyDetectorIfEnabled(&config.Config{}, database),
-		"an install without Jira must get no detector")
-	assert.NotNil(t, NewKeyDetectorIfEnabled(&config.Config{Jira: config.JiraConfig{Enabled: true}}, database),
-		"an install with Jira connected must get a detector")
 }

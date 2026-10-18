@@ -224,9 +224,12 @@ final class JiraQueriesTests: XCTestCase {
             try issue(db, acct, "PROJ-2")
             try issue(db, acct, "PROJ-3") { $0.deleted = true }
             try db.execute(sql: """
-                INSERT INTO jira_slack_links (issue_key, track_id, link_type) VALUES
+                INSERT INTO issue_slack_links (issue_key, track_id, link_type) VALUES
                     ('PROJ-1', 1, 'track'), ('PROJ-2', 1, 'track'), ('PROJ-1', 2, 'track'),
-                    ('PROJ-3', 2, 'track'), ('PROJ-2', 3, 'track')
+                    ('PROJ-3', 2, 'track'), ('PROJ-2', 3, 'track');
+                -- A Linear link on a key a Jira issue also carries is not a Jira link.
+                INSERT INTO issue_slack_links (tracker, issue_key, track_id, link_type) VALUES
+                    ('linear', 'PROJ-2', 2, 'track')
                 """)
         }
 
@@ -270,7 +273,7 @@ final class JiraQueriesTests: XCTestCase {
             // Older than the window: not counted.
             let old = since.timeIntervalSince1970 - 86400
             try TestDatabase.insertDigest(db, channelID: "C2", periodFrom: old, periodTo: old + 3600)
-            try db.execute(sql: "INSERT INTO jira_slack_links (issue_key, channel_id) VALUES ('PROJ-1', 'C1')")
+            try db.execute(sql: "INSERT INTO issue_slack_links (issue_key, channel_id) VALUES ('PROJ-1', 'C1')")
         }
 
         let rows = try queue.read { db in try JiraQueries.fetchChannelsWithoutJira(db, since: since) }

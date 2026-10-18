@@ -54,15 +54,18 @@ func TestSubLogger_KeepsPrefixOnParentStream(t *testing.T) {
 // never runs (AGENT-03) — widen the scan if that ever changes.
 //
 // KeyDetector is the one exception to the per-function rule: it has a
-// nil-returning gate constructor, so cmd/ wraps it once in newJiraKeyDetector
+// nil-returning gate constructor, so cmd/ wraps it once in newIssueKeyDetector
 // and the scan instead requires every other function to go through that
 // wrapper.
 func TestSyncWiring_EveryJiraComponentGetsTheDaemonLogger(t *testing.T) {
 	root := repoRootForPromptScan(t)
 	jiraFiles := parseGoFilesUnder(t, root, filepath.Join(root, "internal", "jira"))
+	// The issue-key detector moved to internal/issuekey (Linear plan 2); it is
+	// still a daemon component with a SetLogger seam, so it stays in the scan.
+	jiraFiles = append(jiraFiles, parseGoFilesUnder(t, root, filepath.Join(root, "internal", "issuekey"))...)
 	ctors := jiraSetLoggerConstructors(jiraFiles)
 	for _, want := range []string{"NewClient", "NewUserMapper", "NewBoardAnalyzer", "NewSyncer", "NewKeyDetector", "NewKeyDetectorIfEnabled"} {
-		require.Truef(t, ctors[want], "discovery missed jira.%s (found %v) — the scan is probably broken", want, sortedKeys(ctors))
+		require.Truef(t, ctors[want], "discovery missed jira/issuekey.%s (found %v) — the scan is probably broken", want, sortedKeys(ctors))
 	}
 
 	var syncFile *parsedGoFile
@@ -88,8 +91,8 @@ func TestSyncWiring_EveryJiraComponentGetsTheDaemonLogger(t *testing.T) {
 		for name, ctor := range bound {
 			constructions++
 			if strings.HasPrefix(ctor, "NewKeyDetector") {
-				if fd.Name.Name != "newJiraKeyDetector" {
-					t.Errorf("%s: construct the key detector via newJiraKeyDetector, not jira.%s", fd.Name.Name, ctor)
+				if fd.Name.Name != "newIssueKeyDetector" {
+					t.Errorf("%s: construct the key detector via newIssueKeyDetector, not issuekey.%s", fd.Name.Name, ctor)
 				}
 			}
 			if !setters[name] {
@@ -98,7 +101,7 @@ func TestSyncWiring_EveryJiraComponentGetsTheDaemonLogger(t *testing.T) {
 		}
 	}
 	// Coverage floor: client, mapper, syncer, analyzer in wireJiraSyncers plus
-	// the detector in newJiraKeyDetector.
+	// the detector in newIssueKeyDetector.
 	require.GreaterOrEqual(t, constructions, 5, "found too few jira constructions in cmd/sync.go — the scan is probably broken")
 }
 
@@ -170,7 +173,7 @@ func jiraCtorCall(n ast.Node, ctors map[string]bool) (*ast.CallExpr, string) {
 		return nil, ""
 	}
 	pkg, ok := sel.X.(*ast.Ident)
-	if !ok || pkg.Name != "jira" || !ctors[sel.Sel.Name] {
+	if !ok || (pkg.Name != "jira" && pkg.Name != "issuekey") || !ctors[sel.Sel.Name] {
 		return nil, ""
 	}
 	return call, sel.Sel.Name

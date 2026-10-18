@@ -69,7 +69,7 @@ func callsMethod(body ast.Node, receiver, method string) bool {
 // the defect this task removes, stated as the property rather than as a list of
 // today's call sites: jira.NewKeyDetector and both SetJiraKeyDetector hooks
 // shipped with ZERO production callers and stayed that way for the life of the
-// feature, so jira_slack_links was never written once. A sync path that writes
+// feature, so jira_slack_links (now issue_slack_links) was never written once. A sync path that writes
 // messages without the hook is that bug again, scoped to whatever that path
 // syncs — and permanently, because such a path advances search_last_date and
 // sync_state, so the daemon never revisits those messages and this wave is

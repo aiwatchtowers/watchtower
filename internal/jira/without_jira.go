@@ -11,7 +11,7 @@ import (
 )
 
 // WithoutJiraWarning represents a Slack channel with active discussions
-// that have no associated Jira issues linked via jira_slack_links.
+// that have no associated Jira issues linked via issue_slack_links.
 type WithoutJiraWarning struct {
 	TopicTitle    string `json:"topic_title"`
 	ChannelID     string `json:"channel_id"`
@@ -38,7 +38,7 @@ const minMessageCount = 10
 //  2. Query channel-level digests since `since`, aggregating per channel:
 //     distinct digest dates (days_discussed), total message_count,
 //     first/last created_at.
-//  3. Exclude channels that have any jira_slack_links in the period.
+//  3. Exclude channels that have any Jira issue_slack_links in the period.
 //  4. Apply thresholds: days_discussed >= 3 AND message_count >= 10.
 //  5. Resolve channel names and sort by days_discussed DESC, message_count DESC.
 func DetectWithoutJira(d *db.DB, cfg *config.Config, since time.Time) ([]WithoutJiraWarning, error) {
@@ -95,7 +95,7 @@ func DetectWithoutJira(d *db.DB, cfg *config.Config, since time.Time) ([]Without
 		return nil, nil
 	}
 
-	// Step 2: Batch-check which channels have jira_slack_links in the period.
+	// Step 2: Batch-check which channels have Jira issue_slack_links in the period.
 	channelIDs := make([]string, len(candidates))
 	for i, c := range candidates {
 		channelIDs[i] = c.channelID
@@ -112,8 +112,8 @@ func DetectWithoutJira(d *db.DB, cfg *config.Config, since time.Time) ([]Without
 		args = append(args, sinceISO)
 
 		linkRows, err := d.Query(`
-			SELECT DISTINCT channel_id FROM jira_slack_links
-			WHERE channel_id IN (`+strings.Join(placeholders, ",")+`) AND detected_at >= ?
+			SELECT DISTINCT channel_id FROM issue_slack_links
+			WHERE tracker = 'jira' AND channel_id IN (`+strings.Join(placeholders, ",")+`) AND detected_at >= ?
 		`, args...)
 		if err != nil {
 			return nil, fmt.Errorf("batch checking jira links: %w", err)

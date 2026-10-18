@@ -248,7 +248,7 @@ package enum JiraQueries {
         try JiraIssue.filter(Column("key") == key).fetchOne(db)
     }
 
-    /// Fetch all issues linked to a track via jira_slack_links.
+    /// Fetch all issues linked to a track via issue_slack_links.
     package static func fetchIssuesForTrack(
         _ db: Database,
         trackID: Int
@@ -258,7 +258,7 @@ package enum JiraQueries {
             sql: """
                 SELECT DISTINCT ji.*
                 FROM jira_issues ji
-                JOIN jira_slack_links jsl ON jsl.issue_key = ji.key
+                JOIN issue_slack_links jsl ON jsl.tracker = 'jira' AND jsl.issue_key = ji.key
                 WHERE jsl.track_id = ? AND ji.is_deleted = 0
                 ORDER BY ji.updated_at DESC
                 """,
@@ -277,7 +277,7 @@ package enum JiraQueries {
         let sql = """
             SELECT DISTINCT ji.*, jsl.track_id AS _track_id
             FROM jira_issues ji
-            JOIN jira_slack_links jsl ON jsl.issue_key = ji.key
+            JOIN issue_slack_links jsl ON jsl.tracker = 'jira' AND jsl.issue_key = ji.key
             WHERE jsl.track_id IN (\(placeholders)) AND ji.is_deleted = 0
             ORDER BY ji.updated_at DESC
             """
@@ -296,7 +296,7 @@ package enum JiraQueries {
         return result
     }
 
-    /// Fetch all issues linked to a digest via jira_slack_links.
+    /// Fetch all issues linked to a digest via issue_slack_links.
     package static func fetchIssuesForDigest(
         _ db: Database,
         digestID: Int
@@ -306,7 +306,7 @@ package enum JiraQueries {
             sql: """
                 SELECT DISTINCT ji.*
                 FROM jira_issues ji
-                JOIN jira_slack_links jsl ON jsl.issue_key = ji.key
+                JOIN issue_slack_links jsl ON jsl.tracker = 'jira' AND jsl.issue_key = ji.key
                 WHERE jsl.digest_id = ? AND ji.is_deleted = 0
                 ORDER BY ji.updated_at DESC
                 """,
@@ -342,9 +342,9 @@ package enum JiraQueries {
             db,
             sql: """
                 SELECT DISTINCT jsl.issue_key
-                FROM jira_slack_links jsl
+                FROM issue_slack_links jsl
                 JOIN jira_issues ji ON ji.key = jsl.issue_key
-                WHERE jsl.track_id = ? AND ji.is_deleted = 0
+                WHERE jsl.tracker = 'jira' AND jsl.track_id = ? AND ji.is_deleted = 0
                 ORDER BY jsl.issue_key
                 """,
             arguments: [trackID]
@@ -735,7 +735,7 @@ package enum JiraQueries {
         )
     }
 
-    /// Fetch the latest Slack message text referencing an issue (via jira_slack_links).
+    /// Fetch the latest Slack message text referencing an issue (via issue_slack_links).
     package static func fetchSlackContextForIssue(
         _ db: Database,
         issueKey: String
@@ -744,10 +744,10 @@ package enum JiraQueries {
             db,
             sql: """
                 SELECT m.text
-                FROM jira_slack_links jsl
+                FROM issue_slack_links jsl
                 JOIN messages m ON m.channel_id = jsl.channel_id
                                 AND m.ts = jsl.message_ts
-                WHERE jsl.issue_key = ?
+                WHERE jsl.tracker = 'jira' AND jsl.issue_key = ?
                   AND jsl.message_ts != ''
                 ORDER BY m.ts DESC
                 LIMIT 1
@@ -817,8 +817,8 @@ package enum JiraQueries {
               AND d.period_from >= ?
               AND d.channel_id NOT IN (
                   SELECT DISTINCT jsl.channel_id
-                  FROM jira_slack_links jsl
-                  WHERE jsl.channel_id != ''
+                  FROM issue_slack_links jsl
+                  WHERE jsl.tracker = 'jira' AND jsl.channel_id != ''
               )
             GROUP BY d.channel_id
             ORDER BY message_count DESC
@@ -982,8 +982,8 @@ package enum JiraQueries {
             db,
             sql: """
                 SELECT *
-                FROM jira_slack_links
-                WHERE issue_key IN (\(placeholders))
+                FROM issue_slack_links
+                WHERE tracker = 'jira' AND issue_key IN (\(placeholders))
                 ORDER BY detected_at DESC
                 """,
             arguments: StatementArguments(keys)

@@ -15,7 +15,7 @@ import (
 // track link, a decision link and every later track for the same issue key and
 // channel all landed on one row, each write discarding the previous one.
 
-func TestUpsertJiraSlackLink_TracksForSameKeyAndChannelCoexist(t *testing.T) {
+func TestUpsertIssueSlackLink_TracksForSameKeyAndChannelCoexist(t *testing.T) {
 	database := openTestDB(t)
 	SeedTestJiraAccount(t, database)
 	require.NoError(t, database.UpsertJiraIssue(JiraIssue{
@@ -25,10 +25,10 @@ func TestUpsertJiraSlackLink_TracksForSameKeyAndChannelCoexist(t *testing.T) {
 	}))
 
 	first, second := 41, 42
-	require.NoError(t, database.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, database.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-1", ChannelID: "1:C1", TrackID: &first, LinkType: "track",
 	}))
-	require.NoError(t, database.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, database.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-1", ChannelID: "1:C1", TrackID: &second, LinkType: "track",
 	}))
 
@@ -53,14 +53,14 @@ func TestUpsertJiraSlackLink_TracksForSameKeyAndChannelCoexist(t *testing.T) {
 	}
 }
 
-func TestUpsertJiraSlackLink_TrackAndDecisionCoexist(t *testing.T) {
+func TestUpsertIssueSlackLink_TrackAndDecisionCoexist(t *testing.T) {
 	database := openTestDB(t)
 
 	trackID, digestID := 7, 9
-	require.NoError(t, database.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, database.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-2", ChannelID: "1:C1", TrackID: &trackID, LinkType: "track",
 	}))
-	require.NoError(t, database.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, database.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-2", ChannelID: "1:C1", DigestID: &digestID, LinkType: "decision",
 	}))
 
@@ -76,16 +76,16 @@ func TestUpsertJiraSlackLink_TrackAndDecisionCoexist(t *testing.T) {
 		"link_type must not flip-flop between the two kinds")
 }
 
-func TestUpsertJiraSlackLink_RollupDecisionsKeepTheirDigest(t *testing.T) {
+func TestUpsertIssueSlackLink_RollupDecisionsKeepTheirDigest(t *testing.T) {
 	database := openTestDB(t)
 
 	// Daily/weekly rollups store decisions with an empty channel_id, so under a
 	// shared identity every rollup in the workspace collapsed onto one row.
 	daily, weekly := 100, 200
-	require.NoError(t, database.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, database.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-3", DigestID: &daily, LinkType: "decision",
 	}))
-	require.NoError(t, database.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, database.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-3", DigestID: &weekly, LinkType: "decision",
 	}))
 
@@ -101,14 +101,14 @@ func TestUpsertJiraSlackLink_RollupDecisionsKeepTheirDigest(t *testing.T) {
 	assert.Equal(t, map[int]bool{100: true, 200: true}, digests)
 }
 
-func TestUpsertJiraSlackLink_MentionStaysIdempotent(t *testing.T) {
+func TestUpsertIssueSlackLink_MentionStaysIdempotent(t *testing.T) {
 	database := openTestDB(t)
 
-	mention := JiraSlackLink{
+	mention := IssueSlackLink{
 		IssueKey: "PROJ-4", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention",
 	}
-	require.NoError(t, database.UpsertJiraSlackLink(mention))
-	require.NoError(t, database.UpsertJiraSlackLink(mention))
+	require.NoError(t, database.UpsertIssueSlackLink(mention))
+	require.NoError(t, database.UpsertIssueSlackLink(mention))
 
 	links, err := database.GetJiraSlackLinksByIssue("PROJ-4")
 	require.NoError(t, err)
@@ -123,10 +123,10 @@ func TestMigration00067DownUpCycle(t *testing.T) {
 	defer d.Close()
 
 	first, second := 41, 42
-	require.NoError(t, d.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, d.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-1", ChannelID: "1:C1", TrackID: &first, LinkType: "track",
 	}))
-	require.NoError(t, d.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, d.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-1", ChannelID: "1:C1", TrackID: &second, LinkType: "track",
 	}))
 
@@ -145,7 +145,7 @@ func TestMigration00067DownUpCycle(t *testing.T) {
 	require.NoError(t, goose.Up(d.DB, "migrations"))
 
 	third := 43
-	require.NoError(t, d.UpsertJiraSlackLink(JiraSlackLink{
+	require.NoError(t, d.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-1", ChannelID: "1:C1", TrackID: &third, LinkType: "track",
 	}))
 	links, err := d.GetJiraSlackLinksByIssue("PROJ-1")
@@ -155,12 +155,12 @@ func TestMigration00067DownUpCycle(t *testing.T) {
 
 // A link kind with no identity matches no partial index, so every write would
 // insert. An empty link_type is what a caller gets by forgetting a field.
-func TestUpsertJiraSlackLink_EmptyLinkTypeIsStoredAndDedupedAsMention(t *testing.T) {
+func TestUpsertIssueSlackLink_EmptyLinkTypeIsStoredAndDedupedAsMention(t *testing.T) {
 	database := openTestDB(t)
 
-	link := JiraSlackLink{IssueKey: "PROJ-5", ChannelID: "1:C1", MessageTS: "1000.001"}
-	require.NoError(t, database.UpsertJiraSlackLink(link))
-	require.NoError(t, database.UpsertJiraSlackLink(link))
+	link := IssueSlackLink{IssueKey: "PROJ-5", ChannelID: "1:C1", MessageTS: "1000.001"}
+	require.NoError(t, database.UpsertIssueSlackLink(link))
+	require.NoError(t, database.UpsertIssueSlackLink(link))
 
 	links, err := database.GetJiraSlackLinksByIssue("PROJ-5")
 	require.NoError(t, err)
@@ -168,10 +168,10 @@ func TestUpsertJiraSlackLink_EmptyLinkTypeIsStoredAndDedupedAsMention(t *testing
 	assert.Equal(t, "mention", links[0].LinkType)
 }
 
-func TestUpsertJiraSlackLink_UnknownLinkTypeIsRefused(t *testing.T) {
+func TestUpsertIssueSlackLink_UnknownLinkTypeIsRefused(t *testing.T) {
 	database := openTestDB(t)
 
-	err := database.UpsertJiraSlackLink(JiraSlackLink{
+	err := database.UpsertIssueSlackLink(IssueSlackLink{
 		IssueKey: "PROJ-6", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "sighting",
 	})
 	require.Error(t, err)
@@ -235,15 +235,15 @@ func TestMigration00067_DedupesLegacyRowsTheNewIndexesCannotHold(t *testing.T) {
 	}
 }
 
-// UpsertJiraSlackLinkBatch is the message-sync path's writer: same per-link
-// semantics as UpsertJiraSlackLink, one commit for the whole page. It must
+// UpsertIssueSlackLinkBatch is the message-sync path's writer: same per-link
+// semantics as UpsertIssueSlackLink, one commit for the whole page. It must
 // route each kind to its own conflict target — a batch that prepared one
 // statement for everything would silently give the other two kinds no dedup.
-func TestUpsertJiraSlackLinkBatch_RoutesEachKindToItsOwnIdentity(t *testing.T) {
+func TestUpsertIssueSlackLinkBatch_RoutesEachKindToItsOwnIdentity(t *testing.T) {
 	database := openTestDB(t)
 
 	trackID, digestID := 7, 9
-	links := []JiraSlackLink{
+	links := []IssueSlackLink{
 		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention"},
 		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.002", LinkType: "mention"},
 		// Each kind's second entry differs only outside that kind's own
@@ -257,7 +257,7 @@ func TestUpsertJiraSlackLinkBatch_RoutesEachKindToItsOwnIdentity(t *testing.T) {
 
 	tx, err := database.Begin()
 	require.NoError(t, err)
-	require.NoError(t, database.UpsertJiraSlackLinkBatch(tx, links))
+	require.NoError(t, database.UpsertIssueSlackLinkBatch(tx, links))
 	require.NoError(t, tx.Commit())
 
 	stored, err := database.GetJiraSlackLinksByIssue("PROJ-1")
@@ -273,16 +273,16 @@ func TestUpsertJiraSlackLinkBatch_RoutesEachKindToItsOwnIdentity(t *testing.T) {
 
 // Re-syncing a page re-processes its messages, so a repeated batch must dedupe
 // exactly as the single-link writer does.
-func TestUpsertJiraSlackLinkBatch_IsIdempotent(t *testing.T) {
+func TestUpsertIssueSlackLinkBatch_IsIdempotent(t *testing.T) {
 	database := openTestDB(t)
 
-	links := []JiraSlackLink{
+	links := []IssueSlackLink{
 		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention"},
 	}
 	for range 2 {
 		tx, err := database.Begin()
 		require.NoError(t, err)
-		require.NoError(t, database.UpsertJiraSlackLinkBatch(tx, links))
+		require.NoError(t, database.UpsertIssueSlackLinkBatch(tx, links))
 		require.NoError(t, tx.Commit())
 	}
 
@@ -300,12 +300,12 @@ func TestUpsertJiraSlackLinkBatch_IsIdempotent(t *testing.T) {
 // back. A rollback here would pin the test's own cleanup instead of the
 // function — the version of this test that rolled back passed even when the
 // batch wrote the first link before refusing the second.
-func TestUpsertJiraSlackLinkBatch_UnknownLinkTypeIsRefusedWholeBatch(t *testing.T) {
+func TestUpsertIssueSlackLinkBatch_UnknownLinkTypeIsRefusedWholeBatch(t *testing.T) {
 	database := openTestDB(t)
 
 	tx, err := database.Begin()
 	require.NoError(t, err)
-	err = database.UpsertJiraSlackLinkBatch(tx, []JiraSlackLink{
+	err = database.UpsertIssueSlackLinkBatch(tx, []IssueSlackLink{
 		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention"},
 		{IssueKey: "PROJ-2", ChannelID: "1:C1", MessageTS: "1000.002", LinkType: "sighting"},
 	})
@@ -318,9 +318,9 @@ func TestUpsertJiraSlackLinkBatch_UnknownLinkTypeIsRefusedWholeBatch(t *testing.
 	assert.Empty(t, stored, "the link ahead of the refused one must not have been written")
 }
 
-func TestUpsertJiraSlackLinkBatch_NilTransactionIsRefused(t *testing.T) {
+func TestUpsertIssueSlackLinkBatch_NilTransactionIsRefused(t *testing.T) {
 	database := openTestDB(t)
-	assert.Error(t, database.UpsertJiraSlackLinkBatch(nil, []JiraSlackLink{
+	assert.Error(t, database.UpsertIssueSlackLinkBatch(nil, []IssueSlackLink{
 		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention"},
 	}))
 }

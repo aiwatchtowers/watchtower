@@ -994,10 +994,14 @@ CREATE TABLE IF NOT EXISTS jira_user_map (
     resolved_at TEXT NOT NULL DEFAULT ''
 );
 
--- Jira Slack links (key detection) — intentionally NOT account-scoped:
--- keys detected in Slack text are site-ambiguous by nature (see 00049)
-CREATE TABLE IF NOT EXISTS jira_slack_links (
+-- Slack <-> issue links (key detection) — intentionally NOT account-scoped:
+-- keys detected in Slack text are site-ambiguous by nature (see 00049).
+-- Written by the tracker-neutral key detector
+-- (internal/issuekey). tracker is 'jira' or 'linear'; a key prefix known to
+-- both trackers writes one link per tracker (00144, was jira_slack_links).
+CREATE TABLE IF NOT EXISTS issue_slack_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tracker TEXT NOT NULL DEFAULT 'jira' CHECK (tracker IN ('jira','linear')),
     issue_key TEXT NOT NULL,
     channel_id TEXT NOT NULL DEFAULT '',
     message_ts TEXT NOT NULL DEFAULT '',
@@ -1006,19 +1010,19 @@ CREATE TABLE IF NOT EXISTS jira_slack_links (
     link_type TEXT NOT NULL DEFAULT 'mention',
     detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
-CREATE INDEX IF NOT EXISTS idx_jira_slack_links_issue ON jira_slack_links(issue_key);
-CREATE INDEX IF NOT EXISTS idx_jira_slack_links_channel ON jira_slack_links(channel_id, message_ts);
-CREATE INDEX IF NOT EXISTS idx_jira_slack_links_track ON jira_slack_links(track_id);
-CREATE INDEX IF NOT EXISTS idx_jira_slack_links_digest ON jira_slack_links(digest_id);
--- One identity per link kind (see 00067): only a mention carries a real
--- message_ts, so a track link is identified by its track and a decision link by
--- its digest. A shared identity made them overwrite one another.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_mention_identity
-    ON jira_slack_links(issue_key, channel_id, message_ts) WHERE link_type = 'mention';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_track_identity
-    ON jira_slack_links(issue_key, track_id) WHERE link_type = 'track';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_decision_identity
-    ON jira_slack_links(issue_key, digest_id) WHERE link_type = 'decision';
+CREATE INDEX IF NOT EXISTS idx_issue_slack_links_issue ON issue_slack_links(issue_key);
+CREATE INDEX IF NOT EXISTS idx_issue_slack_links_channel ON issue_slack_links(channel_id, message_ts);
+CREATE INDEX IF NOT EXISTS idx_issue_slack_links_track ON issue_slack_links(track_id);
+CREATE INDEX IF NOT EXISTS idx_issue_slack_links_digest ON issue_slack_links(digest_id);
+-- One identity per link kind and tracker (see 00067, 00144): only a mention
+-- carries a real message_ts, so a track link is identified by its track and a
+-- decision link by its digest. A shared identity made them overwrite one another.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_mention_identity
+    ON issue_slack_links(tracker, issue_key, channel_id, message_ts) WHERE link_type = 'mention';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_track_identity
+    ON issue_slack_links(tracker, issue_key, track_id) WHERE link_type = 'track';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_decision_identity
+    ON issue_slack_links(tracker, issue_key, digest_id) WHERE link_type = 'decision';
 
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_slack ON jira_issues(assignee_slack_id);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_status ON jira_issues(assignee_slack_id, status_category);
@@ -1962,7 +1966,7 @@ CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
 CREATE TABLE IF NOT EXISTS idea_mentions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap')),
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear')),
     ref         TEXT NOT NULL DEFAULT '',
     quote       TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL DEFAULT '',
@@ -1977,7 +1981,7 @@ CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 -- consolidator reads alongside Slack digests and meeting recaps.
 CREATE TABLE IF NOT EXISTS stream_digests (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    source       TEXT NOT NULL CHECK(source IN ('gmail','jira','imap')),  -- 'imap' = an email_accounts mailbox (IMAP or Outlook), see 00135
+    source       TEXT NOT NULL CHECK(source IN ('gmail','jira','imap','linear')),  -- 'imap' = an email_accounts mailbox (IMAP or Outlook), see 00135; 'linear' = a Linear workspace, see 00144
     account_id   INTEGER NOT NULL,
     scope        TEXT NOT NULL DEFAULT '',
     period_from  TEXT NOT NULL,

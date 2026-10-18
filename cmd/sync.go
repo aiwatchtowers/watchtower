@@ -33,6 +33,7 @@ import (
 	"watchtower/internal/guide"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
+	"watchtower/internal/issuekey"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
 	"watchtower/internal/prompts"
@@ -901,7 +902,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	pipe.TrackLinker = tracksPipe
 	// One shared detector across both pipelines, so the known-project-key set
 	// is loaded once rather than once per pipeline.
-	if det := newJiraKeyDetector(cfg, database, logger); det != nil {
+	if det := newIssueKeyDetector(cfg, database, logger); det != nil {
 		pipe.SetJiraKeyDetector(det)
 		tracksPipe.SetJiraKeyDetector(det)
 	}
@@ -1004,9 +1005,9 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		return nil
 	}
 	// One detector shared by every account's orchestrator: its known-key cache
-	// is workspace-wide (jira_slack_links is deliberately not account-scoped)
+	// is workspace-wide (issue_slack_links is deliberately not account-scoped)
 	// and its only mutable state is behind a mutex.
-	keyDetector := newJiraKeyDetector(cfg, database, logger)
+	keyDetector := newIssueKeyDetector(cfg, database, logger)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
 		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
@@ -1194,14 +1195,14 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 	d.SetExternalSync(engine)
 }
 
-// newJiraKeyDetector is jira.NewKeyDetectorIfEnabled with the detector's
+// newIssueKeyDetector is issuekey.NewKeyDetectorIfEnabled with the detector's
 // logger moved onto the sync command's stream (its default is os.Stderr, which
-// is daemon.log for a detached child). Returns a nil *jira.KeyDetector when
-// Jira is off, so callers keep their nil check.
-func newJiraKeyDetector(cfg *config.Config, database *db.DB, logger *log.Logger) *jira.KeyDetector {
-	det := jira.NewKeyDetectorIfEnabled(cfg, database)
+// is daemon.log for a detached child). Returns a nil *issuekey.KeyDetector when
+// no tracker is connected, so callers keep their nil check.
+func newIssueKeyDetector(cfg *config.Config, database *db.DB, logger *log.Logger) *issuekey.KeyDetector {
+	det := issuekey.NewKeyDetectorIfEnabled(cfg, database)
 	if det != nil {
-		det.SetLogger(subLogger(logger, "[jira-keys] "))
+		det.SetLogger(subLogger(logger, "[issue-keys] "))
 	}
 	return det
 }
@@ -1464,7 +1465,7 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	tracksPipe.SetPromptStore(prompts.New(database, nil))
 	pipe.TrackLinker = tracksPipe
-	if det := newJiraKeyDetector(cfg, database, logger); det != nil {
+	if det := newIssueKeyDetector(cfg, database, logger); det != nil {
 		pipe.SetJiraKeyDetector(det)
 		tracksPipe.SetJiraKeyDetector(det)
 	}
