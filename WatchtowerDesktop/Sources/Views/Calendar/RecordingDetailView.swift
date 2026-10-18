@@ -63,8 +63,8 @@ struct RecordingDetailView: View {
     /// against the struct it started from — so after an `await`, a write
     /// touches the screen only while `isShowing(_:)` its own recording.
     @State private var shownTranscriptID: Int64?
-    /// The last notes save handed to the writer (`saveNotes`).
-    @State private var lastNotesSave: Task<Void, Never>?
+    /// The notes saves handed to the writer, in order (`saveNotes`).
+    @State private var notesSaves = NotesSaveChain()
     @State private var followup: FollowupState?
     /// `CallAudioGapNote` for this recording, read off-main from its
     /// activity sidecar in `load()`. Gone once retention sweeps the audio
@@ -313,8 +313,9 @@ struct RecordingDetailView: View {
 
     private func load() async {
         guard let db = appState.databaseManager else { return }
+        let transcriptID = transcriptID
         do {
-            let loaded = try await Task.detached(priority: .userInitiated) { [transcriptID] in
+            let loaded = try await Task.detached(priority: .userInitiated) {
                 try db.dbPool.read { conn -> LoadedDetail in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
                     // Durable transcript_id link first (survives the event's
@@ -335,6 +336,9 @@ struct RecordingDetailView: View {
                                         callAudioNote: CallAudioGapNote.load(audioPath: row?.audioPath))
                 }
             }.value
+            // The pane moved to another recording during the read: its own
+            // load fills the screen, this one must not overwrite it.
+            guard isShowing(transcriptID) else { return }
             transcript = loaded.row
             linkedEvent = loaded.link
             callAudioNote = loaded.callAudioNote
@@ -368,7 +372,7 @@ struct RecordingDetailView: View {
                 && loaded.recap?.recap.sourceText != loaded.row?.transcriptText
             shownRecap = eventRecapContent != nil ? loaded.recap : nil
         } catch {
-            errorMessage = error.localizedDescription
+            if isShowing(transcriptID) { errorMessage = error.localizedDescription }
         }
     }
 
@@ -536,15 +540,21 @@ struct RecordingDetailView: View {
 
     /// Saves in its own task (not the caller's), so the tab cancels its
     /// debounce task freely and a save already handed over still lands. Each
-    /// save awaits the one before it (`lastNotesSave`): an older draft can
+    /// save awaits the one before it (`NotesSaveChain`): an older draft can
     /// never land after a newer one (the debounced save, then the flush as
-    /// the pane goes away).
+    /// the pane goes away). A queued save that a newer draft of the same
+    /// recording overtook while it waited skips its write — only the newest
+    /// draft is written; another recording's save never skips this one.
     private func saveNotes(_ markdown: String) {
         guard let db = appState.databaseManager else { return }
         let transcriptID = transcriptID
-        let previous = lastNotesSave
-        lastNotesSave = Task {
+        // The chain object itself, not the @State: the flush's task outlives
+        // the pane.
+        let chain = notesSaves
+        let (previous, ticket) = chain.enqueue(transcriptID)
+        chain.last = Task {
             await previous?.value
+            guard chain.isNewest(ticket, for: transcriptID) else { return }
             do {
                 try await db.dbPool.write { conn in
                     try MeetingTranscriptQueries.saveNotes(conn, id: transcriptID, markdown: markdown)

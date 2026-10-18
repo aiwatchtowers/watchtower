@@ -34,7 +34,7 @@
   - **State changes only on success.** A failed write keeps the owner's draft, toggle or selection. A meeting's new note or topic stays in its field until the row exists, and is cleared only if the field still holds what was submitted.
   - **One pending write per action** (`ViewWrite.run`'s `pending` flag). A second press while one waits does nothing. The sheets (link transcript, extract topics, extract targets, suggest links) also disable Cancel and Esc (`interactiveDismissDisabled`) until the write lands.
   - **A completion checks the screen is still its own.** `RecordingDetailView` is reused across an event's recordings, so after an `await` it touches its state only while `shownTranscriptID` is the recording it wrote. A delete clears the host's selection only while it is still the deleted pane's (`CalendarEventsView.selectionAfterDelete`, `TracksListView`).
-  - **Ordered saves.** A recording's notes saves chain, each awaiting the previous one (`lastNotesSave`), so an older draft never lands after a newer one.
+  - **Ordered saves.** A recording's notes saves chain (`NotesSaveChain`), each awaiting the previous one, so an older draft never lands after a newer one. A queued draft overtaken by a newer draft of the same recording skips its write, so only the newest is written.
 
   `ViewDatabaseWriteCallSiteTests` fails on any synchronous write under `Sources/Views/`, and `ViewWriteTests` pins the rules above. ViewModels, centers and `DatabaseManager`'s star toggles (the latter under OWNER-01 guard tests) still write synchronously from the main actor. Moving them is a follow-up target.
 
