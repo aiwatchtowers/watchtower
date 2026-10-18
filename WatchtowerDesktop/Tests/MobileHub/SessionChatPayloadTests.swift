@@ -3,8 +3,6 @@ import XCTest
 import WatchtowerCore
 
 final class SessionChatPayloadTests: XCTestCase {
-    private let now = Date(timeIntervalSince1970: 1_700_000_060)
-
     private func feed(_ entries: [SessionFeedEntry]) throws -> SessionFeedPayload {
         struct Wire: Encodable {
             let session_id: Int64
@@ -18,6 +16,7 @@ final class SessionChatPayloadTests: XCTestCase {
                 let subagent: Sub?
             }
             struct Sub: Encodable {
+                let tool_use_id: String
                 let agent_id: String
                 let description: String
             }
@@ -25,7 +24,7 @@ final class SessionChatPayloadTests: XCTestCase {
         let iso = ISO8601DateFormatter()
         let wire = Wire(session_id: 7, entries: entries.map {
             .init(id: $0.id, kind: $0.kind, at: $0.at.map(iso.string), text: $0.text, title: $0.title,
-                  subagent: $0.subagent.map { .init(agent_id: $0.agentID, description: $0.description) })
+                  subagent: $0.subagent.map { .init(tool_use_id: $0.toolUseID, agent_id: $0.agentID, description: $0.description) })
         })
         return try JSONDecoder().decode(SessionFeedPayload.self, from: JSONEncoder().encode(wire))
     }
@@ -35,7 +34,7 @@ final class SessionChatPayloadTests: XCTestCase {
     }
 
     private func encode(_ entries: [SessionFeedEntry], agentID: String? = nil) throws -> (data: Data, json: [String: Any]) {
-        let data = try SessionChatPayload.encode(try feed(entries), sessionID: 7, agentID: agentID, live: true, now: now)
+        let data = try SessionChatPayload.encode(try feed(entries), sessionID: 7, agentID: agentID, live: true)
         return (data, try SliceJSON.object(data))
     }
 
@@ -68,6 +67,7 @@ final class SessionChatPayloadTests: XCTestCase {
         XCTAssertEqual((list[0]["title"] as? String)?.count, 200)
         let sub = try XCTUnwrap(list[1]["subagent"] as? [String: Any])
         XCTAssertEqual((sub["description"] as? String)?.count, 200)
+        XCTAssertEqual(sub["tool_use_id"] as? String, "t", "the selector for --subagent rides along")
     }
 
     func testTrimsToByteBudget() throws {
@@ -92,7 +92,7 @@ final class SessionChatPayloadTests: XCTestCase {
 
     func testDatesAreUnixSeconds() throws {
         let json = try encode([entry(5)]).json
-        XCTAssertEqual(json["updated_at"] as? Double, 1_700_000_060)
+        XCTAssertNil(json["updated_at"])
         XCTAssertEqual(try items(json)[0]["at"] as? Double, 1_700_000_005)
     }
 
@@ -100,5 +100,25 @@ final class SessionChatPayloadTests: XCTestCase {
         let sep = SessionFeedEntry(id: "sep", kind: "separator", text: "Context compacted")
         let item = try items(try encode([sep]).json)[0]
         XCTAssertEqual(Set(item.keys), ["id", "kind", "text"])
+    }
+
+    func testOnlyFeedKindsPublished() throws {
+        let kinds = ["owner", "tool_use", "agent", "thinking", "hologram", "subagent"]
+        let entries = kinds.enumerated().map { index, kind in
+            SessionFeedEntry(id: "k\(index)", kind: kind, at: Date(timeIntervalSince1970: 1_700_000_000 + Double(index)), text: kind)
+        }
+        let json = try encode(entries).json
+        XCTAssertEqual(try items(json).compactMap { $0["kind"] as? String }, ["owner", "agent", "subagent"])
+        XCTAssertEqual(json["entries_more"] as? Int ?? 0, 0, "dropped kinds are not counted as older entries")
+
+        let many = (0..<350).flatMap { [entry($0), SessionFeedEntry(id: "t\($0)", kind: "tool_use", text: "x")] }
+        let capped = try encode(many).json
+        XCTAssertEqual(try items(capped).count, 300)
+        XCTAssertEqual(capped["entries_more"] as? Int, 50)
+    }
+
+    func testIdenticalFetchesAreByteIdentical() throws {
+        let entries = (0..<5).map { entry($0) }
+        XCTAssertEqual(try encode(entries).data, try encode(entries).data)
     }
 }

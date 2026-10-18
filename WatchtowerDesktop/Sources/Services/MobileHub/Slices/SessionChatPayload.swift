@@ -12,17 +12,17 @@ enum SessionChatPayload {
     static let maxText = 4000
     static let maxLabel = 200
     static let maxBytes = 600_000
-    /// Entries dropped per re-encode while the payload is over budget.
-    private static let dropChunk = 10
 
     private struct Subagent: Encodable {
         let agentID: String
+        let toolUseID: String
         let type: String
         let description: String
         let status: String
 
         enum CodingKeys: String, CodingKey {
             case agentID = "agent_id"
+            case toolUseID = "tool_use_id"
             case type, description, status
         }
     }
@@ -48,46 +48,56 @@ enum SessionChatPayload {
     private struct Payload: Encodable {
         let sessionID: Int64
         let agentID: String?
-        let updatedAt: Date
         let live: Bool
-        var entriesMore: Int
-        var entries: [Entry]
+        let entriesMore: Int
+        let entries: [Entry]
 
         enum CodingKeys: String, CodingKey {
             case sessionID = "session_id"
             case agentID = "agent_id"
-            case updatedAt = "updated_at"
             case live
             case entriesMore = "entries_more"
             case entries
         }
     }
 
+    /// The FEED-02 kinds only (`SessionFeedEntry.knownKinds`: no tool calls,
+    /// thinking or kinds a newer CLI adds), cut to the newest `maxEntries`,
+    /// then trimmed from the oldest end until the encoded size fits
+    /// `maxBytes`. The payload carries no clock, so an unchanged feed encodes
+    /// to the same bytes and is not uploaded again.
     static func encode(
         _ feed: SessionFeedPayload,
         sessionID: Int64,
         agentID: String?,
-        live: Bool,
-        now: Date
+        live: Bool
     ) throws -> Data {
-        let tail = SliceClip.list(Array(feed.entries.reversed()), limit: maxEntries)
-        var payload = Payload(
+        let known = feed.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }
+        let tail = SliceClip.list(Array(known.reversed()), limit: maxEntries)
+        let entries = tail.items.reversed().map(entry)
+        let encoder = RelayCoder.makeEncoder()
+        // Each entry is measured once; the envelope is measured with the
+        // largest `entries_more` it can carry.
+        let sizes = try entries.map { try encoder.encode($0).count }
+        let overhead = try encoder.encode(Payload(
+            sessionID: sessionID, agentID: agentID, live: live, entriesMore: known.count, entries: []
+        )).count
+        var kept = entries.count
+        var total = overhead + max(0, kept - 1) // the commas between entries
+        total += sizes.reduce(0, +)
+        var dropped = 0
+        while total > maxBytes, kept > 0 {
+            total -= sizes[dropped] + (kept > 1 ? 1 : 0)
+            dropped += 1
+            kept -= 1
+        }
+        return try encoder.encode(Payload(
             sessionID: sessionID,
             agentID: agentID,
-            updatedAt: now,
             live: live,
-            entriesMore: tail.more ?? 0,
-            entries: tail.items.reversed().map(entry)
-        )
-        let encoder = RelayCoder.makeEncoder()
-        var data = try encoder.encode(payload)
-        while data.count > maxBytes, !payload.entries.isEmpty {
-            let drop = min(dropChunk, payload.entries.count)
-            payload.entries.removeFirst(drop)
-            payload.entriesMore += drop
-            data = try encoder.encode(payload)
-        }
-        return data
+            entriesMore: (tail.more ?? 0) + dropped,
+            entries: Array(entries.dropFirst(dropped))
+        ))
     }
 
     private static func entry(_ source: SessionFeedEntry) -> Entry {
@@ -104,6 +114,7 @@ enum SessionChatPayload {
             subagent: source.subagent.map {
                 Subagent(
                     agentID: $0.agentID,
+                    toolUseID: $0.toolUseID,
                     type: $0.type,
                     description: SliceClip.text($0.description, limit: maxLabel).text,
                     status: $0.status

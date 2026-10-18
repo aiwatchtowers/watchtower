@@ -272,9 +272,9 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             wire("session_chat_request", entity: "7", params: #"{"session_id":7}"#)
         )
         try assertParams(
-            SessionChatRequestParams(sessionID: 7, subagentID: "a1b2"),
+            SessionChatRequestParams(sessionID: 7, subagentID: "a1b2", toolUseID: "toolu_01a"),
             entityID: "7",
-            wire("session_chat_request", entity: "7", params: #"{"session_id":7,"subagent_id":"a1b2"}"#)
+            wire("session_chat_request", entity: "7", params: #"{"session_id":7,"subagent_id":"a1b2","tool_use_id":"toolu_01a"}"#)
         )
         try assertParams(
             SessionInterruptParams(),
@@ -428,7 +428,6 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         let chat = try SessionChat.decode(payload: try fixture("session_chat"))
         XCTAssertEqual(chat.sessionID, 7)
         XCTAssertNil(chat.agentID)
-        XCTAssertEqual(chat.updatedAt, Date(timeIntervalSince1970: 1_700_000_060))
         XCTAssertTrue(chat.live)
         XCTAssertEqual(chat.entriesMore, 12)
         XCTAssertEqual(Set(chat.entries.map(\.kind)), Set(SessionChat.Entry.Kind.knownValues))
@@ -439,7 +438,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(chat.entries[4].via, "Watchtower")
         XCTAssertEqual(
             chat.entries[5].subagent,
-            .init(agentID: "a1b2", type: "Explore", description: "Check the fixtures", status: "running")
+            .init(agentID: "a1b2", toolUseID: "toolu_01a", type: "Explore", description: "Check the fixtures", status: "running")
         )
         XCTAssertNil(chat.entries[6].at)
 

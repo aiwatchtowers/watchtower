@@ -15,12 +15,14 @@ import WatchtowerSync
 ///
 /// The capped payloads (`SessionChatPayload`) live in memory only: a watch
 /// does not survive a restart anyway, and nothing transcript-derived is
-/// written to disk on the Mac. An expired watch loses its payload, so the
+/// ever in the clear on disk on the Mac (the sealed slice records wait in the
+/// hub's transport queue). An expired watch loses its payload, so the
 /// record leaves the phone. A failed, undecodable or hung run keeps the last
 /// payload and the next run is scheduled as usual. It never touches the relay
 /// processor.
 final class SessionChatRunner: HubCompanion, Sendable {
-    typealias Fetch = @Sendable (_ sessionID: Int64, _ agentID: String?) async throws -> SessionFeedPayload
+    /// `toolUseID` is the CLI's `--subagent` selector, nil for the main feed.
+    typealias Fetch = @Sendable (_ sessionID: Int64, _ toolUseID: String?) async throws -> SessionFeedPayload
     typealias IsLive = @Sendable (Int64) -> Bool
 
     struct Timing: Equatable, Sendable {
@@ -38,7 +40,10 @@ final class SessionChatRunner: HubCompanion, Sendable {
 
     struct Key: Hashable, Sendable {
         let sessionID: Int64
+        /// Names the record; the subagent's own id.
         let agentID: String?
+        /// What `--subagent` takes; nil exactly when `agentID` is.
+        let toolUseID: String?
 
         /// The slice record id (`SessionChat.recordName` of the Kit mirror
         /// is `session_chat-<id>`).
@@ -93,9 +98,9 @@ final class SessionChatRunner: HubCompanion, Sendable {
 
     /// The `SessionFeedStore` argv of a full read, plus `--subagent` for a
     /// subagent's feed.
-    static func arguments(sessionID: Int64, agentID: String?) -> [String] {
+    static func arguments(sessionID: Int64, toolUseID: String?) -> [String] {
         let args = ["workbench", "session-feed", "--session", String(sessionID), "--json"]
-        return agentID.map { args + ["--subagent", $0] } ?? args
+        return toolUseID.map { args + ["--subagent", $0] } ?? args
     }
 
     /// The hub's runner: the CLI through `runner`; no pass runs while
@@ -112,18 +117,22 @@ final class SessionChatRunner: HubCompanion, Sendable {
     /// (cursor-less) reads: every run returns the whole feed, so the subagent
     /// markers already carry their current status and need no overlay.
     static func cliFetch(_ runner: any CLIRunnerProtocol) -> Fetch {
-        { sessionID, agentID in
-            let data = try await runner.run(args: arguments(sessionID: sessionID, agentID: agentID))
+        { sessionID, toolUseID in
+            let data = try await runner.run(args: arguments(sessionID: sessionID, toolUseID: toolUseID))
             return try JSONDecoder().decode(SessionFeedPayload.self, from: data)
         }
     }
 
     /// The phone's `session_chat_request`: opens or extends the watch of the
-    /// session's chat (or one subagent's).
-    func request(sessionID: Int64, agentID: String?) {
-        let expires = clock() + timing.watch
+    /// session's chat (or one subagent's: both ids or neither). `expires` is
+    /// when the watch ends; it never reaches past `timing.watch` from now.
+    func request(sessionID: Int64, agentID: String?, toolUseID: String? = nil, expires: ContinuousClock.Instant? = nil) {
+        let limit = clock() + timing.watch
+        let end = min(expires ?? limit, limit)
         watches.withLock { watches in
-            watches[Key(sessionID: sessionID, agentID: agentID), default: Watch(expires: expires)].expires = expires
+            let key = Key(sessionID: sessionID, agentID: agentID, toolUseID: toolUseID)
+            // A repeat never shortens a watch a newer request already holds.
+            watches[key, default: Watch(expires: end)].expires = max(watches[key]?.expires ?? end, end)
         }
     }
 
@@ -199,7 +208,7 @@ final class SessionChatRunner: HubCompanion, Sendable {
         let fetch = self.fetch
         let result = await MobileHubService.bounded(timing.timeout) { () -> Result<SessionFeedPayload, any Error> in
             do {
-                return .success(try await fetch(key.sessionID, key.agentID))
+                return .success(try await fetch(key.sessionID, key.toolUseID))
             } catch {
                 return .failure(error)
             }
@@ -214,10 +223,11 @@ final class SessionChatRunner: HubCompanion, Sendable {
         case .success(let feed)?:
             let (live, stamp) = (isLive(key.sessionID), now())
             do {
-                let payload = try SessionChatPayload.encode(feed, sessionID: key.sessionID, agentID: key.agentID, live: live, now: stamp)
+                let payload = try SessionChatPayload.encode(feed, sessionID: key.sessionID, agentID: key.agentID, live: live)
                 watches.withLock { watches in
-                    // A watch that expired or was dropped meanwhile stays gone.
-                    guard var watch = watches[key] else { return }
+                    // A watch that expired or was dropped meanwhile stays gone;
+                    // one past its end is dropped by the next sweep, never stored into.
+                    guard var watch = watches[key], watch.expires > clock() else { return }
                     watch.payload = payload
                     watch.fetchedAt = stamp
                     watch.storedLive = live

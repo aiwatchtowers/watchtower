@@ -82,6 +82,7 @@
 - `WatchtowerDesktop/Tests/MobileHub/SessionChatRunnerTests.swift::testExpiredWatchLeavesWindow`
 - `WatchtowerDesktop/Tests/MobileHub/SessionChatRunnerTests.swift::testUnlinkedPhoneDropsPayloadsForGood`
 - `WatchtowerDesktop/Tests/MobileHub/SessionChatPayloadTests.swift::testMatchesKitFixtureKeys`
+- `WatchtowerDesktop/Tests/MobileHub/SessionChatPayloadTests.swift::testOnlyFeedKindsPublished`
 
 **Locked since:** 2026-10-18
 
@@ -90,4 +91,5 @@
 
 - 2026-10-16 (board #477..#485): file created, FEED-01..04. Spec `docs/superpowers/specs/2026-10-16-session-chat-feed-design.md`.
 - 2026-10-17: FEED-01..03 now cover Codex sessions (`ParseCodex`/`LocateCodex`, agent instructions Task 6); `codex sessions are not supported yet` refusal removed.
+- 2026-10-18 (board #486, final review): FEED-05 guard `testOnlyFeedKindsPublished` added (the payload filters to the FEED-02 kinds before the cut); text unchanged.
 - 2026-10-18 (board #486, owner approval ask #379): FEED-05 added; mobile POC I-4 amended (session chat exception). Spec `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`.

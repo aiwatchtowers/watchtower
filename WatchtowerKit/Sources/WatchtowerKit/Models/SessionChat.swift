@@ -30,13 +30,16 @@ public struct SessionChat: SliceMirror, Equatable {
 
         public struct Subagent: Hashable, Sendable, Decodable {
             public let agentID: String
+            /// The CLI's `--subagent` selector; `agentID` only names the record.
+            public let toolUseID: String
             public let type: String
             /// Cap 200.
             public let description: String
             public let status: String
 
-            public init(agentID: String, type: String, description: String, status: String) {
+            public init(agentID: String, toolUseID: String = "", type: String, description: String, status: String) {
                 self.agentID = agentID
+                self.toolUseID = toolUseID
                 self.type = type
                 self.description = description
                 self.status = status
@@ -45,7 +48,17 @@ public struct SessionChat: SliceMirror, Equatable {
             // convertFromSnakeCase maps "agent_id" -> "agentId".
             enum CodingKeys: String, CodingKey {
                 case agentID = "agentId"
+                case toolUseID = "toolUseId"
                 case type, description, status
+            }
+
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                agentID = try c.decode(String.self, forKey: .agentID)
+                toolUseID = try c.decodeIfPresent(String.self, forKey: .toolUseID) ?? ""
+                type = try c.decode(String.self, forKey: .type)
+                description = try c.decode(String.self, forKey: .description)
+                status = try c.decode(String.self, forKey: .status)
             }
         }
 
@@ -107,7 +120,6 @@ public struct SessionChat: SliceMirror, Equatable {
     public let sessionID: Int64
     /// nil for the main feed.
     public let agentID: String?
-    public let updatedAt: Date
     /// The session is still running; the Mac refreshes a live chat every 10 s.
     public let live: Bool
     /// Older entries cut by the 300-entry and byte caps.
@@ -118,14 +130,12 @@ public struct SessionChat: SliceMirror, Equatable {
     public init(
         sessionID: Int64,
         agentID: String? = nil,
-        updatedAt: Date,
         live: Bool,
         entriesMore: Int = 0,
         entries: [Entry]
     ) {
         self.sessionID = sessionID
         self.agentID = agentID
-        self.updatedAt = updatedAt
         self.live = live
         self.entriesMore = entriesMore
         self.entries = entries
@@ -135,7 +145,6 @@ public struct SessionChat: SliceMirror, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         sessionID = try c.decode(Int64.self, forKey: .sessionID)
         agentID = try c.decodeIfPresent(String.self, forKey: .agentID)
-        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
         live = try c.decodeIfPresent(Bool.self, forKey: .live) ?? false
         entriesMore = try c.decodeIfPresent(Int.self, forKey: .entriesMore) ?? 0
         entries = try c.decodeIfPresent([Entry].self, forKey: .entries) ?? []
@@ -145,7 +154,7 @@ public struct SessionChat: SliceMirror, Equatable {
     enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"
         case agentID = "agentId"
-        case updatedAt, live, entriesMore, entries
+        case live, entriesMore, entries
     }
 
     /// `session_chat-<session id>` or `session_chat-<session id>-<agent id>`.

@@ -116,23 +116,24 @@ final class SessionChatRunnerTests: XCTestCase {
         let calls = Calls()
         let chat = runner(calls: calls, clock: TestInstant())
         chat.request(sessionID: 7, agentID: nil)
-        chat.request(sessionID: 7, agentID: "a1b2")
+        chat.request(sessionID: 7, agentID: "a1b2", toolUseID: "toolu_01a")
         await chat.runDue()
         XCTAssertEqual(calls.count, 2)
         XCTAssertEqual(Set(chat.payloads().keys), ["session_chat-7", "session_chat-7-a1b2"])
+        XCTAssertTrue(calls.all.contains { $0.0 == 7 && $0.1 == "toolu_01a" }, "the fetch gets the tool_use id")
         XCTAssertEqual(
-            SessionChatRunner.arguments(sessionID: 7, agentID: "a1b2"),
-            ["workbench", "session-feed", "--session", "7", "--json", "--subagent", "a1b2"]
+            SessionChatRunner.arguments(sessionID: 7, toolUseID: "toolu_01a"),
+            ["workbench", "session-feed", "--session", "7", "--json", "--subagent", "toolu_01a"]
         )
-        XCTAssertEqual(SessionChatRunner.arguments(sessionID: 7, agentID: nil), ["workbench", "session-feed", "--session", "7", "--json"])
+        XCTAssertEqual(SessionChatRunner.arguments(sessionID: 7, toolUseID: nil), ["workbench", "session-feed", "--session", "7", "--json"])
     }
 
     func testCliFetchRunsTheArgvAndDecodes() async throws {
         let json = #"{"session_id":7,"cursor":"c","entries":[{"id":"e1","kind":"owner","text":"Hi"}],"subagents":[]}"#
         let cli = FakeCLIRunner(stdout: Data(json.utf8))
-        let feed = try await SessionChatRunner.cliFetch(cli)(7, "a1b2")
+        let feed = try await SessionChatRunner.cliFetch(cli)(7, "toolu_01a")
         XCTAssertEqual(feed.entries.map(\.id), ["e1"])
-        XCTAssertEqual(cli.invocations, [SessionChatRunner.arguments(sessionID: 7, agentID: "a1b2")])
+        XCTAssertEqual(cli.invocations, [SessionChatRunner.arguments(sessionID: 7, toolUseID: "toolu_01a")])
     }
 
     func testFetchFailureKeepsLastPayload() async throws {
@@ -244,6 +245,8 @@ final class SessionChatRunnerTests: XCTestCase {
         }
         chat.request(sessionID: 7, agentID: nil)
         await chat.runDue()
+        let stored = chat.watches.withLock { $0.values.compactMap(\.payload) }
+        XCTAssertTrue(stored.isEmpty, "the expired watch got no payload")
         XCTAssertTrue(chat.payloads().isEmpty)
         XCTAssertTrue(chat.watches.withLock { $0.isEmpty })
     }

@@ -259,14 +259,19 @@ public struct SessionChatRequestParams: ActionParams {
     public let sessionID: Int64
     /// nil for the main feed.
     public let subagentID: String?
+    /// The subagent marker's tool_use id (the CLI's `--subagent` selector);
+    /// sent with `subagentID` or not at all.
+    public let toolUseID: String?
 
-    public init(sessionID: Int64, subagentID: String? = nil) {
+    public init(sessionID: Int64, subagentID: String? = nil, toolUseID: String? = nil) {
         self.sessionID = sessionID
         self.subagentID = subagentID
+        self.toolUseID = toolUseID
     }
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"
         case subagentID = "subagentId"
+        case toolUseID = "toolUseId"
     }
 }
