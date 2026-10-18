@@ -87,14 +87,17 @@ struct LinkTranscriptSheet: View {
     private func link() {
         guard let eventID = selectedEventID, let id = transcript.id,
               let db = appState.databaseManager else { return }
-        do {
-            try db.dbPool.write { conn in
-                try MeetingTranscriptQueries.linkToEvent(conn, id: id, eventID: eventID)
+        // Off the main thread: a busy database never freezes the sheet.
+        Task {
+            do {
+                try await db.dbPool.write { conn in
+                    try MeetingTranscriptQueries.linkToEvent(conn, id: id, eventID: eventID)
+                }
+                onLinked()
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            onLinked()
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 

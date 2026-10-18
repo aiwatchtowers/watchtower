@@ -15,6 +15,7 @@ struct SuggestLinksSheet: View {
     @State private var applyParent: Bool = true
     @State private var selectedLinks: Set<Int> = []
     @State private var errorMessage: String?
+    @State private var isSaving = false
 
     init(targetID: Int, suggestions: SuggestedLinksResult) {
         self.targetID = targetID
@@ -109,7 +110,7 @@ struct SuggestLinksSheet: View {
             Button("Apply") { apply() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!hasAnythingToApply)
+                .disabled(!hasAnythingToApply || isSaving)
         }
         .padding()
     }
@@ -123,24 +124,33 @@ struct SuggestLinksSheet: View {
             errorMessage = "Database not available"
             return
         }
-        do {
-            try db.dbPool.write { dbConn in
-                if applyParent, let parentID = suggestions.parentID {
-                    try TargetQueries.updateParent(dbConn, id: targetID, parentID: parentID)
+        guard !isSaving else { return }
+        let targetID = targetID
+        let parentID = applyParent ? suggestions.parentID : nil
+        let links = selectedLinks.sorted().map { suggestions.secondaryLinks[$0] }
+        // Off the main thread: a busy database never freezes the sheet; Apply
+        // stays disabled until the write lands, so nothing is linked twice.
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await db.dbPool.write { dbConn in
+                    if let parentID {
+                        try TargetQueries.updateParent(dbConn, id: targetID, parentID: parentID)
+                    }
+                    for link in links {
+                        // target_links CHECK requires at least one of target_target_id / external_ref.
+                        guard link.targetId != nil || !link.externalRef.isEmpty else { continue }
+                        try TargetQueries.createLink(
+                            dbConn, sourceID: targetID, targetID: link.targetId,
+                            externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
+                        )
+                    }
                 }
-                for idx in selectedLinks.sorted() {
-                    let link = suggestions.secondaryLinks[idx]
-                    // target_links CHECK requires at least one of target_target_id / external_ref.
-                    guard link.targetId != nil || !link.externalRef.isEmpty else { continue }
-                    try TargetQueries.createLink(
-                        dbConn, sourceID: targetID, targetID: link.targetId,
-                        externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
-                    )
-                }
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 }

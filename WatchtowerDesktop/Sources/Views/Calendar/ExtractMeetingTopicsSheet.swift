@@ -17,6 +17,7 @@ struct ExtractMeetingTopicsSheet: View {
     @State private var result: MeetingTopicsExtractResult?
     @State private var selected: Set<Int> = []
     @State private var errorMessage: String?
+    @State private var isSaving = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -204,7 +205,7 @@ struct ExtractMeetingTopicsSheet: View {
                 Button("Add \(selected.count) selected") { applySelected() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(selected.isEmpty)
+                    .disabled(selected.isEmpty || isSaving)
             }
         }
         .padding()
@@ -238,25 +239,34 @@ struct ExtractMeetingTopicsSheet: View {
             errorMessage = "Database not available"
             return
         }
-        let picked = selected.sorted().map { result.topics[$0] }
-        do {
-            try db.dbPool.write { dbConn in
-                var next = existingTopicSortOrderCeiling + 1
-                for topic in picked {
-                    _ = try MeetingNoteQueries.create(
-                        dbConn,
-                        eventID: eventID,
-                        type: .question,
-                        text: topic.text,
-                        sortOrder: next
-                    )
-                    next += 1
+        guard !isSaving else { return }
+        let picked = selected.sorted().map { result.topics[$0].text }
+        let eventID = eventID
+        let firstSortOrder = existingTopicSortOrderCeiling + 1
+        // Off the main thread: a busy database never freezes the sheet; the
+        // button stays disabled until the write lands, so nothing is added twice.
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await db.dbPool.write { dbConn in
+                    var next = firstSortOrder
+                    for text in picked {
+                        _ = try MeetingNoteQueries.create(
+                            dbConn,
+                            eventID: eventID,
+                            type: .question,
+                            text: text,
+                            sortOrder: next
+                        )
+                        next += 1
+                    }
                 }
+                onCreated()
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            onCreated()
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 }

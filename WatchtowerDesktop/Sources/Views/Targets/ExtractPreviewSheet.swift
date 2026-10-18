@@ -37,6 +37,7 @@ struct ExtractPreviewSheet: View {
 
     @State private var items: [ProposedTarget]
     @State private var errorMessage: String?
+    @State private var isSaving = false
     let onCreateSelected: ([ProposedTarget]) -> Void
 
     // Footer info (set by US-002 extractor caller)
@@ -154,7 +155,7 @@ struct ExtractPreviewSheet: View {
                     createSelected()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(selectedItems.isEmpty)
+                .disabled(selectedItems.isEmpty || isSaving)
                 .keyboardShortcut(.defaultAction)
             }
             .padding()
@@ -168,54 +169,66 @@ struct ExtractPreviewSheet: View {
             errorMessage = "Database not available"
             return
         }
+        guard !isSaving else { return }
         let toCreate = selectedItems
-        do {
-            try db.dbPool.write { dbConn in
-                for item in toCreate {
-                    do {
-                        let today = dateFormatter.string(from: Date())
-                        let start = item.periodStart.isEmpty ? today : item.periodStart
-                        let end = item.periodEnd.isEmpty ? today : item.periodEnd
-                        let subItemsJSON = Self.encodeSubItems(item.subItems)
-                        let newID = try TargetQueries.create(
-                            dbConn,
-                            text: item.text,
-                            intent: item.intent,
-                            level: item.level,
-                            customLabel: item.customLabel,
-                            periodStart: start,
-                            periodEnd: end,
-                            parentId: item.parentId,
-                            priority: item.priority,
-                            subItems: subItemsJSON,
-                            sourceType: "extract",
-                            aiLevelConfidence: item.levelConfidence
-                        )
-                        for link in item.secondaryLinks {
-                            if link.targetId != nil || !link.externalRef.isEmpty {
-                                try TargetQueries.createLink(
-                                    dbConn, sourceID: newID, targetID: link.targetId,
-                                    externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
-                                )
-                            }
+        let today = dateFormatter.string(from: Date())
+        // Off the main thread: a busy database never freezes the sheet; the
+        // button stays disabled until the write lands, so nothing is created twice.
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await Self.create(toCreate, today: today, db: db)
+                onCreateSelected(toCreate)
+                dismiss()
+            } catch {
+                // The write rolled back as a whole, so nothing was created: keep
+                // the sheet open with the reason (e.g. a parent deleted meanwhile).
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Creates the picked targets and their links in ONE write transaction.
+    nonisolated private static func create(_ toCreate: [ProposedTarget], today: String, db: DatabaseManager) async throws {
+        try await db.dbPool.write { dbConn in
+            for item in toCreate {
+                do {
+                    let start = item.periodStart.isEmpty ? today : item.periodStart
+                    let end = item.periodEnd.isEmpty ? today : item.periodEnd
+                    let subItemsJSON = Self.encodeSubItems(item.subItems)
+                    let newID = try TargetQueries.create(
+                        dbConn,
+                        text: item.text,
+                        intent: item.intent,
+                        level: item.level,
+                        customLabel: item.customLabel,
+                        periodStart: start,
+                        periodEnd: end,
+                        parentId: item.parentId,
+                        priority: item.priority,
+                        subItems: subItemsJSON,
+                        sourceType: "extract",
+                        aiLevelConfidence: item.levelConfidence
+                    )
+                    for link in item.secondaryLinks {
+                        if link.targetId != nil || !link.externalRef.isEmpty {
+                            try TargetQueries.createLink(
+                                dbConn, sourceID: newID, targetID: link.targetId,
+                                externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
+                            )
                         }
-                    } catch {
-                        throw ExtractCreateError(itemText: item.text, underlying: error)
                     }
+                } catch {
+                    throw ExtractCreateError(itemText: item.text, underlying: error)
                 }
             }
-            onCreateSelected(toCreate)
-            dismiss()
-        } catch {
-            // The write rolled back as a whole, so nothing was created: keep
-            // the sheet open with the reason (e.g. a parent deleted meanwhile).
-            errorMessage = error.localizedDescription
         }
     }
 
     // Serialize `[TargetSubItem]` into the JSON shape persisted in targets.sub_items.
     // Mirrors `storedSubItem` in internal/targets/store.go — `{text, done}` per item.
-    static func encodeSubItems(_ items: [TargetSubItem]) -> String {
+    nonisolated static func encodeSubItems(_ items: [TargetSubItem]) -> String {
         guard !items.isEmpty else { return "[]" }
         if let data = try? JSONEncoder().encode(items),
            let json = String(data: data, encoding: .utf8) {

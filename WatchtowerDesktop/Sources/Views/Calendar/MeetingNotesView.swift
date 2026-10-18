@@ -352,23 +352,21 @@ struct MeetingNotesView: View {
         return rel.localizedString(for: date, relativeTo: Date())
     }
 
+    // Every write below runs off the main thread (`await dbPool.write`): a
+    // database busy with the daemon never freezes the meeting pane, and the
+    // list reloads once the write lands.
+
     private func addActionItemToNotes(idx: Int, text: String) {
         guard let db = appState.databaseManager else { return }
-        do {
-            let nextSort = (freeformNotes.last?.sortOrder ?? -1) + 1
-            _ = try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.create(
-                    dbConn,
-                    eventID: eventID,
-                    type: .note,
-                    text: text,
-                    sortOrder: nextSort
-                )
+        let nextSort = (freeformNotes.last?.sortOrder ?? -1) + 1
+        Task {
+            do {
+                try await Self.createNote(db, eventID: eventID, type: .note, text: text, sortOrder: nextSort)
+                addedActionItems.insert(idx)
+                loadNotes()
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            addedActionItems.insert(idx)
-            loadNotes()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -393,18 +391,18 @@ struct MeetingNotesView: View {
         let trimmed = newQuestionText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard let db = appState.databaseManager else { return }
-        do {
-            let sortOrder = (questions.last?.sortOrder ?? -1) + 1
-            _ = try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.create(
-                    dbConn, eventID: eventID, type: .question,
-                    text: trimmed, sortOrder: sortOrder
-                )
+        let sortOrder = (questions.last?.sortOrder ?? -1) + 1
+        // Cleared up front so a second Enter while the write is pending adds
+        // nothing twice; a failed write puts the text back.
+        newQuestionText = ""
+        Task {
+            do {
+                try await Self.createNote(db, eventID: eventID, type: .question, text: trimmed, sortOrder: sortOrder)
+                loadNotes()
+            } catch {
+                if newQuestionText.isEmpty { newQuestionText = trimmed }
+                errorMessage = error.localizedDescription
             }
-            newQuestionText = ""
-            loadNotes()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -412,75 +410,87 @@ struct MeetingNotesView: View {
         let trimmed = newNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard let db = appState.databaseManager else { return }
-        do {
-            let sortOrder = (freeformNotes.last?.sortOrder ?? -1) + 1
-            _ = try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.create(
-                    dbConn, eventID: eventID, type: .note,
-                    text: trimmed, sortOrder: sortOrder
-                )
+        let sortOrder = (freeformNotes.last?.sortOrder ?? -1) + 1
+        // Cleared up front, as in `addQuestion`.
+        newNoteText = ""
+        Task {
+            do {
+                try await Self.createNote(db, eventID: eventID, type: .note, text: trimmed, sortOrder: sortOrder)
+                loadNotes()
+            } catch {
+                if newNoteText.isEmpty { newNoteText = trimmed }
+                errorMessage = error.localizedDescription
             }
-            newNoteText = ""
-            loadNotes()
-        } catch {
-            errorMessage = error.localizedDescription
+        }
+    }
+
+    private static func createNote(
+        _ db: DatabaseManager, eventID: String, type: MeetingNote.NoteType, text: String, sortOrder: Int
+    ) async throws {
+        try await db.dbPool.write { dbConn in
+            _ = try MeetingNoteQueries.create(dbConn, eventID: eventID, type: type, text: text, sortOrder: sortOrder)
         }
     }
 
     private func toggleChecked(_ note: MeetingNote) {
         guard let id = note.id else { return }
         guard let db = appState.databaseManager else { return }
-        do {
-            try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.toggleChecked(dbConn, id: id)
+        Task {
+            do {
+                try await db.dbPool.write { dbConn in
+                    try MeetingNoteQueries.toggleChecked(dbConn, id: id)
+                }
+                loadNotes()
+            } catch {
+                // A note deleted elsewhere leaves the list instead of failing again.
+                if error is RowNotFoundError { loadNotes() }
+                errorMessage = error.localizedDescription
             }
-            loadNotes()
-        } catch {
-            // A note deleted elsewhere leaves the list instead of failing again.
-            if error is RowNotFoundError { loadNotes() }
-            errorMessage = error.localizedDescription
         }
     }
 
     private func deleteNote(_ note: MeetingNote) {
         guard let id = note.id else { return }
         guard let db = appState.databaseManager else { return }
-        do {
-            try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.delete(dbConn, id: id)
+        Task {
+            do {
+                try await db.dbPool.write { dbConn in
+                    try MeetingNoteQueries.delete(dbConn, id: id)
+                }
+                loadNotes()
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            loadNotes()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
     private func createTask(from note: MeetingNote) {
-        guard let noteID = note.id else { return }
+        guard let noteID = note.id, creatingTaskForID != noteID else { return }
         guard let db = appState.databaseManager else { return }
+        let text = note.text
 
         creatingTaskForID = noteID
-        do {
-            let taskID = try db.dbPool.write { dbConn in
-                let today = TargetQueries.todayDateString()
-                let id = try TargetQueries.create(
-                    dbConn,
-                    text: note.text,
-                    level: "day",
-                    periodStart: today,
-                    periodEnd: today,
-                    sourceType: "manual",
-                    sourceID: "meeting_note:\(noteID)"
-                )
-                try MeetingNoteQueries.setTaskID(dbConn, noteID: noteID, taskID: Int64(id))
-                return id
+        Task {
+            defer { creatingTaskForID = nil }
+            do {
+                try await db.dbPool.write { dbConn in
+                    let today = TargetQueries.todayDateString()
+                    let id = try TargetQueries.create(
+                        dbConn,
+                        text: text,
+                        level: "day",
+                        periodStart: today,
+                        periodEnd: today,
+                        sourceType: "manual",
+                        sourceID: "meeting_note:\(noteID)"
+                    )
+                    try MeetingNoteQueries.setTaskID(dbConn, noteID: noteID, taskID: Int64(id))
+                }
+                loadNotes()
+            } catch {
+                if error is RowNotFoundError { loadNotes() }
+                errorMessage = error.localizedDescription
             }
-            _ = taskID
-            loadNotes()
-        } catch {
-            if error is RowNotFoundError { loadNotes() }
-            errorMessage = error.localizedDescription
         }
-        creatingTaskForID = nil
     }
 }

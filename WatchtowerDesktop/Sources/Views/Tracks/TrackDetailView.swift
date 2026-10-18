@@ -198,22 +198,26 @@ struct TrackDetailView: View {
         }
     }
 
-    /// Persists an edited watch instruction and reflects it immediately. A
-    /// failed save keeps the editor open with the draft.
+    /// Persists an edited watch instruction and reflects it once the write
+    /// lands — off the main thread, so a database busy with the daemon never
+    /// freezes the pane. A failed save keeps the editor open with the draft.
     private func saveInstruction() {
         let text = draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let db = appState.databaseManager else { return }
-        do {
-            try db.dbPool.write { database in
-                try TrackQueries.updateInstruction(database, id: track.id, instruction: text)
+        let trackID = track.id
+        Task {
+            do {
+                try await db.dbPool.write { database in
+                    try TrackQueries.updateInstruction(database, id: trackID, instruction: text)
+                }
+            } catch {
+                reportWatchEditFailure("save the instruction", error)
+                return
             }
-        } catch {
-            reportWatchEditFailure("save the instruction", error)
-            return
+            watchEditError = nil
+            displayedInstruction = text
+            isEditingInstruction = false
         }
-        watchEditError = nil
-        displayedInstruction = text
-        isEditingInstruction = false
     }
 
     /// A watch deleted elsewhere reloads the tracks list so it leaves the
@@ -223,38 +227,44 @@ struct TrackDetailView: View {
         watchEditError = "Failed to \(what): \(error.localizedDescription)"
     }
 
-    /// Toggles whether the daemon collects for this watch; a failed write
-    /// leaves the toggle where it was.
+    /// Toggles whether the daemon collects for this watch once the write
+    /// lands; a failed write leaves the toggle where it was.
     private func setCollecting(_ on: Bool) {
         guard let db = appState.databaseManager else { return }
-        do {
-            try db.dbPool.write { database in
-                try TrackQueries.setEnabled(database, id: track.id, enabled: on)
+        let trackID = track.id
+        Task {
+            do {
+                try await db.dbPool.write { database in
+                    try TrackQueries.setEnabled(database, id: trackID, enabled: on)
+                }
+            } catch {
+                reportWatchEditFailure("update collecting", error)
+                return
             }
-        } catch {
-            reportWatchEditFailure("update collecting", error)
-            return
+            watchEditError = nil
+            collecting = on
         }
-        watchEditError = nil
-        collecting = on
     }
 
     /// Permanently deletes a custom track (and its events) and closes the pane;
     /// the list's tracks-count observation drops it automatically.
     private func deleteTrack() {
         guard let db = appState.databaseManager else { return }
-        do {
-            try db.dbPool.write { database in
-                try TrackQueries.delete(database, id: track.id)
+        let trackID = track.id
+        Task {
+            do {
+                try await db.dbPool.write { database in
+                    try TrackQueries.delete(database, id: trackID)
+                }
+            } catch {
+                NSLog("TrackDetailView: deleting track %d failed: %@", trackID, String(describing: error))
+                watchEditError = "Couldn't delete the watch: \(error.localizedDescription)"
+                return
             }
-        } catch {
-            NSLog("TrackDetailView: deleting track %d failed: %@", track.id, String(describing: error))
-            watchEditError = "Couldn't delete the watch: \(error.localizedDescription)"
-            return
+            // Only once it is gone: a reply in its chat stops with it.
+            appState.embeddedChatCenter.dropContext(type: TrackChatSurface.contextType, id: String(trackID))
+            onClose?()
         }
-        // Only once it is gone: a reply in its chat stops with it.
-        appState.embeddedChatCenter.dropContext(type: TrackChatSurface.contextType, id: String(track.id))
-        onClose?()
     }
 
     /// Builds and starts the custom-track timeline VM. When the track is linked
