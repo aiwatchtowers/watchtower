@@ -45,6 +45,27 @@ struct SessionChatView: View {
         vm.session(sessionID, projectID: projectID).map { vm.sessionState($0).kind }
     }
 
+    /// The session's composer (#711); nil without the app's `SessionControl`.
+    private var workchat: WorkchatModel? { vm.workchat(sessionID: sessionID) }
+
+    /// A live session that has not finished takes lines; a finished or
+    /// stopped one keeps its history readable only.
+    private var composerShown: Bool {
+        guard let session = vm.session(sessionID, projectID: projectID) else { return false }
+        let state = vm.sessionState(session)
+        return state.live && state.kind != .finished
+    }
+
+    /// The round button is Stop while the agent or its subagents work.
+    private var working: Bool {
+        vm.sessionStatuses[sessionID].map(SessionControl.isWorking) ?? false
+    }
+
+    /// A typed or copied line waits for the owner in the terminal.
+    private func showInTerminal() {
+        Task { await vm.showInPane(.sessionChat(sessionID), item: .session(sessionID), projectID: projectID) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if store.runnerMissing {
@@ -54,12 +75,18 @@ struct SessionChatView: View {
             }
             if let subagent = path.stack.last {
                 subagentScreen(subagent)
-            } else if store.entries.isEmpty {
+            } else if store.entries.isEmpty && (workchat?.outgoing.isEmpty ?? true) {
                 emptyState
             } else {
                 feed
             }
+            if path.isRoot, let workchat, composerShown {
+                Divider()
+                WorkchatComposer(model: workchat, working: working)
+            }
         }
+        // The feed shows a sent line: its bubble leaves.
+        .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
         // The main feed is polled only while it is on screen: an open
         // subagent stops it, and back at the root it is read once.
         .task(id: MainFollowKey(state: stateKind, root: path.isRoot)) {
@@ -185,6 +212,16 @@ struct SessionChatView: View {
                         }
                         ForEach(store.entries[window.range(total: store.entries.count)]) { entry in
                             row(entry).id(entry.id)
+                        }
+                        if let workchat {
+                            ForEach(workchat.outgoing) { line in
+                                WorkchatOutgoingBubble(
+                                    line: line,
+                                    onCancel: { workchat.cancel(line.id) },
+                                    onShowTerminal: showInTerminal
+                                )
+                                .id(line.id)
+                            }
                         }
                         // The bottom margin: scrolling to it lands at the
                         // content's true bottom (the `ChatFeedView` rule).

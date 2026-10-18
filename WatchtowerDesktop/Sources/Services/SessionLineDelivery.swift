@@ -47,6 +47,8 @@ final class SessionLineDelivery {
         case input(String)
         /// A review round's line (board #328), by round id.
         case review(Int64)
+        /// A line from the Workchat composer (#711), by its bubble's id.
+        case workchat(UUID)
     }
 
     /// What became of a held line when the held lines were tried again.
@@ -317,10 +319,14 @@ extension SessionLineDelivery.LineKey {
         if case let .ask(id) = self { id } else { nil }
     }
 
-    /// Only the phone's text keeps its format characters (emoji joiners);
-    /// an answer's and a review's lines are the app's own.
+    /// The owner's own text — the phone's and the Workchat's — keeps its
+    /// format characters (emoji joiners); an answer's and a review's lines
+    /// are the app's own.
     var keepsFormatCharacters: Bool {
-        if case .input = self { true } else { false }
+        switch self {
+        case .input, .workchat: true
+        case .ask, .review: false
+        }
     }
 
     /// The app log's source: an answer's lines keep `OwnerAsks` (PROJ-12).
@@ -329,13 +335,14 @@ extension SessionLineDelivery.LineKey {
         case .ask: "OwnerAsks"
         case .input: "SessionInput"
         case .review: "review"
+        case .workchat: "Workchat"
         }
     }
 
     fileprivate var logNoun: String {
         switch self {
         case .ask: "answer"
-        case .input, .review: "line"
+        case .input, .review, .workchat: "line"
         }
     }
 }
