@@ -1,0 +1,286 @@
+<title>Workchat Mockups</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a board of macOS pane mockups (one per state), each with numbered callouts explained beside it. */
+:root {
+  --page: #eceef1;
+  --ink: #1d2128;
+  --muted: #5f6672;
+  --win: #ffffff;
+  --chrome: #f4f5f7;
+  --line: #d9dce1;
+  --bubble: #dfe9fb;
+  --accent: #2f6fd6;
+  --event: #6b7280;
+  --code: #f2f3f5;
+  --warn-bg: #fff4e0;
+  --warn: #b26a00;
+  --ok: #1f8a4c;
+  --violet: #7a4ad8;
+  --callout: #d6336c;
+  --display: "Instrument Sans", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --ui: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --page: #15171b; --ink: #e7e9ee; --muted: #9aa1ad; --win: #1f2227; --chrome: #26292f; --line: #353941;
+  --bubble: #23395e; --accent: #6ea2ff; --event: #9aa1ad; --code: #2a2e35; --warn-bg: #3a2c12; --warn: #f0b04a;
+  --ok: #4cc782; --violet: #b394ff; --callout: #ff6b9a; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --page: #15171b; --ink: #e7e9ee; --muted: #9aa1ad; --win: #1f2227; --chrome: #26292f; --line: #353941;
+  --bubble: #23395e; --accent: #6ea2ff; --event: #9aa1ad; --code: #2a2e35; --warn-bg: #3a2c12; --warn: #f0b04a;
+  --ok: #4cc782; --violet: #b394ff; --callout: #ff6b9a; color-scheme: dark }
+
+body { background: var(--page); color: var(--ink); font-family: var(--ui); }
+.wrap { max-width: 1240px; margin: 0 auto; padding-block: 32px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 48px; }
+header h1 { font-family: var(--display); font-size: 2rem; margin: 0 0 6px; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); max-width: 70ch; line-height: 1.5; }
+section.state { display: grid; grid-template-columns: minmax(0, 520px) minmax(0, 1fr); gap: 28px; align-items: start; }
+@media (max-width: 900px) { section.state { grid-template-columns: minmax(0, 1fr); } }
+.state h2 { font-family: var(--display); font-size: 1.25rem; margin: 0 0 4px; }
+.state .lede { color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.notes ol { margin: 0; padding-left: 0; list-style: none; display: grid; gap: 10px; }
+.notes li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; line-height: 1.45; }
+.n { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--callout); color: #fff; font: 600 11px/1 var(--ui); flex: none; }
+.notes code, .pane code { font-family: var(--mono); font-size: 0.86em; background: var(--code); padding: 1px 4px; border-radius: 4px; }
+
+/* the pane */
+.pane { background: var(--win); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0,0,0,.10); font-size: 13px; display: flex; flex-direction: column; height: 640px; }
+.bar { background: var(--chrome); border-bottom: 1px solid var(--line); padding: 8px 10px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bar .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pill { font-size: 11px; padding: 2px 7px; border-radius: 99px; white-space: nowrap; font-weight: 500; }
+.pill.working { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.pill.approval { background: var(--warn-bg); color: var(--warn); }
+.pill.ask { background: color-mix(in srgb, var(--violet) 18%, transparent); color: var(--violet); }
+.seg { margin-left: auto; display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex: none; }
+.seg span { padding: 3px 9px; font-size: 12px; color: var(--muted); }
+.seg span.on { background: var(--win); color: var(--ink); font-weight: 600; }
+.crumbs { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; flex-wrap: wrap; }
+.crumbs b { color: var(--ink); }
+.back { color: var(--accent); font-weight: 600; }
+.feed { flex: 1; overflow: hidden; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; position: relative; }
+.row-owner { align-self: flex-end; max-width: 82%; display: grid; justify-items: end; gap: 3px; }
+.bubble { background: var(--bubble); border-radius: 12px; padding: 7px 10px; line-height: 1.4; }
+.meta { font-size: 10.5px; color: var(--muted); }
+.row-agent { max-width: 92%; line-height: 1.45; display: grid; gap: 4px; }
+.row-agent h4 { margin: 2px 0 0; font-size: 14px; }
+.row-agent ul { margin: 0; padding-left: 18px; }
+.row-agent pre { margin: 0; background: var(--code); border-radius: 6px; padding: 7px 9px; font: 11.5px/1.45 var(--mono); overflow-x: auto; }
+.event { align-self: center; display: flex; align-items: center; gap: 6px; color: var(--event); font-size: 11.5px; max-width: 92%; }
+.event .ic { width: 14px; text-align: center; }
+.event .chev { color: var(--muted); }
+.brief { align-self: center; font-size: 11.5px; color: var(--muted); }
+.card { border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; display: flex; gap: 8px; align-items: center; max-width: 90%; background: color-mix(in srgb, var(--ink) 3%, var(--win)); }
+.card .grow { flex: 1; min-width: 0; }
+.card .t { font-weight: 600; }
+.card .d { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spin { width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; display: inline-block; }
+.perm { border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--line)); background: var(--warn-bg); border-radius: 10px; padding: 10px; display: grid; gap: 7px; }
+.perm .t { font-weight: 600; color: var(--warn); }
+.btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn { border: 1px solid var(--line); background: var(--win); border-radius: 6px; padding: 3px 10px; font-size: 12px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.askcard { border: 1px solid color-mix(in srgb, var(--violet) 45%, var(--line)); border-radius: 10px; padding: 10px; display: grid; gap: 6px; }
+.askcard .t { font-weight: 600; }
+.askcard .k { font-size: 11px; color: var(--violet); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+.pending { opacity: .65; }
+.pending .bubble { border: 1px dashed var(--accent); background: transparent; }
+.loading { align-self: center; display: flex; gap: 6px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.composer { border-top: 1px solid var(--line); padding: 8px 10px; display: flex; gap: 8px; align-items: flex-end; background: var(--chrome); }
+.field { flex: 1; min-width: 0; background: var(--win); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; color: var(--muted); min-height: 18px; line-height: 1.4; }
+.field.typed { color: var(--ink); }
+.send { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #fff; font-size: 13px; flex: none; }
+.stop { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--ink); color: var(--win); font-size: 10px; flex: none; }
+.ro { border-top: 1px solid var(--line); padding: 9px 12px; font-size: 12px; color: var(--muted); background: var(--chrome); }
+.c { position: relative; }
+.c > .n { position: absolute; left: -9px; top: -9px; z-index: 2; }
+.fade { position: absolute; inset: 0 0 auto; height: 26px; background: linear-gradient(var(--win), transparent); pointer-events: none; }
+</style>
+
+<div class="wrap">
+<header>
+  <h1>Workchat</h1>
+  <p>Mockups for board target #711. The session pane named Chat becomes Workchat, a second way to drive a workbench session next to the terminal. You read the dialog with markdown rendered, and you can write to the agent, stop it, answer its permission prompt and open its asks without switching to the terminal. Four states of one pane are shown below; the numbers match the notes.</p>
+</header>
+
+<!-- 1 -->
+<section class="state">
+  <div>
+    <div class="pane">
+      <div class="bar">
+        <span class="title">#711 Workchat</span>
+        <span class="pill working">Working</span>
+        <span class="seg"><span>Terminal</span><span class="on">Workchat</span></span>
+      </div>
+      <div class="feed">
+        <div class="brief">▸ Watchtower brief</div>
+        <div class="row-owner c"><span class="n">1</span>
+          <div class="bubble">Check PR 340 and merge it if CI is green</div>
+          <div class="meta">11:02</div>
+        </div>
+        <div class="row-agent c"><span class="n">2</span>
+          <h4>Verdict: approve</h4>
+          <div>I checked every item accepted in round 1 against the code. All of them are fixed.</div>
+          <ul>
+            <li><b>M1 (one model wait per run):</b> fixed in <code>SpeechGate.swift</code></li>
+            <li><b>M2 (cancellation):</b> fixed</li>
+          </ul>
+          <pre>gh pr checks 340 --watch</pre>
+          <div class="meta">11:04</div>
+        </div>
+        <div class="event c"><span class="n">3</span><span class="ic">⚙︎</span>Background task finished · Wait for PR 340 CI <span class="chev">›</span></div>
+        <div class="event"><span class="ic">✉︎</span>Message from session lane-564 · #564 PR #340 opened <span class="chev">›</span></div>
+        <div class="card c"><span class="n">4</span>
+          <span class="meta">⧉</span>
+          <div class="grow"><div class="t">review-judge</div><div class="d">Judge verify #564</div></div>
+          <span class="spin"></span><span class="meta">Running</span><span class="chev">›</span>
+        </div>
+        <div class="row-owner pending c"><span class="n">5</span>
+          <div class="bubble">After the merge, close #564 on the board</div>
+          <div class="meta">Queued · sends when the agent stops · <u>Cancel</u></div>
+        </div>
+      </div>
+      <div class="composer c"><span class="n">6</span>
+        <div class="field">Message the agent… (/ for commands)</div>
+        <div class="stop" title="Stop (Esc)">■</div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <h2>1 · The agent is working</h2>
+    <p class="lede">The everyday view. It opens at the newest message and follows the bottom while the agent writes.</p>
+    <ol>
+      <li><span class="n">1</span><span>Your lines on the right, in a bubble. Lines that came from the phone, an ask answer or a review round carry "via Watchtower" in the caption, as today.</span></li>
+      <li><span class="n">2</span><span>Agent text with full markdown: headings, lists, bold, code blocks, links. It is the same renderer as AI Chat, so it is no longer raw <code>##</code>.</span></li>
+      <li><span class="n">3</span><span>Service messages from Claude Code (a background task finished, a message from another session) become one grey event line instead of your bubble. Click it to expand the full text.</span></li>
+      <li><span class="n">4</span><span>A subagent is a card with its live status. Click opens it in this same pane (state 3).</span></li>
+      <li><span class="n">5</span><span>A line written while the agent works is queued (dashed bubble) and is typed into the session when the agent stops. You can cancel it until then.</span></li>
+      <li><span class="n">6</span><span>The composer. Return sends (Shift-Return adds a new line). While the agent works, the round button is <b>Stop</b>, the same as Esc in the terminal. A line starting with <code>/</code> is sent as a slash command.</span></li>
+    </ol>
+  </div>
+</section>
+
+<!-- 2 -->
+<section class="state">
+  <div>
+    <div class="pane">
+      <div class="bar">
+        <span class="title">#711 Workchat</span>
+        <span class="pill approval">Needs approval</span>
+        <span class="seg"><span>Terminal</span><span class="on">Workchat</span></span>
+      </div>
+      <div class="feed">
+        <div class="fade"></div>
+        <div class="row-agent">
+          <div>CI is green on all 14 checks. Merging now.</div>
+          <div class="meta">11:21</div>
+        </div>
+        <div class="perm c"><span class="n">1</span>
+          <div class="t">Claude wants to run a command</div>
+          <pre style="margin:0;background:var(--win);border-radius:6px;padding:7px 9px;font:11.5px/1.45 var(--mono);overflow-x:auto">gh pr merge 340 --merge --delete-branch</pre>
+          <div class="btns"><span class="btn primary">Allow</span><span class="btn">Deny</span><span class="btn">Show in Terminal</span></div>
+        </div>
+      </div>
+      <div class="composer c"><span class="n">2</span>
+        <div class="field typed">Use squash instead</div>
+        <div class="send">↑</div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <h2>2 · The agent asks for permission</h2>
+    <p class="lede">Claude Code stopped at a permission prompt. You answer it here without opening the terminal.</p>
+    <ol>
+      <li><span class="n">1</span><span>The prompt as a card at the end of the feed: what the agent wants to run, then <b>Allow</b> and <b>Deny</b>. They answer the same pending permission request the phone answers (PROJ-21). Prompts the app cannot read in full, such as edits to settings files, show only <b>Show in Terminal</b>.</span></li>
+      <li><span class="n">2</span><span>A line you send now is queued and goes in after the prompt is answered, so it never lands inside the prompt.</span></li>
+    </ol>
+  </div>
+</section>
+
+<!-- 3 -->
+<section class="state">
+  <div>
+    <div class="pane">
+      <div class="bar c"><span class="n">1</span>
+        <div class="crumbs"><span class="back">‹ Back</span><span>Workchat</span><span>›</span><b>review-judge</b></div>
+        <span class="pill working" style="margin-left:auto">Running</span>
+      </div>
+      <div class="feed">
+        <div class="meta" style="font-weight:600">TASK</div>
+        <div class="row-owner"><div class="bubble">Verify-mode judgement for branch fix/564-silence-tails vs origin/main. Check each accepted item is fixed in code…</div></div>
+        <div class="row-agent c"><span class="n">2</span>
+          <div class="meta" style="font-weight:600">REPORT</div>
+          <h4>Verdict: approve</h4>
+          <div>Verify round on fix/564-silence-tails. I checked every item accepted in round 1.</div>
+          <h4 style="font-size:13px">Fixes confirmed</h4>
+          <ul><li><b>M1:</b> <code>WindowSpeechGate</code> takes <code>modelWait</code> at construction</li><li><b>M3:</b> failure delivery per attempt</li></ul>
+        </div>
+        <div class="card c"><span class="n">3</span>
+          <span class="meta">⧉</span>
+          <div class="grow"><div class="t">codex-wrapper</div><div class="d">Codex verify round 2</div></div>
+          <span class="meta">Finished</span><span class="chev">›</span>
+        </div>
+      </div>
+      <div class="ro c"><span class="n">4</span>Subagents read only. Write to the agent in the main Workchat.</div>
+    </div>
+  </div>
+  <div class="notes">
+    <h2>3 · Inside a subagent</h2>
+    <p class="lede">The subagent replaces the feed in the same pane. There is no modal window and no Done button.</p>
+    <ol>
+      <li><span class="n">1</span><span>A path bar: <b>‹ Back</b> (also Esc and ⌘[) and the path. Each part of the path opens that level.</span></li>
+      <li><span class="n">2</span><span>The task the subagent got, then its text and its report, with full markdown.</span></li>
+      <li><span class="n">3</span><span>A nested subagent opens one level deeper, and the path grows.</span></li>
+      <li><span class="n">4</span><span>No composer here. A line typed into a subagent screen would reach the main agent, the same rule as on the phone.</span></li>
+    </ol>
+  </div>
+</section>
+
+<!-- 4 -->
+<section class="state">
+  <div>
+    <div class="pane">
+      <div class="bar">
+        <span class="title">#702 Workchat</span>
+        <span class="pill ask">Waiting on you</span>
+        <span class="seg"><span>Terminal</span><span class="on">Workchat</span></span>
+      </div>
+      <div class="feed">
+        <div class="loading c"><span class="n">1</span><span class="spin"></span>Loading earlier messages…</div>
+        <div class="row-agent">
+          <div>The spec is written: <code>docs/superpowers/specs/2026-10-18-workchat-design.md</code>. I filed it for your review.</div>
+          <div class="meta">20:40</div>
+        </div>
+        <div class="askcard c"><span class="n">2</span>
+          <div class="k">Ask #391 · Review</div>
+          <div class="t">Workchat design: composer, subagents, events</div>
+          <div class="btns"><span class="btn primary">Open Ask</span></div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="field">Message the agent…</div>
+        <div class="send">↑</div>
+      </div>
+      <div class="ro c" style="display:none"></div>
+    </div>
+    <div class="pane" style="height:auto;margin-top:16px">
+      <div class="bar"><span class="title">#698 Workchat</span><span class="pill" style="background:var(--code);color:var(--muted)">Finished</span></div>
+      <div class="ro c"><span class="n">3</span>Session finished. The history stays readable.</div>
+    </div>
+  </div>
+  <div class="notes">
+    <h2>4 · Long history, asks and the end of a session</h2>
+    <p class="lede">A long session opens at once on its newest messages; older ones load as you scroll up.</p>
+    <ol>
+      <li><span class="n">1</span><span>Lazy loading. The pane shows the newest messages first and keeps finished rows from re-rendering. Scrolling to the top loads the next older batch while the scroll position stays where it was.</span></li>
+      <li><span class="n">2</span><span>An open ask of this session shows as a card. <b>Open Ask</b> opens it where asks are answered today. The answer is delivered into the session as before.</span></li>
+      <li><span class="n">3</span><span>A finished or stopped session has no composer. The pane keeps the whole history readable.</span></li>
+    </ol>
+  </div>
+</section>
+</div>
