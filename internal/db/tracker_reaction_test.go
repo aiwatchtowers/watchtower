@@ -36,6 +36,30 @@ func TestReactionTrackerPrefixes_BothTrackers(t *testing.T) {
 	assert.Equal(t, map[string]bool{"ENG": true, "OPS": true}, got.Linear, "disabled and removed accounts' teams are not Linear keys")
 }
 
+// A removed or disabled Jira account keeps its rows but owns no prefix.
+func TestReactionTrackerPrefixes_IgnoresRemovedAndDisabledJiraAccounts(t *testing.T) {
+	d := openTestDB(t)
+	for i, state := range []string{"removed", "disabled"} {
+		ja, err := d.CreateJiraAccount(JiraAccount{CloudID: state, SiteURL: "https://" + state + ".example.com", SiteName: state})
+		require.NoError(t, err)
+		key := []string{"OLD", "OFF"}[i]
+		_, err = d.Exec(`INSERT INTO jira_sync_state (account_id, project_key) VALUES (?, ?)`, ja, key)
+		require.NoError(t, err)
+		_, err = d.Exec(`INSERT INTO jira_issues (account_id, key, id, project_key, summary, status, status_category,
+			created_at, updated_at, synced_at, is_deleted)
+			VALUES (?, ? || '-1', ?, ?, 's', 'Open', 'todo', '', '', '', 0)`, ja, key, state, key)
+		require.NoError(t, err)
+		if state == "removed" {
+			require.NoError(t, d.SetJiraAccountRemoved(ja))
+		} else {
+			require.NoError(t, d.SetJiraAccountEnabled(ja, false))
+		}
+	}
+	got, err := d.ReactionTrackerPrefixes()
+	require.NoError(t, err)
+	assert.Empty(t, got.Jira)
+}
+
 func TestReactionTrackerPrefixes_Empty(t *testing.T) {
 	got, err := openTestDB(t).ReactionTrackerPrefixes()
 	require.NoError(t, err)

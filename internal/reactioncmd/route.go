@@ -69,22 +69,39 @@ func routeIssueTool(mapped string, ev trackerEvidence, jiraConnected, linearConn
 	}
 }
 
+// prefixCache holds one Run's tracker key prefixes, read on first use.
+type prefixCache struct {
+	loaded bool
+	pre    db.TrackerPrefixes
+	err    error
+}
+
+func (pc *prefixCache) get(d *db.DB) (db.TrackerPrefixes, error) {
+	if !pc.loaded {
+		pc.pre, pc.err = d.ReactionTrackerPrefixes()
+		pc.loaded = true
+	}
+	return pc.pre, pc.err
+}
+
 // routeIssue returns the registered reaction-surface tool an issue reaction
-// files with. Routing refines the dictionary's choice and never gates it: a
-// read error or a routed tool the reaction surface cannot dispatch keeps the
-// dictionary's tool (logged).
-func (p *Pipeline) routeIssue(c candidate, mapped *tools.Tool) *tools.Tool {
-	pre, err := p.db.ReactionTrackerPrefixes()
+// files with, from the keys in the reacted message, its thread (thread, the
+// lines compose also grounds on) and the channel's newest messages. Routing
+// refines the dictionary's choice and never gates it: a read error or a
+// routed tool the reaction surface cannot dispatch keeps the dictionary's
+// tool (logged).
+func (p *Pipeline) routeIssue(c candidate, mapped *tools.Tool, prefixes *prefixCache, thread []string) *tools.Tool {
+	pre, err := prefixes.get(p.db)
 	if err != nil {
 		p.logf("reaction-commands: routing :%s: (keeping %s): %v", c.Emoji, mapped.Name, err)
 		return mapped
 	}
-	texts := []string{c.Text}
 	recent, err := p.db.RecentChannelTexts(c.ChannelID, channelScanLimit)
 	if err != nil {
-		p.logf("reaction-commands: routing :%s: reads only the reacted message: %v", c.Emoji, err)
+		p.logf("reaction-commands: routing :%s: (keeping %s): %v", c.Emoji, mapped.Name, err)
+		return mapped
 	}
-	texts = append(texts, recent...)
+	texts := append(append([]string{c.Text}, thread...), recent...)
 	name, why := routeIssueTool(mapped.Name, scanTrackerEvidence(texts, pre), len(pre.Jira) > 0, len(pre.Linear) > 0)
 	if name == mapped.Name {
 		if why != "" {

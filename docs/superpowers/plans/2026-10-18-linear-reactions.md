@@ -27,7 +27,14 @@ An "issue" reaction — an emoji the dictionary maps to `create_jira_issue` or
 
 Compose then uses the routed tool's argument guide and grounding: Jira projects
 for Jira (unchanged), selected Linear team keys of enabled accounts for Linear
-(`KEY (account_id N)` when a key exists on several workspaces).
+(`KEY (account_id N)` when a key exists on several workspaces). Only the routed
+tracker's list is offered — a deliberate deviation from spec §6 ("available
+projects/teams from both"), ruled by the controller on PR #415: the two tools
+take different arguments, so the tracker is decided first.
+
+Review fixes (PR #415): both prefix sets filter enabled, non-removed accounts;
+the thread is scanned too; any routing read error keeps the dictionary's tool;
+prefixes are read once per Run and only budget-winning candidates are routed.
 
 ## Tasks
 

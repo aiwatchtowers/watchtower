@@ -18,13 +18,18 @@ type TrackerPrefixes struct {
 }
 
 // ReactionTrackerPrefixes returns the Jira project keys (synced projects plus
-// the projects of mirrored issues) and the team keys of enabled Linear
-// accounts.
+// the projects of mirrored issues) and the Linear team keys, both of enabled,
+// non-removed accounts only: a removed account keeps its rows (removal is
+// non-destructive), and must not make its tracker look connected.
 func (db *DB) ReactionTrackerPrefixes() (TrackerPrefixes, error) {
 	out := TrackerPrefixes{Jira: map[string]bool{}, Linear: map[string]bool{}}
 	if err := db.collectKeys(out.Jira, "jira project keys", `
-		SELECT project_key FROM jira_sync_state WHERE project_key != ''
-		UNION SELECT DISTINCT project_key FROM jira_issues WHERE project_key != ''`); err != nil {
+		SELECT s.project_key FROM jira_sync_state s
+		JOIN jira_accounts a ON a.id = s.account_id
+		WHERE s.project_key != '' AND a.enabled = 1 AND a.status != 'removed'
+		UNION SELECT DISTINCT i.project_key FROM jira_issues i
+		JOIN jira_accounts a ON a.id = i.account_id
+		WHERE i.project_key != '' AND a.enabled = 1 AND a.status != 'removed'`); err != nil {
 		return TrackerPrefixes{}, err
 	}
 	if err := db.collectKeys(out.Linear, "linear team keys", `

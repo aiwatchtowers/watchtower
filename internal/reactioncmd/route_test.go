@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -117,6 +118,7 @@ func fakeIssueTool(t *testing.T, name string, surfaces ...string) *tools.Tool {
 func routingPipeline(t *testing.T, database *db.DB, gen digest.Generator, linearSurfaces []string, items []slack.ReactedItem, logs *bytes.Buffer) *Pipeline {
 	t.Helper()
 	reg := tools.New(database)
+	require.NoError(t, reg.Register(tools.NewCreateTarget()))
 	require.NoError(t, reg.Register(fakeIssueTool(t, toolJiraIssue, "main", "target", "reaction")))
 	require.NoError(t, reg.Register(fakeIssueTool(t, toolLinearIssue, linearSurfaces...)))
 	accountsFn := func(context.Context) ([]Account, error) {
@@ -261,7 +263,8 @@ func TestReactionCmd_RoutedToolOffTheSurfaceKeepsDictionaryTool(t *testing.T) {
 }
 
 // Routing applies only to issue tools: a create_target reaction in a Linear
-// channel stays create_target.
+// channel stays create_target, with create_linear_issue registered on the
+// reaction surface (so a removed gate would route it there).
 func TestReactionCmd_NonIssueToolIsNotRouted(t *testing.T) {
 	database := seededPipelineDB(t, 1)
 	connectLinear(t, database, "ENG")
@@ -269,10 +272,108 @@ func TestReactionCmd_NonIssueToolIsNotRouted(t *testing.T) {
 	gen := &mockGenerator{out: `{"text":"Do it","reason":"r"}`}
 	items := []slack.ReactedItem{msgItem("C1", "500.1", "UAUTHOR", "ENG-41 do it", "",
 		slack.ItemReaction{Name: "white_check_mark", Users: []string{"UOWNER"}})}
-	p := newTestPipeline(t, database, gen, items)
+	var logs bytes.Buffer
+	p := routingPipeline(t, database, gen, []string{"main", "target", "reaction"}, items, &logs)
 
 	_, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	tool, _ := dispatchedTool(t, database)
 	assert.Equal(t, "create_target", tool)
+}
+
+// A removed or disabled Jira account keeps its rows but no longer makes Jira
+// "connected": old Jira keys route nowhere and the one connected tracker,
+// Linear, files the issue.
+func TestReactionCmd_RemovedOrDisabledJiraAccountRoutesToLinear(t *testing.T) {
+	for _, state := range []string{"removed", "disabled"} {
+		t.Run(state, func(t *testing.T) {
+			database := seededPipelineDB(t, 1)
+			ja, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c", SiteURL: "https://acme.atlassian.net", SiteName: "Acme"})
+			require.NoError(t, err)
+			_, err = database.Exec(`INSERT INTO jira_sync_state (account_id, project_key) VALUES (?, 'ABC')`, ja)
+			require.NoError(t, err)
+			if state == "removed" {
+				require.NoError(t, database.SetJiraAccountRemoved(ja))
+			} else {
+				require.NoError(t, database.SetJiraAccountEnabled(ja, false))
+			}
+			connectLinear(t, database, "ENG")
+			addChannelMessage(t, database, "1:C1", "400.1", "ABC-3 from the old tracker")
+			gen := &capturingGenerator{out: `{"reason":"r"}`}
+			var logs bytes.Buffer
+			p := routingPipeline(t, database, gen, []string{"main", "target", "reaction"}, ticketReaction("x"), &logs)
+
+			_, err = p.Run(context.Background(), nil)
+			require.NoError(t, err)
+			tool, _ := dispatchedTool(t, database)
+			assert.Equal(t, toolLinearIssue, tool)
+		})
+	}
+}
+
+// A Linear key in a thread reply older than the channel window still routes:
+// the thread compose loads is scanned too.
+func TestReactionCmd_ThreadReplyOutsideTheWindowRoutes(t *testing.T) {
+	database := seededPipelineDB(t, 1)
+	connectJira(t, database, "ABC")
+	connectLinear(t, database, "ENG")
+	_, err := database.Exec(`INSERT INTO messages (channel_id, ts, text, thread_ts) VALUES
+		('1:C1', '10.1', 'login broke', '10.1'), ('1:C1', '11.1', 'filed as ENG-77', '10.1')`)
+	require.NoError(t, err)
+	for i := range channelScanLimit {
+		addChannelMessage(t, database, "1:C1", fmt.Sprintf("%d.1", 1000+i), "chatter")
+	}
+	items := []slack.ReactedItem{msgItem("C1", "12.1", "UAUTHOR", "still broken", "10.1",
+		slack.ItemReaction{Name: "ticket", Users: []string{"UOWNER"}})}
+	gen := &capturingGenerator{out: `{"reason":"r"}`}
+	var logs bytes.Buffer
+	p := routingPipeline(t, database, gen, []string{"main", "target", "reaction"}, items, &logs)
+
+	_, err = p.Run(context.Background(), nil)
+	require.NoError(t, err)
+	tool, _ := dispatchedTool(t, database)
+	assert.Equal(t, toolLinearIssue, tool)
+	require.Len(t, gen.msgs, 1)
+	assert.Contains(t, gen.msgs[0], "filed as ENG-77", "the same thread lines ground the compose")
+}
+
+// Either routing read failing keeps the dictionary's tool, even when the
+// reacted message alone names the other tracker's key.
+func TestReactionCmd_RoutingReadErrorKeepsDictionaryTool(t *testing.T) {
+	for _, tc := range []struct{ name, drop string }{
+		{"prefixes", "linear_teams"},
+		{"channel messages", "messages"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := seededPipelineDB(t, 1)
+			connectJira(t, database, "ABC")
+			connectLinear(t, database, "ENG")
+			_, err := database.Exec(`DROP TABLE ` + tc.drop)
+			require.NoError(t, err)
+			gen := &capturingGenerator{out: `{"reason":"r"}`}
+			var logs bytes.Buffer
+			p := routingPipeline(t, database, gen, []string{"main", "target", "reaction"}, ticketReaction("ENG-5 broke"), &logs)
+
+			_, err = p.Run(context.Background(), nil)
+			require.NoError(t, err)
+			tool, _ := dispatchedTool(t, database)
+			assert.Equal(t, toolJiraIssue, tool)
+			assert.Contains(t, logs.String(), "(keeping create_jira_issue)")
+		})
+	}
+}
+
+// The prefixes are read once per Run: a second issue reaction reuses the
+// first one's read.
+func TestPrefixCache_ReadsOnce(t *testing.T) {
+	database := seededPipelineDB(t, 1)
+	connectLinear(t, database, "ENG")
+	var pc prefixCache
+	first, err := pc.get(database)
+	require.NoError(t, err)
+	_, err = database.Exec(`DROP TABLE linear_teams`)
+	require.NoError(t, err)
+	second, err := pc.get(database)
+	require.NoError(t, err, "a cached read never queries again")
+	assert.Equal(t, first, second)
 }

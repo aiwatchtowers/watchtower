@@ -16,14 +16,14 @@ func argGuide(tool string) string {
 - "intent" (optional): why it matters / the desired outcome.
 - "priority" (optional): "high" | "medium" | "low".
 - "reason" (required): one sentence for the owner.`
-	case "create_jira_issue":
+	case toolJiraIssue:
 		return `Arguments:
 - "project_key" (required): a project key from the "Available Jira projects" list below — pick the best fit; if none fits, use the first.
 - "issue_type" (required): "Task" unless the message clearly implies "Bug" or "Story".
 - "summary" (required): the issue title, at most 255 characters.
 - "description" (optional): plain-text body summarising the message and any thread context.
 - "reason" (required): one sentence for the owner.`
-	case "create_linear_issue":
+	case toolLinearIssue:
 		return `Arguments:
 - "team" (required): a team key from the "Available Linear teams" list below — pick the best fit; if none fits, use the first.
 - "account_id" (only when the chosen team's entry names one): that number.
@@ -56,6 +56,13 @@ Set no other field.`
 	}
 }
 
+// issueChoiceLines is the grounding line an issue tool's brief carries: its
+// label and the text shown when there is nothing to list.
+var issueChoiceLines = map[string]struct{ label, none string }{
+	toolJiraIssue:   {"Available Jira projects", "(none synced — use your best guess for project_key)"},
+	toolLinearIssue: {"Available Linear teams", "(none selected — use your best guess for team)"},
+}
+
 // buildComposeUserMessage assembles the user message for the reactioncmd.command
 // prompt: which action to build, its argument guide, the reacted message and
 // any thread context, and grounding facts (the issue tool's Jira projects or
@@ -81,19 +88,12 @@ func buildComposeUserMessage(tool string, c candidate, guide string, threadLines
 		}
 	}
 
-	switch tool {
-	case toolJiraIssue:
+	if l, ok := issueChoiceLines[tool]; ok {
+		list := l.none
 		if len(issueChoices) > 0 {
-			fmt.Fprintf(&b, "\nAvailable Jira projects: %s\n", strings.Join(issueChoices, ", "))
-		} else {
-			b.WriteString("\nAvailable Jira projects: (none synced — use your best guess for project_key)\n")
+			list = strings.Join(issueChoices, ", ")
 		}
-	case toolLinearIssue:
-		if len(issueChoices) > 0 {
-			fmt.Fprintf(&b, "\nAvailable Linear teams: %s\n", strings.Join(issueChoices, ", "))
-		} else {
-			b.WriteString("\nAvailable Linear teams: (none selected — use your best guess for team)\n")
-		}
+		fmt.Fprintf(&b, "\n%s: %s\n", l.label, list)
 	}
 
 	fmt.Fprintf(&b, "\nToday's date: %s\n", today)
