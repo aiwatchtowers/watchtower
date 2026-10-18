@@ -117,13 +117,13 @@ func liveDiffWindow(now time.Time, after string) (from, to time.Time) {
 // row at a page boundary (atPageBoundary) or with an unparseable ts is not
 // judged either, and a listing with an unparseable page edge (badEdge) is
 // not diffed at all. Every skip is logged. The stored set is read and diffed before the short writes.
-func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (int, error) {
+func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) error {
 	if l.badEdge {
-		return 0, nil // callers log and skip a badEdge listing first
+		return nil // callers log and skip a badEdge listing first
 	}
 	all, err := o.db.LiveSlackMessageKeys(o.accountID, float64(from.Unix()), float64(to.Unix()))
 	if err != nil {
-		return 0, err
+		return err
 	}
 	listedIn := make(map[string]int)
 	listed := 0
@@ -177,7 +177,7 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 		if reason != "" {
 			o.logger.Printf("slack deletions: account %d range %s: skipped: %s", o.accountID, rangeDesc, reason)
 		}
-		return 0, nil
+		return nil
 	}
 	n, err := o.db.TombstoneSlackMessages(missing)
 	if err != nil {
@@ -185,11 +185,11 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 			o.logger.Printf("slack deletions: account %d range %s: tombstoned %d messages before failing: %v",
 				o.accountID, rangeDesc, n, err)
 		}
-		return n, err
+		return err
 	}
 	o.logger.Printf("slack deletions: account %d range %s: tombstoned %d of %d stored messages (%d listed)",
 		o.accountID, rangeDesc, n, len(stored), listed)
-	return n, nil
+	return nil
 }
 
 // diffLiveWindow tombstones messages deleted at the source inside the live
@@ -211,7 +211,7 @@ func (o *Orchestrator) diffLiveWindow(l *searchListing, after string) {
 			o.accountID, from.Format(time.RFC3339), to.Format(time.RFC3339))
 		return
 	}
-	if _, err := o.tombstoneMissing(l, from, to); err != nil {
+	if err := o.tombstoneMissing(l, from, to); err != nil {
 		o.logger.Printf("slack deletions: account %d: live diff failed: %v", o.accountID, err)
 	}
 }
@@ -288,7 +288,7 @@ func (o *Orchestrator) sweepDeletionDay(ctx context.Context) error {
 		o.logger.Printf("slack deletion sweep: account %d day %s: a page edge ts did not parse, page boundaries unknown, skipped",
 			o.accountID, day)
 	default:
-		if _, err := o.tombstoneMissing(listing, from, to); err != nil {
+		if err := o.tombstoneMissing(listing, from, to); err != nil {
 			return err
 		}
 	}
