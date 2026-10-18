@@ -1484,7 +1484,7 @@ final class AppState {
         do {
             try await daemon.waitUntilStopped()
             // 2. Wipe LLM-generated tables and the daemon's stamps.
-            try db.wipeLLMData()
+            try await db.wipeLLMData()
             if let workspaceDir {
                 try DaemonStampFiles.clear(in: workspaceDir)
             }

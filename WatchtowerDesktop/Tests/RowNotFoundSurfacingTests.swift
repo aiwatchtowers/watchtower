@@ -25,10 +25,10 @@ final class RowNotFoundSurfacingTests: XCTestCase {
         }
     }
 
-    func testTrackEdit_OfATrackDeletedElsewhere_NamesIt_AndDropsTheRow() throws {
+    func testTrackEdit_OfATrackDeletedElsewhere_NamesIt_AndDropsTheRow() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try manager.dbPool.write { db -> Int64 in
+        let id = try await manager.dbPool.write { db -> Int64 in
             try TestDatabase.insertWorkspace(db)
             return try TestDatabase.insertTrack(db, text: "gone soon")
         }
@@ -36,9 +36,9 @@ final class RowNotFoundSurfacingTests: XCTestCase {
         vm.load()
         let stale = try XCTUnwrap((vm.updatedTracks + vm.allTracks).first { Int64($0.id) == id })
         // No `load()` after the delete: the VM never sees another process's write.
-        try manager.dbPool.write { db in try db.execute(sql: "DELETE FROM tracks WHERE id = ?", arguments: [id]) }
+        try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM tracks WHERE id = ?", arguments: [id]) }
 
-        vm.updatePriority(stale, to: "high")
+        await vm.updatePriority(stale, to: "high")
 
         XCTAssertEqual(
             vm.errorMessage,
@@ -50,13 +50,13 @@ final class RowNotFoundSurfacingTests: XCTestCase {
     /// The event's watch was deleted elsewhere (the delete cascades to its
     /// events): Apply must fail BEFORE touching the target, or the action
     /// would land and still be reported as failed — and re-land on a retry.
-    func testWatchApply_OfAnEventDeletedElsewhere_LeavesTheTargetAlone() throws {
+    func testWatchApply_OfAnEventDeletedElsewhere_LeavesTheTargetAlone() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let targetID = try manager.dbPool.write { db in
+        let targetID = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "goal", periodStart: "2026-09-01", periodEnd: "2026-09-30")
         }
-        let eventID = try manager.dbPool.write { db -> Int64 in
+        let eventID = try await manager.dbPool.write { db -> Int64 in
             try db.execute(sql: """
                 INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
                     origin, instruction, enabled, linked_target_id)
@@ -69,10 +69,12 @@ final class RowNotFoundSurfacingTests: XCTestCase {
                 """, arguments: [watchID])
             return db.lastInsertedRowID
         }
-        let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) })
-        let event = try XCTUnwrap(manager.dbPool.read { db in
+        let targetRow = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
+        let target = try XCTUnwrap(targetRow)
+        let eventRow = try await manager.dbPool.read { db in
             try TrackEventQueries.fetchForTarget(db, targetID: targetID).first
-        })
+        }
+        let event = try XCTUnwrap(eventRow)
         XCTAssertNotNil(event.decodedAction)
         let vm = TargetWatchesViewModel(
             target: target,
@@ -82,16 +84,16 @@ final class RowNotFoundSurfacingTests: XCTestCase {
             scanCenter: TrackScanCenter()
         )
         vm.events = [event]
-        try manager.dbPool.write { db in try db.execute(sql: "DELETE FROM tracks") }
+        try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM tracks") }
 
-        vm.applyAction(for: event)
+        await vm.applyAction(for: event)
 
         XCTAssertEqual(
             vm.errorMessage,
             "Failed to apply: \(RowNotFoundError(kind: "track event", id: eventID).localizedDescription)"
         )
         XCTAssertTrue(vm.events.isEmpty, "the vanished event leaves the feed")
-        let status = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID)?.status }
+        let status = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID)?.status }
         XCTAssertEqual(status, "todo", "the target was not touched")
     }
 }

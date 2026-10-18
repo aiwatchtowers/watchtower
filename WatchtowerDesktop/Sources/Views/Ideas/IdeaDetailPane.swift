@@ -25,11 +25,13 @@ struct IdeaDetailPane: View {
     let onDrop: () -> Void
     let onMerge: (Int) -> Void
     let onConvert: () -> Void
-    let onRating: (Int, String) -> Bool
+    let onRating: (Int, String) async -> Bool
     let onDelete: () -> Void
 
     @State private var comment: String
     @State private var rating: Int?
+    /// A rating write is waiting for the database (board #670).
+    @State private var isRating = false
     @State private var mentions: [IdeaMention] = []
     @State private var mentionsLoaded = false
     @State private var mentionsError: String?
@@ -53,7 +55,7 @@ struct IdeaDetailPane: View {
         onDrop: @escaping () -> Void,
         onMerge: @escaping (Int) -> Void,
         onConvert: @escaping () -> Void,
-        onRating: @escaping (Int, String) -> Bool,
+        onRating: @escaping (Int, String) async -> Bool,
         onDelete: @escaping () -> Void
     ) {
         self.idea = idea
@@ -398,10 +400,18 @@ struct IdeaDetailPane: View {
 
     /// Clears the owner's typed comment only once the write actually landed —
     /// wiping it on a failed write throws away something they cannot get back.
+    /// A second press while the write waits does nothing, and text typed
+    /// meanwhile stays (board #670).
     private func submitRating(_ value: Int) {
-        guard onRating(value, comment) else { return }
-        comment = ""
-        rating = value
+        guard !isRating else { return }
+        isRating = true
+        let sent = comment
+        Task {
+            defer { isRating = false }
+            guard await onRating(value, sent) else { return }
+            if comment == sent { comment = "" }
+            rating = value
+        }
     }
 
     /// Buttons offered depend on kind+status per the lifecycle in the design

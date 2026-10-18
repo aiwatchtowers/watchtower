@@ -79,7 +79,10 @@ struct ChatSidebarView: View {
         .alert("Rename Chat", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: $renameText)
             Button("Save") {
-                if let conv = renaming { historyVM.rename(conv.id, title: renameText) }
+                if let conv = renaming {
+                    let title = renameText
+                    Task { await historyVM.rename(conv.id, title: title) }
+                }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -172,7 +175,8 @@ struct ChatSidebarView: View {
             renameText = conv.title
             renaming = conv
         }
-        Button(conv.pinned ? "Unpin" : "Pin") { historyVM.togglePin(conv.id) }
+        Button(conv.pinned ? "Unpin" : "Pin") { Task { await historyVM.togglePin(conv.id) } }
+            .disabled(historyVM.pendingWrites.isPending("pin:\(conv.id)"))
         if !chatVM.projects.isEmpty || conv.projectID != nil {
             Menu("Move to Project") {
                 Button("None") { chatVM.moveConversation(conv.id, toProject: nil) }

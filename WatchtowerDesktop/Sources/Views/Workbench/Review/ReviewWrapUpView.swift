@@ -92,11 +92,11 @@ struct ReviewWrapUpView: View {
             set: { state in
                 guard let state else { return }
                 if state == .done {
-                    try? model.markIntent(item, state: state, note: "") // a failure lands in lastError
+                    Task { try? await model.markIntent(item, state: state, note: "") } // a failure lands in lastError
                 } else {
                     compose(.init(title: state == .partial ? "What is only partly done?" : "What is not done?",
                                   allowsEmpty: true) { note, _ in
-                        try model.markIntent(item, state: state, note: note)
+                        try await model.markIntent(item, state: state, note: note)
                     })
                 }
             }

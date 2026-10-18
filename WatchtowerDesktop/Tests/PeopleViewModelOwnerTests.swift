@@ -82,14 +82,14 @@ final class PeopleViewModelOwnerTests: XCTestCase {
     @MainActor
     private func assertProfileWritesPersist(
         under wantKey: String, reloads: Bool = true, file: StaticString = #filePath, line: UInt = #line
-    ) throws {
+    ) async throws {
         let vm = PeopleViewModel(dbManager: dbManager)
         vm.load()
-        vm.toggleStarredPerson("U002")
-        vm.updateConnections(reports: ["U003"], peers: [], manager: "U004")
+        await vm.toggleStarredPerson("U002")
+        await vm.updateConnections(reports: ["U003"], peers: [], manager: "U004")
         XCTAssertNil(vm.errorMessage, file: file, line: line)
 
-        let rows = try dbManager.dbPool.read { try UserProfile.fetchAll($0, sql: "SELECT * FROM user_profile") }
+        let rows = try await dbManager.dbPool.read { try UserProfile.fetchAll($0, sql: "SELECT * FROM user_profile") }
         XCTAssertEqual(rows.map(\.slackUserID), [wantKey], "exactly one profile row, keyed to the owner", file: file, line: line)
         XCTAssertEqual(rows.first?.decodedStarredPeople, ["U002"], file: file, line: line)
         XCTAssertEqual(rows.first?.reports, #"["U003"]"#, file: file, line: line)
@@ -103,28 +103,28 @@ final class PeopleViewModelOwnerTests: XCTestCase {
     /// A Slack owner whose profile is parked under `pending:owner`: the
     /// writes re-key that row onto the owner id and land on it.
     @MainActor
-    func testOwner01SlackOwnerProfileWritesReKeyParkedRow() throws {
-        try dbManager.dbPool.write { db in
+    func testOwner01SlackOwnerProfileWritesReKeyParkedRow() async throws {
+        try await dbManager.dbPool.write { db in
             _ = try TestDatabase.insertSlackAccount(db, teamID: "T1", currentUserID: "1:U001")
             try TestDatabase.insertProfile(db, slackUserID: ProfileQueries.pendingOwnerKey, role: "EM")
         }
-        try assertProfileWritesPersist(under: "1:U001")
+        try await assertProfileWritesPersist(under: "1:U001")
     }
 
     /// A Google-only owner has no Slack id, yet its profile writes land.
     @MainActor
-    func testOwner01GoogleOwnerProfileWritesPersist() throws {
-        try dbManager.dbPool.write { db in
+    func testOwner01GoogleOwnerProfileWritesPersist() async throws {
+        try await dbManager.dbPool.write { db in
             _ = try TestDatabase.insertGoogleAccount(db, email: "me@x.com")
             try TestDatabase.insertProfile(db, slackUserID: "google:me@x.com", role: "EM")
         }
-        try assertProfileWritesPersist(under: "google:me@x.com")
+        try await assertProfileWritesPersist(under: "google:me@x.com")
     }
 
     /// No owner and no profile yet: the writes park on the pending key
     /// (the onboarding rule) instead of silently hitting zero rows.
     @MainActor
-    func testOwner01NoOwnerProfileWritesParkOnPendingKey() throws {
-        try assertProfileWritesPersist(under: ProfileQueries.pendingOwnerKey, reloads: false)
+    func testOwner01NoOwnerProfileWritesParkOnPendingKey() async throws {
+        try await assertProfileWritesPersist(under: ProfileQueries.pendingOwnerKey, reloads: false)
     }
 }

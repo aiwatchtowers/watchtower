@@ -103,8 +103,8 @@ final class DecisionLedgerTests: XCTestCase {
     }
 
     @MainActor
-    func testMarkDecisionSeenDropsUnreadCount() throws {
-        let ideaID = try dbManager.dbPool.write { db in
+    func testMarkDecisionSeenDropsUnreadCount() async throws {
+        let ideaID = try await dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "Unseen", seenAt: nil)
         }
 
@@ -112,15 +112,15 @@ final class DecisionLedgerTests: XCTestCase {
         vm.load()
         XCTAssertEqual(vm.unreadDecisionCount, 1)
 
-        vm.markDecisionSeen(id: Int(ideaID))
+        await vm.markDecisionSeen(id: Int(ideaID))
 
         XCTAssertEqual(vm.unreadDecisionCount, 0)
         XCTAssertNotNil(vm.ledgerDecisions.first { $0.id == Int(ideaID) }?.seenAt)
     }
 
     @MainActor
-    func testMarkAllDecisionsSeenClearsUnreadCount() throws {
-        try dbManager.dbPool.write { db in
+    func testMarkAllDecisionsSeenClearsUnreadCount() async throws {
+        try await dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "A", seenAt: nil)
             try TestDatabase.insertIdea(db, kind: "decision", title: "B", seenAt: nil)
             try TestDatabase.insertIdea(db, kind: "decision", title: "C", seenAt: "2026-01-01T00:00:00Z")
@@ -130,7 +130,7 @@ final class DecisionLedgerTests: XCTestCase {
         vm.load()
         XCTAssertEqual(vm.unreadDecisionCount, 2)
 
-        vm.markAllDecisionsSeen()
+        await vm.markAllDecisionsSeen()
 
         XCTAssertEqual(vm.unreadDecisionCount, 0)
         // Every previously-unseen row is now stamped, matching what the
@@ -156,8 +156,8 @@ final class DecisionLedgerTests: XCTestCase {
     }
 
     @MainActor
-    func testDecisionMentionSourcesSurvivesReloadAfterAWrite() throws {
-        let ideaID = try dbManager.dbPool.write { db -> Int64 in
+    func testDecisionMentionSourcesSurvivesReloadAfterAWrite() async throws {
+        let ideaID = try await dbManager.dbPool.write { db -> Int64 in
             let id = try TestDatabase.insertIdea(db, kind: "decision", title: "A call", seenAt: nil)
             try TestDatabase.insertIdeaMention(db, ideaID: id, source: "meeting")
             return id
@@ -169,7 +169,7 @@ final class DecisionLedgerTests: XCTestCase {
 
         // reloadLedger() (invoked internally by every write action) must keep
         // refreshing the source map, not just the decisions/unread count.
-        vm.markDecisionSeen(id: Int(ideaID))
+        await vm.markDecisionSeen(id: Int(ideaID))
 
         XCTAssertEqual(vm.decisionMentionSources[Int(ideaID)], ["meeting"])
     }
@@ -177,8 +177,8 @@ final class DecisionLedgerTests: XCTestCase {
     // MARK: - Supersede / reverse
 
     @MainActor
-    func testSupersedeSetsStatusAndSupersededByID() throws {
-        let ids = try dbManager.dbPool.write { db -> (old: Int64, new: Int64) in
+    func testSupersedeSetsStatusAndSupersededByID() async throws {
+        let ids = try await dbManager.dbPool.write { db -> (old: Int64, new: Int64) in
             let old = try TestDatabase.insertIdea(db, kind: "decision", title: "Old plan", status: "active")
             let new = try TestDatabase.insertIdea(db, kind: "decision", title: "New plan", status: "active")
             return (old, new)
@@ -187,7 +187,7 @@ final class DecisionLedgerTests: XCTestCase {
         let vm = DigestViewModel(dbManager: dbManager)
         vm.load()
 
-        vm.supersede(id: Int(ids.old), by: Int(ids.new))
+        await vm.supersede(id: Int(ids.old), by: Int(ids.new))
 
         let updated = try XCTUnwrap(vm.ledgerDecisions.first { $0.id == Int(ids.old) })
         XCTAssertEqual(updated.status, .superseded)
@@ -195,14 +195,14 @@ final class DecisionLedgerTests: XCTestCase {
     }
 
     @MainActor
-    func testSupersedeWithoutReplacementLeavesSupersededByIDNil() throws {
-        let ideaID = try dbManager.dbPool.write { db in
+    func testSupersedeWithoutReplacementLeavesSupersededByIDNil() async throws {
+        let ideaID = try await dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "Old plan", status: "active")
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
         vm.load()
-        vm.supersede(id: Int(ideaID))
+        await vm.supersede(id: Int(ideaID))
 
         let updated = try XCTUnwrap(vm.ledgerDecisions.first { $0.id == Int(ideaID) })
         XCTAssertEqual(updated.status, .superseded)
@@ -210,14 +210,14 @@ final class DecisionLedgerTests: XCTestCase {
     }
 
     @MainActor
-    func testReverseSetsStatusReversed() throws {
-        let ideaID = try dbManager.dbPool.write { db in
+    func testReverseSetsStatusReversed() async throws {
+        let ideaID = try await dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "A call", status: "active")
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
         vm.load()
-        vm.reverse(id: Int(ideaID))
+        await vm.reverse(id: Int(ideaID))
 
         let updated = try XCTUnwrap(vm.ledgerDecisions.first { $0.id == Int(ideaID) })
         XCTAssertEqual(updated.status, .reversed)
@@ -226,15 +226,15 @@ final class DecisionLedgerTests: XCTestCase {
     // MARK: - Rating
 
     @MainActor
-    func testSetRatingPersistsRatingAndComment() throws {
-        let ideaID = try dbManager.dbPool.write { db in
+    func testSetRatingPersistsRatingAndComment() async throws {
+        let ideaID = try await dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "A call")
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
         vm.load()
 
-        let ok = vm.setRating(id: Int(ideaID), rating: 1, comment: "Good call")
+        let ok = await vm.setRating(id: Int(ideaID), rating: 1, comment: "Good call")
         XCTAssertTrue(ok)
 
         let updated = try XCTUnwrap(vm.ledgerDecisions.first { $0.id == Int(ideaID) })

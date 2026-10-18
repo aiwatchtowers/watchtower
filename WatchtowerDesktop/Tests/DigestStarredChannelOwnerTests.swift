@@ -33,8 +33,8 @@ final class DigestStarredChannelOwnerTests: XCTestCase {
     /// by another writer after the Digests screen loaded: the star still
     /// lands on the one owner-keyed row and survives a reload.
     @MainActor
-    func testOwner01ChannelStarPersistsForParkedSlackOwnerProfile() throws {
-        try dbManager.dbPool.write { db in
+    func testOwner01ChannelStarPersistsForParkedSlackOwnerProfile() async throws {
+        try await dbManager.dbPool.write { db in
             _ = try TestDatabase.insertSlackAccount(db, teamID: "T1", currentUserID: "1:U001")
             try TestDatabase.insertProfile(db, slackUserID: ProfileQueries.pendingOwnerKey, role: "EM")
         }
@@ -42,13 +42,13 @@ final class DigestStarredChannelOwnerTests: XCTestCase {
         vm.load()
         // Another writer (People, Profile settings, onboarding, Go) re-keys
         // the parked row after load().
-        try dbManager.dbPool.write { db in
+        try await dbManager.dbPool.write { db in
             let owner = try OwnerQueries.resolve(db)
             let profile = try XCTUnwrap(ProfileQueries.fetchOwnerProfile(db, owner: owner))
             try ProfileQueries.upsertOwnerProfile(db, owner: owner, profile: profile)
         }
 
-        vm.toggleStarredChannel("1:C1")
+        await vm.toggleStarredChannel("1:C1")
 
         XCTAssertNil(vm.errorMessage)
         let rows = try profileRows()
@@ -61,14 +61,14 @@ final class DigestStarredChannelOwnerTests: XCTestCase {
     /// A Google-only owner with no profile row yet: the star creates the
     /// owner-keyed row instead of silently doing nothing.
     @MainActor
-    func testOwner01ChannelStarPersistsForGoogleOnlyOwner() throws {
-        try dbManager.dbPool.write { db in
+    func testOwner01ChannelStarPersistsForGoogleOnlyOwner() async throws {
+        try await dbManager.dbPool.write { db in
             _ = try TestDatabase.insertGoogleAccount(db, email: "me@x.com")
         }
         let vm = DigestViewModel(dbManager: dbManager)
         vm.load()
 
-        vm.toggleStarredChannel("1:C1")
+        await vm.toggleStarredChannel("1:C1")
 
         XCTAssertNil(vm.errorMessage)
         let rows = try profileRows()
