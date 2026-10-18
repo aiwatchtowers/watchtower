@@ -233,7 +233,8 @@ final class AppRootRelinkTests: XCTestCase {
         let clock = GateLinkClock()
         addTeardownBlock { clock.release() }
         let watch = Task { await clock.untilParked() }
-        await Task.yield()
+        try await poll { clock.watching == 1 }
+        XCTAssertEqual(clock.waiting, 0, "nothing parked yet: the watcher waits for a park")
         let sleeper = Task { try await clock.sleep(for: .seconds(2)) }
 
         await watch.value
@@ -244,12 +245,17 @@ final class AppRootRelinkTests: XCTestCase {
         try await sleeper.value
         XCTAssertEqual(clock.waiting, 0)
         let next = Task { await clock.untilParked() }
-        await Task.yield()
+        try await poll { clock.watching == 1 }
         let nextSleeper = Task { try await clock.sleep(for: .seconds(2)) }
         await next.value
         XCTAssertEqual(clock.waiting, 1, "after a release, the next park")
         clock.release()
         try await nextSleeper.value
+        let cancelled = Task { await clock.untilParked() }
+        try await poll { clock.watching == 1 }
+        cancelled.cancel()
+        await cancelled.value
+        XCTAssertEqual(clock.watching, 0, "a cancelled wait leaves no watcher")
     }
 
     // MARK: - The kept farewell (#143)

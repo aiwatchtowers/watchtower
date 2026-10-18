@@ -1664,6 +1664,7 @@ final class AppRootWiringTests: XCTestCase {
         try await TestPhone.hub(over: macSide).save([try TestPhone.grantRecord(waiting, keys: nil, modifiedAt: Date())])
         linkClock.release()
         await waitUntilParked(linkClock)
+        try await poll { root.linking.linkCode != nil }
         XCTAssertEqual(root.linking.linkCode, opened.sas, "the real host's keybox gives the phone the Mac's code")
         XCTAssertTrue(root.linking.macSeesPhone)
         let grant = DeviceGrant(
