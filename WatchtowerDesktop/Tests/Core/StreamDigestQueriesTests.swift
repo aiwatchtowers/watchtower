@@ -56,6 +56,23 @@ final class StreamDigestQueriesTests: XCTestCase {
         XCTAssertEqual(IdeaMention.Source.gmail.label, "Gmail")
     }
 
+    /// A Linear workspace's stream digest (source 'linear', migration 00144)
+    /// reads back labelled "Linear" and badged as a tracker stream; its
+    /// mentions decode as `.linear`.
+    func testLinearStreamDigestReadsBackAsATrackerStream() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertStreamDigest(db, source: "linear", createdAt: "2024-01-01T00:00:00Z")
+            try TestDatabase.insertStreamDigest(db, source: "gmail", createdAt: "2024-01-02T00:00:00Z")
+        }
+
+        let digests = try db.read { try StreamDigestQueries.fetchAll($0) }
+
+        XCTAssertEqual(digests.map(\.sourceLabel), ["Gmail", "Linear"])
+        XCTAssertEqual(digests.map(\.isTrackerStream), [false, true])
+        XCTAssertEqual(IdeaMention.Source(rawValue: "linear")?.label, "Linear")
+    }
+
     // MARK: - parsedTopics
 
     func testParsedTopicsDecodesGmailTopicsWithDecisions() throws {
