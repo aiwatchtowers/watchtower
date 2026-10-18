@@ -3,6 +3,7 @@ package sessioncleanup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -532,5 +533,41 @@ func TestPlan_SweepMeasuresWorktreesConcurrently(t *testing.T) {
 		if !it.BytesKnown || it.Bytes != int64(len(root)) {
 			t.Fatalf("%s measured %+v: the sizes were not walked at the same time", root, it)
 		}
+	}
+}
+
+// peakSizer records the most Size calls running at once.
+type peakSizer struct {
+	mu            sync.Mutex
+	running, peak int
+}
+
+func (s *peakSizer) Size(context.Context, string, time.Duration) (int64, bool) {
+	s.mu.Lock()
+	s.running++
+	s.peak = max(s.peak, s.running)
+	s.mu.Unlock()
+	time.Sleep(20 * time.Millisecond)
+	s.mu.Lock()
+	s.running--
+	s.mu.Unlock()
+	return 1, true
+}
+
+func TestPlan_SweepMeasuresAtMostSizeWorkersAtOnce(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	for i := range sizeWorkers + 2 {
+		f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
+	}
+	d := f.deps()
+	sizer := &peakSizer{}
+	d.Sizer = sizer
+
+	if _, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench}); err != nil {
+		t.Fatal(err)
+	}
+	if sizer.peak > sizeWorkers {
+		t.Fatalf("%d walks ran at once, want at most %d", sizer.peak, sizeWorkers)
 	}
 }
