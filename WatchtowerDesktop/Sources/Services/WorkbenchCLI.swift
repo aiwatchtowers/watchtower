@@ -772,6 +772,52 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchMethodologyState.self, from: data)
     }
 
+    // MARK: - Owner instructions (agent instructions, Task 9)
+
+    /// `watchtower instructions show --json`: the owner's texts, the limit and
+    /// the open "you keep saying this" suggestions. `workbenchID` adds that
+    /// workbench's own texts.
+    func instructions(workbenchID: Int64?) async throws -> OwnerInstructionsState {
+        try await instructionsCall(["show"], workbenchID: workbenchID)
+    }
+
+    /// Saves one field (empty clears it). The text goes over stdin, never
+    /// argv; a refusal (over the limit) throws `OwnerInstructionsError`.
+    func setInstruction(field: InstructionField, workbenchID: Int64?, body: String) async throws -> OwnerInstructionsState {
+        try await instructionsCall(["set", "--field", field.rawValue, "--stdin"], workbenchID: workbenchID, stdin: Data(body.utf8))
+    }
+
+    /// Adds (to the matching instructions) or dismisses one suggestion.
+    func decideSuggestion(id: Int64, add: Bool) async throws -> OwnerInstructionsState {
+        try await instructionsCall(["suggestion", add ? "add" : "dismiss", String(id)], workbenchID: nil)
+    }
+
+    /// The exact brief slot and target procedure the agent receives.
+    func instructionsPreview(workbenchID: Int64?) async throws -> (briefSlot: String, procedure: String) {
+        let data = try await instructionsRun(["preview"], workbenchID: workbenchID, stdin: nil)
+        let p = try OwnerInstructionsPreview.decode(data)
+        return (p.briefSlot, p.procedure)
+    }
+
+    private func instructionsCall(_ sub: [String], workbenchID: Int64?, stdin: Data? = nil) async throws -> OwnerInstructionsState {
+        try OwnerInstructionsState.decode(try await instructionsRun(sub, workbenchID: workbenchID, stdin: stdin))
+    }
+
+    /// A refusal exits non-zero with Go's message on stderr (and
+    /// `{"ok":false,…}` on stdout, which the runner does not return): surface
+    /// that message as an `OwnerInstructionsError`.
+    private func instructionsRun(_ sub: [String], workbenchID: Int64?, stdin: Data?) async throws -> Data {
+        var args = ["instructions"] + sub
+        if let workbenchID, sub.first != "suggestion" { args += ["--workbench", String(workbenchID)] }
+        args.append("--json")
+        do {
+            if let stdin { return try await runner.run(args: args, stdin: stdin) }
+            return try await runner.run(args: args)
+        } catch CLIRunnerError.nonZeroExit(_, let stderr) where !stderr.isEmpty {
+            throw OwnerInstructionsError(message: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
     /// The workbench's board column definition (board #267, PROJ-19) as
     /// `watchtower workbench columns <id> --json` prints it.
     func boardColumns(projectID: Int64) async throws -> WorkbenchBoardColumns {

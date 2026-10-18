@@ -53,7 +53,7 @@ Session row context menu **Show Chat**; the session header **Chat** toggle; the 
 
 ## v1 limits
 
-- Claude Code only. A Codex session returns `codex sessions are not supported yet`; the entry kinds are agent-neutral so it can be added.
+- Codex sessions (2026-10-17): `sessionfeed.ParseCodex`/`LocateCodex` read the rollout (`$CODEX_HOME/sessions/*/*/*/rollout-*-<id>.jsonl`, the stored `transcript_path` first) in both owner dialects (paginated `item_completed` `UserMessage`/`AgentMessage`, legacy `user_message`/`agent_message`); user text is classified like Claude's (brief, ask answer, Watchtower line). Legacy lines carry no id, so their entry id is `L<line byte offset>`. No subagent markers for Codex; a zstd-compressed rollout yields no entries (`unknown_records["<zstd>"]`).
 - No search, export or sharing. The iPhone chat is pending (phase 3: tail of a feed in the 900 000-byte envelope, subagent feeds on request).
 - Zero time means no time: the separator, a report entry and a meta-only subagent marker may carry `0001-01-01T00:00:00Z`; the Desktop treats it as unknown and shows no timestamp.
 - `--after` and `--subagent` are mutually exclusive (the command refuses both). `skipped` and `unknown_records` count only what that call read.
