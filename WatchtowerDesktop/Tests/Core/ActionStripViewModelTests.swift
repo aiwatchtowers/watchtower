@@ -45,7 +45,7 @@ final class ActionStripViewModelTests: XCTestCase {
         vm.refresh()
         XCTAssertEqual(vm.reminderRows.map(\.id), [id])
 
-        vm.markReminderDone(id)
+        await vm.markReminderDone(id)
 
         XCTAssertTrue(vm.reminderRows.isEmpty, "markReminderDone must drop the reminder from the strip on refresh")
         XCTAssertNil(vm.lastError)
@@ -65,7 +65,7 @@ final class ActionStripViewModelTests: XCTestCase {
         vm.refresh()
         XCTAssertEqual(vm.reminderRows.map(\.id), [id])
 
-        vm.snoozeReminder(id, until: "2999-01-01T00:00:00Z")
+        await vm.snoozeReminder(id, until: "2999-01-01T00:00:00Z")
 
         XCTAssertTrue(vm.reminderRows.isEmpty, "a reminder snoozed into the future must drop out of the due strip")
         XCTAssertNil(vm.lastError)

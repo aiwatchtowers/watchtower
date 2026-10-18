@@ -110,7 +110,9 @@ final class ChatSessionClient {
     }
 
     var liveTurn: LiveTurn? { driver.liveTurn }
-    var isBusy: Bool { driver.liveTurn?.isRunning == true }
+    /// A turn is running, or its terminal write is under way (board #670):
+    /// no next turn starts and nothing evicts the session until it landed.
+    var isBusy: Bool { driver.isBusy }
     /// A process was launched and has not exited yet.
     var hasLiveProcess: Bool { process != nil && !exited }
 
@@ -223,7 +225,9 @@ final class ChatSessionClient {
         let turnID = turn.turnID
         Task { [weak self] in
             try? await Task.sleep(for: grace)
-            guard let self, self.driver.liveTurn?.turnID == turnID else { return }
+            // Still running: a turn that ended and only waits for its final
+            // write (board #670) answered the cancel; its session is healthy.
+            guard let self, let live = self.driver.liveTurn, live.turnID == turnID, live.isRunning else { return }
             self.driver.finishRunningAsPartial()
             // A session that ignored `cancel` is never reused.
             self.shutdownRequested = true
@@ -270,15 +274,18 @@ final class ChatSessionClient {
     }
 
     /// Quit / eviction: keep what streamed, ask politely (`close`), wait up
-    /// to `grace`, then one SIGTERM, then SIGKILL after `killAfter`.
+    /// to `grace`, then one SIGTERM, then SIGKILL after `killAfter`. Returns
+    /// once the turn's writes landed too, so a quit never loses its text.
     func close(grace: Duration, killAfter: Duration = ChatSessionClient.defaultKillAfter) async {
         abandon()
-        guard let process, !exited else { return }
-        // A failed write means the pipe is already closed — the process is gone
-        // or going; the wait below and the signals still apply.
-        try? process.send(.close)
-        await waitForExit(upTo: grace)
-        await terminateAndReap(killAfter: killAfter)
+        if let process, !exited {
+            // A failed write means the pipe is already closed — the process is
+            // gone or going; the wait below and the signals still apply.
+            try? process.send(.close)
+            await waitForExit(upTo: grace)
+            await terminateAndReap(killAfter: killAfter)
+        }
+        await driver.writesSettled()
     }
 
     // MARK: - Private
@@ -309,7 +316,9 @@ final class ChatSessionClient {
         if case let .exited(status, stderrTail) = event {
             // Only an exit nobody asked for is an error: a non-zero status, or
             // any exit that leaves a turn without its terminal event.
-            if !shutdownRequested, status != 0 || isBusy {
+            // A turn only finishing (its final write under way) has its
+            // terminal event: a clean exit then is not an error.
+            if !shutdownRequested, status != 0 || driver.liveTurn?.isRunning == true {
                 let failure = ChatSessionError(turnID: nil, code: .sessionLost,
                                                message: Self.exitMessage(status: status, stderrTail: stderrTail),
                                                retryable: true)

@@ -58,6 +58,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
     ) async {
         let before = ai.calls.count
         engine.send(text)
+        await engine.finished()
         let started = await eventually { ai.calls.count == before + 1 }
         XCTAssertTrue(started)
         if let sessionID { ai.emit(.sessionID(sessionID)) }

@@ -27,6 +27,7 @@ struct ChatComposerField: View {
     /// name; true once attached (board #534). nil → ⌘V always inserts text.
     var onPasteData: ((Data, String) async -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
+    var attachmentProgress = AttachmentProgress()
     /// Called with the full text and the caret (UTF-16 offset) on every edit
     /// or caret move — the @/ pickers' input. nil for a surface with no
     /// picker (the Discuss-chat default).
@@ -62,6 +63,7 @@ struct ChatComposerField: View {
             onAttachFiles: onAttachFiles,
             onPasteData: onPasteData,
             onRemoveAttachment: onRemoveAttachment,
+            attachmentProgress: attachmentProgress,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
             hasPendingContent: hasPendingContent,
@@ -91,6 +93,7 @@ struct ChatComposerFieldContent: View {
     var onAttachFiles: (([URL]) -> Void)?
     var onPasteData: ((Data, String) async -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
+    var attachmentProgress = AttachmentProgress()
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     var hasPendingContent = false
@@ -109,8 +112,14 @@ struct ChatComposerFieldContent: View {
                     .foregroundStyle(.red)
                     .padding(.horizontal, 16)
             }
-            if !attachments.isEmpty {
-                AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment)
+            if attachmentProgress.sendWaits {
+                Text("Sending once the files are attached…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+            }
+            if !attachments.isEmpty || !attachmentProgress.isEmpty {
+                AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment, progress: attachmentProgress)
                     .padding(.horizontal, 12)
             }
             if let longPaste, onPasteData != nil {

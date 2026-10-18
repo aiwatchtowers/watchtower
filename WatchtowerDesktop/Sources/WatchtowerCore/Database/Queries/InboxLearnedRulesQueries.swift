@@ -30,9 +30,11 @@ package struct InboxLearnedRulesQueries {
 
     // MARK: - Write
 
-    package func upsertManual(ruleType: String, scopeKey: String, weight: Double) throws {
+    // Both await the writer off the main thread (board #670).
+
+    package func upsertManual(ruleType: String, scopeKey: String, weight: Double) async throws {
         let now = ISO8601DateFormatter().string(from: Date())
-        try dbPool.write { db in
+        try await dbPool.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, evidence_count, last_updated)
@@ -47,8 +49,8 @@ package struct InboxLearnedRulesQueries {
         }
     }
 
-    package func delete(ruleType: String, scopeKey: String) throws {
-        try dbPool.write { db in
+    package func delete(ruleType: String, scopeKey: String) async throws {
+        try await dbPool.write { db in
             try db.execute(
                 sql: "DELETE FROM inbox_learned_rules WHERE rule_type = ? AND scope_key = ?",
                 arguments: [ruleType, scopeKey]

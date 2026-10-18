@@ -14,6 +14,8 @@ package final class ArtifactPanelModel {
     package private(set) var liveDraft: ArtifactDraft?
     package private(set) var isEditing = false
     package var editText = ""
+    /// An edit is being written (board #670): Save waits for it.
+    package private(set) var isSavingEdit = false
     package private(set) var errorMessage: String?
     /// The comments on this key, anchored on its latest stored version.
     package let comments: ArtifactCommentsModel
@@ -80,21 +82,29 @@ package final class ArtifactPanelModel {
         editText = ""
     }
 
-    package func saveEdit() {
-        guard isEditing, let base = selectedArtifact else { return }
-        guard editText != base.content else {
+    /// Stores the edit as a new version off the main thread (board #670).
+    /// The editor stays open and editable meanwhile; it closes once the
+    /// version landed, unless the owner typed on since — then it stays open
+    /// over the new version with that text.
+    package func saveEdit() async {
+        guard isEditing, !isSavingEdit, let base = selectedArtifact else { return }
+        let text = editText
+        guard text != base.content else {
             cancelEdit()
             return
         }
         var draft = base.asDraft
-        draft.content = editText
+        draft.content = text
+        isSavingEdit = true
+        defer { isSavingEdit = false }
+        let (db, conversationID, messageID, saved) = (db, conversationID, base.messageID, draft)
         do {
-            _ = try db.write {
-                try ChatArtifactQueries.saveVersion($0, conversationID: conversationID, messageID: base.messageID,
-                                                    draft: draft, edited: true)
+            _ = try await db.write {
+                try ChatArtifactQueries.saveVersion($0, conversationID: conversationID, messageID: messageID,
+                                                    draft: saved, edited: true)
             }
             selectedVersion = nil
-            cancelEdit()
+            if editText == text { cancelEdit() }
             reload()
         } catch {
             errorMessage = "Could not save the edit: \(error.localizedDescription)"

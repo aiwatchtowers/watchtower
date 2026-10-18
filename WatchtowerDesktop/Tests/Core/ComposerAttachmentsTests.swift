@@ -32,41 +32,76 @@ final class ComposerAttachmentsTests: XCTestCase {
         return url
     }
 
-    func testAddKeepsValidAndReportsRejected() throws {
+    func testAddKeepsValidAndReportsRejected() async throws {
         let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
         model.add(urls: [try source("a.png", AttachmentValidatorTests.png), try source("b.zip", AttachmentValidatorTests.zip)],
                   conversationID: conversationID)
+        await model.settled()
         XCTAssertEqual(model.pending.map(\.name), ["a.png"])
         XCTAssertEqual(model.errorMessage, AttachmentRejection.unsupportedType(fileName: "b.zip").message)
 
         model.add(urls: [try source("c.md", Data("x".utf8))], conversationID: conversationID)
+        await model.settled()
         XCTAssertNil(model.errorMessage, "a clean add clears the previous rejection")
     }
 
-    func testRemoveDiscardsRowAndFile() throws {
+    func testRemoveDiscardsRowAndFile() async throws {
         let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
         model.add(urls: [try source("a.png", AttachmentValidatorTests.png)], conversationID: conversationID)
+        await model.settled()
         let path = try XCTUnwrap(model.pending.first?.path)
         model.remove(id: try XCTUnwrap(model.pending.first?.id))
+        XCTAssertEqual(model.pending.count, 1, "shown until its removal landed")
+        await model.settled()
         XCTAssertTrue(model.pending.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: path))
     }
 
-    func testTakeForSendHandsOverAndClears() throws {
+    func testTakeForSendHandsOverAndClears() async throws {
         let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
-        model.addPasted(AttachmentValidatorTests.png, name: "Pasted image.png", conversationID: conversationID)
+        await model.addPasted(AttachmentValidatorTests.png, name: "Pasted image.png", conversationID: conversationID)
         let taken = model.takeForSend()
         XCTAssertEqual(taken.map(\.name), ["Pasted image.png"])
         XCTAssertTrue(model.pending.isEmpty)
         XCTAssertNil(model.errorMessage)
     }
 
-    func testAddPastedReportsSuccessAndRejection() {
+    func testAddPastedReportsSuccessAndRejection() async {
         let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
-        XCTAssertTrue(model.addPasted(Data("long text".utf8), name: "Pasted text.txt", conversationID: conversationID))
+        let attached = await model.addPasted(Data("long text".utf8), name: "Pasted text.txt", conversationID: conversationID)
+        XCTAssertTrue(attached)
         XCTAssertEqual(model.pending.map(\.mime), ["text/plain"])
-        XCTAssertFalse(model.addPasted(AttachmentValidatorTests.zip, name: "Pasted image.png", conversationID: conversationID))
+        let rejected = await model.addPasted(AttachmentValidatorTests.zip, name: "Pasted image.png",
+                                             conversationID: conversationID)
+        XCTAssertFalse(rejected)
         XCTAssertEqual(model.errorMessage, AttachmentRejection.unsupportedType(fileName: "Pasted image.png").message)
+    }
+
+    /// Board #670: an add that lands after the composer switched chats stays
+    /// stored for its own chat and is not shown in the new one.
+    func testAnAddLandingAfterAChatSwitchIsNotShown() async throws {
+        let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
+        model.add(urls: [try source("a.png", AttachmentValidatorTests.png)], conversationID: conversationID)
+        model.replacePending(with: [])
+        await model.settled()
+        XCTAssertTrue(model.pending.isEmpty)
+        let stored = try await dbQueue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_attachments") }
+        XCTAssertEqual(stored, 1, "kept as the first chat's pending file")
+    }
+
+    /// A → B → A before an add for A landed: back on A, the file shows
+    /// once stored, though A's pending rows were read before it existed.
+    func testAnAddLandingAfterSwitchingBackShowsItsFile() async throws {
+        let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
+        model.replacePending(with: [], conversationID: conversationID)
+        model.add(urls: [try source("a.png", AttachmentValidatorTests.png)], conversationID: conversationID)
+        XCTAssertEqual(model.importing, ["a.png"], "shown as being stored at once")
+        model.replacePending(with: [], conversationID: conversationID + 1)
+        XCTAssertTrue(model.importing.isEmpty, "not in another chat")
+        model.replacePending(with: [], conversationID: conversationID)
+        await model.settled()
+        XCTAssertEqual(model.pending.map(\.name), ["a.png"])
+        XCTAssertTrue(model.importing.isEmpty)
     }
 
     func testNoWorkspaceSaysSo() {

@@ -16,7 +16,8 @@ struct WorkbenchGitSnapshot: Equatable, Sendable {
 /// --json` (`WorkbenchCLI.gitStatus`, PROJ-10's git — the hub never runs
 /// git itself), every 120 s per workbench and on a state change of one of its
 /// sessions, at most once per 30 s per workbench. A failed, refused or hung
-/// run keeps the last value.
+/// run keeps the last value. The loop sleeps until a session change wakes it
+/// or a deferred request is due, at most `Timing.idle` (board #842).
 ///
 /// Off the main actor: the loop and the runs are plain tasks, and the slice
 /// reads the cache synchronously under a lock inside its DB read. Each run is
@@ -32,16 +33,25 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         let minSpacing: Duration
         /// The bound on one CLI run.
         let timeout: Duration
-        /// How often the loop looks for due workbenches.
-        let wake: Duration
+        /// The longest wait between two passes with no session change
+        /// (board #842); a change wakes the loop, at most once per
+        /// `HubRunnerWake.standardMinimumGap`.
+        let idle: Duration
 
-        static let standard = Self(every: .seconds(120), minSpacing: .seconds(30), timeout: .seconds(20), wake: .seconds(5))
+        static let standard = Self(every: .seconds(120), minSpacing: .seconds(30), timeout: .seconds(20), idle: .seconds(15))
     }
 
     private struct Entry {
         var snapshot: WorkbenchGitSnapshot?
         var lastAttempt: ContinuousClock.Instant?
         var requested = false
+    }
+
+    private struct State {
+        var entries: [Int64: Entry] = [:]
+        /// When the earliest request the last pass deferred (inside
+        /// `minSpacing`) is due; nil when it deferred none.
+        var nextRequestDue: ContinuousClock.Instant?
     }
 
     private let fetch: Fetch
@@ -51,7 +61,8 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     /// Whether a pass runs at all (the hub's linked-phone gate): with no
     /// phone nothing reads the status, so no CLI runs.
     private let isActive: @Sendable () -> Bool
-    private let entries = OSAllocatedUnfairLock<[Int64: Entry]>(initialState: [:])
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    private let wake: HubRunnerWake
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     /// Bumped by `start()` and `stop()`: a pass that began under another
     /// generation stops before its next run and stores nothing.
@@ -62,18 +73,21 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     ///   - workbenchIDs: the workbenches to keep a status for (the published
     ///     ones); a workbench that leaves the list is forgotten.
     ///   - isActive: false skips the loop's passes (nothing is listed or run).
+    ///   - wake: the loop's wait between passes.
     init(
         fetch: @escaping Fetch,
         workbenchIDs: @escaping @Sendable () async throws -> [Int64],
         timing: Timing = .standard,
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
-        isActive: @escaping @Sendable () -> Bool = { true }
+        isActive: @escaping @Sendable () -> Bool = { true },
+        wake: HubRunnerWake = HubRunnerWake()
     ) {
         self.fetch = fetch
         self.workbenchIDs = workbenchIDs
         self.timing = timing
         self.clock = clock
         self.isActive = isActive
+        self.wake = wake
     }
 
     /// The hub's refresher: the CLI's `gitStatus` over the published
@@ -89,16 +103,18 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
 
     /// The last good status; nil before the first one.
     func status(for workbenchID: Int64) -> WorkbenchGitSnapshot? {
-        entries.withLock { $0[workbenchID]?.snapshot }
+        state.withLock { $0.entries[workbenchID]?.snapshot }
     }
 
-    /// A session of `workbenchID` changed state: refresh at the next wake,
-    /// but no sooner than `minSpacing` after its last run.
+    /// A session of `workbenchID` changed state: wakes the loop, which
+    /// refreshes it no sooner than `minSpacing` after its last run (a
+    /// workbench not listed yet runs as new on that pass).
     func sessionStateChanged(workbenchID: Int64) {
-        entries.withLock { entries in
-            guard entries[workbenchID] != nil else { return }
-            entries[workbenchID]?.requested = true
+        state.withLock { state in
+            guard state.entries[workbenchID] != nil else { return }
+            state.entries[workbenchID]?.requested = true
         }
+        wake.signal()
     }
 
     /// One pass: runs every due workbench, one after the other. A `stop()`
@@ -140,15 +156,17 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         let stamp: ContinuousClock.Instant
     }
 
-    /// Forgets workbenches that left `ids`, adds new ones, and stamps the
-    /// due ones as attempted now.
+    /// Forgets workbenches that left `ids`, adds new ones, stamps the due
+    /// ones as attempted now, and notes when the earliest deferred request
+    /// is due.
     private func takeDue(ids: [Int64], now: ContinuousClock.Instant) -> [Taken] {
-        entries.withLock { [timing] entries in
+        state.withLock { [timing] state in
             let wanted = Set(ids)
-            entries = entries.filter { wanted.contains($0.key) }
+            state.entries = state.entries.filter { wanted.contains($0.key) }
+            state.nextRequestDue = nil
             var due: [Taken] = []
             for id in ids {
-                let previous = entries[id]
+                let previous = state.entries[id]
                 var entry = previous ?? Entry()
                 let isDue: Bool = {
                     guard let last = entry.lastAttempt else { return true }
@@ -159,11 +177,24 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
                     entry.lastAttempt = now
                     entry.requested = false
                     due.append(Taken(id: id, previous: previous, stamp: now))
+                } else if entry.requested, let last = entry.lastAttempt {
+                    state.nextRequestDue = min(state.nextRequestDue ?? last + timing.minSpacing, last + timing.minSpacing)
                 }
-                entries[id] = entry
+                state.entries[id] = entry
             }
             return due
         }
+    }
+
+    /// The wait before the next pass: until the earliest request the last
+    /// pass deferred, else `idle`. Taken once, so a pass that did not get
+    /// to `takeDue` (a failed listing) leaves the loop at `idle`.
+    private func takeNextWait() -> Duration {
+        let due = state.withLock { state -> ContinuousClock.Instant? in
+            defer { state.nextRequestDue = nil }
+            return state.nextRequestDue
+        }
+        return HubRunnerWake.duration(until: due, now: clock(), idle: timing.idle)
     }
 
     /// Puts back the cadence state of workbenches the pass did not finish
@@ -171,12 +202,12 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     /// runs them at once and keeps their session-change requests.
     private func restore(_ unfinished: [Taken]) {
         guard !unfinished.isEmpty else { return }
-        entries.withLock { entries in
+        state.withLock { state in
             for taken in unfinished {
-                guard var entry = entries[taken.id], entry.lastAttempt == taken.stamp else { continue }
+                guard var entry = state.entries[taken.id], entry.lastAttempt == taken.stamp else { continue }
                 entry.lastAttempt = taken.previous?.lastAttempt
                 entry.requested = entry.requested || (taken.previous?.requested ?? false)
-                entries[taken.id] = entry
+                state.entries[taken.id] = entry
             }
         }
     }
@@ -207,10 +238,10 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     }
 
     private func store(_ snapshot: WorkbenchGitSnapshot, for id: Int64) {
-        entries.withLock { entries in
+        state.withLock { state in
             // The workbench may have been forgotten while the run was out.
-            guard entries[id] != nil else { return }
-            entries[id]?.snapshot = snapshot
+            guard state.entries[id] != nil else { return }
+            state.entries[id]?.snapshot = snapshot
         }
     }
 
@@ -225,8 +256,9 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                if self.isActive() { await self.refreshDue() }
-                try? await Task.sleep(for: self.timing.wake)
+                let active = self.isActive()
+                if active { await self.refreshDue() }
+                await self.wake.wait(upTo: active ? self.takeNextWait() : self.timing.idle)
             }
         }
         loopTask.withLock { current in

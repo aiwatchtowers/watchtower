@@ -90,7 +90,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         await vm.removeSource(source)
         XCTAssertEqual(promptChanges.count, 3, "removing an already-gone source changes nothing")
 
-        vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "imported_\(UUID().uuidString).pdf")])
+        await vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "imported_\(UUID().uuidString).pdf")])
         XCTAssertEqual(promptChanges.count, 4)
         let file = try XCTUnwrap(vm.files.first)
         await vm.removeFile(file)
@@ -127,7 +127,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         try Data("x".utf8).write(to: file)
         let vm = makeVM()
         vm.load()
-        vm.addFiles([file])
+        await vm.addFiles([file])
         XCTAssertEqual(importedURLs, [file])
         XCTAssertEqual(vm.files.map(\.name), [file.lastPathComponent])
         await vm.removeFile(vm.files[0])
@@ -135,23 +135,23 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "disk file removed post-commit")
     }
 
-    func testImportFailureSurfacesError() {
+    func testImportFailureSurfacesError() async {
         let vm = ProjectDetailViewModel(projectID: projectID, dbPool: pool, debounce: .zero) { _, _ in
             throw NSError(domain: "t", code: 1, userInfo: [NSLocalizedDescriptionKey: "too big"])
         }
         vm.load()
-        vm.addFiles([URL(fileURLWithPath: "/tmp/huge.pdf")])
+        await vm.addFiles([URL(fileURLWithPath: "/tmp/huge.pdf")])
         XCTAssertEqual(vm.errorMessage, "huge.pdf: too big")
         XCTAssertTrue(vm.files.isEmpty)
     }
 
-    func testStoreImporterWithoutWorkspaceFailsVisibly() {
+    func testStoreImporterWithoutWorkspaceFailsVisibly() async {
         let vm = ProjectDetailViewModel(
             projectID: projectID, dbPool: pool, debounce: .zero,
             importFile: ProjectDetailViewModel.storeImporter(dbPool: pool, rootDir: nil)
         )
         vm.load()
-        vm.addFiles([URL(fileURLWithPath: "/tmp/spec.pdf")])
+        await vm.addFiles([URL(fileURLWithPath: "/tmp/spec.pdf")])
         XCTAssertEqual(vm.errorMessage, "spec.pdf: Attachments need an active workspace")
     }
 
@@ -169,7 +169,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
             importFile: ProjectDetailViewModel.storeImporter(dbPool: pool, rootDir: root)
         )
         vm.load()
-        vm.addFiles([source])
+        await vm.addFiles([source])
         XCTAssertNil(vm.errorMessage)
         let stored = try XCTUnwrap(vm.files.first?.path)
         XCTAssertTrue(stored.hasPrefix(root.appendingPathComponent("projects/\(projectID)").path))

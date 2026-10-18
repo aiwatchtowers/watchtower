@@ -121,8 +121,11 @@ struct ArtifactPanelView: View {
     private var toolbar: some View {
         HStack(spacing: 8) {
             if model.isEditing {
-                Button("Save") { model.saveEdit() }.keyboardShortcut(.defaultAction)
-                Button("Cancel") { model.cancelEdit() }
+                // Both wait while the edit is being written (board #670).
+                Button("Save") { Task { await model.saveEdit() } }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(model.isSavingEdit)
+                Button("Cancel") { model.cancelEdit() }.disabled(model.isSavingEdit)
             } else if let draft = model.displayed {
                 Button("Edit") { model.beginEdit() }.disabled(model.liveDraft != nil)
                 Button("Copy") { run(.copy(draft.content)) }

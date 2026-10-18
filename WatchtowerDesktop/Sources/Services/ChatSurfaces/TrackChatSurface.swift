@@ -17,9 +17,15 @@ enum TrackChatSurface {
                           sendsImmediately: true)
     ]
 
+    /// The track's conversation when it already has one (a read, at once).
+    static func existingConversationID(for track: Track, dbPool: DatabasePool) throws -> Int64? {
+        try DatabaseEmbeddedChatStore.existingConversationID(dbPool: dbPool, contextType: contextType,
+                                                             contextID: String(track.id))
+    }
+
     /// The track's conversation, created on first use.
-    static func conversationID(for track: Track, dbPool: DatabasePool) throws -> Int64 {
-        try DatabaseEmbeddedChatStore.conversationID(
+    static func conversationID(for track: Track, dbPool: DatabasePool) async throws -> Int64 {
+        try await DatabaseEmbeddedChatStore.conversationID(
             dbPool: dbPool, contextType: contextType, contextID: String(track.id),
             title: "Track: \(String(track.text.prefix(60)))")
     }

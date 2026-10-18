@@ -65,7 +65,7 @@ struct ArtifactCommentsView: View {
             contentID: contentID,
             selection: $selection,
             composerText: $composerText,
-            onComment: { body, range in comments.add(body: body, selection: range) },
+            onComment: { body, range in await comments.add(body: body, selection: range) },
             onClick: { location in
                 // A click on a highlight opens the list on its thread.
                 guard let id = comments.threadID(at: location) else { return }
@@ -120,9 +120,11 @@ struct ArtifactCommentsView: View {
             thread: comment.content,
             isActive: comment.id == activeID,
             onReply: nil,
-            onResolve: comment.status == .sent || comment.status == .outdated ? { comments.resolve(comment.id) } : nil,
+            // A comment whose Delete or Resolve is being written offers neither.
+            onResolve: (comment.status == .sent || comment.status == .outdated) && !comments.isChanging(comment.id)
+                ? { comments.resolve(comment.id) } : nil,
             onReopen: nil,
-            onDelete: comment.status == .open ? { comments.delete(comment.id) } : nil
+            onDelete: comment.status == .open && !comments.isChanging(comment.id) ? { comments.delete(comment.id) } : nil
         )
         .id(comment.id)
         .onTapGesture { activeID = comment.id }

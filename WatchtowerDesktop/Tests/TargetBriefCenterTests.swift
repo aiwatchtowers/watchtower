@@ -349,6 +349,7 @@ final class TargetBriefCenterTests: XCTestCase {
         XCTAssertTrue(vm.isStreaming)
 
         vm.cancelStream()
+        await vm.engine.finished()
         XCTAssertFalse(vm.isStreaming)
 
         // Give the cancelled executeStream a chance to run its tail (a bounded

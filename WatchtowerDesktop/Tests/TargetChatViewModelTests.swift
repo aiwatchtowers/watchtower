@@ -116,6 +116,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "mark this done"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         // The DB row actually changed, without any user approval.
@@ -158,6 +159,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "what's left?"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         let systemPrompt = try XCTUnwrap(mock.systemPrompts.compactMap { $0 }.first)
@@ -187,6 +189,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "close the parent too"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         // The card is there and pending — nothing was written.
@@ -204,6 +207,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         // Approving it still works — the narrowing is about the gate, not the reach.
         await chat.approve(try XCTUnwrap(chat.actionCards.first))
+        await chat.engine.finished()
         let rootApproved = try XCTUnwrap(fetchTargetRow(manager, id: root.id))
         XCTAssertEqual(rootApproved.status, "done")
     }
@@ -232,6 +236,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "add the step and link it"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         // The successful action landed in the DB.
@@ -269,6 +274,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "do the thing"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         XCTAssertEqual(chat.errorMessage, "CLI exploded")
@@ -303,6 +309,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "what do you think?"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         XCTAssertEqual(chat.actionCards.count, 1)
@@ -332,6 +339,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "mark this done"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         XCTAssertTrue(chat.actionCards.isEmpty)
@@ -391,6 +399,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         let after = try XCTUnwrap(fetchTarget(manager, id: target.id))
         XCTAssertEqual(after.status, "done")
@@ -415,6 +424,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card, as: .createChildTarget)
+        await chat.engine.finished()
 
         let children = try await manager.dbPool.read { db in
             try Target.fetchAll(db, sql: "SELECT * FROM targets WHERE parent_id = ?", arguments: [target.id])
@@ -440,6 +450,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         if case .failed = chat.actionCards.first?.state {} else {
             XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
@@ -470,10 +481,12 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "hello"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         chat.inputText = "again"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         XCTAssertEqual(mock.prompts.count, 2)
@@ -521,6 +534,7 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertEqual(chat.pendingActionCount, 3)
 
         await chat.approveAll()
+        await chat.engine.finished()
 
         XCTAssertTrue(chat.actionCards.allSatisfy {
             if case .applied = $0.state { return true } else { return false }
@@ -556,6 +570,7 @@ final class TargetChatViewModelTests: XCTestCase {
         }
 
         await chat.approveAll()
+        await chat.engine.finished()
 
         let after = try XCTUnwrap(fetchTarget(manager, id: target.id))
         let texts = after.decodedSubItems.map(\.text)
@@ -584,6 +599,7 @@ final class TargetChatViewModelTests: XCTestCase {
         ]
 
         await chat.approveAll()
+        await chat.engine.finished()
 
         XCTAssertEqual(chat.actionCards[0].state, .rejected)
         let after = try XCTUnwrap(fetchTarget(manager, id: target.id))
@@ -614,6 +630,7 @@ final class TargetChatViewModelTests: XCTestCase {
         ]
 
         await chat.approveAll(messageID: secondTurn)
+        await chat.engine.finished()
 
         XCTAssertEqual(chat.actionCards[0].state, .pending, "the other turn's batch must stay untouched")
         if case .applied = chat.actionCards[1].state {} else {
@@ -641,6 +658,7 @@ final class TargetChatViewModelTests: XCTestCase {
         ]
 
         await chat.approveAll()
+        await chat.engine.finished()
 
         XCTAssertEqual(chat.actionCards[0].state, .rejected)
         XCTAssertNil(chat.errorMessage)
@@ -667,6 +685,7 @@ final class TargetChatViewModelTests: XCTestCase {
         ]
 
         await chat.approveAll()
+        await chat.engine.finished()
 
         if case .applied = chat.actionCards[0].state {} else {
             XCTFail("valid card must still apply, got \(chat.actionCards[0].state)")
@@ -698,6 +717,7 @@ final class TargetChatViewModelTests: XCTestCase {
         }
 
         await chat.approveAll()
+        await chat.engine.finished()
 
         let followUp = try XCTUnwrap(chat.messages.last { $0.role == .system })
         XCTAssertTrue(followUp.text.contains("Actions applied (10 of 10)"),
@@ -729,6 +749,7 @@ final class TargetChatViewModelTests: XCTestCase {
         chat.actionCards = cards
 
         await chat.approveAll()
+        await chat.engine.finished()
 
         let followUp = try XCTUnwrap(chat.messages.last { $0.role == .system })
         XCTAssertTrue(followUp.text.contains("Actions applied (9 of 10)"), "got: \(followUp.text)")
@@ -794,9 +815,11 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "hello"
         chat.send()
+        await chat.engine.finished()
         XCTAssertTrue(chat.isStreaming)
 
         await chat.approve(card)
+        await chat.engine.finished()
 
         // Applied straight away — the DB write does not wait for the turn.
         XCTAssertEqual(chat.actionCards.first?.state, .applied("set status to done"))
@@ -833,16 +856,21 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "hello"
         chat.send()
+        await chat.engine.finished()
         await chat.approve(card)
+        await chat.engine.finished()
         chat.cancelStream()
+        await chat.engine.finished()
         // Cancelling must not auto-start another turn to drain the queue.
         XCTAssertFalse(chat.isStreaming)
 
         chat.inputText = "what now?"
         chat.send()
+        await chat.engine.finished()
         let asked = await waitForCondition { mock.prompts.contains { $0.hasSuffix("what now?") } }
         XCTAssertTrue(asked)
         chat.cancelStream()
+        await chat.engine.finished()
 
         // The user's message carries the queued decision with it. (The cancelled
         // turn may or may not have reached the service, so match by content.)
@@ -850,7 +878,7 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(sent.contains("Action applied"), "queued decision must ride the next message")
     }
 
-    func testRejectMarksCardRejected() throws {
+    func testRejectMarksCardRejected() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
@@ -862,12 +890,14 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         chat.reject(card)
+        await chat.engine.finished()
 
         XCTAssertEqual(chat.actionCards.first?.state, .rejected)
         XCTAssertTrue(chat.messages.contains {
             $0.role == .system && $0.text.contains("rejected")
         })
-        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        let stored = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }
+        let after = try XCTUnwrap(stored)
         XCTAssertEqual(after.status, "todo") // unchanged
     }
 
@@ -889,6 +919,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         XCTAssertEqual(notifications, 1)
     }
@@ -910,6 +941,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         if case .failed = chat.actionCards.first?.state {} else {
             XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
@@ -937,6 +969,7 @@ final class TargetChatViewModelTests: XCTestCase {
                              state: .pending)
         ]
         await chat.approveAll()
+        await chat.engine.finished()
 
         XCTAssertEqual(notifications, 1)
     }
@@ -956,6 +989,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "what now?"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         XCTAssertEqual(notifications, 1)
@@ -987,6 +1021,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         let childAfter = try XCTUnwrap(fetchTarget(manager, id: child.id))
         XCTAssertTrue(childAfter.decodedSubItems.contains { $0.text == "step 1" })
@@ -1012,6 +1047,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         let rootAfter = try XCTUnwrap(fetchTarget(manager, id: root.id))
         XCTAssertEqual(rootAfter.status, "done")
@@ -1031,6 +1067,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         if case .failed = chat.actionCards.first?.state {} else {
             XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
@@ -1052,6 +1089,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         if case .failed = chat.actionCards.first?.state {} else {
             XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
@@ -1071,6 +1109,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
+        await chat.engine.finished()
 
         let grandchildren = try await manager.dbPool.read { db in
             try Target.fetchAll(db, sql: "SELECT * FROM targets WHERE parent_id = ?", arguments: [child.id])
@@ -1100,6 +1139,7 @@ final class TargetChatViewModelTests: XCTestCase {
                              state: .pending)
         ]
         await chat.approveAll()
+        await chat.engine.finished()
 
         let aAfter = try XCTUnwrap(fetchTarget(manager, id: childA.id))
         let bAfter = try XCTUnwrap(fetchTarget(manager, id: childB.id))
@@ -1216,6 +1256,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         chat.inputText = "make a ticket"
         chat.send()
+        await chat.engine.finished()
         for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
 
         let firstToolMode = try XCTUnwrap(mock.toolModes.first)
@@ -1235,8 +1276,11 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: MockClaudeService(events: [.text("ok"), .done]))
+        // The stream ends only once the test released it: the turn's rows are
+        // written off the main thread (board #670), so the proposal goes in
+        // while the turn is still running.
+        let mock = MockClaudeService(events: [.text("ok")], thenAwaitsRelease: true)
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
         let convID = try XCTUnwrap(fetchConversationID(manager, targetID: target.id))
         // An earlier row through the app's own pool proves the observation is live.
         try TestDatabase.insertAgentActionSync(manager.dbPool, conversationID: convID, turnID: "earlier")
@@ -1245,10 +1289,11 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "file a ticket"
         chat.send()
+        await chat.engine.finished()
         let turnID = try XCTUnwrap(chat.messages.last?.turnID)
-        // Synchronous: the main actor must not yield before the row exists.
         let otherPool = try DatabasePool(path: path)
         try TestDatabase.insertAgentActionSync(otherPool, conversationID: convID, turnID: turnID)
+        mock.release()
         for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
 
         XCTAssertEqual(chat.actionFeed.cards(forTurn: turnID).count, 1,
@@ -1269,6 +1314,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock, toolsAvailable: false)
         chat.inputText = "make a ticket"
         chat.send()
+        await chat.engine.finished()
         for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
 
         XCTAssertEqual(mock.toolModes, [nil])
@@ -1285,7 +1331,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
     /// A turn waiting for a free slot is a turn under way: the brief center
     /// and the tab chip read `isStreaming` as "busy", never as "nothing sent".
-    func testATurnWaitingForASlotCountsAsBusy() throws {
+    func testATurnWaitingForASlotCountsAsBusy() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
@@ -1294,28 +1340,32 @@ final class TargetChatViewModelTests: XCTestCase {
         let center = EmbeddedChatCenter(gate: EmbeddedStreamGate(limit: 1)) { spec, gate in
             makeSurfaceEngine(spec, dbPool: manager.dbPool, ai: ai, gate: gate)
         }
-        let busyConv = try manager.dbPool.write { db in
+        let busyConv = try await manager.dbPool.write { db in
             try ChatConversationQueries.create(db, title: "other", contextType: "target", contextID: String(target.id)).id
         }
         let other = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
                                         conversationID: busyConv, center: center)
         other.inputText = "takes the slot"
         other.send()
+        await other.engine.finished()
 
-        let conv = try manager.dbPool.write { db in
+        let conv = try await manager.dbPool.write { db in
             try ChatConversationQueries.create(db, title: "Task", contextType: "target", contextID: String(target.id)).id
         }
         let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
                                        conversationID: conv, center: center)
         chat.inputText = "waits"
         chat.send()
+        await chat.engine.finished()
         XCTAssertTrue(chat.engine.isQueued)
         XCTAssertTrue(chat.isStreaming)
         XCTAssertEqual(chat.inputText, "", "the queued text left the composer")
         chat.cancelStream()
+        await chat.engine.finished()
         XCTAssertEqual(chat.inputText, "waits", "Stop on a queued turn puts the text back")
         XCTAssertFalse(chat.isStreaming)
         other.cancelStream()
+        await other.engine.finished()
     }
 
     /// A decision taken mid-turn on a task deleted before the turn ends
@@ -1334,7 +1384,9 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "go"
         chat.send()
+        await chat.engine.finished()
         await chat.approve(card)
+        await chat.engine.finished()
         try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target.id]) }
         mock.release()
         try await waitForStreamEnd(chat)
@@ -1360,6 +1412,7 @@ final class TargetChatViewModelTests: XCTestCase {
                                 aiService: MockClaudeService(events: [.text(reply), .done]))
         chat.inputText = "plan it"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         let replyRow = try XCTUnwrap(chat.engine.messages.last { $0.message.isAssistant })
@@ -1383,6 +1436,7 @@ final class TargetChatViewModelTests: XCTestCase {
                                 aiService: MockClaudeService(events: [.text(block)], thenError: StubStreamError()))
         chat.inputText = "mark it done"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         XCTAssertEqual(try XCTUnwrap(fetchTargetRow(manager, id: target.id)).status, "todo")
@@ -1439,12 +1493,14 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "add the step"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         let message = try XCTUnwrap(chat.errorMessage)
         XCTAssertTrue(message.contains("Already applied: added sub-item \"draft reply\""), message)
         XCTAssertEqual(try draftReplyCount(manager, target), 1)
         chat.stop()
+        await chat.engine.finished()
 
         try await manager.dbPool.write { db in try db.execute(sql: "DROP TRIGGER fail_reply_save") }
         let back = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
@@ -1452,6 +1508,7 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(back.engine === chat.engine, "the center keeps the engine across the tab")
         XCTAssertTrue(back.engine.canRetry)
         back.engine.retry()
+        await back.engine.finished()
         try await waitForStreamEnd(back)
 
         XCTAssertNil(back.errorMessage)
@@ -1462,6 +1519,7 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertEqual(back.actionCards.last?.state, .applied("already applied before the retry"))
         XCTAssertEqual(back.engine.messages.last { $0.message.role == "assistant" }?.message.status, "complete")
         back.stop()
+        await back.engine.finished()
     }
 
     /// Only Retry skips: a new owner message after the failed turn is a turn
@@ -1477,6 +1535,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         chat.inputText = "add the step"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
         XCTAssertNotNil(chat.errorMessage)
 
@@ -1484,6 +1543,7 @@ final class TargetChatViewModelTests: XCTestCase {
         chat.errorMessage = nil
         chat.inputText = "add it once more"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         XCTAssertFalse(mock.prompts[1].contains("already applied these changes"), mock.prompts[1])
@@ -1507,6 +1567,7 @@ final class TargetChatViewModelTests: XCTestCase {
                                 aiService: MockClaudeService(events: [.text(reply), .done]))
         chat.inputText = "mark it done"
         chat.send()
+        await chat.engine.finished()
         try await waitForStreamEnd(chat)
 
         let persisted = try fetchPersistedMessages(manager, targetID: target.id)
@@ -1528,6 +1589,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let convID = try XCTUnwrap(fetchConversationID(manager, targetID: target.id))
         chat.inputText = "file a ticket"
         chat.send()
+        await chat.engine.finished()
         let turnID = try XCTUnwrap(chat.messages.last?.turnID)
         let otherPool = try DatabasePool(path: path)
         try TestDatabase.insertAgentActionSync(otherPool, conversationID: convID, turnID: turnID)
