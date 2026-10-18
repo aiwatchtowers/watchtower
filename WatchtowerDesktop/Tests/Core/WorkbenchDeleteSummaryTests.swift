@@ -30,8 +30,12 @@ final class WorkbenchDeleteSummaryTests: XCTestCase {
             try db.execute(sql: "INSERT INTO project_comments (project_id, target_id, author, body) VALUES (?, ?, 'owner', 'x')",
                            arguments: [pid, target])
             for contextID in ["\(pid):a.swift:1", "\(pid)::0", "\(other):a.swift:1", "\(pid)0:a.swift:1"] {
-                _ = try ChatConversationQueries.create(db, title: "q", contextType: "code_question", contextID: contextID)
+                let id = try ChatConversationQueries.create(db, title: "q", contextType: "code_question", contextID: contextID).id
+                try db.execute(sql: "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, 'user', 'q', 1)",
+                               arguments: [id])
             }
+            // Written but never asked: not a question the summary names.
+            _ = try ChatConversationQueries.create(db, title: "q", contextType: "code_question", contextID: "\(pid):b.swift:1")
             return try XCTUnwrap(WorkbenchQueries.fetch(db, id: pid))
         }
         let summary = try queue.read { try WorkbenchDeleteSummary.fetch($0, project: project, legacy: false) }

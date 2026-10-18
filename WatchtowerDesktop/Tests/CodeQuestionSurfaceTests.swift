@@ -38,9 +38,9 @@ final class CodeQuestionSurfaceTests: XCTestCase {
                                   fileText: "import Foundation\nload(config)\n") { _ in [] }
     }
 
-    private func conversation(_ choice: CodeQuestionSurface.ModelChoice) throws -> Int64 {
-        try CodeQuestionSurface.createConversation(workbenchID: workbench.id, origin: origin, choice: choice,
-                                                   dbPool: dbManager.dbPool)
+    private func conversation(_ choice: CodeQuestionSurface.ModelChoice) async throws -> Int64 {
+        try await CodeQuestionSurface.createConversation(workbenchID: workbench.id, origin: origin, choice: choice,
+                                                         dbPool: dbManager.dbPool)
     }
 
     private func spec(_ conversationID: Int64) -> ChatSurfaceSpec {
@@ -69,8 +69,8 @@ final class CodeQuestionSurfaceTests: XCTestCase {
 
     // MARK: - Contract
 
-    func testSpecIsDraftOnlyOnTheDatabase() throws {
-        let conv = try conversation(.init(provider: .claude, model: ""))
+    func testSpecIsDraftOnlyOnTheDatabase() async throws {
+        let conv = try await conversation(.init(provider: .claude, model: ""))
         let spec = spec(conv)
         XCTAssertEqual(spec.toolAccess, .draftOnly, "a code question never acts (AGENT-04)")
         XCTAssertEqual(spec.persistence, .database(conversationID: conv))
@@ -79,9 +79,10 @@ final class CodeQuestionSurfaceTests: XCTestCase {
                                                  conversationID: conv))
     }
 
-    func testCreateConversationStoresContextAndModel() throws {
-        let conv = try conversation(.init(provider: .codex, model: "gpt-5.4"))
-        let row = try XCTUnwrap(dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: conv) })
+    func testCreateConversationStoresContextAndModel() async throws {
+        let conv = try await conversation(.init(provider: .codex, model: "gpt-5.4"))
+        let stored = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: conv) }
+        let row = try XCTUnwrap(stored)
         XCTAssertEqual(row.contextType, "code_question")
         XCTAssertEqual(row.contextID, "\(workbench.id):Sources/App.swift:2")
         XCTAssertEqual(row.provider, "codex")
@@ -101,7 +102,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
     // MARK: - Turns
 
     func testTurnRunsInTheFolderWithTheStoredModel() async throws {
-        let conv = try conversation(.init(provider: .claude, model: "claude-sonnet-4-6"))
+        let conv = try await conversation(.init(provider: .claude, model: "claude-sonnet-4-6"))
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec(conv), dbPool: dbManager.dbPool, ai: ai)
 
@@ -126,7 +127,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
     /// A follow-up keeps the conversation's model; a new choice applies from
     /// the next turn and is stored.
     func testFollowUpKeepsTheModelAndAChangeIsStored() async throws {
-        let conv = try conversation(.init(provider: .claude, model: "claude-sonnet-4-6"))
+        let conv = try await conversation(.init(provider: .claude, model: "claude-sonnet-4-6"))
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec(conv), dbPool: dbManager.dbPool, ai: ai)
 
@@ -136,8 +137,8 @@ final class CodeQuestionSurfaceTests: XCTestCase {
         XCTAssertEqual(ai.calls[1].sessionID, "s1")
         XCTAssertNil(ai.calls[1].systemPrompt, "a resumed Claude session already holds the context")
 
-        try CodeQuestionSurface.setModelChoice(.init(provider: .codex, model: "gpt-5.4"), conversationID: conv,
-                                               dbPool: dbManager.dbPool)
+        try await CodeQuestionSurface.setModelChoice(.init(provider: .codex, model: "gpt-5.4"), conversationID: conv,
+                                                     dbPool: dbManager.dbPool)
         await turn(engine, ai, "Any problems?")
         XCTAssertEqual(ai.calls[2].provider, "codex")
         XCTAssertEqual(ai.calls[2].model, "gpt-5.4")
@@ -161,7 +162,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
     /// Ollama has no file tools: no folder, a prompt that says so, and the
     /// notice once per conversation.
     func testOllamaReadsNoFolderAndSaysSoOnce() async throws {
-        let conv = try conversation(.init(provider: .ollama, model: "llama3"))
+        let conv = try await conversation(.init(provider: .ollama, model: "llama3"))
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec(conv), dbPool: dbManager.dbPool, ai: ai)
 
@@ -176,7 +177,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
     /// Board #361: a turn that resumes no provider session carries the
     /// earlier turns; a resumed Claude turn does not (its session has them).
     func testAFollowUpWithoutASessionReplaysTheEarlierTurns() async throws {
-        let conv = try conversation(.init(provider: .ollama, model: "llama3"))
+        let conv = try await conversation(.init(provider: .ollama, model: "llama3"))
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec(conv), dbPool: dbManager.dbPool, ai: ai)
 
@@ -189,8 +190,8 @@ final class CodeQuestionSurfaceTests: XCTestCase {
         XCTAssertTrue(second.hasSuffix(EmbeddedChatReplay.footer + "\n\nAnd the caller?"), second)
         XCTAssertFalse(second.contains(CodeQuestionSurface.cannotReadFilesNotice), "notices are not replayed")
 
-        try CodeQuestionSurface.setModelChoice(.init(provider: .claude, model: ""), conversationID: conv,
-                                               dbPool: dbManager.dbPool)
+        try await CodeQuestionSurface.setModelChoice(.init(provider: .claude, model: ""), conversationID: conv,
+                                                     dbPool: dbManager.dbPool)
         await turn(engine, ai, "Any problems?", sessionID: "s1")
         XCTAssertTrue(ai.calls[2].prompt.contains("Assistant: main.swift calls it."),
                       "a Claude turn with no session yet replays too")
@@ -204,19 +205,19 @@ final class CodeQuestionSurfaceTests: XCTestCase {
     /// whole conversation replayed; an id the other provider reports is
     /// never kept.
     func testClaudeAfterAnotherProviderStartsFreshWithTheReplay() async throws {
-        let conv = try conversation(.init(provider: .claude, model: ""))
+        let conv = try await conversation(.init(provider: .claude, model: ""))
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec(conv), dbPool: dbManager.dbPool, ai: ai)
         await turn(engine, ai, "Explain this.", sessionID: "s1")
 
-        try CodeQuestionSurface.setModelChoice(.init(provider: .ollama, model: "llama3"), conversationID: conv,
-                                               dbPool: dbManager.dbPool)
+        try await CodeQuestionSurface.setModelChoice(.init(provider: .ollama, model: "llama3"), conversationID: conv,
+                                                     dbPool: dbManager.dbPool)
         await turn(engine, ai, "And the caller?", reply: "main.swift calls it.", sessionID: "ollama-id")
         let stored = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: conv) }
         XCTAssertNil(try XCTUnwrap(stored).sessionID, "the Claude session is forgotten, the other id never kept")
 
-        try CodeQuestionSurface.setModelChoice(.init(provider: .claude, model: ""), conversationID: conv,
-                                               dbPool: dbManager.dbPool)
+        try await CodeQuestionSurface.setModelChoice(.init(provider: .claude, model: ""), conversationID: conv,
+                                                     dbPool: dbManager.dbPool)
         await turn(engine, ai, "Any problems?")
         XCTAssertNil(ai.calls[2].sessionID, "not resumed: the session never saw the Ollama turn")
         XCTAssertNotNil(ai.calls[2].systemPrompt)
@@ -226,7 +227,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
 
     /// Claude reads the folder (ruling R55): no "cannot read" notice.
     func testClaudeGetsNoNotice() async throws {
-        let conv = try conversation(.init(provider: .claude, model: ""))
+        let conv = try await conversation(.init(provider: .claude, model: ""))
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec(conv), dbPool: dbManager.dbPool, ai: ai)
         await turn(engine, ai, "Explain this.", sessionID: "s1")
@@ -243,7 +244,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
     /// conversation with the same words is found by each, so the guard
     /// cannot pass on a broken search.
     func testCodeQuestionGuard_NeverInTheMainChat() async throws {
-        let conv = try conversation(.init(provider: .claude, model: ""))
+        let conv = try await conversation(.init(provider: .claude, model: ""))
         try await dbManager.dbPool.write { db in
             try ChatConversationQueries.rename(db, id: conv, title: "zephyrquux question")
         }

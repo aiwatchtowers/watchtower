@@ -41,7 +41,9 @@ package enum CodeQuestionList {
     package static let contextType = "code_question"
 
     /// Newest first. The `<id>:` prefix is matched exactly, so workbench 1
-    /// never lists workbench 10's questions.
+    /// never lists workbench 10's questions. A question with no message yet
+    /// (its row is written before its first turn, board #670) is not
+    /// listed (`hasMessage`).
     package static func fetch(_ db: Database, workbenchID: Int64) throws -> [CodeQuestionListItem] {
         let prefix = "\(workbenchID):"
         let rows = try Row.fetchAll(db, sql: """
@@ -51,6 +53,7 @@ package enum CodeQuestionList {
                      ORDER BY m.id LIMIT 1) AS first_question
             FROM chat_conversations c
             WHERE c.context_type = ? AND \(ofWorkbench("c"))
+              AND \(hasMessage("c"))
             ORDER BY c.created_at DESC, c.id DESC
             """, arguments: [contextType, prefix, prefix])
         return rows.compactMap { row in
@@ -63,14 +66,20 @@ package enum CodeQuestionList {
         }
     }
 
-    /// How many code questions the workbench has (the delete takes them,
-    /// PROJ-02).
+    /// How many code questions the workbench lists (the delete takes them,
+    /// PROJ-02): the rule `fetch` uses, so the summary names what the
+    /// Questions tab shows.
     package static func count(_ db: Database, workbenchID: Int64) throws -> Int {
         let prefix = "\(workbenchID):"
         return try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM chat_conversations c
-            WHERE c.context_type = ? AND \(ofWorkbench("c"))
+            WHERE c.context_type = ? AND \(ofWorkbench("c")) AND \(hasMessage("c"))
             """, arguments: [contextType, prefix, prefix]) ?? 0
+    }
+
+    /// The conversation holds at least one message, of any role.
+    private static func hasMessage(_ table: String) -> String {
+        "EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = \(table).id)"
     }
 
     /// `context_id` starts with the bound `<id>:` (bound twice): matched
@@ -88,6 +97,30 @@ package enum CodeQuestionList {
         let rest = contextID.dropFirst(prefix.count)
         guard let colon = rest.lastIndex(of: ":"), let line = Int(rest[rest.index(after: colon)...]) else { return nil }
         return CodeQuestionOrigin(path: String(rest[..<colon]), line: line, selection: nil)
+    }
+
+    /// How old a question with no message must be before `deleteEmpty`
+    /// takes it: far longer than writing a first turn ever takes.
+    package static let emptyQuestionAge: TimeInterval = 10 * 60
+
+    /// Deletes the workbench's code questions that have no message at all
+    /// and were created before `createdBefore` (unix seconds), except
+    /// `keeping` (conversations a surface still holds); how many went.
+    @discardableResult
+    package static func deleteEmpty(
+        _ db: Database, workbenchID: Int64, createdBefore: Double, keeping: Set<Int64> = []
+    ) throws -> Int {
+        let prefix = "\(workbenchID):"
+        let candidates = try Int64.fetchAll(db, sql: """
+            SELECT c.id FROM chat_conversations c
+            WHERE c.context_type = ? AND \(ofWorkbench("c")) AND c.created_at < ? AND NOT \(hasMessage("c"))
+            """, arguments: [contextType, prefix, prefix, createdBefore])
+        var deleted = 0
+        for id in candidates where !keeping.contains(id) {
+            try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
+            deleted += db.changesCount
+        }
+        return deleted
     }
 
     /// Deletes a code question with its messages (and their search rows,
