@@ -138,7 +138,7 @@ Today the Chat opens only as a second pane beside its session's terminal: the he
 - **Header (A, proposed):** the Terminal segment becomes a twin switch **Terminal | Workchat** with the existing ▾ session menu shared by both halves. Clicking the other half swaps the session pane in place: same session, same slot, no split. The terminal keeps running while hidden, as a hidden pane does today. The separate **Chat** view button goes away. The alternatives B (own header button) and C (switch on the pane's bar) are in the mockups for the decision.
 - **Split (B):** with the split on, both halves can be lit: Terminal left, Workchat of the same session right, the way today's Chat opens. The split pane pickers list **Workchat** in place of **Chat**.
 - **Remembered mode:** each session remembers the mode it was last shown in, stored with the workbench's layout state (`WorkspaceLayout`), not in SQLite. A new session opens in the Terminal, because a fresh agent may stop at trust or login prompts the Workchat cannot show.
-- **Shortcut:** `⌃\`` toggles Terminal and Workchat for the session on screen. The View menu has **Show Terminal** and **Show Workchat**.
+- **Shortcut:** `` ⌃` `` toggles Terminal and Workchat for the session on screen. The View menu has **Show Terminal** and **Show Workchat**.
 - **Session rows:** a small glyph shows the mode the session opens in. The context menu has **Open in Terminal** and **Open in Workchat**, replacing **Show Chat**.
 - `WorkspaceView.chat`/`WorkspacePane.sessionChat` keep their raw values. Only titles and the switch change, so saved layouts stay valid.
 
