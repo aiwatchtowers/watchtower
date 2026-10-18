@@ -19,9 +19,10 @@ const (
 // router reads for issue keys.
 const channelScanLimit = 200
 
-// issueKeyRe matches an issue key (ENG-12, ABC_X-3) anywhere in a text,
-// including inside a tracker URL.
-var issueKeyRe = regexp.MustCompile(`\b([A-Z][A-Z0-9_]+)-[0-9]+\b`)
+// issueKeyRe matches an issue key (ENG-12, ABC_X-3, A-5) anywhere in a text,
+// including inside a tracker URL. Linear allows one-letter team keys; a
+// prefix counts only when it is a known project or team key.
+var issueKeyRe = regexp.MustCompile(`\b([A-Z][A-Z0-9_]*)-[0-9]+\b`)
 
 func isIssueTool(name string) bool { return name == toolJiraIssue || name == toolLinearIssue }
 

@@ -24,7 +24,7 @@ import (
 func TestScanTrackerEvidence(t *testing.T) {
 	pre := db.TrackerPrefixes{
 		Jira:   map[string]bool{"ABC": true, "OPS": true},
-		Linear: map[string]bool{"ENG": true, "OPS": true},
+		Linear: map[string]bool{"ENG": true, "OPS": true, "A": true},
 	}
 	for _, tc := range []struct {
 		name  string
@@ -37,6 +37,8 @@ func TestScanTrackerEvidence(t *testing.T) {
 		{"collision prefix counts for neither", []string{"OPS-3"}, trackerEvidence{}},
 		{"unknown prefix", []string{"XYZ-3 and UTF-8"}, trackerEvidence{}},
 		{"lowercase is not a key", []string{"abc-12"}, trackerEvidence{}},
+		{"one-letter linear team key", []string{"see A-5"}, trackerEvidence{linear: true}},
+		{"one-letter unknown prefix", []string{"B-5"}, trackerEvidence{}},
 		{"no texts", nil, trackerEvidence{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
