@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -220,4 +221,60 @@ func TestFetchViewerWithToken(t *testing.T) {
 
 	_, err = FetchViewerWithToken(context.Background(), "stale")
 	assert.ErrorIs(t, err, ErrAuthRevoked)
+}
+
+func newAPIKeyClient(t *testing.T, gql http.HandlerFunc) (*Client, *atomic.Int32) {
+	t.Helper()
+	c, store := newTestClient(t, gql, nil)
+	require.NoError(t, store.Save(APIKeyToken("  lin_api_x\n")))
+	var tokenCalls atomic.Int32
+	tk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		tokenCalls.Add(1)
+		_, _ = w.Write([]byte(`{"access_token":"a1","refresh_token":"r1","expires_in":86399}`))
+	}))
+	t.Cleanup(tk.Close)
+	c.tokenURL = tk.URL
+	return c, &tokenCalls
+}
+
+func TestClient_APIKeySendsBareAuthorization(t *testing.T) {
+	c, _ := newAPIKeyClient(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "lin_api_x", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	})
+	require.NoError(t, c.Do(context.Background(), `query { viewer { id } }`, nil, &struct{}{}))
+}
+
+func TestClient_APIKeyNeverRefreshes(t *testing.T) {
+	c, tokenCalls := newAPIKeyClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	})
+	require.True(t, APIKeyToken("k").IsExpired()) // an empty Expiry would trigger a refresh for OAuth
+	require.NoError(t, c.Do(context.Background(), `query { viewer { id } }`, nil, &struct{}{}))
+	assert.Zero(t, tokenCalls.Load())
+}
+
+func TestClient_APIKey401IsAuthRevoked(t *testing.T) {
+	var gqlCalls atomic.Int32
+	c, tokenCalls := newAPIKeyClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		gqlCalls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	err := c.Do(context.Background(), `query { viewer { id } }`, nil, &struct{}{})
+	assert.ErrorIs(t, err, ErrAuthRevoked)
+	assert.Zero(t, tokenCalls.Load())
+	assert.Equal(t, int32(1), gqlCalls.Load())
+}
+
+func TestTokenStore_APIKeyRoundTrip(t *testing.T) {
+	store := NewTokenStore(t.TempDir(), 7)
+	require.NoError(t, store.Save(APIKeyToken(" lin_api_x ")))
+	got, err := store.Load()
+	require.NoError(t, err)
+	assert.Equal(t, TokenTypeAPIKey, got.TokenType)
+	assert.Equal(t, "lin_api_x", got.AccessToken)
+	assert.True(t, got.IsAPIKey())
+	fi, err := os.Stat(store.Path())
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
 }

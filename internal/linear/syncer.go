@@ -39,7 +39,7 @@ func FetchViewerWithToken(ctx context.Context, accessToken string) (Viewer, erro
 	}
 	c := &Client{endpoint: graphqlEndpoint, http: &http.Client{Timeout: 30 * time.Second}}
 	var v viewerData
-	authFailed, err := c.send(ctx, body, accessToken, &v)
+	authFailed, err := c.send(ctx, body, accessToken, false, &v)
 	if err != nil {
 		return Viewer{}, fmt.Errorf("fetching linear viewer: %w", err)
 	}
