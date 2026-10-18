@@ -1669,11 +1669,7 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		// Nobody polls, so reactions placed now must not fire when the
 		// feature comes back: clear the event seed stamps (a no-op read when
 		// none is set).
-		if d.db != nil {
-			if err := d.db.ResetReactionEventsSeeded(); err != nil {
-				d.logger.Printf("reaction-commands: resetting event seeds: %v", err)
-			}
-		}
+		d.resetReactionEventSeeds()
 		return
 	}
 	if d.reactionCmdPipe == nil || d.db == nil {
@@ -1697,25 +1693,13 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 			// A throttled cycle polls nothing, but nobody listening still
 			// means reactions placed now must not fire later.
 			if d.reactionEventsUnheard() {
-				if err := d.db.ResetReactionEventsSeeded(); err != nil {
-					d.logger.Printf("reaction-commands: resetting event seeds: %v", err)
-				}
+				d.resetReactionEventSeeds()
 			}
 			return
 		}
 	}
 
-	// The cycle's bus. With no bus wired, a sink nobody listens on (never a
-	// typed nil) so the pipeline clears its event seed stamps. With a bus
-	// wired whose Begin failed this cycle, nil: the state is left alone,
-	// because a reset would drop the reactions placed meanwhile.
-	var sink reactioncmd.EventSink
-	switch {
-	case d.cycleEvents != nil:
-		sink = d.cycleEvents
-	case d.automationEvents == nil:
-		sink = noReactionBus{}
-	}
+	sink := d.reactionEventSink()
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
 		dispatched, err := d.reactionCmdPipe.Run(ctx, sink)
 		if err != nil {
@@ -1726,6 +1710,32 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		d.lastReactionCmd = now
 		return pipelineRunStats{items: dispatched, err: err}
 	})
+}
+
+// resetReactionEventSeeds clears the reaction-event seed stamps; an error is
+// logged.
+func (d *Daemon) resetReactionEventSeeds() {
+	if d.db == nil {
+		return
+	}
+	if err := d.db.ResetReactionEventsSeeded(); err != nil {
+		d.logger.Printf("reaction-commands: resetting event seeds: %v", err)
+	}
+}
+
+// reactionEventSink is the reaction poll's sink: the cycle's bus. With no bus
+// wired, a sink nobody listens on (never a typed nil) so the pipeline clears
+// its event seed stamps. With a bus wired whose Begin failed this cycle, nil:
+// the state is left alone, because a reset would drop the reactions placed
+// meanwhile.
+func (d *Daemon) reactionEventSink() reactioncmd.EventSink {
+	switch {
+	case d.cycleEvents != nil:
+		return d.cycleEvents
+	case d.automationEvents == nil:
+		return noReactionBus{}
+	}
+	return nil
 }
 
 // reactionEventsUnheard reports that no recipe can receive reaction events
