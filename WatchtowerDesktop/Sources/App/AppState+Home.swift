@@ -39,6 +39,12 @@ extension AppState {
         return Self.homeAlwaysAllowed.union(followed)
     }
 
+    /// Open the Automations tab on one of its sections (the Settings pointer).
+    func navigateToAutomations(section: AutomationsSection) {
+        UserDefaults.standard.set(section.rawValue, forKey: AutomationsSection.storageKey)
+        selectedDestination = .automations
+    }
+
     /// The Slack Digests Turn on for Home's cards (#575); read inside a
     /// view's body, so the card follows it.
     var digestsTurnOnState: DigestsTurnOnState {

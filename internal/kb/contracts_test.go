@@ -116,7 +116,7 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 	exec(t, d, `DELETE FROM jira_comments`)
 	exec(t, d, `DELETE FROM jira_issues`)
 	// An in-place edit of a message far older than the 48h tail: the
-	// kb_dirty mark (migration 00138) carries it to the index.
+	// kb_dirty mark (migration 00139) carries it to the index.
 	exec(t, d, `UPDATE messages SET text = 'ревизия: релиз в четверг' WHERE ts = '1758000100.000200'`)
 	// A Confluence comment is removed (the engine stamps children_changed_at)
 	// and an attachment is hard-deleted (the reconcile drops it).

@@ -10,7 +10,7 @@ import (
 
 // drainDirty re-renders every document of src that kb_dirty marks: a source
 // row was edited in place or deleted, which moves no change cursor the
-// source's Changed can see (migration 00138's triggers write the marks). A
+// source's Changed can see (migration 00139's triggers write the marks). A
 // source document that no longer exists renders as nil, so the key is
 // deleted from the index like any gone document — a purge or an FK cascade
 // that left a mark behind is no error and the row is removed with it.

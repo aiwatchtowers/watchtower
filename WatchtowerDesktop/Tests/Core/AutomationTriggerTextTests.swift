@@ -19,6 +19,9 @@ final class AutomationTriggerTextTests: XCTestCase {
             ("event", #"{"event":{"type":"jira.issue_changed"}}"#, "On Jira change"),
             ("event", #"{"event":{"type":"calendar.event_changed"}}"#, "On calendar change"),
             ("event", #"{"event":{"type":"confluence.page_changed"}}"#, "On Confluence change"),
+            ("event", #"{"event":{"type":"slack.reaction_added"}}"#, "On a Slack reaction"),
+            ("event", #"{"event":{"type":"slack.reaction_added","where":{"emoji":"eyes"}}}"#, "On :eyes: reactions"),
+            ("event", #"{"event":{"type":"slack.reaction_added","where":{"emoji":":eyes:"}}}"#, "On :eyes: reactions"),
             ("manual", #"{"manual":true}"#, "Manual"),
             ("", "{}", "—")
         ]

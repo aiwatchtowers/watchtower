@@ -1910,6 +1910,14 @@ Entry format:
 - miss: codex returned no findings again. Every item came from the prosecutor, and all of them were minor or nit.
 - weak-dimension: 7 (thin). The working-count test covers working/background/waiting/other-workbench but not the pending-delete path that F2 is about.
 - rule-gap: none new. The existing "doc asserts an invariant → check every input it reads" process rule caught F2.
+
+## 2026-10-18 — feature/rules-in-automations (`slack.reaction_added` event via `reactioncmd` + migration 00136 `reaction_events` ledger and seed stamps; Automations tab Reactions/Tracks sections, Settings → Slack pointer; 50 files vs origin/main; panel: prosecutor (6) + codex (1), 3 specialists DOWN (not installed); judge verified against e451a23c6 by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, prosecutor F1): the new Turn on calls `DaemonManager.restart()` directly, while every sibling Turn on (ActionStrip, FeaturesSettings, Calendar, Confluence) goes through `appState.restartOnChain`, which #577 brought in from main during this branch's life. A parallel-lane branch merged with main can miss a convention that main added meanwhile. **After a merge from main, grep the new code for the call that main just replaced.** [5/8]
+- false-positive: codex's major (an event is lost if the daemon exits between the ledger insert and Flush) is the spec's owner-approved at-most-once loss window, documented in automations.md. A failed Flush enqueue is logged and joined into Flush's error, so it is not silent. Prosecutor F3 (window slide) was already in the v1 limits after 5ace188. It went to Needs human because it conflicts with a spec anti-goal. [6/9]
+- miss: none lane-only. Codex's one finding was an accepted spec trade-off.
+- weak-dimension: 7. Desktop tests cover the pure row/section helpers, but not the Settings pointer/editor switch, `countsByTrack` or the Turn on path.
+- rule-gap (candidate, dim 6): *a v1-limit line that documents a breach of a spec anti-goal ("a failure even if it works") needs an owner ruling, not just the doc line.*
 - outcome: TBD
 
 ## 2026-10-17 — docs/481-system-session-poc (PR #314: docs-only POC research note, board #481 "system session" channel; the owner had already decided "don't build", and the recommendation was out of scope; panel: prosecutor + code-reviewer + codex (default review only, no findings), test/silent lanes N/A; judge verified by reading and grep, no runs; judge synthesis, round 1) — verdict: approve

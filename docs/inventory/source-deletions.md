@@ -10,7 +10,7 @@
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/sourcediff/`, `internal/sync/deletions.go`, `internal/db/slack_deletions.go`, `internal/gmail/deletions.go`, `internal/imap/sync.go`, `internal/jira/sync.go` (comment set-replace), `internal/db/migrations/00138_source_deletions.sql`, `internal/kb/dirty.go`
+**Module:** `internal/sourcediff/`, `internal/sync/deletions.go`, `internal/db/slack_deletions.go`, `internal/gmail/deletions.go`, `internal/imap/sync.go`, `internal/jira/sync.go` (comment set-replace), `internal/db/migrations/00139_source_deletions.sql`, `internal/kb/dirty.go`
 **Last full audit:** 2026-10-17
 
 ## SRCDEL-01 — No deletion from a bad listing

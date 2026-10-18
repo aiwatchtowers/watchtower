@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/slack-go/slack"
-
 	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
 )
@@ -94,7 +92,7 @@ func seedAccount(ctx context.Context, database *db.DB, acct Account) (int, error
 	if err != nil {
 		return 0, fmt.Errorf("reactions.list: %w", err)
 	}
-	reactions := ownerReactionKeys(items, rawOwner, acct.AccountID)
+	reactions := ownerMessageReactions(items, rawOwner, acct.AccountID)
 	unseen, err := database.FilterUnseenReactionCommands(acct.AccountID, reactions)
 	if err != nil {
 		return 0, fmt.Errorf("filtering reaction commands: %w", err)
@@ -108,38 +106,4 @@ func seedAccount(ctx context.Context, database *db.DB, acct Account) (int, error
 		return 0, err
 	}
 	return len(unseen), nil
-}
-
-// ownerReactionKeys reduces a reactions.list result to every ledger key the
-// owner's own reactions occupy, dictionary or not. It is the seed's sibling of
-// extractOwnerReactions (extract.go), deliberately separate rather than a
-// dictionary-optional branch on it: the two want different outputs (bare ledger
-// keys vs dispatchable candidates carrying message context) and extract.go's
-// function is already near the complexity gate.
-func ownerReactionKeys(items []slack.ReactedItem, ownerRawID string, accountID int64) []db.OwnerReaction {
-	var out []db.OwnerReaction
-	for _, it := range items {
-		if it.Type != "message" || it.Message == nil {
-			continue
-		}
-		ts := it.Message.Timestamp
-		if ts == "" {
-			ts = it.Timestamp
-		}
-		if ts == "" || it.Channel == "" {
-			continue
-		}
-		for _, r := range it.Reactions {
-			if !reactorIsOwner(r.Users, ownerRawID) {
-				continue
-			}
-			out = append(out, db.OwnerReaction{
-				AccountID: accountID,
-				ChannelID: watchtowerslack.Namespace(accountID, it.Channel),
-				MessageTS: ts,
-				Emoji:     r.Name,
-			})
-		}
-	}
-	return out
 }

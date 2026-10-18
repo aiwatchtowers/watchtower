@@ -11,11 +11,11 @@ import (
 
 	"github.com/slack-go/slack"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
-	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/tools"
 )
 
@@ -105,15 +105,28 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, registry *to
 func (p *Pipeline) SetPromptStore(s *prompts.Store) { p.promptStore = s }
 
 // Run polls every connected account's reactions.list and dispatches new
-// commands, returning the count dispatched. One account's failure never blocks
-// the others (the sync-wiring fan-out precedent); the first error is returned
-// for the daemon's run stats after every account has been tried.
-func (p *Pipeline) Run(ctx context.Context) (int, error) {
+// commands, returning the count dispatched (tool dispatches only; published
+// events are not counted). With events wanting slack.reaction_added it also
+// publishes one event per new owner reaction; events may be nil, which
+// leaves the reaction-event state untouched. One
+// account's failure never blocks the others (the sync-wiring fan-out
+// precedent); the first error is returned for the daemon's run stats after
+// every account has been tried.
+func (p *Pipeline) Run(ctx context.Context, events EventSink) (int, error) {
+	// A nil sink leaves the event state alone (the manual CLI poll); a sink
+	// nobody listens on clears the seed stamps.
+	wants := events != nil && events.Wants(automations.SlackReactionAdded)
+	if events != nil && !wants {
+		p.resetEventSeeds()
+	}
+	if !wants {
+		events = nil
+	}
 	dict, err := p.db.ListReactionCommandMap()
 	if err != nil {
 		return 0, fmt.Errorf("loading reaction command map: %w", err)
 	}
-	if len(dict) == 0 {
+	if len(dict) == 0 && !wants {
 		return 0, nil
 	}
 	accounts, err := p.accountsFn(ctx)
@@ -124,7 +137,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	var firstErr error
 	budget := &dispatchBudget{remaining: maxDispatchPerRun}
 	for _, acct := range accounts {
-		n, err := p.processAccount(ctx, acct, dict, budget)
+		n, err := p.processAccount(ctx, acct, dict, budget, events)
 		total += n
 		if err != nil {
 			p.logf("reaction-commands: account #%d: %v", acct.AccountID, err)
@@ -140,7 +153,34 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	return total, firstErr
 }
 
-func (p *Pipeline) processAccount(ctx context.Context, acct Account, dict map[string]db.ReactionCommandMapping, budget *dispatchBudget) (int, error) {
+// processAccount runs one account's dictionary path (when the dictionary has
+// entries) and, with a sink, its event path, over one shared reactions.list
+// call (an account whose dictionary history is not yet seeded makes a second
+// call once: seedAccount lists on its own). The two are independent: a
+// failure in one never skips the other, and the dictionary path's error wins
+// the return.
+func (p *Pipeline) processAccount(ctx context.Context, acct Account, dict map[string]db.ReactionCommandMapping, budget *dispatchBudget, events EventSink) (int, error) {
+	list := newReactionList(acct)
+	dispatched := 0
+	var cmdErr error
+	if len(dict) > 0 {
+		dispatched, cmdErr = p.processCommands(ctx, list, dict, budget)
+	}
+	if events == nil {
+		return dispatched, cmdErr
+	}
+	if err := p.publishReactionEvents(ctx, list, events); err != nil {
+		if cmdErr != nil {
+			p.logf("reaction-commands: account #%d: reaction events: %v", acct.AccountID, err)
+			return dispatched, cmdErr
+		}
+		return dispatched, fmt.Errorf("reaction events: %w", err)
+	}
+	return dispatched, cmdErr
+}
+
+func (p *Pipeline) processCommands(ctx context.Context, list *reactionList, dict map[string]db.ReactionCommandMapping, budget *dispatchBudget) (int, error) {
+	acct := list.acct
 	// An account whose history was never seeded (an install that never ran
 	// `features enable` — the feature defaults to on — or a Slack account added
 	// after the enable) is seeded by this poll instead of dispatched: FEAT-03's
@@ -158,15 +198,11 @@ func (p *Pipeline) processAccount(ctx context.Context, acct Account, dict map[st
 		return 0, nil
 	}
 	p.failStranded(acct.AccountID)
-	rawOwner := acct.OwnerID
-	if _, raw, ok := watchtowerslack.SplitAccountID(acct.OwnerID); ok {
-		rawOwner = raw
-	}
-	items, err := acct.Lister.ListUserReactions(ctx, rawOwner)
+	items, err := list.get(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("reactions.list: %w", err)
+		return 0, err
 	}
-	cands := extractOwnerReactions(items, rawOwner, dict, acct.AccountID)
+	cands := extractOwnerReactions(items, list.rawOwner, dict, acct.AccountID)
 	if len(cands) == 0 {
 		return 0, nil
 	}

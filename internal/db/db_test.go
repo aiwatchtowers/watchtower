@@ -186,7 +186,7 @@ func TestAllTablesExist(t *testing.T) {
 		"jira_issue_changelog", "jira_changelog_sync", "jira_linked_issues",
 		"catchup_recaps",
 		"agent_actions", "tool_trust",
-		"reaction_command_map", "reaction_commands", "reminders",
+		"reaction_command_map", "reaction_commands", "reaction_events", "reminders",
 		"external_connections",
 		"external_connection_tools",
 		"kb_documents", "kb_chunks", "kb_sources", "kb_dirty",
