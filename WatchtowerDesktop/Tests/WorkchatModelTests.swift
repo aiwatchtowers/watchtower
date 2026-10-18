@@ -252,6 +252,57 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(model.outgoing.isEmpty)
     }
 
+    /// Shift-Return's line break goes as a space (PROJ-12: one line): the
+    /// typed text, the bubble and the echo agree.
+    func testMultilineDraftSentAsOneLine() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = "Fix the test\nand\trun it"
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.map(\.text), ["Fix the test and run it"])
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+        XCTAssertTrue(typedText.contains("Fix the test and run it"), "typed as the bubble shows it: \(typedText)")
+        model.reconcile(with: [owner("Fix the test and run it", after: 1)])
+        XCTAssertTrue(model.outgoing.isEmpty)
+    }
+
+    /// The pane was off screen past the window: an echo dated in time still
+    /// takes the line when the feed is read at last.
+    func testLateReconcileStillMatchesTimelyEcho() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = "Ship it"
+        await model.send()
+        let echo = owner("Ship it", after: 2)
+
+        clock.advance(120)
+        model.reconcile(with: [echo])
+
+        XCTAssertTrue(model.outgoing.isEmpty)
+    }
+
+    /// A feed read holding the echo landed while the line was still on its
+    /// way: settling matches it against that read.
+    func testEchoSeenWhileSendingReconcilesOnSettle() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let model = try makeModel(session)
+        model.draft = "Later"
+        await model.send()
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+        model.reconcile(with: [owner("Later", after: 1)])
+        XCTAssertEqual(model.outgoing.count, 1, "a queued line has no echo yet")
+
+        setState(session, .stopped)
+        await delivery.deliverHeld()
+
+        XCTAssertTrue(model.outgoing.isEmpty, "the echo already read takes it")
+    }
+
     /// No echo within `echoWindow` (a `/clear`, say): the line stays as a
     /// plain local bubble, and a late identical entry does not take it.
     func testReconcileKeepsLineWithoutEchoPastWindow() async throws {

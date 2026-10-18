@@ -157,11 +157,14 @@ struct SessionChatView: View {
                 .frame(maxWidth: .infinity)
                 .padding(10)
         }
-        // Esc pops one level while the pane has focus; it takes focus when
+        // Esc and ⌘[ pop one level while the pane has focus; it takes focus when
         // a subagent opens, so Esc works without another click.
         .focusable()
         .focusEffectDisabled()
         .focused($subagentFocused)
+        // ⌘[ belongs to the menu's "Back to Workbenches", which runs this
+        // first while this pane has focus.
+        .focusedValue(\.sessionChatPop) { path.pop() }
         .onKeyPress(.escape) {
             path.pop()
             return .handled
@@ -173,7 +176,6 @@ struct SessionChatView: View {
     private func pathBar(_ subagent: SessionFeedSubagent) -> some View {
         HStack(spacing: 6) {
             Button("‹ Back") { path.pop() }
-                .keyboardShortcut("[", modifiers: .command)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     Button("Workchat") { path.popTo(level: 0) }
@@ -226,8 +228,7 @@ struct SessionChatView: View {
                             loadingRow
                                 .onAppear {
                                     loadingRowVisible = true
-                                    loadEarlier(proxy: proxy)
-                                    fillIfShort(follow.tracker.lastMetrics)
+                                    if !loadEarlier(proxy: proxy) { fillIfShort(follow.tracker.lastMetrics) }
                                 }
                                 .onDisappear { loadingRowVisible = false }
                         }
@@ -307,10 +308,13 @@ struct SessionChatView: View {
     /// Grows the window by one step and keeps the entry that was at the top
     /// on screen. Only while the owner reads older text: a following view
     /// stays at the bottom (the loading row can lay out at open).
-    private func loadEarlier(proxy: ScrollViewProxy) {
-        guard !window.following, let anchor = window.grow(entries: store.entries) else { return }
+    /// Returns whether the window grew.
+    @discardableResult
+    private func loadEarlier(proxy: ScrollViewProxy) -> Bool {
+        guard !window.following, let anchor = window.grow(entries: store.entries) else { return false }
         // After the grown rows lay out.
         DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
+        return true
     }
 
     /// Feeds one content measurement to the tracker, mirrors its follow bit
