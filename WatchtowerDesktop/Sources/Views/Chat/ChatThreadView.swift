@@ -144,6 +144,7 @@ struct ChatThreadView: View {
             gestureError: chatVM.actionFeed.rowErrors[action.id],
             onApproveEdited: { patch in Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
             onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
+            onDismiss: { Task { await chatVM.actionFeed.dismiss(action.id) } },
             sessionHoldsCall: appState.chatSessionPool?.holdsSessionCall(action) ?? false
         )
         .overlay {

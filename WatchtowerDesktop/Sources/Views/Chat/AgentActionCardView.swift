@@ -37,6 +37,10 @@ struct AgentActionCardView: View {
     /// The editor chat's newest draft text (the Draft panel's); a pending
     /// `save_automation` card whose text differs warns. nil elsewhere.
     var latestDraftText: String?
+    /// Dismiss on a session call whose outcome is unknown
+    /// (`ConnectorCallProposal.awaitsDismissal`), which waits on the Inbox
+    /// badge until then. Nil hides the button.
+    var onDismiss: (() -> Void)?
     /// A session-applied call (`claude_ai_connector_call`): whether the live
     /// chat session that proposed it still waits on it
     /// (`ConnectorCallProposal.sessionHolds`). False shows "Chat session
@@ -470,6 +474,11 @@ struct AgentActionCardView: View {
                     Button("Reject", action: onReject)
                 } else if action.canRetry {
                     Button("Retry", action: onRetry)
+                } else if let onDismiss, ConnectorCallProposal.awaitsDismissal(action) {
+                    Text(ConnectorCallProposal.dismissNote).font(.caption).foregroundStyle(.secondary)
+                    Button("Dismiss", action: onDismiss)
+                        .help("Take this call off the Inbox badge")
+                        .accessibilityIdentifier("agentAction.dismissOutcomeUnknown")
                 }
                 if inFlight { ProgressView().controlSize(.small) }
             }

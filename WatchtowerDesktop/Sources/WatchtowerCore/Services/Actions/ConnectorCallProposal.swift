@@ -83,6 +83,19 @@ package struct ConnectorCallProposal: Equatable, Sendable {
         action.isPending && sessionHolds
     }
 
+    /// A failed call whose session ended while it ran may or may not have
+    /// reached the connector, so it waits on the owner (the Inbox badge,
+    /// owner decision in ask #342) until they dismiss it (`actions dismiss`,
+    /// `AgentActionFeed.dismiss`). Every other failed
+    /// reason provably sent nothing and waits on nobody.
+    package static func awaitsDismissal(_ action: AgentAction) -> Bool {
+        action.isSessionApplied && action.status == "failed" && action.error == sessionEndedWhileRunning
+            && action.dismissedAt.isEmpty
+    }
+
+    /// Beside Dismiss on a call whose outcome is unknown.
+    package static let dismissNote = "Check the connector to see whether the call ran, then dismiss this card."
+
     /// Whether the status label already words this session call's error
     /// (the expiry and cancel reasons, per status); any other error is shown
     /// on its own line.
