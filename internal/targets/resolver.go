@@ -22,16 +22,16 @@ type URLResolver interface {
 
 // URLMatch holds a detected URL and parsed metadata.
 type URLMatch struct {
-	Source    string // "slack" or "jira"
+	Source    string // "slack", "jira" or "linear"
 	RawURL    string
 	ChannelID string // Slack only
 	TS        string // Slack only (normalized: "1714567890.123456")
-	Key       string // Jira only (e.g. "PROJ-123")
+	Key       string // Jira or Linear only (e.g. "PROJ-123")
 }
 
 // Enrichment is the result of resolving a URL.
 type Enrichment struct {
-	Ref    string // "jira:PROJ-123" or "slack:C123:1714567890.123456"
+	Ref    string // "jira:PROJ-123", "linear:ENG-12" or "slack:C123:1714567890.123456"
 	Title  string
 	Body   string // formatted text for prompt injection
 	Source string // "local" or "mcp"
@@ -56,10 +56,17 @@ var (
 	jiraIssueRe = regexp.MustCompile(
 		`https://[a-z0-9-]+\.atlassian\.net/browse/([A-Z][A-Z0-9]+-\d+)`,
 	)
+
+	// linearIssueRe matches Linear issue URLs.
+	// Format: https://linear.app/<workspace>/issue/<KEY-NUM>[/<slug>]
+	linearIssueRe = regexp.MustCompile(
+		`https://linear\.app/[a-z0-9-]+/issue/([A-Z][A-Z0-9]*-\d+)`,
+	)
 )
 
-// Extract detects Slack and Jira URLs in text and returns URLMatch entries.
-// Only the two supported URL types (Slack archives, Jira browse) are returned.
+// Extract detects Slack, Jira and Linear URLs in text and returns URLMatch
+// entries. Only the supported URL types (Slack archives, Jira browse, Linear
+// issues) are returned.
 func Extract(text string) []URLMatch {
 	var matches []URLMatch
 	seen := make(map[string]bool)
@@ -94,6 +101,19 @@ func Extract(text string) []URLMatch {
 		})
 	}
 
+	for _, m := range linearIssueRe.FindAllStringSubmatch(text, -1) {
+		raw := m[0]
+		if seen[raw] {
+			continue
+		}
+		seen[raw] = true
+		matches = append(matches, URLMatch{
+			Source: "linear",
+			RawURL: raw,
+			Key:    m[1],
+		})
+	}
+
 	return matches
 }
 
@@ -105,7 +125,7 @@ type Resolver struct {
 	timeout   time.Duration
 }
 
-// NewResolver creates a Resolver with Slack and Jira resolvers registered.
+// NewResolver creates a Resolver with Slack, Jira and Linear resolvers registered.
 // mcp may be nil to disable MCP fallback.
 func NewResolver(database *db.DB, mcp MCPClient, mcpTimeout time.Duration) *Resolver {
 	if mcpTimeout <= 0 {
@@ -119,6 +139,7 @@ func NewResolver(database *db.DB, mcp MCPClient, mcpTimeout time.Duration) *Reso
 	r.resolvers = []URLResolver{
 		&SlackResolver{db: database},
 		&JiraResolver{db: database, mcp: mcp, timeout: mcpTimeout},
+		&LinearResolver{db: database},
 	}
 	return r
 }
@@ -156,6 +177,8 @@ func refForMatch(m URLMatch) string {
 		return fmt.Sprintf("slack:%s:%s", m.ChannelID, m.TS)
 	case "jira":
 		return fmt.Sprintf("jira:%s", m.Key)
+	case "linear":
+		return fmt.Sprintf("linear:%s", m.Key)
 	default:
 		return m.RawURL
 	}
@@ -305,6 +328,55 @@ func (j *JiraResolver) Resolve(ctx context.Context, m URLMatch) (*Enrichment, er
 		Body:   body + " (via MCP)",
 		Source: "mcp",
 	}, nil
+}
+
+// LinearResolver resolves Linear issue URLs from tracker_issues. There is no
+// live fallback: an issue not synced yet is annotated, not fetched.
+type LinearResolver struct {
+	db *db.DB
+}
+
+// CanResolve returns true for Linear issue URLs.
+func (l *LinearResolver) CanResolve(url string) bool {
+	return linearIssueRe.MatchString(url)
+}
+
+// Resolve looks up the Linear issue the URL names. The same key on two
+// workspaces is told apart by the URL's workspace; a key that moved resolves
+// through its previous keys.
+func (l *LinearResolver) Resolve(_ context.Context, m URLMatch) (*Enrichment, error) {
+	ref := fmt.Sprintf("linear:%s", m.Key)
+	issue, err := l.find(m)
+	if err != nil {
+		return nil, err
+	}
+	if issue == nil {
+		return &Enrichment{Ref: ref, Body: "[linear issue not in local DB]", Source: "local"}, nil
+	}
+	return &Enrichment{
+		Ref:    ref,
+		Title:  fmt.Sprintf("[%s] %s", issue.Key, issue.Title),
+		Body:   jira.BuildIssueContext([]db.JiraIssue{issue.AsJiraIssue()}),
+		Source: "local",
+	}, nil
+}
+
+func (l *LinearResolver) find(m URLMatch) (*db.TrackerIssue, error) {
+	found, err := l.db.ListTrackerIssues(db.TrackerIssueFilter{Tracker: db.TrackerLinear, Key: m.Key})
+	if err != nil {
+		return nil, fmt.Errorf("querying linear issue %s: %w", m.Key, err)
+	}
+	// linearIssueRe guarantees "/issue/": the prefix before it names the workspace.
+	prefix := m.RawURL[:strings.Index(m.RawURL, "/issue/")+len("/issue/")]
+	for i := range found {
+		if strings.HasPrefix(found[i].URL, prefix) {
+			return &found[i], nil
+		}
+	}
+	if len(found) == 1 {
+		return &found[0], nil
+	}
+	return l.db.UnambiguousTrackerIssue(db.TrackerLinear, m.Key)
 }
 
 // truncateRunes returns s truncated to at most n runes, safe for multi-byte UTF-8.

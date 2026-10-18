@@ -397,6 +397,14 @@ func runTargetsList(cmd *cobra.Command, _ []string) error {
 				line += fmt.Sprintf("  [%s]", item.SourceID)
 			}
 		}
+		if item.SourceType == db.TrackerLinear && item.SourceID != "" {
+			issue, err := database.UnambiguousTrackerIssue(db.TrackerLinear, item.SourceID)
+			if err == nil && issue != nil {
+				line += "  " + jira.FormatJiraBadge(issue.AsJiraIssue())
+			} else {
+				line += fmt.Sprintf("  [%s]", item.SourceID)
+			}
+		}
 
 		if item.Level != "" && item.Level != "day" {
 			line += fmt.Sprintf("  (%s)", item.Level)
