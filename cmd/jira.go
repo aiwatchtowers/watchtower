@@ -618,6 +618,47 @@ func enableJiraPhase() error {
 	return writeConfigAtomic(v, flagConfig)
 }
 
+// jiraLogin is jira.Login; a var so tests can script the OAuth outcome.
+var jiraLogin = jira.Login
+
+// jiraConfluenceNotEnabled is what `jira add --with-confluence` prints when
+// the grant came back without the Confluence scopes (#573).
+const jiraConfluenceNotEnabled = "Jira connected; Confluence isn't enabled for this Atlassian app."
+
+// jiraAddLogin is `jira add`'s consent (#573): with --with-confluence, a
+// refusal of the wider scope set (Atlassian's invalid_scope — an app without
+// the Confluence API) is retried once with the Jira scopes only, so asking
+// for Confluence never costs a Jira connect. The retry opens the browser a
+// second time; any other failure is returned as is.
+func jiraAddLogin(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, opts jira.LoginOptions) (*jira.OAuthToken, error) {
+	token, err := jiraLogin(ctx, cfg, out, opts)
+	if err == nil || !opts.WithConfluence || !errors.Is(err, jira.ErrScopeRefused) {
+		return token, err
+	}
+	fmt.Fprintln(out, jiraOnlyRetryMarker+" Atlassian refused the Confluence access; connecting Jira only…")
+	opts.WithConfluence, opts.WithConfluenceWrite = false, false
+	return jiraLogin(ctx, cfg, out, opts)
+}
+
+// Stable markers the Desktop's connect sheet reads (#573, dual path:
+// WatchtowerCore `ConfluenceConnectStep`): the stdout token of the Jira-only
+// retry, and `jira add`'s exit code when nobody completed the consent in
+// time (an Atlassian error page that never redirects back looks like that).
+const (
+	jiraOnlyRetryMarker       = "[jira-only-retry]"
+	jiraLoginTimedOutExitCode = 75
+)
+
+// jiraAddLoginError wraps a failed consent; a login timeout exits with
+// jiraLoginTimedOutExitCode so the Desktop can tell it from other failures.
+func jiraAddLoginError(err error) error {
+	wrapped := fmt.Errorf("jira login: %w", err)
+	if errors.Is(err, oauthpage.ErrLoginTimedOut) {
+		return &exitCodeError{code: jiraLoginTimedOutExitCode, err: wrapped}
+	}
+	return wrapped
+}
+
 func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
@@ -637,10 +678,13 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 
 	opts := jiraLoginOptionsFromFlags(cmd)
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
+	token, err := jiraAddLogin(cmd.Context(), jiraCfg, out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
-		return fmt.Errorf("jira login: %w", err)
+		return jiraAddLoginError(err)
+	}
+	if opts.WithConfluence && !jira.HasConfluenceScopes(token) {
+		fmt.Fprintln(out, jiraConfluenceNotEnabled)
 	}
 
 	accountID, err := database.CreateJiraAccount(db.JiraAccount{Label: label})
