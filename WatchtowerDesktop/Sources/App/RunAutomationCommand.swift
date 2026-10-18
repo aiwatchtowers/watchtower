@@ -14,15 +14,15 @@ enum RunAutomationCommand {
         case runAutomationPalette, unavailable
     }
 
-    /// The menu item is shown only while the `automations` feature is on
-    /// and the quick-run center exists (the database is open).
-    static func isAvailable(featureEnabled: Bool, hasCenter: Bool) -> Bool {
-        featureEnabled && hasCenter
+    /// The menu item is shown only while the quick-run center exists
+    /// (the database is open).
+    static func isAvailable(hasCenter: Bool) -> Bool {
+        hasCenter
     }
 
     /// What the shortcut does. `selected` is ignored on purpose: the answer
     /// is the same on every tab, which is what the tests pin.
-    static func target(featureEnabled: Bool, hasCenter: Bool, selected _: SidebarDestination?) -> Target {
-        isAvailable(featureEnabled: featureEnabled, hasCenter: hasCenter) ? .runAutomationPalette : .unavailable
+    static func target(hasCenter: Bool, selected _: SidebarDestination?) -> Target {
+        isAvailable(hasCenter: hasCenter) ? .runAutomationPalette : .unavailable
     }
 }

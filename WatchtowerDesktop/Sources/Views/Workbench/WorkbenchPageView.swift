@@ -161,9 +161,7 @@ struct WorkbenchPageView: View {
 
     private func automationButtons(_ project: Workbench) -> WorkbenchAutomationButtons? {
         guard let automations = appState.automationsViewModel else { return nil }
-        return WorkbenchAutomationButtons(
-            project: project, vm: automations, featureEnabled: appState.isAutomationsFeatureEnabled
-        ) { [appState] id, runID in appState.openAutomationRun(automationID: id, runID: runID) }
+        return WorkbenchAutomationButtons(project: project, vm: automations) { [appState] id, runID in appState.openAutomationRun(automationID: id, runID: runID) }
     }
 
     private func confirmDelete() {

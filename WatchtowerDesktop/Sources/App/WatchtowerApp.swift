@@ -463,8 +463,7 @@ struct WatchtowerApp: App {
             // Spec §12.7, owner ruling 2026-10-15: its own key equivalent,
             // the same on every tab and window (⌘K stays Go to… / Search Chats).
             CommandGroup(after: .newItem) {
-                if RunAutomationCommand.isAvailable(featureEnabled: appState.isAutomationsFeatureEnabled,
-                                                    hasCenter: appState.quickRunCenter != nil) {
+                if RunAutomationCommand.isAvailable(hasCenter: appState.quickRunCenter != nil) {
                     Button(RunAutomationCommand.title) { appState.showRunAutomationPalette() }
                         .keyboardShortcut(KeyEquivalent(RunAutomationCommand.key),
                                           modifiers: RunAutomationCommand.modifiers)

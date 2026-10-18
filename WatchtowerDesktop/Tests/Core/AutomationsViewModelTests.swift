@@ -647,7 +647,7 @@ final class AutomationsViewModelTests: XCTestCase {
         let vm = makeViewModel { await sleeper.sleep($0) }
         let notifier = CountingNotifier()
         let center = QuickRunCenter(dbPool: pool, viewModel: vm, cli: AutomationsCLI(runner: runner),
-                                    notifier: notifier) { true }
+                                    notifier: notifier)
         center.reload()
         let row = try XCTUnwrap(center.rows.first { $0.id == id })
         let outcome = await center.activate(row, origin: .palette)

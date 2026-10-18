@@ -127,7 +127,6 @@ extension SidebarDestination {
         case .dayPlan: ["day-plan"]
         case .tracks: ["tracks"]
         case .people: ["people-cards"]
-        case .automations: ["automations"]
         default: nil
         }
     }

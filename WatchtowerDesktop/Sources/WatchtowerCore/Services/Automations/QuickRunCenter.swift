@@ -63,8 +63,6 @@ package final class QuickRunCenter {
         package let origin: Origin
     }
 
-    nonisolated package static let featureOffMessage = "Automations are turned off in Settings → Features"
-
     package private(set) var rows: [QuickRunRow] = []
     /// The `confirm: true` recipe whose "Run “<name>”?" sheet is up.
     package private(set) var pendingConfirm: QuickRunRow?
@@ -83,21 +81,18 @@ package final class QuickRunCenter {
     @ObservationIgnored private let viewModel: AutomationsViewModel
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let notifier: AutomationRunNotifying
-    @ObservationIgnored private let isFeatureEnabled: () -> Bool
 
     /// Registers itself as `viewModel`'s run watcher (held weakly there).
     package init(
         dbPool: DatabasePool,
         viewModel: AutomationsViewModel,
         cli: AutomationsCLI,
-        notifier: AutomationRunNotifying,
-        isFeatureEnabled: @escaping () -> Bool
+        notifier: AutomationRunNotifying
     ) {
         self.dbPool = dbPool
         self.viewModel = viewModel
         self.cli = cli
         self.notifier = notifier
-        self.isFeatureEnabled = isFeatureEnabled
         viewModel.runWatcher = self
     }
 
@@ -127,7 +122,6 @@ package final class QuickRunCenter {
     /// one only after `confirmRun()`; a dimmed row opens its confirmation
     /// sheet or its card instead.
     package func activate(_ row: QuickRunRow, origin: Origin) async -> Outcome {
-        guard isFeatureEnabled() else { return refuse(Self.featureOffMessage) }
         switch row.state {
         case .runnable:
             guard !row.asksFirst else {
@@ -172,7 +166,6 @@ package final class QuickRunCenter {
     }
 
     private func start(_ row: QuickRunRow, origin: Origin) async -> Outcome {
-        guard isFeatureEnabled() else { return refuse(Self.featureOffMessage) }
         lastError = nil
         do {
             let result = try await cli.run(row.id)

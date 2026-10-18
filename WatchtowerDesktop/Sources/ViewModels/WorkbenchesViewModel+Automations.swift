@@ -28,9 +28,9 @@ extension WorkbenchesViewModel {
         }
     }
 
-    /// The feature came on (or its state loaded, on): the rescans asked
+    /// The Feature Manager state loaded successfully: the rescans asked
     /// for meanwhile run now, once each.
-    func automationsFeatureTurnedOn() {
+    func automationsBecameReady() {
         let deferred = automationRescansDeferred
         automationRescansDeferred = []
         for workbenchID in deferred.sorted() {
@@ -39,13 +39,13 @@ extension WorkbenchesViewModel {
     }
 
     /// Best effort, logged: a failed rescan leaves the index as it was.
-    /// Only while the feature is on — asked for before, it waits for
-    /// `automationsFeatureTurnedOn`; one at a time per workbench — an ask
+    /// Only once the features list has loaded — asked for before, it waits for
+    /// `automationsBecameReady`; one at a time per workbench — an ask
     /// while one runs becomes one more rescan after it, which sees a change
     /// the running one may have missed.
     private func startAutomationRescan(workbenchID: Int64) {
         guard let rescanAutomations else { return }
-        guard isAutomationsFeatureOn() else {
+        guard automationsReady() else {
             automationRescansDeferred.insert(workbenchID)
             return
         }

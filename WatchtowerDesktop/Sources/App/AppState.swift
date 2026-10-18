@@ -1372,9 +1372,7 @@ final class AppState {
         vm.start()
         automationsViewModel = vm
         let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
-                                      notifier: notifier) { [weak self] in
-            self?.isAutomationsFeatureEnabled ?? false
-        }
+                                      notifier: notifier)
         quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }
         quickRunCenter = quickRun
         automationEditorCenter = AutomationEditorCenter(
@@ -1813,7 +1811,7 @@ final class AppState {
         )
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
-        vm.isAutomationsFeatureOn = { [weak self] in self?.isAutomationsFeatureLoadedOn ?? false }
+        vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
             codeQuestionCenter?.workbenchRemoved($0)

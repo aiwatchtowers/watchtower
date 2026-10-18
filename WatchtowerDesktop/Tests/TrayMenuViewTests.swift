@@ -302,8 +302,8 @@ final class TrayMenuViewTests: XCTestCase {
     }
 
     /// The environment-wired view reads its sections from `AppState`: the
-    /// quick-run rows while the feature is on, nil (no submenu) when off.
-    func testTraySectionsFollowTheFeature() throws {
+    /// quick-run rows, nil (no submenu) before the database opens.
+    func testTraySectionsFollowTheDatabase() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let suite = "TrayMenuViewTests.\(UUID().uuidString)"
@@ -320,7 +320,5 @@ final class TrayMenuViewTests: XCTestCase {
             appState.stopSidebarCounts()
         }
         XCTAssertEqual(appState.trayRunAutomationSections(), [])
-        appState.featureVisibility.disabledFeatureIDs = ["automations"]
-        XCTAssertNil(appState.trayRunAutomationSections())
     }
 }

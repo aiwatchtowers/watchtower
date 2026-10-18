@@ -31,15 +31,11 @@ extension AppState {
         }
     }
 
-    /// The `automations` feature is on (the Feature Manager's disabled set).
-    var isAutomationsFeatureEnabled: Bool {
-        !featureVisibility.disabledFeatureIDs.contains("automations")
-    }
-
-    /// On per a Feature Manager load that succeeded — never the fail-open
-    /// empty set before one. Gates the work automations start on their own.
-    var isAutomationsFeatureLoadedOn: Bool {
-        featureVisibility.isLoaded && isAutomationsFeatureEnabled
+    /// The Feature Manager has loaded successfully — never the fail-open
+    /// empty state before one (R-P5-8). Automations are always on; this only
+    /// gates the work they start on their own (the session center, rescans).
+    var automationsReady: Bool {
+        featureVisibility.isLoaded
     }
 
     /// "Run Automation…" (⌃⌘R): the same palette whatever tab is selected.
@@ -49,8 +45,7 @@ extension AppState {
         windows: [NSWindow]? = nil,
         activate: () -> Void = ActivationPolicyDecision.becomeRegularAndActivate
     ) {
-        guard RunAutomationCommand.target(featureEnabled: isAutomationsFeatureEnabled,
-                                          hasCenter: quickRunCenter != nil,
+        guard RunAutomationCommand.target(hasCenter: quickRunCenter != nil,
                                           selected: selectedDestination) == .runAutomationPalette else { return }
         bringMainWindowForward(windows: windows, activate: activate)
         quickRunCenter?.lastError = nil
@@ -106,23 +101,23 @@ extension AppState {
         return center
     }
 
-    /// Polls while the `automations` feature is on per a successful load;
-    /// off, or before one (a failed load leaves it so), requests stay
-    /// pending (their run waits, bounded by its pause timeout). On, the
-    /// workbench rescans asked for meanwhile run too.
+    /// Polls once the features list has loaded successfully; before that
+    /// (a failed load leaves it so), requests stay pending (their run waits,
+    /// bounded by its pause timeout). Once loaded, the workbench rescans
+    /// asked for meanwhile run too.
     func syncAutomationSessionCenter() {
-        let on = isAutomationsFeatureLoadedOn
-        if on { workbenchesViewModel?.automationsFeatureTurnedOn() }
+        let ready = automationsReady
+        if ready { workbenchesViewModel?.automationsBecameReady() }
         guard let center = automationSessionCenter else { return }
-        if on { center.start() } else { center.stop() }
+        if ready { center.start() } else { center.stop() }
     }
 
     // MARK: - Tray "Run automation ▸" (spec §12.7)
 
-    /// The tray's sections: nil hides the submenu (feature off, or the
-    /// database not open yet). Reads `quickRunCenter.rows`, never the database.
+    /// The tray's sections: nil hides the submenu (the
+    /// database is not open yet). Reads `quickRunCenter.rows`, never the database.
     func trayRunAutomationSections(now: Date = Date()) -> [TrayRunAutomationMenu.Section]? {
-        guard isAutomationsFeatureEnabled, let center = quickRunCenter else { return nil }
+        guard let center = quickRunCenter else { return nil }
         return TrayRunAutomationMenu.sections(center.rows, now: now)
     }
 
