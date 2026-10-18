@@ -96,7 +96,7 @@ func maintenanceKeys(t *testing.T, path string) map[string]string {
 }
 
 func TestCompact_ShrinksSparseFixture(t *testing.T) {
-	path := sparseFixture(t, 4000)
+	path := sparseFixture(t, 400) // ~3 MB is enough to prove the shrink; 4000 rows took minutes under -race on CI
 	countBefore, sumBefore := messagesDigest(t, path)
 
 	res, err := Compact(context.Background(), path, CompactOptions{Reason: "migration:134", Version: "1.0.0"})
