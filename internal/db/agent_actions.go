@@ -32,6 +32,9 @@ type AgentAction struct {
 	// SessionToken is the chat-session process a session-applied row belongs
 	// to (claude_ai_connector_call); "" for every other row.
 	SessionToken string
+	// DismissedAt is when the owner dismissed a session call whose outcome
+	// is unknown (DismissAgentAction); "" otherwise.
+	DismissedAt string
 }
 
 // AgentActionFilter narrows ListAgentActions; zero values mean "any".
@@ -43,13 +46,13 @@ type AgentActionFilter struct {
 
 const agentActionColumns = `id, tool, external, args_json, reason, surface, conversation_id,
 	context_type, context_id, turn_id, status, trust_at_create, result_json, error,
-	created_at, decided_at, applied_at, session_token`
+	created_at, decided_at, applied_at, session_token, dismissed_at`
 
 func scanAgentAction(row interface{ Scan(dest ...any) error }) (*AgentAction, error) {
 	var a AgentAction
 	err := row.Scan(&a.ID, &a.Tool, &a.External, &a.ArgsJSON, &a.Reason, &a.Surface, &a.ConversationID,
 		&a.ContextType, &a.ContextID, &a.TurnID, &a.Status, &a.TrustAtCreate, &a.ResultJSON, &a.Error,
-		&a.CreatedAt, &a.DecidedAt, &a.AppliedAt, &a.SessionToken)
+		&a.CreatedAt, &a.DecidedAt, &a.AppliedAt, &a.SessionToken, &a.DismissedAt)
 	if err != nil {
 		return nil, err
 	}

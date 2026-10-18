@@ -550,9 +550,10 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			unknown, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool,
 				External: true, ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", Status: "executing"})
 			require.NoError(t, err)
-			_, err = database.TransitionAgentAction(unknown, []string{"executing"}, "failed", "",
+			ok, err := database.TransitionAgentAction(unknown, []string{"executing"}, "failed", "",
 				"session ended while the call ran; outcome unknown")
 			require.NoError(t, err)
+			require.True(t, ok)
 			t.Setenv(marker, "1")
 
 			_, err = runActions(t, "approve", strconv.FormatInt(pending, 10), "--json")
@@ -566,6 +567,7 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			require.Error(t, err)
 			_, err = runActions(t, "dismiss", strconv.FormatInt(unknown, 10), "--json")
 			require.Error(t, err, "only the owner dismisses an unknown outcome")
+			assert.Contains(t, err.Error(), marker)
 			var dismissedAt string
 			require.NoError(t, database.QueryRow(`SELECT dismissed_at FROM agent_actions WHERE id = ?`, unknown).
 				Scan(&dismissedAt))
@@ -741,7 +743,8 @@ func TestActions_DismissSessionCallWithUnknownOutcome(t *testing.T) {
 	var env struct {
 		OK     bool `json:"ok"`
 		Action struct {
-			Status string `json:"status"`
+			Status      string `json:"status"`
+			DismissedAt string `json:"dismissed_at"`
 		} `json:"action"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &env), out)
@@ -749,11 +752,16 @@ func TestActions_DismissSessionCallWithUnknownOutcome(t *testing.T) {
 	assert.Equal(t, "failed", env.Action.Status, "a dismiss is not a transition")
 	first := dismissedAt(id)
 	assert.NotEmpty(t, first)
+	assert.Equal(t, first, env.Action.DismissedAt)
 	_, err = runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
 	require.NoError(t, err, "a second dismiss is a no-op")
 	assert.Equal(t, first, dismissedAt(id))
 
+	running, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool, External: true,
+		ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", ConversationID: 7, Status: "executing"})
+	require.NoError(t, err)
 	for _, other := range []int64{
+		running, // not failed yet: a later expiry must land it undismissed
 		insertFailed(tools.ClaudeAIConnectorCallTool, "session ended before approval"),
 		insertFailed(tools.ClaudeAIConnectorCallTool, "stopped"),
 		insertFailed("send_slack_message", unknown),

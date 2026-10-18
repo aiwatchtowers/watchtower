@@ -451,3 +451,42 @@ func TestRegistry_ListNeverOffersSessionCalls(t *testing.T) {
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&rows))
 	assert.Zero(t, rows)
 }
+
+// DismissSessionCall (ask #342) stamps dismissed_at on an expired call whose
+// outcome is unknown and only there: the status never moves, a second
+// dismiss is a no-op, and an open, not-sent or other-tool row is refused.
+func TestSessionCall_DismissOnlyAnUnknownOutcome(t *testing.T) {
+	reg, database := newSessionRegistry(t)
+	const conv = int64(7)
+	running := proposeConnectorCall(t, reg, conv)
+	approveRow(t, database, running)
+	_, ok, err := reg.ClaimSessionCall(running, sessionToken)
+	require.NoError(t, err)
+	require.True(t, ok)
+	notSent := proposeConnectorCall(t, reg, conv)
+	open := proposeConnectorCall(t, reg, conv+1)
+
+	require.ErrorIs(t, reg.DismissSessionCall(running), ErrBadTransition, "still executing")
+	_, err = reg.ExpireSessionCalls(conv, time.Now().Add(-20*time.Minute))
+	require.NoError(t, err)
+
+	require.NoError(t, reg.DismissSessionCall(running))
+	row, err := database.GetAgentAction(running)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Equal(t, sessionEndedWhileRunning, row.Error)
+	first := row.DismissedAt
+	assert.NotEmpty(t, first)
+	require.NoError(t, reg.DismissSessionCall(running), "a second dismiss is a no-op")
+	row, err = database.GetAgentAction(running)
+	require.NoError(t, err)
+	assert.Equal(t, first, row.DismissedAt)
+
+	for _, id := range []int64{notSent, open} {
+		require.ErrorIs(t, reg.DismissSessionCall(id), ErrBadTransition, id)
+		row, err := database.GetAgentAction(id)
+		require.NoError(t, err)
+		assert.Empty(t, row.DismissedAt, id)
+	}
+	assert.ErrorIs(t, reg.DismissSessionCall(999999), ErrNotFound)
+}

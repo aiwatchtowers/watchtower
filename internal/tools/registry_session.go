@@ -200,7 +200,7 @@ func (r *Registry) ExpireSessionCalls(conversationID int64, staleBefore time.Tim
 func (r *Registry) DismissSessionCall(id int64) error {
 	row, err := r.db.GetAgentAction(id)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading action #%d: %w", id, err)
 	}
 	if row == nil {
 		return ErrNotFound
@@ -208,8 +208,10 @@ func (r *Registry) DismissSessionCall(id int64) error {
 	if !r.sessionApplied(row.Tool) || row.Status != "failed" || row.Error != sessionEndedWhileRunning {
 		return fmt.Errorf("%w: #%d is not a chat-session call whose outcome is unknown", ErrBadTransition, id)
 	}
-	_, err = r.db.DismissAgentAction(id, sessionEndedWhileRunning)
-	return err
+	if _, err := r.db.DismissAgentAction(id, sessionEndedWhileRunning); err != nil {
+		return fmt.Errorf("dismissing action #%d: %w", id, err)
+	}
+	return nil
 }
 
 // sessionApplied reports whether name is a registered AppliedBySession tool.

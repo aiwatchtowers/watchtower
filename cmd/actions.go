@@ -107,13 +107,14 @@ type actionJSON struct {
 	CreatedAt      string          `json:"created_at"`
 	DecidedAt      string          `json:"decided_at"`
 	AppliedAt      string          `json:"applied_at"`
+	DismissedAt    string          `json:"dismissed_at"`
 }
 
 func toActionJSON(a db.AgentAction) actionJSON {
 	out := actionJSON{ID: a.ID, Tool: a.Tool, External: a.External, Status: a.Status,
 		Args: json.RawMessage(a.ArgsJSON), Reason: a.Reason, Surface: a.Surface, ConversationID: a.ConversationID,
 		TurnID: a.TurnID, Result: json.RawMessage("null"), Error: a.Error,
-		CreatedAt: a.CreatedAt, DecidedAt: a.DecidedAt, AppliedAt: a.AppliedAt}
+		CreatedAt: a.CreatedAt, DecidedAt: a.DecidedAt, AppliedAt: a.AppliedAt, DismissedAt: a.DismissedAt}
 	if a.ResultJSON != "" {
 		out.Result = json.RawMessage(a.ResultJSON)
 	}
@@ -459,11 +460,11 @@ func runActionsDismiss(cmd *cobra.Command, args []string) error {
 		if errors.Is(err, tools.ErrNotFound) {
 			return fmt.Errorf("no action #%d", id)
 		}
-		return err
+		return fmt.Errorf("dismissing action #%d: %w", id, err)
 	}
 	row, err := database.GetAgentAction(id)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading action #%d: %w", id, err)
 	}
 	if row == nil {
 		return fmt.Errorf("no action #%d", id)
