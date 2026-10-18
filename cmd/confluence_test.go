@@ -33,6 +33,12 @@ type fakeConfluenceFetcher struct {
 	failKeys   map[string]bool  // spaces whose delta listing fails
 	onChanged  func(key string) // called on every delta listing, before failKeys
 	logger     *log.Logger      // set by SetLogger, nil until wired
+	recent     []string         // RecentSpaceKeys' answer
+	recentErr  error            // RecentSpaceKeys' error
+}
+
+func (f *fakeConfluenceFetcher) RecentSpaceKeys(context.Context) ([]string, error) {
+	return f.recent, f.recentErr
 }
 
 // SetLogger records the logger it was given (nil until a caller wires one),
@@ -130,6 +136,7 @@ func runConfluence(t *testing.T, daemonPID int, args ...string) (string, error) 
 	err := rootCmd.Execute()
 	rootCmd.SetArgs(nil)
 	confluenceFlagAccount, confluenceSpacesJSON, confluenceStatusJSON, confluenceSyncForce, confluenceAccessJSON = 0, false, false, false, false
+	confluenceSelectRecent = false
 	confluenceCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 	for _, c := range confluenceCmd.Commands() {
 		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
@@ -172,6 +179,60 @@ func TestConfluenceSelect_UnknownKeyWritesNothing(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "NOPE")
 	assert.Empty(t, selectedSpaceKeys(t, env.db), "a partly-unknown selection must write nothing")
+}
+
+// TestConfluenceSelectRecent_SelectsListedRecentSpaces (#573): --recent
+// selects the live spaces the owner wrote in or viewed, skipping a key the
+// space listing lacks, and is idempotent.
+func TestConfluenceSelectRecent_SelectsListedRecentSpaces(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	env.fetcher.recent = []string{"OPS", "GONE"}
+
+	out, err := runConfluence(t, 0, "select", "--recent")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Selected OPS (Operations)")
+	assert.Equal(t, []string{"OPS"}, selectedSpaceKeys(t, env.db))
+
+	_, err = runConfluence(t, 0, "select", "--recent")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"OPS"}, selectedSpaceKeys(t, env.db), "a second run adds no duplicate")
+}
+
+func TestConfluenceSelectRecent_NoneSelectsNothing(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+
+	out, err := runConfluence(t, 0, "select", "--recent")
+	require.NoError(t, err)
+	assert.Contains(t, out, "No space you wrote in or viewed lately")
+	assert.Empty(t, selectedSpaceKeys(t, env.db))
+}
+
+func TestConfluenceSelectRecent_ErrorsAndArgs(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	env.fetcher.recentErr = extsync.ErrNeedsConsent
+
+	_, err := runConfluence(t, 0, "select", "--recent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--with-confluence")
+
+	_, err = runConfluence(t, 0, "select", "--recent", "ENG")
+	require.Error(t, err, "--recent takes no keys")
+	_, err = runConfluence(t, 0, "select")
+	require.Error(t, err, "plain select still needs a key")
+	assert.Empty(t, selectedSpaceKeys(t, env.db))
+}
+
+// TestConfluenceSelectRecent_NoGrantRefused: without the Confluence scopes
+// (the Confluence box was unchecked, or the app lacks the API) --recent
+// fails with the re-consent hint before any listing.
+func TestConfluenceSelectRecent_NoGrantRefused(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.JiraScopes)
+	env.fetcher.recent = []string{"ENG"}
+
+	_, err := runConfluence(t, 0, "select", "--recent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--with-confluence")
+	assert.Empty(t, selectedSpaceKeys(t, env.db))
 }
 
 func TestConfluenceUnselect_RemovesSourceAndDocuments(t *testing.T) {

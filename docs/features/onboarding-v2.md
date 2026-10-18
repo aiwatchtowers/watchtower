@@ -81,7 +81,18 @@ browser marks the step closed, and the connect then applies its policy itself
 when it succeeds (reset at each connect). No foreground sync: the daemon path syncs and starts
 the backfill. Skip leaves
 Jira with no board, which readiness reports as `needsSource(.jiraBoards)`
-(first-run.md). Nothing is preselected. The Google card carries no scopes: connecting a
+(first-run.md). Nothing is preselected. **Confluence at connect (#573):** the
+form's **Also connect Confluence** checkbox (on by default) adds
+`--with-confluence` to `jira add` (`JiraAccountsViewModel.addArgs`), so one
+consent covers both. With it, the board step also runs `confluence --account
+N select --recent` once for each site the connect added
+(`ConfluenceConnectStep.addedSites` — no every-site fallback when the
+before-read failed) and shows one caption line naming the selected spaces,
+"no space …", or the failure (`ConfluenceConnectStep.summary`), each
+pointing at Settings → Connections → Jira. It is a line, not a step: Done and
+Skip do not wait for it. The daemon picks the new `ext_sources` rows up on
+its next cycle. A failed connect with the box on adds a hint to untick it
+(an Atlassian app without the Confluence API refuses the wider scopes). The Google card carries no scopes: connecting a
 Google account means mail and calendar both, whatever the goals (owner
 decision 2026-10-14, #740), so its sheet opens with Calendar and Gmail
 checked like Settings' Add Google sheet, and either can be unchecked there.

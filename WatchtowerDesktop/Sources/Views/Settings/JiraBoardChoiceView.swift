@@ -13,13 +13,23 @@ import WatchtowerCore
 /// daemon restart here: the sheet's `JiraAccountsViewModel.finishBoardStep`
 /// wires the daemon once, and the daemon syncs the chosen boards (and starts
 /// the site's history backfill) on its own path.
+///
+/// With `connectConfluence` (#573, the connect asked for Confluence too) the
+/// step also selects the new site's recent Confluence spaces once, in the
+/// background, and shows one line naming them — not a step of its own.
 struct JiraBoardChoiceView: View {
     @Environment(AppState.self) private var appState
 
     /// Account ids read before the connect; nil lists every enabled site.
     let accountIDsBefore: Set<Int>?
+    /// The connect also requested Confluence (`--with-confluence`).
+    var connectConfluence = false
     /// Done (after its writes) or Skip.
     let onClose: () -> Void
+
+    /// The Confluence line (`ConfluenceConnectStep.summary`); nil while the
+    /// selection runs or when Confluence was not asked for.
+    @State private var confluenceLine: String?
 
     @State private var sites: [JiraAccount] = []
     @State private var boards: [JiraBoard] = []
@@ -43,6 +53,13 @@ struct JiraBoardChoiceView: View {
             list
                 .frame(maxHeight: .infinity)
 
+            if let confluenceLine {
+                Text(confluenceLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
             if let error {
                 Text(error)
                     .font(.caption)
@@ -64,6 +81,44 @@ struct JiraBoardChoiceView: View {
             }
         }
         .task { await load() }
+        .task {
+            if connectConfluence { await selectConfluenceSpaces() }
+        }
+    }
+
+    /// Selects the added site's recent Confluence spaces (once per sheet),
+    /// then names what is selected. The CLI checks the grant, so a consent
+    /// that left Confluence out reports its hint here.
+    private func selectConfluenceSpaces() async {
+        guard let pool = appState.databaseManager?.dbPool, let cliPath = Constants.findCLIPath() else {
+            confluenceLine = ConfluenceConnectStep.summary(spaceNames: [], failures: ["Watchtower CLI not found"])
+            return
+        }
+        do {
+            let accounts = try await pool.read { db in try JiraAccountQueries.fetchAll(db) }
+            let added = ConfluenceConnectStep.addedSites(accounts, before: accountIDsBefore)
+            guard !added.isEmpty else {
+                confluenceLine = ConfluenceConnectStep.summary(siteFound: false, spaceNames: [], failures: [])
+                return
+            }
+            var failures: [String] = []
+            for site in added {
+                if let failure = await JiraBoardsCLI.run(
+                    cliPath: cliPath,
+                    arguments: ConfluenceConnectStep.selectArgs(accountID: site.id),
+                    fallbackMessage: "failed to choose spaces"
+                ) {
+                    failures.append(failure)
+                }
+            }
+            let names = try await pool.read { db in
+                try added.flatMap { try ExtSourceQueries.fetchForJiraAccount(db, accountID: Int64($0.id)) }
+                    .map(\.containerName)
+            }
+            confluenceLine = ConfluenceConnectStep.summary(spaceNames: names, failures: failures)
+        } catch {
+            confluenceLine = ConfluenceConnectStep.summary(spaceNames: [], failures: [error.localizedDescription])
+        }
     }
 
     @ViewBuilder

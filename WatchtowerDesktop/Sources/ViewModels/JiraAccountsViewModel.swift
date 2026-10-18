@@ -86,10 +86,17 @@ final class JiraAccountsViewModel {
     /// prompt: a grant that reaches several Atlassian sites cannot be resolved
     /// from a spawned process, so the sheet lets the user name the site up
     /// front.
-    static func addArgs(site: String = "") -> [String] {
+    ///
+    /// `withConfluence` adds `--with-confluence` (#573): the same Atlassian
+    /// consent also grants Confluence read access, so the site's Confluence
+    /// needs no second sign-in.
+    static func addArgs(site: String = "", withConfluence: Bool = false) -> [String] {
         var args = ["jira", "add", "--app-return"]
         if !site.isEmpty {
             args.append(contentsOf: ["--site", site])
+        }
+        if withConfluence {
+            args.append("--with-confluence")
         }
         return args
     }
@@ -97,8 +104,14 @@ final class JiraAccountsViewModel {
     /// Connects a new Atlassian site via `watchtower jira add`. The OAuth
     /// consent happens in the loopback browser; the detached Process is held in
     /// `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(site: String = "", daemonPolicy: DaemonRestartPolicy = .restart) async {
-        await runAuthFlow(args: Self.addArgs(site: site), failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
+    func addAccount(
+        site: String = "", withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy = .restart
+    ) async {
+        await runAuthFlow(
+            args: Self.addArgs(site: site, withConfluence: withConfluence),
+            failurePrefix: "Connect failed",
+            daemonPolicy: daemonPolicy
+        )
     }
 
     /// The add sheet's connect (#572): `addAccount` with the daemon restart
@@ -109,12 +122,12 @@ final class JiraAccountsViewModel {
     /// the connect, so the board step can list the site it added (nil when
     /// that read fails).
     func addAccountHoldingRestart(
-        site: String = "", daemonPolicy: DaemonRestartPolicy
+        site: String = "", withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy
     ) async -> (connected: Bool, accountIDsBefore: Set<Int>?) {
         boardStepClosed = false
         heldRestart = nil
         let before = try? await dbPool.read { db in Set(try JiraAccountQueries.fetchAll(db).map(\.id)) }
-        await addAccount(site: site, daemonPolicy: .deferred)
+        await addAccount(site: site, withConfluence: withConfluence, daemonPolicy: .deferred)
         guard error == nil, !lastAuthFlowCancelled else { return (false, before) }
         if boardStepClosed {
             daemonRestartTask = daemonPolicy.apply(using: daemon)

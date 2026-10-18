@@ -71,6 +71,18 @@ final class JiraAccountsViewModelTests: XCTestCase {
         XCTAssertEqual(args, ["jira", "add", "--app-return", "--site", "acme.atlassian.net"])
     }
 
+    // #573: "Also connect Confluence" widens the same consent.
+    func testAddArgsWithConfluence() {
+        XCTAssertEqual(
+            JiraAccountsViewModel.addArgs(withConfluence: true),
+            ["jira", "add", "--app-return", "--with-confluence"]
+        )
+        XCTAssertEqual(
+            JiraAccountsViewModel.addArgs(site: "acme.atlassian.net", withConfluence: true),
+            ["jira", "add", "--app-return", "--site", "acme.atlassian.net", "--with-confluence"]
+        )
+    }
+
     // MARK: - removeArgs (pure)
 
     func testRemoveArgs() {

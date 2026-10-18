@@ -36,7 +36,7 @@ var confluenceCmd = &cobra.Command{
 }
 
 var confluenceSpacesCmd = &cobra.Command{Use: "spaces", Short: "List the site's spaces and which are selected", RunE: runConfluenceSpaces}
-var confluenceSelectCmd = &cobra.Command{Use: "select KEY...", Short: "Select spaces to sync", Args: cobra.MinimumNArgs(1), RunE: runConfluenceSelect}
+var confluenceSelectCmd = &cobra.Command{Use: "select KEY... | --recent", Short: "Select spaces to sync", Args: confluenceSelectArgs, RunE: runConfluenceSelect}
 var confluenceUnselectCmd = &cobra.Command{Use: "unselect KEY...", Short: "Stop syncing spaces and drop their synced content", Args: cobra.MinimumNArgs(1), RunE: runConfluenceUnselect}
 var confluenceStatusCmd = &cobra.Command{Use: "status", Short: "Show every selected space's sync state", RunE: runConfluenceStatus}
 var confluenceSyncCmd = &cobra.Command{Use: "sync", Short: "Sync the account's selected spaces now", RunE: runConfluenceSync}
@@ -48,6 +48,8 @@ var (
 	confluenceStatusJSON  bool
 	confluenceSyncForce   bool
 	confluenceAccessJSON  bool
+	// confluenceSelectRecent: `select --recent` (#573).
+	confluenceSelectRecent bool
 )
 
 func init() {
@@ -59,6 +61,8 @@ func init() {
 	confluenceSpacesCmd.Flags().BoolVar(&confluenceSpacesJSON, "json", false, "JSON output")
 	confluenceStatusCmd.Flags().BoolVar(&confluenceStatusJSON, "json", false, "JSON output")
 	confluenceSyncCmd.Flags().BoolVar(&confluenceSyncForce, "force", false, "sync even while the sync daemon is running")
+	confluenceSelectCmd.Flags().BoolVar(&confluenceSelectRecent, "recent", false,
+		"select the spaces you wrote in or viewed in the last 90 days instead of naming keys")
 }
 
 // newConfluenceFetcher builds the fetcher for one account's client. A
@@ -248,6 +252,14 @@ func runConfluenceSpaces(cmd *cobra.Command, _ []string) error {
 	return w.Flush()
 }
 
+// confluenceSelectArgs: space keys, or --recent with none.
+func confluenceSelectArgs(cmd *cobra.Command, args []string) error {
+	if confluenceSelectRecent {
+		return cobra.NoArgs(cmd, args)
+	}
+	return cobra.MinimumNArgs(1)(cmd, args)
+}
+
 func runConfluenceSelect(cmd *cobra.Command, args []string) error {
 	s, err := openConfluenceSession()
 	if err != nil {
@@ -258,11 +270,20 @@ func runConfluenceSelect(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	picked, err := resolveSpaceKeys(cs, args)
+	out := cmd.OutOrStdout()
+	var picked []extsync.Container
+	if confluenceSelectRecent {
+		picked, err = s.recentContainers(cmd, cs)
+		if err == nil && len(picked) == 0 {
+			fmt.Fprintln(out, "No space you wrote in or viewed lately; pick spaces with 'watchtower confluence select KEY'.")
+			return nil
+		}
+	} else {
+		picked, err = resolveSpaceKeys(cs, args)
+	}
 	if err != nil {
 		return err
 	}
-	out := cmd.OutOrStdout()
 	for _, c := range picked {
 		if _, err := s.db.CreateExtSource(providerConfluence, s.account.ID, c.Key, c.ExtID, c.Name); err != nil {
 			return fmt.Errorf("selecting %s: %w", c.Key, err)
@@ -271,6 +292,44 @@ func runConfluenceSelect(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(out, "The sync daemon picks it up on its next cycle; 'watchtower confluence sync' runs it now.")
 	return nil
+}
+
+// recentSpaceFinder is the *confluence.Fetcher method `select --recent`
+// uses; an interface so tests can fake it.
+type recentSpaceFinder interface {
+	RecentSpaceKeys(ctx context.Context) ([]string, error)
+}
+
+// recentContainers is `select --recent`'s choice (#573): the live spaces
+// holding content the owner wrote in or viewed lately, most recent first.
+// A key the search names but the space listing lacks is skipped (the
+// listing is the truth, as for named keys).
+func (s *confluenceSession) recentContainers(cmd *cobra.Command, cs []extsync.Container) ([]extsync.Container, error) {
+	finder, ok := s.fetcher.(recentSpaceFinder)
+	if !ok {
+		return nil, errors.New("this Confluence fetcher cannot list recent spaces")
+	}
+	keys, err := finder.RecentSpaceKeys(cmd.Context())
+	switch {
+	case errors.Is(err, extsync.ErrNeedsConsent):
+		return nil, errConfluenceConsent(s.account.ID)
+	case errors.Is(err, extsync.ErrAuthRevoked):
+		revoked, _ := confluenceHints(s.account.ID)
+		return nil, errors.New(revoked)
+	case err != nil:
+		return nil, err
+	}
+	byKey := make(map[string]extsync.Container, len(cs))
+	for _, c := range cs {
+		byKey[c.Key] = c
+	}
+	var picked []extsync.Container
+	for _, k := range keys {
+		if c, ok := byKey[k]; ok {
+			picked = append(picked, c)
+		}
+	}
+	return picked, nil
 }
 
 // resolveSpaceKeys maps every key to a live container; any unknown key fails

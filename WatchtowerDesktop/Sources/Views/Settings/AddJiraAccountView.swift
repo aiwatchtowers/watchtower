@@ -41,11 +41,19 @@ struct AddJiraAccountView: View {
     @State private var accountIDsBefore: Set<Int>?
     /// Set on the click, before any await, so a double click starts one connect.
     @State private var starting = false
+    /// "Also connect Confluence" (#573): the same consent grants Confluence,
+    /// and the board step selects the spaces the owner works in. On by
+    /// default; unchecking it keeps the connect Jira-only.
+    @State private var withConfluence = true
+    /// What the finished connect asked for (the box can change afterwards).
+    @State private var connectedConfluence = false
 
     var body: some View {
         Group {
             if choosingBoards {
-                JiraBoardChoiceView(accountIDsBefore: accountIDsBefore) { dismiss() }
+                JiraBoardChoiceView(
+                    accountIDsBefore: accountIDsBefore, connectConfluence: connectedConfluence
+                ) { dismiss() }
                     .padding(20)
                     .frame(width: 420, height: 420)
             } else {
@@ -79,6 +87,11 @@ struct AddJiraAccountView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Toggle("Also connect Confluence", isOn: $withConfluence)
+                .toggleStyle(.checkbox)
+                .disabled(vm?.isConnecting == true || starting)
+                .help("The same sign-in also grants Confluence. The spaces you wrote in or viewed lately become searchable.")
+
             Spacer()
 
             HStack {
@@ -107,19 +120,29 @@ struct AddJiraAccountView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
+                // An Atlassian app without the Confluence API refuses the
+                // wider scope set, so a failed connect names the way out.
+                if connectedConfluence {
+                    Text("Refused by Atlassian? Uncheck Also connect Confluence and try again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(20)
-        .frame(width: 360, height: 220)
+        .frame(width: 360, height: 300)
     }
 
     private func connect() {
         guard let vm, !starting else { return }
         starting = true
         cancelled = false
+        connectedConfluence = withConfluence
         let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
-            let result = await vm.addAccountHoldingRestart(site: trimmedSite, daemonPolicy: daemonPolicy)
+            let result = await vm.addAccountHoldingRestart(
+                site: trimmedSite, withConfluence: connectedConfluence, daemonPolicy: daemonPolicy
+            )
             starting = false
             accountIDsBefore = result.accountIDsBefore
             // A user Cancel clears error (SIGTERM/SIGKILL branch) and returns
