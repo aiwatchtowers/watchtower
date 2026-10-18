@@ -168,6 +168,11 @@ final class TargetsViewModel {
         }
     }
 
+    /// `perform` for a write with no value: whether it landed.
+    private func write(_ what: String, _ body: @escaping @Sendable (Database) throws -> Void) async -> Bool {
+        await perform(what, body) != nil
+    }
+
     @discardableResult
     func markDone(_ target: Target) async -> Bool {
         await updateStatus(target, to: "done")
@@ -280,22 +285,22 @@ final class TargetsViewModel {
               destination >= 0, destination <= shown.count else { return false }
         let texts = shown.map(\.text)
         let id = target.id
-        return await perform("update sub-items") { db -> Void in
+        return await write("update sub-items") { db in
             var items = try Self.freshSubItems(db, id: id)
             // A reorder is of the list as shown: one changed since (another
             // window, the agent) is refused rather than shuffled.
             guard items.map(\.text) == texts else { throw TargetSubItemsChangedError() }
             items.move(fromOffsets: source, toOffset: destination)
             try TargetQueries.updateSubItems(db, id: id, subItems: items)
-        } != nil
+        }
     }
 
     @discardableResult
     func replaceSubItems(_ target: Target, items: [TargetSubItem]) async -> Bool {
         let id = target.id
-        return await perform("update sub-items") { db -> Void in
+        return await write("update sub-items") { db in
             try TargetQueries.updateSubItems(db, id: id, subItems: items)
-        } != nil
+        }
     }
 
     @discardableResult
@@ -318,14 +323,14 @@ final class TargetsViewModel {
     ) async -> Bool {
         let id = target.id
         let shownText = shown?.text
-        return await perform("update sub-items") { db -> Void in
+        return await write("update sub-items") { db in
             var items = try Self.freshSubItems(db, id: id)
             if let shownText {
                 guard index < items.count, items[index].text == shownText else { throw TargetSubItemsChangedError() }
             }
             change(&items)
             try TargetQueries.updateSubItems(db, id: id, subItems: items)
-        } != nil
+        }
     }
 
     nonisolated private static func freshSubItems(_ db: Database, id: Int) throws -> [TargetSubItem] {
@@ -372,12 +377,12 @@ final class TargetsViewModel {
         _ change: @escaping @Sendable (inout [TargetNote]) throws -> Void
     ) async -> Bool {
         let id = target.id
-        return await perform("update notes") { db -> Void in
+        return await write("update notes") { db in
             guard let fresh = try TargetQueries.fetchByID(db, id: id) else { throw TargetNotFoundError(id: id) }
             var notes = fresh.decodedNotes
             try change(&notes)
             try TargetQueries.updateNotes(db, id: id, notes: notes)
-        } != nil
+        }
     }
 
     @discardableResult
@@ -388,19 +393,26 @@ final class TargetsViewModel {
         } != nil
     }
 
-    /// Returns whether the label set actually changed (false on the
-    /// idempotent no-op cases), nil when the write failed (`errorMessage`
-    /// says why; the action executor reports it).
-    @discardableResult
-    func addTag(_ target: Target, tag: String) async -> Bool? {
-        let id = target.id
-        return await perform("add label") { db in try TargetQueries.addTag(db, id: id, tag: tag) }
+    /// What a label write did: the set changed, or it already was so (the
+    /// idempotent no-op cases). Nil from `addTag`/`removeTag` is a failed
+    /// write (`errorMessage` says why; the action executor reports it).
+    enum LabelEdit {
+        case changed
+        case unchanged
     }
 
     @discardableResult
-    func removeTag(_ target: Target, tag: String) async -> Bool? {
+    func addTag(_ target: Target, tag: String) async -> LabelEdit? {
+        let id = target.id
+        return await perform("add label") { db in try TargetQueries.addTag(db, id: id, tag: tag) }
+            .map { $0 ? .changed : .unchanged }
+    }
+
+    @discardableResult
+    func removeTag(_ target: Target, tag: String) async -> LabelEdit? {
         let id = target.id
         return await perform("remove label") { db in try TargetQueries.removeTag(db, id: id, tag: tag) }
+            .map { $0 ? .changed : .unchanged }
     }
 
     @discardableResult

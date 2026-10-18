@@ -635,14 +635,16 @@ final class WorkbenchBoardViewModel {
         let pid = projectID
         // Both the old and the new parent chain may roll up (PROJ-05); those
         // are the owner's doing too, so they never notify.
-        return startWrite("move the target", target: id, onSuccess: { [weak self] in
-            if let parentID { self?.collapsed.remove(parentID) }
-        }) { db in
+        let body: @Sendable (Database) throws -> [Int64] = { db in
             let before = try WorkbenchQueries.statuses(db, projectID: pid)
             try WorkbenchQueries.moveTarget(db, projectID: pid, targetID: Int64(id), parentID: parentID.map(Int64.init))
             let after = try WorkbenchQueries.statuses(db, projectID: pid)
             return after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
         }
+        let expandParent: () -> Void = { [weak self] in
+            if let parentID { self?.collapsed.remove(parentID) }
+        }
+        return startWrite("move the target", target: id, onSuccess: expandParent, body)
     }
 
     // MARK: - New target
@@ -786,6 +788,11 @@ final class WorkbenchBoardViewModel {
             try TargetQueries.updateIntent(db, id: id, intent: intent, ifUnchangedFrom: original)
             return []
         })
+    }
+
+    /// Whether `id`'s description save waits for the writer.
+    func isSavingDescription(_ id: Int) -> Bool {
+        savingDescriptions.contains(id)
     }
 
     /// The open editor on `id`, nil when its description is not being edited.

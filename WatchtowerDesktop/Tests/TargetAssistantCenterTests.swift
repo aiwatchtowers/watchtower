@@ -95,7 +95,8 @@ final class TargetAssistantCenterTests: XCTestCase {
         let third = try makeTarget(manager, text: "third")
 
         let busyContainer = center.container(for: busy, viewModel: targets, dbManager: manager)
-        let chat = try XCTUnwrap(busyContainer.activeChat)
+        let ready = await busyContainer.readyChat()
+        let chat = try XCTUnwrap(ready)
         chat.inputText = "keep working"
         chat.send()
         XCTAssertTrue(busyContainer.isAnyWorking)

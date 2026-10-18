@@ -204,21 +204,34 @@ final class TargetAssistantViewModel {
     }
 
     func rename(_ conversationID: Int64, to title: String) async {
+        await renameWrite(conversationID, to: title)?.value
+    }
+
+    /// Queues the rename right away (the auto-title runs from a synchronous
+    /// send); the tab's label follows once it landed.
+    @discardableResult
+    private func renameWrite(_ conversationID: Int64, to title: String) -> Task<Void, Never>? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              conversations.contains(where: { $0.id == conversationID }) else { return }
+              conversations.contains(where: { $0.id == conversationID }) else { return nil }
         let pool = dbManager.dbPool
-        do {
-            try await writes.runThrowing {
+        return writes.start { [weak self] in
+            do {
                 try await pool.write { db in
                     try ChatConversationQueries.updateTitle(db, id: conversationID, title: trimmed)
                 }
+            } catch {
+                self?.errorMessage = "Failed to rename the chat: \(error.localizedDescription)"
+                return
             }
-        } catch {
-            errorMessage = "Failed to rename the chat: \(error.localizedDescription)"
-            return
+            self?.reloadConversation(conversationID)
         }
-        reloadConversation(conversationID)
+    }
+
+    /// Returns once every tab write queued so far has landed or failed
+    /// (tests; the auto-title is queued by a synchronous send).
+    func writesSettled() async {
+        await writes.idle()
     }
 
     /// Closes a tab: the conversation AND its messages are deleted. The last
@@ -284,7 +297,7 @@ final class TargetAssistantViewModel {
     private func autoTitle(conversationID: Int64, from text: String) {
         guard let conversation = conversations.first(where: { $0.id == conversationID }),
               Self.isPlaceholderTitle(conversation.title) else { return }
-        Task { await rename(conversationID, to: Self.autoTitle(from: text)) }
+        renameWrite(conversationID, to: Self.autoTitle(from: text))
     }
 
     static func isPlaceholderTitle(_ title: String) -> Bool {

@@ -188,12 +188,12 @@ enum TargetActionExecutor {
             try checkWrite(changed != nil, viewModel)
             // The no-op summary must not claim a write (the toggleSubItem
             // precedent); `changed` is the in-transaction truth, not a snapshot.
-            return changed == true ? "added label \"\(label)\"" : "task already has label \"\(label)\""
+            return changed == .changed ? "added label \"\(label)\"" : "task already has label \"\(label)\""
         case .removeLabel:
             let label = try requireTrimmedText(action)
             let changed = await viewModel.removeTag(target, tag: label)
             try checkWrite(changed != nil, viewModel)
-            return changed == true ? "removed label \"\(label)\"" : "label \"\(label)\" was not on the task"
+            return changed == .changed ? "removed label \"\(label)\"" : "label \"\(label)\" was not on the task"
         default:
             throw TargetActionError.writeFailed("internal: \(action.type.rawValue) is not a field action")
         }

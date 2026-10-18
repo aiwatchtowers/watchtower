@@ -63,7 +63,7 @@ struct ChatComposerView: View {
             }
         }
         .onChange(of: chatVM.draft) { old, new in
-            if old.isEmpty, !new.isEmpty { chatVM.draftStarted() }
+            if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
         }
     }
 

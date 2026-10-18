@@ -29,7 +29,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     private func spec(
         conversationID: Int64? = nil,
         toolAccess: ChatSurfaceSpec.ToolAccess = .draftOnly,
-        postTurn: @escaping @MainActor (ChatPostTurnInput) -> ChatPostTurnResult = ChatPostTurnResult.identity
+        postTurn: @escaping @MainActor (ChatPostTurnInput) async -> ChatPostTurnResult = ChatPostTurnResult.identity
     ) -> ChatSurfaceSpec {
         let id = conversationID ?? self.conversationID
         return ChatSurfaceSpec(
@@ -256,6 +256,34 @@ final class EmbeddedChatEngineTests: XCTestCase {
         ai.finish()
         expectTrue(await waitIdle(engine))
         guard case .completed = outcomes.first else { return XCTFail("\(outcomes)") }
+    }
+
+    /// Board #670: an action surface's postTurn awaits its writes. Until it
+    /// returns the turn stays live and keeps its slot; Stop and a new send
+    /// do nothing meanwhile, and the reply then completes as usual.
+    func testAnAwaitingPostTurnKeepsTheTurnLiveUntilItReturns() async throws {
+        var release: CheckedContinuation<Void, Never>?
+        let engine = makeEngine(spec: spec { input in
+            await withCheckedContinuation { release = $0 }
+            return ChatPostTurnResult(displayText: input.reply, notices: ["Applied: x"])
+        })
+        engine.send("q")
+        ai.emit(.text("answer"))
+        ai.finish()
+        expectTrue(await waitForCondition { release != nil })
+
+        XCTAssertTrue(engine.isStreaming, "the turn is live while postTurn runs")
+        XCTAssertEqual(gate.active.count, 1, "it keeps its slot")
+        engine.stop()
+        XCTAssertFalse(engine.send("again"), "no second turn meanwhile")
+        release?.resume()
+
+        expectTrue(await waitIdle(engine))
+        let all = try rows()
+        XCTAssertEqual(all.map(\.role), ["user", "assistant", "system"])
+        XCTAssertEqual(all[1].status, "complete", "Stop meanwhile did not cut the turn")
+        XCTAssertEqual(gate.active.count, 0)
+        XCTAssertEqual(ai.calls.count, 1)
     }
 
     // MARK: - Tool access

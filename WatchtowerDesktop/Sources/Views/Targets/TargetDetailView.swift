@@ -1475,7 +1475,7 @@ struct TargetDetailView: View {
             let added = await viewModel.pendingWrites.run(TargetsViewModel.tagsKey(target.id)) {
                 await viewModel.addTag(target, tag: tag)
             }
-            if added == true, newTagText == submitted { newTagText = "" }
+            if let landed = added, landed == .changed, newTagText == submitted { newTagText = "" }
         }
     }
 

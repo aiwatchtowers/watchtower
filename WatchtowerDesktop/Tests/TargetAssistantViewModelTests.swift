@@ -22,13 +22,15 @@ final class TargetAssistantViewModelTests: XCTestCase {
         return try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
     }
 
+    /// A container whose first tab, when it needs one, has been written
+    /// (board #670: the first tab's row awaits the writer).
     private func makeContainer(
         _ manager: DatabaseManager,
         target: Target,
         aiService: @escaping @autoclosure () -> any AIServiceProtocol = MockClaudeService()
-    ) -> TargetAssistantViewModel {
+    ) async -> TargetAssistantViewModel {
         let targets = TargetsViewModel(dbManager: manager)
-        return TargetAssistantViewModel(
+        let assistant = TargetAssistantViewModel(
             target: target,
             viewModel: targets,
             dbManager: manager
@@ -38,6 +40,8 @@ final class TargetAssistantViewModelTests: XCTestCase {
                 conversationID: conversationID, aiService: aiService()
             )
         }
+        _ = await assistant.readyChat()
+        return assistant
     }
 
     private func conversationRows(_ manager: DatabaseManager, target: Target) throws -> [ChatConversation] {
@@ -61,12 +65,12 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     /// A target chatted with for the first time gets exactly one tab, created
     /// lazily right here — the pre-tabs behaviour.
-    func testFirstOpenCreatesASingleTab() throws {
+    func testFirstOpenCreatesASingleTab() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
 
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
 
         XCTAssertEqual(assistant.conversations.count, 1)
         XCTAssertEqual(assistant.activeConversationID, assistant.conversations.first?.id)
@@ -77,20 +81,20 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     /// A target that already had the single pre-tabs conversation must adopt it
     /// as tab #1 rather than starting a second, empty thread beside it.
-    func testAdoptsTheExistingConversationInsteadOfCreatingOne() throws {
+    func testAdoptsTheExistingConversationInsteadOfCreatingOne() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let existing = try manager.dbPool.write { db in
+        let existing = try await manager.dbPool.write { db in
             try ChatConversationQueries.create(
                 db, title: "Task: ship feature", contextType: "target", contextID: String(target.id)
             )
         }
-        _ = try manager.dbPool.write { db in
+        _ = try await manager.dbPool.write { db in
             try ChatMessageQueries.insert(db, conversationID: existing.id, role: "user", text: "hello")
         }
 
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
 
         XCTAssertEqual(assistant.conversations.map(\.id), [existing.id])
         XCTAssertEqual(assistant.activeConversationID, existing.id)
@@ -100,24 +104,24 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     /// With several tabs the container opens on the one the user last worked in
     /// — the row the pre-tabs `fetchByContext` would have returned.
-    func testOpensOnTheMostRecentlyUsedTab() throws {
+    func testOpensOnTheMostRecentlyUsedTab() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let first = try manager.dbPool.write { db in
+        let first = try await manager.dbPool.write { db in
             try ChatConversationQueries.create(
                 db, title: "one", contextType: "target", contextID: String(target.id)
             )
         }
-        let second = try manager.dbPool.write { db in
+        let second = try await manager.dbPool.write { db in
             try ChatConversationQueries.create(
                 db, title: "two", contextType: "target", contextID: String(target.id)
             )
         }
         // Make the older tab the most recently touched one.
-        try manager.dbPool.write { db in try ChatConversationQueries.touch(db, id: first.id) }
+        try await manager.dbPool.write { db in try ChatConversationQueries.touch(db, id: first.id) }
 
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
 
         XCTAssertEqual(assistant.conversations.map(\.id), [first.id, second.id],
                        "tab order stays creation order")
@@ -126,14 +130,15 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     // MARK: - Create / switch
 
-    func testNewConversationOpensAndActivatesAnotherTab() throws {
+    func testNewConversationOpensAndActivatesAnotherTab() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let firstID = try XCTUnwrap(assistant.activeConversationID)
 
-        let newID = try XCTUnwrap(assistant.newConversation())
+        let created = await assistant.newConversation()
+        let newID = try XCTUnwrap(created)
 
         XCTAssertEqual(assistant.conversations.map(\.id), [firstID, newID])
         XCTAssertEqual(assistant.activeConversationID, newID)
@@ -143,15 +148,16 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     /// Switching tabs must hand back the SAME view model, never a fresh one —
     /// that is what lets a turn keep running in the tab you left.
-    func testSwitchingTabsKeepsTheSameChatViewModels() throws {
+    func testSwitchingTabsKeepsTheSameChatViewModels() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let firstID = try XCTUnwrap(assistant.activeConversationID)
         let firstChat = try XCTUnwrap(assistant.activeChat)
 
-        let secondID = try XCTUnwrap(assistant.newConversation())
+        let created = await assistant.newConversation()
+        let secondID = try XCTUnwrap(created)
         let secondChat = try XCTUnwrap(assistant.activeChat)
         XCTAssertFalse(firstChat === secondChat)
 
@@ -161,11 +167,11 @@ final class TargetAssistantViewModelTests: XCTestCase {
         XCTAssertTrue(assistant.activeChat === secondChat)
     }
 
-    func testSelectingAnUnknownConversationIsIgnored() throws {
+    func testSelectingAnUnknownConversationIsIgnored() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let activeID = assistant.activeConversationID
 
         assistant.select(9_999)
@@ -175,47 +181,48 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     // MARK: - Rename
 
-    func testRenameUpdatesTheTabAndTheRow() throws {
+    func testRenameUpdatesTheTabAndTheRow() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let id = try XCTUnwrap(assistant.activeConversationID)
 
-        assistant.rename(id, to: "  Rollout plan  ")
+        await assistant.rename(id, to: "  Rollout plan  ")
 
         XCTAssertEqual(assistant.conversations.first?.title, "Rollout plan")
-        let stored = try manager.dbPool.read { db in try ChatConversationQueries.fetchByID(db, id: id) }
+        let stored = try await manager.dbPool.read { db in try ChatConversationQueries.fetchByID(db, id: id) }
         XCTAssertEqual(stored?.title, "Rollout plan")
     }
 
-    func testRenameToBlankIsIgnored() throws {
+    func testRenameToBlankIsIgnored() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let id = try XCTUnwrap(assistant.activeConversationID)
         let before = assistant.conversations.first?.title
 
-        assistant.rename(id, to: "   ")
+        await assistant.rename(id, to: "   ")
 
         XCTAssertEqual(assistant.conversations.first?.title, before)
     }
 
     // MARK: - Close
 
-    func testCloseDeletesTheConversationAndItsMessages() throws {
+    func testCloseDeletesTheConversationAndItsMessages() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let firstID = try XCTUnwrap(assistant.activeConversationID)
-        let secondID = try XCTUnwrap(assistant.newConversation())
-        _ = try manager.dbPool.write { db in
+        let created = await assistant.newConversation()
+        let secondID = try XCTUnwrap(created)
+        _ = try await manager.dbPool.write { db in
             try ChatMessageQueries.insert(db, conversationID: secondID, role: "user", text: "hi")
         }
 
-        assistant.close(secondID)
+        await assistant.close(secondID)
 
         XCTAssertEqual(assistant.conversations.map(\.id), [firstID])
         XCTAssertEqual(assistant.activeConversationID, firstID)
@@ -223,23 +230,24 @@ final class TargetAssistantViewModelTests: XCTestCase {
         XCTAssertNil(assistant.loadedChat(secondID))
         let rows = try conversationRows(manager, target: target)
         XCTAssertEqual(rows.map(\.id), [firstID])
-        let messages = try manager.dbPool.read { db in
+        let messages = try await manager.dbPool.read { db in
             try ChatMessageQueries.fetchByConversation(db, conversationID: secondID)
         }
         XCTAssertTrue(messages.isEmpty, "closing a tab must not leave orphaned messages")
     }
 
     /// Closing a tab that is not the active one leaves the selection alone.
-    func testClosingABackgroundTabKeepsTheActiveOne() throws {
+    func testClosingABackgroundTabKeepsTheActiveOne() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let firstID = try XCTUnwrap(assistant.activeConversationID)
-        let secondID = try XCTUnwrap(assistant.newConversation())
+        let created = await assistant.newConversation()
+        let secondID = try XCTUnwrap(created)
         let secondChat = try XCTUnwrap(assistant.activeChat)
 
-        assistant.close(firstID)
+        await assistant.close(firstID)
 
         XCTAssertEqual(assistant.conversations.map(\.id), [secondID])
         XCTAssertEqual(assistant.activeConversationID, secondID)
@@ -247,14 +255,14 @@ final class TargetAssistantViewModelTests: XCTestCase {
     }
 
     /// A target always keeps one assistant thread — the last tab has no Close.
-    func testLastTabCannotBeClosed() throws {
+    func testLastTabCannotBeClosed() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let onlyID = try XCTUnwrap(assistant.activeConversationID)
 
-        assistant.close(onlyID)
+        await assistant.close(onlyID)
 
         XCTAssertEqual(assistant.conversations.map(\.id), [onlyID])
         XCTAssertEqual(assistant.activeConversationID, onlyID)
@@ -267,20 +275,20 @@ final class TargetAssistantViewModelTests: XCTestCase {
     /// creates a conversation row, and that alone must NOT read as activity —
     /// otherwise every first visit lights "context changed since this step" on a
     /// target nobody has chatted with. A real turn does.
-    func testOpeningATabIsNotActivityButASentTurnIs() throws {
+    func testOpeningATabIsNotActivityButASentTurnIs() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
 
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         XCTAssertEqual(assistant.conversations.count, 1, "the tab row exists")
-        var activity = try manager.dbPool.read { db in
+        var activity = try await manager.dbPool.read { db in
             try ChatConversationQueries.latestTurnActivity(db, type: "target", id: String(target.id))
         }
         XCTAssertNil(activity, "opening a tab is not work on the target")
 
-        _ = assistant.newConversation()
-        activity = try manager.dbPool.read { db in
+        _ = await assistant.newConversation()
+        activity = try await manager.dbPool.read { db in
             try ChatConversationQueries.latestTurnActivity(db, type: "target", id: String(target.id))
         }
         XCTAssertNil(activity, "neither is opening another one")
@@ -289,7 +297,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         chat.inputText = "what is left here?"
         chat.send()
 
-        activity = try manager.dbPool.read { db in
+        activity = try await manager.dbPool.read { db in
             try ChatConversationQueries.latestTurnActivity(db, type: "target", id: String(target.id))
         }
         XCTAssertNotNil(activity, "a user turn is activity even before any reply lands")
@@ -300,13 +308,13 @@ final class TargetAssistantViewModelTests: XCTestCase {
     /// A read that fails is "unknown", not "this target has no chats": falling
     /// through to the create would open a duplicate tab beside the existing ones.
     /// The chat table is dropped here so the list read throws.
-    func testAFailedTabListReadNeverOpensAReplacementTab() throws {
+    func testAFailedTabListReadNeverOpensAReplacementTab() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        try manager.dbPool.write { db in try db.execute(sql: "DROP TABLE chat_conversations") }
+        try await manager.dbPool.write { db in try db.execute(sql: "DROP TABLE chat_conversations") }
 
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
 
         XCTAssertTrue(assistant.conversations.isEmpty)
         XCTAssertNil(assistant.activeChat)
@@ -324,12 +332,13 @@ final class TargetAssistantViewModelTests: XCTestCase {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(
+        let assistant = await makeContainer(
             manager, target: target,
             aiService: MockClaudeService(events: [.sessionID("s1"), .text("background reply"), .done])
         )
         let firstID = try XCTUnwrap(assistant.activeConversationID)
-        let workingID = try XCTUnwrap(assistant.newConversation())
+        let created = await assistant.newConversation()
+        let workingID = try XCTUnwrap(created)
         let workingChat = try XCTUnwrap(assistant.activeChat)
 
         workingChat.inputText = "dig through the channel"
@@ -360,10 +369,11 @@ final class TargetAssistantViewModelTests: XCTestCase {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target,
-                                      aiService: MockClaudeService(events: [.text("half a repl")], thenHangs: true))
+        let assistant = await makeContainer(manager, target: target,
+                                            aiService: MockClaudeService(events: [.text("half a repl")], thenHangs: true))
         _ = try XCTUnwrap(assistant.activeConversationID)
-        let secondID = try XCTUnwrap(assistant.newConversation())
+        let created = await assistant.newConversation()
+        let secondID = try XCTUnwrap(created)
         let chat = try XCTUnwrap(assistant.activeChat)
 
         // A real mid-turn state: the reply has streamed part of its text.
@@ -375,7 +385,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         }
         XCTAssertTrue(chat.isStreaming)
 
-        assistant.close(secondID)
+        await assistant.close(secondID)
 
         XCTAssertFalse(chat.isStreaming)
         func leftovers() throws -> [ChatMessageRecord] {
@@ -386,46 +396,49 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     // MARK: - Auto-title
 
-    func testNewTabIsAutoTitledFromItsFirstUserMessage() throws {
+    func testNewTabIsAutoTitledFromItsFirstUserMessage() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
-        let newID = try XCTUnwrap(assistant.newConversation())
+        let assistant = await makeContainer(manager, target: target)
+        let created = await assistant.newConversation()
+        let newID = try XCTUnwrap(created)
         let chat = try XCTUnwrap(assistant.activeChat)
 
         chat.inputText = "Draft the rollout note for the release"
         chat.send()
+        await assistant.writesSettled()
 
         let title = try XCTUnwrap(assistant.conversations.last?.title)
         XCTAssertEqual(title, "Draft the rollout note for the…")
-        let stored = try manager.dbPool.read { db in try ChatConversationQueries.fetchByID(db, id: newID) }
+        let stored = try await manager.dbPool.read { db in try ChatConversationQueries.fetchByID(db, id: newID) }
         XCTAssertEqual(stored?.title, title)
     }
 
     /// Only the FIRST message names the tab; later ones leave the title alone.
-    func testAutoTitleOnlyAppliesToAStillUnnamedTab() throws {
+    func testAutoTitleOnlyAppliesToAStillUnnamedTab() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
-        _ = assistant.newConversation()
+        let assistant = await makeContainer(manager, target: target)
+        _ = await assistant.newConversation()
         let chat = try XCTUnwrap(assistant.activeChat)
 
         chat.inputText = "first"
         chat.send()
         chat.inputText = "second"
         chat.send()
+        await assistant.writesSettled()
 
         XCTAssertEqual(assistant.conversations.last?.title, "first")
     }
 
     /// Tab #1 carries the task title — a message there must not rename it.
-    func testFirstTabKeepsItsTaskTitle() throws {
+    func testFirstTabKeepsItsTaskTitle() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         let chat = try XCTUnwrap(assistant.activeChat)
 
         chat.inputText = "what should I do first?"
@@ -449,20 +462,20 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     /// The host screen's next-step badge hangs off this callback, so it must be
     /// wired on every tab the container owns — not just the first.
-    func testTargetActivityIsForwardedFromEveryTab() throws {
+    func testTargetActivityIsForwardedFromEveryTab() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = await makeContainer(manager, target: target)
         var notifications = 0
         assistant.onTargetActivity = { notifications += 1 }
 
-        _ = assistant.newConversation()
+        _ = await assistant.newConversation()
         let chat = try XCTUnwrap(assistant.activeChat)
         let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
-        chat.approve(card)
+        await chat.approve(card)
 
         XCTAssertEqual(notifications, 1)
     }
@@ -471,39 +484,41 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     private func makeCenteredContainer(
         _ manager: DatabaseManager, target: Target, ai: any AIServiceProtocol
-    ) -> (TargetAssistantViewModel, EmbeddedChatCenter) {
+    ) async -> (TargetAssistantViewModel, EmbeddedChatCenter) {
         let center = EmbeddedChatCenter(idleTTL: 0) { spec, gate in
             makeSurfaceEngine(spec, dbPool: manager.dbPool, ai: ai, gate: gate)
         }
         let assistant = TargetAssistantViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager),
                                                  dbManager: manager, embeddedChats: center)
+        _ = await assistant.readyChat()
         return (assistant, center)
     }
 
-    func testATabsEngineComesFromTheCenterAndSurvivesItsSweep() throws {
+    func testATabsEngineComesFromTheCenterAndSurvivesItsSweep() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let (assistant, center) = makeCenteredContainer(manager, target: target, ai: MockClaudeService())
+        let (assistant, center) = await makeCenteredContainer(manager, target: target, ai: MockClaudeService())
         let chat = try XCTUnwrap(assistant.activeChat)
         XCTAssertTrue(center.loaded(chat.engine.spec.key) === chat.engine)
         center.sweep(now: Date().addingTimeInterval(3600))
         XCTAssertTrue(center.loaded(chat.engine.spec.key) === chat.engine, "the open tab holds its engine")
     }
 
-    func testClosingATabReleasesItsEngine() throws {
+    func testClosingATabReleasesItsEngine() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let (assistant, center) = makeCenteredContainer(manager, target: target, ai: MockClaudeService())
-        let secondID = try XCTUnwrap(assistant.newConversation())
+        let (assistant, center) = await makeCenteredContainer(manager, target: target, ai: MockClaudeService())
+        let created = await assistant.newConversation()
+        let secondID = try XCTUnwrap(created)
         let key = try XCTUnwrap(assistant.activeChat).engine.spec.key
-        assistant.close(secondID)
+        await assistant.close(secondID)
         XCTAssertNil(center.loaded(key))
         XCTAssertEqual(center.count, 1, "the remaining tab keeps its engine")
     }
 
-    func testDroppingADeletedTargetDropsItsEngines() throws {
+    func testDroppingADeletedTargetDropsItsEngines() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
@@ -512,7 +527,9 @@ final class TargetAssistantViewModelTests: XCTestCase {
         }
         let targets = TargetAssistantCenter()
         targets.embeddedChats = embedded
-        _ = targets.container(for: target, viewModel: TargetsViewModel(dbManager: manager), dbManager: manager)
+        let container = targets.container(for: target, viewModel: TargetsViewModel(dbManager: manager),
+                                          dbManager: manager)
+        _ = await container.readyChat()
         XCTAssertEqual(embedded.count, 1)
         targets.drop(targetID: target.id)
         XCTAssertEqual(embedded.count, 0)
@@ -525,7 +542,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
         struct Boom: Error {}
-        let assistant = makeContainer(manager, target: target, aiService: MockClaudeService(error: Boom()))
+        let assistant = await makeContainer(manager, target: target, aiService: MockClaudeService(error: Boom()))
         let chat = try XCTUnwrap(assistant.activeChat)
         chat.inputText = "go"
         chat.send()
@@ -534,7 +551,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
                                     action: ProposedAction(type: .addSubItem, reason: "r", text: "step"),
                                     state: .pending)
         chat.actionCards = [card]
-        chat.approve(card)
+        await chat.approve(card)
         XCTAssertFalse(chat.isStreaming, "after a failure the follow-up waits for Retry or the next message")
         XCTAssertTrue(assistant.isAnyWorking)
     }
@@ -546,7 +563,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
         struct Boom: Error {}
-        let assistant = makeContainer(manager, target: target, aiService: MockClaudeService(error: Boom()))
+        let assistant = await makeContainer(manager, target: target, aiService: MockClaudeService(error: Boom()))
         let chat = try XCTUnwrap(assistant.activeChat)
         chat.inputText = "go"
         chat.send()
@@ -555,7 +572,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
                                     action: ProposedAction(type: .addSubItem, reason: "r", text: "step"),
                                     state: .pending)
         chat.actionCards = [card]
-        chat.approve(card)
+        await chat.approve(card)
         XCTAssertTrue(assistant.isAnyWorking)
 
         try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target.id]) }

@@ -32,7 +32,7 @@ struct HelpChatPanel: View {
         .shadow(radius: 12, y: 4)
         .onExitCommand(perform: escape)
         .onChange(of: chatVM.draft) { old, new in
-            if old.isEmpty, !new.isEmpty { chatVM.draftStarted() }
+            if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Ask Watchtower")

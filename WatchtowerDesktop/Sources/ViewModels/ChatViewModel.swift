@@ -338,26 +338,35 @@ final class ChatViewModel {
 
     /// Deletes a conversation nobody wrote into (in the chain; best effort,
     /// a failure is logged), and its session with it.
+    /// Queued right away: the caller (a selection, the launch cleanup) is
+    /// synchronous.
     private func discardIfUntouched(_ draft: LandingDraft) {
-        Task {
+        let dbPool = dbManager.dbPool
+        writes.start { [weak self] in
             do {
-                let deleted = try await write { db in
+                let deleted = try await dbPool.write { db in
                     try ChatConversationQueries.deleteIfUntouched(db, id: draft.id, createdAt: draft.createdAt)
                 }
-                guard deleted else { return }
-                pool.close(conversationID: draft.id)
-                reloadConversations()
+                guard deleted, let self else { return }
+                self.pool.close(conversationID: draft.id)
+                self.reloadConversations()
             } catch {
                 NSLog("ChatViewModel: discarding the landing's unused chat failed: %@", error.localizedDescription)
             }
         }
     }
 
+    /// Returns once every write queued so far has landed or failed (tests:
+    /// a synchronous caller queued one, e.g. a landing draft's discard).
+    func writesSettled() async {
+        await writes.idle()
+    }
+
     /// The composer's first keystroke: prewarm the session. On the landing
     /// that first needs a conversation, made without leaving the landing.
-    func draftStarted() {
+    func draftStarted() async {
         if conversationID == nil {
-            Task { _ = await conversationIDCreatingIfNeeded() }
+            _ = await conversationIDCreatingIfNeeded()
         } else {
             prewarm()
         }
@@ -829,9 +838,9 @@ final class ChatViewModel {
               let index = thread.firstIndex(where: { $0.message.id == messageID }), index > 0,
               thread[index].message.isAssistant, thread[index - 1].message.isUser else { return }
         let owner = thread[index - 1]
-        await startTurnBusy(TurnPlan(conversationID: id, historyTipID: owner.message.parentID, userText: owner.message.text,
-                           reuseUserMessageID: owner.message.id, attachments: owner.attachments, outcomes: nil,
-                           screen: nil, forceReplay: true))
+        await startTurnBusy(TurnPlan(conversationID: id, historyTipID: owner.message.parentID,
+                                     userText: owner.message.text, reuseUserMessageID: owner.message.id,
+                                     attachments: owner.attachments, outcomes: nil, screen: nil, forceReplay: true))
     }
 
     /// A new owner sibling under the original's parent, then a fresh reply.
@@ -847,8 +856,8 @@ final class ChatViewModel {
         editingMessageID = nil
         let turnText = ChatTurnComposer.recompose(stored: item.message.text, newBody: trimmed)
         await startTurnBusy(TurnPlan(conversationID: id, historyTipID: item.message.parentID, userText: turnText,
-                           reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil, screen: nil,
-                           forceReplay: true))
+                                     reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil,
+                                     screen: nil, forceReplay: true))
     }
 
     /// ↑ in an empty composer (spec §3.5).
