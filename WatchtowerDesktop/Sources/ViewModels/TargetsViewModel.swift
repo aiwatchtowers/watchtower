@@ -26,7 +26,7 @@ final class TargetsViewModel {
     var availableTags: [String] = []
 
     private let dbManager: DatabaseManager
-    private var observationTask: Task<Void, Never>?
+    private(set) var observationTask: Task<Void, Never>?
     /// Optional injected runner for tests; production uses ProcessCLIRunner.makeDefault().
     private let cliRunner: CLIRunnerProtocol?
 
