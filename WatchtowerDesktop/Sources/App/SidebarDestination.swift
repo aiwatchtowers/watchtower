@@ -136,9 +136,11 @@ extension SidebarDestination {
     var requiredSources: [SidebarSource]? {
         switch self {
         case .calendar: [.calendar]
-        case .boards, .workload, .blockers, .projectMap, .releases: [.jira]
-        // Inbox and Catch-Up also surface Jira mentions and meeting items.
-        case .inbox, .catchUp: [.messages, .jira, .calendar]
+        case .boards, .workload, .projectMap, .releases: [.jira]
+        // Blockers read Jira and Linear through `tracker_issues`.
+        case .blockers: [.jira, .linear]
+        // Inbox and Catch-Up also surface tracker mentions and meeting items.
+        case .inbox, .catchUp: [.messages, .jira, .linear, .calendar]
         case .statistics: [.messages]
         default: nil
         }

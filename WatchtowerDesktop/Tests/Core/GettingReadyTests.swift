@@ -45,6 +45,18 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(sourceRows(result.zone), [GettingReadySourceRow(source: .jira, features: [.jira])])
     }
 
+    /// Linear is no second tracker to ask for: no Connect Linear row, and a
+    /// connected Linear is a card like Jira.
+    func testLinearHasNoConnectRowButACardOnceConnected() {
+        let missing = step(readinessMap([.digests: .ready, .tracks: .preparing(detail: nil), .linear: .needsSource(.linear)]))
+        XCTAssertEqual(cards(missing.zone).map(\.feature), [.digests, .tracks])
+        XCTAssertTrue(sourceRows(missing.zone).isEmpty)
+
+        let connected = step(readinessMap([.digests: .ready, .linear: .scheduled(.nextCycle(minutes: 15))]))
+        XCTAssertEqual(cards(connected.zone).map(\.feature), [.digests, .linear])
+        XCTAssertEqual(cards(connected.zone).last?.copy.title, "Linear")
+    }
+
     /// #575: a feature waiting on Slack Digests is a card with its reason,
     /// not a Connect row, and keeps the zone open.
     func testNeedsDigestsIsACard() throws {

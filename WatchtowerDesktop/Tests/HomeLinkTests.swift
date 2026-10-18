@@ -104,10 +104,11 @@ final class HomeLinkTests: XCTestCase {
     }
 
     /// Each feature opens a tab whose empty state is about that feature (or
-    /// its sibling: stream digests on Digests, Jira on its views); Knowledge
+    /// its sibling: stream digests on Digests, Linear on Blockers, whose row
+    /// speaks for both trackers, Jira on its views); Knowledge
     /// search opens Search, which keeps its own empty state.
     func testEveryFeatureHasADestination() {
-        let siblings: [ReadinessFeature: ReadinessFeature] = [.streamDigests: .digests]
+        let siblings: [ReadinessFeature: ReadinessFeature] = [.streamDigests: .digests, .linear: .jira]
         for feature in ReadinessFeature.allCases {
             let destination = AppState.homeDestination(for: feature)
             guard let copy = EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 9),

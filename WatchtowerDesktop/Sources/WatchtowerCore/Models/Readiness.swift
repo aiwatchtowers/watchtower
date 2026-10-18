@@ -3,13 +3,13 @@ import Foundation
 /// A tracked feature: an AI or sync output a tab shows, with a readiness.
 package enum ReadinessFeature: String, CaseIterable, Sendable {
     case slackSync, digests, streamDigests, tracks, peopleCards, briefing,
-         dayPlan, ideas, memory, inbox, knowledgeIndex, calendar, jira
+         dayPlan, ideas, memory, inbox, knowledgeIndex, calendar, jira, linear
 
     /// The feature registry id (`internal/features`); nil when the feature
     /// has no switch of its own.
     package var featureID: String? {
         switch self {
-        case .slackSync, .calendar, .jira: nil
+        case .slackSync, .calendar, .jira, .linear: nil
         case .digests: "slack-digests"
         case .streamDigests: "stream-digests"
         case .tracks: "tracks"
@@ -24,7 +24,8 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
     }
 
     /// `pipeline_runs.pipeline` as the daemon writes it; nil when the
-    /// feature has no runs to read (calendar).
+    /// feature has no runs to read (calendar, and Linear: `phaseLinearSync`
+    /// writes no `pipeline_runs` row).
     package var pipelineName: String? {
         switch self {
         case .slackSync: "slack-sync"
@@ -38,7 +39,7 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
         case .memory: "memory"
         case .inbox: "inbox"
         case .knowledgeIndex: "knowledge-index"
-        case .calendar: nil
+        case .calendar, .linear: nil
         case .jira: "jira-boards"
         }
     }
@@ -51,6 +52,7 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
         case .knowledgeIndex: .none
         case .calendar: .calendar
         case .jira: .jira
+        case .linear: .linear
         }
     }
 
@@ -68,7 +70,7 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
 
 /// The source a feature reads.
 package enum ReadinessSource: Hashable, Sendable {
-    case none, slack, anySource, calendar, jira, jiraOrMail
+    case none, slack, anySource, calendar, jira, jiraOrMail, linear
     /// A source that tells Watchtower who the owner is (the OWNER-01 ladder).
     /// No feature reads it; Home names it on an owner-gated card while the
     /// owner is unknown.
@@ -87,6 +89,7 @@ package enum ReadinessSource: Hashable, Sendable {
         case .slack: "Slack"
         case .calendar: "a calendar"
         case .jira: "Jira"
+        case .linear: "Linear"
         case .jiraBoards: "Jira boards"
         case .jiraOrMail: "Jira or mail"
         case .ownerIdentity: "Slack, Google, Jira, Linear or an email account"
@@ -117,10 +120,11 @@ package enum ReadinessSource: Hashable, Sendable {
         switch self {
         case .none, .ownerIdentity, .ownerIdentityPending: true
         case .slack: connected.slack
-        case .anySource: connected.slack || connected.mail || connected.calendar || connected.jira
+        case .anySource: connected.slack || connected.mail || connected.calendar || connected.jira || connected.linear
         case .calendar: connected.calendar
         case .jira, .jiraBoards: connected.jira
         case .jiraOrMail: connected.jira || connected.mail
+        case .linear: connected.linear
         }
     }
 }

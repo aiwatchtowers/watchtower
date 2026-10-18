@@ -84,6 +84,11 @@ package enum GettingReadyPolicy {
             switch state {
             case .off:
                 continue
+            // Linear is a peer of Jira, not a second tracker to ask for: the
+            // Connect Jira row stays the one tracker prompt, and Linear shows
+            // as a card only once it is connected.
+            case .needsSource(.linear):
+                continue
             // Jira connected with no board picked (#572) stays a waiting
             // card: a row never holds the zone open, and nothing syncs until
             // the owner picks boards.

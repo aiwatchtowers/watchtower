@@ -450,7 +450,7 @@ final class FeatureReadinessTests: XCTestCase {
     func testEmptyInputsAllOffOrWaiting() {
         let result = FeatureReadiness.evaluate(ReadinessInputs(now: today(10)))
         XCTAssertEqual(Set(result.keys), Set(ReadinessFeature.allCases))
-        XCTAssertEqual(result.count, 13)
+        XCTAssertEqual(result.count, 14)
         for (feature, readiness) in result {
             switch readiness {
             case .off, .needsSource, .waitingForSync: break
@@ -535,5 +535,47 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(ReadinessSource.jiraBoards.actionTitle, "Choose Jira boards")
         XCTAssertTrue(ReadinessSource.jiraBoards.isConnected(in: ConnectedSources(jira: true)))
         XCTAssertFalse(ReadinessSource.jiraBoards.isOwnerIdentity)
+    }
+
+    // MARK: - Linear (spec §3.5)
+
+    /// `.linear` is keyed on rows in `linear_issues`: no switch (never off),
+    /// no pipeline run (never preparing or error), Connect Linear while no
+    /// workspace is connected.
+    func testLinearReadinessFollowsItsSourceAndContent() {
+        var input = inputs(now: today(10))
+        input.disabledFeatureIDs = ["slack-digests", "memory"]
+        XCTAssertEqual(evaluate(.linear, input), .needsSource(.linear))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.linear)), "Connect Linear to get this")
+        input.connected = ConnectedSources(linear: true)
+        input.latestRuns = ["jira-boards": RunSnapshot(status: "error", startedAt: today(9), errorMessage: "x")]
+        XCTAssertEqual(evaluate(.linear, input), .scheduled(.nextCycle(minutes: 15)))
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.linear, input), .scheduled(.nextCycle(minutes: 15)), "Jira boards never hold Linear")
+        input.contentPresent = [.linear]
+        XCTAssertEqual(evaluate(.linear, input), .ready)
+        XCTAssertNil(ReadinessFeature.linear.featureID)
+        XCTAssertNil(ReadinessFeature.linear.pipelineName)
+        XCTAssertEqual(ReadinessQueries.contentTable(.linear), "linear_issues")
+    }
+
+    /// A Linear-only install has a source: the owner-gated features do not
+    /// ask for one.
+    func testLinearCountsAsAnySource() {
+        XCTAssertTrue(ReadinessSource.anySource.isConnected(in: ConnectedSources(linear: true)))
+        XCTAssertFalse(ReadinessSource.jira.isConnected(in: ConnectedSources(linear: true)))
+    }
+
+    /// The tracker-neutral tabs: either tracker's content is enough; without
+    /// content the connected tracker speaks, Jira first.
+    func testTrackerReadinessFoldsJiraAndLinear() {
+        let soon = Readiness.scheduled(.nextCycle(minutes: 15))
+        XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: .ready), .ready)
+        XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .ready, linear: .needsSource(.linear)), .ready)
+        XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: soon), soon)
+        XCTAssertEqual(
+            FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: .needsSource(.linear)), .needsSource(.jira))
+        XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jiraBoards), linear: soon), .needsSource(.jiraBoards))
+        XCTAssertNil(FeatureReadiness.trackerReadiness(jira: nil, linear: nil))
     }
 }

@@ -20,7 +20,8 @@ final class ReadinessQueriesTests: XCTestCase {
         (.inbox, "inbox_items"),
         (.knowledgeIndex, "kb_documents"),
         (.calendar, "calendar_events"),
-        (.jira, "jira_issues")
+        (.jira, "jira_issues"),
+        (.linear, "linear_issues")
     ]
 
     /// One row with a filler for every NOT NULL column that has no default.

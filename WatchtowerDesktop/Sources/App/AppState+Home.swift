@@ -112,6 +112,7 @@ extension AppState {
         case .knowledgeIndex: .search
         case .calendar: .calendar
         case .jira: .boards
+        case .linear: .blockers
         }
     }
 }
