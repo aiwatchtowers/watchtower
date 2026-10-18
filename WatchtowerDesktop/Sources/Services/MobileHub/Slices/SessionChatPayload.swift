@@ -61,7 +61,7 @@ enum SessionChatPayload {
         }
     }
 
-    /// The FEED-02 kinds only (`SessionFeedEntry.knownKinds`: no tool calls,
+    /// The FEED-02 kinds only (`SessionFeedEntry.phoneKinds`: no tool calls,
     /// thinking or kinds a newer CLI adds), cut to the newest `maxEntries`,
     /// then trimmed from the oldest end until the encoded size fits
     /// `maxBytes`. The payload carries no clock, so an unchanged feed encodes
@@ -72,7 +72,7 @@ enum SessionChatPayload {
         agentID: String?,
         live: Bool
     ) throws -> Data {
-        let known = feed.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }
+        let known = feed.entries.filter { SessionFeedEntry.phoneKinds.contains($0.kind) }
         let tail = SliceClip.list(Array(known.reversed()), limit: maxEntries)
         let entries = tail.items.reversed().map(entry)
         let encoder = RelayCoder.makeEncoder()

@@ -37,6 +37,22 @@ final class SessionFeedStoreTests: XCTestCase {
         """
     }
 
+    func testDecodesEventEntry() throws {
+        let json = #"{"id":"ev1","kind":"event","event_type":"task","title":"Task done","text":"body","#
+            + #""at":"2026-10-16T10:00:00Z","conversation":"main"}"#
+        let e = try JSONDecoder().decode(SessionFeedEntry.self, from: Data(json.utf8))
+        XCTAssertEqual(e.kind, "event")
+        XCTAssertEqual(e.eventType, "task")
+        XCTAssertEqual(e.title, "Task done")
+        XCTAssertEqual(e.text, "body")
+        XCTAssertTrue(SessionFeedEntry.knownKinds.contains("event"))
+    }
+
+    func testPhoneKindsExcludeEvent() {
+        XCTAssertFalse(SessionFeedEntry.phoneKinds.contains("event"))
+        XCTAssertEqual(SessionFeedEntry.phoneKinds.union(["event"]), SessionFeedEntry.knownKinds)
+    }
+
     func testDecodesPinnedPayload() throws {
         let kinds = ["owner", "agent", "watchtower", "brief", "separator"]
             .enumerated().map { entry("e\($0.offset)", $0.element) }
