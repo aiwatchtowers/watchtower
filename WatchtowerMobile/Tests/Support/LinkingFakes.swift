@@ -432,20 +432,52 @@ final class FakeLinkHost: LinkHost {
 
 /// A link clock whose sleeps wait for `release()` and whose `now` stands
 /// still: the grant wait polls once, then the test answers for the Mac.
+/// A test waits for the poll with `untilParked()`, a signal rather than a
+/// deadline: a release goes only to a sleep already parked, so a test that
+/// gave up on a timed check before a slow flow parked would release
+/// nothing and leave the flow parked for good (#683).
 final class GateLinkClock: LinkClock, @unchecked Sendable {
     let start = Date()
     private let lock = NSLock()
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var parkWatchers: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     var waiting: Int { lock.withLock { waiters.count } }
+    /// `untilParked` calls waiting for a park.
+    var watching: Int { lock.withLock { parkWatchers.count } }
 
     func now() -> Date { start }
 
     func sleep(for duration: Duration) async throws {
         await withCheckedContinuation { continuation in
-            lock.withLock { waiters.append(continuation) }
+            let watchers = lock.withLock {
+                waiters.append(continuation)
+                let parked = parkWatchers.values
+                parkWatchers = [:]
+                return parked
+            }
+            watchers.forEach { $0.resume() }
         }
         try Task.checkCancellation()
+    }
+
+    /// Returns once a sleep is parked: at once if one already is, else at
+    /// the next one (after a `release()`, the flow's next poll). A cancelled
+    /// call returns at once and leaves no watcher behind.
+    func untilParked() async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let resumeNow = lock.withLock {
+                    if !waiters.isEmpty || Task.isCancelled { return true }
+                    parkWatchers[id] = continuation
+                    return false
+                }
+                if resumeNow { continuation.resume() }
+            }
+        } onCancel: {
+            lock.withLock { parkWatchers.removeValue(forKey: id) }?.resume()
+        }
     }
 
     func release() {

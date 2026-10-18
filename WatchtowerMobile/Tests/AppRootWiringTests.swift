@@ -1644,7 +1644,7 @@ final class AppRootWiringTests: XCTestCase {
         let hubID = TestE2E.hubID.uuidString
 
         let flow = Task { await root.open(code.url()) }
-        try await poll { linkClock.waiting == 1 }
+        await waitUntilParked(linkClock)
 
         XCTAssertEqual(root.linking.phase, .waiting(macName: "Acme Mac"))
         XCTAssertEqual(built.last?.hubID, hubID, "the code's hub's session")
@@ -1663,7 +1663,8 @@ final class AppRootWiringTests: XCTestCase {
             confirmNonce: TestPhone.confirmNonceText, linkCodeTag: try TestPhone.linkCodeTag(code))
         try await TestPhone.hub(over: macSide).save([try TestPhone.grantRecord(waiting, keys: nil, modifiedAt: Date())])
         linkClock.release()
-        try await poll { root.linking.linkCode != nil && linkClock.waiting == 1 }
+        await waitUntilParked(linkClock)
+        try await poll { root.linking.linkCode != nil }
         XCTAssertEqual(root.linking.linkCode, opened.sas, "the real host's keybox gives the phone the Mac's code")
         XCTAssertTrue(root.linking.macSeesPhone)
         let grant = DeviceGrant(
