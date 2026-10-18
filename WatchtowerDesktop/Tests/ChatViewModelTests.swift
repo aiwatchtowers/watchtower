@@ -69,7 +69,7 @@ final class ChatViewModelTests: XCTestCase {
         let fake = try lastFake()
         fake.emit(.textDelta(turnID: turn, text: text))
         fake.emit(.turnDone(turnID: turn, status: .complete, sessionID: nil))
-        let done = await waitForCondition { !vm.isStreaming && vm.thread.last?.message.status == "complete" }
+        let done = await waitForCondition { !vm.isBusy && vm.thread.last?.message.status == "complete" }
         XCTAssertTrue(done, "turn \(turn) did not complete")
     }
 
@@ -216,7 +216,7 @@ final class ChatViewModelTests: XCTestCase {
         fake.emit(.sessionReady(sessionID: "sess-1", provider: "claude", model: "m"))
         fake.emit(.textDelta(turnID: "turn-1", text: "half"))
         fake.exit(status: 9)
-        let persisted = await waitForCondition { (try? self.lastAssistant(convID))?.status == "partial" && !vm.isStreaming }
+        let persisted = await waitForCondition { (try? self.lastAssistant(convID))?.status == "partial" && !vm.isBusy }
         XCTAssertTrue(persisted)
         XCTAssertEqual(try lastAssistant(convID)?.text, "half")
 
@@ -650,7 +650,8 @@ final class ChatViewModelTests: XCTestCase {
         await vm.send(text: "q")
         let fake = try lastFake()
         fake.emit(.turnDone(turnID: "turn-1", status: .interrupted, sessionID: nil))
-        _ = await waitForCondition { !vm.isStreaming }
+        let stopped = await waitForCondition { !vm.isBusy }
+        XCTAssertTrue(stopped)
         await vm.continueStopped(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(fake.turns.last?.text, "Continue")
     }
@@ -842,7 +843,8 @@ final class ChatViewModelTests: XCTestCase {
         _ = await waitForCondition { runner.invocations.count == 1 }
         await vm.send(text: "q2")
         try lastFake().emit(.turnDone(turnID: "turn-2", status: .interrupted, sessionID: nil))
-        _ = await waitForCondition { !vm.isStreaming }
+        let finished = await waitForCondition { !vm.isBusy }
+        XCTAssertTrue(finished)
         let stillNeeded = try await dbManager.dbPool.read { d in try ChatConversationQueries.needsAITitle(d, id: convID) }
         XCTAssertTrue(stillNeeded)
         try await Task.sleep(for: .milliseconds(50))
@@ -1195,7 +1197,7 @@ final class ChatViewModelTests: XCTestCase {
         let first = try lastFake()
         first.emit(.textDelta(turnID: "turn-1", text: "a1"))
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
-        let done = await waitForCondition { !vm.isStreaming && vm.thread.last?.message.status == "complete" }
+        let done = await waitForCondition { !vm.isBusy && vm.thread.last?.message.status == "complete" }
         XCTAssertTrue(done)
         XCTAssertFalse(first.arguments.contains("--project-id"))
 
@@ -1232,7 +1234,7 @@ final class ChatViewModelTests: XCTestCase {
         let projectID = try XCTUnwrap(projectResult)
         await vm.moveConversation(convID, toProject: projectID)
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-late"))
-        let done = await waitForCondition { !vm.isStreaming && vm.thread.last?.message.status == "complete" }
+        let done = await waitForCondition { !vm.isBusy && vm.thread.last?.message.status == "complete" }
         XCTAssertTrue(done)
 
         let stored = try await dbManager.dbPool.read { d in
@@ -1254,7 +1256,7 @@ final class ChatViewModelTests: XCTestCase {
         let first = try lastFake()
         first.emit(.textDelta(turnID: "turn-1", text: "a1"))
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
-        let done = await waitForCondition { !vm.isStreaming && vm.currentConversation?.sessionID == "sess-1" }
+        let done = await waitForCondition { !vm.isBusy && vm.currentConversation?.sessionID == "sess-1" }
         XCTAssertTrue(done)
 
         try await dbManager.dbPool.write { try ChatProjectQueries.updateInstructions($0, id: projectID, instructions: "Use bullets.") }
@@ -1287,7 +1289,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isStreaming, "a running turn is never cut")
         XCTAssertFalse(first.terminated)
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-late"))
-        let done = await waitForCondition { !vm.isStreaming && vm.thread.last?.message.status == "complete" }
+        let done = await waitForCondition { !vm.isBusy && vm.thread.last?.message.status == "complete" }
         XCTAssertTrue(done)
         let stored = try await dbManager.dbPool.read { d in try ChatConversationQueries.fetchByID(d, id: convID) }
         XCTAssertNil(stored?.sessionID, "the stale session id is not recorded")
@@ -1308,7 +1310,7 @@ final class ChatViewModelTests: XCTestCase {
         await vm.send(text: "q1")
         let first = try lastFake()
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
-        let done = await waitForCondition { !vm.isStreaming && vm.currentConversation?.sessionID == "sess-1" }
+        let done = await waitForCondition { !vm.isBusy && vm.currentConversation?.sessionID == "sess-1" }
         XCTAssertTrue(done)
 
         _ = try await dbManager.dbPool.write { try ChatProjectQueries.delete($0, id: projectID) }
@@ -1582,7 +1584,7 @@ final class ChatLandingViewModelTests: XCTestCase {
         let fake = try XCTUnwrap(fakes.last)
         fake.emit(.textDelta(turnID: "turn-\(turnCounter)", text: "a"))
         fake.emit(.turnDone(turnID: "turn-\(turnCounter)", status: .complete, sessionID: nil))
-        let done = await waitForCondition { !vm.isStreaming && vm.thread.last?.message.status == "complete" }
+        let done = await waitForCondition { !vm.isBusy && vm.thread.last?.message.status == "complete" }
         XCTAssertTrue(done)
         return id
     }
