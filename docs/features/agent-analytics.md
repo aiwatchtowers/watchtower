@@ -135,6 +135,7 @@ Every hint has an id, a finding, evidence items (`session` uuid, `target` `#<id>
 - Deleting `agentlog.db` loses the rows of deleted transcripts: the file is recreated empty and the next scans reimport only the transcripts that still exist (Claude Code deletes them after about 30 days).
 - The emptied `agent_log_*` tables stay in `watchtower.db` until a later release drops them (follow-up target), and `watchtower.db` itself does not shrink until #850.
 - `terminal_session_id` can name a terminal session deleted since (no foreign key across files); nothing reads it today.
+- Rows an older binary writes into `watchtower.db` after the move marker is set are deleted by a later move run without being copied; they come back from a re-scan while their transcript still exists.
 
 ## v1 limits (#298)
 
@@ -146,5 +147,5 @@ Every hint has an id, a finding, evidence items (`session` uuid, `target` `#<id>
 
 AGENTLOG-01..07 in `docs/inventory/agent-analytics.md`: no transcript text; each API call counts once; metrics outlive their source; only the workbench's transcripts are read; read-only on the agent's files; a session's time categories add up to its wall time; every hint cites evidence.
 
-- **PROJ-02 exception (ask #153, amended in ask #350).** Analytics rows live in `agentlog.db`, so a workbench delete leaves no row of it in `watchtower.db`. The delete does not touch `agentlog.db`: the rows stay with their `folder_path`, and a workbench later created on the same folder adopts them on its first scan. `TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted` (`internal/agentlogdb`) asserts it; until #849 `TestProj02_DeleteProjectLeavesNoRows` did, with `project_id` set NULL by the foreign key.
+- **PROJ-02 exception (ask #153, amended in ask #350).** Analytics rows live in `agentlog.db`, so, once the one-time move out of `watchtower.db` has run, a workbench delete leaves no row of it in `watchtower.db`. The delete does not touch `agentlog.db`: the rows stay with their `folder_path`, and a workbench later created on the same folder adopts them on its first scan. `TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted` (`internal/agentlogdb`) asserts it; until #849 `TestProj02_DeleteProjectLeavesNoRows` did, with `project_id` set NULL by the foreign key.
 - **FEAT-03 exception (ask #153, amended in ask #350).** Enabling loads the folder's history in the background, through the daemon; the feature is not a registry entry (it is a per-workbench column), makes no AI calls and reads only local files. `phaseAgentAnalytics` joins FEAT-01's phase list gated by that column (`TestPhaseAgentAnalytics_InertWithoutEnabledWorkbench`).

@@ -189,7 +189,7 @@ row delete removes each session's worktree ledger
 from `terminal_sessions`, with its `cleanup_result`/`cleanup_at` on the row
 itself. The worktrees and branches a cleanup removed are not brought back
 by anything; a workbench delete runs no sweep of the repository (only the placed sessions' own cleanup below).
-Agent analytics rows live outside `watchtower.db`, in `agentlog.db` next to it (board #849; before that, `agent_log_sessions`/`agent_log_events` of migration `00116` in `watchtower.db`), so a workbench delete leaves no row of it in `watchtower.db` without an exception. The analytics rows themselves are untouched by the delete: they outlive the workbench (its id is never reused, so they simply stop being queried) and are adopted by a workbench later created on the same folder — guarded by `internal/agentlogdb/agent_log_test.go::TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted` (AGENTLOG-03).
+Agent analytics rows live outside `watchtower.db`, in `agentlog.db` next to it (board #849; before that, `agent_log_sessions`/`agent_log_events` of migration `00116` in `watchtower.db`), so, once the one-time move out of `watchtower.db` has run, a workbench delete leaves no row of it in `watchtower.db` without an exception. The analytics rows themselves are untouched by the delete: they outlive the workbench (its id is never reused, so they simply stop being queried) and are adopted by a workbench later created on the same folder — guarded by `internal/agentlogdb/agent_log_test.go::TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted` (AGENTLOG-03).
 *2026-10-14 (board #229, asks #122/#124):* deleting a workbench
 first runs the session cleanup (PROJ-18) for every placed session's
 worktree and `wt/` branch; a worktree the cleanup keeps stays on disk
