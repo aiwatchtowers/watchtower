@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -28,9 +29,15 @@ const (
 	compactCheckBusy = 5 * time.Second
 )
 
+// compactBusy bounds how long a compaction statement waits on another
+// process's lock; a var so a test can shorten the final checkpoint's wait
+// on a reader.
+var compactBusy = 30 * time.Second
+
 // db_maintenance keys (migration 00142).
 const (
 	maintLastCompactedVersion   = "last_compacted_version"
+	maintCompactedAt            = "compacted_at"
 	maintCompactFailures        = "compact_failures"
 	maintCompactFailuresVersion = "compact_failures_version"
 )
@@ -81,7 +88,11 @@ func CheckCompaction(dbPath, version string) (CompactCheck, error) {
 	}
 	defer d.Close()
 
-	if !d.SchemaCurrent() {
+	current, err := d.schemaCurrentErr()
+	if err != nil {
+		return CompactCheck{}, err
+	}
+	if !current {
 		c.Reason = "schema_pending"
 		return c, nil
 	}
@@ -196,4 +207,209 @@ func readMaintenanceInt(q queryRower, key string) (int64, error) {
 		return 0, fmt.Errorf("db_maintenance %s is not an integer: %w", key, err)
 	}
 	return n, nil
+}
+
+// CompactOptions configures Compact.
+type CompactOptions struct {
+	Force   bool   // skip the disk rule (the daemon rule lives in cmd)
+	Reason  string // carried into the result: the check's reason, or "manual"
+	Version string // CLI build version, for the failure counter
+}
+
+// CompactResult is the outcome of Compact, printed by `db compact --json`.
+// Skipped is "not_due", "disk", "daemon_running", "interrupted" or
+// "schema_pending" (not_due and daemon_running are set by the command).
+type CompactResult struct {
+	Compacted   bool   `json:"compacted"`
+	Skipped     string `json:"skipped,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	BytesBefore int64  `json:"bytes_before,omitempty"`
+	BytesAfter  int64  `json:"bytes_after,omitempty"`
+	DurationMS  int64  `json:"duration_ms,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Failures    int    `json:"failures,omitempty"`
+	GaveUp      bool   `json:"gave_up,omitempty"`
+}
+
+// compactVacuumHook, nil in production, runs right before the VACUUM Exec
+// (test seam for the interrupt test).
+var compactVacuumHook func()
+
+// compactVacuumSQL is the statement run (test seam for a forced failure).
+var compactVacuumSQL = "VACUUM"
+
+// Compact rewrites the database at dbPath with VACUUM between two
+// wal_checkpoint(TRUNCATE)s and records last_compacted_version and
+// compacted_at. It opens with OpenExistingRW, so it never creates the file
+// or migrates; a schema that is not current is skipped as schema_pending.
+// Unless opts.Force, a volume with less than twice the file's size free is
+// skipped as disk before the database is opened. Cancelling ctx interrupts
+// the VACUUM (skipped as interrupted, nothing written; VACUUM is atomic, so
+// the old content stays). Skips return (result, nil); a VACUUM or I/O
+// failure returns (result, err) with Error, Failures and GaveUp filled,
+// after counting it in compact_failures for opts.Version.
+func Compact(ctx context.Context, dbPath string, opts CompactOptions) (CompactResult, error) {
+	res := CompactResult{Reason: opts.Reason}
+	if !opts.Force {
+		info, err := os.Stat(dbPath)
+		if err != nil {
+			return res, fmt.Errorf("checking database %s: %w", dbPath, err)
+		}
+		free, err := freeDiskBytes(filepath.Dir(dbPath))
+		if err != nil {
+			return res, fmt.Errorf("checking free disk space: %w", err)
+		}
+		if free < 2*info.Size() {
+			res.Skipped = "disk"
+			return res, nil
+		}
+	}
+
+	d, err := OpenExistingRW(dbPath, compactBusy)
+	if err != nil {
+		return res, err
+	}
+	defer d.Close()
+	current, err := d.schemaCurrentErr()
+	if err != nil {
+		return res, err
+	}
+	if !current {
+		res.Skipped = "schema_pending"
+		return res, nil
+	}
+
+	start := time.Now()
+	if res.BytesBefore, err = fileSize(dbPath); err != nil {
+		return res, err
+	}
+	if err := vacuumWithCheckpoints(ctx, d); err != nil {
+		if ctx.Err() != nil {
+			res.Skipped = "interrupted"
+			return res, nil
+		}
+		return res, compactFailed(d, opts.Version, &res, err)
+	}
+	if res.BytesAfter, err = fileSize(dbPath); err != nil {
+		return res, err
+	}
+	res.DurationMS = time.Since(start).Milliseconds()
+	if err := recordCompaction(d); err != nil {
+		return res, err
+	}
+	res.Compacted = true
+	return res, nil
+}
+
+// vacuumWithCheckpoints runs checkpoint, VACUUM, checkpoint. The first two
+// honour ctx (the VACUUM through sqlite3_interrupt); the last runs to the
+// end once the VACUUM has committed. A checkpoint that reports busy (a
+// reader still on an older snapshot) is not an error.
+func vacuumWithCheckpoints(ctx context.Context, d *DB) error {
+	if err := walCheckpointTruncate(ctx, d); err != nil {
+		return err
+	}
+	if compactVacuumHook != nil {
+		compactVacuumHook()
+	}
+	if _, err := d.ExecContext(ctx, compactVacuumSQL); err != nil {
+		return fmt.Errorf("vacuum: %w", err)
+	}
+	return walCheckpointTruncate(context.WithoutCancel(ctx), d)
+}
+
+func walCheckpointTruncate(ctx context.Context, d *DB) error {
+	var busy, logFrames, checkpointed int64
+	if err := d.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return fmt.Errorf("wal checkpoint: %w", err)
+	}
+	return nil
+}
+
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("checking database %s: %w", path, err)
+	}
+	return info.Size(), nil
+}
+
+// recordCompaction stores the highest applied goose version and the time in
+// one write transaction and clears the failure counter.
+func recordCompaction(d *DB) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return fmt.Errorf("recording the compaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var version int64
+	if err := tx.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil {
+		return fmt.Errorf("recording the compaction: reading goose version: %w", err)
+	}
+	if err := writeMaintenance(tx, maintLastCompactedVersion, strconv.FormatInt(version, 10)); err != nil {
+		return fmt.Errorf("recording the compaction: %w", err)
+	}
+	if err := writeMaintenance(tx, maintCompactedAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("recording the compaction: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM db_maintenance WHERE key IN (?, ?)`, maintCompactFailures, maintCompactFailuresVersion); err != nil {
+		return fmt.Errorf("recording the compaction: clearing the failure counter: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("recording the compaction: %w", err)
+	}
+	return nil
+}
+
+// compactFailed counts vacErr in compact_failures — restarting at 1 when
+// compact_failures_version is not version — and fills res. It returns the
+// error to hand back: vacErr, joined with the counter write's error if that
+// failed too.
+func compactFailed(d *DB, version string, res *CompactResult, vacErr error) error {
+	res.Error = vacErr.Error()
+	failures, err := countCompactFailure(d, version)
+	if err != nil {
+		return errors.Join(vacErr, fmt.Errorf("recording the compaction failure: %w", err))
+	}
+	res.Failures = failures
+	res.GaveUp = failures >= compactMaxFailures
+	return vacErr
+}
+
+func countCompactFailure(d *DB, version string) (int, error) {
+	tx, err := d.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var failures int64
+	failedVersion, ok, err := readMaintenance(tx, maintCompactFailuresVersion)
+	if err != nil {
+		return 0, err
+	}
+	if ok && failedVersion == version {
+		if failures, err = readMaintenanceInt(tx, maintCompactFailures); err != nil {
+			return 0, err
+		}
+	}
+	failures++
+	if err := writeMaintenance(tx, maintCompactFailures, strconv.FormatInt(failures, 10)); err != nil {
+		return 0, err
+	}
+	if err := writeMaintenance(tx, maintCompactFailuresVersion, version); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(failures), nil
+}
+
+func writeMaintenance(tx *sql.Tx, key, value string) error {
+	_, err := tx.Exec(`INSERT INTO db_maintenance (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	if err != nil {
+		return fmt.Errorf("writing db_maintenance %s: %w", key, err)
+	}
+	return nil
 }

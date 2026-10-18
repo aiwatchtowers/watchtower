@@ -428,36 +428,55 @@ var embeddedMigrationVersions = sync.OnceValues(func() ([]int64, error) {
 // migration as applied — so goose.Up would have nothing to do. A failed read
 // reads false: the locked path then decides, as before.
 func (db *DB) schemaCurrent() bool {
+	current, err := db.schemaCurrentErr()
+	return err == nil && current
+}
+
+// schemaCurrentErr is schemaCurrent with its read errors returned, for the
+// callers that must tell a pending schema from a busy or unreadable file
+// (compaction). A file without goose_db_version (a new file) is not current
+// and not an error.
+func (db *DB) schemaCurrentErr() (bool, error) {
 	var mode string
-	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || !strings.EqualFold(mode, "wal") {
-		return false
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return false, fmt.Errorf("reading journal_mode: %w", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return false, nil
 	}
 	want, err := embeddedMigrationVersions()
 	if err != nil {
-		return false
+		return false, err
+	}
+	var hasTable bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version')`).Scan(&hasTable); err != nil {
+		return false, fmt.Errorf("looking up goose_db_version: %w", err)
+	}
+	if !hasTable {
+		return false, nil
 	}
 	rows, err := db.Query(`SELECT version_id FROM goose_db_version WHERE is_applied = 1`)
 	if err != nil {
-		return false // no version table yet: a new file
+		return false, fmt.Errorf("reading goose_db_version: %w", err)
 	}
 	defer rows.Close()
 	applied := map[int64]bool{}
 	for rows.Next() {
 		var v int64
 		if err := rows.Scan(&v); err != nil {
-			return false
+			return false, fmt.Errorf("reading goose_db_version: %w", err)
 		}
 		applied[v] = true
 	}
-	if rows.Err() != nil {
-		return false
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("reading goose_db_version: %w", err)
 	}
 	for _, v := range want {
 		if !applied[v] {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // SchemaCurrent is schemaCurrent for callers outside the package: true when
