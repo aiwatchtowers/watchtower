@@ -165,6 +165,48 @@ func TestSchemaDrift_SkippedForNewerDatabase(t *testing.T) {
 	assertTableGone(t, d, "external_connections")
 }
 
+// TestCheckSchemaDrift_ToleratesLeftoverAgentLogTables: the analytics tables
+// moved to agentlog.db (#849) and left schema.sql, but 00116/00125 still
+// create them in watchtower.db, where they stay empty until a later release
+// drops them. Drift checking neither reports those leftovers nor recreates
+// them once they are gone.
+func TestCheckSchemaDrift_ToleratesLeftoverAgentLogTables(t *testing.T) {
+	t.Parallel()
+	tables := []string{"agent_log_events", "agent_log_sessions", "agent_log_files"}
+	for _, table := range tables {
+		assert.NotContains(t, declaredTables, table)
+	}
+
+	path := filepath.Join(t.TempDir(), "leftover.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	require.NoError(t, d.CheckSchemaDrift(), "the leftover tables are not drift")
+	for _, table := range tables {
+		assertTableExists(t, d, table)
+		var n int
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM `+table).Scan(&n))
+		assert.Zero(t, n, table)
+	}
+
+	_, err = d.Exec(`DROP VIEW agent_log_session_totals`)
+	require.NoError(t, err)
+	for _, table := range tables {
+		dropTable(t, d, table)
+	}
+	require.NoError(t, d.CheckSchemaDrift(), "dropped leftovers are not drift")
+	require.NoError(t, d.Close())
+
+	d2, err := Open(path)
+	require.NoError(t, err)
+	defer d2.Close()
+	for _, table := range tables {
+		assertTableGone(t, d2, table)
+	}
+	var views int
+	require.NoError(t, d2.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'agent_log_session_totals'`).Scan(&views))
+	assert.Zero(t, views, "the view is not recreated either")
+}
+
 func TestReplayableMigrations(t *testing.T) {
 	migrations, err := loadMigrations()
 	require.NoError(t, err)
