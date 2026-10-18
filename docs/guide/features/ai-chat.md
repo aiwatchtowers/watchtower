@@ -43,15 +43,7 @@ Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same 
 
 ### Artifacts
 
-Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. See [Artifacts in the AI Chat](ai-chat-artifacts.md).
-
-### Publishing to claude.ai
-
-On the Claude provider, signed in with a claude.ai account, a page, a slide deck or a document you ask for in the main chat is published privately to your claude.ai account instead of the artifact panel. Say "keep it in the app" to get the in-app artifact instead. Drafts to send, tables and code stay in the panel.
-
-The reply ends with a **Published on claude.ai** card naming the page. **Open in Browser** opens it on claude.ai; **Copy Link** copies the link. Only you can see the page until you share it on claude.ai yourself. Asking for a change in the same chat publishes the new version to the same link; once that chat has restarted (after a quiet spell or a settings change), updating the old page waits for your Approve first.
-
-With an API key, Bedrock, Vertex, Foundry, Codex or Ollama the chat cannot publish. It says so and gives you the in-app artifact.
+Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. On the Claude provider a page, deck or doc is published to your claude.ai account instead. See [Artifacts in the AI Chat](ai-chat-artifacts.md).
 
 ### Ask about a passage
 

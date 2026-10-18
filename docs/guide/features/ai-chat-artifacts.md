@@ -22,6 +22,14 @@ An HTML page, such as a slide deck, shows rendered in the panel once it is fully
 
 Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 
+### Publishing to claude.ai
+
+On the Claude provider, signed in with a claude.ai account, a page, a slide deck or a document you ask for in the main chat is published privately to your claude.ai account instead of the artifact panel. Say "keep it in the app" to get the in-app artifact instead. Drafts to send, tables and code stay in the panel.
+
+The reply ends with a **Published on claude.ai** card naming the page. **Open in Browser** opens it on claude.ai; **Copy Link** copies the link. Only you can see the page until you share it on claude.ai yourself. Asking for a change in the same chat publishes the new version to the same link; once that chat has restarted (after a quiet spell or a settings change), updating the old page waits for your Approve first.
+
+With an API key, Bedrock, Vertex, Foundry, Codex or Ollama the chat cannot publish. It says so and gives you the in-app artifact.
+
 ## When it's empty or wrong
 
 - **An HTML page shows nothing yet.** It renders once it is fully written.
