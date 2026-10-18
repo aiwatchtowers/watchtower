@@ -20,6 +20,7 @@ import (
 
 type fixture struct {
 	t      *testing.T
+	dir    string // holds w.db and agentlog.db
 	d      *db.DB // watchtower.db
 	al     *agentlogdb.DB
 	claude string
@@ -43,7 +44,7 @@ func newFixture(t *testing.T) *fixture {
 	wb, err := d.CreateWorkbench("app", folder)
 	require.NoError(t, err)
 	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
-	return &fixture{t: t, d: d, al: al, claude: t.TempDir(), folder: folder, wb: wb}
+	return &fixture{t: t, dir: dir, d: d, al: al, claude: t.TempDir(), folder: folder, wb: wb}
 }
 
 // write appends content to the transcript of session sid whose cwd is cwd.
@@ -533,6 +534,54 @@ func TestScan_RefusesBeforeMove(t *testing.T) {
 	require.NoError(t, err)
 	r := f.scan()
 	assert.Equal(t, 1, r.Sessions, "the scan runs once the move is done")
+}
+
+// The move's purpose: an install whose transcripts watchtower.db already read
+// to the end keeps every read offset, so the first scan after the move reads
+// nothing and writes no event (no reparse of the whole history from 0).
+func TestScan_AfterMoveFullyReadFilesStayUnchanged(t *testing.T) {
+	f := newFixture(t)
+	path := f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5)+call(t, "s1", f.folder, "u2", "m2", "r2", 7))
+	require.Equal(t, 1, f.scan().FilesScanned)
+
+	// watchtower.db as a pre-#849 install left it: the fixture's scan copied
+	// into its agent_log_* tables (same column order as agentlog.db's).
+	_, err := f.d.Exec(`ATTACH DATABASE ? AS src`, filepath.Join(f.dir, "agentlog.db"))
+	require.NoError(t, err)
+	for _, table := range []string{"agent_log_files", "agent_log_sessions", "agent_log_events"} {
+		_, err = f.d.Exec(`INSERT INTO main.` + table + ` SELECT * FROM src.` + table)
+		require.NoError(t, err)
+	}
+	_, err = f.d.Exec(`DETACH DATABASE src`)
+	require.NoError(t, err)
+	st, err := os.Stat(path)
+	require.NoError(t, err)
+	var size, offset int64
+	var version int
+	require.NoError(t, f.d.QueryRow(`SELECT size, read_offset, parser_version FROM agent_log_files WHERE path = ?`, path).
+		Scan(&size, &offset, &version))
+	require.Equal(t, st.Size(), size)
+	require.Equal(t, size, offset, "read to the end")
+	require.Equal(t, ParserVersion, version)
+	var events int
+	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&events))
+	require.Positive(t, events)
+
+	dir := t.TempDir()
+	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { al.Close() })
+	_, err = agentlogdb.MoveFromMain(context.Background(), f.d, al, filepath.Join(dir, "agentlog.db.move.lock"))
+	require.NoError(t, err)
+
+	r, err := Scan(context.Background(), f.d, al, f.wb, Options{ClaudeDir: f.claude})
+	require.NoError(t, err)
+	assert.Zero(t, r.FilesScanned)
+	assert.Equal(t, 1, r.FilesSkipped, "the moved ledger row says unchanged")
+	assert.Zero(t, r.EventsWritten)
+	var after int
+	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&after))
+	assert.Equal(t, events, after)
 }
 
 // importProgress reads the fixture workbench's agent_log_import row.
