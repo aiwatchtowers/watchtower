@@ -66,14 +66,6 @@ final class RunAutomationShortcutTests: XCTestCase {
         XCTAssertFalse(navigation.contains("RunAutomation"), "no per-destination branch")
     }
 
-    func testPaletteRefusedWhenFeatureOff() throws {
-        try withAppState { appState in
-            appState.featureVisibility.disabledFeatureIDs = ["automations"]
-            appState.showRunAutomationPalette(windows: []) {}
-            XCTAssertFalse(appState.isRunAutomationPaletteShown)
-        }
-    }
-
     func testCommandKUnchangedOnWorkbenchAndChat() throws {
         let files = try Self.swiftSources()
         let commandK = files.filter { $0.text.contains(#".keyboardShortcut("k", modifiers: .command)"#) }

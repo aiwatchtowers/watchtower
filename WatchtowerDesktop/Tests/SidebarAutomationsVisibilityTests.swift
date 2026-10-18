@@ -3,30 +3,23 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The Automations tab (spec §12.1, D12): feature id `automations`, off →
-/// the tab is hidden and a selection on it falls back to Home.
+/// The Automations tab (spec §12.1, D12): always on, no feature id.
 @MainActor
 final class SidebarAutomationsVisibilityTests: XCTestCase {
     func testTabIdentity() {
         XCTAssertEqual(SidebarDestination.automations.title, "Automations")
         XCTAssertEqual(SidebarDestination.automations.icon, "gearshape.2")
-        XCTAssertEqual(SidebarDestination.automations.requiredFeatures, ["automations"])
+        XCTAssertNil(SidebarDestination.automations.requiredFeatures)
         let root = SidebarDestination.rootItems
         let workbench = root.firstIndex(of: .workbench)
         XCTAssertEqual(root.firstIndex(of: .automations), workbench.map { $0 + 1 }, "right after Workbench")
     }
 
-    func testAutomationsHiddenWhenFeatureDisabled() {
-        XCTAssertFalse(SidebarDestination.automations.isVisible(disabledFeatures: ["automations"], connected: .all))
+    func testAutomationsAlwaysVisible() {
         XCTAssertTrue(SidebarDestination.automations.isVisible(disabledFeatures: [], connected: .none),
                       "no source gate: recipes read whatever they declare")
-    }
-
-    func testFallbackLeavesAutomationsWhenDisabled() {
-        XCTAssertEqual(
-            SidebarDestination.fallbackDestination(current: .automations, disabled: ["automations"], connected: .all),
-            .home
-        )
+        XCTAssertTrue(SidebarDestination.automations.isVisible(disabledFeatures: ["automations"], connected: .none),
+                      "an old disabled id means nothing")
         XCTAssertNil(SidebarDestination.fallbackDestination(current: .automations, disabled: [], connected: .none))
     }
 

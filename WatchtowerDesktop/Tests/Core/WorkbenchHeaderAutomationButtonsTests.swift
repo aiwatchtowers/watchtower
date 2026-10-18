@@ -199,12 +199,6 @@ final class WorkbenchHeaderAutomationButtonsTests: XCTestCase {
         XCTAssertEqual(runs, 0, "Swift writes no run; the CLI queues it")
     }
 
-    func testHiddenWhenFeatureOff() {
-        let buttons = [button(), button("lint", id: 2)]
-        XCTAssertEqual(Model.shown(buttons, featureEnabled: false), [])
-        XCTAssertEqual(Model.shown(buttons, featureEnabled: true), buttons)
-    }
-
     // MARK: - View model
 
     func testHeaderButtonsPerWorkbenchReloadOnRefresh() throws {

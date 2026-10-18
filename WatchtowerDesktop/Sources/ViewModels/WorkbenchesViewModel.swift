@@ -485,12 +485,12 @@ final class WorkbenchesViewModel {
     /// meanwhile (one follow-up rescan, not one per ask).
     @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
     @ObservationIgnored var automationRescansAgain: Set<Int64> = []
-    /// The workbenches asked for a rescan while the feature was not on
-    /// (or its state not loaded yet): rescanned once it comes on.
+    /// The workbenches asked for a rescan before the Feature Manager state
+    /// loaded: rescanned once it has.
     @ObservationIgnored var automationRescansDeferred: Set<Int64> = []
-    /// The `automations` feature is on per a successful Feature Manager
-    /// load (`AppState.isAutomationsFeatureLoadedOn`); off, no rescan runs.
-    @ObservationIgnored var isAutomationsFeatureOn: () -> Bool = { false }
+    /// A Feature Manager load has succeeded (`AppState.automationsReady`);
+    /// before that, no rescan runs (R-P5-8).
+    @ObservationIgnored var automationsReady: () -> Bool = { false }
 
     let dbPool: DatabasePool
     /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.

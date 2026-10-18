@@ -15,25 +15,17 @@ final class RunAutomationCommandTests: XCTestCase {
 
     func testSameTargetOnEveryTab() {
         for tab in tabs {
-            XCTAssertEqual(RunAutomationCommand.target(featureEnabled: true, hasCenter: true, selected: tab),
+            XCTAssertEqual(RunAutomationCommand.target(hasCenter: true, selected: tab),
                            .runAutomationPalette, String(describing: tab))
         }
-        XCTAssertTrue(RunAutomationCommand.isAvailable(featureEnabled: true, hasCenter: true))
-    }
-
-    func testUnavailableWhenFeatureOff() {
-        for tab in tabs {
-            XCTAssertEqual(RunAutomationCommand.target(featureEnabled: false, hasCenter: true, selected: tab),
-                           .unavailable, String(describing: tab))
-        }
-        XCTAssertFalse(RunAutomationCommand.isAvailable(featureEnabled: false, hasCenter: true))
+        XCTAssertTrue(RunAutomationCommand.isAvailable(hasCenter: true))
     }
 
     func testUnavailableWithoutCenter() {
         for tab in tabs {
-            XCTAssertEqual(RunAutomationCommand.target(featureEnabled: true, hasCenter: false, selected: tab),
+            XCTAssertEqual(RunAutomationCommand.target(hasCenter: false, selected: tab),
                            .unavailable, String(describing: tab))
         }
-        XCTAssertFalse(RunAutomationCommand.isAvailable(featureEnabled: true, hasCenter: false))
+        XCTAssertFalse(RunAutomationCommand.isAvailable(hasCenter: false))
     }
 }

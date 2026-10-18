@@ -303,35 +303,15 @@ struct SlackConnectionDetail: View {
         }
     }
 
-    /// The dictionary editor lives only in Automations → Reactions (ask #366);
-    /// with Automations off the pointer turns the feature on first.
+    /// The dictionary editor lives only in Automations → Reactions (ask #366).
     private var reactionDictionarySection: some View {
-        let automationsVisible = SidebarDestination.automations.isVisible(
-            disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
-            connected: appState.featureVisibility.connectedSources
-        )
-        return Section("Reaction commands") {
+        Section("Reaction commands") {
             HStack {
                 Text("Reaction commands live in Automations → Reactions")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                if automationsVisible {
-                    Button("Open") { appState.navigateToAutomations(section: .reactions) }
-                } else {
-                    Button("Turn On Automations") {
-                        Task {
-                            await appState.turnOnFeatureFromEmptyState("automations")
-                            if appState.emptyStateTurnOnError(for: "automations") == nil {
-                                appState.navigateToAutomations(section: .reactions)
-                            }
-                        }
-                    }
-                    .disabled(appState.turningOnFeatureID != nil)
-                }
-            }
-            if let error = appState.emptyStateTurnOnError(for: "automations") {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Button("Open") { appState.navigateToAutomations(section: .reactions) }
             }
         }
     }

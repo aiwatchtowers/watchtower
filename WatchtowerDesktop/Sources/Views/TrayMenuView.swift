@@ -84,7 +84,7 @@ struct TrayMenuView: View {
         // refreshes the line (and the automation rows) the moment the menu is opened.
         .onAppear {
             appState.daemonManager.checkStatus()
-            if appState.isAutomationsFeatureEnabled { appState.quickRunCenter?.reload() }
+            appState.quickRunCenter?.reload()
         }
     }
 }

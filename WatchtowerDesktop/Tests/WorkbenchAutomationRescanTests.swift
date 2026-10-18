@@ -90,7 +90,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     func testRescanOnPageOpen() async throws {
         let runner = FakeCLIRunner()
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
-        vm.isAutomationsFeatureOn = { true }
+        vm.automationsReady = { true }
 
         vm.workbenchPageOpened(projectID: 7)
 
@@ -101,7 +101,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     func testRescanOnRecipeFolderChangeDebounced() async throws {
         let runner = FakeCLIRunner()
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
-        vm.isAutomationsFeatureOn = { true }
+        vm.automationsReady = { true }
         vm.automationRescanDelay = .milliseconds(400)
         let root = watchedRoot(vm, id: 7)
 
@@ -121,7 +121,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     func testNoRescanForOtherPaths() async throws {
         let runner = FakeCLIRunner()
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
-        vm.isAutomationsFeatureOn = { true }
+        vm.automationsReady = { true }
         vm.automationRescanDelay = .milliseconds(50)
         let root = watchedRoot(vm, id: 7)
 
@@ -168,10 +168,10 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
         await waitUntil { runner.finished == 2 }
     }
 
-    /// Off, or before the Feature Manager's first successful load, no
-    /// rescan runs: the pages opened meanwhile are rescanned once each when
-    /// the feature state loads on, or the feature is turned on.
-    func testRescansAskedBeforeTheFeatureIsOnRunWhenItComesOn() async throws {
+    /// Before the Feature Manager's first successful load (or after a
+    /// failed one), no rescan runs: the pages opened meanwhile are
+    /// rescanned once each when the features list loads.
+    func testRescansAskedBeforeTheFeaturesLoadRunWhenTheyDo() async throws {
         let runner = FakeCLIRunner()
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
@@ -181,16 +181,15 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
         defer { stopWiring(appState) }
 
         vm.workbenchPageOpened(projectID: 7)
-        // A load that finds the feature off (what onDisabledChanged does).
-        appState.featureVisibility.isLoaded = true
-        appState.featureVisibility.disabledFeatureIDs = ["automations"]
+        // Not loaded (or the load failed): the sync changes nothing.
+        appState.featureVisibility.isLoaded = false
         appState.syncAutomationSessionCenter()
         vm.workbenchPageOpened(projectID: 9)
         try await Task.sleep(for: .milliseconds(200))
-        XCTAssertTrue(rescans(runner).isEmpty, "not loaded, then off")
+        XCTAssertTrue(rescans(runner).isEmpty, "not loaded")
 
-        // Turned on: each waiting workbench once.
-        appState.featureVisibility.disabledFeatureIDs = []
+        // Loaded: each waiting workbench once.
+        appState.featureVisibility.isLoaded = true
         appState.syncAutomationSessionCenter()
         await waitUntil { self.rescans(runner).count == 2 }
         XCTAssertEqual(Set(rescans(runner).map { $0.last }), ["7", "9"])
@@ -216,7 +215,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     func testRescanInFlightIsNotDuplicated() async throws {
         let runner = GatedRescanRunner()
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
-        vm.isAutomationsFeatureOn = { true }
+        vm.automationsReady = { true }
 
         vm.workbenchPageOpened(projectID: 7)
         await waitUntil { runner.started == 1 }
