@@ -44,6 +44,9 @@ final class WorkbenchNotificationCenter {
 
     @ObservationIgnored private var ownerTouched: [Int64: Set<WorkbenchSubject>] = [:]
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    /// Bumped by `stop()`: a poll begun before it sends, saves and reloads
+    /// nothing once it resumes.
+    @ObservationIgnored private var generation = 0
     private let dbPool: DatabasePool
     private let notifier: WorkbenchNotifying
     private let activityReader: WorkbenchActivityReading
@@ -72,6 +75,7 @@ final class WorkbenchNotificationCenter {
     }
 
     func stop() {
+        generation += 1
         pollTask?.cancel()
         pollTask = nil
     }
@@ -102,6 +106,7 @@ final class WorkbenchNotificationCenter {
     }
 
     func poll() async {
+        let run = generation
         let projects: [Workbench]
         do {
             projects = try await dbPool.read { try WorkbenchQueries.fetchAll($0) }
@@ -109,24 +114,28 @@ final class WorkbenchNotificationCenter {
             // Nothing to iterate and nothing to prune against: bail before
             // touching either.
             print("[WorkbenchNotifications] poll error: \(error.localizedDescription)")
-            await onPolled?()
+            if run == generation { await onPolled?() }
             return
         }
         // One project's read failing (a race with its own delete, a
         // transient I/O error) must not skip every other project's poll —
         // T18: log and move on rather than aborting the whole cycle.
         for project in projects {
+            guard run == generation else { return }
             do {
-                try await poll(project)
+                try await poll(project, run: run)
             } catch {
                 print("[WorkbenchNotifications] poll error for workbench \(project.id): \(error.localizedDescription)")
             }
         }
+        guard run == generation else { return }
         prune(keeping: Set(projects.map(\.id)))
         await onPolled?()
     }
 
-    private func poll(_ project: Workbench) async throws {
+    /// One project's read, then — unless `stop()` came meanwhile (`run` is
+    /// no longer the generation) — its notices and saved snapshot.
+    private func poll(_ project: Workbench, run: Int) async throws {
         let previous = load(project.id)
         let touchedBefore = ownerTouched[project.id] ?? []
         let watermark = previous?.lastAgentCommentID ?? 0
@@ -134,6 +143,7 @@ final class WorkbenchNotificationCenter {
         var current = try await dbPool.read {
             try reader.snapshot($0, project: project, afterAgentCommentID: watermark)
         }
+        guard run == generation else { return }
         // Writes recorded while the read ran stay pending for the next poll
         // too: their effect may or may not be in this snapshot.
         current.ownerTouched = ownerTouched[project.id] ?? []

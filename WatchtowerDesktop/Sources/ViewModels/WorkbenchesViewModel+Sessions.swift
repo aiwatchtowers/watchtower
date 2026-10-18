@@ -636,6 +636,7 @@ extension WorkbenchesViewModel {
     /// cleanup, a host reattach) still finishes: it does what the owner
     /// asked for.
     func stop() {
+        isStopped = true
         stopTitleRefresh()
         asks.stop()
         for id in gitWatching { stopGitWatching(projectID: id) }
