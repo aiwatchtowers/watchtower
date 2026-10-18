@@ -156,7 +156,7 @@ func TestKBDirty_JiraCommentDeleteMarksIssue(t *testing.T) {
 	}
 }
 
-func TestMigration00136_AddsSweepStampColumns(t *testing.T) {
+func TestMigration00138_AddsSweepStampColumns(t *testing.T) {
 	d := openTestDB(t)
 	if _, err := d.Exec(`INSERT INTO slack_accounts (team_id) VALUES ('T1')`); err != nil {
 		t.Fatal(err)

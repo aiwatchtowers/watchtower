@@ -70,6 +70,10 @@ final class WorkbenchesViewModel {
     /// Each workbench's latest methodology call: an older call's answer
     /// (a sheet's load still in flight when a picker changed) is dropped.
     @ObservationIgnored private var methodologyCallSeq: [Int64: Int] = [:]
+    /// Agent Settings → "Your instructions": the owner's texts per workbench,
+    /// and the last refusal per field (the sheet keeps its draft on one).
+    private(set) var instructions: [Int64: OwnerInstructionsState] = [:]
+    private(set) var instructionErrors: [Int64: [InstructionField: String]] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// The default agent (Settings → Workbench → Default agent, D1) as last
     /// read: menus label themselves with it. A launch reads it afresh
@@ -424,6 +428,14 @@ final class WorkbenchesViewModel {
     var switchingBranch: [GitRootKey: String] = [:]
     /// A switch Go refused until the owner confirms (dirty tree, live agent).
     var pendingBranchConfirmation: [GitRootKey: BranchSwitchConfirmation] = [:]
+    /// The popover's `git fetch origin` per repository (board #563), keyed
+    /// by its common dir: one fetch at a time, shared by its worktrees.
+    var gitFetchStates: [String: GitFetchState] = [:]
+    /// The fetch in flight per repository: owned here, not by the popover,
+    /// so closing it never cancels a fetch half way.
+    @ObservationIgnored var gitFetchTasks: [String: Task<Void, Never>] = [:]
+    /// A seam for tests: the fetch's clock.
+    @ObservationIgnored var gitFetchNow: () -> Date = Date.init
     /// The header's label when Go asked: a status showing anything else
     /// means the branch moved since, and the question is dropped.
     @ObservationIgnored var pendingBranchBase: [GitRootKey: String] = [:]
@@ -440,6 +452,9 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitWatchedDirs: [GitRootKey: [String]] = [:]
     @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored var gitActivationObserver: NSObjectProtocol?
+    /// Set for good by `stop()` (the view model was replaced): no page
+    /// watching starts or arms again, even one in flight across an await.
+    @ObservationIgnored var isStopped = false
     /// Seams for tests: the refs watcher, the dirty-dot poll's wait, the
     /// notification center, the clipboard.
     @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor (GitRefsChange) -> Void)
@@ -1105,6 +1120,53 @@ final class WorkbenchesViewModel {
         }
         await reload()
         return true
+    }
+
+    func loadInstructions(projectID: Int64) async {
+        await runInstructions(projectID: projectID, field: nil) { try await $0.instructions(workbenchID: projectID) }
+    }
+
+    /// Saves this workbench's text for one field; false = refused or failed
+    /// (the message is in `instructionErrors`, nothing was stored).
+    @discardableResult
+    func saveInstruction(projectID: Int64, field: InstructionField, body: String) async -> Bool {
+        await runInstructions(projectID: projectID, field: field) {
+            try await $0.setInstruction(field: field, workbenchID: projectID, body: body)
+        }
+    }
+
+    /// Adds or dismisses one suggestion; the answer carries this workbench's texts.
+    func decideSuggestion(projectID: Int64, field: InstructionField, id: Int64, add: Bool) async {
+        await runInstructions(projectID: projectID, field: field) { cli in
+            _ = try await cli.decideSuggestion(id: id, add: add)
+            return try await cli.instructions(workbenchID: projectID)
+        }
+    }
+
+    @discardableResult
+    private func runInstructions(
+        projectID: Int64,
+        field: InstructionField?,
+        _ call: (WorkbenchCLI) async throws -> OwnerInstructionsState
+    ) async -> Bool {
+        guard let cli else {
+            setInstructionError("The watchtower command-line tool is not available.", projectID: projectID, field: field)
+            return false
+        }
+        do {
+            instructions[projectID] = try await call(cli)
+            instructionErrors[projectID] = nil
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            setInstructionError(error.localizedDescription, projectID: projectID, field: field)
+            return false
+        }
+    }
+
+    private func setInstructionError(_ message: String, projectID: Int64, field: InstructionField?) {
+        instructionErrors[projectID, default: [:]][field ?? .session] = message
     }
 
     /// The Agent settings sheet's read (spec 2026-10-15 §8).

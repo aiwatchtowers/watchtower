@@ -15,9 +15,9 @@ final class TracksViewModelBulkDismissTests: XCTestCase {
         Set(try pool.read { try Int.fetchAll($0, sql: "SELECT id FROM tracks WHERE dismissed_at = ''") })
     }
 
-    func testDismissSelectedDismissesExactlyTheSelectionAndEndsSelecting() throws {
+    func testDismissSelectedDismissesExactlyTheSelectionAndEndsSelecting() async throws {
         let (vm, pool) = try makeVM()
-        let ids = try pool.write { db in try (0..<3).map { _ in Int(try TestDatabase.insertTrack(db)) } }
+        let ids = try await pool.write { db in try (0..<3).map { _ in Int(try TestDatabase.insertTrack(db)) } }
         vm.showRead = true
         vm.load()
         vm.isSelecting = true
@@ -26,7 +26,7 @@ final class TracksViewModelBulkDismissTests: XCTestCase {
         vm.toggleSelection(ids[1])
         XCTAssertEqual(vm.selectedIDs, [ids[0]])
 
-        vm.dismissTracks(ids: vm.selectedIDs.sorted())
+        await vm.dismissTracks(ids: vm.selectedIDs.sorted())
 
         XCTAssertEqual(try activeIDs(pool), [ids[1], ids[2]])
         XCTAssertFalse(vm.isSelecting)
@@ -34,9 +34,9 @@ final class TracksViewModelBulkDismissTests: XCTestCase {
         XCTAssertNil(vm.errorMessage)
     }
 
-    func testSelectAllVisibleAndAutoIDsForConfirmation() throws {
+    func testSelectAllVisibleAndAutoIDsForConfirmation() async throws {
         let (vm, pool) = try makeVM()
-        let ids = try pool.write { db in
+        let ids = try await pool.write { db in
             let ids = try (0..<3).map { _ in Int(try TestDatabase.insertTrack(db)) }
             try db.execute(sql: "UPDATE tracks SET origin = 'custom' WHERE id = ?", arguments: [ids[2]])
             return ids
@@ -49,28 +49,28 @@ final class TracksViewModelBulkDismissTests: XCTestCase {
         let auto = try XCTUnwrap(vm.activeAutoTrackIDs())
         XCTAssertEqual(auto, [ids[0], ids[1]], "the confirmation counts auto tracks only")
         // A track the daemon adds after the dialog opened is not swept up.
-        let late = try pool.write { db in Int(try TestDatabase.insertTrack(db)) }
-        vm.dismissTracks(ids: auto)
+        let late = try await pool.write { db in Int(try TestDatabase.insertTrack(db)) }
+        await vm.dismissTracks(ids: auto)
         XCTAssertEqual(try activeIDs(pool), [ids[2], late])
     }
 
-    func testNoAutoTracksAndPartialDismissAreReported() throws {
+    func testNoAutoTracksAndPartialDismissAreReported() async throws {
         let (vm, pool) = try makeVM()
         XCTAssertNil(vm.activeAutoTrackIDs())
         XCTAssertEqual(vm.notice, "No active auto tracks to dismiss.")
 
-        let ids = try pool.write { db in try (0..<2).map { _ in Int(try TestDatabase.insertTrack(db)) } }
-        try pool.write { db in try TrackQueries.dismiss(db, id: ids[0]) }
+        let ids = try await pool.write { db in try (0..<2).map { _ in Int(try TestDatabase.insertTrack(db)) } }
+        try await pool.write { db in try TrackQueries.dismiss(db, id: ids[0]) }
         vm.notice = nil
-        vm.dismissTracks(ids: ids)
+        await vm.dismissTracks(ids: ids)
         XCTAssertEqual(vm.notice, "Dismissed 1 of 2; the rest were already dismissed or gone.")
     }
 
-    func testDismissFailureIsReported() throws {
+    func testDismissFailureIsReported() async throws {
         let (vm, pool) = try makeVM()
-        try pool.write { db in try db.execute(sql: "DROP TABLE tracks") }
+        try await pool.write { db in try db.execute(sql: "DROP TABLE tracks") }
         vm.isSelecting = true
-        vm.dismissTracks(ids: [1])
+        await vm.dismissTracks(ids: [1])
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertTrue(vm.isSelecting, "a failed write keeps the selection")
     }

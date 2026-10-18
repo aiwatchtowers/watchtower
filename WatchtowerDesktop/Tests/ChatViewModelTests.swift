@@ -90,12 +90,68 @@ final class ChatViewModelTests: XCTestCase {
         return activePath(id).last { $0.isUser }?.id
     }
 
+    // MARK: - Busy writer (board #670)
+
+    /// The turn's rows await the writer: while they wait the composer takes
+    /// no second send, the turn goes out once they exist, and text typed
+    /// meanwhile stays in the composer.
+    func testASendWhileTheWriterIsBusySendsOnceAndKeepsTextTypedMeanwhile() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        vm.draft = "first"
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        let sending = Task { await vm.sendDraft() }
+        let starting = await eventually { vm.isStartingTurn }
+        XCTAssertTrue(starting)
+        XCTAssertTrue(vm.isBusy)
+        XCTAssertEqual(vm.draft, "", "the sent text leaves the composer at once")
+        vm.draft += "typed meanwhile"
+        let second = await vm.send(text: "again")
+        XCTAssertFalse(second, "one send at a time")
+
+        held.release()
+        await sending.value
+        XCTAssertEqual(vm.draft, "typed meanwhile", "only what was typed after the send stays")
+        XCTAssertEqual(activePath(convID).filter(\.isUser).map(\.text), ["first"])
+        XCTAssertEqual(try lastFake().turns.count, 1)
+    }
+
+    /// A send whose rows cannot be written puts its text back, ahead of
+    /// what was typed while it waited.
+    func testAFailedSendPutsItsTextBackAheadOfTextTypedMeanwhile() async throws {
+        let vm = try makeViewModel()
+        _ = await vm.newConversation()
+        try await dbManager.dbPool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_user BEFORE INSERT ON chat_messages WHEN NEW.role = 'user'
+                BEGIN SELECT RAISE(ABORT, 'boom'); END
+                """)
+        }
+        vm.draft = "first"
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        let sending = Task { await vm.sendDraft() }
+        let starting = await eventually { vm.isStartingTurn }
+        XCTAssertTrue(starting)
+        vm.draft = "more"
+        held.release()
+        await sending.value
+
+        XCTAssertEqual(vm.draft, "first\nmore")
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
     // MARK: - CHAT-01
 
     /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
-    func testChat01UserMessageIsPersistedBeforeTheTurnIsSent() throws {
+    func testChat01UserMessageIsPersistedBeforeTheTurnIsSent() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
         let fake = try lastFake()
         let db = dbManager.dbPool
         var userRowsAtSend: [String] = []
@@ -106,22 +162,24 @@ final class ChatViewModelTests: XCTestCase {
                                     arguments: [convID])
             }) ?? []
         }
-        XCTAssertTrue(vm.send(text: "hello"))
+        let sent = await vm.send(text: "hello")
+        XCTAssertTrue(sent)
         XCTAssertEqual(userRowsAtSend, ["hello"])
     }
 
     /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
-    func testChat01NothingIsSentWhenTheMessageCannotBeSaved() throws {
+    func testChat01NothingIsSentWhenTheMessageCannotBeSaved() async throws {
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
-        try dbManager.dbPool.write { d in
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
+        try await dbManager.dbPool.write { d in
             try d.execute(sql: """
                 CREATE TRIGGER fail_user BEFORE INSERT ON chat_messages WHEN NEW.role = 'user'
                 BEGIN SELECT RAISE(ABORT, 'boom'); END
                 """)
         }
         vm.draft = "hello"
-        vm.sendDraft()
+        await vm.sendDraft()
         XCTAssertTrue(try lastFake().turns.isEmpty)
         XCTAssertEqual(vm.draft, "hello", "the owner's text stays in the composer")
         XCTAssertNotNil(vm.errorMessage)
@@ -130,8 +188,9 @@ final class ChatViewModelTests: XCTestCase {
     /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
     func testChat01PartialTextSurvivesStop() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         let fake = try lastFake()
         fake.emit(.textDelta(turnID: "turn-1", text: "Hel"))
         fake.emit(.textDelta(turnID: "turn-1", text: "lo"))
@@ -149,8 +208,9 @@ final class ChatViewModelTests: XCTestCase {
     /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
     func testChat01PartialTextSurvivesProcessDeathAndTheNextTurnResumes() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         let fake = try lastFake()
         fake.emit(.sessionReady(sessionID: "sess-1", provider: "claude", model: "m"))
         fake.emit(.textDelta(turnID: "turn-1", text: "half"))
@@ -159,7 +219,8 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(persisted)
         XCTAssertEqual(try lastAssistant(convID)?.text, "half")
 
-        XCTAssertTrue(vm.send(text: "again"))
+        let sent = await vm.send(text: "again")
+        XCTAssertTrue(sent)
         XCTAssertEqual(fakes.count, 2, "a dead session is respawned")
         XCTAssertEqual(try lastFake().argument(after: "--resume"), "sess-1")
     }
@@ -170,15 +231,16 @@ final class ChatViewModelTests: XCTestCase {
     /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
     func testChat01RegenerateRowExistsUnderTheNewTurnIDWhenSent() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a1")
         let fake = try lastFake()
         var atSend: [ChatMessageRecord] = []
         fake.onSend = { [weak self] command in
             if case .turn = command { atSend = self?.activePath(convID) ?? [] }
         }
-        vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
+        await vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(fake.turns.last?.turnID, "turn-2")
         XCTAssertEqual(atSend.map(\.role), ["user", "assistant"])
         XCTAssertEqual(atSend.map(\.turnID), ["turn-1", "turn-2"])
@@ -188,15 +250,16 @@ final class ChatViewModelTests: XCTestCase {
     /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
     func testChat01EditRowsExistUnderTheNewTurnIDWhenSent() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a1")
         let fake = try lastFake()
         var atSend: [ChatMessageRecord] = []
         fake.onSend = { [weak self] command in
             if case .turn = command { atSend = self?.activePath(convID) ?? [] }
         }
-        vm.edit(messageID: try XCTUnwrap(vm.thread.first?.id), newText: "q2")
+        await vm.edit(messageID: try XCTUnwrap(vm.thread.first?.id), newText: "q2")
         XCTAssertEqual(fake.turns.last?.turnID, "turn-2")
         XCTAssertEqual(atSend.map(\.text), ["q2", ""])
         XCTAssertEqual(atSend.map(\.turnID), ["turn-2", "turn-2"])
@@ -208,10 +271,12 @@ final class ChatViewModelTests: XCTestCase {
     /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
     func testChat01FailedSendKeepsTheOwnerMessageAnswered() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
         let fake = try lastFake()
         fake.sendError = CocoaError(.fileWriteUnknown)
-        XCTAssertTrue(vm.send(text: "q"))
+        let sent = await vm.send(text: "q")
+        XCTAssertTrue(sent)
         let failed = await waitForCondition { vm.thread.last?.message.status == "error" }
         XCTAssertTrue(failed)
         XCTAssertEqual(vm.thread.map(\.message.role), ["user", "assistant"])
@@ -221,7 +286,8 @@ final class ChatViewModelTests: XCTestCase {
         fake.onSend = { [weak self] command in
             if case .turn = command { atSend = self?.activePath(convID) ?? [] }
         }
-        XCTAssertTrue(vm.send(text: "q2"))
+        let sent2 = await vm.send(text: "q2")
+        XCTAssertTrue(sent2)
         XCTAssertEqual(atSend.map(\.role), ["user", "assistant", "user", "assistant"])
         XCTAssertEqual(atSend.map(\.status), ["complete", "error", "complete", "partial"])
         XCTAssertEqual(fake.turns.last?.replay, true, "a failed turn forces a replay")
@@ -231,15 +297,16 @@ final class ChatViewModelTests: XCTestCase {
     /// the next turn first records that question as answered-by-nothing
     /// (`partial`, empty), so the replay keeps it instead of dropping it.
     /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
-    func testChat01LegacyUnansweredQuestionIsKeptBeforeTheNextTurn() throws {
-        let (convID, question) = try dbManager.dbPool.write { d in
+    func testChat01LegacyUnansweredQuestionIsKeptBeforeTheNextTurn() async throws {
+        let (convID, question) = try await dbManager.dbPool.write { d in
             let conv = try TestDatabase.insertChatConversation(d, title: "Old")
             let user = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "user", text: "old q")
             return (conv, user)
         }
         let vm = try makeViewModel()
         vm.select(conversationID: convID)
-        XCTAssertTrue(vm.send(text: "next"))
+        let sent = await vm.send(text: "next")
+        XCTAssertTrue(sent)
         let path = activePath(convID)
         XCTAssertEqual(path.map(\.role), ["user", "assistant", "user", "assistant"])
         XCTAssertEqual(path[0].id, question)
@@ -252,8 +319,10 @@ final class ChatViewModelTests: XCTestCase {
 
     func testTurnKeepsPersistingAfterViewModelIsReleased() async throws {
         var vm: ChatViewModel? = try makeViewModel()
-        let convID = try XCTUnwrap(vm?.newConversation())
-        XCTAssertEqual(vm?.send(text: "q"), true)
+        let created = await vm?.newConversation()
+        let convID = try XCTUnwrap(created)
+        let sent = await vm?.send(text: "q")
+        XCTAssertEqual(sent, true)
         let fake = try lastFake()
         weak var released = vm
         vm = nil
@@ -271,10 +340,11 @@ final class ChatViewModelTests: XCTestCase {
 
     func testSwitchingConversationMidTurnAndBackShowsTheLiveTurn() async throws {
         let vm = try makeViewModel()
-        let first = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let first = try XCTUnwrap(created)
+        await vm.send(text: "q")
         let firstFake = try lastFake()
-        _ = vm.newConversation()
+        _ = await vm.newConversation()
 
         firstFake.emit(.textDelta(turnID: "turn-1", text: "Hel"))
         _ = await waitForCondition { self.pool.client(for: first)?.liveTurn?.fullText == "Hel" }
@@ -296,12 +366,14 @@ final class ChatViewModelTests: XCTestCase {
     func testFourthConversationWaitsForAFreeSession() async throws {
         let vm = try makeViewModel()
         for index in 1...3 {
-            _ = vm.newConversation()
-            XCTAssertTrue(vm.send(text: "q\(index)"))
+            _ = await vm.newConversation()
+            let sent = await vm.send(text: "q\(index)")
+            XCTAssertTrue(sent)
         }
         XCTAssertEqual(fakes.count, 3)
-        _ = vm.newConversation()
-        XCTAssertTrue(vm.send(text: "q4"))
+        _ = await vm.newConversation()
+        let sent2 = await vm.send(text: "q4")
+        XCTAssertTrue(sent2)
         XCTAssertEqual(fakes.count, 3, "a busy session is never evicted")
         XCTAssertTrue(vm.isWaitingForSession)
         XCTAssertTrue(vm.isStreaming, "a held turn counts as running: no second send")
@@ -314,14 +386,15 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     /// Stopping a held turn keeps its owner message answered (`partial`).
-    func testStoppingAHeldTurnLeavesAPartialReply() throws {
+    func testStoppingAHeldTurnLeavesAPartialReply() async throws {
         let vm = try makeViewModel()
         for index in 1...3 {
-            _ = vm.newConversation()
-            vm.send(text: "q\(index)")
+            _ = await vm.newConversation()
+            await vm.send(text: "q\(index)")
         }
-        let waiting = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q4")
+        let created = await vm.newConversation()
+        let waiting = try XCTUnwrap(created)
+        await vm.send(text: "q4")
         XCTAssertTrue(vm.isWaitingForSession)
         vm.stop()
         XCTAssertFalse(vm.isStreaming)
@@ -334,13 +407,14 @@ final class ChatViewModelTests: XCTestCase {
     func testSendAfterStoppingAHeldTurnReplays() async throws {
         let vm = try makeViewModel()
         for index in 1...3 {
-            _ = vm.newConversation()
-            vm.send(text: "q\(index)")
+            _ = await vm.newConversation()
+            await vm.send(text: "q\(index)")
         }
-        _ = vm.newConversation()
-        vm.send(text: "q4")
+        _ = await vm.newConversation()
+        await vm.send(text: "q4")
         vm.stop()
-        XCTAssertTrue(vm.send(text: "q5"))
+        let sentResult = await vm.send(text: "q5")
+        XCTAssertTrue(sentResult)
         XCTAssertTrue(vm.isWaitingForSession)
 
         fakes[0].emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
@@ -355,8 +429,8 @@ final class ChatViewModelTests: XCTestCase {
     func testDeltasDoNotInvalidateTheThread() async throws {
         final class Flag: @unchecked Sendable { var fired = false }
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        vm.send(text: "q")
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
         let fake = try lastFake()
         let flag = Flag()
         withObservationTracking { _ = vm.thread } onChange: { flag.fired = true }
@@ -368,8 +442,8 @@ final class ChatViewModelTests: XCTestCase {
 
     // MARK: - Legacy (skeleton Review Focus #1)
 
-    func testContinuingLegacyConversationResumesItsSession() throws {
-        let (convID, lastID) = try dbManager.dbPool.write { d in
+    func testContinuingLegacyConversationResumesItsSession() async throws {
+        let (convID, lastID) = try await dbManager.dbPool.write { d in
             let conv = try TestDatabase.insertChatConversation(d, title: "Old", sessionID: "sess-legacy")
             let user = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "user", text: "old q")
             let asst = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "old a", parentID: user)
@@ -379,7 +453,8 @@ final class ChatViewModelTests: XCTestCase {
         vm.select(conversationID: convID)
         XCTAssertEqual(vm.thread.map(\.message.text), ["old q", "old a"])
 
-        XCTAssertTrue(vm.send(text: "next"))
+        let sent = await vm.send(text: "next")
+        XCTAssertTrue(sent)
         let fake = try lastFake()
         XCTAssertEqual(fake.argument(after: "--resume"), "sess-legacy")
         XCTAssertEqual(fake.turns.last?.replay, false, "the resumed session already holds this history")
@@ -389,8 +464,8 @@ final class ChatViewModelTests: XCTestCase {
 
     /// The stored claude session saw only the claude turns: when another
     /// provider answered last, resuming it without a replay would skip them.
-    func testResumedSessionReplaysWhenAnotherProviderAnsweredLast() throws {
-        let convID = try dbManager.dbPool.write { d in
+    func testResumedSessionReplaysWhenAnotherProviderAnsweredLast() async throws {
+        let convID = try await dbManager.dbPool.write { d in
             let conv = try TestDatabase.insertChatConversation(d, sessionID: "sess-1", provider: "claude")
             let user = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "user", text: "q")
             let asst = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "a", parentID: user)
@@ -399,16 +474,17 @@ final class ChatViewModelTests: XCTestCase {
         }
         let vm = try makeViewModel()
         vm.select(conversationID: convID)
-        XCTAssertTrue(vm.send(text: "next"))
+        let sent = await vm.send(text: "next")
+        XCTAssertTrue(sent)
         XCTAssertEqual(try lastFake().argument(after: "--resume"), "sess-1")
         XCTAssertEqual(try lastFake().turns.last?.replay, true)
     }
 
     /// A newest reply that failed, or was cut before any text, may never
     /// have reached the provider: a `--resume` spawn must replay past it.
-    func testResumedSessionReplaysWhenTheNewestReplyNeverProvablyArrived() throws {
+    func testResumedSessionReplaysWhenTheNewestReplyNeverProvablyArrived() async throws {
         for status in ["error", "partial"] {
-            let convID = try dbManager.dbPool.write { d in
+            let convID = try await dbManager.dbPool.write { d in
                 let conv = try TestDatabase.insertChatConversation(d, sessionID: "sess-\(status)", provider: "claude")
                 let user = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "user", text: "q")
                 let asst = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "",
@@ -418,7 +494,8 @@ final class ChatViewModelTests: XCTestCase {
             }
             let vm = try makeViewModel()
             vm.select(conversationID: convID)
-            XCTAssertTrue(vm.send(text: "next"))
+            let sent = await vm.send(text: "next")
+            XCTAssertTrue(sent)
             XCTAssertEqual(try lastFake().argument(after: "--resume"), "sess-\(status)")
             XCTAssertEqual(try lastFake().turns.last?.replay, true, "newest reply is \(status)")
         }
@@ -430,8 +507,9 @@ final class ChatViewModelTests: XCTestCase {
     /// from the turn that proposed those actions.
     func testRegenerateAndEditDropTheOutcomesBlock() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a1")
         let applied = AgentActionFeed.timestampString(Date().addingTimeInterval(60))
         _ = try await dbManager.dbPool.write { d in
@@ -441,11 +519,11 @@ final class ChatViewModelTests: XCTestCase {
         _ = await waitForCondition { vm.actionFeed.rows.count == 1 }
         XCTAssertNotNil(vm.actionFeed.outcomesBlock(after: vm.thread.first?.message.createdDate))
 
-        vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
+        await vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(try lastFake().turns.last?.text, "q")
         try await complete(vm, turn: "turn-2", text: "a2")
 
-        vm.edit(messageID: try XCTUnwrap(vm.thread.first?.id), newText: "q2")
+        await vm.edit(messageID: try XCTUnwrap(vm.thread.first?.id), newText: "q2")
         XCTAssertEqual(try lastFake().turns.last?.text, "q2")
     }
 
@@ -453,9 +531,9 @@ final class ChatViewModelTests: XCTestCase {
     /// message is what was typed, and a regenerate re-sends the typed text.
     func testScreenBlockIsSentButNotStored() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
+        _ = await vm.newConversation()
         let screen = ScreenContext(tab: "Inbox", status: nil, selected: nil)
-        vm.send(text: "how do I snooze?", screen: screen)
+        await vm.send(text: "how do I snooze?", screen: screen)
         let sent = try XCTUnwrap(lastFake().turns.last?.text)
         XCTAssertTrue(sent.hasPrefix("=== CURRENT SCREEN ==="))
         XCTAssertTrue(sent.hasSuffix("how do I snooze?"))
@@ -466,9 +544,9 @@ final class ChatViewModelTests: XCTestCase {
     /// sent, the typed draft is stored, and the draft is cleared.
     func testSendDraftWithScreenSendsBlockAndStoresTypedText() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
+        _ = await vm.newConversation()
         vm.draft = "where is my plan?"
-        vm.sendDraft(screen: ScreenContext(tab: "Day Plan"))
+        await vm.sendDraft(screen: ScreenContext(tab: "Day Plan"))
         let sent = try XCTUnwrap(lastFake().turns.last?.text)
         XCTAssertTrue(sent.hasPrefix("=== CURRENT SCREEN ==="))
         XCTAssertTrue(sent.hasSuffix("where is my plan?"))
@@ -478,21 +556,21 @@ final class ChatViewModelTests: XCTestCase {
 
     func testRegenerateDoesNotResendScreen() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        vm.send(text: "q", screen: ScreenContext(tab: "Inbox"))
+        _ = await vm.newConversation()
+        await vm.send(text: "q", screen: ScreenContext(tab: "Inbox"))
         try await complete(vm, turn: "turn-1", text: "a1")
-        vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
+        await vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(try lastFake().turns.last?.text, "q")
     }
 
     func testRegenerateMakesASiblingReplaysAndVariantsSwitch() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        vm.send(text: "q")
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a1")
         let firstAnswer = try XCTUnwrap(vm.thread.last?.id)
 
-        vm.regenerate(messageID: firstAnswer)
+        await vm.regenerate(messageID: firstAnswer)
         let fake = try lastFake()
         XCTAssertEqual(fake.turns.last?.text, "q")
         XCTAssertEqual(fake.turns.last?.replay, true)
@@ -502,7 +580,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.thread.last?.siblingCount, 2)
 
         let previous = try XCTUnwrap(vm.variant(of: try XCTUnwrap(vm.thread.last?.id), offset: -1))
-        vm.selectVariant(messageID: previous)
+        await vm.selectVariant(messageID: previous)
         XCTAssertEqual(vm.thread.last?.message.text, "a1")
         XCTAssertNil(vm.variant(of: previous, offset: -1))
     }
@@ -511,8 +589,8 @@ final class ChatViewModelTests: XCTestCase {
     /// panel — it never keeps a hidden variant's sources on screen.
     func testSourcesPanelClosesWhenItsAnswerLeavesTheBranch() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        vm.send(text: "q")
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a1")
         let firstAnswer = try XCTUnwrap(vm.thread.last?.id)
         let sources = ChatSource.encodeList([ChatSource(kind: "jira", title: "PAY-1", url: nil, ref: "jira:PAY-1")])
@@ -528,19 +606,19 @@ final class ChatViewModelTests: XCTestCase {
         vm.reload()
         XCTAssertEqual(vm.sourcesPanel?.sources.count, 1, "a reload of the same branch keeps the panel")
 
-        vm.regenerate(messageID: firstAnswer)
+        await vm.regenerate(messageID: firstAnswer)
         try await complete(vm, turn: "turn-2", text: "a2")
         XCTAssertNil(vm.sourcesPanel, "the shown answer is now a hidden variant")
     }
 
     func testEditMakesAUserSiblingAndReplays() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        vm.send(text: "q")
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a1")
         let userID = try XCTUnwrap(vm.thread.first?.id)
 
-        vm.edit(messageID: userID, newText: "q2")
+        await vm.edit(messageID: userID, newText: "q2")
         XCTAssertEqual(try lastFake().turns.last?.text, "q2")
         XCTAssertEqual(try lastFake().turns.last?.replay, true)
         try await complete(vm, turn: "turn-2", text: "a2")
@@ -550,36 +628,39 @@ final class ChatViewModelTests: XCTestCase {
 
     func testErrorMarksTheMessageAndRetryRegenerates() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        vm.send(text: "q")
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
         let fake = try lastFake()
         fake.emit(.error(ChatSessionError(turnID: "turn-1", code: .rateLimit, message: "slow", retryable: true)))
         let failed = await waitForCondition { vm.thread.last?.message.status == "error" }
         XCTAssertTrue(failed)
         XCTAssertEqual(vm.thread.last?.message.errorCode, "rate_limit")
 
-        vm.retry(messageID: try XCTUnwrap(vm.thread.last?.id))
+        await vm.retry(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(fake.turns.count, 2)
         XCTAssertEqual(fake.turns.last?.replay, true, "a failed turn may not have reached the provider")
     }
 
     func testContinueStoppedSendsContinue() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        vm.send(text: "q")
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
         let fake = try lastFake()
         fake.emit(.turnDone(turnID: "turn-1", status: .interrupted, sessionID: nil))
         _ = await waitForCondition { !vm.isStreaming }
-        vm.continueStopped(messageID: try XCTUnwrap(vm.thread.last?.id))
+        await vm.continueStopped(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(fake.turns.last?.text, "Continue")
     }
 
-    func testSendingWhileStreamingIsRefused() throws {
+    func testSendingWhileStreamingIsRefused() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        XCTAssertTrue(vm.send(text: "q"))
-        XCTAssertFalse(vm.send(text: "again"))
-        XCTAssertFalse(vm.send(text: "   "))
+        _ = await vm.newConversation()
+        let sent = await vm.send(text: "q")
+        XCTAssertTrue(sent)
+        let sent2 = await vm.send(text: "again")
+        XCTAssertFalse(sent2)
+        let sent3 = await vm.send(text: "   ")
+        XCTAssertFalse(sent3)
     }
 
     /// Degenerate clean-exit branch: no text and no attachments is simply
@@ -594,27 +675,30 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(AIProvider.fromConfig("something-else"), .claude)
     }
 
-    func testSendingNothingIsRefused() throws {
+    func testSendingNothingIsRefused() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        XCTAssertFalse(vm.send(text: "   ", attachments: []))
+        _ = await vm.newConversation()
+        let sent = await vm.send(text: "   ", attachments: [])
+        XCTAssertFalse(sent)
         XCTAssertTrue(vm.thread.isEmpty)
     }
 
     /// A message may carry only attachments (spec §7.1 / preflight A39): the
     /// composer's canSend twin, and the attachment rows are linked to the new
     /// owner message in the SAME transaction that persists it (CHAT-01).
-    func testSendWithOnlyAttachmentsSucceedsAndLinksInTheSameTransaction() throws {
+    func testSendWithOnlyAttachmentsSucceedsAndLinksInTheSameTransaction() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        let att = try dbManager.dbPool.write { db in
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        let att = try await dbManager.dbPool.write { db in
             try ChatAttachmentQueries.insert(db, owner: .conversation(convID), name: "shot.png", mime: "image/png",
                                              size: 3, path: "/tmp/shot.png", sha256: "abc")
         }
-        XCTAssertTrue(vm.send(text: "", attachments: [att]))
+        let sentResult = await vm.send(text: "", attachments: [att])
+        XCTAssertTrue(sentResult)
 
         let userMessageID = try XCTUnwrap(activePath(convID).first?.id)
-        let linked = try dbManager.dbPool.read { db in
+        let linked = try await dbManager.dbPool.read { db in
             try ChatAttachmentQueries.fetchByMessages(db, messageIDs: [userMessageID])
         }
         XCTAssertEqual(linked[userMessageID]?.map(\.id), [att.id])
@@ -628,27 +712,29 @@ final class ChatViewModelTests: XCTestCase {
     /// owner message's files, or the model answers as if nothing was attached.
     func testRegenerateRetryAndEditResendTheOwnerMessagesAttachments() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
         let att = try await dbManager.dbPool.write { db in
             try ChatAttachmentQueries.insert(db, owner: .conversation(convID), name: "spec.pdf", mime: "application/pdf",
                                              size: 3, path: "/tmp/spec.pdf", sha256: "abc")
         }
         let wire = [ChatCommandAttachment(path: "/tmp/spec.pdf", mime: "application/pdf", name: "spec.pdf")]
-        XCTAssertTrue(vm.send(text: "summarize", attachments: [att]))
+        let sentResult = await vm.send(text: "summarize", attachments: [att])
+        XCTAssertTrue(sentResult)
         let fake = try lastFake()
         fake.emit(.error(ChatSessionError(turnID: "turn-1", code: .rateLimit, message: "slow", retryable: true)))
         _ = await waitForCondition { vm.thread.last?.message.status == "error" }
 
-        vm.retry(messageID: try XCTUnwrap(vm.thread.last?.id))
+        await vm.retry(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(fake.turns.count, 2)
         XCTAssertEqual(fake.turns.last?.attachments, wire, "retry re-sends the file")
         try await complete(vm, turn: "turn-2", text: "a2")
 
-        vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
+        await vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(try lastFake().turns.last?.attachments, wire, "regenerate re-sends the file")
         try await complete(vm, turn: "turn-3", text: "a3")
 
-        vm.edit(messageID: try XCTUnwrap(vm.thread.first?.id), newText: "summarize briefly")
+        await vm.edit(messageID: try XCTUnwrap(vm.thread.first?.id), newText: "summarize briefly")
         XCTAssertEqual(try lastFake().turns.last?.attachments, wire, "edit keeps the original's files")
         let linked = try await dbManager.dbPool.read { db in try ChatAttachment.fetchAll(db, sql: "SELECT * FROM chat_attachments") }
         XCTAssertEqual(linked.count, 1, "no attachment row is duplicated")
@@ -657,11 +743,13 @@ final class ChatViewModelTests: XCTestCase {
 
     /// The skill line and finished REFERENCED tokens (for mentions still
     /// present in the text) are both part of the stored (and sent) owner text.
-    func testMentionsAndSkillArePartOfTheStoredText() throws {
+    func testMentionsAndSkillArePartOfTheStoredText() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
         let pay = MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "")
-        XCTAssertTrue(vm.send(text: "look at @PAY-1", mentions: [pay], skill: "status-update"))
+        let sentResult = await vm.send(text: "look at @PAY-1", mentions: [pay], skill: "status-update")
+        XCTAssertTrue(sentResult)
         let expected = "Use skill status-update: load it with load_skill first.\n\nlook at @PAY-1\n\n"
             + "REFERENCED: jira:PAY-1 \"PAY-1\""
         XCTAssertEqual(activePath(convID).first?.text, expected)
@@ -671,12 +759,13 @@ final class ChatViewModelTests: XCTestCase {
     /// @-mentions and REFERENCED tokens (spec §6.2): `send` filters the picked
     /// mentions down to those still present in the text, composes them into
     /// the stored/sent owner text, and clears the draft's pending mentions.
-    func testSendAppendsReferencedLineForLiveMentionsAndPersistsIt() throws {
+    func testSendAppendsReferencedLineForLiveMentionsAndPersistsIt() async throws {
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
         let anna = MentionCandidate(kind: .person, ref: "1:U1", label: "Anna", detail: "")
         let gone = MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "")
-        vm.send(text: "ask @Anna", attachments: [], mentions: [anna, gone])
+        await vm.send(text: "ask @Anna", attachments: [], mentions: [anna, gone])
 
         let expected = "ask @Anna\n\nREFERENCED: person:1:U1 \"Anna\""
         XCTAssertEqual(try lastFake().turns.last?.text.hasPrefix(expected), true,
@@ -687,19 +776,21 @@ final class ChatViewModelTests: XCTestCase {
 
     /// A question card's answer goes out as a turn of its own: the owner's
     /// half-written draft keeps the mention it picked.
-    func testAnAnswerSentPastTheComposerKeepsItsPicks() throws {
-        try dbManager.dbPool.write { db in
+    func testAnAnswerSentPastTheComposerKeepsItsPicks() async throws {
+        try await dbManager.dbPool.write { db in
             _ = try TargetQueries.create(db, text: "ship feature", periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
         vm.composer.update(text: "@ship", cursor: 5)
         XCTAssertTrue(vm.composer.isOpen)
         _ = vm.composer.accept(index: 0, text: "@ship", cursor: 5)
         let picked = vm.composer.mentions
         XCTAssertEqual(picked.count, 1)
 
-        XCTAssertTrue(vm.send(text: "v0.11", keepsComposer: true))
+        let sent = await vm.send(text: "v0.11", keepsComposer: true)
+        XCTAssertTrue(sent)
 
         XCTAssertEqual(vm.composer.mentions, picked, "the answer must not wipe the draft's picks")
         XCTAssertEqual(try lastStoredUserText(vm), "v0.11")
@@ -709,12 +800,13 @@ final class ChatViewModelTests: XCTestCase {
     /// while streaming (like `send`), so the first turn must finish first.
     func testEditKeepsReferences() async throws {
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
         let pay = MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "")
-        vm.send(text: "look at @PAY-1", attachments: [], mentions: [pay])
+        await vm.send(text: "look at @PAY-1", attachments: [], mentions: [pay])
         try await complete(vm, turn: "turn-1", text: "a")
         let messageID = try XCTUnwrap(try lastStoredUserID(vm))
-        vm.edit(messageID: messageID, newText: "now @PAY-1 again")
+        await vm.edit(messageID: messageID, newText: "now @PAY-1 again")
         XCTAssertEqual(try lastStoredUserText(vm),
                        "now @PAY-1 again\n\nREFERENCED: jira:PAY-1 \"PAY-1\"")
     }
@@ -724,11 +816,12 @@ final class ChatViewModelTests: XCTestCase {
     func testTitleIsRequestedOnceAfterTheFirstCompletedTurn() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"title":"T","written":true}"#.utf8))
         let vm = try makeViewModel(cliRunner: runner)
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a")
         _ = await waitForCondition { runner.invocations.count == 1 }
-        vm.send(text: "q2")
+        await vm.send(text: "q2")
         try await complete(vm, turn: "turn-2", text: "b")
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(runner.invocations, [["chat", "title", String(convID)]])
@@ -739,11 +832,12 @@ final class ChatViewModelTests: XCTestCase {
     func testTitleIsNotRetriedAfterAFailedCall() async throws {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
         let vm = try makeViewModel(cliRunner: runner)
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a")
         _ = await waitForCondition { runner.invocations.count == 1 }
-        vm.send(text: "q2")
+        await vm.send(text: "q2")
         try lastFake().emit(.turnDone(turnID: "turn-2", status: .interrupted, sessionID: nil))
         _ = await waitForCondition { !vm.isStreaming }
         let stillNeeded = try await dbManager.dbPool.read { d in try ChatConversationQueries.needsAITitle(d, id: convID) }
@@ -753,21 +847,25 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     /// The prefix title is the owner's words, not the skill/REFERENCED lines.
-    func testPrefixTitleUsesTheOwnersWords() throws {
+    func testPrefixTitleUsesTheOwnersWords() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
         let pay = MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "")
-        XCTAssertTrue(vm.send(text: "look at @PAY-1", mentions: [pay], skill: "status-update"))
-        XCTAssertEqual(try dbManager.dbPool.read { d in try ChatConversationQueries.fetchByID(d, id: convID)?.title },
+        let sentResult = await vm.send(text: "look at @PAY-1", mentions: [pay], skill: "status-update")
+        XCTAssertTrue(sentResult)
+        let fetchByIDResult = try await dbManager.dbPool.read { d in try ChatConversationQueries.fetchByID(d, id: convID)?.title }
+        XCTAssertEqual(fetchByIDResult,
                        "look at @PAY-1")
     }
 
     /// The `/` skill picker prefixes the skill line into the stored/sent
     /// owner text (Task 26).
-    func testSendWithSkillPrefixesTheSkillLine() throws {
+    func testSendWithSkillPrefixesTheSkillLine() async throws {
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "for PAY", attachments: [], mentions: [], skill: "status-update")
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
+        await vm.send(text: "for PAY", attachments: [], mentions: [], skill: "status-update")
         XCTAssertEqual(try lastStoredUserText(vm),
                        "Use skill status-update: load it with load_skill first.\n\nfor PAY")
     }
@@ -776,8 +874,9 @@ final class ChatViewModelTests: XCTestCase {
     /// the floor is the previous owner message, not the session.
     func testOutcomesOfProposalsPrefixTheNextTurn() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "first")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "first")
         try await complete(vm, turn: "turn-1", text: "a")
         let applied = AgentActionFeed.timestampString(Date().addingTimeInterval(60))
         _ = try await dbManager.dbPool.write { d in
@@ -785,7 +884,7 @@ final class ChatViewModelTests: XCTestCase {
                                                resultJSON: #"{"target_id":5}"#, appliedAt: applied)
         }
         _ = await waitForCondition { vm.actionFeed.rows.count == 1 }
-        vm.send(text: "second")
+        await vm.send(text: "second")
         let text = try XCTUnwrap(lastFake().turns.last?.text)
         XCTAssertTrue(text.hasPrefix("=== ACTIONS SINCE YOUR LAST MESSAGE ==="))
         XCTAssertTrue(text.contains("create_target: applied"))
@@ -809,9 +908,10 @@ final class ChatViewModelTests: XCTestCase {
 
     /// The artifact and sources panels share the inspector without closing
     /// each other (ChatInspectorPolicy); a conversation switch closes both.
-    func testSourcesPanelSharesTheInspectorWithAnOpenArtifact() throws {
+    func testSourcesPanelSharesTheInspectorWithAnOpenArtifact() async throws {
         let vm = try makeViewModel()
-        XCTAssertNotNil(vm.newConversation())
+        let created = await vm.newConversation()
+        XCTAssertNotNil(created)
         let source = ChatSource(kind: "jira", title: "PAY-1: A", url: nil, ref: "jira:PAY-1", group: "PAY")
         vm.openArtifact(key: "q3")
         XCTAssertEqual(vm.inspectorMode, .artifacts)
@@ -824,7 +924,8 @@ final class ChatViewModelTests: XCTestCase {
         vm.openSources(messageID: 7, sources: [])
         XCTAssertNil(vm.sourcesPanel, "an answer without sources opens nothing")
         vm.openSources(messageID: 7, sources: [source])
-        XCTAssertNotNil(vm.newConversation())
+        let created2 = await vm.newConversation()
+        XCTAssertNotNil(created2)
         XCTAssertNil(vm.inspectorMode, "switching conversations closes both panels")
         vm.openSources(messageID: 8, sources: [source])
         vm.closeInspector()
@@ -833,9 +934,10 @@ final class ChatViewModelTests: XCTestCase {
 
     /// The inspector can take the chat's whole width (#786): expanded while a
     /// panel stays open, back to the column once the inspector closes.
-    func testTheInspectorExpandsToTheChatWidthUntilItCloses() throws {
+    func testTheInspectorExpandsToTheChatWidthUntilItCloses() async throws {
         let vm = try makeViewModel()
-        XCTAssertNotNil(vm.newConversation())
+        let created = await vm.newConversation()
+        XCTAssertNotNil(created)
         let source = ChatSource(kind: "jira", title: "PAY-1: A", url: nil, ref: "jira:PAY-1", group: "PAY")
         vm.toggleInspectorExpanded()
         XCTAssertFalse(vm.isInspectorExpanded, "nothing to expand while the inspector is closed")
@@ -860,7 +962,8 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isInspectorExpanded, "a panel opened after a close starts in the column")
 
         vm.toggleInspectorExpanded()
-        XCTAssertNotNil(vm.newConversation())
+        let created2 = await vm.newConversation()
+        XCTAssertNotNil(created2)
         vm.openSources(messageID: 8, sources: [source])
         XCTAssertFalse(vm.isInspectorExpanded, "a conversation switch closes the expanded panel too")
         vm.inspectorColumnDismissed()
@@ -901,8 +1004,9 @@ final class ChatViewModelTests: XCTestCase {
     /// and the exits that leave the chat. A turn that completes keeps it.
     func testTheExpandedPanelStepsAsideForWhatOnlyTheConversationShows() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         vm.openArtifact(key: "plan")
         vm.toggleInspectorExpanded()
         let fake = try lastFake()
@@ -911,7 +1015,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(failed)
         XCTAssertFalse(vm.isInspectorExpanded, "a failed turn shows its error and Retry")
 
-        vm.retry(messageID: try XCTUnwrap(vm.thread.last?.id))
+        await vm.retry(messageID: try XCTUnwrap(vm.thread.last?.id))
         vm.toggleInspectorExpanded()
         try await complete(vm, turn: "turn-2", text: "a")
         XCTAssertTrue(vm.isInspectorExpanded, "a completed turn keeps the expanded panel")
@@ -921,25 +1025,27 @@ final class ChatViewModelTests: XCTestCase {
 
         vm.errorMessage = nil
         vm.toggleInspectorExpanded()
-        vm.open(ChatSearchHit(conversationID: convID, messageID: try XCTUnwrap(vm.thread.last?.id), title: "", snippet: ""))
+        await vm.open(ChatSearchHit(conversationID: convID, messageID: try XCTUnwrap(vm.thread.last?.id), title: "", snippet: ""))
         XCTAssertFalse(vm.isInspectorExpanded, "a search hit in the chat on screen shows in the conversation")
 
         vm.toggleInspectorExpanded()
-        XCTAssertNotNil(vm.createProject(name: "Payments"))
+        let projectResult = await vm.createProject(name: "Payments")
+        XCTAssertNotNil(projectResult)
         XCTAssertFalse(vm.isInspectorExpanded, "the project page closes the panels")
     }
 
     func testOpeningASearchHitShowsItsBranchAndScrollsToIt() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "first answer")
         let firstAnswer = try XCTUnwrap(vm.thread.last?.id)
-        vm.regenerate(messageID: firstAnswer)
+        await vm.regenerate(messageID: firstAnswer)
         try await complete(vm, turn: "turn-2", text: "second answer")
-        _ = vm.newConversation()
+        _ = await vm.newConversation()
 
-        vm.open(ChatSearchHit(conversationID: convID, messageID: firstAnswer, title: "", snippet: ""))
+        await vm.open(ChatSearchHit(conversationID: convID, messageID: firstAnswer, title: "", snippet: ""))
         XCTAssertEqual(vm.conversationID, convID)
         XCTAssertEqual(vm.thread.last?.id, firstAnswer, "the hit's branch becomes the active one")
         XCTAssertEqual(vm.scrollTarget, firstAnswer)
@@ -949,17 +1055,18 @@ final class ChatViewModelTests: XCTestCase {
     /// target again, so the view jumps again instead of seeing no change.
     func testConsumedScrollTargetLetsTheSameHitJumpAgain() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "answer")
         let answer = try XCTUnwrap(vm.thread.last?.id)
         let hit = ChatSearchHit(conversationID: convID, messageID: answer, title: "", snippet: "")
 
-        vm.open(hit)
+        await vm.open(hit)
         XCTAssertEqual(vm.scrollTarget, answer)
         vm.consumeScrollTarget()
         XCTAssertNil(vm.scrollTarget)
-        vm.open(hit)
+        await vm.open(hit)
         XCTAssertEqual(vm.scrollTarget, answer)
     }
 
@@ -972,8 +1079,8 @@ final class ChatViewModelTests: XCTestCase {
 
     func testArrowUpEditsTheLastUserMessage() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
-        vm.send(text: "q")
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
         try await complete(vm, turn: "turn-1", text: "a")
         vm.beginEditingLast()
         XCTAssertEqual(vm.editingMessageID, vm.thread.first?.id)
@@ -983,12 +1090,13 @@ final class ChatViewModelTests: XCTestCase {
 
     func testSwitchingProviderClosesTheSessionAndTheNextTurnUsesTheNewProvider() async throws {
         let vm = try makeViewModel()
-        _ = vm.newConversation()
+        _ = await vm.newConversation()
         let first = try lastFake()
         vm.switchProvider(.codex)
         let closed = await waitForCondition { first.sent.contains(.close) }
         XCTAssertTrue(closed)
-        XCTAssertTrue(vm.send(text: "q"))
+        let sentResult = await vm.send(text: "q")
+        XCTAssertTrue(sentResult)
         // The pool never overlaps a config-change replacement with the
         // process it replaces (ChatSessionPoolTests precedent): the new
         // session stays pending until the old one's retirement finishes.
@@ -1008,7 +1116,8 @@ final class ChatViewModelTests: XCTestCase {
         vm.selectedModel = "model-b"
         let closed = await waitForCondition { first.sent.contains(.close) }
         XCTAssertTrue(closed)
-        XCTAssertTrue(vm.send(text: "q"))
+        let sentResult = await vm.send(text: "q")
+        XCTAssertTrue(sentResult)
         let spawned = await waitForCondition { self.fakes.count == 2 }
         XCTAssertTrue(spawned)
         XCTAssertEqual(try lastFake().argument(after: "--model"), "model-b")
@@ -1030,13 +1139,14 @@ final class ChatViewModelTests: XCTestCase {
 
     // MARK: - Projects (Task 24)
 
-    func testCreateProjectOpensItAndSelectingAConversationLeavesIt() throws {
+    func testCreateProjectOpensItAndSelectingAConversationLeavesIt() async throws {
         let vm = try makeViewModel()
-        let id = try XCTUnwrap(vm.createProject(name: "Payments"))
+        let projectResult = await vm.createProject(name: "Payments")
+        let id = try XCTUnwrap(projectResult)
         XCTAssertEqual(vm.openProjectID, id)
         XCTAssertEqual(vm.projects.map(\.name), ["Payments"])
 
-        vm.newConversation(projectID: id)
+        await vm.newConversation(projectID: id)
         XCTAssertNil(vm.openProjectID, "starting a chat leaves the project page")
         XCTAssertEqual(vm.currentConversation?.projectID, id)
 
@@ -1052,20 +1162,21 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.projects.map(\.name), ["Existing"])
     }
 
-    func testNewConversationInProjectPassesProjectIDToTheSession() throws {
+    func testNewConversationInProjectPassesProjectIDToTheSession() async throws {
         let vm = try makeViewModel()
-        let id = try XCTUnwrap(vm.createProject(name: "P"))
-        vm.newConversation(projectID: id)
-        vm.send(text: "hi")
+        let projectResult = await vm.createProject(name: "P")
+        let id = try XCTUnwrap(projectResult)
+        await vm.newConversation(projectID: id)
+        await vm.send(text: "hi")
         XCTAssertEqual(pool.lastConfig?.projectID, id)
         let args = try lastFake().arguments
         XCTAssertEqual(args.firstIndex(of: "--project-id").map { args[$0 + 1] }, String(id))
     }
 
-    func testChatOutsideAProjectHasNoProjectFlag() throws {
+    func testChatOutsideAProjectHasNoProjectFlag() async throws {
         let vm = try makeViewModel()
-        vm.newConversation()
-        vm.send(text: "hi")
+        await vm.newConversation()
+        await vm.send(text: "hi")
         XCTAssertNil(pool.lastConfig?.projectID)
         XCTAssertFalse(try lastFake().arguments.contains("--project-id"))
     }
@@ -1075,8 +1186,9 @@ final class ChatViewModelTests: XCTestCase {
     /// with `--project-id` and no `--resume` of the old session.
     func testMoveToProjectRespawnsTheSessionWithTheProject() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q1")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q1")
         let first = try lastFake()
         first.emit(.textDelta(turnID: "turn-1", text: "a1"))
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
@@ -1084,12 +1196,13 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(done)
         XCTAssertFalse(first.arguments.contains("--project-id"))
 
-        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
-        vm.moveConversation(convID, toProject: projectID)
+        let projectResult = await vm.createProject(name: "P")
+        let projectID = try XCTUnwrap(projectResult)
+        await vm.moveConversation(convID, toProject: projectID)
         XCTAssertEqual(vm.currentConversation?.projectID, projectID)
         XCTAssertNil(vm.currentConversation?.sessionID, "the old session never saw the project prompt")
 
-        vm.send(text: "q2")
+        await vm.send(text: "q2")
         // The replacement launches once the retired process has exited.
         let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
         XCTAssertTrue(launched, "a new process for the project session")
@@ -1105,14 +1218,16 @@ final class ChatViewModelTests: XCTestCase {
     /// `turn_done` — the next turn would `--resume` past the project prompt.
     func testMoveDuringAStreamingTurnIgnoresTheLateSessionID() async throws {
         let vm = try makeViewModel()
-        let convID = try XCTUnwrap(vm.newConversation())
-        vm.send(text: "q1")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q1")
         let first = try lastFake()
         first.emit(.textDelta(turnID: "turn-1", text: "a1"))
         _ = await waitForCondition { vm.liveTurn?.fullText == "a1" }
 
-        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
-        vm.moveConversation(convID, toProject: projectID)
+        let projectResult = await vm.createProject(name: "P")
+        let projectID = try XCTUnwrap(projectResult)
+        await vm.moveConversation(convID, toProject: projectID)
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-late"))
         let done = await waitForCondition { !vm.isStreaming && vm.thread.last?.message.status == "complete" }
         XCTAssertTrue(done)
@@ -1129,9 +1244,10 @@ final class ChatViewModelTests: XCTestCase {
     /// turn spawns fresh (new prompt) without `--resume` and replays.
     func testProjectInstructionsEditRespawnsTheChatWithoutResume() async throws {
         let vm = try makeViewModel()
-        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
-        vm.newConversation(projectID: projectID)
-        vm.send(text: "q1")
+        let project = await vm.createProject(name: "P")
+        let projectID = try XCTUnwrap(project)
+        await vm.newConversation(projectID: projectID)
+        await vm.send(text: "q1")
         let first = try lastFake()
         first.emit(.textDelta(turnID: "turn-1", text: "a1"))
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
@@ -1142,7 +1258,7 @@ final class ChatViewModelTests: XCTestCase {
         vm.projectPromptChanged(projectID)
         XCTAssertNil(vm.currentConversation?.sessionID, "the session carries the old instructions")
 
-        vm.send(text: "q2")
+        await vm.send(text: "q2")
         let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
         XCTAssertTrue(launched, "the warm process with the old prompt is not reused")
         let second = try lastFake()
@@ -1154,9 +1270,11 @@ final class ChatViewModelTests: XCTestCase {
     /// recorded at `turn_done` and the process is not reused afterwards.
     func testProjectEditDuringAStreamingTurnIgnoresTheLateSessionID() async throws {
         let vm = try makeViewModel()
-        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
-        let convID = try XCTUnwrap(vm.newConversation(projectID: projectID))
-        vm.send(text: "q1")
+        let projectResult = await vm.createProject(name: "P")
+        let projectID = try XCTUnwrap(projectResult)
+        let created = await vm.newConversation(projectID: projectID)
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q1")
         let first = try lastFake()
         first.emit(.textDelta(turnID: "turn-1", text: "a1"))
         _ = await waitForCondition { vm.liveTurn?.fullText == "a1" }
@@ -1171,7 +1289,7 @@ final class ChatViewModelTests: XCTestCase {
         let stored = try await dbManager.dbPool.read { d in try ChatConversationQueries.fetchByID(d, id: convID) }
         XCTAssertNil(stored?.sessionID, "the stale session id is not recorded")
 
-        vm.send(text: "q2")
+        await vm.send(text: "q2")
         let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
         XCTAssertTrue(launched, "the session with the old prompt is replaced after its turn")
         XCTAssertFalse(try lastFake().arguments.contains("--resume"))
@@ -1181,9 +1299,10 @@ final class ChatViewModelTests: XCTestCase {
     /// session (spawned with the project prompt) is not reused or resumed.
     func testProjectDeleteRespawnsTheDetachedChatWithoutResume() async throws {
         let vm = try makeViewModel()
-        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
-        vm.newConversation(projectID: projectID)
-        vm.send(text: "q1")
+        let projectResult = await vm.createProject(name: "P")
+        let projectID = try XCTUnwrap(projectResult)
+        await vm.newConversation(projectID: projectID)
+        await vm.send(text: "q1")
         let first = try lastFake()
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
         let done = await waitForCondition { !vm.isStreaming && vm.currentConversation?.sessionID == "sess-1" }
@@ -1195,7 +1314,7 @@ final class ChatViewModelTests: XCTestCase {
         let closed = await waitForCondition { first.terminated }
         XCTAssertTrue(closed, "the warm process with the deleted project's prompt goes")
 
-        vm.send(text: "q2")
+        await vm.send(text: "q2")
         let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
         XCTAssertTrue(launched)
         let second = try lastFake()
@@ -1204,12 +1323,13 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(second.turns.last?.replay, true)
     }
 
-    func testProjectDeletedClosesThePageAndDetachesTheShownChat() throws {
+    func testProjectDeletedClosesThePageAndDetachesTheShownChat() async throws {
         let vm = try makeViewModel()
-        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
-        vm.newConversation(projectID: projectID)
+        let project = await vm.createProject(name: "P")
+        let projectID = try XCTUnwrap(project)
+        await vm.newConversation(projectID: projectID)
         vm.openProject(projectID)
-        _ = try dbManager.dbPool.write { try ChatProjectQueries.delete($0, id: projectID) }
+        _ = try await dbManager.dbPool.write { try ChatProjectQueries.delete($0, id: projectID) }
         vm.projectDeleted(projectID)
         XCTAssertNil(vm.openProjectID)
         XCTAssertTrue(vm.projects.isEmpty)
@@ -1219,9 +1339,10 @@ final class ChatViewModelTests: XCTestCase {
     // MARK: - Artifact comments
 
     /// A conversation with one stored `document` artifact ("plan"), its panel open.
-    private func conversationWithArtifact(_ vm: ChatViewModel, content: String) throws -> Int64 {
-        let convID = try XCTUnwrap(vm.newConversation())
-        try dbManager.dbPool.write { d in
+    private func conversationWithArtifact(_ vm: ChatViewModel, content: String) async throws -> Int64 {
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        try await dbManager.dbPool.write { d in
             let message = try TestDatabase.insertChatMessage(d, conversationID: convID, role: "assistant", text: "")
             _ = try ChatArtifactQueries.saveVersion(
                 d, conversationID: convID, messageID: message,
@@ -1246,15 +1367,15 @@ final class ChatViewModelTests: XCTestCase {
 
     /// CHAT-05 spirit: a comment never leaves the machine by itself — it
     /// reaches the assistant only inside the owner's own message.
-    func testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage() throws {
+    func testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage() async throws {
         let vm = try makeViewModel()
-        _ = try conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
+        _ = try await conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
         let comments = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
         XCTAssertTrue(try lastFake().turns.isEmpty, "adding a comment sends nothing")
         let expected = try XCTUnwrap(comments.outgoing()).text
         vm.toggleInspectorExpanded()
 
-        vm.sendArtifactComments()
+        await vm.sendArtifactComments()
 
         XCTAssertFalse(vm.isInspectorExpanded, "the answer shows in the conversation (#786)")
 
@@ -1264,11 +1385,11 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNotNil(comments.comments.first?.sentAt)
     }
 
-    func testAFailedSaveLeavesTheCommentsUnsent() throws {
+    func testAFailedSaveLeavesTheCommentsUnsent() async throws {
         let vm = try makeViewModel()
-        _ = try conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
+        _ = try await conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
         _ = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
-        try dbManager.dbPool.write { d in
+        try await dbManager.dbPool.write { d in
             try d.execute(sql: """
                 CREATE TRIGGER fail_user BEFORE INSERT ON chat_messages WHEN NEW.role = 'user'
                 BEGIN SELECT RAISE(ABORT, 'boom'); END
@@ -1276,36 +1397,37 @@ final class ChatViewModelTests: XCTestCase {
         }
         vm.toggleInspectorExpanded()
         XCTAssertTrue(vm.isInspectorExpanded)
-        vm.sendArtifactComments()
+        await vm.sendArtifactComments()
         XCTAssertTrue(try lastFake().turns.isEmpty)
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertFalse(vm.isInspectorExpanded, "the expanded panel steps aside so the error shows (#786)")
         XCTAssertEqual(try commentStatuses(), ["open"])
     }
 
-    func testNothingIsSentWhileAnAnswerIsStreaming() throws {
+    func testNothingIsSentWhileAnAnswerIsStreaming() async throws {
         let vm = try makeViewModel()
-        _ = try conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
-        XCTAssertTrue(vm.send(text: "q"))
+        _ = try await conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
+        let sent = await vm.send(text: "q")
+        XCTAssertTrue(sent)
         _ = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
         vm.toggleInspectorExpanded()
-        vm.sendArtifactComments()
+        await vm.sendArtifactComments()
         XCTAssertFalse(vm.isInspectorExpanded, "the refusal shows in the conversation (#786)")
         XCTAssertEqual(try lastFake().turns.count, 1, "only the first question went out")
         XCTAssertEqual(try commentStatuses(), ["open"])
         XCTAssertNotNil(vm.errorMessage, "a refused send says why instead of doing nothing")
     }
 
-    func testOnlyTheUnsentCommentsAreIncludedAndMarked() throws {
+    func testOnlyTheUnsentCommentsAreIncludedAndMarked() async throws {
         let vm = try makeViewModel()
-        _ = try conversationWithArtifact(vm, content: "# Plan\n\nKeep the retry budget small.\n\nShip on Friday.")
+        _ = try await conversationWithArtifact(vm, content: "# Plan\n\nKeep the retry budget small.\n\nShip on Friday.")
         let comments = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
         let earlier = try XCTUnwrap(comments.comments.first?.id)
-        _ = try dbManager.dbPool.write { try ArtifactCommentQueries.markSent($0, ids: [earlier], at: Date(timeIntervalSince1970: 100)) }
+        _ = try await dbManager.dbPool.write { try ArtifactCommentQueries.markSent($0, ids: [earlier], at: Date(timeIntervalSince1970: 100)) }
         comments.reload()
         _ = try addComment(vm, on: "retry budget", body: "Why?")
 
-        vm.sendArtifactComments()
+        await vm.sendArtifactComments()
 
         let stored = try XCTUnwrap(try lastStoredUserText(vm))
         XCTAssertTrue(stored.contains("Why?"))
@@ -1322,9 +1444,10 @@ final class ChatViewModelTests: XCTestCase {
 
     /// Owner rule: comments go to the LLM as one batch — a quote never sends
     /// by itself, however many are added.
-    func testQuotesAccumulateAndNothingIsSentPerQuote() throws {
+    func testQuotesAccumulateAndNothingIsSentPerQuote() async throws {
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
         vm.addQuote("retry budget", comment: "Why so small?")
         vm.addQuote("Ship on Friday", comment: "")
         vm.addQuote("   ", comment: "ignored")
@@ -1339,9 +1462,10 @@ final class ChatViewModelTests: XCTestCase {
 
     /// "Ask about this": each added quote asks for the composer anew, so the
     /// owner types the follow-up; an ignored one does not.
-    func testAddingAQuoteRequestsComposerFocus() throws {
+    func testAddingAQuoteRequestsComposerFocus() async throws {
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
         XCTAssertNil(vm.composerFocusRequest)
         vm.addQuote("retry budget", comment: "")
         let first = try XCTUnwrap(vm.composerFocusRequest)
@@ -1351,15 +1475,16 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNotEqual(vm.composerFocusRequest, first)
     }
 
-    func testSendDraftSendsEveryQuoteAndTheTypedTextAsOneTurn() throws {
+    func testSendDraftSendsEveryQuoteAndTheTypedTextAsOneTurn() async throws {
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
         vm.addQuote("retry budget", comment: "Why so small?")
         vm.addQuote("Ship on Friday", comment: "")
         vm.draft = "And staging?"
         let expected = ChatQuoteReply.compose(quotes: vm.pendingQuotes, typed: "And staging?")
 
-        vm.sendDraft()
+        await vm.sendDraft()
 
         XCTAssertEqual(try lastFake().turns.count, 1)
         XCTAssertEqual(try lastStoredUserText(vm), expected)
@@ -1367,26 +1492,29 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.draft, "")
     }
 
-    func testAFailedSendKeepsTheQuoteBatch() throws {
+    func testAFailedSendKeepsTheQuoteBatch() async throws {
         let vm = try makeViewModel()
-        _ = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        _ = try XCTUnwrap(created)
         vm.addQuote("retry budget", comment: "Why so small?")
-        try dbManager.dbPool.write { d in
+        try await dbManager.dbPool.write { d in
             try d.execute(sql: """
                 CREATE TRIGGER fail_user BEFORE INSERT ON chat_messages WHEN NEW.role = 'user'
                 BEGIN SELECT RAISE(ABORT, 'boom'); END
                 """)
         }
-        vm.sendDraft()
+        await vm.sendDraft()
         XCTAssertTrue(try lastFake().turns.isEmpty)
         XCTAssertEqual(vm.pendingQuotes.count, 1, "the owner's quotes survive a failed send")
     }
 
-    func testQuoteBatchesAreKeptPerConversationAndDroppedWithIt() throws {
+    func testQuoteBatchesAreKeptPerConversationAndDroppedWithIt() async throws {
         let vm = try makeViewModel()
-        let first = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        let first = try XCTUnwrap(created)
         vm.addQuote("retry budget", comment: "")
-        _ = try XCTUnwrap(vm.newConversation())
+        let created2 = await vm.newConversation()
+        _ = try XCTUnwrap(created2)
         XCTAssertTrue(vm.pendingQuotes.isEmpty)
         vm.select(conversationID: first)
         XCTAssertEqual(vm.pendingQuotes.map(\.quote), ["retry budget"])
@@ -1443,8 +1571,10 @@ final class ChatLandingViewModelTests: XCTestCase {
 
     /// A conversation whose one finished exchange happened now.
     private func answeredConversation(_ vm: ChatViewModel) async throws -> Int64 {
-        let id = try XCTUnwrap(vm.newConversation())
-        XCTAssertTrue(vm.send(text: "q"))
+        let created = await vm.newConversation()
+        let id = try XCTUnwrap(created)
+        let sent = await vm.send(text: "q")
+        XCTAssertTrue(sent)
         let fake = try XCTUnwrap(fakes.last)
         fake.emit(.textDelta(turnID: "turn-\(turnCounter)", text: "a"))
         fake.emit(.turnDone(turnID: "turn-\(turnCounter)", status: .complete, sessionID: nil))
@@ -1487,10 +1617,12 @@ final class ChatLandingViewModelTests: XCTestCase {
 
     /// Start a turn → leave the tab → come back hours later: a running turn
     /// always resumes (review-rules: start → navigate away → return).
-    func testARunningTurnResumesWhateverTheTime() throws {
+    func testARunningTurnResumesWhateverTheTime() async throws {
         let vm = makeViewModel()
-        let id = try XCTUnwrap(vm.newConversation())
-        XCTAssertTrue(vm.send(text: "long question"))
+        let created = await vm.newConversation()
+        let id = try XCTUnwrap(created)
+        let sent = await vm.send(text: "long question")
+        XCTAssertTrue(sent)
         vm.showLanding()
         XCTAssertTrue(vm.isOnLanding)
         XCTAssertNil(vm.conversationID)
@@ -1517,9 +1649,10 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isOnLanding)
     }
 
-    func testAnOpenProjectPageIsLeftAlone() throws {
+    func testAnOpenProjectPageIsLeftAlone() async throws {
         let vm = makeViewModel()
-        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
+        let project = await vm.createProject(name: "P")
+        let projectID = try XCTUnwrap(project)
         vm.enterTab(rememberedConversationID: nil, lastViewedAt: nil, now: Date().addingTimeInterval(3 * window))
         XCTAssertEqual(vm.openProjectID, projectID)
         XCTAssertFalse(vm.isOnLanding)
@@ -1527,47 +1660,95 @@ final class ChatLandingViewModelTests: XCTestCase {
 
     /// The landing's first keystroke makes the conversation and prewarms its
     /// session without leaving the landing; the first turn leaves it.
-    func testFirstKeystrokeOnTheLandingPrewarmsAndTheFirstTurnLeavesIt() throws {
+    func testFirstKeystrokeOnTheLandingPrewarmsAndTheFirstTurnLeavesIt() async throws {
         let vm = makeViewModel()
-        vm.draftStarted()
+        await vm.draftStarted()
         let id = try XCTUnwrap(vm.conversationID)
         XCTAssertTrue(vm.isOnLanding)
         XCTAssertEqual(fakes.count, 1, "the session was prewarmed")
 
         vm.draft = "hello"
-        vm.sendDraft()
+        await vm.sendDraft()
         XCTAssertFalse(vm.isOnLanding)
         XCTAssertEqual(vm.conversationID, id)
         XCTAssertEqual(fakes.count, 1, "the prewarmed session took the turn")
         XCTAssertEqual(try XCTUnwrap(fakes.last).turns.count, 1)
     }
 
-    func testSendingFromTheLandingWithoutAKeystrokeStillStartsAChat() throws {
+    func testSendingFromTheLandingWithoutAKeystrokeStillStartsAChat() async throws {
         let vm = makeViewModel()
-        XCTAssertTrue(vm.send(text: "What mattered yesterday?"))
+        let sent = await vm.send(text: "What mattered yesterday?")
+        XCTAssertTrue(sent)
         XCTAssertFalse(vm.isOnLanding)
         XCTAssertNotNil(vm.conversationID)
     }
 
     /// Returning to the landing keeps its untouched conversation instead of
     /// writing a second empty row.
-    func testTheLandingReusesItsUntouchedConversation() throws {
+    func testTheLandingReusesItsUntouchedConversation() async throws {
         let vm = makeViewModel()
-        vm.draftStarted()
+        await vm.draftStarted()
         let id = try XCTUnwrap(vm.conversationID)
         vm.showLanding()
         XCTAssertEqual(vm.conversationID, id)
         vm.enterTab(rememberedConversationID: nil, lastViewedAt: nil, now: Date())
         XCTAssertEqual(vm.conversationID, id)
         XCTAssertTrue(vm.isOnLanding)
-        let rows = try dbManager.dbPool.read { try ChatConversationQueries.fetchStandalone($0) }
+        let rows = try await dbManager.dbPool.read { try ChatConversationQueries.fetchStandalone($0) }
         XCTAssertEqual(rows.map(\.id), [id])
     }
 
-    func testAttachingOnTheLandingStaysOnTheLanding() throws {
+    func testAttachingOnTheLandingStaysOnTheLanding() async throws {
         let vm = makeViewModel()
-        vm.attachPasted(Data([0x89, 0x50, 0x4E, 0x47]), name: "Pasted image.png")
+        await vm.attachPasted(Data([0x89, 0x50, 0x4E, 0x47]), name: "Pasted image.png")
         XCTAssertTrue(vm.isOnLanding)
+    }
+
+    /// Board #670: a paste on the landing lands after its conversation is
+    /// written; Enter right after it waits for it, so the file goes out with
+    /// that message rather than the next one.
+    func testASendRightAfterALandingPasteCarriesThePaste() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("chat-files-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude, defaults: defaults,
+                               attachmentsRoot: root) { "turn-1" }
+        vm.draft = "what is in it?"
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        let pasting = Task { await vm.attachPasted(Data("plain words".utf8), name: "Pasted text.txt") }
+        let landing = await eventually { vm.isPasting }
+        XCTAssertTrue(landing)
+        let sending = Task { await vm.sendDraft() }
+        held.release()
+        let attached = await pasting.value
+        await sending.value
+
+        XCTAssertTrue(attached)
+        let sent = try XCTUnwrap(fakes.last?.turns.last)
+        XCTAssertEqual(sent.attachments.map(\.name), ["Pasted text.txt"])
+        XCTAssertTrue(vm.composerAttachments.pending.isEmpty)
+    }
+
+    /// Board #670: on the landing a paste waits for its conversation. When
+    /// that cannot be written nothing is attached and the answer is false,
+    /// so a long text paste stays in the field instead of vanishing.
+    func testAPasteWhoseLandingConversationCannotBeWrittenKeepsTheText() async throws {
+        try await dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_conversation BEFORE INSERT ON chat_conversations
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+        let vm = makeViewModel()
+        var removed = false
+        let paste = LongPaste(text: String(repeating: "long ", count: 400), isIntact: { true }, remove: { removed = true })
+
+        await paste.attach { data, name in await vm.attachPasted(data, name: name) }
+
+        XCTAssertFalse(removed, "the pasted text stays in the field")
+        XCTAssertTrue(vm.composerAttachments.pending.isEmpty)
+        XCTAssertNotNil(vm.errorMessage)
     }
 
     func testForgettingTheShownConversationShowsTheLanding() async throws {
@@ -1600,14 +1781,15 @@ final class ChatLandingViewModelTests: XCTestCase {
     }
 
     /// I-1: only the landing's own first turn announces itself — once.
-    func testTheLandingsFirstTurnIsAnnouncedOnce() throws {
+    func testTheLandingsFirstTurnIsAnnouncedOnce() async throws {
         let vm = makeViewModel()
         var started: [Int64] = []
         vm.onLandingTurnStarted = { started.append($0) }
-        vm.draftStarted()
+        await vm.draftStarted()
         let id = try XCTUnwrap(vm.conversationID)
         XCTAssertTrue(started.isEmpty, "a keystroke is not a turn")
-        XCTAssertTrue(vm.send(text: "q"))
+        let sent = await vm.send(text: "q")
+        XCTAssertTrue(sent)
         XCTAssertEqual(started, [id])
         XCTAssertNil(vm.landingDraftID)
         try XCTUnwrap(fakes.last).emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
@@ -1617,12 +1799,13 @@ final class ChatLandingViewModelTests: XCTestCase {
 
     /// I-1 glue: landing → type a character → open a project shows the
     /// project page; the history selection is not moved to the draft.
-    func testLandingKeystrokeThenOpenProjectShowsTheProjectPage() throws {
+    func testLandingKeystrokeThenOpenProjectShowsTheProjectPage() async throws {
         let (vm, history) = wiredPair()
-        let projectID = try dbManager.dbPool.write { try ChatProjectQueries.create($0, name: "P") }.id
-        vm.draftStarted()
+        let projectID = try await dbManager.dbPool.write { try ChatProjectQueries.create($0, name: "P") }.id
+        await vm.draftStarted()
         let draftID = try XCTUnwrap(vm.conversationID)
         vm.openProject(projectID)
+        await vm.writesSettled()
         XCTAssertEqual(vm.openProjectID, projectID)
         XCTAssertFalse(vm.isOnLanding)
         XCTAssertNil(history.selectedConversationID)
@@ -1631,9 +1814,10 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertNil(pool.client(for: draftID), "and so does its session")
     }
 
-    func testLandingsFirstTurnBecomesTheHistorySelection() throws {
+    func testLandingsFirstTurnBecomesTheHistorySelection() async throws {
         let (vm, history) = wiredPair()
-        XCTAssertTrue(vm.send(text: "hi"))
+        let sent = await vm.send(text: "hi")
+        XCTAssertTrue(sent)
         XCTAssertEqual(history.selectedConversationID, vm.conversationID)
     }
 
@@ -1641,10 +1825,11 @@ final class ChatLandingViewModelTests: XCTestCase {
     func testSelectingAnotherChatDiscardsTheUntouchedDraft() async throws {
         let other = try await answeredConversation(makeViewModel())
         let vm = makeViewModel()
-        vm.draftStarted()
+        await vm.draftStarted()
         let draftID = try XCTUnwrap(vm.conversationID)
         XCTAssertNotNil(pool.client(for: draftID))
         vm.select(conversationID: other)
+        await vm.writesSettled()
         XCTAssertFalse(try rowExists(draftID))
         XCTAssertNil(pool.client(for: draftID))
     }
@@ -1652,9 +1837,10 @@ final class ChatLandingViewModelTests: XCTestCase {
     func testOpeningASearchHitDiscardsTheUntouchedDraft() async throws {
         let other = try await answeredConversation(makeViewModel())
         let vm = makeViewModel()
-        vm.draftStarted()
+        await vm.draftStarted()
         let draftID = try XCTUnwrap(vm.conversationID)
-        vm.open(ChatSearchHit(conversationID: other, messageID: nil, title: "", snippet: ""))
+        await vm.open(ChatSearchHit(conversationID: other, messageID: nil, title: "", snippet: ""))
+        await vm.writesSettled()
         XCTAssertFalse(try rowExists(draftID))
         XCTAssertEqual(vm.conversationID, other)
     }
@@ -1664,7 +1850,7 @@ final class ChatLandingViewModelTests: XCTestCase {
     func testADraftWithAMessageIsNeverDiscarded() async throws {
         let other = try await answeredConversation(makeViewModel())
         let vm = makeViewModel()
-        vm.draftStarted()
+        await vm.draftStarted()
         let draftID = try XCTUnwrap(vm.conversationID)
         _ = try await dbManager.dbPool.write {
             try TestDatabase.insertChatMessage($0, conversationID: draftID, role: "user", text: "x")
@@ -1675,15 +1861,15 @@ final class ChatLandingViewModelTests: XCTestCase {
 
     /// Only the landing's own draft is reused — here the one a previous
     /// launch left behind — never an empty chat of another origin.
-    func testDraftStartedReusesOnlyTheLandingsOwnDraft() throws {
-        let foreign = try dbManager.dbPool.write { try TestDatabase.insertChatConversation($0, title: "") }
+    func testDraftStartedReusesOnlyTheLandingsOwnDraft() async throws {
+        let foreign = try await dbManager.dbPool.write { try TestDatabase.insertChatConversation($0, title: "") }
         let first = makeViewModel()
-        first.draftStarted()
+        await first.draftStarted()
         let draft = try XCTUnwrap(first.conversationID)
         XCTAssertNotEqual(draft, foreign)
 
         let relaunched = makeViewModel()
-        relaunched.draftStarted()
+        await relaunched.draftStarted()
         XCTAssertEqual(relaunched.conversationID, draft)
         XCTAssertTrue(relaunched.isOnLanding)
         XCTAssertTrue(try rowExists(foreign))
@@ -1692,7 +1878,7 @@ final class ChatLandingViewModelTests: XCTestCase {
     func testLaunchCleanupDropsOnlyTheAbandonedLandingDraft() async throws {
         let answered = try await answeredConversation(makeViewModel())
         let quitter = makeViewModel()
-        quitter.draftStarted()
+        await quitter.draftStarted()
         let draft = try XCTUnwrap(quitter.conversationID)
         // Empty, in a project, moved out of one, left by a deleted one, pinned, renamed.
         let others: [Int64] = try await dbManager.dbPool.write { d in
@@ -1709,7 +1895,9 @@ final class ChatLandingViewModelTests: XCTestCase {
             try ChatConversationQueries.rename(d, id: renamed, title: "Keep me")
             return [empty, inProject, movedOut, orphaned, pinned, renamed]
         }
-        makeViewModel().cleanUpUntouchedConversations()
+        let launched = makeViewModel()
+        launched.cleanUpUntouchedConversations()
+        await launched.writesSettled()
         XCTAssertFalse(try rowExists(draft))
         for kept in [answered] + others {
             XCTAssertTrue(try rowExists(kept), "chat \(kept) survives the launch sweep")
@@ -1720,12 +1908,12 @@ final class ChatLandingViewModelTests: XCTestCase {
     /// A database reset at the same path can reissue the persisted draft's
     /// id to an unrelated chat: id + created_at must both match, so that chat
     /// is neither swept nor reused.
-    func testAReissuedDraftIDIsNeverSweptOrReused() throws {
+    func testAReissuedDraftIDIsNeverSweptOrReused() async throws {
         let quitter = makeViewModel()
-        quitter.draftStarted()
+        await quitter.draftStarted()
         let draft = try XCTUnwrap(quitter.conversationID)
         let createdAt = try XCTUnwrap(quitter.currentConversation).createdAt
-        try dbManager.dbPool.write { d in
+        try await dbManager.dbPool.write { d in
             try ChatConversationQueries.delete(d, id: draft)
             try d.execute(sql: """
                 INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (?, '', ?, ?)
@@ -1735,7 +1923,7 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertTrue(try rowExists(draft), "the unrelated chat survives the sweep")
 
         let vm = makeViewModel()
-        vm.draftStarted()
+        await vm.draftStarted()
         XCTAssertNotEqual(vm.conversationID, draft, "and is not reused as a draft")
     }
 
@@ -1751,7 +1939,7 @@ final class ChatLandingViewModelTests: XCTestCase {
         let other = try await answeredConversation(makeViewModel())
         for touch in ["pin", "rename"] {
             let vm = makeViewModel()
-            vm.draftStarted()
+            await vm.draftStarted()
             let draft = try XCTUnwrap(vm.conversationID)
             try await dbManager.dbPool.write { d in
                 if touch == "pin" {
@@ -1798,7 +1986,8 @@ final class ChatLandingViewModelTests: XCTestCase {
     func testPendingFilesStayWithTheirChat() async throws {
         let other = try await answeredConversation(makeViewModel())
         let vm = makeViewModel()
-        let withFile = try XCTUnwrap(vm.newConversation())
+        let created = await vm.newConversation()
+        let withFile = try XCTUnwrap(created)
         try await insertPendingAttachment(withFile)
         vm.select(conversationID: other)
         vm.select(conversationID: withFile)
@@ -1814,7 +2003,7 @@ final class ChatLandingViewModelTests: XCTestCase {
     func testALandingDraftWithOnlyAFileStaysVisibleAndResumable() async throws {
         let other = try await answeredConversation(makeViewModel())
         let (vm, history) = wiredPair()
-        vm.draftStarted()
+        await vm.draftStarted()
         let draft = try XCTUnwrap(vm.conversationID)
         try await insertPendingAttachment(draft)
         vm.select(conversationID: draft) // same id: nothing reloads, as when a file is added live
@@ -1851,10 +2040,10 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isOnLanding)
     }
 
-    func testTheLandingWithUnsentTextStaysPut() throws {
+    func testTheLandingWithUnsentTextStaysPut() async throws {
         let vm = makeViewModel()
         vm.draft = "hello"
-        vm.draftStarted()
+        await vm.draftStarted()
         let draftID = try XCTUnwrap(vm.conversationID)
         vm.enterTab(rememberedConversationID: nil, lastViewedAt: nil, now: Date().addingTimeInterval(3 * window))
         XCTAssertTrue(vm.isOnLanding)
@@ -1863,10 +2052,11 @@ final class ChatLandingViewModelTests: XCTestCase {
     }
 
     /// M-3: deleting the open project lands.
-    func testDeletingTheOpenProjectShowsTheLanding() throws {
+    func testDeletingTheOpenProjectShowsTheLanding() async throws {
         let vm = makeViewModel()
-        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
-        _ = try dbManager.dbPool.write { try ChatProjectQueries.delete($0, id: projectID) }
+        let project = await vm.createProject(name: "P")
+        let projectID = try XCTUnwrap(project)
+        _ = try await dbManager.dbPool.write { try ChatProjectQueries.delete($0, id: projectID) }
         vm.projectDeleted(projectID)
         XCTAssertNil(vm.openProjectID)
         XCTAssertTrue(vm.isOnLanding)

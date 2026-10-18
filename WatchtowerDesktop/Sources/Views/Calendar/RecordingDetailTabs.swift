@@ -543,7 +543,7 @@ struct RecordingTranscriptTab: View {
     let showRecapRefreshHint: Bool
     /// Returns whether the transactional rewrite landed — the toast only
     /// shows (and the undo only clears) on success.
-    let onSetUtteranceDeleted: (_ idx: Int, _ deleted: Bool) -> Bool
+    let onSetUtteranceDeleted: (_ idx: Int, _ deleted: Bool) async -> Bool
     let onListenToSamples: (_ speaker: String) -> Void
     let onRegenerateRecap: () -> Void
 
@@ -690,8 +690,10 @@ struct RecordingTranscriptTab: View {
                 Button("Undo") {
                     // Keep the toast when the restore write failed, so the
                     // utterance stays recoverable without reopening the row.
-                    if onSetUtteranceDeleted(idx, false) {
-                        clearUndo()
+                    Task {
+                        if await onSetUtteranceDeleted(idx, false) {
+                            clearUndo()
+                        }
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -708,13 +710,15 @@ struct RecordingTranscriptTab: View {
     private func deleteUtterance(_ idx: Int) {
         // No toast when the write failed — the detail view surfaces the error
         // and the transcript is unchanged, so "Utterance deleted" would lie.
-        guard onSetUtteranceDeleted(idx, true) else { return }
-        undoDismissTask?.cancel()
-        undoIdx = idx
-        undoDismissTask = Task {
-            try? await Task.sleep(for: .seconds(5))
-            guard !Task.isCancelled else { return }
-            clearUndo()
+        Task {
+            guard await onSetUtteranceDeleted(idx, true) else { return }
+            undoDismissTask?.cancel()
+            undoIdx = idx
+            undoDismissTask = Task {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                clearUndo()
+            }
         }
     }
 

@@ -15,7 +15,6 @@ final class WorkbenchSwitcherPresentationTests: XCTestCase {
         name: String,
         folder: String = "/tmp/x",
         blocked: Int = 0,
-        sessions: Int = 0,
         lastActivity: String = ""
     ) -> WorkbenchSwitcherSummary {
         let project = Workbench(row: ["id": id, "name": name, "folder_path": folder])
@@ -23,7 +22,6 @@ final class WorkbenchSwitcherPresentationTests: XCTestCase {
             summary: WorkbenchSummary(project: project, openTargets: 0, inProgressTargets: 0,
                                       unreadAgentComments: 0),
             blockedTargets: blocked,
-            sessionCount: sessions,
             lastSessionActivity: lastActivity
         )
     }
@@ -33,9 +31,9 @@ final class WorkbenchSwitcherPresentationTests: XCTestCase {
     func testOrderedByLastActivityThenNoSessionWorkbenchesByName() {
         let rows = [
             summary(id: 1, name: "zeta"),
-            summary(id: 2, name: "old", sessions: 1, lastActivity: "2026-09-01T10:00:00Z"),
+            summary(id: 2, name: "old", lastActivity: "2026-09-01T10:00:00Z"),
             summary(id: 3, name: "Alpha"),
-            summary(id: 4, name: "new", sessions: 2, lastActivity: "2026-09-30T10:00:00Z"),
+            summary(id: 4, name: "new", lastActivity: "2026-09-30T10:00:00Z"),
             summary(id: 5, name: "beta")
         ]
         XCTAssertEqual(WorkbenchSwitcherPresentation.ordered(rows).map(\.id), [4, 2, 3, 5, 1])
@@ -63,42 +61,35 @@ final class WorkbenchSwitcherPresentationTests: XCTestCase {
     private func segments(
         _ row: WorkbenchSwitcherSummary,
         comments: Int = 0,
-        live: Int = 0
+        working: Int = 0
     ) -> [WorkbenchSwitcherPresentation.Segment] {
-        WorkbenchSwitcherPresentation.stateSegments(summary: row, newComments: comments, liveCount: live, now: now)
+        WorkbenchSwitcherPresentation.stateSegments(summary: row, newComments: comments, workingCount: working, now: now)
     }
 
     func testSegmentsEachCombination() {
         typealias Seg = WorkbenchSwitcherPresentation.Segment
-        let all = summary(id: 1, name: "a", blocked: 2, sessions: 5, lastActivity: iso(60))
-        XCTAssertEqual(segments(all, comments: 3, live: 1), [
+        let all = summary(id: 1, name: "a", blocked: 2, lastActivity: iso(60))
+        XCTAssertEqual(segments(all, comments: 3, working: 4), [
             Seg(text: "3 new comments", tone: .comments),
             Seg(text: "2 blocked", tone: .blocked),
-            Seg(text: "5 sessions · 1 running", tone: .sessions)
+            Seg(text: "4 working", tone: .sessions)
         ])
         XCTAssertEqual(segments(all, comments: 1), [
             Seg(text: "1 new comment", tone: .comments),
             Seg(text: "2 blocked", tone: .blocked),
             Seg(text: "1m", tone: .age)
-        ], "nothing running → the age instead of the sessions")
-        let sessionsOnly = summary(id: 2, name: "b", sessions: 1, lastActivity: iso(60))
-        XCTAssertEqual(segments(sessionsOnly, live: 1), [Seg(text: "1 session · 1 running", tone: .sessions)])
+        ], "nothing working → the age instead")
+        let workingOnly = summary(id: 2, name: "b", lastActivity: iso(60))
+        XCTAssertEqual(segments(workingOnly, working: 1), [Seg(text: "1 working", tone: .sessions)])
         let blockedOnly = summary(id: 3, name: "c", blocked: 1)
         XCTAssertEqual(segments(blockedOnly), [Seg(text: "1 blocked", tone: .blocked)])
         let commentsOnly = summary(id: 4, name: "d")
         XCTAssertEqual(segments(commentsOnly, comments: 5), [Seg(text: "5 new comments", tone: .comments)])
     }
 
-    /// Unreachable from the DB (a live session has a row) but the counts
-    /// come from two sources: a live count alone still says it is running.
-    func testSegmentsLiveWithoutCountedSessions() {
-        let row = summary(id: 1, name: "a")
-        XCTAssertEqual(segments(row, live: 2), [.init(text: "2 running", tone: .sessions)])
-    }
-
     func testSegmentsFallBackToTheAgeThenToNothing() {
-        let quiet = summary(id: 1, name: "a", sessions: 2, lastActivity: iso(3 * 86_400 + 100))
-        XCTAssertEqual(segments(quiet), [.init(text: "3d", tone: .age)], "sessions on file, none running")
+        let quiet = summary(id: 1, name: "a", lastActivity: iso(3 * 86_400 + 100))
+        XCTAssertEqual(segments(quiet), [.init(text: "3d", tone: .age)], "sessions on file, none working")
         XCTAssertEqual(segments(summary(id: 2, name: "b")), [])
         XCTAssertEqual(segments(summary(id: 3, name: "c", lastActivity: "garbage")), [],
                        "an unreadable stamp shows nothing rather than the raw text")

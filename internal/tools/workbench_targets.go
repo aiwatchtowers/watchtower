@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"unicode"
 
 	"watchtower/internal/db"
+	"watchtower/internal/instructions"
 	"watchtower/internal/workbenchfiles"
 )
 
@@ -109,7 +111,7 @@ func validateTargetItems(items []newTargetItem) error {
 }
 
 func validateTargetItem(i int, it newTargetItem, earlier map[string]bool) error {
-	if _, err := requireText(fmt.Sprintf("items[%d].text", i), it.Text, 200); err != nil {
+	if err := requireText(fmt.Sprintf("items[%d].text", i), it.Text, 200); err != nil {
 		return err
 	}
 	switch {
@@ -319,9 +321,32 @@ func NewUpdateTarget(store workbenchfiles.Store, sessionEnv func() string) *Tool
 			if err != nil {
 				return nil, err
 			}
+			addTargetProcedure(d, call.Binding.WorkbenchID, a, out)
 			linkSession(d, call.Binding, sessionEnv, out, a.TargetID)
 			return out, nil
 		},
+	}
+}
+
+// addTargetProcedure adds the owner's target procedure (PROJ-22) to out when
+// the call leaves the target in_progress. A failure to read the texts is
+// logged and the key omitted: the update itself is already committed.
+func addTargetProcedure(d *db.DB, workbenchID int64, a updateTargetArgs, out map[string]any) {
+	inProgress := a.Status == "in_progress"
+	if !inProgress && a.Column != nil {
+		t, err := d.GetTargetByID(int(a.TargetID))
+		inProgress = err == nil && t.Status == "in_progress"
+	}
+	if !inProgress {
+		return
+	}
+	texts, err := instructions.Load(d, workbenchID)
+	if err != nil {
+		log.Printf("update_target: loading owner instructions: %v", err)
+		return
+	}
+	if p := instructions.Procedure(texts, a.TargetID); p != "" {
+		out["procedure"] = p
 	}
 }
 

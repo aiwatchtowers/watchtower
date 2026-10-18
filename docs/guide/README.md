@@ -31,6 +31,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [A Workbench session or ask is stuck](troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
 - [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
 - [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — Claude plan warnings, rate limits and how to spend fewer tokens
+- [An automation run stopped at a limit](troubleshooting/automation-run-limits.md) — what the per-run call, output and session limits mean and what to do when a run cannot finish
 - [Known issues](troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
 
 ## Focus
@@ -65,9 +66,11 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Updates and quitting](features/workbench/updates-and-quitting.md) — what keeps running when you update, quit or restart with sessions at work
 - [Asks](features/workbench/asks.md) — reviews, checks and decisions the agent files for you, and how your answer gets back
 - [Code viewer](features/workbench/code-viewer.md) — read and edit the folder's files, jump to definitions with Open Quickly, and ask about code
+- [Branches in the header](features/workbench/branches.md) — switch, create, fetch and check out branches from the page header without losing work
 - [Worktrees and cleanup](features/workbench/worktrees-and-cleanup.md) — an own git worktree per parallel session, and safe removal of what a session leaves behind
 - [Diff review](features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
 - [Methodology](features/workbench/methodology.md) — the workflow file, **Agent Settings…** and the ask guard that shape how agents work
+- [Your instructions](features/workbench/instructions.md) — standing directions for every agent, a target procedure, and suggestions from what you repeat
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench
 - [Agent analytics](features/agent-analytics.md) — tokens, cost and tool use of the agent sessions in a workbench, on the Analytics view or from the command line
 
@@ -80,6 +83,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Memory](features/memory.md) — the assistant's long-term notebook of people, projects and beliefs, in plain files you can edit
 - [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants
 - [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe, event triggers and the five ready-made templates
+- [Automations: confirmation, budgets and writes](features/automations-safety.md) — what you confirm, the per-run budget, how writes wait for you and auto grants
 
 ## Meetings & calendar
 

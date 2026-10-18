@@ -463,8 +463,11 @@ final class AppState {
         self.openDatabase = openDatabase
         // A daemon that came up after all (a later poll, a Settings start)
         // takes the "did not start" banner with it.
+        wireDaemonStartQueue()
         daemonManager.onRunningChanged = { [weak self] running in
-            if running { self?.daemonStartFailure = nil }
+            guard running else { return }
+            self?.daemonStartFailure = nil
+            self?.clearRestartFailedTurnOnErrors()
         }
     }
 
@@ -630,7 +633,7 @@ final class AppState {
                 viewModel: TargetsViewModel(dbManager: manager),
                 dbManager: manager
             )
-            return container.activeChat
+            return await container.readyChat()
         }
         targetBriefCenter.targetExists = { [weak self] id in
             guard let manager = self?.databaseManager else { return true }
@@ -1080,40 +1083,20 @@ final class AppState {
         }
     }
 
-    /// Finish's daemon bring-up, held so tests can await it.
-    @ObservationIgnored private(set) var onboardingDaemonStart: Task<Void, Never>?
-
-    /// Starts (or, with `startOnly` false, restarts) the daemon in the
-    /// background, after any earlier bring-up still running: two restarts
-    /// overlapping would read as a failed start.
-    private func bringUpDaemonInBackground(startOnly: Bool) {
-        let daemon = daemonControl
-        let previous = onboardingDaemonStart
-        onboardingDaemonStart = Task {
-            await previous?.value
-            let up = startOnly && daemon.daemonIsRunning()
-                ? true
-                : await OnboardingFinishPlan.bringUpDaemon(daemon)
-            if up {
-                daemonStartFailure = nil
-            } else {
-                daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
-            }
-        }
+    /// Every daemon start or restart the app makes runs on this queue
+    /// (`enqueueDaemonStart`, AppState+DaemonStart.swift); tests get their own.
+    @ObservationIgnored var daemonStartQueue = DaemonStartQueue.shared {
+        didSet { wireDaemonStartQueue() }
     }
-
-    /// The background sync did not come up after setup: shown over the tab
-    /// setup landed on, not only in the tray.
-    private(set) var daemonStartFailure: String?
-
-    func dismissDaemonStartFailure() {
-        daemonStartFailure = nil
-    }
-
-    static func daemonStartFailureText(_ detail: String?) -> String {
-        let reason = detail.map { ": \($0)." } ?? "."
-        return "The background sync did not start\(reason) Open Settings → System to retry."
-    }
+    /// How long the banner's Start waits for the daemon to show up, and how
+    /// often it looks (a first start after an update runs migrations first).
+    @ObservationIgnored var daemonStartWaitBound: Duration = .seconds(60)
+    @ObservationIgnored var daemonStartPollInterval: Duration = .seconds(1)
+    /// The banner's Start is waiting for the daemon (no second Start).
+    var isStartingDaemon = false
+    /// The down stretch (`DaemonManager.notRunningSince`) whose "isn't
+    /// running" banner the owner dismissed.
+    var stoppedBannerDismissedFor: Date?
 
     // MARK: - Features for a source connected from Settings
 
@@ -1197,7 +1180,7 @@ final class AppState {
         // The connect that raised the offer may still be restarting the
         // daemon itself: one restart at a time.
         await awaitAccountDaemonRestarts()
-        let result = await featureManager.enableNow(ids) { try await daemon.restartWaiting() }
+        let result = await featureManager.enableNow(ids) { try await self.restartOnChain(daemon) }
         if result.busy {
             // Settings → Features is applying its own batch.
             featureSuggestionError = Self.featureChangesBusy
@@ -1208,7 +1191,7 @@ final class AppState {
             // Everything is on already (a retry after a failed restart): the
             // daemon still has to pick it up.
             do {
-                try await daemon.restartWaiting()
+                try await restartOnChain(daemon)
                 featureManager.loadError = nil
             } catch {
                 featureSuggestionError = error.localizedDescription
@@ -1254,7 +1237,7 @@ final class AppState {
         onboardingGoals.wroteChanges || accountFingerprint != rerunAccountsAtStart
     }
 
-    private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
+    var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
 
     /// Why the last Turn on from a tab's empty state didn't work, per feature
     /// id, so one tab's error never shows under another's Turn on; cleared
@@ -1274,6 +1257,9 @@ final class AppState {
         return error.featureWasOn || !nowOn ? error.message : nil
     }
 
+    /// A later successful start or restart picked the feature up: drop its Try again.
+    func clearRestartFailedTurnOnErrors() { emptyStateTurnOnErrors = emptyStateTurnOnErrors.filter { !$0.value.featureWasOn } }
+
     private func recordTurnOnError(_ featureID: String, _ message: String, featureWasOn: Bool = false) {
         emptyStateTurnOnErrors[featureID] = (message, featureWasOn)
     }
@@ -1292,7 +1278,7 @@ final class AppState {
         defer { turningOnFeatureID = nil }
         let daemon = daemonControl
         await awaitAccountDaemonRestarts()
-        let result = await featureManager.enableNow([featureID]) { try await daemon.restartWaiting() }
+        let result = await featureManager.enableNow([featureID]) { try await self.restartOnChain(daemon) }
         if result.busy {
             recordTurnOnError(featureID, Self.featureChangesBusy)
             return
@@ -1313,13 +1299,13 @@ final class AppState {
                 return
             }
             do {
-                try await daemon.restartWaiting()
+                try await restartOnChain(daemon)
             } catch {
                 recordTurnOnError(featureID, error.localizedDescription, featureWasOn: true)
                 return
             }
         }
-        emptyStateTurnOnErrors[featureID] = nil
+        emptyStateTurnOnErrors = emptyStateTurnOnErrors.filter { $0.key != featureID && !$0.value.featureWasOn }
     }
 
     /// A first run of onboarding opens Home, whatever the goals.
@@ -1375,16 +1361,18 @@ final class AppState {
         guard automationsViewModel == nil else { return }
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
         let cli = AutomationsCLI(runner: runner)
-        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli)
-        // Daemon-written inbox outputs never fire the counts VM's observation.
-        // Resolved at call time: the counts VM may be built after this one.
+        let notifier = AutomationRunNotifier()
+        let watch = AutomationFailureWatch(defaults: .standard, workspace: dbPool.path, notifier: notifier)
+        let looking = { NSApp.isActive && NSApp.keyWindow?.isVisible == true }
+        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli, failureWatch: watch, isOwnerLooking: looking)
+        // Daemon-written inbox outputs never fire the counts VM's observation; resolved at call time.
         vm.onInboxOutputCountChanged = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
         vm.start()
         automationsViewModel = vm
         let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
-                                      notifier: AutomationRunNotifier()) { [weak self] in
+                                      notifier: notifier) { [weak self] in
             self?.isAutomationsFeatureEnabled ?? false
         }
         quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }
@@ -1475,12 +1463,20 @@ final class AppState {
     /// A failed restart is thrown for the Settings error line.
     func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
         guard let db = databaseManager else { return }
-
-        // 1. Stop the daemon so nothing writes while the tables are wiped —
-        // after a finish still bringing one up, and only once its process is
-        // really gone (a timeout wipes nothing).
-        await onboardingDaemonStart?.value
         let daemon = daemonControl
+        // One item on the start queue: no other start lands mid-wipe.
+        let failure = await enqueueDaemonStart { () -> (any Error)? in
+            await Self.stopWipeRestart(daemon: daemon, db: db, workspaceDir: workspaceDir)
+        }.value
+        if let failure { throw failure }
+        daemonStartQueue.succeeded()
+    }
+
+    private static func stopWipeRestart(
+        daemon: any DaemonControl, db: DatabaseManager, workspaceDir: String?
+    ) async -> (any Error)? {
+        // 1. Stop the daemon so nothing writes while the tables are wiped —
+        // only once its process is really gone (a timeout wipes nothing).
         if daemon.daemonIsRunning() {
             await daemon.stopDaemonNow()
         }
@@ -1488,7 +1484,7 @@ final class AppState {
         do {
             try await daemon.waitUntilStopped()
             // 2. Wipe LLM-generated tables and the daemon's stamps.
-            try db.wipeLLMData()
+            try await db.wipeLLMData()
             if let workspaceDir {
                 try DaemonStampFiles.clear(in: workspaceDir)
             }
@@ -1503,23 +1499,33 @@ final class AppState {
         } catch {
             failure = failure ?? error
         }
-        if let failure { throw failure }
+        return failure
     }
 
     /// Ensure the daemon is running against the current CLI binary.
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
-    /// so UI quit/launch cycles the daemon lifecycle.
-    private func ensureDaemonRunning() {
+    /// so UI quit/launch cycles the daemon lifecycle. On the one start chain.
+    func ensureDaemonRunning() {
         let daemon = daemonControl
-        ensureDaemonTask = Task {
-            daemonManager.resolvePathIfNeeded()
+        let manager = daemonManager
+        let item = enqueueDaemonStart {
+            manager.resolvePathIfNeeded()
             if daemon.daemonIsRunning() {
                 await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            _ = await daemon.startDetached()
+            if await daemon.startDetached() {
+                self.daemonStartQueue.succeeded()
+            } else if daemon.daemonIsRunning() {
+                // The old daemon is still there (still exiting, or it did not
+                // stop): the new one never came up. Retry restarts it.
+                self.daemonStartFailure = Self.daemonOldStillRunningText(manager.errorMessage)
+            } else {
+                self.daemonStartFailure = Self.daemonStartFailureText(manager.errorMessage)
+            }
         }
+        ensureDaemonTask = Task { _ = await item.value }
     }
 
     /// What onboarding's steps need once the database is open: the database
@@ -1834,8 +1840,9 @@ final class AppState {
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
-        workbenchesViewModel?.asks.stop()
+        workbenchesViewModel?.stop()
         workbenchesViewModel = vm
+        workbenchNotificationCenter?.stop()
         workbenchNotificationCenter = notices
         sessionAgentStateCenter?.stop()
         sessionAgentStateCenter = agentStates

@@ -42,11 +42,15 @@ var registry = []Provider{
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
 	},
 	{
-		ID:            "codex",
-		DisplayName:   "Codex",
-		Kind:          "cli",
-		DefaultLight:  "gpt-6-luna",
-		DefaultStrong: "gpt-6-astra",
+		ID:          "codex",
+		DisplayName: "Codex",
+		Kind:        "cli",
+		// Models codex-cli 0.145 lists (`codex debug models`). It refuses
+		// gpt-6-astra ("requires a newer version of Codex") and, on
+		// ChatGPT sign-in, gpt-6-luna (board #666); a newer model stays
+		// one pin away in Settings.
+		DefaultLight:  "gpt-5.6-luna",
+		DefaultStrong: "gpt-5.6-sol",
 	},
 	{
 		ID:          "ollama",
@@ -99,9 +103,11 @@ func ByID(id string) Provider {
 // resolves to its family alias (`opus`, `haiku`): a pin written once — by an
 // older setup, a Settings pick or a hand edit — otherwise stays on that release
 // forever while the aliases move on to the newest model of the class.
-// For `codex`, a pinned gpt-5 family model (`gpt-5.4`, `gpt-5.4-mini`,
-// `gpt-5.5`, `gpt-5.3-codex`) resolves to the tier default: OpenAI retired
-// them from Codex (2026-08-31 … 2026-10-14), and a pin would fail every call.
+// For `codex`, a pinned retired gpt-5 model (`gpt-5`, `gpt-5.4`,
+// `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.3-codex`) resolves to the tier default:
+// OpenAI retired them from Codex (2026-08-31 … 2026-10-14), and a pin would
+// fail every call. The gpt-5.6 models (`gpt-5.6-sol`, `gpt-5.6-luna`) are
+// still offered and stay pinned.
 // For single-model backends (ollama), an unset light tier follows the
 // resolved strong model, so configuring one model configures both tiers.
 // Ollama ships no default model — an unconfigured ollama resolves to empty
@@ -138,7 +144,7 @@ func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong stri
 
 var (
 	claudeFullModelID  = regexp.MustCompile(`^claude-(opus|sonnet|haiku)-[0-9]`)
-	codexRetiredModels = regexp.MustCompile(`^gpt-5([.-]|$)`)
+	codexRetiredModels = regexp.MustCompile(`^gpt-5(\.[0-5])?(-|$)`)
 )
 
 // normalizePinnedModel keeps a pinned model from going stale: a full Claude

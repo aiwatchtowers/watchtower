@@ -20,7 +20,7 @@ A feature like digest / tracks / inbox / catchup is built in layers in a fixed o
 
 4. **Daemon wiring** (`internal/daemon/daemon.go`): add a field to `Daemon`, a `SetXPipeline(p *X.Pipeline)` setter, and invoke it from the right phase in `Run` (phase order is documented in the `docs/features/` notes / the `phaseXxx` methods — slot it by its dependencies: after digests if it consumes them, etc.).
 
-5. **Daemon init** (`cmd/sync.go`): build the pipeline behind its config flag and register it — `if cfg.X.Enabled { d.SetXPipeline(x.New(database, cfg, gen, logger)) }` — reusing the shared `gen, cleanup := cliPooledGenerator(cfg, logger)`.
+5. **Daemon init** (`cmd/sync.go`): build the pipeline behind its config flag and register it — `if cfg.X.Enabled { d.SetXPipeline(x.New(database, cfg, gen, logger)) }` — reusing the shared `gen, cleanup := cliPooledGenerator(cfg)`.
 
 6. **CLI command** (`cmd/<feature>.go`): cobra `Cmd` + subcommands, `init()` → `rootCmd.AddCommand`, and a factory that does `config.Load` → `applyProviderOverride(cfg)` → `db.Open` → `cliPooledGenerator` → `feature.New(...)`. Copy `cmd/catchup.go`.
 

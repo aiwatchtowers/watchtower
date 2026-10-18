@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -295,6 +296,8 @@ func init() {
 	jiraAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().String("label", "", "display name for this site")
+	jiraAddCmd.Flags().Bool("app-site-picker", false, "with several sites, print them as one [jira-sites] JSON line and read the chosen URL from stdin (the Desktop's connect sheet)")
+	_ = jiraAddCmd.Flags().MarkHidden("app-site-picker")
 	jiraAddCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
 	jiraAddCmd.Flags().Bool("with-confluence-write", false, "also request Confluence write scopes, so the assistant can edit pages (implies --with-confluence; requires the Confluence API with its write scopes enabled on this OAuth app in its Atlassian developer console, or the login fails)")
 	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
@@ -398,7 +401,8 @@ func jiraSiteURLs(resources []jira.CloudResource) []string {
 }
 
 // selectJiraSite picks one accessible site: --site substring match, auto if
-// exactly one, else an interactive numeric prompt. preferCloudID, when
+// exactly one, else an interactive numeric prompt (under --app-site-picker,
+// the Desktop's list: pickJiraSiteForApp). preferCloudID, when
 // non-empty, is the re-login path: the account already has a site, so the
 // grant must reach it — a hit short-circuits the choice without prompting and
 // a miss is an error, never a silent re-point onto some other site.
@@ -435,6 +439,15 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 	if len(resources) == 1 {
 		return resources[0], nil
 	}
+	if f := cmd.Flags().Lookup("app-site-picker"); f != nil && f.Value.String() == "true" {
+		return pickJiraSiteForApp(cmd, resources)
+	}
+	return promptJiraSite(cmd, resources)
+}
+
+// promptJiraSite is the terminal's numbered site prompt over several sites.
+func promptJiraSite(cmd *cobra.Command, resources []jira.CloudResource) (jira.CloudResource, error) {
+	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "\nAvailable Jira Cloud sites:")
 	for i, r := range resources {
 		fmt.Fprintf(out, "  [%d] %s (%s)\n", i+1, r.Name, r.URL)
@@ -442,11 +455,10 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 	fmt.Fprintf(out, "\nSelect site [1-%d]: ", len(resources))
 	var choice int
 	if _, err := fmt.Fscan(cmd.InOrStdin(), &choice); err != nil {
-		// No usable stdin — the Desktop "Add Jira Site" sheet spawns this
-		// without a terminal, so an unattended run must say what to do next
-		// instead of dying on "invalid selection". The site names are inlined
-		// rather than pointed at: the sheet surfaces only stderr, so "see the
-		// list above" would name a list the user cannot see.
+		// No usable stdin (a run without a terminal and without
+		// --app-site-picker): say what to do next instead of dying on
+		// "invalid selection". The site names are inlined rather than
+		// pointed at, so the error alone is enough to act on.
 		return jira.CloudResource{}, fmt.Errorf(
 			"this Atlassian grant reaches %d sites and no site was chosen; re-run with --site set to one of: %s",
 			len(resources), strings.Join(jiraSiteURLs(resources), ", "))
@@ -457,33 +469,109 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 	return resources[choice-1], nil
 }
 
-// connectJiraAccount finishes an OAuth flow for accountID: resolves the
-// accessible sites, records the chosen site on the row, saves the token to
-// the account's store, and marks the account ok. On any failure for a newly
-// created row the account is soft-removed so a failed connect never leaves
-// an un-loginable ghost.
-func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, token *jira.OAuthToken, siteFlag, preferCloudID string, isNewRow bool) (jira.CloudResource, error) {
-	rollback := func() {
-		if isNewRow {
-			_ = jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Delete()
-			_ = database.SetJiraAccountRemoved(accountID)
+// jiraSitesMarker starts the one stdout line `jira add --app-site-picker`
+// prints when a grant reaches several sites (#574, dual path: WatchtowerCore
+// `JiraSitePrompt`): the marker, a space, then {"sites":[{"url","name"}]}.
+// The Desktop's connect sheet shows the sites as a list and writes the
+// chosen URL back on stdin, so the owner picks a site instead of typing one.
+const jiraSitesMarker = "[jira-sites]"
+
+// jiraSiteChoice is one entry of the jiraSitesMarker line.
+type jiraSiteChoice struct {
+	URL  string `json:"url"`
+	Name string `json:"name"`
+}
+
+// pickJiraSiteForApp prints the sites as a jiraSitesMarker line and reads
+// the chosen site's URL from one stdin line. An empty answer, a closed stdin
+// or a URL outside the grant chooses nothing.
+func pickJiraSiteForApp(cmd *cobra.Command, resources []jira.CloudResource) (jira.CloudResource, error) {
+	choices := make([]jiraSiteChoice, len(resources))
+	for i, r := range resources {
+		choices[i] = jiraSiteChoice{URL: r.URL, Name: r.Name}
+	}
+	payload, err := json.Marshal(struct {
+		Sites []jiraSiteChoice `json:"sites"`
+	}{choices})
+	if err != nil {
+		return jira.CloudResource{}, fmt.Errorf("encoding the site list: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", jiraSitesMarker, payload)
+	line, err := readJiraSiteAnswer(cmd.InOrStdin(), jiraSitePickTimeout)
+	if err != nil {
+		return jira.CloudResource{}, err
+	}
+	if chosen := strings.TrimSpace(line); chosen != "" {
+		for _, r := range resources {
+			if r.URL == chosen {
+				return r, nil
+			}
 		}
 	}
+	return jira.CloudResource{}, fmt.Errorf("this Atlassian grant reaches %d sites and no site was chosen", len(resources))
+}
 
-	resources, err := jira.FetchAccessibleResources(cmd.Context(), token.AccessToken)
+// jiraSitePickTimeout bounds the wait for the app's site answer, so a sheet
+// that went away can never leave `jira add` blocked; a var for tests.
+var jiraSitePickTimeout = 5 * time.Minute
+
+// readJiraSiteAnswer reads one line from in within timeout. A closed stdin
+// (EOF) is an empty answer; any other read error, and the timeout, fail.
+func readJiraSiteAnswer(in io.Reader, timeout time.Duration) (string, error) {
+	type answer struct {
+		line string
+		err  error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		line, err := bufio.NewReader(in).ReadString('\n')
+		done <- answer{line, err}
+	}()
+	select {
+	case a := <-done:
+		if a.err != nil && !errors.Is(a.err, io.EOF) {
+			return "", fmt.Errorf("reading the chosen site: %w", a.err)
+		}
+		return a.line, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("no site was chosen within %s", timeout)
+	}
+}
+
+// jiraFetchResources is jira.FetchAccessibleResources; a var so tests can
+// script the grant's sites.
+var jiraFetchResources = jira.FetchAccessibleResources
+
+// chooseJiraSite resolves the sites a fresh grant reaches and picks one
+// (selectJiraSite). It writes nothing, so `jira add` asks before any row
+// exists (#574): a cancelled or failed choice leaves no account behind.
+func chooseJiraSite(cmd *cobra.Command, token *jira.OAuthToken, siteFlag, preferCloudID string) (jira.CloudResource, error) {
+	resources, err := jiraFetchResources(cmd.Context(), token.AccessToken)
 	if err != nil {
-		rollback()
 		return jira.CloudResource{}, fmt.Errorf("fetching accessible resources: %w", err)
 	}
 	if len(resources) == 0 {
-		rollback()
 		return jira.CloudResource{}, fmt.Errorf("no Jira Cloud sites found for this account")
 	}
+	return selectJiraSite(cmd, resources, siteFlag, preferCloudID)
+}
 
-	site, err := selectJiraSite(cmd, resources, siteFlag, preferCloudID)
-	if err != nil {
-		rollback()
-		return jira.CloudResource{}, err
+// rollbackNewJiraAccount soft-removes a row this connect created and drops
+// its token, so a failed connect never leaves an un-loginable ghost.
+func rollbackNewJiraAccount(cfg *config.Config, database *db.DB, accountID int64) {
+	_ = jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Delete()
+	_ = database.SetJiraAccountRemoved(accountID)
+}
+
+// connectJiraAccount finishes an OAuth flow for accountID on the chosen
+// site: records the site on the row, saves the token to the account's
+// store, and marks the account ok. On any failure for a newly created row
+// the account is rolled back (rollbackNewJiraAccount).
+func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, token *jira.OAuthToken, site jira.CloudResource, isNewRow bool) (jira.CloudResource, error) {
+	rollback := func() {
+		if isNewRow {
+			rollbackNewJiraAccount(cfg, database, accountID)
+		}
 	}
 
 	if err := database.UpdateJiraAccountConnection(accountID, site.ID, site.URL, site.Name); err != nil {
@@ -618,6 +706,47 @@ func enableJiraPhase() error {
 	return writeConfigAtomic(v, flagConfig)
 }
 
+// jiraLogin is jira.Login; a var so tests can script the OAuth outcome.
+var jiraLogin = jira.Login
+
+// jiraConfluenceNotEnabled is what `jira add --with-confluence` prints when
+// the grant came back without the Confluence scopes (#573).
+const jiraConfluenceNotEnabled = "Jira connected; Confluence isn't enabled for this Atlassian app."
+
+// jiraAddLogin is `jira add`'s consent (#573): with --with-confluence, a
+// refusal of the wider scope set (Atlassian's invalid_scope — an app without
+// the Confluence API) is retried once with the Jira scopes only, so asking
+// for Confluence never costs a Jira connect. The retry opens the browser a
+// second time; any other failure is returned as is.
+func jiraAddLogin(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, opts jira.LoginOptions) (*jira.OAuthToken, error) {
+	token, err := jiraLogin(ctx, cfg, out, opts)
+	if err == nil || !opts.WithConfluence || !errors.Is(err, jira.ErrScopeRefused) {
+		return token, err
+	}
+	fmt.Fprintln(out, jiraOnlyRetryMarker+" Atlassian refused the Confluence access; connecting Jira only…")
+	opts.WithConfluence, opts.WithConfluenceWrite = false, false
+	return jiraLogin(ctx, cfg, out, opts)
+}
+
+// Stable markers the Desktop's connect sheet reads (#573, dual path:
+// WatchtowerCore `ConfluenceConnectStep`): the stdout token of the Jira-only
+// retry, and `jira add`'s exit code when nobody completed the consent in
+// time (an Atlassian error page that never redirects back looks like that).
+const (
+	jiraOnlyRetryMarker       = "[jira-only-retry]"
+	jiraLoginTimedOutExitCode = 75
+)
+
+// jiraAddLoginError wraps a failed consent; a login timeout exits with
+// jiraLoginTimedOutExitCode so the Desktop can tell it from other failures.
+func jiraAddLoginError(err error) error {
+	wrapped := fmt.Errorf("jira login: %w", err)
+	if errors.Is(err, oauthpage.ErrLoginTimedOut) {
+		return &exitCodeError{code: jiraLoginTimedOutExitCode, err: wrapped}
+	}
+	return wrapped
+}
+
 func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
@@ -637,17 +766,24 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 
 	opts := jiraLoginOptionsFromFlags(cmd)
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
+	token, err := jiraAddLogin(cmd.Context(), jiraCfg, out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
-		return fmt.Errorf("jira login: %w", err)
+		return jiraAddLoginError(err)
+	}
+	if opts.WithConfluence && !jira.HasConfluenceScopes(token) {
+		fmt.Fprintln(out, jiraConfluenceNotEnabled)
 	}
 
+	chosen, err := chooseJiraSite(cmd, token, siteFlag, "")
+	if err != nil {
+		return err
+	}
 	accountID, err := database.CreateJiraAccount(db.JiraAccount{Label: label})
 	if err != nil {
 		return fmt.Errorf("creating jira account: %w", err)
 	}
-	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, siteFlag, "", true)
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, chosen, true)
 	if err != nil {
 		return err
 	}
@@ -727,7 +863,14 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("jira login: %w", err)
 	}
 
-	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, siteFlag, account.CloudID, isNewRow)
+	chosen, err := chooseJiraSite(cmd, token, siteFlag, account.CloudID)
+	if err != nil {
+		if isNewRow {
+			rollbackNewJiraAccount(cfg, database, accountID)
+		}
+		return err
+	}
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, chosen, isNewRow)
 	if err != nil {
 		return err
 	}

@@ -109,4 +109,19 @@ final class CalendarEventsViewTests: XCTestCase {
         XCTAssertNil(CalendarEventsView.toggledSelection(current: .event("e1"), tapped: .event("e1")))
         XCTAssertNil(CalendarEventsView.toggledSelection(current: .recording(7), tapped: .recording(7)))
     }
+
+    // MARK: - selectionAfterDelete (board #590: the delete lands after its write)
+
+    func test_selectionAfterDelete_closesThePaneStillOnScreen() {
+        XCTAssertNil(CalendarEventsView.selectionAfterDelete(current: .recording(7), deletedFrom: .recording(7)))
+        XCTAssertNil(CalendarEventsView.selectionAfterDelete(current: .event("e1"), deletedFrom: .event("e1")))
+    }
+
+    /// The owner opened another meeting while the delete waited for the lock.
+    func test_selectionAfterDelete_keepsAnotherSelection() {
+        XCTAssertEqual(
+            CalendarEventsView.selectionAfterDelete(current: .event("e2"), deletedFrom: .recording(7)),
+            .event("e2"))
+        XCTAssertNil(CalendarEventsView.selectionAfterDelete(current: nil, deletedFrom: .recording(7)))
+    }
 }

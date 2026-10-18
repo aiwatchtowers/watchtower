@@ -45,6 +45,16 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(sourceRows(result.zone), [GettingReadySourceRow(source: .jira, features: [.jira])])
     }
 
+    /// #575: a feature waiting on Slack Digests is a card with its reason,
+    /// not a Connect row, and keeps the zone open.
+    func testNeedsDigestsIsACard() throws {
+        let result = step(readinessMap([.digests: .off, .tracks: .needsDigests, .briefing: .ready]))
+        let card = try XCTUnwrap(cards(result.zone).first { $0.feature == .tracks })
+        XCTAssertEqual(card.readiness, .needsDigests)
+        XCTAssertFalse(card.isTerminal)
+        XCTAssertTrue(sourceRows(result.zone).isEmpty)
+    }
+
     func testCardsFollowPipelineOrder() {
         let named: [ReadinessFeature: Readiness] = [
             .jira: .scheduled(.nextCycle(minutes: 15)), .briefing: .ready, .slackSync: .preparing(detail: nil),
@@ -240,6 +250,9 @@ final class GettingReadyTests: XCTestCase {
             (.error(message: "x"), .error, true),
             (.waitingForSync(detail: nil), .waiting, false),
             (.scheduled(.inAboutADay), .waiting, false),
+            (.needsDigests, .waiting, false),
+            // Not terminal: a zone of stopped cards must not complete and fold.
+            (.daemonStopped, .waiting, false),
             (nil, .waiting, false)
         ]
         for (readiness, tone, terminal) in cases {
@@ -250,5 +263,21 @@ final class GettingReadyTests: XCTestCase {
             XCTAssertEqual(card.tone, tone, "\(String(describing: readiness))")
             XCTAssertEqual(card.isTerminal, terminal, "\(String(describing: readiness))")
         }
+    }
+
+    // MARK: - Jira boards (#572)
+
+    /// Slack + Jira after a Skip on the board step: every Slack card done,
+    /// Jira waits for boards. The zone stays open on a Jira card instead of
+    /// "Everything's ready" with the prompt gone for good.
+    func testJiraBoardsGapIsAWaitingCardThatKeepsTheZoneOpen() {
+        let first = step(readinessMap([.digests: .preparing(detail: nil), .jira: .needsSource(.jiraBoards)]))
+        let second = step(
+            readinessMap([.digests: .ready, .jira: .needsSource(.jiraBoards)]),
+            memory: first.memory, sawUnready: first.sawUnready)
+        XCTAssertEqual(cards(second.zone).map(\.feature), [.digests, .jira])
+        XCTAssertEqual(sourceRows(second.zone), [])
+        XCTAssertNil(second.memory.completedAt)
+        XCTAssertFalse(try XCTUnwrap(cards(second.zone).last).isTerminal)
     }
 }

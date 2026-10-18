@@ -22,12 +22,15 @@ extension AppState {
     }
 
     /// Turn on goes through `turnOnFeatureFromEmptyState`; Connect and Open
-    /// Settings open the Settings window on their tab. A tab's own action is
-    /// the tab's (`TabEmptyState.onTabAction`).
+    /// Settings open the Settings window on their tab, except Choose Jira
+    /// boards, which opens the Boards tab where the board switches are. A
+    /// tab's own action is the tab's (`TabEmptyState.onTabAction`).
     func performEmptyStateAction(_ action: EmptyStateAction) {
         switch action {
         case .turnOn(let featureID):
             Task { await turnOnFeatureFromEmptyState(featureID) }
+        case .connect(.jiraBoards):
+            selectedDestination = .boards
         case .connect:
             settingsTab = .connections
             openSettingsWindow?()

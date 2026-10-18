@@ -137,7 +137,7 @@ func (p *Pipeline) language() string {
 // error either pass produced, if any, without swallowing it.
 func (p *Pipeline) RunStreamDigests(ctx context.Context) error {
 	var firstErr error
-	if err := p.runEmailDigests(ctx, time.Time{}); err != nil {
+	if err := p.runEmailDigests(ctx); err != nil {
 		firstErr = err
 	}
 	if err := p.runJiraDigests(ctx, time.Time{}); err != nil && firstErr == nil {
@@ -158,6 +158,6 @@ func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
 	if p.cfg != nil && !p.cfg.Ideas.Enabled {
 		return 0, nil
 	}
-	proposed, _, err = p.runConsolidate(ctx, time.Time{}, time.Time{})
+	proposed, _, err = p.runConsolidate(ctx)
 	return proposed, err
 }

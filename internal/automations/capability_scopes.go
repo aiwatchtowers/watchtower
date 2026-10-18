@@ -117,15 +117,13 @@ func issueProject(key string) string {
 	return strings.ToUpper(prefix)
 }
 
-// issueKeyScope scopes a call by its issue key's project.
-func issueKeyScope(key string) func(context.Context, *db.DB, json.RawMessage) ([]CallScope, error) {
-	return func(_ context.Context, _ *db.DB, args json.RawMessage) ([]CallScope, error) {
-		a, err := decodeScopeArgs(args)
-		if err != nil {
-			return nil, err
-		}
-		return unit(issueProject(argString(a, key))), nil
+// issueKeyScope scopes a call by its issue key's project (the "key" arg).
+func issueKeyScope(_ context.Context, _ *db.DB, args json.RawMessage) ([]CallScope, error) {
+	a, err := decodeScopeArgs(args)
+	if err != nil {
+		return nil, err
 	}
+	return unit(issueProject(argString(a, "key"))), nil
 }
 
 // projectsOfKeys is one unit per distinct project prefix; a key without a

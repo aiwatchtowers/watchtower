@@ -110,7 +110,7 @@ struct ReviewOverviewView: View {
 
     /// Deep's Meaning has no diff: the file opens in Chapters.
     private func open(_ path: String) {
-        if style == .full, model.mode == .deep, model.phase == .meaning { try? model.setPhase(.chapters) }
+        if style == .full, model.mode == .deep, model.phase == .meaning { Task { try? await model.setPhase(.chapters) } }
         Task { await model.select(path) }
     }
 

@@ -48,7 +48,7 @@ var specTemplates = []specTemplate{
 	{"pr-review-rounds", automations.ScopeWorkbench, []string{"pr-review-rounds"}, map[string]wantTemplateRecipe{
 		"pr-review-rounds": {
 			trigger:     scheduleTrigger("0 10,16 * * 1-5"),
-			permissions: []string{`shell:"gh pr list --state open --json number,title,url,author,updatedAt"`, "session:start", "llm:light"},
+			permissions: []string{`shell:"gh pr list --state open --limit 200 --json number,title,url,author,updatedAt"`, "session:start", "llm:light"},
 			outputs:     []string{"report"},
 		},
 	}},
@@ -207,6 +207,48 @@ func triggersEqual(a, b automations.Trigger) bool {
 	return a.Event == nil || a.Event.Type == b.Event.Type && len(a.Event.Where) == 0 && len(b.Event.Where) == 0
 }
 
+// #582: a list value repeats the permission line per project and fills the
+// script's array; the copy parses with one grant per project.
+func TestRenderTemplate_ListParam(t *testing.T) {
+	files, err := automations.RenderTemplate("jira-state-report", map[string]string{"PROJECT": "PAY,OPS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(files["jira-state-report"])
+	for _, want := range []string{"  - jira:read@PAY\n  - jira:read@OPS\n", `const projects = ["PAY", "OPS"];`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("rendered copy lacks %q:\n%s", want, text)
+		}
+	}
+	r, err := automations.ParseRecipe("jira-state-report", files["jira-state-report"], automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Permissions; !slices.Equal(got, []string{"jira:read@PAY", "jira:read@OPS", "llm:strong"}) {
+		t.Errorf("permissions = %v", got)
+	}
+}
+
+// #582: every template still parses with two values for each of its params,
+// so a placeholder on a line that must not be repeated is caught here.
+func TestRenderTemplate_EveryTemplateParsesWithListParams(t *testing.T) {
+	for _, tpl := range automations.Templates() {
+		params := map[string]string{}
+		for _, p := range tpl.Params {
+			params[p.Key] = p.Example + ",OTHER"
+		}
+		files, err := automations.RenderTemplate(tpl.Name, params)
+		if err != nil {
+			t.Fatalf("%s: %v", tpl.Name, err)
+		}
+		for slug, data := range files {
+			if _, err := automations.ParseRecipe(slug, data, templateScope(tpl.Scope)); err != nil {
+				t.Errorf("%s/%s with %v: %v", tpl.Name, slug, params, err)
+			}
+		}
+	}
+}
+
 func TestRenderTemplate_Params(t *testing.T) {
 	files, err := automations.RenderTemplate("jira-state-report", map[string]string{"PROJECT": "PAY"})
 	if err != nil {
@@ -229,6 +271,8 @@ func TestRenderTemplate_Params(t *testing.T) {
 		{"quote", map[string]string{"PROJECT": `A"`}, "PROJECT"},
 		{"at", map[string]string{"PROJECT": "A@B"}, "PROJECT"},
 		{"angle", map[string]string{"PROJECT": "<A>"}, "PROJECT"},
+		{"star", map[string]string{"PROJECT": "*"}, "PROJECT"},
+		{"empty list item", map[string]string{"PROJECT": "PAY,,OPS"}, "PROJECT"},
 	}
 	for _, tc := range refused {
 		name := "jira-state-report"

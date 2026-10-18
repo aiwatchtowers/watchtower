@@ -319,22 +319,26 @@ struct IdeasView: View {
             IdeaDetailPane(
                 idea: idea,
                 allIdeas: vm.reviewItems + vm.registryItems,
-                onApprove: { vm.approve(idea) },
-                onReject: { vm.reject(idea) },
-                onActivate: { vm.activate(idea) },
-                onNotNow: { date in vm.notNow(idea, until: date.map(Self.isoDateString) ?? "") },
-                onDrop: { vm.drop(idea) },
-                onMerge: { targetID in vm.merge(idea, into: targetID) },
+                onApprove: { Task { await vm.approve(idea) } },
+                onReject: { Task { await vm.reject(idea) } },
+                onActivate: { Task { await vm.activate(idea) } },
+                onNotNow: { date in Task { await vm.notNow(idea, until: date.map(Self.isoDateString) ?? "") } },
+                onDrop: { Task { await vm.drop(idea) } },
+                onMerge: { targetID in Task { await vm.merge(idea, into: targetID) } },
                 onConvert: {
-                    if let targetID = vm.convertToTarget(idea) {
-                        appState.navigateToTarget(targetID)
+                    Task {
+                        if let targetID = await vm.convertToTarget(idea) {
+                            appState.navigateToTarget(targetID)
+                        }
                     }
                 },
-                onRating: { rating, comment in vm.setRating(idea, rating: rating, comment: comment) },
+                onRating: { rating, comment in await vm.setRating(idea, rating: rating, comment: comment) },
                 onDelete: {
-                    // Its Discuss chat went with it: stop a reply still streaming.
-                    if vm.deleteIdea(idea) {
-                        appState.embeddedChatCenter.dropContext(type: IdeaChatSurface.contextType, id: String(idea.id))
+                    Task {
+                        // Its Discuss chat went with it: stop a reply still streaming.
+                        if await vm.deleteIdea(idea) {
+                            appState.embeddedChatCenter.dropContext(type: IdeaChatSurface.contextType, id: String(idea.id))
+                        }
                     }
                 }
             )

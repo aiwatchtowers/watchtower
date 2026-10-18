@@ -49,11 +49,11 @@ Locating transcripts: `LocateAll` lists the workbench's candidate directories (`
 
 ## Entry points in the app
 
-Session row context menu **Show Chat**; the session header **Chat** toggle; the pane picker **Chat**. The pane opens scrolled to the newest message, refreshes every 3 s while shown (`SessionFeedPoller` serializes polls: a refresh asked during a run folds into exactly one more run), and shows `watchtower` entries as the owner's bubble marked "via Watchtower".
+Session row context menu **Show Chat**; the session header **Chat** toggle; the pane picker **Chat**. The pane opens scrolled to the newest message, reads the feed once when shown or when the session's state changes and every 3 s while the agent works or has background subagents (`SessionFeedStore.follow`; `SessionFeedPoller` serializes polls: a refresh asked during a run folds into exactly one more run). Any of these reads — the one on open, the one on a state change, each 3 s tick — is skipped while the main window is hidden, minimised or covered (`isTabOnScreen`), so a pane nobody sees spawns no CLI; when the app's windows come back on screen (`AppState.uiVisibility`, #731) after a skipped read, the feed is read at once (`SessionFeedStore.screenChanged`, `ForegroundRefreshGate`, board #589). The store and its CLI lookup are built once per pane, not on each render. It shows `watchtower` entries as the owner's bubble marked "via Watchtower".
 
 ## v1 limits
 
-- Claude Code only. A Codex session returns `codex sessions are not supported yet`; the entry kinds are agent-neutral so it can be added.
+- Codex sessions (2026-10-17): `sessionfeed.ParseCodex`/`LocateCodex` read the rollout (`$CODEX_HOME/sessions/*/*/*/rollout-*-<id>.jsonl`, the stored `transcript_path` first) in both owner dialects (paginated `item_completed` `UserMessage`/`AgentMessage`, legacy `user_message`/`agent_message`); user text is classified like Claude's (brief, ask answer, Watchtower line). Legacy lines carry no id, so their entry id is `L<line byte offset>`. No subagent markers for Codex; a zstd-compressed rollout yields no entries (`unknown_records["<zstd>"]`).
 - No search, export or sharing. The iPhone chat is pending (phase 3: tail of a feed in the 900 000-byte envelope, subagent feeds on request).
 - Zero time means no time: the separator, a report entry and a meta-only subagent marker may carry `0001-01-01T00:00:00Z`; the Desktop treats it as unknown and shows no timestamp.
 - `--after` and `--subagent` are mutually exclusive (the command refuses both). `skipped` and `unknown_records` count only what that call read.

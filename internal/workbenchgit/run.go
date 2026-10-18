@@ -1,6 +1,7 @@
 // Package workbenchgit reads a workbench folder's git state — the current
-// branch, its changes, the local branches, the files git does not ignore —
-// and switches or creates a branch for the Desktop's workbench header. git
+// branch, its changes, the local branches and origin's remote-only ones, the
+// files git does not ignore — fetches origin, and switches to, creates or
+// checks out a branch for the Desktop's workbench header. git
 // is located through internal/gitbin, never the macOS /usr/bin/git shim, and
 // no git process runs outside a repository. A switch never forces,
 // discards, resets or cleans, and never swaps the owner's uncommitted work
@@ -65,17 +66,25 @@ func (e *runError) Unwrap() error { return e.err }
 // inherited repository variables) and keeps git's stderr apart in a
 // runError. The owner's own writes (a switch, its stash and restore) run
 // the repository's hooks as a terminal would; every other call is a
-// background read that runs none, nor a filter driver (gitbin.ReadArgsIn).
+// background read that runs none, nor a filter driver (gitbin.ReadArgsIn);
+// a fetch from origin also runs no credential helper, askpass or ssh prompt
+// (gitbin.FetchArgs, gitbin.ExecFetch).
 func execRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
-	argv := gitbin.OwnerArgs(args...)
-	if !ownerWrite(args) {
-		read, err := gitbin.ReadArgsIn(ctx, name, dir, args...)
-		if err != nil {
-			return nil, -1, &runError{args: args, err: err}
+	var stdout, stderr []byte
+	var err error
+	if len(args) > 0 && args[0] == "fetch" { // the network: never a prompt (gitbin.ExecFetch)
+		stdout, stderr, err = gitbin.ExecFetch(ctx, dir, isUnattended(ctx), name, gitbin.FetchArgs(args...)...)
+	} else {
+		argv := gitbin.OwnerArgs(args...)
+		if !ownerWrite(args) {
+			read, readErr := gitbin.ReadArgsIn(ctx, name, dir, args...)
+			if readErr != nil {
+				return nil, -1, &runError{args: args, err: readErr}
+			}
+			argv = read
 		}
-		argv = read
+		stdout, stderr, err = gitbin.Exec(ctx, dir, stdin, name, argv...)
 	}
-	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, name, argv...)
 	var exitErr *exec.ExitError
 	switch {
 	case err != nil && ctx.Err() != nil: // killed or never started: say why

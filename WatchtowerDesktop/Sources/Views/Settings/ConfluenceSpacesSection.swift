@@ -24,8 +24,12 @@ struct ConfluenceSpacesSection: View {
 
     /// Off only when the Feature Manager list says so; not loaded yet (or a
     /// CLI predating the feature) shows the picker.
-    private var featureOff: Bool {
-        appState.featureManager.features.first { $0.id == Self.featureID }?.state == "disabled"
+    private var featureOff: Bool { Self.isFeatureOff(appState.featureManager) }
+
+    /// The gate itself, shared with the connect sheet's automatic selection
+    /// (`ConfluenceConnectSelection`, #573).
+    static func isFeatureOff(_ manager: FeatureManagerService) -> Bool {
+        manager.features.first { $0.id == featureID }?.state == "disabled"
     }
 
     var body: some View {
@@ -73,7 +77,7 @@ struct ConfluenceSpacesSection: View {
             let manager = appState.featureManager
             Task {
                 await manager.enableNow(Self.featureID) {
-                    try await DaemonManager.restart()
+                    try await appState.restartOnChain(appState.daemonControl)
                 }
             }
         }

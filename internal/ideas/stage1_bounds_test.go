@@ -29,7 +29,7 @@ func TestIdeas01_EmailReplyWithoutTopicsKey_NoRowFloorUnchanged(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{}`, nil }}
 	p := New(d, testCfg(), gen, testLogger())
-	require.Error(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.Error(t, p.runEmailDigests(context.Background()))
 
 	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)

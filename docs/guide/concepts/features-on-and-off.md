@@ -33,7 +33,7 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Automations (own switch) | Medium | |
 | Claude plan limits (no AI) | None | |
 
-Tracks and People Cards read what Slack Digests writes, so with Slack Digests off they have nothing to work on. Memory has an **Advanced** section with switches for each source and each place memory is used.
+Tracks and People Cards read what Slack Digests writes, so they run only while Slack Digests is on too. With Slack Digests off, their empty tabs and Home cards say **Needs Slack Digests** with a **Turn on Slack Digests** button, and onboarding's **Customize** screen shows **Needs Slack Digests** with a **Turn on Slack Digests** button under them. Memory has an **Advanced** section with switches for each source and each place memory is used.
 
 ## Why a tab is empty and what its status line means
 
@@ -43,6 +43,7 @@ An empty tab shows an icon, a title ("No briefings yet"), one sentence on what w
 |---|---|---|
 | **Off — Turn on** | The feature is off. | **Turn on** switches it on at once and restarts the sync once, without going through **Save**. |
 | **Connect Slack to get this** (or "a calendar", "Jira", "Jira or mail", "a source") | The source it reads is not connected. | Connect it in **Settings → Connections**. |
+| **Needs Slack Digests** (Tracks and People only) | The feature is on, but it runs only while Slack Digests is on, and Slack Digests is off. | **Turn on Slack Digests** switches Slack Digests on (heavy AI use). |
 | **Preparing now** | Its job is running; the sync's progress follows. | Wait. |
 | **Didn't work yet — retries automatically** | Its last run failed; the first line of the reason follows. | Nothing: the next cycle retries. |
 | **Starts after the first sync** | Slack is connected and its first sync has not finished. | Wait; a first sync usually takes 3 to 5 minutes. |

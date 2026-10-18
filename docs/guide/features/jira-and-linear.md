@@ -26,8 +26,8 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 
 ## Using it
 
-1. Open **Settings** → **Connections** → **Jira**, press **Add Jira Site** and approve in the browser. Add a second site the same way.
-2. Open **Boards** in the sidebar, press **Fetch Boards** (later **Refresh Boards**) and switch on the boards you want synced.
+1. Open **Settings** → **Connections** → **Jira**, press **Add Jira Site** and approve in the browser. You type nothing: if your Atlassian account reaches several sites, the sheet lists them under **Choose a Site**, so pick one and press **Continue**. Until you press **Continue**, **Cancel** stops the connect and nothing is added; after it, the site is added even if the sheet closes. Add a second site the same way. Setup's Jira card opens the same sheet. **Also connect Confluence** (ticked by default) makes the same sign-in cover Confluence for [knowledge search](search-and-knowledge.md); untick it for Jira only. If Atlassian refuses Confluence, a second sign-in tab connects Jira alone and the next step says so. If Atlassian shows an error page instead, press **Cancel**: the box unticks itself, so **Connect** again signs in to Jira only.
+2. After the approval the sheet turns into **Choose Boards**: tick the boards you want synced and press **Done**. Only ticked boards sync. With Confluence connected, a line under the list names the spaces it selected for you. To change them later, open **Boards** in the sidebar, press **Refresh Boards** (**Fetch Boards** when the list is empty) and flip a board's switch.
 3. Wait for the first sync. **Last sync** and **Issues synced** at the bottom of **Boards** show progress.
 4. Open **Workload**. If people are missing, expand **User Mapping** on **Boards** and press **Resolve**, or use **Assign Slack user** on an unmatched row.
 5. A board's row opens its profile. **Re-analyze** rebuilds the profile (workflow stages, estimation field) after the board's setup changed.
@@ -38,6 +38,7 @@ An issue or epic key on any tab opens in Jira.
 ## When it's empty or wrong
 
 - **A tab says Jira isn't connected.** The tab says "Connect Jira to get this". Press **Connect Jira**; it opens **Settings** → **Connections**.
+- **A tab says "Choose Jira boards to get this".** Jira is connected but no board is picked, so nothing syncs. Press **Choose Jira boards**; it opens **Boards**, where you switch boards on.
 - **Boards says "No boards yet".** Press **Fetch Boards**.
 - **A tab says "No blockers yet", "No workload yet" or similar.** Jira is connected but no data has arrived. Check that a board is switched on in **Boards** and wait for a sync.
 - **Workload is empty though Jira has issues.** No Jira user is matched to a Slack user. Connect Slack, then press **Resolve** in **User Mapping**.

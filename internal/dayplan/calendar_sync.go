@@ -8,10 +8,10 @@ import (
 	"watchtower/internal/db"
 )
 
-// syncCalendarItems diffs current calendar_events for date against existing
+// syncCalendarItems diffs the plan date's calendar events against existing
 // day_plan_items with source_type='calendar' on planID: adds new, updates
 // modified, removes orphans. Matches by event.ID == item.source_id.
-func (p *Pipeline) syncCalendarItems(planID int64, date string, events []db.CalendarEvent) error {
+func (p *Pipeline) syncCalendarItems(planID int64, events []db.CalendarEvent) error {
 	existing, err := p.db.GetDayPlanItems(planID)
 	if err != nil {
 		return fmt.Errorf("load existing items: %w", err)
@@ -111,5 +111,5 @@ func (p *Pipeline) SyncCalendarItemsForDate(ctx context.Context, userID, date st
 	if err != nil {
 		return fmt.Errorf("gather calendar events: %w", err)
 	}
-	return p.syncCalendarItems(plan.ID, date, events)
+	return p.syncCalendarItems(plan.ID, events)
 }

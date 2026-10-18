@@ -36,7 +36,9 @@ final class CodeQuestionListTests: XCTestCase {
                 ("user", "Explain this."), ("assistant", "It loads."), ("user", "And then?")
             ])
             let newer = try self.conversation(db, contextID: "1:a:b.swift:3", createdAt: 300, messages: [("user", "Why a colon?")])
-            let noFile = try self.conversation(db, contextID: "1::0", createdAt: 200)
+            let noFile = try self.conversation(db, contextID: "1::0", createdAt: 200, messages: [("user", "What is this?")])
+            // Written, not sent yet (board #670): not listed.
+            _ = try self.conversation(db, contextID: "1:Sources/App.swift:5", createdAt: 250)
             _ = try self.conversation(db, contextID: "10:Sources/App.swift:1", createdAt: 400, messages: [("user", "other")])
             _ = try self.conversation(db, contextID: "11:x:1", createdAt: 500)
             _ = try self.conversation(db, contextID: "1:Sources/App.swift:1", createdAt: 600, contextType: "track")
@@ -48,12 +50,44 @@ final class CodeQuestionListTests: XCTestCase {
         XCTAssertEqual(items[0].path, "a:b.swift", "the line is after the last colon")
         XCTAssertEqual(items[0].line, 3)
         XCTAssertEqual(items[0].originLabel, "a:b.swift:3")
-        XCTAssertNil(items[1].firstQuestion, "nothing sent yet")
+        XCTAssertEqual(items[1].firstQuestion, "What is this?")
         XCTAssertNil(items[1].originLabel, "asked with no file open (Open Quickly)")
         XCTAssertEqual(items[1].origin, CodeQuestionOrigin(path: "", line: 0, selection: nil))
         XCTAssertEqual(items[2].firstQuestion, "Explain this.")
         XCTAssertEqual(items[2].createdAt, Date(timeIntervalSince1970: 100))
         XCTAssertEqual(try queue.read { try CodeQuestionList.fetch($0, workbenchID: 10) }.count, 1)
+    }
+
+    /// Questions of the workbench with no message, created before the
+    /// cutoff, go; a newer one, one with a message and another workbench's
+    /// stay.
+    func testDeleteEmptyTakesOnlyOldQuestionsWithNoMessage() throws {
+        let queue = try TestDatabase.create()
+        let (fresh, answered, notice, reply, held) = try queue.write { db in
+            _ = try self.conversation(db, contextID: "1:a.swift:1", createdAt: 100)
+            let fresh = try self.conversation(db, contextID: "1:a.swift:2", createdAt: 900)
+            let answered = try self.conversation(db, contextID: "1:a.swift:3", createdAt: 100, messages: [("user", "Why?")])
+            // Any message keeps an old question, not only the owner's.
+            let notice = try self.conversation(db, contextID: "1:a.swift:5", createdAt: 100, messages: [("system", "notice")])
+            let reply = try self.conversation(db, contextID: "1:a.swift:6", createdAt: 100, messages: [("assistant", "ok")])
+            let held = try self.conversation(db, contextID: "1:a.swift:7", createdAt: 100)
+            _ = try self.conversation(db, contextID: "10:a.swift:1", createdAt: 100)
+            _ = try self.conversation(db, contextID: "1:a.swift:4", createdAt: 100, contextType: nil)
+            return (fresh, answered, notice, reply, held)
+        }
+        XCTAssertEqual(try queue.write {
+            try CodeQuestionList.deleteEmpty($0, workbenchID: 1, createdBefore: 500, keeping: [held])
+        }, 1, "kept: newer, with a message, held by a surface")
+        let left = try queue.read { db in
+            try Int64.fetchAll(db, sql: """
+                SELECT id FROM chat_conversations WHERE context_type = ? AND context_id LIKE '1:%' ORDER BY id
+                """, arguments: [CodeQuestionList.contextType])
+        }
+        XCTAssertEqual(left, [fresh, answered, notice, reply, held])
+        XCTAssertEqual(try queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") }, 7)
+        let listed = try queue.read { try CodeQuestionList.fetch($0, workbenchID: 1) }.map(\.conversationID)
+        XCTAssertEqual(Set(listed), [answered, notice, reply], "listed: a question with any message")
+        XCTAssertEqual(try queue.read { try CodeQuestionList.count($0, workbenchID: 1) }, 3, "count follows the list")
     }
 
     func testContextIDParsing() {

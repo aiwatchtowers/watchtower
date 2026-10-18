@@ -29,7 +29,7 @@ func FastForward(id string, database *db.DB, now time.Time, deps Deps) error {
 	case "secretary-inbox":
 		return fastForwardSecretaryInbox(database, now)
 	case "ideas":
-		return fastForwardIdeas(database, now)
+		return fastForwardIdeas(database)
 	case "stream-digests":
 		return fastForwardStreamFloors(database, now)
 	case "slack-digests":
@@ -110,7 +110,7 @@ func fastForwardSecretaryInbox(database *db.DB, now time.Time) error {
 // Ideas was off; advancing its floors from an Ideas enable would skip a
 // window of email/Jira digest generation the owner never asked to skip.
 // See fastForwardStreamFloors, the hook that does own them.
-func fastForwardIdeas(database *db.DB, now time.Time) error {
+func fastForwardIdeas(database *db.DB) error {
 	digestTop, streamTop, transcriptTop, err := database.IdeasFloorTops()
 	if err != nil {
 		return fmt.Errorf("fast-forwarding ideas floors: reading table tops: %w", err)

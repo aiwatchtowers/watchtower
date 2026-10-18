@@ -73,6 +73,13 @@ final class TargetBriefCenterTests: XCTestCase {
         }
     }
 
+    /// The VM a just-started brief runs on, once the center resolved it
+    /// (a target's first chat tab is written on first use, board #670).
+    private func startedVM(_ center: TargetBriefCenter, for targetID: Int) async throws -> TargetChatViewModel {
+        await waitUntil("the brief's chat") { center.adoptVM(for: targetID) != nil }
+        return try XCTUnwrap(center.adoptVM(for: targetID))
+    }
+
     // Sync helper: inside async test methods GRDB's async read overload would
     // win inside an autoclosure; a sync func pins the sync overload.
     private func fetchTarget(_ manager: DatabaseManager, id: Int) throws -> Target? {
@@ -112,6 +119,7 @@ final class TargetBriefCenterTests: XCTestCase {
         center.startBrief(target: target, text: "Ship feature\n\nWalk the transcripts and break it down.")
 
         XCTAssertEqual(center.phase, .briefing(targetID: target.id))
+        _ = try await startedVM(center, for: target.id)
         // The detail view for this target adopts the center's VM …
         XCTAssertNotNil(center.adoptVM(for: target.id))
         // … while any other target gets nil (fresh VM as today).
@@ -146,6 +154,7 @@ final class TargetBriefCenterTests: XCTestCase {
         let center = makeCenter(manager: manager, mock: mock)
 
         center.startBrief(target: target, text: "brief text")
+        _ = try await startedVM(center, for: target.id)
         let first = center.adoptVM(for: target.id)
         let second = center.adoptVM(for: target.id)
         XCTAssertNotNil(first)
@@ -202,7 +211,7 @@ final class TargetBriefCenterTests: XCTestCase {
         let center = makeCenter(manager: manager) { $0.id == targetA.id ? mockA : mockB }
 
         center.startBrief(target: targetA, text: "brief A")
-        let vmA = try XCTUnwrap(center.adoptVM(for: targetA.id))
+        let vmA = try await startedVM(center, for: targetA.id)
         await waitUntil("A's action block to arrive") {
             vmA.messages.last?.text.contains("watchtower-action") ?? false
         }
@@ -290,7 +299,7 @@ final class TargetBriefCenterTests: XCTestCase {
         let center = makeCenter(manager: manager, mock: mockA)
 
         center.startBrief(target: targetA, text: "brief A")
-        let vmA = try XCTUnwrap(center.adoptVM(for: targetA.id))
+        let vmA = try await startedVM(center, for: targetA.id)
         await waitUntil("A's text to arrive") {
             vmA.messages.last?.text.contains("working on it") ?? false
         }
@@ -331,7 +340,7 @@ final class TargetBriefCenterTests: XCTestCase {
         let center = makeCenter(manager: manager, mock: mock)
 
         center.startBrief(target: target, text: "brief A")
-        let vm = try XCTUnwrap(center.adoptVM(for: target.id))
+        let vm = try await startedVM(center, for: target.id)
         // Wait until the action block has actually arrived, so the cancel
         // below interrupts a run that HAS a parseable directive.
         await waitUntil("the action block to arrive") {
@@ -510,6 +519,7 @@ final class TargetBriefCenterTests: XCTestCase {
         let center = makeCenter(manager: manager, mock: mock)
 
         center.startBrief(target: target, text: "  \n ")
+        await center.task?.value
 
         XCTAssertEqual(center.phase(for: target.id),
                        .failed(targetID: target.id, message: "The brief could not be sent — re-ask here."))
@@ -536,6 +546,7 @@ final class TargetBriefCenterTests: XCTestCase {
         chatVM.inputText = "half-typed draft"
 
         center.startBrief(target: target, text: "brief text")
+        await center.task?.value
 
         guard case .failed(_, let message) = center.phase(for: target.id) else {
             return XCTFail("expected .failed, got \(center.phase(for: target.id))")
@@ -557,7 +568,7 @@ final class TargetBriefCenterTests: XCTestCase {
         let center = makeCenter(manager: manager) { $0.id == targetA.id ? mockA : mockB }
 
         center.startBrief(target: targetA, text: "brief A")
-        let vmA = try XCTUnwrap(center.adoptVM(for: targetA.id))
+        let vmA = try await startedVM(center, for: targetA.id)
         center.startBrief(target: targetB, text: "brief B")
         await waitUntil("A's text to arrive") { vmA.messages.last?.text.contains("A working") ?? false }
         XCTAssertTrue(mockB.prompts.isEmpty)
@@ -593,7 +604,7 @@ final class TargetBriefCenterTests: XCTestCase {
         defer { mockA.release() }
 
         center.startBrief(target: targetA, text: "brief A")
-        vmA = try XCTUnwrap(center.adoptVM(for: targetA.id))
+        vmA = try await startedVM(center, for: targetA.id)
         center.startBrief(target: targetB, text: "brief B")
         XCTAssertEqual(vmA?.isStreaming, true)
         let watcherA = try XCTUnwrap(center.task)

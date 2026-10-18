@@ -296,10 +296,10 @@ struct WorkbenchTargetMenu: View {
         Divider()
         Menu("Move to") {
             ForEach(WorkbenchBoardOutline.moveDestinations(for: target.id, in: vm.roots)) { row in
-                Button(Self.destinationTitle(row)) { vm.move(target.id, under: row.id) }
+                Button(Self.destinationTitle(row)) { Task { await vm.move(target.id, under: row.id) } }
             }
         }
-        Button("Move to Top Level") { vm.move(target.id, under: nil) }
+        Button("Move to Top Level") { Task { await vm.move(target.id, under: nil) } }
             .disabled(!WorkbenchBoardOutline.canMove(target.id, under: nil, in: vm.roots))
     }
 

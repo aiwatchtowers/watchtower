@@ -215,7 +215,7 @@ struct GoToPalette: View {
             Spacer(minLength: 4)
             WorkbenchStateSegments(segments: WorkbenchSwitcherPresentation.stateSegments(
                 summary: row, newComments: row.summary.unreadAgentComments,
-                liveCount: vm.liveSessionCount(workbenchID: row.id), now: now
+                workingCount: vm.workingSessionCount(workbenchID: row.id), now: now
             ))
         }
     }

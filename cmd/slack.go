@@ -189,7 +189,7 @@ func rollbackSlackAccount(database *db.DB, id int64, warnOut io.Writer) {
 // openSlackCmdDB is the shared preamble for the slack subcommands: loads
 // config, applies the --workspace override, validates the workspace, and opens
 // the database. The caller is responsible for closing the returned DB.
-func openSlackCmdDB(cmd *cobra.Command) (*config.Config, *db.DB, error) {
+func openSlackCmdDB() (*config.Config, *db.DB, error) {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading config: %w", err)
@@ -208,7 +208,7 @@ func openSlackCmdDB(cmd *cobra.Command) (*config.Config, *db.DB, error) {
 }
 
 func runSlackAdd(cmd *cobra.Command, _ []string) error {
-	cfg, database, err := openSlackCmdDB(cmd)
+	cfg, database, err := openSlackCmdDB()
 	if err != nil {
 		return err
 	}
@@ -249,7 +249,7 @@ func runSlackAdd(cmd *cobra.Command, _ []string) error {
 }
 
 func runSlackLogin(cmd *cobra.Command, _ []string) error {
-	cfg, database, err := openSlackCmdDB(cmd)
+	cfg, database, err := openSlackCmdDB()
 	if err != nil {
 		return err
 	}
@@ -293,7 +293,7 @@ func runSlackLogin(cmd *cobra.Command, _ []string) error {
 }
 
 func runSlackAccounts(cmd *cobra.Command, _ []string) error {
-	_, database, err := openSlackCmdDB(cmd)
+	_, database, err := openSlackCmdDB()
 	if err != nil {
 		return err
 	}
@@ -343,7 +343,7 @@ func setSlackAccountEnabled(cmd *cobra.Command, idArg string, enabled bool) erro
 	if err != nil {
 		return fmt.Errorf("invalid account id %q: %w", idArg, err)
 	}
-	_, database, err := openSlackCmdDB(cmd)
+	_, database, err := openSlackCmdDB()
 	if err != nil {
 		return err
 	}
@@ -376,7 +376,7 @@ func runSlackRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid account id %q: %w", args[0], err)
 	}
-	cfg, database, err := openSlackCmdDB(cmd)
+	cfg, database, err := openSlackCmdDB()
 	if err != nil {
 		return err
 	}

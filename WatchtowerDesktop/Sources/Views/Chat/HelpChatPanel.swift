@@ -16,9 +16,10 @@ struct HelpChatPanel: View {
             ChatThreadView(chatVM: chatVM, ownerName: appState.owner.displayName)
             ChatComposerBar(input: ChatComposerField(
                 text: $chatVM.draft,
-                isStreaming: chatVM.isStreaming,
+                isStreaming: chatVM.isBusy,
                 onSend: send,
-                onStop: { chatVM.stop() },
+                // Nothing to stop while the turn's rows are being written.
+                onStop: chatVM.isStartingTurn ? nil : { chatVM.stop() },
                 placeholder: "Ask how Watchtower works…",
                 maxHeight: 120,
                 // Esc stops a running answer first, then closes the panel.
@@ -32,7 +33,7 @@ struct HelpChatPanel: View {
         .shadow(radius: 12, y: 4)
         .onExitCommand(perform: escape)
         .onChange(of: chatVM.draft) { old, new in
-            if old.isEmpty, !new.isEmpty { chatVM.draftStarted() }
+            if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Ask Watchtower")
@@ -66,6 +67,7 @@ struct HelpChatPanel: View {
 
     /// The typed words are stored as they are; the screen block rides along.
     private func send() {
-        chatVM.sendDraft(screen: appState.currentScreenContext())
+        let screen = appState.currentScreenContext()
+        Task { await chatVM.sendDraft(screen: screen) }
     }
 }

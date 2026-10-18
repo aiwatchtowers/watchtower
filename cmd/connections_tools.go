@@ -133,6 +133,10 @@ func applyAllowFlags(warn io.Writer, database *db.DB, conn *db.ExternalConnectio
 // policy: no allowed tool records the tools error; a usable policy clears a
 // tools error this code wrote earlier (never a credential one).
 func reconcileToolsStatus(database *db.DB, conn db.ExternalConnection) {
+	if externalmcp.ReservedName(conn.Name) {
+		recordReservedName(database, conn) // only removing it clears that
+		return
+	}
 	if strings.HasPrefix(conn.Error, transportReasonPrefix) {
 		return // the URL, not the tool policy, keeps it unmounted
 	}
@@ -149,6 +153,11 @@ func reconcileToolsStatus(database *db.DB, conn db.ExternalConnection) {
 // listConnectionTools refreshes conn's cached tools/list from its server,
 // with the same credentials a chat launch would use.
 func listConnectionTools(cfg *config.Config, database *db.DB, conn *db.ExternalConnection) error {
+	if externalmcp.ReservedName(conn.Name) {
+		// Its server is never started, not even to list it.
+		recordReservedName(database, *conn)
+		return fmt.Errorf("%w — remove it and add it again under another name", errReservedName)
+	}
 	server, err := connectionServer(cfg, database, *conn)
 	switch {
 	case errors.Is(err, errNoCredentials):
@@ -169,33 +178,33 @@ var errNoCredentials = errors.New("no usable credentials")
 // this command's output on success. Best effort: on a failed listing a
 // never-listed connection stays enabled with no tool allowed (fail closed); a
 // listed one keeps its last good listing.
-func refreshToolsAfterEnable(cmd *cobra.Command, cfg *config.Config, database *db.DB, id int64) {
+func refreshToolsAfterEnable(out, errOut io.Writer, cfg *config.Config, database *db.DB, id int64) {
 	conn, err := database.GetExternalConnection(id)
 	if err == nil {
 		err = listConnectionTools(cfg, database, &conn)
 	}
-	if errors.Is(err, errNoCredentials) || errors.Is(err, errInsecureTransport) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
+	if errors.Is(err, errNoCredentials) || errors.Is(err, errInsecureTransport) || errors.Is(err, errReservedName) {
+		fmt.Fprintf(errOut, "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
 		return
 	}
 	if err != nil && !conn.ToolsListed {
 		reason := fmt.Sprintf("%slisting its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", staleNote(conn), err, id)
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %s\n", id, reason)
+		fmt.Fprintf(errOut, "warning: connection %d: %s\n", id, reason)
 		connectionUnmounted(database, conn, reason)
 		return
 	}
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: listing its tools failed (%v); the listing from %s still applies\n", id, err, conn.ToolsListedAt)
+		fmt.Fprintf(errOut, "warning: connection %d: listing its tools failed (%v); the listing from %s still applies\n", id, err, conn.ToolsListedAt)
 	}
 	allowed, _ := externalmcp.ResolveTools(conn)
 	if len(allowed) == 0 {
 		reason := fmt.Sprintf("none of its tools is known read-only, so none is available to the chat — `watchtower connections tools %d` to review", id)
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %s\n", id, reason)
+		fmt.Fprintf(errOut, "warning: connection %d: %s\n", id, reason)
 		connectionUnmounted(database, conn, reason)
 		return
 	}
 	markConnectionOK(database, conn)
-	fmt.Fprintf(cmd.OutOrStdout(), "%s. `watchtower connections tools %d` to review.\n", toolsSummary(conn, allowed), id)
+	fmt.Fprintf(out, "%s. `watchtower connections tools %d` to review.\n", toolsSummary(conn, allowed), id)
 }
 
 // toolsSummary is the one-line "N tools available" sentence the CLI prints.

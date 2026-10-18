@@ -189,6 +189,7 @@ Troubleshooting
 - A Workbench session or ask is stuck (troubleshooting/workbench-session-or-ask-stuck.md)
 - The iPhone is not syncing (troubleshooting/iphone-not-syncing.md)
 - Plan limits and high cost (troubleshooting/plan-limits-or-high-cost.md)
+- An automation run stopped at a limit (troubleshooting/automation-run-limits.md)
 - Known issues (troubleshooting/known-issues.md)
 
 Focus
@@ -219,9 +220,11 @@ Workbench
 - Updates and quitting (features/workbench/updates-and-quitting.md)
 - Asks (features/workbench/asks.md)
 - Code viewer (features/workbench/code-viewer.md)
+- Branches in the header (features/workbench/branches.md)
 - Worktrees and cleanup (features/workbench/worktrees-and-cleanup.md)
 - Diff review (features/workbench/diff-review.md)
 - Methodology (features/workbench/methodology.md)
+- Your instructions (features/workbench/instructions.md)
 - Codex (features/workbench/codex.md)
 - Agent analytics (features/agent-analytics.md)
 
@@ -233,6 +236,7 @@ Automations & AI
 - Memory (features/memory.md)
 - Automations (features/automations.md)
 - Automations: recipes and templates (features/automations-recipes.md)
+- Automations: confirmation, budgets and writes (features/automations-safety.md)
 
 Meetings & calendar
 - Calendar and meeting prep (features/calendar-and-meeting-prep.md)

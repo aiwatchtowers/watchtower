@@ -181,7 +181,9 @@ func runPersonalDryRun(t *testing.T, c personalDryRun) {
 // shell() returns no output, so pr-review-rounds lists no pull request and
 // starts no session step.
 var workbenchDryRunSteps = map[string]string{
-	"pr-review-rounds": "shell(shell):dry_run,state(get):ok,state(set):dry_run,output(report):dry_run",
+	// last_round and reviewed are read, then set (board #562: a round
+	// starts at most MaxSessionCalls sessions and keeps the rest).
+	"pr-review-rounds": "shell(shell):dry_run,state(get):ok,state(get):ok,state(set):dry_run,state(set):dry_run,output(report):dry_run",
 	"release":          "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",
 	"deploy-test":      "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",
 	"deploy-stage":     "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",

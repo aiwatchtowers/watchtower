@@ -217,14 +217,7 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 	case "codex":
 		// Stateless per turn: the backend replays the active path every turn.
 		// The MCP server reads the running turn from the turn file.
-		c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
-		c.SetMCPArgs(w.mcpArgs)
-		// CHAT-04 (spec §9): the chat session's system prompt and replayed
-		// history must never sit on this process's argv — route the whole
-		// turn through stdin instead of -c developer_instructions=... and a
-		// positional prompt.
-		c.SetStdinOnly(true)
-		return chat.NewTurnBackend(c, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
+		return chat.NewTurnBackend(codexSessionClient(w), w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
 	case "ollama":
 		// Ollama ships no default model: without one every turn would fail
 		// as a retryable internal error, so the session refuses to start
@@ -239,6 +232,25 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 	default:
 		return chat.NewClaudeBackend(claudeSessionOptions(w, loadExternalMCPServers(w.cfg, w.dbPath))), nil
 	}
+}
+
+// codexSessionClient is the codex chat session's client: only the
+// watchtower server and the enabled Quick Connections — the owner's own
+// codex MCP servers are disabled per launch (board #594). Connections load
+// per turn on the session's open database: each turn is a new codex
+// launch, so OAuth tokens are refreshed as for claude (QC-04); tools are
+// re-listed only when the cache needs it (mountConnection). A connection a
+// launch cannot mount says so on its row (markCodexSkipped). The session's surfaces are main and target only,
+// never automation_editor (D11).
+func codexSessionClient(w sessionWiring) *codex.Client {
+	c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
+	c.SetMCPArgs(w.mcpArgs)
+	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
+		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
+	})
+	// CHAT-04 (spec §9): the client always routes the system prompt and
+	// replayed history through stdin, never this process's argv.
+	return c
 }
 
 // sessionToolBinding is the in-process registry's binding (runtime B): the
@@ -259,7 +271,7 @@ func claudeSessionOptions(w sessionWiring, ext []ai.ExternalMCPServer) chat.Clau
 		Binary:          claude.FindBinary(w.cfg.ClaudePath),
 		Model:           w.model,
 		ResumeSessionID: aiSessionFlagResume,
-		SystemPrompt:    w.prompt,
+		SystemPrompt:    ai.WithExternalDataRule(w.prompt, ext),
 		MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
 		Tools:           ai.SessionBuiltinTools,
 		AllowedTools:    ai.AllowedTools(ext) + "," + ai.WebSearchTool,

@@ -41,14 +41,6 @@ struct CalendarEventsView: View {
     /// short loop while the tab is open, so it clears once the sync lands.
     @State private var syncHealth: CalendarSyncHealth = .ok
     @State private var syncHealthError: String?
-    /// A failed Turn On / Start Sync restart — kept apart from
-    /// `syncHealthError` because it is cleared by the daemon coming up (by
-    /// any route: the app, the tray), not by a state change.
-    @State private var restartError: String?
-    /// The old daemon outlived the stop (`stopTimedOut`): one IS running, but
-    /// it started before the change the restart was for, so its running does
-    /// not clear the error — only a successful restart does.
-    @State private var restartErrorOutlivesDaemon = false
     @State private var syncHealthReadFailed = false
     @State private var isRestartingSync = false
     /// Derived tri-state position of the now-line marker relative to the
@@ -106,7 +98,6 @@ struct CalendarEventsView: View {
                 calDAVCalendarCount: counts.calDAV,
                 daemonRunning: daemonRunning
             )
-            if daemonRunning, !restartErrorOutlivesDaemon { restartError = nil }
             // An action's error belongs to the state it was raised in.
             if health != syncHealth { syncHealthError = nil }
             syncHealth = health
@@ -134,22 +125,17 @@ struct CalendarEventsView: View {
         await restartSync()
     }
 
-    /// Starts the daemon (or restarts it) and surfaces a failure in the banner.
+    /// Restarts the daemon on the app's start queue. A failure goes to the
+    /// app-wide banner only (one message, cleared by a successful restart,
+    /// its Retry restarts); a success clears it.
     private func restartSync() async {
         isRestartingSync = true
         defer { isRestartingSync = false }
         do {
-            try await DaemonManager.restart()
-            restartError = nil
-            restartErrorOutlivesDaemon = false
+            try await appState.restartOnChain(appState.daemonControl)
         } catch {
             NSLog("CalendarEventsView: sync restart failed: %@", error.localizedDescription)
-            restartError = "Couldn't restart the sync: \(error.localizedDescription)"
-            if case DaemonRestartError.stopTimedOut = error {
-                restartErrorOutlivesDaemon = true
-            } else {
-                restartErrorOutlivesDaemon = false
-            }
+            appState.daemonStartFailure = AppState.daemonRestartFailureText(error)
         }
         await refreshSyncHealth()
     }
@@ -171,6 +157,14 @@ struct CalendarEventsView: View {
     /// deselects it (closing the detail pane), any other row selects it.
     static func toggledSelection(current: MeetingSelection?, tapped: MeetingSelection) -> MeetingSelection? {
         current == tapped ? nil : tapped
+    }
+
+    /// Selection once a recording deleted from the pane of `deletedFrom` is
+    /// gone: the pane closes only when it is still the one on screen — the
+    /// delete lands after its write, and the owner may have opened another
+    /// meeting meanwhile.
+    static func selectionAfterDelete(current: MeetingSelection?, deletedFrom: MeetingSelection) -> MeetingSelection? {
+        current == deletedFrom ? nil : current
     }
 
     private func selectRow(_ tapped: MeetingSelection) {
@@ -233,7 +227,7 @@ struct CalendarEventsView: View {
                 MeetingDetailView(
                     entry: entry,
                     userNotes: $userNotes,
-                    onDeleted: handleRecordingDeleted,
+                    onDeleted: { handleRecordingDeleted(from: selected) },
                     onChanged: loadRecordings,
                     onClose: { selectedMeeting = nil },
                     onOpenEvent: { link in openLinkedEvent(link, in: vm) }
@@ -271,8 +265,8 @@ struct CalendarEventsView: View {
         .onChange(of: recordings) { _, _ in rebuildSections(vm) }
     }
 
-    private func handleRecordingDeleted() {
-        selectedMeeting = nil
+    private func handleRecordingDeleted(from pane: MeetingSelection) {
+        selectedMeeting = Self.selectionAfterDelete(current: selectedMeeting, deletedFrom: pane)
         loadRecordings()
     }
 
@@ -717,14 +711,8 @@ struct CalendarEventsView: View {
     private var syncHealthBanner: some View {
         switch syncHealth {
         case .ok, .awaitingFirstSync:
-            // A failed restart can land on an otherwise healthy or waiting
-            // state (calendars synced before, or an old daemon still up) —
-            // it must still be seen, with the retry.
-            if let restartError {
-                healthBanner(icon: "exclamationmark.triangle", text: "The sync didn't restart.", error: restartError) {
-                    syncButton("Restart Sync") { await restartSync() }
-                }
-            } else if syncHealth == .awaitingFirstSync {
+            // A failed restart shows on the app-wide banner, with its Retry.
+            if syncHealth == .awaitingFirstSync {
                 healthBanner(icon: nil, text: "Syncing your calendar — events appear within a minute.", error: nil) {
                     EmptyView()
                 }
@@ -733,7 +721,7 @@ struct CalendarEventsView: View {
             healthBanner(
                 icon: "exclamationmark.triangle",
                 text: "Calendar sync is off — your Google Calendar is connected, but Watchtower isn't syncing it.",
-                error: syncHealthError ?? restartError
+                error: syncHealthError
             ) {
                 syncButton("Turn On Calendar Sync") { await turnOnCalendarSync() }
             }
@@ -746,13 +734,9 @@ struct CalendarEventsView: View {
                 reconnectButton(account)
             }
         case .daemonStopped:
-            healthBanner(
-                icon: "exclamationmark.triangle",
-                text: "Watchtower's sync isn't running, so your calendar hasn't synced yet.",
-                error: restartError
-            ) {
-                syncButton("Start Sync") { await restartSync() }
-            }
+            // The app-wide banner says the daemon isn't running (or why it
+            // did not restart) and starts it: one message, one control.
+            EmptyView()
         }
     }
 

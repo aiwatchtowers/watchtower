@@ -45,7 +45,7 @@ struct DecisionsListView: View {
             } else {
                 expandedIDs.insert(idea.id)
                 if isUnread(idea) {
-                    viewModel.markDecisionSeen(id: idea.id)
+                    Task { await viewModel.markDecisionSeen(id: idea.id) }
                 }
             }
         }

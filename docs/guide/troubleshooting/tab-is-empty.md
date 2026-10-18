@@ -13,7 +13,8 @@ A tab shows what a background job wrote. It stays empty until its feature is on,
 | Tab | Feature (**Settings → Features**) | Needs |
 |---|---|---|
 | Catch Up, Digests | Slack Digests | Slack |
-| Tracks, People, Ideas | Tracks, People Cards, Ideas & Decisions | Slack |
+| Tracks, People | Tracks, People Cards, plus Slack Digests | Slack |
+| Ideas | Ideas & Decisions | Slack |
 | Briefings, Day Plan | Daily Briefing, Day Plan | Any source, and Watchtower knows who you are |
 | Inbox | Attention detection | Any source, and Watchtower knows who you are |
 | Memory | Memory (off by default) | Any source |
@@ -28,6 +29,9 @@ Targets, Workbench and Automations have no status line: they stay empty until yo
 1. Read the status line.
    - **Off — Turn on:** press **Turn on**.
    - **Connect Slack to get this** (or a calendar, Jira, a source): connect it in **Settings → Connections**.
+   - **Choose Jira boards to get this:** Jira is connected but no board is picked. Press **Choose Jira boards** and switch boards on in **Boards**.
+   - **Needs Slack Digests** (Tracks, People): press **Turn on Slack Digests**; Tracks and People Cards run only with it.
+   - **Watchtower isn't running:** the background sync has been stopped for at least 30 seconds, so nothing new arrives. Press **Start** on the banner at the top of the window; it says "Starting Watchtower…" until the sync is up, which can take up to a minute after an update. If you stopped it on purpose, **Dismiss** hides the banner until the next time it stops. If it does not start, the banner says why, with **Retry** and **Open Logs**; see [Sync is stuck or slow](sync-stuck-or-slow.md).
    - **Waiting for history to load** (Memory): a source is loading its first month; before its first run, Memory waits for it at most a day.
    - **Starts after the first sync**, **Preparing now**, a time ("Within ~15 min", "Today at 08:00"): wait. A first sync takes 3 to 5 minutes.
 2. **Didn't work yet — retries automatically:** the reason follows the dot (·). If it names the Claude or Codex tool, go to [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md). The next sync cycle retries on its own.

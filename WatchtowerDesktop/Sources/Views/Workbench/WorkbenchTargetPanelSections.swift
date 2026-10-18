@@ -82,7 +82,7 @@ struct WorkbenchPanelActivity: View {
         ForEach(vm.threads) { thread in
             CommentThreadView(
                 thread: thread.content,
-                onReply: { vm.reply(to: thread.id, body: $0) },
+                onReply: { await vm.reply(to: thread.id, body: $0) },
                 onResolve: thread.root.isOpen ? { vm.setThreadStatus(rootID: thread.id, status: "resolved") } : nil,
                 onReopen: thread.root.isOpen ? nil : { vm.setThreadStatus(rootID: thread.id, status: "open") }
             )
@@ -165,14 +165,15 @@ struct WorkbenchPanelComposer: View {
         .background(Color.red.opacity(0.08))
     }
 
+    /// A comment still being written takes no second send (board #670).
     private var canSend: Bool {
-        !vm.commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !vm.isSendingComment && !vm.commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func send() {
         guard canSend else { return }
         // Cleared only once the comment is saved: a failed write keeps the text.
-        vm.sendCommentDraft()
+        Task { await vm.sendCommentDraft() }
     }
 
     /// The chat composer's idiom: a rounded field and a round send button.

@@ -7,12 +7,25 @@ final class QuickConnectionsProviderNoticeTests: XCTestCase {
         XCTAssertNil(QuickConnectionsProviderNotice.caption(forProvider: "claude"))
     }
 
+    /// The codex chat mounts Quick Connections in its own CODEX_HOME (#594).
+    func testCodexProviderShowsNoCaption() {
+        XCTAssertNil(QuickConnectionsProviderNotice.caption(forProvider: "codex"))
+    }
+
     func testNonClaudeProvidersShowCaptionNamingClaude() {
-        for provider in ["ollama", "codex"] {
-            let caption = QuickConnectionsProviderNotice.caption(forProvider: provider)
-            XCTAssertNotNil(caption, provider)
-            XCTAssertTrue(caption?.contains("claude") == true, provider)
-        }
+        let caption = QuickConnectionsProviderNotice.caption(forProvider: "ollama")
+        XCTAssertNotNil(caption)
+        XCTAssertTrue(caption?.contains("claude") == true)
+        XCTAssertTrue(caption?.contains("codex") == true)
+    }
+
+    func testCodexImportNoticeShowsOnceForCodexUsersWithServers() {
+        let notice = QuickConnectionsProviderNotice.self
+        XCTAssertNotNil(notice.codexImportNotice(forProvider: "codex", dismissed: false, codexServers: 2))
+        XCTAssertNil(notice.codexImportNotice(forProvider: "codex", dismissed: true, codexServers: 2))
+        XCTAssertNil(notice.codexImportNotice(forProvider: "claude", dismissed: false, codexServers: 2))
+        XCTAssertNil(notice.codexImportNotice(forProvider: "codex", dismissed: false, codexServers: 0))
+        XCTAssertNil(notice.codexImportNotice(forProvider: "codex", dismissed: false, codexServers: nil))
     }
 
     func testUnknownOrAbsentProviderWarnsByDefault() {

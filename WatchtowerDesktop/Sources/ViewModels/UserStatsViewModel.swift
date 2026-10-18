@@ -28,7 +28,11 @@ final class UserStatsViewModel {
     var errorMessage: String?
 
     private let dbManager: DatabaseManager
-    private var observationTask: Task<Void, Never>?
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
+    /// One pending toggle per row (board #670).
+    let pendingWrites = PendingWrites()
+    private(set) var observationTask: Task<Void, Never>?
 
     init(dbManager: DatabaseManager) {
         self.dbManager = dbManager
@@ -36,16 +40,20 @@ final class UserStatsViewModel {
 
     func startObserving() {
         guard observationTask == nil else { return }
-        load()
+        // No load() here: the observation's first value is the load, so a
+        // write between a load and the registration cannot be missed.
+        isLoading = true
         let dbPool = dbManager.dbPool
         observationTask = Task { [weak self] in
             let observation = ValueObservation.tracking { db in
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM users") ?? 0
             }
             do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled else { break }
-                    self?.load()
+                for try await _ in observation.values(in: dbPool) {
+                    // A released VM ends the loop, so its observer leaves the pool
+                    // at the next change even if no view called stopObserving().
+                    guard !Task.isCancelled, let self else { break }
+                    self.load()
                 }
             } catch {}
         }
@@ -141,11 +149,23 @@ final class UserStatsViewModel {
         stats.filter(\.effectiveIsBot).reduce(0) { $0 + $1.totalMessages }
     }
 
-    func toggleMuteForLLM(userID: String) {
+    /// A toggle pressed again while its write waits does nothing (board #670).
+    func toggleMuteForLLM(userID: String) async {
+        await pendingWrites.run("mute:\(userID)") { await writeMute(userID: userID) }
+    }
+
+    func toggleBotOverride(userID: String) async {
+        await pendingWrites.run("bot:\(userID)") { await writeBotOverride(userID: userID) }
+    }
+
+    func isMutePending(_ userID: String) -> Bool { pendingWrites.isPending("mute:\(userID)") }
+    func isBotPending(_ userID: String) -> Bool { pendingWrites.isPending("bot:\(userID)") }
+
+    private func writeMute(userID: String) async {
         guard let stat = stats.first(where: { $0.id == userID }) else { return }
         let newValue = !stat.isMutedForLLM
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try UserStatsQueries.setMutedForLLM(db, userID: userID, muted: newValue)
             }
             load()
@@ -154,7 +174,7 @@ final class UserStatsViewModel {
         }
     }
 
-    func toggleBotOverride(userID: String) {
+    private func writeBotOverride(userID: String) async {
         guard let stat = stats.first(where: { $0.id == userID }) else { return }
         let newValue: Bool? = stat.effectiveIsBot ? false : true
         // If the override would match the Slack value, clear it instead
@@ -165,7 +185,7 @@ final class UserStatsViewModel {
             finalValue = newValue
         }
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try UserStatsQueries.setBotOverride(db, userID: userID, isBot: finalValue)
             }
             load()
@@ -177,5 +197,11 @@ final class UserStatsViewModel {
     func stopObserving() {
         observationTask?.cancel()
         observationTask = nil
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }

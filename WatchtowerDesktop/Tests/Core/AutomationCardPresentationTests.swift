@@ -80,8 +80,7 @@ final class AutomationCardPresentationTests: XCTestCase {
         let event = item(automation(kind: "event",
                                     spec: ##"{"event":{"type":"slack.new_messages","where":{"channel":"#eng"}}}"##,
                                     enabled: false))
-        XCTAssertEqual(ACP.rowDetailLine(event, changes: nil, now: now),
-                       "On new Slack messages (#eng) · coming in a later version")
+        XCTAssertEqual(ACP.rowDetailLine(event, changes: nil, now: now), "On new Slack messages (#eng)")
 
         let waiting = item(automation(), activeRun: run(.waiting, waitingReason: "approval", startedAt: now))
         XCTAssertEqual(ACP.rowDetailLine(waiting, changes: nil, now: now), "Weekdays 09:00 · waiting for your approval")
@@ -91,6 +90,36 @@ final class AutomationCardPresentationTests: XCTestCase {
 
         let manualNoRuns = item(automation(kind: "manual", spec: #"{"manual":true}"#))
         XCTAssertEqual(ACP.rowDetailLine(manualNoRuns, changes: nil, now: now), "Manual")
+    }
+
+    /// Board #583: an event recipe's row shows its real state (events shipped in P4), not "coming later".
+    func testEventRowDetailLineShowsState() {
+        let gmail = #"{"event":{"type":"gmail.new_messages"}}"#
+        let fresh = item(automation(kind: "event", spec: gmail))
+        XCTAssertEqual(ACP.rowDetailLine(fresh, changes: nil, now: now), "On new Gmail · no runs yet")
+
+        let fired = item(automation(kind: "event", spec: gmail),
+                         lastRun: AutomationRun(id: 3, automationID: 7, trigger: "event", status: .succeeded,
+                                                startedAt: now.addingTimeInterval(-7300),
+                                                finishedAt: now.addingTimeInterval(-7200)),
+                         tokens7d: 3200)
+        XCTAssertEqual(ACP.rowDetailLine(fired, changes: nil, now: now),
+                       "On new Gmail · last run 2 h ago · 3.2k tokens this week")
+
+        let running = item(automation(kind: "event", spec: gmail),
+                           activeRun: run(.running, trigger: "event", startedAt: now.addingTimeInterval(-40)))
+        XCTAssertEqual(ACP.rowDetailLine(running, changes: nil, now: now), "On new Gmail · started 40 s ago")
+
+        let failed = item(automation(kind: "event", spec: gmail),
+                          lastRun: run(.failed, error: "Gmail not connected", trigger: "event"))
+        XCTAssertEqual(ACP.rowDetailLine(failed, changes: nil, now: now), "On new Gmail · last run: Gmail not connected")
+
+        let overBudget = item(automation(kind: "event", spec: gmail), lastRun: run(.budgetExceeded, trigger: "event"))
+        XCTAssertEqual(ACP.rowDetailLine(overBudget, changes: nil, now: now), "On new Gmail · last run: budget exceeded")
+
+        let unconfirmed = item(automation(kind: "event", spec: gmail, confirmed: false))
+        XCTAssertEqual(ACP.rowDetailLine(unconfirmed, changes: nil, now: now),
+                       "On new Gmail · waiting for your confirmation")
     }
 
     func testStatusPillAndBadges() {

@@ -23,11 +23,11 @@ With nothing to show, Today says "Nothing needs you right now." If a card can't 
 
 ### The Getting ready zone
 
-On a new install a **Getting ready** zone sits above Today, one card per feature that is on and has its source. Each card carries the same status line as the feature's own empty tab, such as "Preparing now", "Starts after the first sync", "Within ~15 min" or "Today at 08:00". A finished feature shows **Ready** and **Open**.
+On a new install a **Getting ready** zone sits above Today, one card per feature that is on and has its source. Each card carries the same status line as the feature's own empty tab, such as "Preparing now", "Starts after the first sync", "Within ~15 min" or "Today at 08:00". A finished feature shows **Ready** and **Open**. If the background sync has been stopped for 30 seconds or more, the cards that are not ready say "Watchtower isn't running" instead; the banner at the top of the window has **Start**.
 
 While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan cards say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A connected Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead. A bare IMAP login without an @ does not count as an address.
 
-A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button.
+A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button. A connected Jira with no board picked keeps a Jira card saying "Choose Jira boards to get this", with a **Choose Jira boards** button that opens **Boards**; the card stays until you pick boards, hide the zone, or the zone folds after three days.
 
 When every card is ready or has failed and retries on its own, the zone shrinks to "Everything's ready" for the rest of that launch and is gone on the next. It also folds by itself three days after it first showed, whatever is still waiting. An install that was already ready never sees it.
 

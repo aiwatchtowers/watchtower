@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE review_checks (
+CREATE TABLE IF NOT EXISTS review_checks (
   round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
   chapter_key TEXT NOT NULL,
   lens        TEXT NOT NULL,

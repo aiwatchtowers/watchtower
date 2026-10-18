@@ -8,6 +8,8 @@ import WatchtowerCore
 protocol ReadinessEnvironment: AnyObject {
     var now: Date { get }
     var daemonRunning: Bool { get }
+    /// `DaemonManager.notRunningSince`.
+    var daemonNotRunningSince: Date? { get }
     var syncProgress: SyncProgress? { get }
     /// When the last Slack sync finished (`last_sync.json`); nil before the first.
     var lastSyncTime: Date? { get }
@@ -40,6 +42,9 @@ final class ReadinessCenter {
     /// after HH:00" (Go's `config.DefaultBriefingHour`/`DefaultDayPlanHour` until then).
     private(set) var briefingHour = 8
     private(set) var dayPlanHour = 8
+    /// The daemon has been down past `FeatureReadiness.daemonDownGrace`:
+    /// the app-wide banner's Start shows. Follows the status poll and the tick.
+    private(set) var daemonDown = false
 
     /// The daemon's throttle stamps read here, a subset of
     /// `DaemonStampFiles.names`.
@@ -52,6 +57,7 @@ final class ReadinessCenter {
         /// writes it), so the tick's re-read picks its changes up.
         var runningBackfillStarts: [Date]
         var memoryHasRun: Bool
+        var jiraBoardsSelected: Bool
     }
 
     @ObservationIgnored private let environment: any ReadinessEnvironment
@@ -111,7 +117,8 @@ final class ReadinessCenter {
         DBSnapshot(contentPresent: try ReadinessQueries.contentPresent(db),
                    latestRuns: try ReadinessQueries.latestRuns(db),
                    runningBackfillStarts: try ReadinessQueries.runningBackfillStarts(db),
-                   memoryHasRun: try ReadinessQueries.memoryHasRun(db))
+                   memoryHasRun: try ReadinessQueries.memoryHasRun(db),
+                   jiraBoardsSelected: try ReadinessQueries.jiraBoardsSelected(db))
     }
 
     /// The tick's one-shot read: picks up the daemon's writes, and a table a
@@ -156,6 +163,9 @@ final class ReadinessCenter {
         if next != readiness { readiness = next }
         if inputs.briefingHour != briefingHour { briefingHour = inputs.briefingHour }
         if inputs.dayPlanHour != dayPlanHour { dayPlanHour = inputs.dayPlanHour }
+        let down = FeatureReadiness.isDaemonDown(
+            running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now)
+        if down != daemonDown { daemonDown = down }
     }
 
     func readiness(for feature: ReadinessFeature) -> Readiness? {
@@ -168,6 +178,7 @@ final class ReadinessCenter {
             disabledFeatureIDs: environment.disabledFeatureIDs,
             connected: environment.connected,
             daemonRunning: environment.daemonRunning,
+            daemonNotRunningSince: environment.daemonNotRunningSince,
             syncProgress: environment.syncProgress,
             lastSyncTime: environment.lastSyncTime,
             latestRuns: snapshot.latestRuns,
@@ -183,7 +194,8 @@ final class ReadinessCenter {
             pollIntervalMinutes: FeatureReadiness.parsePollInterval(environment.pollInterval),
             runningBackfillStarts: snapshot.runningBackfillStarts,
             memoryHasRun: snapshot.memoryHasRun,
-            backfillOff: environment.backfillDays.map { $0 <= 0 } ?? false
+            backfillOff: environment.backfillDays.map { $0 <= 0 } ?? false,
+            jiraBoardsSelected: snapshot.jiraBoardsSelected
         )
     }
 }
@@ -216,6 +228,7 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
 
     var now: Date { Date() }
     var daemonRunning: Bool { daemon.isRunning }
+    var daemonNotRunningSince: Date? { daemon.notRunningSince }
     var syncProgress: SyncProgress? { daemon.syncProgress }
     var lastSyncTime: Date? { daemon.lastSyncTime }
     var disabledFeatureIDs: Set<String> { visibility.disabledFeatureIDs }

@@ -334,14 +334,12 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	lastTS, sinceTime := p.resolveWatermarkWindow("inbox")
 
-	const totalSteps = 4
-
 	// Phase 0: Deduplicate existing thread inbox items (cleanup from before thread-grouping).
 	p.dedupThreadItems("inbox")
 
 	// Phase 1: Detection — Slack + external sources (individually non-fatal, but a
 	// failure freezes the watermark below so no window is skipped).
-	p.progress(1, totalSteps, "detecting")
+	p.progress(1, "detecting")
 	stepStart := time.Now()
 	// The owner's Jira identity and own comments are read once per cycle and
 	// shared by the Jira detector and Jira auto-resolve.
@@ -351,13 +349,13 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 2: Auto-resolve — rule-based resolution for all source types (INBOX-02).
-	p.progress(2, totalSteps, "auto-resolving")
+	p.progress(2, "auto-resolving")
 	stepStart = time.Now()
 	resolved := p.autoResolveByRules(ctx, owner, jiraOwn)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 3: Auto-archive expired/stale items and unsnooze expired snoozes.
-	p.progress(3, totalSteps, "archiving")
+	p.progress(3, "archiving")
 	archived := p.runArchiveAndUnsnooze()
 
 	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09. Items
@@ -374,7 +372,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 		p.logger.Printf("inbox: detector or sync error, leaving watermark unchanged to avoid losing the skipped window: %v", detectErr)
 	}
 
-	p.progress(totalSteps, totalSteps, "done")
+	p.progress(totalSteps, "done")
 
 	p.logger.Printf("inbox: +%d new (S%d J%d C%d G%d M%d T%d), %d auto-resolved, %d auto-archived",
 		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower,
@@ -407,7 +405,7 @@ func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, jiraOwn *ownJi
 		}
 	}
 	var e error
-	slack, e = p.detectSlackAccounts(ctx, lastTS)
+	slack, e = p.detectSlackAccounts(lastTS)
 	record("slack", e)
 	jira, e = detectJira(ctx, p.db, owner, jiraOwn, sinceTime)
 	record("jira", e)
@@ -443,7 +441,7 @@ func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, jiraOwn *ownJi
 // retries syncCurrentUser whenever current_user_id is empty,
 // internal/sync/orchestrator.go), so the residual exposure is at most the
 // messages synced during that single cycle, not an unbounded window.
-func (p *Pipeline) detectSlackAccounts(ctx context.Context, lastTS float64) (int, error) {
+func (p *Pipeline) detectSlackAccounts(lastTS float64) (int, error) {
 	accounts, err := p.db.ListEnabledSlackAccounts()
 	if err != nil {
 		return 0, fmt.Errorf("listing enabled slack accounts: %w", err)
@@ -456,7 +454,7 @@ func (p *Pipeline) detectSlackAccounts(ctx context.Context, lastTS float64) (int
 			p.logger.Printf("inbox: slack account %d: current_user_id not yet resolved, skipping", acct.ID)
 			continue
 		}
-		n, e := p.detectSlackTriggers(ctx, acct.ID, acct.CurrentUserID, lastTS)
+		n, e := p.detectSlackTriggers(acct.ID, acct.CurrentUserID, lastTS)
 		created += n
 		if e != nil {
 			errs = append(errs, fmt.Errorf("account %d: %w", acct.ID, e))
@@ -468,7 +466,7 @@ func (p *Pipeline) detectSlackAccounts(ctx context.Context, lastTS float64) (int
 // detectSlackTriggers detects @mentions, DMs, thread replies and reactions
 // from Slack messages for one connected account. Returns the count of newly
 // created inbox items.
-func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, currentUserID string, lastTS float64) (int, error) {
+func (p *Pipeline) detectSlackTriggers(accountID int64, currentUserID string, lastTS float64) (int, error) {
 	mentions, err := p.db.FindPendingMentions(accountID, currentUserID, lastTS)
 	if err != nil {
 		return 0, fmt.Errorf("finding mentions: %w", err)
@@ -741,10 +739,13 @@ func (p *Pipeline) loadContext(channelID, messageTS, threadTS string) string {
 	return truncateRunes(result, 2000)
 }
 
+// totalSteps is the number of progress steps one Run reports.
+const totalSteps = 4
+
 // progress is a helper that calls OnProgress if set.
-func (p *Pipeline) progress(done, total int, status string) {
+func (p *Pipeline) progress(done int, status string) {
 	if p.OnProgress != nil {
-		p.OnProgress(done, total, status)
+		p.OnProgress(done, totalSteps, status)
 	}
 }
 
@@ -752,7 +753,7 @@ func (p *Pipeline) progress(done, total int, status string) {
 // Jira, and Calendar sources. Returns the total number of items resolved.
 func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner, jiraOwn *ownJiraComments) int {
 	resolved := 0
-	resolved += p.autoResolveSlack(ctx)
+	resolved += p.autoResolveSlack()
 	resolved += p.autoResolveJira(ctx, jiraOwn)
 	resolved += p.autoResolveCalendar(ctx, owner.Email)
 	return resolved
@@ -769,7 +770,7 @@ func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner, jiraO
 // later-disabled or removed account's existing pending items should still
 // resolve correctly against the identity that created them (slack disable/
 // remove are both non-destructive to already-synced data).
-func (p *Pipeline) autoResolveSlack(ctx context.Context) int {
+func (p *Pipeline) autoResolveSlack() int {
 	items, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
 	if err != nil {
 		p.logger.Printf("inbox: autoResolveSlack: loading items: %v", err)

@@ -609,6 +609,39 @@ final class WorkbenchesViewModelTests: XCTestCase {
     /// House rule: an async operation started from a screen survives leaving
     /// it. The VM lives on AppState, so the create keeps running while the
     /// owner is on another tab and the result is there when they return.
+    /// Run setup again calls `initWorkbenches` a second time (board #593):
+    /// the replaced view model and notification center stop their loops
+    /// at once, so nothing polls or notifies twice.
+    func testInitWorkbenchesAgainStopsThePreviousLoops() throws {
+        let appState = AppState.isolated()
+        appState.terminalCenter.makeProcess = { FakeTerminalSession() }
+        let initWorkbenches = {
+            appState.initWorkbenches(
+                dbPool: self.pool, cliRunner: nil, notifier: RecordingWorkbenchNotifier(),
+                sessionNotifier: RecordingSessionNotifier()
+            )
+        }
+        initWorkbenches()
+        let oldVM = try XCTUnwrap(appState.workbenchesViewModel)
+        let oldNotices = try XCTUnwrap(appState.workbenchNotificationCenter)
+        XCTAssertNotNil(oldVM.titleTask)
+        XCTAssertTrue(oldNotices.isPolling)
+
+        initWorkbenches()
+        defer {
+            appState.sessionReportCenter?.stop()
+            appState.sessionAgentStateCenter?.stop()
+            appState.workbenchNotificationCenter?.stop()
+            appState.workbenchesViewModel?.stop()
+        }
+
+        XCTAssertFalse(appState.workbenchesViewModel === oldVM)
+        XCTAssertNil(oldVM.titleTask, "the old title poll is stopped")
+        XCTAssertFalse(oldNotices.isPolling, "the old notification poll is stopped")
+        XCTAssertTrue(appState.workbenchNotificationCenter?.isPolling ?? false, "the new one polls")
+        XCTAssertNotNil(appState.workbenchesViewModel?.titleTask)
+    }
+
     func testCreateSurvivesNavigatingAwayAndSelectsTheProjectOnReturn() async throws {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let held = HeldCLIRunner(stdout: createdJSON(id))
