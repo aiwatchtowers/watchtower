@@ -242,7 +242,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.commentDraft = "Ignored"
         vm.select(taskA)
         XCTAssertEqual(vm.commentDraft, "Answer for A", "survives closing and reopening the same target")
-        let comments = try dbManager.dbPool.read { db in
+        let comments = try await dbManager.dbPool.read { db in
             try Row.fetchAll(db, sql: "SELECT target_id, body FROM project_comments WHERE project_id = ?",
                              arguments: [pid])
         }
