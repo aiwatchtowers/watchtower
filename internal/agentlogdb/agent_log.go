@@ -45,7 +45,10 @@ type AgentLogEvent struct {
 	MessageID                                                                          string // api_call only, not stored
 	SpawnedAgentID                                                                     string // Agent tool call: the sub-agent's id, set when the result pairs
 	Background                                                                         bool
-	SubagentReplayCheck                                                                bool // skip when the session already has this message.id under another key
+	SubagentReplayCheck                                                                bool   // skip when the session already has this message.id under another key
+	ResultBytes                                                                        *int64 // tool: size of the result, nil = not measured
+	ThinkingTokens                                                                     int64
+	PreTokens, PostTokens                                                              *int64 // compaction: context size before and after
 }
 
 // AgentToolResult pairs a tool_result with its stored `tool:<ToolUseID>` event.
@@ -54,6 +57,26 @@ type AgentToolResult struct {
 	LinesAdded, LinesRemoved           int
 	SpawnedAgentID                     string
 	Background                         bool
+	ResultBytes                        *int64
+}
+
+// AgentContextPart is the size of one baseline part of a lane's first API call.
+type AgentContextPart struct {
+	SessionUUID, AgentID, Part string
+	Bytes                      int64
+}
+
+// AgentSkillListed is one skill in the session's context listing.
+type AgentSkillListed struct {
+	SessionUUID, Skill string
+	Bytes              int64
+}
+
+// AgentSubagent is one sub-agent lane of a session; Finished nil = unknown.
+type AgentSubagent struct {
+	SessionUUID, AgentID, AgentType string
+	Depth                           int
+	Finished                        *bool
 }
 
 // AgentLogBatch is what one parse of one file writes in one transaction.
@@ -63,6 +86,9 @@ type AgentLogBatch struct {
 	Sessions     []AgentLogSession
 	Events       []AgentLogEvent
 	ToolResults  []AgentToolResult
+	ContextParts []AgentContextPart
+	SkillListing []AgentSkillListed
+	Subagents    []AgentSubagent
 }
 
 // AgentLogStats is a workbench's totals for `agents stats --json` (pinned keys).
@@ -200,9 +226,9 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 		}
 		for _, r := range b.ToolResults {
 			if _, err := tx.Exec(`UPDATE agent_log_events SET outcome = ?, error_class = ?,
-				lines_added = ?, lines_removed = ?,
+				lines_added = ?, lines_removed = ?, result_bytes = ?,
 				duration_ms = CAST(ROUND((julianday(?) - julianday(ts)) * 86400000) AS INTEGER)
-				WHERE key = ?`, r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.TS, "tool:"+r.ToolUseID); err != nil {
+				WHERE key = ?`, r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes, r.TS, "tool:"+r.ToolUseID); err != nil {
 				return fmt.Errorf("pairing tool result: %w", err)
 			}
 			if r.SpawnedAgentID != "" {
@@ -214,6 +240,28 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				if _, err := tx.Exec(`UPDATE agent_log_events SET background = 1 WHERE key = ?`, "tool:"+r.ToolUseID); err != nil {
 					return fmt.Errorf("pairing background flag: %w", err)
 				}
+			}
+		}
+		for _, p := range b.ContextParts {
+			if _, err := tx.Exec(`INSERT INTO agent_log_context_parts (session_uuid, agent_id, part, bytes) VALUES (?, ?, ?, ?)
+				ON CONFLICT(session_uuid, agent_id, part) DO UPDATE SET bytes = MAX(bytes, excluded.bytes)`,
+				p.SessionUUID, p.AgentID, p.Part, p.Bytes); err != nil {
+				return fmt.Errorf("upserting context part: %w", err)
+			}
+		}
+		for _, k := range b.SkillListing {
+			if _, err := tx.Exec(`INSERT INTO agent_log_skill_listing (session_uuid, skill, bytes) VALUES (?, ?, ?)
+				ON CONFLICT(session_uuid, skill) DO UPDATE SET bytes = MAX(bytes, excluded.bytes)`,
+				k.SessionUUID, k.Skill, k.Bytes); err != nil {
+				return fmt.Errorf("upserting skill listing: %w", err)
+			}
+		}
+		for _, a := range b.Subagents {
+			if _, err := tx.Exec(`INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished) VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(session_uuid, agent_id) DO UPDATE SET agent_type = excluded.agent_type,
+				depth = excluded.depth, finished = excluded.finished`,
+				a.SessionUUID, a.AgentID, a.AgentType, a.Depth, a.Finished); err != nil {
+				return fmt.Errorf("upserting subagent: %w", err)
 			}
 		}
 		applied = true
@@ -273,8 +321,9 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 	_, err := tx.Exec(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, uuid, parent_uuid, prompt_id, agent_id,
 		is_sidechain, name, target, trigger, outcome, error_class, skill, input_tokens, output_tokens, cache_read_tokens,
 		cache_write_5m_tokens, cache_write_1h_tokens, speed, service_tier, cost_usd, price_version, cost_estimated,
-		lines_added, lines_removed, src_path, src_offset, spawned_agent_id, background)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		lines_added, lines_removed, src_path, src_offset, spawned_agent_id, background,
+		result_bytes, thinking_tokens, pre_tokens, post_tokens)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(key) DO UPDATE SET
 		  session_uuid = CASE WHEN (SELECT started_at FROM agent_log_sessions WHERE session_uuid = excluded.session_uuid)
 		                           < (SELECT started_at FROM agent_log_sessions WHERE session_uuid = agent_log_events.session_uuid)
@@ -287,7 +336,11 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		  cache_write_5m_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cache_write_5m_tokens ELSE agent_log_events.cache_write_5m_tokens END,
 		  cache_write_1h_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cache_write_1h_tokens ELSE agent_log_events.cache_write_1h_tokens END,
 		  cost_usd = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cost_usd ELSE agent_log_events.cost_usd END,
+		  thinking_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.thinking_tokens ELSE agent_log_events.thinking_tokens END,
 		  output_tokens = MAX(agent_log_events.output_tokens, excluded.output_tokens),
+		  pre_tokens = COALESCE(excluded.pre_tokens, agent_log_events.pre_tokens),
+		  post_tokens = COALESCE(excluded.post_tokens, agent_log_events.post_tokens),
+		  error_class = CASE WHEN excluded.error_class <> '' THEN excluded.error_class ELSE agent_log_events.error_class END,
 		  trigger = CASE WHEN excluded.trigger <> '' THEN excluded.trigger ELSE agent_log_events.trigger END,
 		  target = CASE WHEN excluded.target <> '' THEN excluded.target ELSE agent_log_events.target END,
 		  background = MAX(agent_log_events.background, excluded.background),
@@ -295,7 +348,8 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		e.SessionUUID, e.Key, e.Kind, e.TS, e.UUID, e.ParentUUID, e.PromptID, e.AgentID, e.IsSidechain,
 		e.Name, e.Target, e.Trigger, e.Outcome, e.ErrorClass, e.Skill, e.InputTokens, e.OutputTokens, e.CacheReadTokens,
 		e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.Speed, e.ServiceTier, e.CostUSD, e.PriceVersion, e.CostEstimated,
-		e.LinesAdded, e.LinesRemoved, e.SrcPath, e.SrcOffset, e.SpawnedAgentID, e.Background)
+		e.LinesAdded, e.LinesRemoved, e.SrcPath, e.SrcOffset, e.SpawnedAgentID, e.Background,
+		e.ResultBytes, e.ThinkingTokens, e.PreTokens, e.PostTokens)
 	if err != nil {
 		return fmt.Errorf("upserting agent log event: %w", err)
 	}
