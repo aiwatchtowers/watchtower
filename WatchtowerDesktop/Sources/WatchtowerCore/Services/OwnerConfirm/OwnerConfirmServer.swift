@@ -225,11 +225,11 @@ package final class OwnerConfirmServer {
                 }
                 try? await Task.sleep(for: .milliseconds(50))
             } while ContinuousClock.now < deadline && !box.isSet
-            self?.openWindow(request, box: box)
+            self?.openPrompt(request, box: box)
         }
     }
 
-    private func openWindow(_ request: OwnerConfirmRequest, box: OwnerConfirmReplyBox) {
+    private func openPrompt(_ request: OwnerConfirmRequest, box: OwnerConfirmReplyBox) {
         guard !box.isSet else { return } // hung up meanwhile
         if let until = cooldownUntil, ContinuousClock.now < until {
             return box.set(OwnerConfirmReply(decision: OwnerConfirmReply.denied, reason: Self.cooldownReason))
