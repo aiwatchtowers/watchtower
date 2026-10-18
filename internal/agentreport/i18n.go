@@ -71,6 +71,27 @@ var msgs = map[string][2]string{
 		"Субагенты на %s стоили %s, %d%% из %s за период; на %s вышло бы примерно на %s дешевле"},
 	"h7.action": {"Run subagents on a cheaper model (model: sonnet in the agent definition).",
 		"Запускай субагентов на модели дешевле (model: sonnet в описании агента)."},
+
+	"c1.finding": {"CLAUDE.md and rules take %d%% of every session start (%s); %s across the period's starts",
+		"CLAUDE.md и правила занимают %d%% каждого старта сессии (%s); %s на всех стартах за период"},
+	"c1.sub": {", and %d%% of a subagent's start", ", а у субагента — %d%% старта"},
+	"c1.action": {"Move feature notes out of CLAUDE.md into docs the agent reads on demand; keep only the rules every task needs.",
+		"Вынеси заметки по фичам из CLAUDE.md в документы, которые агент читает по необходимости; оставь только правила для каждой задачи."},
+
+	"c2.label": {"%s added", "добавил %s"},
+	"c2.finding": {"%s %s added %s to the context over %s, %d%% of its growth",
+		"%s %s добавил в контекст %s за %s — %d%% его роста"},
+	"c2.action.bash": {"Trim the output: pipe it through head or grep, or add a PostToolUse hook that shortens it.",
+		"Сократи вывод: пропусти его через head или grep или добавь PostToolUse-хук, который его укорачивает."},
+	"c2.action.read": {"Read the file with offset/limit, only the range you need.",
+		"Читай файл с offset/limit — только нужный диапазон."},
+	"c2.action.other": {"Ask for a smaller result, or move the sweep into a subagent so its output stays out of the main context.",
+		"Запрашивай результат поменьше или вынеси перебор в субагента, чтобы его вывод не попадал в основной контекст."},
+
+	"c3.finding": {"%s was read %s in session %s; the repeats added %s",
+		"%s прочитан %s в сессии %s; повторы добавили %s"},
+	"c3.action": {"Read the file once and keep notes, or read only the range you need.",
+		"Прочитай файл один раз и запиши заметки или читай только нужный диапазон."},
 }
 
 // f formats the message key in the language.
@@ -98,6 +119,7 @@ var nouns = map[string]struct {
 	"compaction": {[2]string{"compaction", "compactions"}, [3]string{"компакция", "компакции", "компакций"}},
 	"session.in": {[2]string{"session", "sessions"}, [3]string{"сессии", "сессиях", "сессиях"}},
 	"task.in":    {[2]string{"task", "tasks"}, [3]string{"задаче", "задачах", "задачах"}},
+	"token":      {[2]string{"token", "tokens"}, [3]string{"токен", "токена", "токенов"}},
 }
 
 // count renders "4 runs" / "4 запуска".
@@ -124,6 +146,18 @@ func (l Lang) count(n int, noun string) string {
 		form = f.ru[2]
 	}
 	return fmt.Sprintf("%d %s", n, form)
+}
+
+// tok renders a token count: "950 tokens" / "950 токенов" under a thousand,
+// else "12.3k tokens" / "12,3 тыс. токенов".
+func (l Lang) tok(n int64) string {
+	if n < 1000 {
+		return l.count(int(n), "token")
+	}
+	if l == English {
+		return fmt.Sprintf("%.1fk tokens", float64(n)/1000)
+	}
+	return strings.Replace(fmt.Sprintf("%.1f тыс. токенов", float64(n)/1000), ".", ",", 1)
 }
 
 // dur renders ms as "2h 10m" / "2 ч 10 мин", "7m 10s" / "7 мин 10 с" or "45s" / "45 с".

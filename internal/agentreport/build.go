@@ -38,20 +38,21 @@ type SessionRow struct {
 
 // Overview is the report of one workbench over a period (`agents report --json`).
 type Overview struct {
-	WorkbenchID       int64        `json:"workbench_id"`
-	Enabled           bool         `json:"enabled"`
-	Since             string       `json:"since"`
-	Until             string       `json:"until"`
-	Totals            Totals       `json:"totals"`
-	Time              TimeSplit    `json:"time"`
-	Subagents         Subagents    `json:"subagents"`
-	Commands          []CommandRow `json:"commands"`
-	Models            []ModelRow   `json:"models"`
-	Hints             []Hint       `json:"hints"`
-	Tasks             []TaskRow    `json:"tasks"`
-	Sessions          []SessionRow `json:"sessions"`
-	OldFormatSessions int          `json:"old_format_sessions"`
-	Import            ImportState  `json:"import"`
+	WorkbenchID       int64         `json:"workbench_id"`
+	Enabled           bool          `json:"enabled"`
+	Since             string        `json:"since"`
+	Until             string        `json:"until"`
+	Totals            Totals        `json:"totals"`
+	Time              TimeSplit     `json:"time"`
+	Subagents         Subagents     `json:"subagents"`
+	Commands          []CommandRow  `json:"commands"`
+	Models            []ModelRow    `json:"models"`
+	Hints             []Hint        `json:"hints"`
+	Context           ContextReport `json:"context"`
+	Tasks             []TaskRow     `json:"tasks"`
+	Sessions          []SessionRow  `json:"sessions"`
+	OldFormatSessions int           `json:"old_format_sessions"`
+	Import            ImportState   `json:"import"`
 }
 
 // ImportState is how far the workbench's history import got (spec D6):
@@ -225,6 +226,14 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	}
 	allEvents := eventsByUUID(events)
 	b := assemble(sessions, allEvents)
+	wb, err := main.GetWorkbench(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	ov.Context, err = loadContext(al, sessions, allEvents, wb.FolderPath)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, r := range b.rows {
 		if r.OldFormat {
@@ -246,9 +255,31 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	ov.Models = nonNil(Models(flatten(allEvents)))
 	ov.Commands = nonNil(Commands(flatten(b.events)))
 	ov.Tasks = touched(Tasks(targets, b.segments, b.events, now))
-	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Sessions: b.views, Tasks: ov.Tasks, Targets: targets, Events: b.events, Now: now}))
+	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ov.Context, Sessions: b.views, Tasks: ov.Tasks, Targets: targets,
+		Events: b.events, Now: now}))
 	ov.Sessions = b.rows
 	return ov, nil
+}
+
+// loadContext reads the baseline parts of the sessions with the v2 facts and
+// measures the context block; folder is the workbench folder for the disk
+// sizes ("" = none).
+func loadContext(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
+	folder string) (ContextReport, error) {
+	var facts []string
+	for _, s := range sessions {
+		if s.Facts {
+			facts = append(facts, s.SessionUUID)
+		}
+	}
+	var parts []agentlogdb.AgentContextPart
+	if len(facts) > 0 {
+		var err error
+		if parts, err = al.AgentReportContextParts(facts); err != nil {
+			return ContextReport{}, err
+		}
+	}
+	return Context(sessions, events, parts, folder), nil
 }
 
 // touched keeps the task rows the period's sessions worked on (agent time,
@@ -290,7 +321,12 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 		det.Lanes = append(det.Lanes, Lane{AgentID: "", Segments: nonNil(segs)})
 		det.Lanes = append(det.Lanes, b.lanes[sessionUUID]...)
 	}
+	ctx, err := loadContext(al, all[i:i+1], by, "")
+	if err != nil {
+		return nil, err
+	}
 	tasks := Tasks(targets, b.segments, b.events, now)
-	det.Hints = nonNil(Hints(HintInput{Lang: lang, Sessions: b.views, Tasks: tasks, Targets: targets, Events: b.events, Now: now}))
+	det.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ctx, Sessions: b.views, Tasks: tasks, Targets: targets,
+		Events: b.events, Now: now}))
 	return det, nil
 }

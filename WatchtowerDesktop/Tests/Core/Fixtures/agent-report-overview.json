@@ -98,6 +98,7 @@
       },
       "estimate_ms": 1800000,
       "estimate_usd": 0,
+      "estimate_tokens": 0,
       "evidence": [
         {
           "kind": "session",
@@ -123,6 +124,7 @@
       "action": "Run only the tests of the package you changed; run the full suite once before the PR.",
       "estimate_ms": 240000,
       "estimate_usd": 0,
+      "estimate_tokens": 0,
       "evidence": [
         {
           "kind": "command",
@@ -152,6 +154,7 @@
       },
       "estimate_ms": 0,
       "estimate_usd": 15,
+      "estimate_tokens": 0,
       "evidence": [
         {
           "kind": "session",
@@ -162,6 +165,32 @@
       "more_evidence": 0
     }
   ],
+  "context": {
+    "facts_sessions": 0,
+    "sessions": 2,
+    "baseline": {
+      "tokens": 0,
+      "parts": []
+    },
+    "subagent_baseline": {
+      "tokens": 0,
+      "parts": []
+    },
+    "growth": [],
+    "top_sources": [],
+    "repeated_reads": [],
+    "compactions": {
+      "count": 0,
+      "median_pre_tokens": 0,
+      "median_post_tokens": 0,
+      "sessions": 0
+    },
+    "disk": {
+      "claude_md_bytes": 0,
+      "claude_md_lines": 0,
+      "rules_bytes": 0
+    }
+  },
   "tasks": [
     {
       "target_id": 1,

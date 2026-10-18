@@ -192,9 +192,10 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	runAgentsCmd(t, "enable", "--workbench", wb)
 	runAgentsCmd(t, "scan", "--workbench", wb)
 	out := runAgentsCmd(t, "report", "--workbench", wb, "--days", "0", "--json")
-	assert.Equal(t, []string{"commands", "enabled", "hints", "import", "models", "old_format_sessions", "sessions", "since",
+	assert.Equal(t, []string{"commands", "context", "enabled", "hints", "import", "models", "old_format_sessions", "sessions", "since",
 		"subagents", "tasks", "time", "totals", "until", "workbench_id"}, jsonKeys(t, out))
 	var ov struct {
+		Context  map[string]json.RawMessage `json:"context"`
 		Totals   map[string]json.RawMessage `json:"totals"`
 		Import   map[string]json.RawMessage `json:"import"`
 		Sessions []map[string]json.RawMessage
@@ -202,6 +203,19 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &ov))
 	require.Len(t, ov.Sessions, 1)
 	assert.Equal(t, []string{"files_stored", "state", "updated_at"}, mapKeys(ov.Import))
+	assert.Equal(t, []string{"baseline", "compactions", "disk", "facts_sessions", "growth", "repeated_reads", "sessions",
+		"subagent_baseline", "top_sources"}, mapKeys(ov.Context))
+	var ctx struct {
+		Baseline    map[string]json.RawMessage `json:"baseline"`
+		Compactions map[string]json.RawMessage `json:"compactions"`
+		Disk        map[string]json.RawMessage `json:"disk"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &struct {
+		Context any `json:"context"`
+	}{&ctx}))
+	assert.Equal(t, []string{"parts", "tokens"}, mapKeys(ctx.Baseline))
+	assert.Equal(t, []string{"count", "median_post_tokens", "median_pre_tokens", "sessions"}, mapKeys(ctx.Compactions))
+	assert.Equal(t, []string{"claude_md_bytes", "claude_md_lines", "rules_bytes"}, mapKeys(ctx.Disk))
 	assert.JSONEq(t, `"done"`, string(ov.Import["state"]))
 	assert.Equal(t, []string{"active_ms", "away_ms", "cost_estimated_calls", "cost_usd", "sessions", "tokens"}, mapKeys(ov.Totals))
 	assert.Equal(t, []string{"active_ms", "avg_parallel", "branch", "cost_usd", "ended_at", "model", "old_format", "prs",

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -15,19 +16,23 @@ import (
 
 // Hint thresholds (spec "Hints (rule-based)"); tune them here, not in the rules.
 const (
-	RepeatRuns        = 3               // H1: runs of one build & test verb in one target window or session
-	RepeatMin         = 5 * time.Minute // H1: their total time must exceed this
-	SlowCheapMedian   = 5 * time.Second // H2: median of cheap calls above this
-	cheapBaseline     = 1 * time.Second // H2: what a cheap call should take
-	SerialMinFG       = 3               // H3: foreground subagents in a session
-	SerialMaxParallel = 1.3             // H3: average parallelism below this
-	OwnerShareMax     = 0.30            // H4: waiting for you above this share of active time
-	FailLoop          = 3               // H5: failures in a row of one verb
-	CacheShareMin     = 0.50            // H6: cache read share below this ...
-	CacheCostMin      = 5.0             // H6: ... with more than this spent ($)
-	CompactionsMax    = 2               // H6: or this many compactions
-	TopModelSubShare  = 0.30            // H7: subagents on the top model above this share of the spend
-	evidenceMax       = 5               // evidence items a hint lists; the rest are counted in MoreEvidence
+	RepeatRuns           = 3               // H1: runs of one build & test verb in one target window or session
+	RepeatMin            = 5 * time.Minute // H1: their total time must exceed this
+	SlowCheapMedian      = 5 * time.Second // H2: median of cheap calls above this
+	cheapBaseline        = 1 * time.Second // H2: what a cheap call should take
+	SerialMinFG          = 3               // H3: foreground subagents in a session
+	SerialMaxParallel    = 1.3             // H3: average parallelism below this
+	OwnerShareMax        = 0.30            // H4: waiting for you above this share of active time
+	FailLoop             = 3               // H5: failures in a row of one verb
+	CacheShareMin        = 0.50            // H6: cache read share below this ...
+	CacheCostMin         = 5.0             // H6: ... with more than this spent ($)
+	CompactionsMax       = 2               // H6: or this many compactions
+	TopModelSubShare     = 0.30            // H7: subagents on the top model above this share of the spend
+	InstructionsShareMax = 0.20            // C1: instructions above this share of the main baseline
+	SubInstructions      = 0.50            // C1: also names the subagents' instructions share above this
+	SourceShareMin       = 0.10            // C2: a source above this share of the growth ...
+	SourceTokensMin      = 50_000          // C2: ... and above this many tokens
+	evidenceMax          = 5               // evidence items a hint lists; the rest are counted in MoreEvidence
 )
 
 // Evidence is what a hint rests on: Kind is session, target or command and Ref
@@ -43,6 +48,7 @@ const (
 	FixCopyAllowRules = "copy_allow_rules" // copy Rules, permissions.allow lines
 	FixOpenAsks       = "open_asks"        // open the Waiting for you stack
 	FixOpenSession    = "open_session"     // open session Ref's analytics
+	FixOpenFile       = "open_file"        // open file Ref, relative to the workbench folder
 )
 
 // Fix is the one step the app can take for a hint.
@@ -52,18 +58,20 @@ type Fix struct {
 	Rules []string `json:"rules,omitempty"`
 }
 
-// Hint is one rule-based finding with its estimated saving in time or money,
+// Hint is one rule-based finding with its estimated saving in time, money or
+// context tokens,
 // what to change (Action) and, where the app can take it, a Fix. Evidence is
 // the largest evidenceMax items, MoreEvidence counts the rest.
 type Hint struct {
-	ID           string     `json:"id"`
-	Finding      string     `json:"finding"`
-	Action       string     `json:"action"`
-	Fix          *Fix       `json:"fix,omitempty"`
-	EstimateMS   int64      `json:"estimate_ms"`
-	EstimateUSD  float64    `json:"estimate_usd"`
-	Evidence     []Evidence `json:"evidence"`
-	MoreEvidence int        `json:"more_evidence"`
+	ID             string     `json:"id"`
+	Finding        string     `json:"finding"`
+	Action         string     `json:"action"`
+	Fix            *Fix       `json:"fix,omitempty"`
+	EstimateMS     int64      `json:"estimate_ms"`
+	EstimateUSD    float64    `json:"estimate_usd"`
+	EstimateTokens int64      `json:"estimate_tokens"`
+	Evidence       []Evidence `json:"evidence"`
+	MoreEvidence   int        `json:"more_evidence"`
 }
 
 // SessionView is what the hints read of one session.
@@ -78,9 +86,10 @@ type SessionView struct {
 
 // HintInput is the period the hints judge; Events are keyed by session uuid.
 // Targets (with their status history) and Now give H1 the targets' windows,
-// as in Tasks. Lang is the language of the sentences.
+// as in Tasks. Context feeds C1–C3. Lang is the language of the sentences.
 type HintInput struct {
 	Lang     Lang
+	Context  ContextReport
 	Sessions map[string]SessionView
 	Tasks    []TaskRow
 	Targets  []db.AgentReportTarget
@@ -88,8 +97,9 @@ type HintInput struct {
 	Now      time.Time
 }
 
-// Hints runs the rules H1–H7 over the period and ranks what fired by the
-// estimate, time first; a hint with no estimate is dropped.
+// Hints runs the rules H1–H7 and C1–C3 over the period and ranks what fired
+// by the estimate: time, then money, then tokens; a hint with no estimate is
+// dropped.
 func Hints(in HintInput) []Hint {
 	sessions := slices.Sorted(maps.Keys(in.Sessions))
 	for sid := range in.Events {
@@ -107,15 +117,19 @@ func Hints(in HintInput) []Hint {
 	all = append(all, failingLoops(in, sessions)...)
 	all = append(all, expensiveContext(in, sessions)...)
 	all = append(all, topModelOnSubagents(in, sessions)...)
+	all = append(all, instructionsHeavy(in)...)
+	all = append(all, bigSources(in)...)
+	all = append(all, repeatedReads(in)...)
 
-	out := slices.DeleteFunc(all, func(h Hint) bool { return h.EstimateMS <= 0 && h.EstimateUSD <= 0 })
+	out := slices.DeleteFunc(all, func(h Hint) bool { return h.EstimateMS <= 0 && h.EstimateUSD <= 0 && h.EstimateTokens <= 0 })
 	for i := range out {
 		if n := len(out[i].Evidence); n > evidenceMax {
 			out[i].Evidence, out[i].MoreEvidence = out[i].Evidence[:evidenceMax], n-evidenceMax
 		}
 	}
 	slices.SortStableFunc(out, func(a, b Hint) int {
-		return cmp.Or(cmp.Compare(b.EstimateMS, a.EstimateMS), cmp.Compare(b.EstimateUSD, a.EstimateUSD))
+		return cmp.Or(cmp.Compare(b.EstimateMS, a.EstimateMS), cmp.Compare(b.EstimateUSD, a.EstimateUSD),
+			cmp.Compare(b.EstimateTokens, a.EstimateTokens))
 	})
 	if out == nil {
 		out = []Hint{}
@@ -530,6 +544,89 @@ func topModelOnSubagents(in HintInput, sessions []string) []Hint {
 		h.Evidence = append(h.Evidence, sessionEv(sid, l.f("h7.label", fmtUSD(bySession[sid]))))
 	}
 	return []Hint{h}
+}
+
+// partShare is the share of part in b (0 when absent).
+func partShare(b BaselineSplit, part string) (PartShare, bool) {
+	i := slices.IndexFunc(b.Parts, func(p PartShare) bool { return p.Part == part })
+	if i < 0 {
+		return PartShare{}, false
+	}
+	return b.Parts[i], true
+}
+
+// C1: the instructions (CLAUDE.md and rules) take over InstructionsShareMax of
+// the main agent's baseline; the estimate is their tokens over every lane.
+// The subagents' share is named when it is over SubInstructions.
+func instructionsHeavy(in HintInput) []Hint {
+	b := in.Context.Baseline
+	p, ok := partShare(b, "instructions")
+	if !ok || p.Share <= InstructionsShareMax {
+		return nil
+	}
+	l := in.Lang
+	est := p.Tokens * int64(b.lanes)
+	finding := l.f("c1.finding", int(math.Round(p.Share*100)), l.tok(p.Tokens), l.tok(est))
+	if sp, ok := partShare(in.Context.SubagentBaseline, "instructions"); ok && sp.Share > SubInstructions {
+		finding += l.f("c1.sub", int(math.Round(sp.Share*100)))
+	}
+	h := Hint{ID: "C1", EstimateTokens: est, Action: l.f("c1.action"), Finding: finding,
+		Fix: &Fix{Kind: FixOpenFile, Ref: "CLAUDE.md"}}
+	for _, sid := range b.sessions {
+		h.Evidence = append(h.Evidence, sessionEv(sid, short(sid)))
+	}
+	return []Hint{h}
+}
+
+// C2: a tool and target that caused over SourceShareMin of the period's
+// context growth and over SourceTokensMin tokens; the action depends on the
+// tool.
+func bigSources(in HintInput) []Hint {
+	var total int64
+	for _, g := range in.Context.Growth {
+		total += g.Tokens
+	}
+	if total <= 0 {
+		return nil
+	}
+	l := in.Lang
+	var out []Hint
+	for _, s := range in.Context.TopSources {
+		share := float64(s.Tokens) / float64(total)
+		if share <= SourceShareMin || s.Tokens <= SourceTokensMin {
+			continue
+		}
+		action := "c2.action.other"
+		switch s.Tool {
+		case "Bash":
+			action = "c2.action.bash"
+		case "Read":
+			action = "c2.action.read"
+		}
+		v := verb(agentlogdb.AgentReportEvent{Name: s.Tool, Target: s.Target})
+		h := Hint{ID: "C2", EstimateTokens: s.Tokens, Action: l.f(action),
+			Finding:  l.f("c2.finding", s.Tool, s.Target, l.tok(s.Tokens), l.count(s.Calls, "call"), int(math.Round(share*100))),
+			Evidence: []Evidence{{Kind: "command", Ref: v, Label: l.f("c2.label", l.tok(s.Tokens))}}}
+		for _, sid := range s.sessions {
+			h.Evidence = append(h.Evidence, sessionEv(sid, short(sid)))
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// C3: a file read RepeatReadsMin+ times in one session; the estimate is what
+// the reads after the first added.
+func repeatedReads(in HintInput) []Hint {
+	l := in.Lang
+	var out []Hint
+	for _, r := range in.Context.RepeatedReads {
+		out = append(out, Hint{ID: "C3", EstimateTokens: r.Tokens, Action: l.f("c3.action"),
+			Fix:      &Fix{Kind: FixOpenSession, Ref: r.Session},
+			Finding:  l.f("c3.finding", r.Target, l.count(r.Reads, "time"), short(r.Session), l.tok(r.Tokens)),
+			Evidence: []Evidence{sessionEv(r.Session, short(r.Session))}})
+	}
+	return out
 }
 
 // fmtDur renders ms as "2h 10m", "7m 10s" or "45s".

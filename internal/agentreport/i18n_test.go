@@ -55,9 +55,13 @@ func TestDur_Russian(t *testing.T) {
 func TestHints_ActionInBothLanguages(t *testing.T) {
 	for _, l := range []Lang{English, Russian} {
 		in, _ := allRulesInput()
-		in.Lang = l
-		hs := Hints(in)
+		ctx := contextRulesInput()
+		in.Lang, ctx.Lang = l, l
+		hs := append(Hints(in), Hints(ctx)...)
 		require.NotEmpty(t, hs)
+		for _, id := range []string{"H1", "H2", "H3", "H4", "H5", "H6", "H7", "C1", "C2", "C3"} {
+			assert.NotEmpty(t, hintsOf(hs, id), id)
+		}
 		for _, h := range hs {
 			assert.NotEmpty(t, h.Action, h.ID)
 			hasCyrillic := strings.ContainsFunc(h.Finding+h.Action, func(r rune) bool { return unicode.Is(unicode.Cyrillic, r) })
