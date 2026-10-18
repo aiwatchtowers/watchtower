@@ -67,8 +67,21 @@ struct FeatureManagerSection: View {
                 cascadeCandidate = nil
             }
         } message: { candidate in
-            Text("This also affects: " + candidate.dependents.map(\.title).joined(separator: ", "))
+            Text(Self.cascadeMessage(featureID: candidate.feature.id, dependents: candidate.dependents))
         }
+    }
+
+    /// The cascade dialog's text. Disabling Slack Digests alone still stops
+    /// the dependents the daemon runs only alongside it
+    /// (`ReadinessFeature.runsOnlyWithDigests`, #575), so it says so.
+    static func cascadeMessage(featureID: String, dependents: [FeatureDependents.Dependent]) -> String {
+        let text = "This also affects: " + dependents.map(\.title).joined(separator: ", ")
+        guard featureID == ReadinessFeature.digests.featureID else { return text }
+        let digestBound = Set(ReadinessFeature.allCases.filter(\.runsOnlyWithDigests).compactMap(\.featureID))
+        let stopping = dependents.filter { digestBound.contains($0.id) }.map(\.title)
+        guard let last = stopping.last else { return text }
+        let names = stopping.count > 1 ? stopping.dropLast().joined(separator: ", ") + " and " + last : last
+        return text + "\n\(names) stop running too while Slack Digests is off."
     }
 
     private func cascadeAndDependentsLabel(_ candidate: CascadeCandidate) -> String {

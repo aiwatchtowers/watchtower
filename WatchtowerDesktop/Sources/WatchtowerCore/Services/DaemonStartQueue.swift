@@ -17,6 +17,8 @@ package final class DaemonStartQueue {
     /// A start or restart's failure, for the banner; nil = nothing to say.
     /// Only a successful start or restart (or the owner's Dismiss) clears it.
     package var failure: String?
+    /// Told after every successful start or restart (`succeeded()`).
+    @ObservationIgnored package var onSuccess: (@MainActor () -> Void)?
     /// The last item enqueued, finished or not; awaiting it waits for the queue.
     @ObservationIgnored package private(set) var tail: Task<Void, Never>?
 
@@ -34,6 +36,12 @@ package final class DaemonStartQueue {
         return task
     }
 
+    /// A start or restart went through: clears `failure` and tells `onSuccess`.
+    package func succeeded() {
+        failure = nil
+        onSuccess?()
+    }
+
     /// `restart` as one item: a success clears `failure`, an error is thrown.
     package func restart(_ restart: @escaping @Sendable () async throws -> Void) async throws {
         let result = await enqueue { () -> Result<Void, any Error> in
@@ -44,7 +52,7 @@ package final class DaemonStartQueue {
                 return .failure(error)
             }
         }.value
-        if case .success = result { failure = nil }
+        if case .success = result { succeeded() }
         try result.get()
     }
 

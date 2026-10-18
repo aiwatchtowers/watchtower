@@ -12,6 +12,7 @@ struct HomeView: View {
             HomeContent(
                 snapshot: appState.homeCenter.snapshot,
                 today: context.date,
+                digestsTurnOn: appState.digestsTurnOnState,
                 onLink: { appState.openHomeLink($0) },
                 onHideGettingReady: { appState.homeCenter.hideGettingReady() },
                 onAsk: { appState.toggleHelpChat() }
@@ -26,6 +27,7 @@ struct HomeContent: View {
     /// nil until the first read.
     let snapshot: HomeSnapshot?
     let today: Date
+    let digestsTurnOn: DigestsTurnOnState
     let onLink: (HomeLink) -> Void
     let onHideGettingReady: () -> Void
     let onAsk: () -> Void
@@ -33,12 +35,14 @@ struct HomeContent: View {
     init(
         snapshot: HomeSnapshot?,
         today: Date,
+        digestsTurnOn: DigestsTurnOnState = .idle,
         onLink: @escaping (HomeLink) -> Void,
         onHideGettingReady: @escaping () -> Void,
         onAsk: @escaping () -> Void = {}
     ) {
         self.snapshot = snapshot
         self.today = today
+        self.digestsTurnOn = digestsTurnOn
         self.onLink = onLink
         self.onHideGettingReady = onHideGettingReady
         self.onAsk = onAsk
@@ -51,7 +55,7 @@ struct HomeContent: View {
                 if let snapshot {
                     GettingReadyZoneView(
                         zone: snapshot.gettingReady, firstSync: snapshot.firstSync,
-                        onLink: onLink, onHide: onHideGettingReady)
+                        digestsTurnOn: digestsTurnOn, onLink: onLink, onHide: onHideGettingReady)
                     TodayZoneView(
                         cards: snapshot.today, nothingNeedsYou: snapshot.nothingNeedsYou,
                         readFailed: snapshot.showsReadError, onLink: onLink)

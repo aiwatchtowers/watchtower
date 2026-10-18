@@ -25,7 +25,7 @@ package struct GettingReadyCard: Equatable, Sendable {
         case .ready: .ready
         case .preparing: .preparing
         case .error: .error
-        case .off, .needsSource, .daemonStopped, .waitingForSync, .scheduled, nil: .waiting
+        case .off, .needsSource, .needsDigests, .daemonStopped, .waitingForSync, .scheduled, nil: .waiting
         }
     }
 
@@ -102,6 +102,8 @@ package enum HomeLink: Equatable, Sendable {
     case feature(ReadinessFeature)
     /// Getting ready's Connect row.
     case connect(ReadinessSource)
+    /// A Getting ready card's Turn on (a feature waiting on Slack Digests).
+    case turnOn(featureID: String)
 }
 
 /// A target row's status dot.

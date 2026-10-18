@@ -77,6 +77,43 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(button: "Turn on"))
     }
 
+    /// #575: Tracks with Slack Digests off — the reason and one Turn on
+    /// that switches Slack Digests on, keyed by its id.
+    func testNeedsDigestsTurnsOnSlackDigests() throws {
+        let tracks = EmptyStateCopy(
+            icon: "binoculars", title: "No tracks yet", landsHere: "Ongoing stories.",
+            feature: .tracks, primaryAction: nil)
+        var tapped: EmptyStateAction?
+        let view = FeatureEmptyState(
+            copy: tracks, readiness: .needsDigests, syncLine: nil, turnOnError: nil, isTurningOn: false,
+            turnOnFeatureID: "slack-digests", onAction: { tapped = $0 }, extra: { EmptyView() })
+        XCTAssertNoThrow(try view.inspect().find(text: "Needs Slack Digests"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Turn on"), "it starts another, heavy feature: named")
+        try view.inspect().find(button: "Turn on Slack Digests").tap()
+        XCTAssertEqual(tapped, .turnOn(featureID: "slack-digests"))
+        // Its own Turn on stays plain, and so does Digests' own.
+        XCTAssertEqual(FeatureEmptyState<EmptyView>.label(for: .turnOn(featureID: "tracks"), ownFeatureID: "tracks"), "Turn on")
+        XCTAssertEqual(
+            FeatureEmptyState<EmptyView>.label(for: .turnOn(featureID: "slack-digests"), ownFeatureID: "slack-digests"),
+            "Turn on")
+    }
+
+    /// F1 of #575's review: Slack Digests turned on but the restart failed —
+    /// tracks no longer waits on it, yet the error and the retry of Slack
+    /// Digests stay.
+    func testDigestsRestartFailureKeepsItsRetry() throws {
+        let tracks = EmptyStateCopy(
+            icon: "binoculars", title: "No tracks yet", landsHere: "Ongoing stories.",
+            feature: .tracks, primaryAction: nil)
+        var tapped: EmptyStateAction?
+        let view = FeatureEmptyState(
+            copy: tracks, readiness: .scheduled(.nextCycle(minutes: 15)), syncLine: nil, turnOnError: "boom",
+            isTurningOn: false, turnOnFeatureID: "slack-digests", onAction: { tapped = $0 }, extra: { EmptyView() })
+        XCTAssertNoThrow(try view.inspect().find(text: "boom"))
+        try view.inspect().find(button: "Try again").tap()
+        XCTAssertEqual(tapped, .turnOn(featureID: "slack-digests"))
+    }
+
     /// Daemon down: a short line, no Start of its own (the app-wide banner
     /// has it), and the tab's own action stays (#577).
     func testDaemonStoppedShowsLineAndKeepsTheTabsAction() throws {
@@ -244,6 +281,63 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertNotNil(appState.emptyStateTurnOnError(for: "memory"))
         XCTAssertNil(appState.emptyStateTurnOnError(for: "ideas"), "another tab's Turn on shows no error")
         XCTAssertNil(appState.turningOnFeatureID)
+    }
+
+    /// #575 review R1: a failed restart's error (and Try again) goes once
+    /// the daemon comes up some other way — a start or restart elsewhere.
+    func testRestartFailedErrorClearsWhenTheDaemonComesUp() async {
+        let runner = LiveFeaturesRunner(disabled: ["slack-digests"])
+        let (appState, daemon) = makeAppState(runner)
+        daemon.restartError = DaemonRestartError.startFailed(status: 1, stderr: "boom")
+        await appState.turnOnFeatureFromEmptyState("slack-digests")
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+
+        appState.daemonManager.isRunning = false
+        appState.daemonManager.isRunning = true
+
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+    }
+
+    /// #575 open point: a stop timeout leaves the old daemon running (no
+    /// running flip), so a later successful restart elsewhere — Settings or
+    /// an account change, on the start queue — is what clears the error.
+    func testStopTimeoutErrorClearsOnALaterQueuedRestart() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["slack-digests"])
+        let (appState, daemon) = makeAppState(runner)
+        daemon.restartError = DaemonRestartError.stopTimedOut(pid: nil)
+        await appState.turnOnFeatureFromEmptyState("slack-digests")
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+
+        daemon.restartError = nil
+        try await appState.restartOnChain(daemon)
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+
+        // The same through the background restart of an account change.
+        daemon.restartError = DaemonRestartError.stopTimedOut(pid: nil)
+        await appState.turnOnFeatureFromEmptyState("slack-digests")
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+        await appState.daemonStartQueue.restartLogging {}
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+    }
+
+    /// Another feature's successful Turn on restarted the daemon: an earlier
+    /// failed restart is moot, but a not-yet-enabled feature's error stays.
+    func testAnotherTurnOnClearsRestartFailedErrors() async {
+        let runner = LiveFeaturesRunner(disabled: ["slack-digests", "memory", "ideas"])
+        let (appState, daemon) = makeAppState(runner)
+        daemon.restartError = DaemonRestartError.startFailed(status: 1, stderr: "boom")
+        await appState.turnOnFeatureFromEmptyState("slack-digests")
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+        daemon.restartError = nil
+        appState.featureManager.isApplying = true
+        await appState.turnOnFeatureFromEmptyState("ideas")
+        appState.featureManager.isApplying = false
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "ideas"))
+
+        await appState.turnOnFeatureFromEmptyState("memory")
+
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "slack-digests"))
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "ideas"), "ideas never came on")
     }
 
     func testOffErrorGoesStaleWhenTurnedOnElsewhere() async {
