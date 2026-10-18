@@ -1179,8 +1179,7 @@ final class AppState {
         // The connect that raised the offer may still be restarting the
         // daemon itself: one restart at a time.
         await awaitAccountDaemonRestarts()
-        // During the launch's compaction step the restart is skipped, not
-        // failed: the launch's ensureDaemonRunning picks the new config up.
+        // Skipped, not failed, during the compaction step: the launch's ensureDaemonRunning applies it.
         let result = await featureManager.enableNow(ids) { try await self.restartOnChain(daemon) }
         if result.busy {
             // Settings → Features is applying its own batch.
@@ -1279,8 +1278,7 @@ final class AppState {
         defer { turningOnFeatureID = nil }
         let daemon = daemonControl
         await awaitAccountDaemonRestarts()
-        // During the launch's compaction step the restart is skipped, not
-        // failed: the launch's ensureDaemonRunning picks the new config up.
+        // Skipped, not failed, during the compaction step: the launch's ensureDaemonRunning applies it.
         let result = await featureManager.enableNow([featureID]) { try await self.restartOnChain(daemon) }
         if result.busy {
             recordTurnOnError(featureID, Self.featureChangesBusy)
@@ -1508,12 +1506,10 @@ final class AppState {
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle. On the one start chain.
     func ensureDaemonRunning() {
-        guard !daemonStartBlocked("ensureDaemonRunning") else { return }
         let daemon = daemonControl
         let manager = daemonManager
         let item = enqueueDaemonStart {
-            // Queued before the compaction step, run during it.
-            guard !self.daemonStartBlocked("ensureDaemonRunning") else { return }
+            guard !self.daemonStartBlocked("ensureDaemonRunning") else { return } // queued before the step, run in it
             manager.resolvePathIfNeeded()
             if daemon.daemonIsRunning() {
                 await daemon.stopDaemonNow()
