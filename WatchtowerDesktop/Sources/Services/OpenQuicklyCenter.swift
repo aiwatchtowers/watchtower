@@ -429,9 +429,16 @@ final class OpenQuicklyCenter {
                 session.showAskError("Couldn't start the question.")
                 return
             }
-            switch questions.askFromOpenQuickly(query, project: session.project, root: session.root) {
-            case let .started(conversationID): session.showAnswer(conversationID: conversationID)
-            case let .failed(message): session.showAskError(message)
+            // The conversation is written off the main thread; its answer
+            // shows only while the panel that asked is still up.
+            Task { [weak self] in
+                let start = await questions.askFromOpenQuickly(query, project: session.project, root: session.root)
+                guard let self, self.session === session else { return }
+                switch start {
+                case let .started(conversationID): session.showAnswer(conversationID: conversationID)
+                case let .failed(message): session.showAskError(message)
+                case nil: break
+                }
             }
         case let .handToClaude(query):
             // The hand-off sheet goes on the page: the panel closes first.

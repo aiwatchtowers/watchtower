@@ -67,8 +67,9 @@ struct CodeQuestionPopover: View {
         if let session = questions.sessions[workbenchID] {
             let engine = questions.engine(workbenchID: workbenchID)
             VStack(alignment: .leading, spacing: 0) {
-                header(session, busy: engine?.isBusy ?? false)
-                quickActions(busy: engine?.isBusy == true || session.isSearchingUsages)
+                header(session, busy: engine?.isBusy == true || session.isStarting
+                    || session.conversationID.map(questions.storingChoices.contains) == true)
+                quickActions(busy: engine?.isBusy == true || session.isSearchingUsages || session.isStarting)
                 Divider()
                 if let engine, let chats = questions.embeddedChats {
                     EmbeddedChatView(engine: engine, density: .compact, placeholder: "Ask a follow-up…",
@@ -114,8 +115,15 @@ struct CodeQuestionPopover: View {
                 provider: session.choice.provider,
                 model: session.choice.model,
                 suggestions: questions.modelSuggestions(session.choice.provider),
-                onSelectProvider: { questions.setModelChoice(session.choice.switching(to: $0), workbenchID: workbenchID) },
-                onSelectModel: { questions.setModelChoice(.init(provider: session.choice.provider, model: $0), workbenchID: workbenchID) }
+                onSelectProvider: { provider in
+                    Task { await questions.setModelChoice(session.choice.switching(to: provider), workbenchID: workbenchID) }
+                },
+                onSelectModel: { model in
+                    Task {
+                        await questions.setModelChoice(.init(provider: session.choice.provider, model: model),
+                                                       workbenchID: workbenchID)
+                    }
+                }
             )
             .disabled(busy)
         }
@@ -127,7 +135,7 @@ struct CodeQuestionPopover: View {
     private func quickActions(busy: Bool) -> some View {
         HStack(spacing: 6) {
             ForEach(CodeQuestionQuickAction.allCases) { action in
-                Button(action.title) { questions.quickAction(action, workbenchID: workbenchID) }
+                Button(action.title) { Task { await questions.quickAction(action, workbenchID: workbenchID) } }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -145,18 +153,25 @@ struct CodeQuestionPopover: View {
             ))
             .textFieldStyle(.plain)
             // The draft as it is now, not as this body last saw it.
-            .onSubmit { questions.ask(questions.sessions[workbenchID]?.draft ?? "", workbenchID: workbenchID) }
-            Button {
-                questions.ask(questions.sessions[workbenchID]?.draft ?? "", workbenchID: workbenchID)
-            } label: {
+            .onSubmit(askDraft)
+            .disabled(session.isStarting)
+            Button(action: askDraft) {
                 Image(systemName: "arrow.up.circle.fill").font(.title3)
             }
             .buttonStyle(.borderless)
-            .disabled(session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(session.isStarting || session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .help("Ask")
             .accessibilityLabel("Ask")
         }
         .padding(12)
+    }
+
+    /// The first question writes its conversation before it is sent; the
+    /// field and the button wait for it (`Session.isStarting`).
+    private func askDraft() {
+        let questions = questions
+        let workbenchID = workbenchID
+        Task { await questions.ask(questions.sessions[workbenchID]?.draft ?? "", workbenchID: workbenchID) }
     }
 
     private var proposalBar: some View {

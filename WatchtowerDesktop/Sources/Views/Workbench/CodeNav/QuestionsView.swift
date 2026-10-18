@@ -69,9 +69,9 @@ private struct QuestionListView: View {
                 presenting: pendingDelete
             ) { item in
                 Button("Delete", role: .destructive) {
-                    questions.deleteQuestion(
-                        CodeQuestionRef(project: project, root: root, conversationID: item.conversationID, origin: item.origin)
-                    )
+                    let question = CodeQuestionRef(project: project, root: root, conversationID: item.conversationID,
+                                                   origin: item.origin)
+                    Task { await questions.deleteQuestion(question) }
                 }
             } message: { _ in
                 Text("The conversation and its answers are removed.")
@@ -129,7 +129,7 @@ private struct QuestionConversationView: View {
             Task { await questions.openLink(url, project: question.project, root: question.root) }
         }
         .confirmationDialog("Delete this question?", isPresented: $confirmsDelete) {
-            Button("Delete", role: .destructive) { questions.deleteQuestion(question) }
+            Button("Delete", role: .destructive) { [questions, question] in Task { await questions.deleteQuestion(question) } }
         } message: {
             Text("The conversation and its answers are removed.")
         }
@@ -156,10 +156,14 @@ private struct QuestionConversationView: View {
                 provider: choice.provider,
                 model: choice.model,
                 suggestions: questions.modelSuggestions(choice.provider),
-                onSelectProvider: { questions.setModelChoice(choice.switching(to: $0), conversationID: conversationID) },
-                onSelectModel: { questions.setModelChoice(.init(provider: choice.provider, model: $0), conversationID: conversationID) }
+                onSelectProvider: { provider in
+                    Task { await questions.setModelChoice(choice.switching(to: provider), conversationID: conversationID) }
+                },
+                onSelectModel: { model in
+                    Task { await questions.setModelChoice(.init(provider: choice.provider, model: model), conversationID: conversationID) }
+                }
             )
-            .disabled(busy)
+            .disabled(busy || questions.storingChoices.contains(conversationID))
             if CodeQuestionActionsFeature.handToClaudeCode {
                 Button {
                     questions.handToClaude(question)

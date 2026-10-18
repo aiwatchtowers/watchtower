@@ -280,6 +280,8 @@ final class OpenQuicklyCenterTests: XCTestCase {
         XCTAssertTrue(session.model.rows.contains(.askAI(query: "why save")))
 
         center.perform(session.activateSelection(option: false, command: true))
+        // The conversation is written off the main thread (board #670).
+        _ = await eventually { session.answerConversationID != nil }
         let conversationID = try XCTUnwrap(session.answerConversationID)
         XCTAssertTrue(center.session === session, "the answer is where the question was asked")
         XCTAssertEqual(presenter.dismissals, [])
