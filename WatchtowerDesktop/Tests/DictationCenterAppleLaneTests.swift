@@ -7,11 +7,7 @@ import WatchtowerTestSupport
 /// A thrown apple session / whisper engine-load failure in this file — kept
 /// distinct from `DictationCenterTests`'s `StubCleanupError` so a test
 /// failure message can't be confused between "the cleanup CLI failed" and
-/// "the transcriber/session itself failed". Named apart from
-/// `DictationCenterRealtimeTests`'s identical private helper too — sentrux's
-/// symbol resolver doesn't respect Swift's `private` file scoping, so two
-/// same-named private declarations in sibling files register as a spurious
-/// cross-file edge and trip the god-file gate.
+/// "the transcriber/session itself failed".
 private struct AppleLaneStubTranscribeError: Error {}
 
 /// Canned `watchtower dictate clean --mode idea` stdout envelope. Idea is
@@ -20,9 +16,7 @@ private struct AppleLaneStubTranscribeError: Error {}
 private let ideaCleanedEnvelope = Data(#"{"mode":"idea","body":"cleaned"}"#.utf8)
 
 /// Split from `DictationCenterTests` (file_length): the live-text-replacement
-/// half of MARK 23 plus the Apple lane (MARK 24) of the original suite — kept
-/// apart from `DictationCenterRealtimeTests` because together they push that
-/// file's fan-out over sentrux's god-file threshold.
+/// half of MARK 23 plus the Apple lane (MARK 24) of the original suite.
 @MainActor
 final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
 

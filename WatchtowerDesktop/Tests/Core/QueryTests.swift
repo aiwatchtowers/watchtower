@@ -88,6 +88,19 @@ final class MessageQueryTests: XCTestCase {
         XCTAssertEqual(messages[0].text, "During")
     }
 
+    func testFetchByTimeRangeSkipsDeleted() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertChannel(db, id: "C001")
+            try TestDatabase.insertMessage(db, channelID: "C001", ts: "1700050000.000100", text: "Live")
+            try TestDatabase.insertMessage(db, channelID: "C001", ts: "1700050001.000100", text: "", isDeleted: true)
+        }
+        let messages = try db.read {
+            try MessageQueries.fetchByTimeRange($0, channelID: "C001", from: 1700040000, to: 1700060000)
+        }
+        XCTAssertEqual(messages.map(\.text), ["Live"])
+    }
+
     func testCountByChannel() throws {
         let db = try TestDatabase.create()
         try db.write { db in

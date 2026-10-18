@@ -42,6 +42,7 @@ An issue or epic key on any tab opens in Jira.
 - **Boards says "No boards yet".** Press **Fetch Boards**.
 - **A tab says "No blockers yet", "No workload yet" or similar.** Jira is connected but no data has arrived. Check that a board is switched on in **Boards** and wait for a sync.
 - **Workload is empty though Jira has issues.** No Jira user is matched to a Slack user. Connect Slack, then press **Resolve** in **User Mapping**.
+- **A comment deleted in Jira is still shown.** It disappears the next time that issue is synced.
 - **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Settings** → **Connections** → **Jira**.
 - **Blockers misses an issue you call blocked.** An issue is listed as blocked only when its status name contains "block"; a flag or label is not read. Issue links only build the chain shown under a listed issue.
 

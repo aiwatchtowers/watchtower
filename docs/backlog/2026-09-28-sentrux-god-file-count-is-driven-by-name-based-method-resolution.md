@@ -9,6 +9,10 @@ created: 2026-09-28
 resolved: 2026-09-29
 ---
 
+**Superseded 2026-10-18 (board #672, ask #370):** Sentrux was removed
+from the repo; the function-size ceilings moved to golangci-lint (`gocyclo`,
+`funlen`) and SwiftLint. The scripts named below no longer exist.
+
 **Resolved 2026-09-29 (owner decision):** the blocking CI job no longer runs
 `sentrux gate .` directly. `scripts/sentrux-gate.sh` measures the committed
 tree (a `git archive HEAD` scratch copy, so untracked/uncommitted noise never
