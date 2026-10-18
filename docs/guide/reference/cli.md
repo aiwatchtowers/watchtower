@@ -12,6 +12,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower version` | Version |
 | `watchtower workspace init` | Create the local workspace (data directory and database) |
 | `watchtower db migrate` | Apply database migrations |
+| `watchtower db compact` | Shrink the database file after an update freed space (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short unless `--force` |
 | `watchtower backfill status` | Progress of the [history backfill](../concepts/history-backfill.md) per source |
 | `watchtower features list\|enable\|disable <id>` | [Feature switches](../concepts/features-on-and-off.md) |
 | `watchtower config` | Read and change configuration |

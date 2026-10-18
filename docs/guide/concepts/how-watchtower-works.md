@@ -66,6 +66,14 @@ Two exceptions to the daily hour: on a brand-new install the first briefing and 
 
 Catch Up, the chat, meeting notes and Workbench sessions are not scheduled. They run when you ask.
 
+## Why the app says "Optimizing database" at launch
+
+Some updates free a lot of space inside the database file, and the file only shrinks when Watchtower rewrites it. The first launch after such an update does that before the app opens: the splash shows **Optimizing database —** with the file's size and the time so far, and **This happens once after an update.** The background sync waits until it ends.
+
+From 15 seconds on, **Skip for now** stops it; nothing is lost, and it tries again at the next launch. Quitting the app stops it the same way.
+
+If the disk is short, the app opens normally and says **Watchtower could not optimize its database**, with the free space it needs (twice the file's size) and what is available. Free that much space and relaunch. After three failed tries it waits for the next update and says so. You can also run it yourself with `watchtower db compact` ([Command line](../reference/cli.md)).
+
 ## Related
 
 - [Turning features on and off](features-on-and-off.md): the switches behind this table.

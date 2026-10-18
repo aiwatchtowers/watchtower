@@ -15,6 +15,7 @@ Find what you see on the screen in the first column; the second column opens the
 | The iPhone shows "Mac offline", never finds the Mac, or the code will not link | [The iPhone is not syncing](iphone-not-syncing.md) |
 | "Claude plan limit", "rate-limiting requests", or the AI costs more than you expect | [Plan limits and high cost](plan-limits-or-high-cost.md) |
 | An automation run says "more than 2000 SDK calls", "already started 10 sessions", "journal is incomplete" or "could not be finished" | [An automation run stopped at a limit](automation-run-limits.md) |
+| The app opens with "Optimizing database", or says it "could not optimize its database" | [Why the app says "Optimizing database" at launch](../concepts/how-watchtower-works.md#why-the-app-says-optimizing-database-at-launch) |
 | The app does something other than what its own screen says | [Known issues](known-issues.md) |
 
 Nothing here? Run `watchtower status` and `watchtower logs` in a terminal ([Command line](../reference/cli.md)) and read the last lines for the failing step.
