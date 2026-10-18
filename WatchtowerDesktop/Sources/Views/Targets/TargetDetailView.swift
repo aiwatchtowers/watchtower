@@ -239,9 +239,8 @@ struct TargetDetailView: View {
                     appState.targetAssistantCenter.drop(targetID: deleting.id)
                     // … and forget any brief still waiting for it.
                     appState.targetBriefCenter.drop(targetID: deleting.id)
-                    // The detail may show another target by now: only its own
-                    // delete closes it.
-                    guard target.id == deleting.id else { return }
+                    // The host closes the detail only while it still shows
+                    // this target (TargetsListView's onClose).
                     assistant = nil
                     onClose?()
                 }
@@ -844,30 +843,36 @@ struct TargetDetailView: View {
                     .textFieldStyle(.plain)
                     .onSubmit {
                         let text = newSubItemText
+                        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        // Cleared at once, as before the write went async
+                        // (board #670); back if it fails. The field keeps its
+                        // focus and takes the next item meanwhile.
+                        newSubItemText = ""
                         Task {
-                            // Cleared only if it still holds what was submitted.
-                            if await checklistWrite({ await viewModel.addSubItem(target, text: text) }),
-                               newSubItemText == text {
-                                newSubItemText = ""
-                            }
+                            guard await !viewModel.addSubItem(target, text: text) else { return }
+                            newSubItemText = Self.restoredDraft(sent: text, current: newSubItemText)
                         }
                     }
             }
             .padding(.top, 2)
         }
-        .disabled(checklistBusy)
     }
 
-    /// A checklist write is under way: the checklist takes no other edit
-    /// until it lands (board #670), so a second press never adds twice or
-    /// edits a row the first write is moving.
-    private var checklistBusy: Bool {
-        viewModel.pendingWrites.isPending(TargetsViewModel.subItemsKey(target.id))
+    /// A composer cleared at submit whose write failed: the sent text comes
+    /// back, ahead of anything typed since.
+    static func restoredDraft(sent: String, current: String) -> String {
+        current.isEmpty ? sent : "\(sent) \(current)"
     }
 
-    /// One checklist write at a time (`checklistBusy`).
-    private func checklistWrite(_ body: @MainActor () async -> Bool) async -> Bool {
-        await viewModel.pendingWrites.run(TargetsViewModel.subItemsKey(target.id), body) ?? false
+    private func subItemKey(_ item: TargetSubItem) -> String {
+        TargetsViewModel.subItemKey(target.id, item.text)
+    }
+
+    /// One write per checklist row at a time (its controls are disabled
+    /// meanwhile): a second click never checks twice or removes the row
+    /// after it.
+    private func rowWrite(_ item: TargetSubItem, _ body: @MainActor () async -> Bool) async -> Bool {
+        await viewModel.pendingWrites.run(subItemKey(item), body) ?? false
     }
 
     @ViewBuilder
@@ -877,12 +882,13 @@ struct TargetDetailView: View {
         // the checkbox and the "stuck" badge stay on the first line.
         HStack(alignment: .top, spacing: 8) {
             Button {
-                Task { await checklistWrite { await viewModel.toggleSubItem(target, index: index) } }
+                Task { await rowWrite(item) { await viewModel.toggleSubItem(target, index: index) } }
             } label: {
                 Image(systemName: item.done ? "checkmark.square.fill" : "square")
                     .foregroundStyle(item.done ? .green : .secondary)
             }
             .buttonStyle(.plain)
+            .disabled(viewModel.pendingWrites.isPending(subItemKey(item)))
 
             if editingSubItemIndex == index {
                 TextField("Sub-item", text: $editingSubItemText, axis: .vertical)
@@ -893,7 +899,7 @@ struct TargetDetailView: View {
                         let text = editingSubItemText
                         Task {
                             // A failed edit keeps the editor open with the text.
-                            if await checklistWrite({ await viewModel.editSubItem(target, index: index, newText: text) }),
+                            if await rowWrite(item, { await viewModel.editSubItem(target, index: index, newText: text) }),
                                editingSubItemIndex == index {
                                 editingSubItemIndex = nil
                             }
@@ -953,8 +959,9 @@ struct TargetDetailView: View {
                 promotingSubItem = PromotingSubItemContext(index: index, item: item)
             }
             Button("Remove", role: .destructive) {
-                Task { await checklistWrite { await viewModel.removeSubItem(target, index: index) } }
+                Task { await rowWrite(item) { await viewModel.removeSubItem(target, index: index) } }
             }
+            .disabled(viewModel.pendingWrites.isPending(subItemKey(item)))
         }
     }
 
@@ -970,10 +977,9 @@ struct TargetDetailView: View {
               ),
               let offset = TargetSubItemDrag.moveOffset(from: source, to: index)
         else { return false }
-        guard !checklistBusy else { return false }
         // The inline editor addresses a row by index, which the move invalidates.
         editingSubItemIndex = nil
-        Task { await checklistWrite { await viewModel.moveSubItem(target, from: IndexSet(integer: source), to: offset) } }
+        Task { await viewModel.moveSubItem(target, from: IndexSet(integer: source), to: offset) }
         return true
     }
 
@@ -1355,13 +1361,18 @@ struct TargetDetailView: View {
                         }
                         Spacer()
                         Button {
-                            Task { await notesWrite { await viewModel.removeNote(target, index: index) } }
+                            Task {
+                                await viewModel.pendingWrites.run(TargetsViewModel.noteKey(target.id, note)) {
+                                    await viewModel.removeNote(target, index: index)
+                                }
+                            }
                         } label: {
                             Image(systemName: "xmark.circle")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
+                        .disabled(viewModel.pendingWrites.isPending(TargetsViewModel.noteKey(target.id, note)))
                     }
                     .padding(.vertical, 2)
                     if index < notes.count - 1 { Divider() }
@@ -1376,21 +1387,16 @@ struct TargetDetailView: View {
                     .textFieldStyle(.plain)
                     .onSubmit {
                         let text = newNoteText
+                        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        // As the checklist's field: cleared at once, back on a failure.
+                        newNoteText = ""
                         Task {
-                            // Cleared only if it still holds what was submitted.
-                            if await notesWrite({ await viewModel.addNote(target, text: text) }), newNoteText == text {
-                                newNoteText = ""
-                            }
+                            guard await !viewModel.addNote(target, text: text) else { return }
+                            newNoteText = Self.restoredDraft(sent: text, current: newNoteText)
                         }
                     }
             }
         }
-        .disabled(viewModel.pendingWrites.isPending(TargetsViewModel.notesKey(target.id)))
-    }
-
-    /// One notes write at a time; the section is disabled meanwhile.
-    private func notesWrite(_ body: @MainActor () async -> Bool) async -> Bool {
-        await viewModel.pendingWrites.run(TargetsViewModel.notesKey(target.id), body) ?? false
     }
 
     // MARK: - About (metadata moved off the old Activity tab)
@@ -1419,7 +1425,7 @@ struct TargetDetailView: View {
                             .font(.caption)
                         Button {
                             Task {
-                                await viewModel.pendingWrites.run(TargetsViewModel.tagsKey(target.id)) {
+                                await viewModel.pendingWrites.run(TargetsViewModel.tagKey(target.id, tag)) {
                                     await viewModel.removeTag(target, tag: tag)
                                 }
                             }
@@ -1429,6 +1435,7 @@ struct TargetDetailView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
+                        .disabled(viewModel.pendingWrites.isPending(TargetsViewModel.tagKey(target.id, tag)))
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -1460,7 +1467,6 @@ struct TargetDetailView: View {
                 .help("Add an existing label")
             }
         }
-        .disabled(viewModel.pendingWrites.isPending(TargetsViewModel.tagsKey(target.id)))
     }
 
     private func addTag(_ raw: String) {
@@ -1468,14 +1474,14 @@ struct TargetDetailView: View {
         // typed text so it never looks like a silent success.
         let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tag.isEmpty, !target.decodedTags.contains(tag) else { return }
-        // A failed write keeps the draft too (`errorMessage` says why); a
-        // landed one clears it only if it still holds what was submitted.
+        // Cleared at once, as before the write went async (board #670); a
+        // failed write puts the text back (`errorMessage` says why). Adding a
+        // label twice is a no-op, so a second press needs no guard.
         let submitted = newTagText
+        newTagText = ""
         Task {
-            let added = await viewModel.pendingWrites.run(TargetsViewModel.tagsKey(target.id)) {
-                await viewModel.addTag(target, tag: tag)
-            }
-            if let landed = added, landed == .changed, newTagText == submitted { newTagText = "" }
+            guard await viewModel.addTag(target, tag: tag) == nil else { return }
+            newTagText = Self.restoredDraft(sent: submitted, current: newTagText)
         }
     }
 

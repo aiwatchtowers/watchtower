@@ -639,20 +639,23 @@ final class ChatViewModel {
     /// started (a failed send keeps them for retry). `screen` is the help
     /// popup's per-turn screen block: sent with the turn, never stored.
     ///
-    /// The turn's rows are written off the main thread (board #670): what
-    /// was typed meanwhile stays — the draft is cleared only if it still
-    /// holds the text that went out, and only the files that went out
-    /// leave the composer.
+    /// The turn's rows are written off the main thread (board #670), so the
+    /// text leaves the composer at once, as it always did: what is typed
+    /// while they are written is the next message's. A send that fails puts
+    /// its text back ahead of it, and only the files that went out leave
+    /// the composer.
     func sendDraft(screen: ScreenContext? = nil) async {
         let attachments = composerAttachments.pending
         let batchID = conversationID
         let typed = draft
         let text = ChatQuoteReply.compose(quotes: pendingQuotes, typed: typed) ?? typed
+        draft = ""
         if await send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill,
                       screen: screen) {
-            if draft == typed { draft = "" }
             composerAttachments.removeSent(attachments.map(\.id))
             if let batchID { quoteBatches[batchID] = nil }
+        } else {
+            draft = draft.isEmpty ? typed : "\(typed)\n\(draft)"
         }
     }
 
@@ -698,17 +701,14 @@ final class ChatViewModel {
     }
 
     /// A paste the composer turned into a file (screenshot, PDF data, long
-    /// text — board #534); true once attached, or — when the landing's
-    /// conversation is still to be made — once handed on (a failure then
-    /// shows in the composer's attachment error or the chat's error).
+    /// text — board #534); true once attached. On the landing its
+    /// conversation is written first; a failure there (the chat's error says
+    /// why) attaches nothing and answers false, so a long paste stays in the
+    /// field.
     @discardableResult
-    func attachPasted(_ data: Data, name: String) -> Bool {
-        if let conversationID { return composerAttachments.addPasted(data, name: name, conversationID: conversationID) }
-        Task {
-            guard let id = await conversationIDCreatingIfNeeded() else { return }
-            composerAttachments.addPasted(data, name: name, conversationID: id)
-        }
-        return true
+    func attachPasted(_ data: Data, name: String) async -> Bool {
+        guard let id = await conversationIDCreatingIfNeeded() else { return false }
+        return composerAttachments.addPasted(data, name: name, conversationID: id)
     }
 
     /// `mentions` are the composer's picked candidates (Task 25); only those

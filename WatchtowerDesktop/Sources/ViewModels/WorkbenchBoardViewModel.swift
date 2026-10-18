@@ -197,8 +197,11 @@ final class WorkbenchBoardViewModel {
     @ObservationIgnored private let writes = SerialWrites()
     /// The comment composers' one-send-at-a-time guard.
     let pendingWrites = PendingWrites()
-    /// Targets whose description save waits for the writer.
-    private var savingDescriptions: Set<Int> = []
+    /// The description save under way per target, until its draft settled.
+    private var savingDescriptions: [Int: Task<Bool, Never>] = [:]
+    /// The last status or card move queued per target, until it settled.
+    @ObservationIgnored private var queuedPlacements: [Int: (placement: Placement, token: Int)] = [:]
+    @ObservationIgnored private var placementToken = 0
     private let preferences: WorkbenchBoardPreferences
     private var fingerprint = ""
     private var pollTask: Task<Void, Never>?
@@ -556,13 +559,40 @@ final class WorkbenchBoardViewModel {
     @discardableResult
     private func statusWrite(_ status: String, for id: Int) -> Task<Bool, Never>? {
         guard WorkbenchBoardCard.editableStatuses.contains(status),
-              let current = WorkbenchBoardOutline.find(id, in: roots),
-              current.target.status != status else { return nil }
+              let current = WorkbenchBoardOutline.find(id, in: roots) else { return nil }
+        // A move still queued is what the card will read: compared with that,
+        // so todo → done → todo picked quickly writes the last pick too.
+        let after = queuedPlacements[id]?.placement.status ?? current.target.status
+        guard after != status else { return nil }
         // The rollup (PROJ-05) may move the target's parents in the same
         // write; they are the owner's doing too, so they never notify.
-        return startWrite("change the status", target: id) { db in
+        return placementWrite(id, Placement(status: status, columnID: nil), "change the status") { db in
             try WorkbenchOwnerWrites.setStatus(db, targetID: Int64(id), status: status).rolledUp
         }
+    }
+
+    /// Where a status or card move queued for a target leaves it.
+    private struct Placement: Equatable {
+        let status: String
+        /// The defined column, nil for the status's implicit one.
+        let columnID: Int64?
+    }
+
+    /// A status or card move, remembered as the target's placement until it
+    /// settled (unless a later move replaced it), so the next pick compares
+    /// with it rather than with the board read before it was queued.
+    private func placementWrite(
+        _ id: Int,
+        _ placement: Placement,
+        _ what: String,
+        _ body: @escaping @Sendable (Database) throws -> [Int64]
+    ) -> Task<Bool, Never> {
+        placementToken += 1
+        let token = placementToken
+        queuedPlacements[id] = (placement, token)
+        return startWrite(what, target: id, onSettled: { [weak self] in
+            if self?.queuedPlacements[id]?.token == token { self?.queuedPlacements[id] = nil }
+        }, body)
     }
 
     /// A Kanban drop on `column`, or the panel's column menu (board #267):
@@ -591,11 +621,16 @@ final class WorkbenchBoardViewModel {
         guard let columnID else { return statusWrite(status, for: id) }
         guard WorkbenchBoardCard.editableStatuses.contains(status),
               let current = WorkbenchBoardOutline.find(id, in: roots), current.children.isEmpty else { return nil }
-        let shown = BoardColumnLayout.effectiveColumn(
-            status: current.target.status, columnID: current.boardColumnID, def: boardColumns
-        )
-        guard current.target.status != status || shown?.id != columnID else { return nil }
-        return startWrite("move the card", target: id) { db in
+        if let queued = queuedPlacements[id]?.placement {
+            // A move still queued: the card will be there (see statusWrite).
+            guard queued != Placement(status: status, columnID: columnID) else { return nil }
+        } else {
+            let shown = BoardColumnLayout.effectiveColumn(
+                status: current.target.status, columnID: current.boardColumnID, def: boardColumns
+            )
+            guard current.target.status != status || shown?.id != columnID else { return nil }
+        }
+        return placementWrite(id, Placement(status: status, columnID: columnID), "move the card") { db in
             try WorkbenchOwnerWrites.moveToColumn(db, targetID: Int64(id), status: status, columnID: columnID).rolledUp
         }
     }
@@ -792,7 +827,7 @@ final class WorkbenchBoardViewModel {
 
     /// Whether `id`'s description save waits for the writer.
     func isSavingDescription(_ id: Int) -> Bool {
-        savingDescriptions.contains(id)
+        savingDescriptions[id] != nil
     }
 
     /// The open editor on `id`, nil when its description is not being edited.
@@ -823,9 +858,10 @@ final class WorkbenchBoardViewModel {
     /// opened with. A saved draft closes the editor; a failed one stays on
     /// its own target (`errorMessage` says why), unless the target is gone
     /// and there is nothing left to save it to. One save per editor at a
-    /// time: while one waits for the writer, another does nothing. Text
-    /// typed while it waited stays in the editor, over the description just
-    /// saved.
+    /// time: a save asked for while one waits for the writer follows it,
+    /// with the draft as it is then — text typed meanwhile, over the
+    /// description just saved — so neither a second ⌘↩ nor a panel move or
+    /// close loses it.
     /// - Returns: whether nothing is left unsaved — true with no editor open.
     @discardableResult
     func saveDescription(for id: Int) async -> Bool {
@@ -834,8 +870,13 @@ final class WorkbenchBoardViewModel {
 
     @discardableResult
     private func descriptionWrite(for id: Int) -> Task<Bool, Never> {
+        if let running = savingDescriptions[id] {
+            return Task { [self] in
+                _ = await running.value
+                return await descriptionWrite(for: id).value
+            }
+        }
         guard let draft = descriptionDrafts[id] else { return Task { true } }
-        guard !savingDescriptions.contains(id) else { return Task { false } }
         let write: Task<Bool, Never>
         switch intentWrite(draft.text, original: draft.original, for: id) {
         case .saved:
@@ -847,13 +888,14 @@ final class WorkbenchBoardViewModel {
         case .writing(let task):
             write = task
         }
-        savingDescriptions.insert(id)
-        return Task { [self] in
+        let saving = Task { [self] in
             let saved = await write.value
-            savingDescriptions.remove(id)
+            savingDescriptions[id] = nil
             settleDescriptionDraft(id, sent: draft, saved: saved)
             return saved && descriptionDrafts[id] == nil
         }
+        savingDescriptions[id] = saving
+        return saving
     }
 
     /// After a save of `sent`: a landed one closes the editor, unless the
@@ -970,11 +1012,13 @@ final class WorkbenchBoardViewModel {
         target: Int? = nil,
         failure: @escaping (Error) -> String? = { _ in nil },
         onSuccess: @escaping () -> Void = {},
+        onSettled: @escaping () -> Void = {},
         _ body: @escaping @Sendable (Database) throws -> [Int64]
     ) -> Task<Bool, Never> {
         let touched = target ?? selectedTargetID
         let pool = dbPool
         return writes.start { [weak self] () async -> Bool in
+            defer { onSettled() }
             do {
                 let rolledUp = try await pool.write(body)
                 guard let self else { return true }

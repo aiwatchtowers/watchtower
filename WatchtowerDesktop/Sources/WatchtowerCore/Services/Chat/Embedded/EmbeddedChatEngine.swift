@@ -68,6 +68,13 @@ package final class EmbeddedChatEngine {
     @ObservationIgnored package var onTurnFinished: ((TurnOutcome) -> Void)?
 
     package var isStreaming: Bool { liveTurn != nil }
+    /// The reply streamed to its end and `postTurn` is acting on it (board
+    /// #670: an action surface's writes await the writer). Nothing can stop
+    /// it any more — Stop does nothing and the composer says so — and it
+    /// ends by itself once its writes landed (`finished()`).
+    package var isFinishing: Bool { finishing != nil }
+    /// The running `postTurn` and the turn's end after it.
+    private var finishing: Task<Void, Never>?
     package var isBusy: Bool { isStreaming || isQueued }
     /// Busy, or holding follow-ups for a later turn — the center keeps such
     /// an engine even when no view has shown it for a while.
@@ -242,6 +249,12 @@ package final class EmbeddedChatEngine {
                                   alreadyApplied: appliedBeforeFailure)
         guard !request.promptText.isEmpty else { return }
         start(request)
+    }
+
+    /// Returns once a finishing turn (`isFinishing`) has ended: what a
+    /// surface awaits before deleting the conversation under it.
+    package func finished() async {
+        await finishing?.value
     }
 
     /// Re-reads the rows (another surface wrote to the conversation).
@@ -495,8 +508,9 @@ package final class EmbeddedChatEngine {
             settle(current, outcome: outcome, earlierBanner: earlierBanner)
         case .completed(let reply):
             // Its own task: the stream's task that got here is cancelled.
-            Task { [self] in
+            finishing = Task { [self] in
                 let outcome = await finalizeCompleted(current, reply: reply)
+                finishing = nil
                 settle(current, outcome: outcome, earlierBanner: earlierBanner)
             }
         }

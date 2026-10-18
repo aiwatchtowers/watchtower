@@ -42,7 +42,9 @@ struct TargetsListView: View {
                     if let id = selectedItemID,
                        let item = loaded.first(where: { $0.id == id }) ?? vm.itemByID(id) {
                         TargetDetailView(target: item, viewModel: vm) {
-                            selectedItemID = nil
+                            // A late close (a delete that waited for the writer)
+                            // leaves another target the owner opened meanwhile.
+                            if selectedItemID == id { selectedItemID = nil }
                         }
                         .id(id)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)

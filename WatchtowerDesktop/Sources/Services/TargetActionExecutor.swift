@@ -3,10 +3,14 @@ import WatchtowerCore
 
 enum TargetActionError: LocalizedError {
     case writeFailed(String)
+    /// A mutator did not write; `apply` turns it into `writeFailed` with
+    /// the reason (see `apply`).
+    case notWritten
 
     var errorDescription: String? {
         switch self {
         case .writeFailed(let message): return message
+        case .notWritten: return "the change was not applied"
         }
     }
 }
@@ -19,8 +23,10 @@ enum TargetActionError: LocalizedError {
 ///
 /// The shared TargetsViewModel mutators await the writer (board #670) and
 /// report a DB error in `errorMessage` (the house idiom for the list UI);
-/// each returns whether it wrote, and a write that did not throws here with
-/// that message.
+/// each returns whether it wrote, and a write that did not throws here. Its
+/// reason is that message only when this action set it: a message already
+/// there before (another write's, or an earlier failure) is never passed off
+/// as this card's reason.
 enum TargetActionExecutor {
     @MainActor
     static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) async throws -> String {
@@ -29,24 +35,31 @@ enum TargetActionExecutor {
         // label") would answer from it and report a success that never
         // touched the database.
         guard try targetExists(target.id, viewModel: viewModel) else { throw TargetNotFoundError(id: target.id) }
-        switch action.type {
-        case .updateStatus, .updateNotes, .updateProgress, .addSubItem, .createChildTarget, .linkTarget:
-            return try await applyCore(action, target: target, viewModel: viewModel)
-        case .toggleSubItem, .editSubItem, .deleteSubItem, .setSubItemDue:
-            return try await applySubItem(action, target: target, viewModel: viewModel)
-        case .updateDueDate, .updatePriority, .updateBallOn, .updateTitle, .updateIntent,
-             .addLabel, .removeLabel:
-            return try await applyTargetField(action, target: target, viewModel: viewModel)
+        let earlierMessage = viewModel.errorMessage
+        do {
+            switch action.type {
+            case .updateStatus, .updateNotes, .updateProgress, .addSubItem, .createChildTarget, .linkTarget:
+                return try await applyCore(action, target: target, viewModel: viewModel)
+            case .toggleSubItem, .editSubItem, .deleteSubItem, .setSubItemDue:
+                return try await applySubItem(action, target: target, viewModel: viewModel)
+            case .updateDueDate, .updatePriority, .updateBallOn, .updateTitle, .updateIntent,
+                 .addLabel, .removeLabel:
+                return try await applyTargetField(action, target: target, viewModel: viewModel)
+            }
+        } catch TargetActionError.notWritten {
+            guard let message = viewModel.errorMessage, message != earlierMessage else {
+                throw TargetActionError.writeFailed(TargetActionError.notWritten.localizedDescription)
+            }
+            throw TargetActionError.writeFailed(message)
         }
     }
 
-    /// Throws when a mutator did not write: its own failure, which it has
-    /// just put in `viewModel.errorMessage` (see the type comment) — whether
-    /// it wrote is the mutator's return, never a diff of that slot, so an
-    /// identical repeat failure still throws.
+    /// Throws when a mutator did not write — whether it wrote is the
+    /// mutator's return, never a diff of `errorMessage`, so an identical
+    /// repeat failure still throws (`apply` words the reason).
     @MainActor
     private static func checkWrite(_ wrote: Bool, _ viewModel: TargetsViewModel) throws {
-        guard wrote else { throw TargetActionError.writeFailed(viewModel.errorMessage ?? "the write failed") }
+        guard wrote else { throw TargetActionError.notWritten }
     }
 
     @MainActor
@@ -77,7 +90,7 @@ enum TargetActionExecutor {
                 intent: action.intent ?? "",
                 priority: action.priority ?? "medium"
             ) else {
-                throw TargetActionError.writeFailed(viewModel.errorMessage ?? "could not create child target")
+                throw TargetActionError.notWritten
             }
             // The id lets the assistant address the new child (target_id) in
             // the same conversation without asking the user to open it.

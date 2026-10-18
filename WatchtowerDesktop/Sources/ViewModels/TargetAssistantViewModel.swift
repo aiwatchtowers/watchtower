@@ -156,10 +156,11 @@ final class TargetAssistantViewModel {
         chats[conversationID]?.isStreaming ?? false
     }
 
-    /// Whether ANY of this target's tabs is mid-turn. The center refuses to
-    /// evict a container while this is true.
+    /// Whether ANY of this target's tabs is mid-turn or mid-write, or a tab
+    /// is being created. The center refuses to evict a container while this
+    /// is true.
     var isAnyWorking: Bool {
-        chats.values.contains { $0.hasPendingWork }
+        creating != nil || !closingIDs.isEmpty || chats.values.contains { $0.hasPendingWork }
     }
 
     /// Opens a fresh tab and makes it active once its row is written. Titled
@@ -247,6 +248,9 @@ final class TargetAssistantViewModel {
         // conversation while it still exists (afterwards it would either fail or
         // orphan a row that the delete below can no longer take with it).
         chats[conversationID]?.cancelStream()
+        // A reply whose changes are being written cannot be stopped: its
+        // rows go only once it has ended.
+        await chats[conversationID]?.engine.finished()
         let pool = dbManager.dbPool
         do {
             try await writes.runThrowing {

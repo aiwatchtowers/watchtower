@@ -107,15 +107,42 @@ final class ChatViewModelTests: XCTestCase {
         let starting = await eventually { vm.isStartingTurn }
         XCTAssertTrue(starting)
         XCTAssertTrue(vm.isBusy)
-        vm.draft = "typed meanwhile"
+        XCTAssertEqual(vm.draft, "", "the sent text leaves the composer at once")
+        vm.draft += "typed meanwhile"
         let second = await vm.send(text: "again")
         XCTAssertFalse(second, "one send at a time")
 
         held.release()
         await sending.value
-        XCTAssertEqual(vm.draft, "typed meanwhile")
+        XCTAssertEqual(vm.draft, "typed meanwhile", "only what was typed after the send stays")
         XCTAssertEqual(activePath(convID).filter(\.isUser).map(\.text), ["first"])
         XCTAssertEqual(try lastFake().turns.count, 1)
+    }
+
+    /// A send whose rows cannot be written puts its text back, ahead of
+    /// what was typed while it waited.
+    func testAFailedSendPutsItsTextBackAheadOfTextTypedMeanwhile() async throws {
+        let vm = try makeViewModel()
+        _ = await vm.newConversation()
+        try await dbManager.dbPool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_user BEFORE INSERT ON chat_messages WHEN NEW.role = 'user'
+                BEGIN SELECT RAISE(ABORT, 'boom'); END
+                """)
+        }
+        vm.draft = "first"
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        let sending = Task { await vm.sendDraft() }
+        let starting = await eventually { vm.isStartingTurn }
+        XCTAssertTrue(starting)
+        vm.draft = "more"
+        held.release()
+        await sending.value
+
+        XCTAssertEqual(vm.draft, "first\nmore")
+        XCTAssertNotNil(vm.errorMessage)
     }
 
     // MARK: - CHAT-01
@@ -1671,10 +1698,31 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertEqual(rows.map(\.id), [id])
     }
 
-    func testAttachingOnTheLandingStaysOnTheLanding() throws {
+    func testAttachingOnTheLandingStaysOnTheLanding() async throws {
         let vm = makeViewModel()
-        vm.attachPasted(Data([0x89, 0x50, 0x4E, 0x47]), name: "Pasted image.png")
+        await vm.attachPasted(Data([0x89, 0x50, 0x4E, 0x47]), name: "Pasted image.png")
         XCTAssertTrue(vm.isOnLanding)
+    }
+
+    /// Board #670: on the landing a paste waits for its conversation. When
+    /// that cannot be written nothing is attached and the answer is false,
+    /// so a long text paste stays in the field instead of vanishing.
+    func testAPasteWhoseLandingConversationCannotBeWrittenKeepsTheText() async throws {
+        try await dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_conversation BEFORE INSERT ON chat_conversations
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+        let vm = makeViewModel()
+        var removed = false
+        let paste = LongPaste(text: String(repeating: "long ", count: 400), isIntact: { true }, remove: { removed = true })
+
+        await paste.attach { data, name in await vm.attachPasted(data, name: name) }
+
+        XCTAssertFalse(removed, "the pasted text stays in the field")
+        XCTAssertTrue(vm.composerAttachments.pending.isEmpty)
+        XCTAssertNotNil(vm.errorMessage)
     }
 
     func testForgettingTheShownConversationShowsTheLanding() async throws {

@@ -54,6 +54,8 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         defer { held.release() }
 
         let writing = Task { await vm.updateStatus(target, to: "done") }
+        let pending = await eventually { vm.isWriting }
+        XCTAssertTrue(pending, "the write is under way, waiting for the writer")
         let responsive: Void? = await boundedValue(Task { () }, timeout: .seconds(1))
         XCTAssertNotNil(responsive, "the main actor is free while the write waits")
         XCTAssertEqual(vm.allTargets.first { $0.id == target.id }?.status, "todo")
@@ -214,8 +216,6 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         let saving = Task { await vm.saveDescription(for: taskA) }
         let waiting = await eventually { vm.isSavingDescription(taskA) }
         XCTAssertTrue(waiting)
-        let second = await boundedValue(Task { await vm.saveDescription(for: taskA) })
-        XCTAssertEqual(second, false, "one save per editor at a time")
         vm.setDescriptionDraft("First, and more", for: taskA)
         held.release()
         let first = await saving.value
@@ -252,5 +252,131 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         XCTAssertTrue(sent)
         XCTAssertEqual(vm.commentDraft, "Use the v2 endpoint, and log it")
         XCTAssertEqual(vm.threads.count, 1)
+    }
+
+    // MARK: - Review round (PR #398)
+
+    /// Two items added one after the other while the writer is busy both
+    /// land, in order: the field never waits for the first (F1).
+    func testTwoChecklistAddsWhileTheWriterIsBusyBothLand() async throws {
+        let target = try makeTarget()
+        let vm = TargetsViewModel(dbManager: dbManager)
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        let first = Task { await vm.addSubItem(target, text: "one") }
+        let second = Task { await vm.addSubItem(target, text: "two") }
+        let queued = await eventually { vm.isWriting }
+        XCTAssertTrue(queued)
+        held.release()
+
+        let wroteFirst = await first.value
+        let wroteSecond = await second.value
+        XCTAssertTrue(wroteFirst)
+        XCTAssertTrue(wroteSecond)
+        XCTAssertEqual(try storedTarget(target.id)?.decodedSubItems.map(\.text), ["one", "two"])
+    }
+
+    /// A row edited after an earlier write moved it (a remove above it, still
+    /// queued) lands on that row where it is now, not on its old slot.
+    func testAChecklistToggleAfterAQueuedRemoveFindsItsRow() async throws {
+        let shown = try makeTarget(subItems: #"[{"text":"one","done":false},{"text":"two","done":false}]"#)
+        let vm = TargetsViewModel(dbManager: dbManager)
+
+        let removed = await vm.removeSubItem(shown, index: 0)
+        let toggled = await vm.toggleSubItem(shown, index: 1)
+
+        XCTAssertTrue(removed)
+        XCTAssertTrue(toggled)
+        let stored = try storedTarget(shown.id)?.decodedSubItems
+        XCTAssertEqual(stored?.map(\.text), ["two"])
+        XCTAssertEqual(stored?.map(\.done), [true])
+    }
+
+    /// A composer cleared at submit gets its text back on a failure, ahead
+    /// of what was typed since (F1).
+    func testAFailedComposerWritePutsTheTextBackAheadOfNewText() {
+        XCTAssertEqual(TargetDetailView.restoredDraft(sent: "one", current: ""), "one")
+        XCTAssertEqual(TargetDetailView.restoredDraft(sent: "one", current: "two"), "one two")
+    }
+
+    /// todo → done → todo picked while the first move waits: the last pick
+    /// wins, it is not dropped as a no-op against the board read before (F3).
+    func testTheLastStatusPickWinsWhileAMoveWaits() async throws {
+        let (pid, taskA, _) = try seedBoard()
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        vm.load()
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        vm.select(taskA)
+        vm.setStatus("done")
+        vm.setStatus("todo")
+        held.release()
+        await vm.writesSettled()
+
+        XCTAssertEqual(try storedTarget(taskA)?.status, "todo")
+    }
+
+    /// A save asked for while one waits follows it with the latest draft,
+    /// and a panel close meanwhile loses nothing (F4).
+    func testASaveAskedForWhileOneWaitsFollowsItWithTheLatestDraft() async throws {
+        let (pid, taskA, _) = try seedBoard()
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        vm.load()
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("First", for: taskA)
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        let first = Task { await vm.saveDescription(for: taskA) }
+        let waiting = await eventually { vm.isSavingDescription(taskA) }
+        XCTAssertTrue(waiting)
+        vm.setDescriptionDraft("First, and more", for: taskA)
+        let second = Task { await vm.saveDescription(for: taskA) }
+        vm.closeDetail()
+        held.release()
+
+        _ = await first.value
+        let savedAll = await second.value
+        await vm.writesSettled()
+        XCTAssertTrue(savedAll)
+        XCTAssertEqual(try storedIntent(taskA), "First, and more")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    /// A container whose tab is applying a card is never evicted, even over
+    /// the center's limit (F7).
+    func testAContainerApplyingACardIsNotEvicted() async throws {
+        let target = try makeTarget()
+        let other = try makeTarget()
+        let center = TargetAssistantCenter(limit: 1) { target, targets, manager in
+            TargetAssistantViewModel(target: target, viewModel: targets, dbManager: manager) { id in
+                TargetChatViewModel(target: target, viewModel: targets, dbManager: manager,
+                                    conversationID: id, aiService: MockClaudeService())
+            }
+        }
+        let targets = TargetsViewModel(dbManager: dbManager)
+        let busy = center.container(for: target, viewModel: targets, dbManager: dbManager)
+        let ready = await busy.readyChat()
+        let chat = try XCTUnwrap(ready)
+        defer { busy.stop() }
+        let action = ProposedAction(type: .addSubItem, reason: "r", text: "step")
+        chat.actionCards = [TargetActionCard(messageID: UUID(), action: action, state: .pending)]
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        let approving = Task { await chat.approveAll() }
+        let applying = await eventually { busy.isAnyWorking && chat.actionCards.contains { chat.isApplying($0) } }
+        XCTAssertTrue(applying)
+        _ = center.container(for: other, viewModel: targets, dbManager: dbManager)
+
+        XCTAssertTrue(center.container(for: target, viewModel: targets, dbManager: dbManager) === busy,
+                      "the busy container survives the trim")
+        held.release()
+        await approving.value
+        XCTAssertEqual(try storedTarget(target.id)?.decodedSubItems.map(\.text), ["step"])
     }
 }

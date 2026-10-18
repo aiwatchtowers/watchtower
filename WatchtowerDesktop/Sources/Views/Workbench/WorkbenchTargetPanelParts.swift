@@ -149,7 +149,7 @@ struct WorkbenchPanelDescription: View {
         VStack(alignment: .leading, spacing: 4) {
             CommentTextEditor(text: draft, placeholder: "Describe the target…", focusOnAppear: true,
                               minHeight: 80, maxHeight: 360, onSubmit: save, onCancel: cancel, onEndEditing: endEditing)
-            Text("⌘↩ saves, Esc cancels")
+            Text(vm.isSavingDescription(targetID) ? "Saving…" : "⌘↩ saves, Esc cancels")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

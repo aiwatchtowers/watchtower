@@ -156,9 +156,10 @@ final class TargetChatViewModel {
     /// Busy streaming or waiting for a slot: either way, a turn is under way.
     var isStreaming: Bool { engine.isBusy }
 
-    /// A turn under way, or decisions waiting to reach the assistant — the
-    /// container is never evicted while this holds.
-    var hasPendingWork: Bool { engine.hasPendingWork }
+    /// A turn under way, decisions waiting to reach the assistant, or a
+    /// card's write waiting for the database — the container is never
+    /// evicted while this holds.
+    var hasPendingWork: Bool { engine.hasPendingWork || !applyingCardIDs.isEmpty }
 
     /// The composer's text (the engine's draft — it survives navigation).
     var inputText: String {

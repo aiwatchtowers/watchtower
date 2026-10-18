@@ -273,12 +273,19 @@ final class EmbeddedChatEngineTests: XCTestCase {
         expectTrue(await waitForCondition { release != nil })
 
         XCTAssertTrue(engine.isStreaming, "the turn is live while postTurn runs")
+        XCTAssertTrue(engine.isFinishing, "and says it can no longer be stopped")
         XCTAssertEqual(gate.active.count, 1, "it keeps its slot")
         engine.stop()
         XCTAssertFalse(engine.send("again"), "no second turn meanwhile")
+        var finished = false
+        let waiting = Task { await engine.finished(); finished = true }
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertFalse(finished, "finished() waits for postTurn")
         release?.resume()
+        await waiting.value
 
-        expectTrue(await waitIdle(engine))
+        XCTAssertFalse(engine.isFinishing)
+        XCTAssertFalse(engine.isStreaming, "the turn has ended once finished() returned")
         let all = try rows()
         XCTAssertEqual(all.map(\.role), ["user", "assistant", "system"])
         XCTAssertEqual(all[1].status, "complete", "Stop meanwhile did not cut the turn")
