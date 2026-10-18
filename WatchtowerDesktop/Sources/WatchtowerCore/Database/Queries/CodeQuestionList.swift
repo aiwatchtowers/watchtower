@@ -41,7 +41,9 @@ package enum CodeQuestionList {
     package static let contextType = "code_question"
 
     /// Newest first. The `<id>:` prefix is matched exactly, so workbench 1
-    /// never lists workbench 10's questions.
+    /// never lists workbench 10's questions. A question with no owner
+    /// message yet (its row is written before its first turn, board #670)
+    /// is not listed.
     package static func fetch(_ db: Database, workbenchID: Int64) throws -> [CodeQuestionListItem] {
         let prefix = "\(workbenchID):"
         let rows = try Row.fetchAll(db, sql: """
@@ -51,6 +53,7 @@ package enum CodeQuestionList {
                      ORDER BY m.id LIMIT 1) AS first_question
             FROM chat_conversations c
             WHERE c.context_type = ? AND \(ofWorkbench("c"))
+              AND EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id AND m.role = 'user')
             ORDER BY c.created_at DESC, c.id DESC
             """, arguments: [contextType, prefix, prefix])
         return rows.compactMap { row in
@@ -88,6 +91,23 @@ package enum CodeQuestionList {
         let rest = contextID.dropFirst(prefix.count)
         guard let colon = rest.lastIndex(of: ":"), let line = Int(rest[rest.index(after: colon)...]) else { return nil }
         return CodeQuestionOrigin(path: String(rest[..<colon]), line: line, selection: nil)
+    }
+
+    /// How old a question with no message must be before `deleteEmpty`
+    /// takes it: far longer than writing a first turn ever takes.
+    package static let emptyQuestionAge: TimeInterval = 10 * 60
+
+    /// Deletes the workbench's code questions that have no message and were
+    /// created before `createdBefore` (unix seconds); how many went.
+    @discardableResult
+    package static func deleteEmpty(_ db: Database, workbenchID: Int64, createdBefore: Double) throws -> Int {
+        let prefix = "\(workbenchID):"
+        try db.execute(sql: """
+            DELETE FROM chat_conversations
+            WHERE context_type = ? AND \(ofWorkbench("chat_conversations")) AND created_at < ?
+              AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = chat_conversations.id)
+            """, arguments: [contextType, prefix, prefix, createdBefore])
+        return db.changesCount
     }
 
     /// Deletes a code question with its messages (and their search rows,

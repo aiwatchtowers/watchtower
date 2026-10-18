@@ -906,7 +906,11 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, _) = makeCenter()
         let contextID = "\(project.id):Sources/App.swift:3"
         let conversationID = try await pool.write { db in
-            try ChatConversationQueries.create(db, title: "x", contextType: "code_question", contextID: contextID).id
+            let id = try ChatConversationQueries.create(db, title: "x", contextType: "code_question", contextID: contextID).id
+            // An asked question (the list shows only those, board #670).
+            try db.execute(sql: "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, 'user', 'Why?', 1)",
+                           arguments: [id])
+            return id
         }
         center.reloadQuestionList(workbenchID: project.id)
         center.openQuestion(try XCTUnwrap(center.questionLists[project.id]?.first), project: project, root: root)
@@ -1018,46 +1022,39 @@ final class CodeQuestionCenterTests: XCTestCase {
 
     // MARK: Writes off the main thread (board #670)
 
-    /// Holds the GRDB writer queue until `release()`, as a busy database
-    /// would: every write queued meanwhile waits behind it, the main actor
-    /// does not.
-    private final class HeldWriter: @unchecked Sendable {
-        private let gate = DispatchSemaphore(value: 0)
-
-        init(_ pool: DatabasePool) {
-            let entered = DispatchSemaphore(value: 0)
-            let gate = gate
-            Thread.detachNewThread {
-                try? pool.write { _ in
-                    entered.signal()
-                    gate.wait()
-                }
-            }
-            entered.wait()
-        }
-
-        func release() { gate.signal() }
-    }
-
     private func conversationCount() async throws -> Int {
         try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") ?? 0 }
     }
 
+    /// Polls the database until `count` conversations are left (5 s).
+    private func waitForConversations(_ count: Int) async throws -> Int {
+        var left = try await conversationCount()
+        let start = ContinuousClock.now
+        while left != count, ContinuousClock.now - start < .seconds(5) {
+            try await Task.sleep(for: .milliseconds(10))
+            left = try await conversationCount()
+        }
+        return left
+    }
+
     /// While the first question's conversation waits for the writer, the
-    /// popover takes no second question: one conversation, one turn.
+    /// popover takes no second question or quick action: one conversation,
+    /// one turn.
     func testASecondAskWhileTheConversationIsWrittenDoesNothing() async throws {
         let (center, _, buffer) = makeCenter()
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         let held = HeldWriter(pool)
+        defer { held.release() }
         let first = Task { await center.ask("Why?", workbenchID: project.id) }
         let starting = await eventually { center.sessions[self.project.id]?.isStarting == true }
         XCTAssertTrue(starting, "the main actor runs while the write waits")
-        let second = await center.ask("Why again?", workbenchID: project.id)
-        await center.quickAction(.explain, workbenchID: project.id)
-        XCTAssertFalse(second, "a second ask while the first is written does nothing")
+        let second = await boundedValue(Task { await center.ask("Why again?", workbenchID: project.id) })
+        XCTAssertEqual(second, false, "a second ask while the first is written does nothing (nil = it waited)")
+        let quick = await boundedValue(Task { await center.quickAction(.explain, workbenchID: project.id) })
+        XCTAssertNotNil(quick, "a quick action meanwhile returns at once")
         held.release()
-        let sent = await first.value
-        XCTAssertTrue(sent)
+        let sent = await boundedValue(first)
+        XCTAssertEqual(sent, true)
         await reply("Because.", after: 1, engine: center.engine(workbenchID: project.id))
         XCTAssertEqual(ai.calls.map(\.prompt), ["Why?"])
         let count = try await conversationCount()
@@ -1071,35 +1068,45 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, buffer) = makeCenter()
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         let held = HeldWriter(pool)
+        defer { held.release() }
         let asking = Task { await center.ask("Why?", workbenchID: project.id) }
-        _ = await eventually { center.sessions[self.project.id]?.isStarting == true }
+        let starting = await eventually { center.sessions[self.project.id]?.isStarting == true }
+        XCTAssertTrue(starting)
         center.closeQuestion(workbenchID: project.id)
         held.release()
-        let sent = await asking.value
-        XCTAssertFalse(sent)
-        var left = try await conversationCount()
-        for _ in 0..<300 where left != 0 {
-            try await Task.sleep(for: .milliseconds(10))
-            left = try await conversationCount()
-        }
+        let sent = await boundedValue(asking)
+        XCTAssertEqual(sent, false)
+        let left = try await waitForConversations(0)
         XCTAssertEqual(left, 0, "the closed popover's conversation is removed")
         XCTAssertTrue(ai.calls.isEmpty)
     }
 
-    /// A second ⌘↩ in Open Quickly while the first question is written
-    /// does nothing: one conversation.
-    func testASecondOpenQuicklyAskWhileTheFirstIsWrittenDoesNothing() async throws {
-        let (center, _, _) = makeCenter()
-        let held = HeldWriter(pool)
-        let first = Task { await center.askFromOpenQuickly("Why?", project: project, root: root) }
-        try await Task.sleep(for: .milliseconds(50))
-        let second = await center.askFromOpenQuickly("Why again?", project: project, root: root)
-        XCTAssertNil(second, "ignored while the first is written")
-        held.release()
-        guard case let .started(id) = await first.value else { return XCTFail("start") }
-        await reply("ok", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(id))))
-        let count = try await conversationCount()
-        XCTAssertEqual(count, 1)
+    /// A conversation that cannot be written changes nothing but the
+    /// notice: the draft stays, the popover can ask again.
+    func testAFailedConversationWriteKeepsTheDraftAndSaysSo() async throws {
+        let (center, _, buffer) = makeCenter()
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER refuse_conversations BEFORE INSERT ON chat_conversations
+                BEGIN SELECT RAISE(ABORT, 'refused'); END
+                """)
+        }
+        center.setDraft("Why?", workbenchID: project.id)
+        let sent = await center.ask("Why?", workbenchID: project.id)
+        XCTAssertFalse(sent)
+        let session = try XCTUnwrap(center.sessions[project.id])
+        XCTAssertEqual(session.draft, "Why?", "the draft is kept")
+        XCTAssertNil(session.conversationID)
+        XCTAssertFalse(session.isStarting)
+        XCTAssertTrue(session.notice?.hasPrefix("Couldn't start the question:") == true, session.notice ?? "")
+        XCTAssertTrue(ai.calls.isEmpty)
+
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER refuse_conversations") }
+        let retried = await center.ask("Why?", workbenchID: project.id)
+        XCTAssertTrue(retried)
+        XCTAssertNil(center.sessions[project.id]?.notice)
+        await reply("Because.", after: 1, engine: center.engine(workbenchID: project.id))
     }
 
     /// A model pick waits for the writer with the shown pick unchanged; a
@@ -1111,20 +1118,25 @@ final class CodeQuestionCenterTests: XCTestCase {
         }
         await reply("ok", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(id))))
         let held = HeldWriter(pool)
+        defer { held.release() }
         let picking = Task { await center.setModelChoice(.init(provider: .codex, model: ""), conversationID: id) }
         let storing = await eventually { center.storingChoices.contains(id) }
         XCTAssertTrue(storing)
         XCTAssertEqual(center.modelChoice(conversationID: id).provider, .claude, "unchanged until stored")
-        await center.setModelChoice(.init(provider: .ollama, model: ""), conversationID: id)
+        let dropped = await boundedValue(Task { await center.setModelChoice(.init(provider: .ollama, model: ""), conversationID: id) })
+        XCTAssertNotNil(dropped, "a second pick meanwhile returns at once")
         held.release()
-        await picking.value
+        let stored = await boundedValue(picking)
+        XCTAssertNotNil(stored)
         XCTAssertEqual(center.modelChoice(conversationID: id).provider, .codex)
-        let stored = try await pool.read { try String.fetchOne($0, sql: "SELECT provider FROM chat_conversations WHERE id = ?", arguments: [id]) }
-        XCTAssertEqual(stored, "codex")
+        let provider = try await pool.read {
+            try String.fetchOne($0, sql: "SELECT provider FROM chat_conversations WHERE id = ?", arguments: [id])
+        }
+        XCTAssertEqual(provider, "codex")
     }
 
-    /// A delete waiting for the writer keeps the question shown; a second
-    /// Delete meanwhile does nothing.
+    /// A delete waiting for the writer keeps the question shown and takes
+    /// nothing more for it; a second Delete meanwhile does nothing.
     func testADeleteChangesTheListOnlyOnceTheRowIsGone() async throws {
         let (center, _, _) = makeCenter()
         guard case let .started(id) = await center.askFromOpenQuickly("Why?", project: project, root: root) else {
@@ -1134,16 +1146,48 @@ final class CodeQuestionCenterTests: XCTestCase {
         center.reloadQuestionList(workbenchID: project.id)
         let question = try XCTUnwrap(center.questionRef(id))
         let held = HeldWriter(pool)
+        defer { held.release() }
         let deleting = Task { await center.deleteQuestion(question) }
-        try await Task.sleep(for: .milliseconds(50))
+        let pending = await eventually { center.isDeleting(id) }
+        XCTAssertTrue(pending)
         XCTAssertEqual(center.questionLists[project.id]?.map(\.conversationID), [id], "still listed while it waits")
-        await center.deleteQuestion(question)
+        let second = await boundedValue(Task { await center.deleteQuestion(question) })
+        XCTAssertNotNil(second, "a second Delete meanwhile returns at once")
+        let pick = await boundedValue(Task { await center.setModelChoice(.init(provider: .codex, model: ""), conversationID: id) })
+        XCTAssertNotNil(pick, "no pick for a question being deleted")
+        XCTAssertFalse(center.storingChoices.contains(id))
         held.release()
-        await deleting.value
+        let done = await boundedValue(deleting)
+        XCTAssertNotNil(done)
+        XCTAssertFalse(center.isDeleting(id))
         XCTAssertEqual(center.questionLists[project.id]?.isEmpty, true)
         XCTAssertNil(center.questionRef(id))
         let count = try await conversationCount()
         XCTAssertEqual(count, 0)
+    }
+
+    /// The first list load deletes questions that never got a message and
+    /// are older than the start window; a newer empty one stays, unlisted.
+    func testTheFirstListLoadRemovesOldEmptyQuestions() async throws {
+        let (center, _, _) = makeCenter()
+        now = Date()
+        let created = now.timeIntervalSince1970
+        let old = created - CodeQuestionList.emptyQuestionAge - 60
+        let rows = [("\(project.id):a.swift:1", old), ("\(project.id):b.swift:2", created)]
+        try await pool.write { db in
+            for (contextID, at) in rows {
+                try db.execute(sql: """
+                    INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+                    VALUES ('t', ?, ?, ?, ?)
+                    """, arguments: [CodeQuestionList.contextType, contextID, at, at])
+            }
+        }
+        center.reloadQuestionList(workbenchID: project.id)
+        XCTAssertEqual(center.questionLists[project.id]?.isEmpty, true, "a question with no message is not listed")
+        let left = try await waitForConversations(1)
+        XCTAssertEqual(left, 1, "only the old empty question goes")
+        let kept = try await pool.read { try String.fetchOne($0, sql: "SELECT context_id FROM chat_conversations") }
+        XCTAssertEqual(kept, "\(project.id):b.swift:2")
     }
 }
 

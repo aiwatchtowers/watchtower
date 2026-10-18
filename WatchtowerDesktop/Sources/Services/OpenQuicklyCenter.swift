@@ -59,6 +59,9 @@ final class OpenQuicklySession {
     private(set) var answerConversationID: Int64?
     /// Why the question could not start (the footer shows it).
     private(set) var askError: String?
+    /// ⌘↩'s question is being written; the footer says so and another ⌘↩
+    /// does nothing until it lands.
+    private(set) var isAsking = false
     @ObservationIgnored private let boosts: CodeRankingBoosts
     @ObservationIgnored private let startSearch: CodeSearchStarter
     @ObservationIgnored private let debounce: Duration
@@ -157,6 +160,11 @@ final class OpenQuicklySession {
 
     func showAskError(_ message: String) {
         askError = message
+    }
+
+    func setAsking(_ asking: Bool) {
+        isAsking = asking
+        if asking { askError = nil }
     }
 
     /// The panel goes: the search in flight is killed, none starts again.
@@ -429,10 +437,16 @@ final class OpenQuicklyCenter {
                 session.showAskError("Couldn't start the question.")
                 return
             }
-            // The conversation is written off the main thread; its answer
-            // shows only while the panel that asked is still up.
+            // The conversation is written off the main thread (board #670):
+            // one question per panel at a time, and it is sent and shown
+            // only while the panel that asked is still up.
+            guard !session.isAsking else { return }
+            session.setAsking(true)
             Task { [weak self] in
-                let start = await questions.askFromOpenQuickly(query, project: session.project, root: session.root)
+                let start = await questions.askFromOpenQuickly(query, project: session.project, root: session.root) {
+                    self?.session === session
+                }
+                session.setAsking(false)
                 guard let self, self.session === session else { return }
                 switch start {
                 case let .started(conversationID): session.showAnswer(conversationID: conversationID)

@@ -66,15 +66,18 @@ struct CodeQuestionPopover: View {
     var body: some View {
         if let session = questions.sessions[workbenchID] {
             let engine = questions.engine(workbenchID: workbenchID)
+            // Its Delete waits for the writer: nothing more goes to it.
+            let deleting = questions.isDeleting(session.conversationID)
             VStack(alignment: .leading, spacing: 0) {
-                header(session, busy: engine?.isBusy == true || session.isStarting
+                header(session, busy: engine?.isBusy == true || session.isStarting || deleting
                     || session.conversationID.map(questions.storingChoices.contains) == true)
-                quickActions(busy: engine?.isBusy == true || session.isSearchingUsages || session.isStarting)
+                quickActions(busy: engine?.isBusy == true || session.isSearchingUsages || session.isStarting || deleting)
                 Divider()
                 if let engine, let chats = questions.embeddedChats {
                     EmbeddedChatView(engine: engine, density: .compact, placeholder: "Ask a follow-up…",
                                      onEscape: close)
                         .frame(height: 320)
+                        .disabled(deleting)
                         .embeddedChatVisibility(engine.spec.key, in: chats)
                 } else {
                     firstQuestionField(session)
@@ -91,7 +94,7 @@ struct CodeQuestionPopover: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Divider()
-                actionRow(engine)
+                actionRow(engine, deleting: deleting)
             }
             .frame(width: 460)
             .onExitCommand(perform: close)
@@ -154,20 +157,26 @@ struct CodeQuestionPopover: View {
             .textFieldStyle(.plain)
             // The draft as it is now, not as this body last saw it.
             .onSubmit(askDraft)
-            .disabled(session.isStarting)
-            Button(action: askDraft) {
-                Image(systemName: "arrow.up.circle.fill").font(.title3)
+            if session.isStarting {
+                // The field keeps its focus; `ask` ignores a second submit.
+                ProgressView().controlSize(.small)
+                    .help("Starting…")
+                    .accessibilityLabel("Starting…")
+            } else {
+                Button(action: askDraft) {
+                    Image(systemName: "arrow.up.circle.fill").font(.title3)
+                }
+                .buttonStyle(.borderless)
+                .disabled(session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Ask")
+                .accessibilityLabel("Ask")
             }
-            .buttonStyle(.borderless)
-            .disabled(session.isStarting || session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .help("Ask")
-            .accessibilityLabel("Ask")
         }
         .padding(12)
     }
 
-    /// The first question writes its conversation before it is sent; the
-    /// field and the button wait for it (`Session.isStarting`).
+    /// The first question writes its conversation before it is sent; while
+    /// it does (`Session.isStarting`) a second submit does nothing.
     private func askDraft() {
         let questions = questions
         let workbenchID = workbenchID
@@ -193,7 +202,7 @@ struct CodeQuestionPopover: View {
         .background(Color.green.opacity(0.08))
     }
 
-    private func actionRow(_ engine: EmbeddedChatEngine?) -> some View {
+    private func actionRow(_ engine: EmbeddedChatEngine?, deleting: Bool) -> some View {
         let answer = engine?.messages.last { $0.message.isAssistant && $0.message.status == "complete" }?.message.text
         return HStack(spacing: 14) {
             Button("Copy", systemImage: "doc.on.doc") {
@@ -205,14 +214,14 @@ struct CodeQuestionPopover: View {
             // Ruling R35's rule: no dead control ships.
             if CodeQuestionActionsFeature.pinToInspector {
                 Button("Pin to inspector", systemImage: "pin") { questions.pinToInspector(workbenchID: workbenchID) }
-                    .disabled(!canPin)
+                    .disabled(!canPin || deleting)
                     .help("Keep this conversation in the Questions tab")
             }
             if CodeQuestionActionsFeature.handToClaudeCode {
                 // From the stored messages: not while an answer streams.
                 Button("Hand to Session", systemImage: "terminal") { questions.handToClaude(workbenchID: workbenchID) }
                     .keyboardShortcut(.return, modifiers: [.command, .option])
-                    .disabled(engine == nil || engine?.isBusy == true)
+                    .disabled(engine == nil || engine?.isBusy == true || deleting)
                     .help("Continue this in an agent session of the workbench (⌥⌘↩)")
             }
             Spacer()

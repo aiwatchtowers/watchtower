@@ -63,10 +63,11 @@ final class CodeQuestionCenter {
     private(set) var modelChoices: [Int64: CodeQuestionSurface.ModelChoice] = [:]
     /// Conversations whose model pick is being written (board #670).
     private(set) var storingChoices: Set<Int64> = []
-    /// Conversations being deleted: a second Delete waits for the first.
-    @ObservationIgnored private var deletingQuestions: Set<Int64> = []
-    /// Workbenches whose Open Quickly question is being written.
-    @ObservationIgnored private var startingOpenQuickly: Set<Int64> = []
+    /// Conversations being deleted: until the row is gone their surfaces
+    /// take no follow-up, pick, hand-off or second Delete.
+    private var deletingQuestions: Set<Int64> = []
+    /// Workbenches whose empty questions were cleaned up this run.
+    @ObservationIgnored private var prunedWorkbenches: Set<Int64> = []
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
     @ObservationIgnored weak var navigation: CodeNavigationCenter?
     @ObservationIgnored weak var codeIndex: CodeIndexCenter?
@@ -241,7 +242,8 @@ final class CodeQuestionCenter {
     @discardableResult
     func ask(_ text: String, workbenchID: Int64) async -> Bool {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, let session = sessions[workbenchID], !session.isStarting else { return false }
+        guard !question.isEmpty, let session = sessions[workbenchID], !session.isStarting,
+              !isDeleting(session.conversationID) else { return false }
         if session.conversationID == nil {
             guard await startConversation(workbenchID: workbenchID) else { return false }
         }
@@ -417,7 +419,7 @@ final class CodeQuestionCenter {
     func setModelChoice(_ choice: CodeQuestionSurface.ModelChoice, workbenchID: Int64) async {
         guard let session = sessions[workbenchID], !session.isStarting else { return }
         if let conversationID = session.conversationID {
-            guard !storingChoices.contains(conversationID) else { return }
+            guard !storingChoices.contains(conversationID), !deletingQuestions.contains(conversationID) else { return }
             if let failure = await storeModelChoice(choice, conversationID: conversationID),
                sessions[workbenchID]?.id == session.id {
                 sessions[workbenchID]?.notice = failure
@@ -429,7 +431,7 @@ final class CodeQuestionCenter {
 
     /// The Questions tab's model picker.
     func setModelChoice(_ choice: CodeQuestionSurface.ModelChoice, conversationID: Int64) async {
-        guard !storingChoices.contains(conversationID) else { return }
+        guard !storingChoices.contains(conversationID), !deletingQuestions.contains(conversationID) else { return }
         let failure = await storeModelChoice(choice, conversationID: conversationID)
         guard let workbenchID = questionRefs[conversationID]?.project.id else { return }
         if let failure {
@@ -593,15 +595,15 @@ final class CodeQuestionCenter {
     /// lines) is its context, `<wb>:<path>:<cursor line>` its `context_id`;
     /// with no file open the context is the folder only and the id
     /// `<wb>::0`. The answer shows in the panel.
-    /// The conversation is written off the main thread; nil when another
-    /// Open Quickly question of the workbench is still being written (the
-    /// second ⌘↩ does nothing).
-    func askFromOpenQuickly(_ query: String, project: Workbench, root: CodeRoot) async -> CodeQuestionStart? {
+    /// The conversation is written off the main thread. `stillAsking` is
+    /// asked once the row exists: false (the panel that asked went or was
+    /// reopened) sends nothing, deletes the row again and returns nil.
+    func askFromOpenQuickly(
+        _ query: String, project: Workbench, root: CodeRoot, stillAsking: @MainActor () -> Bool = { true }
+    ) async -> CodeQuestionStart? {
         let question = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return .failed("Type a question first.") }
         guard let dbPool else { return .failed("Couldn't start the question: the database is not open.") }
-        guard startingOpenQuickly.insert(project.id).inserted else { return nil }
-        defer { startingOpenQuickly.remove(project.id) }
         let (origin, context) = openFileContext(root)
         let choice = defaultChoice()
         let conversationID: Int64
@@ -611,6 +613,10 @@ final class CodeQuestionCenter {
         } catch {
             NSLog("CodeQuestionCenter: creating a code question: %@", error.localizedDescription)
             return .failed("Couldn't start the question: \(error.localizedDescription)")
+        }
+        guard stillAsking() else {
+            removeConversation(conversationID, dbPool: dbPool, logAs: "removing a closed panel's question")
+            return nil
         }
         questionContexts[conversationID] = context
         modelChoices[conversationID] = choice
@@ -659,6 +665,7 @@ final class CodeQuestionCenter {
     /// error; an action's error stays until the next action.
     func observeQuestionList(workbenchID: Int64) async {
         guard let dbPool else { return }
+        pruneEmptyQuestions(workbenchID: workbenchID, dbPool: dbPool)
         let observation = ValueObservation.tracking { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
             .removeDuplicates()
         do {
@@ -677,6 +684,7 @@ final class CodeQuestionCenter {
     /// Reads the workbench's questions, newest first, once.
     func reloadQuestionList(workbenchID: Int64) {
         guard let dbPool else { return }
+        pruneEmptyQuestions(workbenchID: workbenchID, dbPool: dbPool)
         do {
             questionLists[workbenchID] = try dbPool.read { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
             if questionListReadFailed.remove(workbenchID) != nil { questionListErrors[workbenchID] = nil }
@@ -732,7 +740,8 @@ final class CodeQuestionCenter {
     /// The Questions tab's ⌥⌘↩ on the open conversation, and the popover's
     /// after `beforeHanding` closed it.
     func handToClaude(_ question: CodeQuestionRef, beforeHanding: () -> Void = {}) {
-        guard let handoff, engine(for: question)?.isBusy != true else {
+        guard let handoff, engine(for: question)?.isBusy != true,
+              !deletingQuestions.contains(question.conversationID) else {
             beep()
             return
         }
@@ -769,8 +778,35 @@ final class CodeQuestionCenter {
         removeConversation(question.conversationID, dbPool: dbPool, logAs: "removing an unsent code question")
     }
 
+    /// Whether the conversation's Delete is waiting for the writer; its
+    /// surfaces disable their composer, picker and hand-off meanwhile.
+    func isDeleting(_ conversationID: Int64?) -> Bool {
+        conversationID.map { deletingQuestions.contains($0) } ?? false
+    }
+
+    /// The first list load of a workbench in this run deletes its questions
+    /// that never got a message and are older than
+    /// `CodeQuestionList.emptyQuestionAge` (a cleanup that failed, a crash
+    /// between the row and its first message), off the main thread. A failed
+    /// cleanup is tried again on the next load.
+    private func pruneEmptyQuestions(workbenchID: Int64, dbPool: DatabasePool) {
+        guard prunedWorkbenches.insert(workbenchID).inserted else { return }
+        let cutoff = clock().addingTimeInterval(-CodeQuestionList.emptyQuestionAge).timeIntervalSince1970
+        Task {
+            do {
+                _ = try await dbPool.write { db in
+                    try CodeQuestionList.deleteEmpty(db, workbenchID: workbenchID, createdBefore: cutoff)
+                }
+            } catch {
+                NSLog("CodeQuestionCenter: removing empty code questions: %@", error.localizedDescription)
+                prunedWorkbenches.remove(workbenchID)
+            }
+        }
+    }
+
     /// Deletes a conversation no surface shows, off the main thread; a
-    /// failure is logged (the row stays as an empty question in the list).
+    /// failure is logged (the list hides a question with no message, and the
+    /// next run's first list load deletes it).
     private func removeConversation(_ conversationID: Int64, dbPool: DatabasePool, logAs what: String) {
         Task {
             do {

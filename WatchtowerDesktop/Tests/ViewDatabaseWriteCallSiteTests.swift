@@ -45,7 +45,7 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
     }
 
     func testNoSynchronousDatabaseWriteInViews() throws {
-        let scanned = try scan(Self.sources.appendingPathComponent("Views")) { $0.pathExtension == "swift" }
+        let (scanned, _) = try scan(Self.sources.appendingPathComponent("Views")) { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(scanned, 50, "the scan found too few views: wrong path?")
     }
 
@@ -53,18 +53,23 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
     /// under Sources) and `CodeQuestionSurface`, whose writes the code
     /// question center makes, are main-actor code too.
     func testNoSynchronousDatabaseWriteInCenters() throws {
-        let scanned = try scan(Self.sources) { url in
+        let (scanned, exempted) = try scan(Self.sources) { url in
             let name = url.deletingPathExtension().lastPathComponent
             return url.pathExtension == "swift"
                 && (name.hasSuffix("Center") || name.contains("Center+") || name == "CodeQuestionSurface")
         }
         XCTAssertGreaterThan(scanned, 30, "the scan found too few centers: wrong path?")
+        XCTAssertEqual(exempted, Self.offMainWrites.count,
+                       "each exemption names exactly one line that is still there; drop one whose write moved")
     }
 
-    /// Writes that already run off the main thread: `OwnerPresenceCenter`'s
-    /// writer is only called on its own serial `writes` queue.
+    /// The one synchronous write that never runs on the main thread, by
+    /// file and its exact line: `OwnerPresenceCenter.databaseWriter`'s
+    /// closure, which the center only calls on its own serial `writes`
+    /// queue (the quit path waits at most `quitWait` for it). Any other
+    /// write in that file is still caught.
     private static let offMainWrites: [String: String] = [
-        "OwnerPresenceCenter.swift": "OwnerPresenceQueries.upsert"
+        "OwnerPresenceCenter.swift": "try dbPool.write { try OwnerPresenceQueries.upsert($0, sessionID: sessionID, at: at) }"
     ]
 
     private static let sources = URL(fileURLWithPath: #filePath)
@@ -73,24 +78,29 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
         .appendingPathComponent("Sources")
 
     /// Fails on every synchronous write in the matching files under
-    /// `folder`; returns how many files it read.
-    private func scan(_ folder: URL, _ include: (URL) -> Bool) throws -> Int {
+    /// `folder`; returns how many files it read and how many exempted
+    /// lines it met.
+    private func scan(_ folder: URL, _ include: (URL) -> Bool) throws -> (scanned: Int, exempted: Int) {
         let write = try NSRegularExpression(pattern: Self.syncWrite)
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil))
         var scanned = 0
+        var exempted = 0
         for case let url as URL in enumerator where include(url) {
             scanned += 1
             let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
             for (index, line) in lines.enumerated() {
                 let code = line.trimmingCharacters(in: .whitespaces)
                 guard !code.hasPrefix("//") else { continue }
-                if let allowed = Self.offMainWrites[url.lastPathComponent], code.contains(allowed) { continue }
+                if Self.offMainWrites[url.lastPathComponent] == code {
+                    exempted += 1
+                    continue
+                }
                 let range = NSRange(line.startIndex..., in: line)
                 XCTAssertNil(write.firstMatch(in: line, range: range),
                              "\(url.lastPathComponent):\(index + 1) writes the database on the main thread; "
                                  + "use `ViewWrite.run` or `try await dbPool.write { … }`")
             }
         }
-        return scanned
+        return (scanned, exempted)
     }
 }

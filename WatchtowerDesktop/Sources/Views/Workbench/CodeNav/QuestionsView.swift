@@ -114,11 +114,14 @@ private struct QuestionConversationView: View {
 
     var body: some View {
         let engine = questions.engine(for: question)
+        // Its Delete waits for the writer: nothing more goes to it.
+        let deleting = questions.isDeleting(question.conversationID)
         VStack(spacing: 0) {
-            header(busy: engine?.isBusy ?? false)
+            header(busy: engine?.isBusy ?? false, deleting: deleting)
             Divider()
             if let engine, let chats = questions.embeddedChats {
                 EmbeddedChatView(engine: engine, density: .compact, placeholder: "Ask a follow-up…")
+                    .disabled(deleting)
                     .embeddedChatVisibility(engine.spec.key, in: chats)
             } else {
                 ContentUnavailableView("This question can't be opened", systemImage: "exclamationmark.triangle")
@@ -135,7 +138,7 @@ private struct QuestionConversationView: View {
         }
     }
 
-    private func header(busy: Bool) -> some View {
+    private func header(busy: Bool, deleting: Bool) -> some View {
         let conversationID = question.conversationID
         let choice = questions.modelChoice(conversationID: conversationID)
         return HStack(spacing: 6) {
@@ -163,7 +166,7 @@ private struct QuestionConversationView: View {
                     Task { await questions.setModelChoice(.init(provider: choice.provider, model: model), conversationID: conversationID) }
                 }
             )
-            .disabled(busy || questions.storingChoices.contains(conversationID))
+            .disabled(busy || deleting || questions.storingChoices.contains(conversationID))
             if CodeQuestionActionsFeature.handToClaudeCode {
                 Button {
                     questions.handToClaude(question)
@@ -171,7 +174,7 @@ private struct QuestionConversationView: View {
                     Image(systemName: "terminal")
                 }
                 .keyboardShortcut(.return, modifiers: [.command, .option])
-                .disabled(busy)
+                .disabled(busy || deleting)
                 .help("Hand to Session (⌥⌘↩)")
                 .accessibilityLabel("Hand to Session")
             }
@@ -180,6 +183,7 @@ private struct QuestionConversationView: View {
             } label: {
                 Image(systemName: "trash")
             }
+            .disabled(deleting)
             .help("Delete this question")
             .accessibilityLabel("Delete")
         }
