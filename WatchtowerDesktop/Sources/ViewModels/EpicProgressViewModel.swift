@@ -2,10 +2,14 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
+/// The weekly digest's progress section: Jira epics and Linear projects,
+/// and the active sprints and cycles, read through the tracker-neutral views
+/// (`TrackerQueries`, spec §6). The "without Jira" warning stays Jira-only.
 @MainActor
 @Observable
 final class EpicProgressViewModel {
     var epics: [EpicProgressItem] = []
+    var iterations: [IterationProgressRow] = []
     var withoutJiraWarnings: [WithoutJiraRow] = []
     var isLoading = false
     var errorMessage: String?
@@ -23,7 +27,10 @@ final class EpicProgressViewModel {
         let dbPool = dbManager.dbPool
         observationTask = Task { [weak self] in
             let observation = ValueObservation.tracking { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM jira_issues WHERE is_deleted = 0") ?? 0
+                (
+                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM jira_issues WHERE is_deleted = 0") ?? 0,
+                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM linear_issues WHERE is_deleted = 0") ?? 0
+                )
             }
             do {
                 for try await _ in observation.values(in: dbPool).dropFirst() {
@@ -42,10 +49,11 @@ final class EpicProgressViewModel {
     func load() {
         isLoading = true
         do {
-            let rows = try dbManager.dbPool.read { db in
-                try JiraQueries.fetchEpicProgress(db)
+            let (rows, active) = try dbManager.dbPool.read { db in
+                (try TrackerQueries.fetchContainerProgress(db), try TrackerQueries.fetchActiveIterations(db))
             }
             epics = rows.map { EpicProgressItem(row: $0) }
+            iterations = active
 
             let since = Calendar.current.date(byAdding: .day, value: -14, to: Date()) ?? Date()
             withoutJiraWarnings = try dbManager.dbPool.read { db in
@@ -59,10 +67,10 @@ final class EpicProgressViewModel {
     }
 }
 
-/// Computed epic progress item with derived metrics.
+/// Computed epic (Jira) or project (Linear) progress item with derived metrics.
 struct EpicProgressItem: Identifiable {
-    var id: String { row.epicKey }
-    let row: EpicProgressRow
+    var id: String { row.id }
+    let row: ContainerProgressRow
 
     /// Weekly velocity: monthly resolved / 4
     var velocity: Double {

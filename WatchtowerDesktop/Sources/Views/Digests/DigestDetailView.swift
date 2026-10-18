@@ -110,8 +110,8 @@ struct DigestDetailView: View {
                     }
                 }
 
-                // Load epic progress for weekly digests
-                if jiraConnected && digest.type == "weekly" {
+                // Load epic/project progress for weekly digests (Jira or Linear)
+                if trackerConnected && digest.type == "weekly" {
                     let vm = EpicProgressViewModel(dbManager: dbManager)
                     vm.load()
                     epicProgressVM = vm
@@ -441,12 +441,18 @@ struct DigestDetailView: View {
         }
     }
 
+    /// Jira (config) or a Linear workspace: the progress section reads both
+    /// through the tracker views.
+    private var trackerConnected: Bool {
+        jiraConnected || appState.featureVisibility.connectedSources.linear
+    }
+
     @ViewBuilder
     private var epicProgressAndWarningsSection: some View {
-        if digest.type == "weekly", jiraConnected, let vm = epicProgressVM {
+        if digest.type == "weekly", trackerConnected, let vm = epicProgressVM {
             EpicProgressSection(viewModel: vm)
 
-            if withoutJiraEnabled {
+            if jiraConnected, withoutJiraEnabled {
                 WithoutJiraWarningView(warnings: vm.withoutJiraWarnings)
             }
         }

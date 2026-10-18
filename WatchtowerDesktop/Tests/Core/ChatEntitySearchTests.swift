@@ -58,7 +58,7 @@ final class ChatEntitySearchTests: XCTestCase {
             try d.execute(sql: "UPDATE users SET is_stub = 1 WHERE id = '1:U5'")
             XCTAssertTrue(try ChatEntitySearch.people(d, query: "stub").isEmpty)
             XCTAssertTrue(try ChatEntitySearch.people(d, query: "zzz").isEmpty)
-            XCTAssertTrue(try ChatEntitySearch.jiraIssues(d, query: "zzz").isEmpty, "no jira data at all")
+            XCTAssertTrue(try ChatEntitySearch.issues(d, query: "zzz").isEmpty, "no jira data at all")
         }
     }
 
@@ -100,11 +100,34 @@ final class ChatEntitySearchTests: XCTestCase {
             try insertIssue(d, accountID: a, key: "OPS-1", project: "OPS", summary: "Payout alerts")
             try insertIssue(d, accountID: a, key: "PAY-99", project: "PAY", summary: "gone", deleted: true)
 
-            XCTAssertEqual(try ChatEntitySearch.jiraIssues(d, query: "pay-1").map(\.ref), ["PAY-12"])
-            XCTAssertEqual(Set(try ChatEntitySearch.jiraIssues(d, query: "payout").map(\.ref)), ["OPS-1"])
-            let hit = try XCTUnwrap(ChatEntitySearch.jiraIssues(d, query: "PAY-12").first)
+            XCTAssertEqual(try ChatEntitySearch.issues(d, query: "pay-1").map(\.ref), ["PAY-12"])
+            XCTAssertEqual(Set(try ChatEntitySearch.issues(d, query: "payout").map(\.ref)), ["OPS-1"])
+            let hit = try XCTUnwrap(ChatEntitySearch.issues(d, query: "PAY-12").first)
             XCTAssertEqual(hit.label, "PAY-12")
             XCTAssertEqual(hit.detail, "Refund flow")
+            XCTAssertEqual(hit.kind, .jiraIssue)
+        }
+    }
+
+    /// Linear issues come from the same search (`tracker_issues`) and are
+    /// mentioned under their own kind; the same key on both trackers is two
+    /// hits.
+    func testIssuesIncludeLinearUnderItsOwnKind() throws {
+        try db.write { d in
+            let jira = try TestDatabase.insertJiraAccount(d, cloudID: "a")
+            let linear = try TestDatabase.insertLinearAccount(d)
+            try insertIssue(d, accountID: jira, key: "ENG-1", project: "ENG", summary: "Jira side")
+            try TestDatabase.insertLinearIssue(d, account: linear, id: "u1", key: "ENG-1") { $0.title = "Linear side" }
+            try TestDatabase.insertLinearIssue(d, account: linear, id: "u2", key: "ENG-7") { $0.title = "Checkout retries" }
+            try TestDatabase.insertLinearIssue(d, account: linear, id: "u3", key: "ENG-8") { $0.deleted = true }
+
+            let both = try ChatEntitySearch.issues(d, query: "eng-1")
+            XCTAssertEqual(Set(both.map(\.kind)), [.jiraIssue, .linearIssue])
+            XCTAssertEqual(try ChatEntitySearch.issues(d, query: "checkout").map(\.ref), ["ENG-7"])
+            XCTAssertEqual(try ChatEntitySearch.issues(d, query: "checkout").first?.kind, .linearIssue)
+            XCTAssertTrue(try ChatEntitySearch.issues(d, query: "eng-8").isEmpty, "deleted issues are not offered")
+            XCTAssertEqual(
+                try ChatEntitySearch.search(d, kind: .linearIssue, query: "eng-1").map(\.detail), ["Linear side"])
         }
     }
 

@@ -6,6 +6,9 @@ package enum ChatEntityKind: String, CaseIterable, Sendable {
     case person
     case channel
     case jiraIssue = "jira"
+    /// A Linear issue: found by the same issue search as a Jira one
+    /// (`tracker_issues`), mentioned as `linear:<KEY>`.
+    case linearIssue = "linear"
     case jiraProject = "jira_project"
     case confluenceSpace = "confluence_space"
     case target
@@ -30,8 +33,8 @@ package struct ChatEntityHit: Equatable, Hashable, Sendable {
 }
 
 extension ChatProjectSource.Kind {
-    /// The project-source kind for a search hit; nil for a Jira issue, which
-    /// can be mentioned but not pinned (a project pins the whole Jira project).
+    /// The project-source kind for a search hit; nil for an issue, which can
+    /// be mentioned but not pinned (a project pins the whole Jira project).
     package init?(entity: ChatEntityKind) {
         switch entity {
         case .person: self = .person
@@ -40,13 +43,13 @@ extension ChatProjectSource.Kind {
         case .confluenceSpace: self = .confluenceSpace
         case .target: self = .target
         case .track: self = .track
-        case .jiraIssue: return nil
+        case .jiraIssue, .linearIssue: return nil
         }
     }
 }
 
 /// Prefix search over the local DB (spec §6.2: people, Slack channels, Jira
-/// issues, targets, tracks — prefix match, 8 results), plus Jira project keys
+/// and Linear issues, targets, tracks — prefix match, 8 results), plus Jira project keys
 /// and Confluence spaces for the project source picker. Pure reads; every
 /// function is bounded by `limit`.
 package enum ChatEntitySearch {
@@ -58,7 +61,8 @@ package enum ChatEntitySearch {
         switch kind {
         case .person: return try people(db, query: query, limit: limit)
         case .channel: return try channels(db, query: query, limit: limit)
-        case .jiraIssue: return try jiraIssues(db, query: query, limit: limit)
+        case .jiraIssue: return try issues(db, query: query, limit: limit)
+        case .linearIssue: return try issues(db, query: query, limit: limit, tracker: .linear)
         case .jiraProject: return try jiraProjects(db, query: query, limit: limit)
         case .confluenceSpace: return try confluenceSpaces(db, query: query, limit: limit)
         case .target: return try targets(db, query: query, limit: limit)
@@ -106,28 +110,39 @@ package enum ChatEntitySearch {
         }
     }
 
-    /// Key prefix (`pay-1` → `PAY-12`) or summary word prefix. A key shared by
-    /// two Jira sites is one hit (the multi-account bare-key convention).
-    package static func jiraIssues(_ db: Database, query: String, limit: Int = defaultLimit) throws -> [ChatEntityHit] {
+    /// Jira and Linear issues (`tracker_issues`) by key prefix (`pay-1` →
+    /// `PAY-12`) or title word prefix; `tracker` narrows to one tracker. A
+    /// key two sites of one tracker share is one hit (the multi-account
+    /// bare-key convention); the same key on both trackers is two hits, each
+    /// mentioned under its own tracker.
+    package static func issues(
+        _ db: Database, query: String, limit: Int = defaultLimit, tracker: TrackerIssue.Tracker? = nil
+    ) throws -> [ChatEntityHit] {
         let prefix = PrefixMatch(query)
-        let summary = prefix.clause(columns: ["summary"])
+        let title = prefix.clause(columns: ["title"])
         let keyPattern = PrefixMatch.escape(query.trimmingCharacters(in: .whitespaces).uppercased()) + "%"
         var args: StatementArguments = [keyPattern]
-        args += StatementArguments(summary.args)
+        args += StatementArguments(title.args)
+        var trackerFilter = ""
+        if let tracker {
+            trackerFilter = " AND tracker = ?"
+            args += [tracker.rawValue]
+        }
         args += [limit]
         let rows = try Row.fetchAll(
             db,
             sql: """
-                SELECT key, summary, MAX(updated_at) AS newest FROM jira_issues
-                WHERE is_deleted = 0 AND (key LIKE ? ESCAPE '\\' OR \(summary.sql))
-                GROUP BY key
-                ORDER BY newest DESC, key
+                SELECT tracker, key, MAX(title) AS title, MAX(updated_at) AS newest FROM tracker_issues
+                WHERE is_deleted = 0 AND (key LIKE ? ESCAPE '\\' OR \(title.sql))\(trackerFilter)
+                GROUP BY tracker, key
+                ORDER BY newest DESC, key, tracker
                 LIMIT ?
                 """,
             arguments: args
         )
         return rows.map { row in
-            ChatEntityHit(kind: .jiraIssue, ref: row["key"], label: row["key"], detail: row["summary"])
+            let kind: ChatEntityKind = (row["tracker"] as String) == TrackerIssue.Tracker.linear.rawValue ? .linearIssue : .jiraIssue
+            return ChatEntityHit(kind: kind, ref: row["key"], label: row["key"], detail: row["title"])
         }
     }
 

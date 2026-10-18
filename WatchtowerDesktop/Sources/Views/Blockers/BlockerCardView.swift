@@ -16,14 +16,14 @@ struct BlockerCardView: View {
                 // Row 1: Issue key + status + days
                 HStack(alignment: .center, spacing: 8) {
                     Group {
-                        if let url = JiraHelpers.browseURL(siteURL: siteURL, issueKey: entry.issueKey) {
+                        if let url = link(for: entry.issueKey, own: entry.issueURL) {
                             Link(destination: url) {
                                 Text(entry.issueKey)
                                     .font(.subheadline)
                                     .fontWeight(.bold)
                                     .foregroundStyle(.blue)
                             }
-                            .help("Open in Jira")
+                            .help("Open in \(entry.trackerName)")
                         } else {
                             Text(entry.issueKey)
                                 .font(.subheadline)
@@ -125,6 +125,15 @@ struct BlockerCardView: View {
 
     // MARK: - Components
 
+    /// The view's own link for the key; else, for a Jira card, the legacy
+    /// config site URL (a site row with no recorded URL). A Linear card never
+    /// falls back to a Jira link.
+    private func link(for key: String, own: URL?) -> URL? {
+        if let own { return own }
+        guard entry.trackerName == "Jira" else { return nil }
+        return JiraHelpers.browseURL(siteURL: siteURL, issueKey: key)
+    }
+
     private var statusBadge: some View {
         Text(entry.status)
             .font(.caption2)
@@ -166,14 +175,14 @@ struct BlockerCardView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Group {
-                    if let url = JiraHelpers.browseURL(siteURL: siteURL, issueKey: key) {
+                    if let url = link(for: key, own: entry.chainURLs[key]) {
                         Link(destination: url) {
                             Text(key)
                                 .font(.caption)
                                 .fontWeight(.medium)
                                 .foregroundStyle(.blue)
                         }
-                        .help("Open in Jira")
+                        .help("Open in \(entry.trackerName)")
                     } else {
                         Text(key)
                             .font(.caption)

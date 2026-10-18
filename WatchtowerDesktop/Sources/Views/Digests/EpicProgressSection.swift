@@ -1,6 +1,8 @@
 import SwiftUI
+import WatchtowerCore
 
-/// Section showing epic progress, designed to be embedded in weekly digest/trends views.
+/// Section showing epic and project progress plus the active sprints and
+/// cycles, designed to be embedded in weekly digest/trends views.
 struct EpicProgressSection: View {
     let viewModel: EpicProgressViewModel
 
@@ -8,7 +10,7 @@ struct EpicProgressSection: View {
         VStack(alignment: .leading, spacing: 16) {
             // Header
             HStack {
-                Label("Epic Progress", systemImage: "chart.bar.xaxis")
+                Label("Epic & Project Progress", systemImage: "chart.bar.xaxis")
                     .font(.headline)
                 Spacer()
                 if viewModel.isLoading {
@@ -23,8 +25,19 @@ struct EpicProgressSection: View {
                     .foregroundStyle(.red)
             }
 
+            if !viewModel.iterations.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Active Sprints & Cycles")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    ForEach(viewModel.iterations) { iteration in
+                        IterationProgressCard(iteration: iteration)
+                    }
+                }
+            }
+
             if viewModel.epics.isEmpty && !viewModel.isLoading {
-                Text("No epics with 3+ issues found.")
+                Text("No epics or projects with 3+ issues found.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
@@ -57,7 +70,7 @@ struct EpicProgressSection: View {
                         Image(systemName: "arrow.up.circle.fill")
                             .foregroundStyle(.green)
                             .font(.caption)
-                        Text(item.row.epicName)
+                        Text(item.row.name)
                             .font(.caption)
                         Text("+\(item.row.weeklyResolvedCount) resolved")
                             .font(.caption)
@@ -70,7 +83,7 @@ struct EpicProgressSection: View {
                         Image(systemName: "arrow.down.circle.fill")
                             .foregroundStyle(.red)
                             .font(.caption)
-                        Text(item.row.epicName)
+                        Text(item.row.name)
                             .font(.caption)
                         Text("no progress this week")
                             .font(.caption)
@@ -85,6 +98,41 @@ struct EpicProgressSection: View {
     }
 }
 
+// MARK: - Iteration Card
+
+/// One active sprint (Jira) or cycle (Linear): done share and days left.
+struct IterationProgressCard: View {
+    let iteration: IterationProgressRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(iteration.name)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                if !iteration.projectKey.isEmpty {
+                    Text(iteration.projectKey)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let days = iteration.daysLeft() {
+                    Text(days == 1 ? "1 day left" : "\(days) days left")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ProgressView(value: iteration.progress)
+            Text("\(iteration.done)/\(iteration.total) done · \(iteration.inProgress) in progress · \(iteration.todo) to do")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 // MARK: - Epic Card
 
 private struct EpicCard: View {
@@ -94,7 +142,7 @@ private struct EpicCard: View {
         VStack(alignment: .leading, spacing: 8) {
             // Title row
             HStack {
-                Text(item.row.epicName)
+                Text(item.row.name)
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .lineLimit(2)

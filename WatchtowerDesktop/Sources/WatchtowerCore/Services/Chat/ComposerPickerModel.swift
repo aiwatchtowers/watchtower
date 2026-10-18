@@ -166,7 +166,7 @@ package final class ComposerPickerModel {
         switch candidate.kind {
         case .person: icon = "person.crop.circle"
         case .channel: icon = "number"
-        case .jira: icon = "ticket"
+        case .jira, .linear: icon = "ticket"
         case .target: icon = "target"
         case .track: icon = "point.topleft.down.to.point.bottomright.curvepath"
         }
