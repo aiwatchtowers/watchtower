@@ -162,7 +162,7 @@ final class ChatViewModel {
     private(set) var isStartingTurn = false
     /// A turn is running or about to: what the composer and the actions
     /// that start a turn wait for.
-    var isBusy: Bool { isStreaming || isStartingTurn }
+    var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn }
     /// Every write of this view model, one after another (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// The composer's conversation being created: one at a time, so a
@@ -220,6 +220,9 @@ final class ChatViewModel {
     var liveTurn: LiveTurn? { pool.client(for: conversationID)?.liveTurn }
     /// A turn is running — or held by the pool waiting for a session.
     var isStreaming: Bool { liveTurn?.isRunning == true }
+    /// The shown chat's turn ended and its final state is being written
+    /// (board #670): nothing can stop it, and the next send waits for it.
+    var isFinishingTurn: Bool { pool.client(for: conversationID)?.driver.isFinishing == true }
     /// Every live session is busy with another conversation's turn: this
     /// turn is held (not lost) until one finishes. The UI says so.
     var isWaitingForSession: Bool {
@@ -365,6 +368,8 @@ final class ChatViewModel {
     /// a synchronous caller queued one, e.g. a landing draft's discard).
     func writesSettled() async {
         await writes.idle()
+        // The shown chat's turn writes too (its driver's, board #670).
+        await pool.client(for: conversationID)?.driver.writesSettled()
     }
 
     /// The composer's first keystroke: prewarm the session. On the landing
@@ -651,6 +656,8 @@ final class ChatViewModel {
     /// the composer.
     func sendDraft(screen: ScreenContext? = nil) async {
         for paste in pastesInFlight.values { _ = await paste.value }
+        // Files dropped or removed just before Enter land first (board #670).
+        await composerAttachments.settled()
         let attachments = composerAttachments.pending
         let batchID = conversationID
         let typed = draft
@@ -719,7 +726,7 @@ final class ChatViewModel {
         let key = UUID()
         let paste = Task { [self] () -> Bool in
             guard let id = await conversationIDCreatingIfNeeded() else { return false }
-            return composerAttachments.addPasted(data, name: name, conversationID: id)
+            return await composerAttachments.addPasted(data, name: name, conversationID: id)
         }
         pastesInFlight[key] = paste
         defer { pastesInFlight[key] = nil }
@@ -1091,7 +1098,7 @@ final class ChatViewModel {
     /// next turn spawns a matching one (Claude keeps `--resume`, the others
     /// replay). Never mid-turn — the picker is disabled while streaming.
     private func recycleSession() {
-        guard !applyingConversationSettings, !isStreaming, let id = conversationID else { return }
+        guard !applyingConversationSettings, !isStreaming, !isFinishingTurn, let id = conversationID else { return }
         pool.close(conversationID: id)
     }
 

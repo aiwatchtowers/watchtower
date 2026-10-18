@@ -275,7 +275,12 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             hasBlockingWork: plan.prompt != nil,
             keepsSessions: plan.keepsSessions,
             confirmQuit: { plan.prompt.map { plan.choice(button: Self.runQuitAlert($0)) } ?? .cancel },
-            closeChatSessions: { await app.chatSessionPool?.closeAll() },
+            closeChatSessions: {
+                // An embedded chat's reply keeps all it streamed: its writes
+                // await the writer (board #670), so the quit waits for them.
+                await app.embeddedChatCenter.finishAllAsPartialForQuit()
+                await app.chatSessionPool?.closeAll()
+            },
             closeTerminals: {
                 // Not reported stopped: the next launch reconciles them.
                 app.automationSessionCenter?.stop()

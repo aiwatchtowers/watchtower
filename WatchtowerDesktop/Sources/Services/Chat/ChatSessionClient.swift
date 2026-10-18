@@ -107,7 +107,9 @@ final class ChatSessionClient {
     }
 
     var liveTurn: LiveTurn? { driver.liveTurn }
-    var isBusy: Bool { driver.liveTurn?.isRunning == true }
+    /// A turn is running, or its terminal write is under way (board #670):
+    /// no next turn starts and nothing evicts the session until it landed.
+    var isBusy: Bool { driver.isBusy }
     /// A process was launched and has not exited yet.
     var hasLiveProcess: Bool { process != nil && !exited }
 
@@ -265,15 +267,18 @@ final class ChatSessionClient {
     }
 
     /// Quit / eviction: keep what streamed, ask politely (`close`), wait up
-    /// to `grace`, then one SIGTERM, then SIGKILL after `killAfter`.
+    /// to `grace`, then one SIGTERM, then SIGKILL after `killAfter`. Returns
+    /// once the turn's writes landed too, so a quit never loses its text.
     func close(grace: Duration, killAfter: Duration = ChatSessionClient.defaultKillAfter) async {
         abandon()
-        guard let process, !exited else { return }
-        // A failed write means the pipe is already closed — the process is gone
-        // or going; the wait below and the signals still apply.
-        try? process.send(.close)
-        await waitForExit(upTo: grace)
-        await terminateAndReap(killAfter: killAfter)
+        if let process, !exited {
+            // A failed write means the pipe is already closed — the process is
+            // gone or going; the wait below and the signals still apply.
+            try? process.send(.close)
+            await waitForExit(upTo: grace)
+            await terminateAndReap(killAfter: killAfter)
+        }
+        await driver.writesSettled()
     }
 
     // MARK: - Private

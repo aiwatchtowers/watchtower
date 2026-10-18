@@ -41,7 +41,7 @@ struct ChatComposerView: View {
                 isStreaming: chatVM.isBusy,
                 onSend: { Task { await chatVM.sendDraft() } },
                 // Nothing to stop while the turn's rows are being written.
-                onStop: chatVM.isStartingTurn ? nil : { chatVM.stop() },
+                onStop: chatVM.isStartingTurn || chatVM.isFinishingTurn ? nil : { chatVM.stop() },
                 placeholder: "Ask about your work…",
                 dictationTargetID: "chat.workspace",
                 maxHeight: maxHeight,
@@ -76,7 +76,9 @@ struct ChatComposerView: View {
             onSelectProvider: { chatVM.switchProvider($0) },
             onSelectModel: { chatVM.selectedModel = $0 }
         )
-        .disabled(chatVM.isStreaming)
+        // Also while a turn's end is written (board #670): a pick then would
+        // close the session under it.
+        .disabled(chatVM.isStreaming || chatVM.isFinishingTurn)
     }
 }
 

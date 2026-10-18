@@ -129,6 +129,7 @@ final class ChatSessionPoolTests: XCTestCase {
         let row = try assistantRow()
         fourth.startTurn(turn("t4", row: row))
         fourth.cancel()
+        await fourth.driver.writesSettled()
         XCTAssertFalse(fourth.isBusy)
         XCTAssertFalse(fourth.isAlive)
         let status = try await dbPool.read { try String.fetchOne($0, sql: "SELECT status FROM chat_messages WHERE id = ?", arguments: [row]) }
@@ -350,6 +351,7 @@ final class ChatSessionPoolTests: XCTestCase {
         let replacement = pool.session(for: conv, config: config(conv, provider: "codex"))
         XCTAssertTrue(replacement.isPending)
         XCTAssertEqual(fakes.count, 1, "no overlap: the replacement waits for the old process")
+        await old.driver.writesSettled()
         XCTAssertFalse(old.isBusy, "the old turn was kept as partial")
         fakes[0].emit(.sessionReady(sessionID: "old-session", provider: "claude", model: ""))
 

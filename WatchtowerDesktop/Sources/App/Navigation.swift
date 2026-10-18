@@ -215,8 +215,8 @@ struct MainNavigationView: View {
         // Personal recipes live in <workspace>/automations, beside the database.
         let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent
         return AutomationEditorChatHooks(
-            open: { try appState.automationEditorChat(automationID: $0) },
-            openNew: { try appState.newAutomationEditorChat() },
+            open: { try await appState.automationEditorChat(automationID: $0) },
+            openNew: { try await appState.newAutomationEditorChat() },
             automationsDir: (workspaceDir as NSString?)?.appendingPathComponent("automations"),
             unavailableHelp: AutomationEditorChatSurface.toolsAvailable(provider: nil)
                 ? nil : AutomationEditorChatSurface.unavailableHelp

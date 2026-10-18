@@ -11,6 +11,8 @@ struct TrackDetailView: View {
     /// a reply.
     @State private var chatConversationID: Int64?
     @State private var chatError: String?
+    /// The latest chat open asked for; an older one landing late is dropped.
+    @State private var chatOpenToken = UUID()
     @State private var showCreateTarget = false
     @State private var targetPrefill: TargetPrefill?
     @State private var targetPrefillError: String?
@@ -108,15 +110,41 @@ struct TrackDetailView: View {
 
     // MARK: - Chat
 
+    /// An existing conversation opens at once (a read); a track's first chat
+    /// is created off the main thread (board #670) and shows once written,
+    /// unless the pane moved on to another track meanwhile.
     private func openChat(db: DatabaseManager) {
+        let requested = track
+        let token = UUID()
+        chatOpenToken = token
         do {
-            chatConversationID = try TrackChatSurface.conversationID(for: track, dbPool: db.dbPool)
-            chatError = nil
+            if let existing = try TrackChatSurface.existingConversationID(for: requested, dbPool: db.dbPool) {
+                chatConversationID = existing
+                chatError = nil
+                return
+            }
         } catch {
-            chatConversationID = nil
-            NSLog("TrackDetailView: opening the chat of track %d failed: %@", track.id, String(describing: error))
-            chatError = "Couldn't open the chat: \(error.localizedDescription)"
+            chatOpenFailed(error, trackID: requested.id)
+            return
         }
+        chatConversationID = nil
+        Task {
+            do {
+                let id = try await TrackChatSurface.conversationID(for: requested, dbPool: db.dbPool)
+                guard chatOpenToken == token else { return }
+                chatConversationID = id
+                chatError = nil
+            } catch {
+                guard chatOpenToken == token else { return }
+                chatOpenFailed(error, trackID: requested.id)
+            }
+        }
+    }
+
+    private func chatOpenFailed(_ error: Error, trackID: Int) {
+        chatConversationID = nil
+        NSLog("TrackDetailView: opening the chat of track %d failed: %@", trackID, String(describing: error))
+        chatError = "Couldn't open the chat: \(error.localizedDescription)"
     }
 
     /// A finished reply can change what the track shows (the daemon's

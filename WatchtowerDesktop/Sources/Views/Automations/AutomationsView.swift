@@ -25,8 +25,8 @@ struct AutomationsTabActions {
 /// How the tab opens the editor chats ("Change in words", the "New
 /// automation" sheet); `AppState` builds them on `embeddedChatCenter`.
 struct AutomationEditorChatHooks {
-    let open: (Int64) throws -> AutomationEditorChat?
-    let openNew: () throws -> AutomationEditorChat?
+    let open: (Int64) async throws -> AutomationEditorChat?
+    let openNew: () async throws -> AutomationEditorChat?
     /// `<workspace>/automations`, where the New sheet's **Form** tab saves.
     let automationsDir: String?
     /// Non-nil when the provider has no tools (ollama): Change in words is
@@ -154,7 +154,7 @@ struct AutomationsView: View {
             if let chats {
                 AutomationChangeInWordsSheet(
                     name: vm.items.first { $0.id == target.id }?.automation.name ?? "automation",
-                    make: { try chats.open(target.id) },
+                    make: { try await chats.open(target.id) },
                     onClose: { changingInWords = nil }
                 )
             }

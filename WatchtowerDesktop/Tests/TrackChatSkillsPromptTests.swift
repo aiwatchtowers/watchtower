@@ -31,7 +31,7 @@ final class TrackChatSkillsPromptTests: XCTestCase {
         })
     }
 
-    func testSkillsBlockListsEveryEnabledSkill() throws {
+    func testSkillsBlockListsEveryEnabledSkill() async throws {
         let track = try makeTrack()
         let dir = try SkillsPromptFixtures.makePair(self)
 
@@ -45,7 +45,7 @@ final class TrackChatSkillsPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("load_skill"), "the model must be told to load the skill first")
     }
 
-    func testSkillsBlockAbsentWhenNoSkillsExist() throws {
+    func testSkillsBlockAbsentWhenNoSkillsExist() async throws {
         let track = try makeTrack()
         let empty = try SkillsPromptFixtures.makeEmptyDir(self)
 
@@ -65,11 +65,12 @@ final class TrackChatSkillsPromptTests: XCTestCase {
     func testSendPassesNoToolMode() async throws {
         let track = try makeTrack()
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let conv = try TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool)
+        let conv = try await TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool)
         let engine = makeSurfaceEngine(TrackChatSurface.spec(track: track, conversationID: conv, dbPool: dbManager.dbPool),
                                        dbPool: dbManager.dbPool, ai: mock)
 
         engine.send("hello")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 

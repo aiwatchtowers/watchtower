@@ -42,6 +42,8 @@ struct IdeaDiscussSection: View {
 
     @State private var persistedCount = 0
     @State private var loadError: String?
+    /// The idea's first chat is being written (board #670).
+    @State private var isCreatingChat = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -103,15 +105,37 @@ struct IdeaDiscussSection: View {
         }
         if state.conversationID == nil {
             do {
-                state.conversationID = try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
-                loadError = nil
+                state.conversationID = try IdeaChatSurface.existingConversationID(for: idea, dbPool: dbManager.dbPool)
             } catch {
-                NSLog("IdeaDiscussSection: opening the chat of idea %d failed: %@", idea.id, String(describing: error))
-                loadError = "Couldn't open the chat: \(error.localizedDescription)"
+                discussOpenFailed(error)
                 return
             }
         }
-        state.isExpanded = true
+        guard state.conversationID == nil else {
+            loadError = nil
+            state.isExpanded = true
+            return
+        }
+        // The idea's first chat is written off the main thread (board #670);
+        // the section opens once it landed. One create at a time. (The pane
+        // is `.id(idea.id)`'d, so its state always belongs to this idea.)
+        guard !isCreatingChat else { return }
+        isCreatingChat = true
+        Task {
+            defer { isCreatingChat = false }
+            do {
+                state.conversationID = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+                loadError = nil
+                withAnimation(.easeInOut(duration: 0.2)) { state.isExpanded = true }
+            } catch {
+                discussOpenFailed(error)
+            }
+        }
+    }
+
+    private func discussOpenFailed(_ error: Error) {
+        NSLog("IdeaDiscussSection: opening the chat of idea %d failed: %@", idea.id, String(describing: error))
+        loadError = "Couldn't open the chat: \(error.localizedDescription)"
     }
 
     private func loadPersistedCount() {

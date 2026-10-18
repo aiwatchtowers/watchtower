@@ -23,9 +23,15 @@ enum MeetingChatSurface {
         ChatStarterPrompt(title: "Draft a follow-up…", text: "Draft a follow-up message to ", sendsImmediately: false)
     ]
 
+    /// The recording's conversation when it already has one (a read, at once).
+    static func existingConversationID(transcriptID: Int64, dbPool: DatabasePool) throws -> Int64? {
+        try DatabaseEmbeddedChatStore.existingConversationID(dbPool: dbPool, contextType: contextType,
+                                                             contextID: String(transcriptID))
+    }
+
     /// The recording's conversation, created on first use.
-    static func conversationID(transcriptID: Int64, title: String, dbPool: DatabasePool) throws -> Int64 {
-        try DatabaseEmbeddedChatStore.conversationID(
+    static func conversationID(transcriptID: Int64, title: String, dbPool: DatabasePool) async throws -> Int64 {
+        try await DatabaseEmbeddedChatStore.conversationID(
             dbPool: dbPool, contextType: contextType, contextID: String(transcriptID),
             title: "Meeting: \(String(title.prefix(60)))")
     }

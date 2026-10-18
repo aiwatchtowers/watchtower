@@ -78,6 +78,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testFullTurnStreamsIntoTheLiveRowAndCommitsTheReply() async throws {
         let engine = makeEngine()
         XCTAssertTrue(engine.send("What is this idea about?"))
+        await engine.finished()
         XCTAssertTrue(engine.isStreaming)
         XCTAssertEqual(try rows().map(\.role), ["user", "assistant"], "owner row on disk before any event")
         XCTAssertEqual(ai.calls.first?.systemPrompt, "SYSTEM")
@@ -108,6 +109,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         try await pool.write { db in try ChatConversationQueries.updateSessionID(db, id: conv, sessionID: "old") }
         let engine = makeEngine()
         engine.send("again")
+        await engine.finished()
         XCTAssertNil(ai.calls.first?.systemPrompt)
         XCTAssertEqual(ai.calls.first?.sessionID, "old")
         XCTAssertEqual(ai.calls.first?.prompt, "CONTEXT\n\nagain")
@@ -116,6 +118,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testTextIsFlushedAtMostOncePerInterval() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("a"))
         expectTrue(await waitForCondition { engine.liveTurn?.fullText == "a" })
         XCTAssertEqual(try rows().last?.text, "", "inside the flush interval")
@@ -128,6 +131,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testHundredDeltasLeaveTheRowsAlone() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         let before = engine.messages
         for _ in 0..<100 { ai.emit(.text("x")) }
         expectTrue(await waitForCondition { engine.liveTurn?.fullText.count == 100 })
@@ -139,9 +143,11 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testStopKeepsThePartialTextAndEndsTheProcess() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("half an ans"))
         expectTrue(await waitForCondition { engine.liveTurn?.fullText == "half an ans" })
         engine.stop()
+        await engine.finished()
         XCTAssertFalse(engine.isStreaming)
         let reply = try XCTUnwrap(try rows().last)
         XCTAssertEqual(reply.text, "half an ans")
@@ -153,6 +159,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testErrorEventKeepsPartialTextWithTheRealMessage() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("Partial"), .error("Not logged in · Please run /login"), .done)
         ai.finish()
         expectTrue(await waitIdle(engine))
@@ -167,6 +174,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testThrownErrorBecomesAnErrorRow() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.finish(throwing: WatchtowerAIError.exitCode(1, "claude crashed"))
         expectTrue(await waitIdle(engine))
         let reply = try XCTUnwrap(try rows().last)
@@ -178,6 +186,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testEmptyCompletedReplyIsAnError() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.emit(.done)
         ai.finish()
         expectTrue(await waitIdle(engine))
@@ -188,10 +197,12 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testRetryRerunsTheTurnWithoutASecondOwnerRow() async throws {
         let engine = makeEngine()
         engine.send("the question")
+        await engine.finished()
         ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
         expectTrue(await waitIdle(engine))
 
         engine.retry()
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 2)
         XCTAssertEqual(ai.calls[1].prompt, "the question")
         ai.emit(.text("answer"), call: 1)
@@ -206,10 +217,12 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testRetryIsRefusedAfterASuccessfulTurn() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("fine"))
         ai.finish()
         expectTrue(await waitIdle(engine))
         engine.retry()
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 1)
     }
 
@@ -223,6 +236,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
                                       failure: "Couldn't read one block")
         })
         engine.send("do it")
+        await engine.finished()
         ai.emit(.text("```watchtower-action {}```"))
         ai.finish()
         expectTrue(await waitIdle(engine))
@@ -238,10 +252,13 @@ final class EmbeddedChatEngineTests: XCTestCase {
         var calls = 0
         let engine = makeEngine(spec: spec { calls += 1; return .identity($0) })
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("partial directive"))
         expectTrue(await waitForCondition { engine.liveTurn?.fullText == "partial directive" })
         engine.stop()
+        await engine.finished()
         engine.send("q2")
+        await engine.finished()
         ai.finish(call: 1, throwing: WatchtowerAIError.exitCode(1, "x"))
         expectTrue(await waitIdle(engine))
         XCTAssertEqual(calls, 0)
@@ -252,6 +269,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let engine = makeEngine()
         engine.onTurnFinished = { outcomes.append($0) }
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("a"))
         ai.finish()
         expectTrue(await waitIdle(engine))
@@ -268,6 +286,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
             return ChatPostTurnResult(displayText: input.reply, notices: ["Applied: x"])
         })
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("answer"))
         ai.finish()
         expectTrue(await waitForCondition { release != nil })
@@ -299,9 +318,10 @@ final class EmbeddedChatEngineTests: XCTestCase {
 
     // MARK: - Tool access
 
-    func testActionSurfaceSendsItsToolMode() {
+    func testActionSurfaceSendsItsToolMode() async {
         let engine = makeEngine(spec: spec(toolAccess: .actions(surface: "target")))
         engine.send("q")
+        await engine.finished()
         let mode = ai.calls.first?.toolMode
         XCTAssertEqual(mode?.surface, "target")
         XCTAssertEqual(mode?.conversationID, conversationID)
@@ -310,12 +330,13 @@ final class EmbeddedChatEngineTests: XCTestCase {
 
     // MARK: - Failures writing
 
-    func testASendThatCannotBeSavedSendsNothingAndKeepsTheText() throws {
+    func testASendThatCannotBeSavedSendsNothingAndKeepsTheText() async throws {
         let conv = conversationID
         let engine = makeEngine()
-        try pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
+        try await pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
         engine.draft = "my words"
         XCTAssertTrue(engine.sendDraft())
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 0, "nothing goes out without the owner row")
         XCTAssertEqual(engine.draft, "my words")
         XCTAssertEqual(engine.bannerError, "This chat no longer exists.")
@@ -330,6 +351,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let engine = makeEngine(spec: spec { postTurnRan = true; return .identity($0) }, store: store)
         engine.onTurnFinished = { outcome = $0 }
         engine.send("q")
+        await engine.finished()
         store.failProgress = true
         clock.advance(2)
         ai.emit(.text("lost"))
@@ -350,7 +372,9 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let engine = makeEngine(store: store)
         engine.onTurnFinished = { outcome = $0 }
         engine.send("q")
+        await engine.finished()
         engine.sendFollowUp(prompt: "Action applied.")
+        await engine.finished()
         store.failFinalize = true
         ai.emit(.text("answer"))
         ai.finish()
@@ -375,6 +399,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         }, store: store)
         engine.onTurnFinished = { outcome = $0 }
         engine.send("mark it done")
+        await engine.finished()
         store.failFinalizeOnce = true
         ai.emit(.text("Done."))
         ai.finish()
@@ -388,6 +413,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
 
         // Retry hands the applied change back to the surface.
         engine.retry()
+        await engine.finished()
         ai.emit(.text("Done."), call: 1)
         ai.finish(call: 1)
         expectTrue(await waitIdle(engine))
@@ -408,12 +434,14 @@ final class EmbeddedChatEngineTests: XCTestCase {
         }, store: store)
         engine.onTurnFinished = { outcome = $0 }
         engine.send("do it")
+        await engine.finished()
         store.failFinalizeOnce = true
         ai.emit(.text("Done."))
         ai.finish()
         expectTrue(await waitIdle(engine))
 
         engine.retry()
+        await engine.finished()
         store.failFinalizeOnce = true
         ai.emit(.text("Done."), call: 1)
         ai.finish(call: 1)
@@ -422,6 +450,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertTrue(message.contains("Already applied: added x; set due"), message)
 
         engine.retry()
+        await engine.finished()
         ai.emit(.text("Done."), call: 2)
         ai.finish(call: 2)
         expectTrue(await waitIdle(engine))
@@ -438,6 +467,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
             return ChatPostTurnResult(displayText: input.reply, applied: [ChatAppliedChange(key: "k", summary: "s")])
         }, store: store)
         engine.send("first")
+        await engine.finished()
         store.failFinalizeOnce = true
         ai.emit(.text("Done."))
         ai.finish()
@@ -445,6 +475,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertTrue(engine.canRetry)
 
         engine.send("something else")
+        await engine.finished()
         ai.emit(.text("ok"), call: 1)
         ai.finish(call: 1)
         expectTrue(await waitIdle(engine))
@@ -461,6 +492,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         }, store: store)
         engine.onTurnFinished = { outcome = $0 }
         engine.send("add x")
+        await engine.finished()
         store.failFinalize = true
         ai.emit(.text("Done."))
         ai.finish()
@@ -477,6 +509,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         store.failSession = true
         let engine = makeEngine(store: store)
         engine.send("q")
+        await engine.finished()
         ai.emit(.sessionID("s1"))
         expectTrue(await waitIdle(engine))
         XCTAssertEqual(engine.messages.last?.message.status, "error")
@@ -491,6 +524,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let store = MemoryEmbeddedChatStore()
         let engine = makeEngine(spec: switching, store: store)
         engine.send("one")
+        await engine.finished()
         ai.emit(.sessionID("s1"), .text("a"), .turnComplete("a"), .done)
         ai.finish()
         expectTrue(await waitIdle(engine))
@@ -498,6 +532,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
 
         provider = "ollama"
         engine.send("two")
+        await engine.finished()
         ai.emit(.sessionID("foreign"), .text("b"), .turnComplete("b"), .done)
         ai.finish()
         expectTrue(await waitIdle(engine))
@@ -505,6 +540,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
 
         provider = "claude"
         engine.send("three")
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 3)
         XCTAssertNil(ai.calls[2].sessionID)
         XCTAssertEqual(ai.calls[2].systemPrompt, "SYSTEM", "a fresh session gets the system prompt")
@@ -520,6 +556,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let store = FlakyStore()
         let engine = makeEngine(spec: switching, store: store)
         engine.send("one")
+        await engine.finished()
         ai.emit(.sessionID("s1"), .text("a"), .turnComplete("a"), .done)
         ai.finish()
         expectTrue(await waitIdle(engine))
@@ -527,39 +564,47 @@ final class EmbeddedChatEngineTests: XCTestCase {
         provider = "codex"
         store.failSession = true
         engine.send("two")
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 1, "nothing sent")
         XCTAssertEqual(engine.draft, "two")
     }
 
-    func testAFailedHistoryLoadBlocksSendingUntilItLoads() throws {
+    func testAFailedHistoryLoadBlocksSendingUntilItLoads() async throws {
         let store = FlakyStore()
         store.failLoad = true
         let engine = makeEngine(store: store)
         XCTAssertNotNil(engine.bannerError)
         engine.draft = "hello"
         XCTAssertFalse(engine.sendDraft(), "a send would fork the stored provider session")
+        await engine.finished()
         XCTAssertEqual(engine.draft, "hello")
         XCTAssertTrue(ai.calls.isEmpty)
         store.failLoad = false
         XCTAssertTrue(engine.sendDraft())
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 1)
     }
 
-    func testBlankOrBusySendsAreRefused() {
+    func testBlankOrBusySendsAreRefused() async {
         let engine = makeEngine()
         XCTAssertFalse(engine.send("   \n "))
+        await engine.finished()
         XCTAssertTrue(engine.send("first"))
+        await engine.finished()
         XCTAssertFalse(engine.send("second"), "one turn at a time")
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 1)
     }
 
     func testAnInactiveTurnTimesOut() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("start"))
         expectTrue(await waitForCondition { engine.liveTurn?.fullText == "start" })
         clock.advance(601)
         engine.checkInactivity()
+        await engine.finished()
         XCTAssertFalse(engine.isStreaming)
         XCTAssertEqual(engine.messages.last?.message.status, "error")
         XCTAssertEqual(engine.messages.last?.message.text, "start")
@@ -574,6 +619,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
             return ChatPostTurnResult(displayText: "(proposed 1 action(s))")
         })
         engine.send("do it")
+        await engine.finished()
         ai.finish()
         expectTrue(await waitIdle(engine))
         XCTAssertEqual(seen, "")
@@ -590,6 +636,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
             let engine = makeEngine(spec: spec(conversationID: conv))
             engines.append(engine)
             engine.send("q\(index)")
+            await engine.finished()
         }
         XCTAssertEqual(ai.calls.count, 3)
         let fourth = engines[3]
@@ -605,20 +652,22 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(try rows(fourth.spec.key.conversationID).map(\.role), ["user", "assistant"])
     }
 
-    func testStopOnAQueuedTurnPutsTheTextBackAndClearsTheMirror() throws {
+    func testStopOnAQueuedTurnPutsTheTextBackAndClearsTheMirror() async throws {
         let mirror = MemoryDraftMirror()
         for _ in 0..<3 {
-            let conv = try pool.write { db in try TestDatabase.insertChatConversation(db, contextType: "idea") }
+            let conv = try await pool.write { db in try TestDatabase.insertChatConversation(db, contextType: "idea") }
             makeEngine(spec: spec(conversationID: conv)).send("busy")
         }
         let engine = makeEngine(mirror: mirror)
         engine.draft = "my question"
         engine.sendDraft()
+        await engine.finished()
         XCTAssertTrue(engine.isQueued)
         XCTAssertEqual(engine.draft, "")
         XCTAssertEqual(mirror.restore(for: engine.spec.key), "my question", "survives a restart as a draft")
 
         engine.stop()
+        await engine.finished()
         XCTAssertFalse(engine.isQueued)
         XCTAssertEqual(engine.draft, "my question")
         XCTAssertNil(mirror.restore(for: engine.spec.key))
@@ -639,21 +688,25 @@ final class EmbeddedChatEngineTests: XCTestCase {
             let conv = try await pool.write { db in try TestDatabase.insertChatConversation(db, contextType: "idea") }
             let filler = makeEngine(spec: spec(conversationID: conv))
             filler.send("busy")
+            await filler.finished()
             fillers.append(filler)
         }
         let engine = makeEngine()
         engine.sendFollowUp(prompt: "Action applied: x.")
+        await engine.finished()
         XCTAssertTrue(engine.isQueued, "the follow-up waits for a slot")
         engine.stop()
+        await engine.finished()
         XCTAssertFalse(engine.isQueued)
         XCTAssertTrue(engine.hasPendingWork, "the follow-up is kept, never dropped")
         ai.finish(call: 0)
         expectTrue(await waitForCondition { !fillers[0].isStreaming })
         engine.send("next")
+        await engine.finished()
         XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\n\nnext")
     }
 
-    func testQuitNeverStartsAQueuedTurn() throws {
+    func testQuitNeverStartsAQueuedTurn() async throws {
         let mirror = MemoryDraftMirror()
         gate = EmbeddedStreamGate(limit: 1)
         let pool = try XCTUnwrap(self.pool), ai = try XCTUnwrap(self.ai)
@@ -661,12 +714,14 @@ final class EmbeddedChatEngineTests: XCTestCase {
             let store = DatabaseEmbeddedChatStore(dbPool: pool, conversationID: spec.key.conversationID ?? 0)
             return EmbeddedChatEngine(spec: spec, store: store, aiService: ai, gate: gate, draftMirror: mirror)
         }
-        let other = try pool.write { db in try TestDatabase.insertChatConversation(db, contextType: "idea") }
+        let other = try await pool.write { db in try TestDatabase.insertChatConversation(db, contextType: "idea") }
         let running = center.engine(for: spec(conversationID: other))
         running.send("running")
+        await running.finished()
         let queued = center.engine(for: spec())
         queued.draft = "wait for me"
         queued.sendDraft()
+        await queued.finished()
         XCTAssertTrue(queued.isQueued)
 
         center.finishAllAsPartial()
@@ -680,7 +735,9 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testFollowUpWhileStreamingIsSentAfterTheTurnEnds() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         engine.sendFollowUp(prompt: "Action applied: x.", notice: "Action applied: x")
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 1, "waits for the running turn")
         ai.emit(.sessionID("s1"), .text("ok"))
         ai.finish()
@@ -693,13 +750,16 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testAFollowUpBehindAFailedTurnWaitsAndRetryStaysAvailable() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         engine.sendFollowUp(prompt: "Action applied: x.")
+        await engine.finished()
         ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
         expectTrue(await waitIdle(engine))
         XCTAssertEqual(ai.calls.count, 1, "no follow-up on a session that just failed")
         XCTAssertTrue(engine.canRetry)
         XCTAssertTrue(engine.hasPendingWork)
         engine.retry()
+        await engine.finished()
         XCTAssertEqual(ai.calls[1].prompt, "Action applied: x.\n\nq", "Retry carries what waited")
         ai.emit(.text("ok"), call: 1)
         ai.finish(call: 1)
@@ -711,17 +771,23 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testFollowUpsQueuedBehindAStoppedTurnRideTheNextOwnerTurn() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         engine.sendFollowUp(prompt: "User rejected the action.")
+        await engine.finished()
         engine.stop()
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 1, "a stop never starts the queued follow-up")
         engine.send("next")
+        await engine.finished()
         XCTAssertEqual(ai.calls[1].prompt, "User rejected the action.\n\nnext")
     }
 
     func testHiddenPromptWritesNoOwnerRow() async throws {
         let engine = makeEngine(store: MemoryEmbeddedChatStore())
         engine.appendLocal(role: "assistant", text: "Do people report to you?")
+        await engine.finished()
         engine.sendHidden("The user completed the questionnaire.")
+        await engine.finished()
         XCTAssertEqual(engine.messages.map(\.message.role), ["assistant", "assistant"])
         XCTAssertNil(ai.calls.first?.dbPath, "a memory chat reads no workspace data")
     }
@@ -732,6 +798,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let engine = EmbeddedChatEngine(spec: spec(), store: MemoryEmbeddedChatStore(), aiService: ai, gate: gate,
                                         inactivityTimeout: 0.05) { self.clock.now }
         engine.send("q")
+        await engine.finished()
         clock.advance(10)
         expectTrue(await waitForCondition { !engine.isStreaming }, "the real watchdog task fires")
         XCTAssertEqual(engine.messages.last?.message.status, "error")
@@ -741,30 +808,37 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let store = FlakyStore()
         let engine = makeEngine(store: store)
         engine.send("q")
+        await engine.finished()
         store.failFinalize = true
         engine.shutdown(quietly: true)
+        await engine.finished()
         XCTAssertNotNil(engine.bannerError, "only \"not found\" is swallowed")
     }
 
-    func testFollowUpsComeBackWhenTheirTurnCannotBeSaved() throws {
+    func testFollowUpsComeBackWhenTheirTurnCannotBeSaved() async throws {
         let store = FlakyStore()
         let engine = makeEngine(store: store)
         store.failBegin = true
         engine.sendFollowUp(prompt: "Action applied: x.")
+        await engine.finished()
         XCTAssertTrue(engine.hasPendingWork)
         store.failBegin = false
         engine.send("next")
+        await engine.finished()
         XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\n\nnext")
     }
 
     func testFollowUpsOfAFailedTurnRideItsRetry() async throws {
         let engine = makeEngine()
         engine.sendFollowUp(prompt: "Action applied: x.")
+        await engine.finished()
         ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
         expectTrue(await waitIdle(engine))
         engine.sendFollowUp(prompt: "Action applied: y.")
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 1, "nothing runs on the session that just failed")
         engine.retry()
+        await engine.finished()
         XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\nAction applied: y.")
     }
 
@@ -773,11 +847,13 @@ final class EmbeddedChatEngineTests: XCTestCase {
         store.failSession = true
         let engine = makeEngine(store: store)
         engine.send("q")
+        await engine.finished()
         ai.emit(.sessionID("s1"))
         expectTrue(await waitIdle(engine))
         store.failSession = false
         XCTAssertFalse(engine.canRetry, "a storage fault is not retried")
         engine.send("again")
+        await engine.finished()
         XCTAssertEqual(ai.calls.count, 2)
         XCTAssertNil(ai.calls.last?.sessionID, "the unsaved session is not resumed")
         ai.emit(.sessionID("s1"), call: 1)
@@ -792,6 +868,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let engine = makeEngine(spec: spec { _ in ChatPostTurnResult(displayText: "a", notices: ["Applied: x"]) },
                                 store: store)
         engine.send("q")
+        await engine.finished()
         store.failAppend = true
         ai.emit(.text("a"))
         ai.finish()
@@ -803,8 +880,10 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let store = FlakyStore()
         let engine = makeEngine(store: store)
         engine.send("q")
+        await engine.finished()
         store.failAppend = true
         engine.sendFollowUp(prompt: "Action applied.", notice: "Applied: x")
+        await engine.finished()
         XCTAssertNotNil(engine.bannerError)
         store.failAppend = false
         ai.emit(.text("ok"))
@@ -816,19 +895,26 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testAStoppedTurnDoesNotSendItsFollowUpsAgain() async throws {
         let engine = makeEngine()
         engine.sendFollowUp(prompt: "Action applied: x.")
+        await engine.finished()
         engine.stop()
+        await engine.finished()
         engine.send("next")
+        await engine.finished()
         XCTAssertEqual(ai.calls.last?.prompt, "next", "the provider already has it")
     }
 
     func testAStopAfterAFailureLetsFollowUpsRunAgain() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
         expectTrue(await waitIdle(engine))
         engine.send("again")
+        await engine.finished()
         engine.stop()
+        await engine.finished()
         engine.sendFollowUp(prompt: "Action applied: y.")
+        await engine.finished()
         XCTAssertEqual(ai.calls.last?.prompt, "Action applied: y.")
     }
 
@@ -837,9 +923,11 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testQuietShutdownMidStreamShowsNothing() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         let conv = conversationID
         try await pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
         engine.shutdown(quietly: true)
+        await engine.finished()
         XCTAssertFalse(engine.isBusy)
         XCTAssertNil(engine.bannerError)
         XCTAssertEqual(gate.active.count, 0)
@@ -848,9 +936,11 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testFinishAsPartialKeepsTheStreamedText() async throws {
         let engine = makeEngine()
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("so far"))
         expectTrue(await waitForCondition { engine.liveTurn?.fullText == "so far" })
         engine.finishAsPartial()
+        await engine.finished()
         XCTAssertEqual(try rows().last?.status, "partial")
         XCTAssertEqual(try rows().last?.text, "so far")
     }
@@ -858,6 +948,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     func testMemoryStoreRunsTheSameTurn() async throws {
         let engine = makeEngine(store: MemoryEmbeddedChatStore())
         engine.send("hello")
+        await engine.finished()
         ai.emit(.text("hi there"))
         ai.finish()
         expectTrue(await waitIdle(engine))
@@ -910,39 +1001,39 @@ private final class FlakyStore: EmbeddedChatStore {
         return try base.loadSessionID()
     }
 
-    func beginTurn(ownerText: String?, turnID: String, provider: String?) throws -> (ownerID: Int64?, assistantID: Int64) {
+    func beginTurn(ownerText: String?, turnID: String, provider: String?) async throws -> (ownerID: Int64?, assistantID: Int64) {
         if failBegin { throw Failure() }
-        return try base.beginTurn(ownerText: ownerText, turnID: turnID, provider: provider)
+        return try await base.beginTurn(ownerText: ownerText, turnID: turnID, provider: provider)
     }
 
-    func saveProgress(messageID: Int64, text: String) throws {
+    func saveProgress(messageID: Int64, text: String) async throws {
         if failProgress { throw Failure() }
-        try base.saveProgress(messageID: messageID, text: text)
+        try await base.saveProgress(messageID: messageID, text: text)
     }
 
-    func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) throws {
+    func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws {
         if failFinalize { throw Failure() }
         if failFinalizeOnce {
             failFinalizeOnce = false
             throw Failure()
         }
-        try base.finalize(messageID: messageID, text: text, status: status, errorCode: errorCode, errorMessage: errorMessage)
+        try await base.finalize(messageID: messageID, text: text, status: status, errorCode: errorCode, errorMessage: errorMessage)
     }
 
-    func append(role: String, text: String) throws -> Int64 {
+    func append(role: String, text: String) async throws -> Int64 {
         if failAppend { throw Failure() }
-        return try base.append(role: role, text: text)
+        return try await base.append(role: role, text: text)
     }
 
-    func saveSessionID(_ sessionID: String?) throws {
+    func saveSessionID(_ sessionID: String?) async throws {
         if failSession { throw Failure() }
-        try base.saveSessionID(sessionID)
+        try await base.saveSessionID(sessionID)
     }
 }
 
 @MainActor
 final class EmbeddedChatEngineWillSendTests: XCTestCase {
-    func testARefusedSendKeepsTheDraftAndStartsNothing() {
+    func testARefusedSendKeepsTheDraftAndStartsNothing() async {
         let ai = ScriptedAIService()
         var allow = false
         var seen: [String] = []
@@ -954,11 +1045,13 @@ final class EmbeddedChatEngineWillSendTests: XCTestCase {
                                         gate: EmbeddedStreamGate())
         engine.draft = "  do it  "
         XCTAssertFalse(engine.sendDraft())
+        await engine.finished()
         XCTAssertEqual(engine.draft, "  do it  ")
         XCTAssertTrue(ai.calls.isEmpty)
         XCTAssertTrue(engine.messages.isEmpty)
         allow = true
         XCTAssertTrue(engine.sendDraft())
+        await engine.finished()
         XCTAssertEqual(seen, ["do it", "do it"], "the trimmed owner text")
         XCTAssertEqual(ai.calls.count, 1)
     }
@@ -971,6 +1064,7 @@ final class EmbeddedChatEngineWillSendTests: XCTestCase {
         let engine = EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai,
                                         gate: EmbeddedStreamGate())
         engine.send("q")
+        await engine.finished()
         ai.finish()
         let done = await waitForCondition { !engine.isStreaming }
         XCTAssertTrue(done)
@@ -992,7 +1086,9 @@ final class EmbeddedChatEngineSurfaceHookTests: XCTestCase {
         let engine = EmbeddedChatEngine(spec: spec { alive }, store: MemoryEmbeddedChatStore(), aiService: ai,
                                         gate: EmbeddedStreamGate())
         engine.send("q")
+        await engine.finished()
         engine.sendFollowUp(prompt: "Action applied.")
+        await engine.finished()
         alive = false
         ai.emit(.text("ok"))
         ai.finish()

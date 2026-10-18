@@ -38,7 +38,7 @@ final class ProjectDetailViewModel {
     /// One pending delete (board #670).
     private let pendingWrites = PendingWrites()
     private let debounce: Duration
-    private let importFile: (URL, Int64) throws -> ChatAttachment
+    private let importFile: (URL, Int64) async throws -> ChatAttachment
     /// `chat_files` root: a deleted project's (now empty) directory goes too.
     private let attachmentsRoot: URL?
     /// After a committed write that changes the project's prompt.
@@ -49,7 +49,7 @@ final class ProjectDetailViewModel {
         dbPool: DatabasePool,
         debounce: Duration = .milliseconds(500),
         attachmentsRoot: URL? = nil,
-        importFile: @escaping (URL, Int64) throws -> ChatAttachment,
+        importFile: @escaping (URL, Int64) async throws -> ChatAttachment,
         onPromptChanged: @escaping (Int64) -> Void = { _ in }
     ) {
         self.projectID = projectID
@@ -117,14 +117,20 @@ final class ProjectDetailViewModel {
         }
     }
 
-    func addFiles(_ urls: [URL]) {
-        var failures: [String] = []
-        for url in urls {
-            do {
-                _ = try importFile(url, projectID)
-            } catch {
-                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+    /// Copied and recorded off the main thread, in this view model's chain
+    /// (board #670); the list shows them once stored.
+    func addFiles(_ urls: [URL]) async {
+        let (importFile, projectID) = (importFile, projectID)
+        let failures = await writes.run { () -> [String] in
+            var failures: [String] = []
+            for url in urls {
+                do {
+                    _ = try await importFile(url, projectID)
+                } catch {
+                    failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
             }
+            return failures
         }
         if failures.count < urls.count { onPromptChanged(projectID) }
         guard refresh() else { return }
@@ -263,10 +269,10 @@ extension ProjectDetailViewModel {
     /// The production importer: the shared attachment store (validation,
     /// 0600 copy under `chat_files/projects/<id>/`). Without an active
     /// workspace every import fails with a visible reason.
-    static func storeImporter(dbPool: DatabasePool, rootDir: URL?) -> (URL, Int64) throws -> ChatAttachment {
+    static func storeImporter(dbPool: DatabasePool, rootDir: URL?) -> (URL, Int64) async throws -> ChatAttachment {
         guard let rootDir else { return { _, _ in throw ImportError.noWorkspace } }
         let store = ChatAttachmentStore(db: dbPool, rootDir: rootDir)
-        return { url, projectID in try store.importFile(url: url, projectID: projectID) }
+        return { url, projectID in try await store.importFile(url: url, projectID: projectID) }
     }
 
     /// A database write in this view model's chain (board #670): it starts

@@ -205,7 +205,7 @@ final class TargetBriefCenter {
             return
         }
         setVM(chatVM, for: next.id)
-        guard send(next.request.text, on: chatVM) else {
+        guard await send(next.request.text, on: chatVM) else {
             let returned = Self.returnBrief(next.request.text, to: chatVM)
             failToStart(next.id, message: (chatVM.errorMessage ?? "The brief could not be sent")
                 + (returned ? Self.backInTheBox : " — re-ask here."))
@@ -217,8 +217,10 @@ final class TargetBriefCenter {
     /// Send the brief through the VM's input field and report whether a
     /// stream actually started (`send()` flips `isStreaming` synchronously;
     /// still false means the send was a no-op, which must not pass for a
-    /// finished brief).
-    private func send(_ text: String, on chatVM: TargetChatViewModel) -> Bool {
+    /// finished brief). The turn's rows are written off the main thread
+    /// (board #670), so this waits for them: a turn whose rows could not be
+    /// written did not start either.
+    private func send(_ text: String, on chatVM: TargetChatViewModel) async -> Bool {
         // The live VM may carry an error from an earlier OWNER turn; `finish`
         // reads `errorMessage` as this brief's outcome, so start it clean.
         chatVM.errorMessage = nil
@@ -228,7 +230,14 @@ final class TargetBriefCenter {
         chatVM.inputText = text
         chatVM.send()
         chatVM.inputText = draft
-        return chatVM.isStreaming
+        guard chatVM.isStreaming else { return false }
+        await chatVM.engine.started()
+        if chatVM.isStreaming { return true }
+        // The engine gave the brief back ahead of the draft; the caller puts
+        // it after the draft, as for any brief that never went out.
+        let sent = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if chatVM.inputText == (draft.isEmpty ? sent : "\(sent)\n\(draft)") { chatVM.inputText = draft }
+        return false
     }
 
     private static let backInTheBox = " — the brief is back in the message box; send it from there."
@@ -252,7 +261,12 @@ final class TargetBriefCenter {
         // A cancelled watcher still settles its job and drains, so it can
         // never strand the queue — but it stops its stream first, or the
         // next brief would start while this one still runs unobserved.
-        if Task.isCancelled { chatVM.cancelStream() }
+        if Task.isCancelled {
+            chatVM.cancelStream()
+            // Its end is written off the main thread (board #670): the next
+            // brief starts once this one has ended.
+            await chatVM.engine.finished()
+        }
         finish(jobID, vm: chatVM)
         drain()
     }

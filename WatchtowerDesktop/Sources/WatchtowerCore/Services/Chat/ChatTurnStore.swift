@@ -2,7 +2,9 @@ import Foundation
 import GRDB
 
 /// The writes a running turn makes. Swift is the only writer of these rows
-/// (spec §2.2); every write is synchronous and small.
+/// (spec §2.2); every write is small and awaits GRDB's writer queue, so a
+/// write lock held by another process never blocks the main thread (board
+/// #670). `ChatTurnDriver` queues them in order.
 package struct ChatTurnStore: Sendable {
     package let dbPool: DatabasePool
 
@@ -10,8 +12,8 @@ package struct ChatTurnStore: Sendable {
         self.dbPool = dbPool
     }
 
-    package func saveProgress(messageID: Int64, text: String, status: String, usage: ChatUsage?, errorCode: String?) throws {
-        try dbPool.write { db in
+    package func saveProgress(messageID: Int64, text: String, status: String, usage: ChatUsage?, errorCode: String?) async throws {
+        try await dbPool.write { db in
             try ChatTreeQueries.updateAssistant(db, id: messageID, text: text, status: status,
                                                 tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut,
                                                 errorCode: errorCode, errorMessage: nil)
@@ -21,15 +23,15 @@ package struct ChatTurnStore: Sendable {
         }
     }
 
-    package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) throws {
-        try dbPool.write { db in
+    package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {
+        try await dbPool.write { db in
             try ChatStepQueries.upsertStart(db, messageID: messageID, seq: seq, toolID: start.id, name: start.name,
                                             argsJSON: start.argsJSON, startedAt: date.timeIntervalSince1970)
         }
     }
 
-    package func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) throws {
-        try dbPool.write { db in
+    package func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws {
+        try await dbPool.write { db in
             try ChatStepQueries.finish(db, messageID: messageID, toolID: end.id, ok: end.ok, summary: end.summary,
                                        sourcesJSON: ChatSource.encodeList(end.sources), endedAt: date.timeIntervalSince1970)
         }
@@ -38,8 +40,8 @@ package struct ChatTurnStore: Sendable {
     /// A session spawned for another project than the conversation's current
     /// one (the chat was moved mid-turn) records nothing: resuming it would
     /// skip the new project's prompt and files.
-    package func saveSessionID(conversationID: Int64, sessionID: String, projectID: Int64?) throws {
-        try dbPool.write { db in
+    package func saveSessionID(conversationID: Int64, sessionID: String, projectID: Int64?) async throws {
+        try await dbPool.write { db in
             try ChatConversationQueries.updateSessionID(db, id: conversationID, sessionID: sessionID, projectID: projectID)
         }
     }
@@ -60,8 +62,8 @@ package struct ChatTurnStore: Sendable {
         status: String,
         usage: ChatUsage?,
         error: ChatSessionError?
-    ) throws -> [ChatArtifact] {
-        try dbPool.write { db in
+    ) async throws -> [ChatArtifact] {
+        try await dbPool.write { db in
             try ChatTreeQueries.updateAssistant(db, id: messageID, text: text, status: status,
                                                 tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut,
                                                 errorCode: error?.code.rawValue, errorMessage: error?.message)

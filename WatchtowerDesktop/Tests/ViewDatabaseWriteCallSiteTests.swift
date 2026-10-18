@@ -9,12 +9,12 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
     /// `try` / `try?` / `try!`, an optional parenthesised receiver
     /// (`(db ?? other).write`), a dotted receiver with optional chaining
     /// (`appState.databaseManager?.dbPool.write`), then a GRDB write entry
-    /// point called with a closure or an argument — never `write(to:)` or
-    /// `write(toFile:)`, a file write. `try await …` never matches: `await`
-    /// is followed by a space.
+    /// point called with a closure or an argument — never `write(to:)`,
+    /// `write(toFile:)` or `write(contentsOf:)`, a file or pipe write.
+    /// `try await …` never matches: `await` is followed by a space.
     private static let syncWrite = #"\btry[?!]?\s+(\([^()]*\)\s*)?[\w.?]*\."#
         + #"(write|writeWithoutTransaction|writeInTransaction|barrierWriteWithoutTransaction)"#
-        + #"\s*(\{|\((?!to:|toFile:))"#
+        + #"\s*(\{|\((?!to:|toFile:|contentsOf:))"#
 
     func testThePatternCatchesEverySynchronousWriteShape() throws {
         let write = try NSRegularExpression(pattern: Self.syncWrite)
@@ -36,6 +36,7 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
             "await ViewWrite.run(db.dbPool, pending: $isSaving, { conn in",
             "try file.contents.write(to: url, atomically: true, encoding: .utf8)",
             "try content.write(toFile: path, atomically: true, encoding: .utf8)",
+            "try stdin.write(contentsOf: Data(line.utf8))",
             "try db.dbPool.read { conn in"
         ]
         for line in caught {
@@ -79,6 +80,24 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
             $0.lastPathComponent == "DatabaseManager.swift"
         }
         XCTAssertEqual(manager, 1, "DatabaseManager.swift moved: point the scan at it")
+    }
+
+    /// Board #670 phase 2b-2: the stores the chats write through — the main
+    /// chat's turn store and session client, the embedded chats' store and
+    /// engine, attachments, artifact panels and comments, the surfaces that
+    /// create a chat's conversation — and the Inbox action strip.
+    func testNoSynchronousDatabaseWriteInChatStores() throws {
+        let folders = ["WatchtowerCore/Services/Chat", "Services/Chat", "Services/ChatSurfaces"]
+        var total = 0
+        for folder in folders {
+            let (scanned, _) = try scan(Self.sources.appendingPathComponent(folder)) { $0.pathExtension == "swift" }
+            XCTAssertGreaterThan(scanned, 0, "\(folder): nothing scanned, wrong path?")
+            total += scanned
+        }
+        XCTAssertGreaterThan(total, 40, "the scan found too few chat files: wrong path?")
+        let named: Set = ["ActionStripViewModel.swift", "EmbeddedChatWiring.swift"]
+        let (single, _) = try scan(Self.sources) { named.contains($0.lastPathComponent) }
+        XCTAssertEqual(single, named.count, "a named file moved: point the scan at it")
     }
 
     /// The one synchronous write that never runs on the main thread, by

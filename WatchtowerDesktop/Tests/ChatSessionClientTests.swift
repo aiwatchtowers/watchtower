@@ -142,37 +142,47 @@ final class ChatSessionClientTests: XCTestCase {
     }
 
     /// A spawn failure never throws at the caller: the turn fails visibly.
-    func testSpawnFailureFailsTheTurnWithProviderUnavailable() throws {
+    func testSpawnFailureFailsTheTurnWithProviderUnavailable() async throws {
         struct Boom: Error {}
         let client = makeClient { throw Boom() }
         XCTAssertFalse(client.isAlive)
         XCTAssertEqual(client.startupError?.code, .providerUnavailable)
+        await client.driver.writesSettled()
         client.startTurn(request())
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "error")
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().errorCode, "provider_unavailable")
         XCTAssertNil(client.continuousLeafID, "a failed turn forces a replay next time")
     }
 
-    func testSendFailureFailsTheTurn() throws {
+    func testSendFailureFailsTheTurn() async throws {
         struct PipeClosed: Error {}
         let fake = FakeChatSessionProcess(arguments: [])
         fake.sendError = PipeClosed()
         let client = makeClient { fake }
+        await client.driver.writesSettled()
         client.startTurn(request())
+        await client.driver.writesSettled()
         XCTAssertFalse(client.isBusy)
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "error")
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().errorCode, "provider_unavailable")
     }
 
     func testProcessDeathKeepsPartialTextAndMarksTheClientDead() async throws {
         let fake = FakeChatSessionProcess(arguments: [])
         let client = makeClient { fake }
+        await client.driver.writesSettled()
         client.startTurn(request())
         fake.emit(.textDelta(turnID: "t1", text: "half"))
         fake.exit(status: 9)
         let dead = await waitForCondition { !client.isAlive }
         XCTAssertTrue(dead)
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().text, "half")
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "partial")
     }
 
@@ -181,17 +191,21 @@ final class ChatSessionClientTests: XCTestCase {
     func testUnexpectedExitSurfacesStatusAndStderr() async throws {
         let fake = FakeChatSessionProcess(arguments: [])
         let client = makeClient { fake }
+        await client.driver.writesSettled()
         client.startTurn(request())
         fake.emit(.textDelta(turnID: "t1", text: "half"))
         fake.exit(status: 2, stderr: "panic: boom\n\ngoroutine 1\n")
         let dead = await waitForCondition { !client.isAlive }
         XCTAssertTrue(dead)
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "partial")
         XCTAssertEqual(client.exitError?.code, .sessionLost)
         XCTAssertEqual(client.exitError?.message,
                        "The chat session ended unexpectedly (exit status 2). panic: boom goroutine 1")
         XCTAssertEqual(client.driver.lastSessionError, client.exitError)
+        await client.driver.writesSettled()
         client.startTurn(request())
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "error")
         XCTAssertEqual(client.driver.lastSessionError?.code, .sessionLost)
     }
@@ -233,15 +247,18 @@ final class ChatSessionClientTests: XCTestCase {
     }
 
     /// Stop on a held turn: nothing was sent, the row is kept as partial.
-    func testCancelWhilePendingDropsTheHeldTurn() throws {
+    func testCancelWhilePendingDropsTheHeldTurn() async throws {
         let fake = FakeChatSessionProcess(arguments: [])
         let client = ChatSessionClient(config: config(), spawn: { fake }, store: ChatTurnStore(dbPool: dbPool),
                                        clock: Date.init, launchImmediately: false)
+        await client.driver.writesSettled()
         client.startTurn(request())
         client.cancel()
+        await client.driver.writesSettled()
         XCTAssertFalse(client.isBusy)
         client.launch()
         XCTAssertTrue(fake.turns.isEmpty)
+        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "partial")
     }
 
