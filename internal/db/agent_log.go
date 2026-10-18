@@ -246,12 +246,19 @@ func upsertAgentLogSession(tx *sql.Tx, s AgentLogSession) error {
 	return nil
 }
 
+// agentLogReplayCheckQuery counts the session's api_calls already stored under
+// a message id. The unary + keeps session_uuid and kind off their indexes so
+// the planner seeks the narrow unique key range: through idx_agent_log_events_kind
+// it walked every api_call per subagent row, holding the import's write lock
+// for seconds per batch.
+const agentLogReplayCheckQuery = `SELECT COUNT(*) FROM agent_log_events WHERE +session_uuid = ? AND +kind = 'api_call'
+	AND key >= ? AND key < ? AND key <> ?`
+
 func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 	if e.SubagentReplayCheck && e.MessageID != "" {
 		var n int
 		prefix := e.MessageID + ":"
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE session_uuid = ? AND kind = 'api_call'
-			AND key >= ? AND key < ? AND key <> ?`, e.SessionUUID, prefix, prefix+"￿", e.Key).Scan(&n); err != nil {
+		if err := tx.QueryRow(agentLogReplayCheckQuery, e.SessionUUID, prefix, prefix+"￿", e.Key).Scan(&n); err != nil {
 			return err
 		}
 		if n > 0 {
