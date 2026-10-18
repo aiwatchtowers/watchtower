@@ -26,8 +26,9 @@ var inMemoryOpenMarkers = []string{`db.OpenTestDB(`, `db.Open(":memory:")`}
 // per-package timeout (internal/kb had 80 un-templated opens).
 //
 // Out of reach by design: a test that opens a file-backed database
-// (db.Open(<path>)) migrates from scratch regardless; use db.OpenTestDB
-// unless the test genuinely needs a file.
+// (db.Open(<path>)) migrates from scratch unless its package calls
+// db.InitTestFileTemplate() (which installs the in-memory template too); use
+// db.OpenTestDB unless the test genuinely needs a file.
 func TestInitTestTemplate_EveryInMemoryPackageInstallsIt(t *testing.T) {
 	root := repoRootForOwnerScan(t)
 
@@ -63,7 +64,7 @@ func TestInitTestTemplate_EveryInMemoryPackageInstallsIt(t *testing.T) {
 					st.opens = true
 				}
 			}
-			if strings.Contains(string(src), "db.InitTestTemplate()") {
+			if strings.Contains(string(src), "db.InitTestTemplate()") || strings.Contains(string(src), "db.InitTestFileTemplate()") {
 				st.installs = true
 			}
 			return nil

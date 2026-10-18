@@ -32,7 +32,9 @@ import (
 func TestMain(m *testing.M) {
 	// Allow sub-second poll intervals in tests for fast execution.
 	minPollInterval = 1 * time.Millisecond
-	if err := db.InitTestTemplate(); err != nil {
+	// Fresh database files under t.TempDir() start from the template too:
+	// each one migrated from scratch otherwise (~15 s under -race, #684).
+	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}

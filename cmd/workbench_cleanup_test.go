@@ -49,10 +49,13 @@ func (failingCleanupResults) SaveCleanupResult(context.Context, int64, string, s
 	return errors.New("database is locked")
 }
 
-// mtimeBirth stands in for the filesystem birth time (darwin-only): a
-// fixture's worktree admin dir is fresh, so its mtime is its birth.
+// mtimeBirth stands in for the filesystem birth time (darwin-only) with the
+// mtime of the admin dir's commondir file, which `git worktree add` writes
+// once and nothing rewrites. Not the admin dir's own mtime: every file git
+// later writes there (index, logs/HEAD, ORIG_HEAD, ...) moves it, so it
+// trails the worktree's real birth (#684).
 func mtimeBirth(adminDir string) (time.Time, bool) {
-	fi, err := os.Stat(adminDir)
+	fi, err := os.Stat(filepath.Join(adminDir, "commondir"))
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -606,18 +609,26 @@ func TestCleanupCmd_SweepApplyItemRemovesTheNamedWorktree(t *testing.T) {
 // placedSession adds a worktree under the repository's .claude/worktrees on
 // wt/<slug>, its branch carrying one pushed commit, then a session row
 // placed in it — the order the Desktop uses (worktree first, row after).
+// The row's created_at is the insert time (placedSessionAt with a zero
+// rowAt), taken once the worktree exists.
 func (f *cleanupFixture) placedSession(slug string) string {
 	f.t.Helper()
-	return f.placedSessionAt(slug, time.Now())
+	return f.placedSessionAt(slug, time.Time{})
 }
 
-// placedSessionAt is placedSession with the row's created_at given.
+// placedSessionAt is placedSession with the row's created_at given; zero is
+// the moment of the insert, after the worktree exists. Taking "now" before
+// the git commands instead let the worktree be born in the next second, past
+// the row's created_at+1s, so it was no longer the row's by record (#684).
 func (f *cleanupFixture) placedSessionAt(slug string, rowAt time.Time) string {
 	f.t.Helper()
 	root := filepath.Join(f.repo, ".claude", "worktrees", slug)
 	f.gitIn(f.repo, "worktree", "add", "-q", "-b", "wt/"+slug, root, "main")
 	f.commit(root, slug+".txt")
 	f.gitIn(root, "push", "-q", "origin", "wt/"+slug)
+	if rowAt.IsZero() {
+		rowAt = time.Now()
+	}
 	_, err := f.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, created_at, worktree_branch, worktree_base)
 		VALUES (?, 'claude', 'placed', ?, ?, ?, ?, 'abc')`, f.wb, root, "p-"+slug,
 		rowAt.UTC().Format(time.RFC3339), "wt/"+slug)
