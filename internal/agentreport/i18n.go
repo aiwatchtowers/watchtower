@@ -95,8 +95,8 @@ var msgs = map[string][2]string{
 		"Прочитай файл один раз и запиши заметки или читай только нужный диапазон."},
 
 	"s1.label": {"%s a session", "%s за сессию"},
-	"s1.finding": {"%d of %s were never used; listing them took %s in %s",
-		"%d из %s ни разу не использовались; их описания заняли %s в %s"},
+	"s1.finding": {"%d of %s %s; listing them took %s in %s",
+		"%d из %s %s; их описания заняли %s в %s"},
 	"s1.action": {"Disable or remove them, or rewrite the description of the ones that should trigger.",
 		"Отключи или удали их либо перепиши описание тех, что должны срабатывать."},
 }
@@ -128,20 +128,24 @@ var nouns = map[string]struct {
 	"task.in":    {[2]string{"task", "tasks"}, [3]string{"задаче", "задачах", "задачах"}},
 	"file.of":    {[2]string{"file", "files"}, [3]string{"файла", "файлов", "файлов"}},
 	"skill.of":   {[2]string{"listed skill", "listed skills"}, [3]string{"навыка в списке", "навыков в списке", "навыков в списке"}},
+	"never.used": {[2]string{"was never used", "were never used"}, [3]string{"ни разу не использовался", "ни разу не использовались", "ни разу не использовались"}},
 	"token":      {[2]string{"token", "tokens"}, [3]string{"токен", "токена", "токенов"}},
 }
 
 // count renders "4 runs" / "4 запуска".
-func (l Lang) count(n int, noun string) string {
+func (l Lang) count(n int, noun string) string { return fmt.Sprintf("%d %s", n, l.form(n, noun)) }
+
+// form is the noun's form for n, without the number ("runs" / "запуска").
+func (l Lang) form(n int, noun string) string {
 	f, ok := nouns[noun]
 	if !ok {
 		panic("agentreport: no noun " + noun)
 	}
 	if l == English {
 		if n == 1 {
-			return "1 " + f.en[0]
+			return f.en[0]
 		}
-		return fmt.Sprintf("%d %s", n, f.en[1])
+		return f.en[1]
 	}
 	form := f.ru[2]
 	switch m10, m100 := n%10, n%100; {
@@ -154,7 +158,7 @@ func (l Lang) count(n int, noun string) string {
 		// The prepositional has one plural form ("в 3 сессиях").
 		form = f.ru[2]
 	}
-	return fmt.Sprintf("%d %s", n, form)
+	return form
 }
 
 // tok renders a token count: "950 tokens" / "950 токенов" under a thousand,

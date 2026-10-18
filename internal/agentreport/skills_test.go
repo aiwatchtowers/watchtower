@@ -201,3 +201,50 @@ func TestSkills_JSONKeys(t *testing.T) {
 		"rows":[{"name":"review","invocations":1,"by_trigger":{"proactive":0,"slash":1,"read":0},"cost_usd":0,"sessions":1}],
 		"never_used":[{"name":"idle","listing_tokens":10}]}`, string(b))
 }
+
+// A SKILL.md read gives the bare folder name; the listing namespaces plugin
+// skills. One listed "<plugin>:<name>" match takes the use, several take none.
+func TestSkills_BareNameMatchesNamespacedListing(t *testing.T) {
+	s := evset{}
+	s.add("s1", 0, skillEv("brainstorming", "read"))
+	s.add("s1", sec, skillEv("review", "read"))
+	listing := []agentlogdb.AgentSkillListed{listed("s1", "plug:brainstorming", 10),
+		listed("s1", "a:review", 10), listed("s1", "b:review", 10)}
+	r := Skills(factsOf(s), s, nil, listing)
+	row, ok := rowOf(r, "plug:brainstorming")
+	require.True(t, ok)
+	assert.Equal(t, 1, row.ByTrigger["read"])
+	_, ok = rowOf(r, "review")
+	assert.True(t, ok, "ambiguous: the bare name stays")
+	assert.Equal(t, []string{"a:review", "b:review"}, unusedNames(r))
+	assert.Equal(t, 1, r.Used, "the unlisted bare review is not counted as used")
+	assert.Equal(t, 3, r.Listed)
+}
+
+// AGENTLOG-07 rule over an input firing S1 only.
+func TestHintsS_CiteEvidence(t *testing.T) {
+	in := skillsRulesInput(UnusedMinSessions)
+	hs := Hints(in)
+	ids := map[string]bool{}
+	for _, h := range hs {
+		ids[h.ID] = true
+		assert.Positive(t, h.EstimateTokens, h.ID)
+		require.NotEmpty(t, h.Evidence, h.ID)
+		for _, e := range h.Evidence {
+			assert.Equal(t, "skill", e.Kind, h.ID)
+			assert.Contains(t, unusedNames(in.Skills), e.Ref, h.ID)
+		}
+	}
+	assert.Equal(t, map[string]bool{"S1": true}, ids)
+}
+
+func TestHintS1_RussianOneUnused(t *testing.T) {
+	in := skillsRulesInput(UnusedMinSessions)
+	in.Lang = Russian
+	in.Skills.NeverUsed = in.Skills.NeverUsed[:1]
+	hs := hintsOf(Hints(in), "S1")
+	require.Len(t, hs, 1)
+	assert.Equal(t, "1 из 3 навыков в списке ни разу не использовался; их описания заняли 5,0 тыс. токенов в 5 сессиях", hs[0].Finding)
+	in.Lang = English
+	assert.Equal(t, "1 of 3 listed skills was never used; listing them took 5.0k tokens in 5 sessions", hintsOf(Hints(in), "S1")[0].Finding)
+}

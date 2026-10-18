@@ -129,9 +129,9 @@ Built by `agentreport.Context` from the sessions with the v2 facts (every source
 
 ### The skills block (`skills`)
 
-Built by `agentreport.Skills` from the same measured sessions (`facts_sessions`), their `skill` events, the `skill` of their API calls and `agent_log_skill_listing`. A skill is used when the period has a `Skill` call (`proactive`), a slash command (`slash`) or a read of its `SKILL.md` (`read`) for it, or an API call made under it.
+Built by `agentreport.Skills` from the same measured sessions (`facts_sessions`), their `skill` events, the `skill` of their API calls and `agent_log_skill_listing`. A skill is used when the period has a `Skill` call (`proactive`), a slash command (`slash`) or a read of its `SKILL.md` (`read`) for it, or an API call made under it. A used name that is not listed (a `SKILL.md` read gives the bare folder name, the listing namespaces plugin skills as `<plugin>:<name>`) counts for the one listed name whose part after the last `:` equals it; with none or several it stays bare.
 
-- `listed` (distinct skills in the listings), `used` (= the rows), `listing_tokens` (the median per session of the whole listing; a listing's bytes x the session's main-lane tokens per byte, as in the context block, else 2.6 bytes a token).
+- `listed` (distinct skills in the listings), `used` (the listed skills with a row, so `used` ≤ `listed`; `rows` may also hold unlisted ones), `listing_tokens` (the median per session of the whole listing; a listing's bytes x the session's main-lane tokens per byte, as in the context block, else 2.6 bytes a token).
 - `rows` (`name`, `invocations`, `by_trigger` with `proactive`, `slash`, `read` always present, `cost_usd` of the API calls with that `skill`, `sessions`), most invocations first.
 - `never_used` (`name`, `listing_tokens` = the median per session it was listed in), largest listing first. The `--session` drill-down computes the block for its hints but does not return it.
 

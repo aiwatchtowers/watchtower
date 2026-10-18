@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
 	"watchtower/internal/agentlogdb"
@@ -17,7 +18,7 @@ import (
 type SkillsReport struct {
 	FactsSessions int           `json:"facts_sessions"`
 	Listed        int           `json:"listed"`
-	Used          int           `json:"used"`
+	Used          int           `json:"used"` // listed skills with a row (≤ Listed); Rows may also hold unlisted ones
 	ListingTokens int64         `json:"listing_tokens"`
 	Rows          []SkillRow    `json:"rows"`
 	NeverUsed     []UnusedSkill `json:"never_used"`
@@ -35,7 +36,7 @@ type SkillRow struct {
 	CostUSD     float64        `json:"cost_usd"`
 	Sessions    int            `json:"sessions"`
 
-	last string // the last session counted
+	last string // the last session counted: Skills walks one session's events at a time
 }
 
 // UnusedSkill is a skill listed in the period's sessions and never used;
@@ -50,11 +51,25 @@ type UnusedSkill struct {
 // Skills measures the period's skills from the sessions' events (keyed by
 // uuid), their baseline parts (for the main lane's tokens per byte, as in
 // Context) and their skill listing. Sessions without the v2 facts are skipped.
+// A used name that is not listed (a SKILL.md read gives the bare folder name)
+// counts for the one listed "<plugin>:<name>" it matches, if exactly one.
 func Skills(sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
 	parts []agentlogdb.AgentContextPart, listing []agentlogdb.AgentSkillListed) SkillsReport {
 	r := SkillsReport{Rows: []SkillRow{}, NeverUsed: []UnusedSkill{}}
+	facts := map[string]bool{}
+	for _, s := range sessions {
+		facts[s.SessionUUID] = s.Facts
+	}
+	listedNames := map[string]bool{}
+	for _, k := range listing {
+		if facts[k.SessionUUID] {
+			listedNames[k.Skill] = true
+		}
+	}
+	resolve := listedResolver(listedNames)
 	rows := map[string]*SkillRow{}
 	use := func(name, sid string) *SkillRow {
+		name = resolve(name)
 		row := rows[name]
 		if row == nil {
 			row = &SkillRow{Name: name, ByTrigger: map[string]int{"proactive": 0, "slash": 0, "read": 0}}
@@ -139,6 +154,28 @@ func Skills(sessions []agentlogdb.AgentReportSession, events map[string][]agentl
 	slices.SortFunc(r.Rows, func(x, y SkillRow) int {
 		return cmp.Or(cmp.Compare(y.Invocations, x.Invocations), cmp.Compare(y.CostUSD, x.CostUSD), cmp.Compare(x.Name, y.Name))
 	})
-	r.Used = len(r.Rows)
+	for _, row := range r.Rows {
+		if listedNames[row.Name] {
+			r.Used++
+		}
+	}
 	return r
+}
+
+// listedResolver maps a used name to its listed name: itself when listed,
+// else the one listed name whose part after the last ':' equals it; with
+// none or several such names it stays as it is.
+func listedResolver(listed map[string]bool) func(string) string {
+	bySuffix := map[string][]string{}
+	for n := range listed {
+		if i := strings.LastIndexByte(n, ':'); i >= 0 {
+			bySuffix[n[i+1:]] = append(bySuffix[n[i+1:]], n)
+		}
+	}
+	return func(name string) string {
+		if c := bySuffix[name]; !listed[name] && len(c) == 1 {
+			return c[0]
+		}
+		return name
+	}
 }

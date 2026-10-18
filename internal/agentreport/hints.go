@@ -692,8 +692,8 @@ func unusedSkills(in HintInput) []Hint {
 		h.EstimateTokens += u.total
 		h.Evidence = append(h.Evidence, Evidence{Kind: "skill", Ref: u.Name, Label: l.f("s1.label", l.tok(u.ListingTokens))})
 	}
-	h.Finding = l.f("s1.finding", len(sk.NeverUsed), l.count(sk.Listed, "skill.of"), l.tok(h.EstimateTokens),
-		l.count(sk.FactsSessions, "session.in"))
+	h.Finding = l.f("s1.finding", len(sk.NeverUsed), l.count(sk.Listed, "skill.of"), l.form(len(sk.NeverUsed), "never.used"),
+		l.tok(h.EstimateTokens), l.count(sk.FactsSessions, "session.in"))
 	return []Hint{h}
 }
 
