@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,10 +57,12 @@ func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
 	out, err := runAutomations(t, "install-template", "jira-state-report", "--json")
 	require.Error(t, err, out)
 	assert.Contains(t, err.Error(), "assignee or reporter")
+	assert.Contains(t, err.Error(), "Connect Jira, let it sync, and try again.", "#665: the gallery says what to do next")
 	assert.NotContains(t, err.Error(), "--param", "the gallery (--json) gets the app's words only")
 	out, err = runAutomations(t, "install-template", "jira-state-report")
 	require.Error(t, err, out)
-	assert.Contains(t, err.Error(), "--param PROJECT=<KEY>", "the CLI text output adds the flag hint")
+	assert.True(t, strings.HasSuffix(err.Error(), "try again. Or pass --param PROJECT=<KEY>."),
+		"the CLI text output adds the flag hint as its own sentence: %s", err)
 	assert.NoFileExists(t, filepath.Join(c.personal, "jira-state-report.md"))
 
 	c2 := newAutoCLI(t)

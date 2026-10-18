@@ -130,6 +130,38 @@ final class HomeCenterTests: XCTestCase {
 
     /// The daemon writes from another process, which the ValueObservation
     /// never sees: a second pool on the same file stands in for it.
+    func testASuggestionDecisionRereadsHomeAtOnce() async throws {
+        let appState = AppState.isolated()
+        appState.homeEnvironmentOverride = FakeHomeEnvironment()
+        var decided: [(Int64, Bool)] = []
+        appState.homeCenter.beginReading(pool: try makePool())
+        defer { appState.homeCenter.endReading() }
+        await waitUntil(appState.homeCenter) { $0 != nil }
+        let reads = appState.homeCenter.todayReads
+
+        let error = await appState.decideInstructionSuggestion(id: 7, add: true) { decided.append(($0, $1)) }
+
+        XCTAssertNil(error)
+        XCTAssertEqual(decided.map(\.0), [7])
+        XCTAssertEqual(appState.homeCenter.todayReads, reads + 1, "a success re-reads Home")
+    }
+
+    func testAFailedSuggestionDecisionDoesNotReread() async throws {
+        let appState = AppState.isolated()
+        appState.homeEnvironmentOverride = FakeHomeEnvironment()
+        appState.homeCenter.beginReading(pool: try makePool())
+        defer { appState.homeCenter.endReading() }
+        await waitUntil(appState.homeCenter) { $0 != nil }
+        let reads = appState.homeCenter.todayReads
+
+        let error = await appState.decideInstructionSuggestion(id: 7, add: true) { _, _ in
+            throw OwnerInstructionsError(message: "session instructions: over")
+        }
+
+        XCTAssertEqual(error, "session instructions: over")
+        XCTAssertEqual(appState.homeCenter.todayReads, reads)
+    }
+
     func testTickPicksUpWritesTheObservationMisses() async throws {
         let pool = try makePool()
         let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
@@ -384,7 +416,7 @@ final class HomeCenterTests: XCTestCase {
     /// feature at a time.
     func testTodayCardsFollowTheirOwnTab() {
         let appState = AppState.isolated()
-        let always: Set<TodayCardKind> = [.myTargets, .agentsWaiting]
+        let always: Set<TodayCardKind> = [.myTargets, .agentsWaiting, .instructionSuggestion]
         let rows: [(ConnectedSources, Set<String>, Set<TodayCardKind>)] = [
             // Briefings has no source gate; Inbox and Catch-Up need any source.
             (.none, [], always.union([.briefing])),
@@ -411,7 +443,7 @@ final class HomeCenterTests: XCTestCase {
         let appState = AppState.isolated()
         appState.featureVisibility.connectedSources = .none
         appState.featureVisibility.disabledFeatureIDs = ["briefing"]
-        XCTAssertEqual(appState.homeTodayCardsAllowed, [.myTargets, .agentsWaiting])
+        XCTAssertEqual(appState.homeTodayCardsAllowed, [.myTargets, .agentsWaiting, .instructionSuggestion])
 
         appState.featureVisibility.connectedSources = .all
         appState.featureVisibility.disabledFeatureIDs = []

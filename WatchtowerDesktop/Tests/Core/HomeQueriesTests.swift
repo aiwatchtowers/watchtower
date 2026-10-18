@@ -336,8 +336,71 @@ final class HomeQueriesTests: XCTestCase {
 
     func testObservedTablesCoverEveryRead() {
         for table in ["agent_actions", "reminders", "calendar_events", "meeting_prep_cache", "briefings",
-                      "targets", "owner_asks", "projects", "catchup_recaps"] {
+                      "targets", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"] {
             XCTAssertTrue(HomeQueries.observedTables.contains(table), table)
         }
+    }
+
+    // MARK: - Instruction suggestion
+
+    private func insertSuggestion(
+        _ d: Database, _ text: String, status: String = "open", daysAgo: Double = 1
+    ) throws {
+        let seen = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-daysAgo * 86400))
+        try d.execute(
+            sql: """
+                INSERT INTO instruction_suggestions (text, field, first_seen_at, last_seen_at, status, fingerprint)
+                VALUES (?, 'session', ?, ?, ?, ?)
+                """, arguments: [text, seen, seen, status, text])
+    }
+
+    private func suggestionRead() throws -> HomeTodayData {
+        try db.read { HomeQueries.today($0, now: Date(), calendar: .current) }
+    }
+
+    func testInstructionSuggestionCardShowsNewest() throws {
+        try db.write { d in
+            try insertSuggestion(d, "older", daysAgo: 3)
+            try insertSuggestion(d, "newest", daysAgo: 1)
+        }
+        XCTAssertEqual(try suggestionRead().suggestion?.text, "newest")
+    }
+
+    func testInstructionSuggestionCardHiddenAfterSevenDays() throws {
+        try db.write { try insertSuggestion($0, "stale", daysAgo: 8) }
+        XCTAssertNil(try suggestionRead().suggestion)
+    }
+
+    func testInstructionSuggestionCardHiddenWhenDecided() throws {
+        try db.write { d in
+            try insertSuggestion(d, "added", status: "added")
+            try insertSuggestion(d, "dismissed", status: "dismissed")
+        }
+        XCTAssertNil(try suggestionRead().suggestion)
+    }
+
+    func testSecondOpenSuggestionShowsAfterFirstIsDecided() throws {
+        try db.write { d in
+            try insertSuggestion(d, "first", daysAgo: 1)
+            try insertSuggestion(d, "second", daysAgo: 2)
+        }
+        XCTAssertEqual(try suggestionRead().suggestion?.text, "first")
+        try db.write { try $0.execute(sql: "UPDATE instruction_suggestions SET status = 'added' WHERE text = 'first'") }
+        XCTAssertEqual(try suggestionRead().suggestion?.text, "second")
+    }
+
+    func testFailedSuggestionReadIsNamedAndShowsNoCard() throws {
+        let data = try db.write { d in
+            try d.execute(sql: """
+                DROP TABLE instruction_suggestions;
+                CREATE TABLE instruction_suggestions (id INTEGER PRIMARY KEY, body TEXT);
+                """)
+            return HomeQueries.today(d, now: Date(), calendar: .current)
+        }
+        XCTAssertEqual(data.failed, [.instructionSuggestion])
+        XCTAssertNil(data.suggestion)
+        XCTAssertFalse(HomeTodayBuilder.cards(
+            data, allowed: Set(TodayCardKind.allCases), now: Date(), calendar: .current)
+            .contains { $0.kind == .instructionSuggestion })
     }
 }

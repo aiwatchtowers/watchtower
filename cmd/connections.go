@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	neturl "net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -209,11 +210,11 @@ func connectionAuthState(cfg *config.Config, id int64, errW io.Writer) string {
 }
 
 // warnIfProviderIgnoresConnections tells the owner that Quick Connections are
-// wired only for the claude provider, so an enabled connection is inert under
-// codex/ollama. Non-fatal: the enable/add still succeeds.
+// wired only for the claude and codex providers, so an enabled connection is
+// inert under any other (ollama). Non-fatal: the enable/add still succeeds.
 func warnIfProviderIgnoresConnections(w io.Writer, cfg *config.Config, name string) {
-	if p := cfg.AI.ConfiguredProviderID(); p != "claude" {
-		fmt.Fprintf(w, "warning: Quick Connections work only with the claude AI provider; connection %q will be inert under provider %q\n", name, p)
+	if p := cfg.AI.ConfiguredProviderID(); p != "claude" && p != "codex" {
+		fmt.Fprintf(w, "warning: Quick Connections work only with the claude and codex AI providers; connection %q will be inert under provider %q\n", name, p)
 	}
 }
 
@@ -244,8 +245,18 @@ func validateConnectionAddFlags(name, kind, command, url string) error {
 		if url == "" {
 			return fmt.Errorf(`--url is required for --kind "http"`)
 		}
+		return validateHTTPURL(url)
 	default:
 		return fmt.Errorf(`--kind must be "stdio" or "http" (got %q)`, kind)
+	}
+	return nil
+}
+
+// validateHTTPURL refuses an --url that is not an absolute http(s) URL.
+func validateHTTPURL(url string) error {
+	u, err := neturl.Parse(url)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("--url %q is not an http(s) URL", url)
 	}
 	return nil
 }
@@ -265,12 +276,21 @@ func readConnectionAddSecret(cmd *cobra.Command, secretStdin bool, kind, url str
 	if err := json.Unmarshal(data, &sec); err != nil {
 		return nil, fmt.Errorf("parsing secret JSON from stdin: %w", err)
 	}
-	if kind == "http" && len(sec.Headers) > 0 {
-		if err := netsec.RequireSecureURL(url, "a connection with headers"); err != nil {
-			return nil, fmt.Errorf("--url: %w", err)
-		}
+	if err := requireSecretTransport(kind, url, &sec); err != nil {
+		return nil, err
 	}
 	return &sec, nil
+}
+
+// requireSecretTransport refuses headers bound for a plain-http URL that is
+// not loopback (netsec) — `connections add` and `connections import`.
+func requireSecretTransport(kind, url string, sec *externalmcp.Secret) error {
+	if kind == "http" && sec != nil && len(sec.Headers) > 0 {
+		if err := netsec.RequireSecureURL(url, "a connection with headers"); err != nil {
+			return fmt.Errorf("--url: %w", err)
+		}
+	}
+	return nil
 }
 
 func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
@@ -403,7 +423,7 @@ func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error 
 			label = conn.Name
 		}
 		warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, label)
-		refreshToolsAfterEnable(cmd, cfg, database, id)
+		refreshToolsAfterEnable(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, database, id)
 	} else {
 		fmt.Fprintf(out, "Connection %d disabled.\n", id)
 	}
@@ -518,7 +538,7 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Connection %d signed in and enabled.\n", id)
 	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
-	refreshToolsAfterEnable(cmd, cfg, database, id)
+	refreshToolsAfterEnable(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg, database, id)
 	return nil
 }
 

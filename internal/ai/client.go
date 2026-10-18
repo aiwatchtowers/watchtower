@@ -117,6 +117,7 @@ func envelopeMessage(result string) string {
 // shape of db.ExternalConnection without importing internal/db, keeping
 // internal/ai free of a DB dependency.
 type ExternalMCPServer struct {
+	ID      int64  // the external_connections row (codex names its header variables after it)
 	Name    string // becomes the mcpServers key and the mcp__<Name>__ tool prefix
 	Kind    string // "stdio" | "http"
 	Command string

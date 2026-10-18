@@ -183,6 +183,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		// codex only: CODEX_HOME joins the env allowlist, pointing at the
 		// scrubbed per-run home (codexAgentHome) instead of ~/.codex.
 		c.SetChildEnv(append(env, "CODEX_HOME="+home))
+		c.SetServersFromHome()
 		c.SetProcessGroup(true)
 		client = c
 	} else {

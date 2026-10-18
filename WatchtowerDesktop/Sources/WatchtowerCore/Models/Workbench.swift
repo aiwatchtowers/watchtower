@@ -249,7 +249,6 @@ package struct WorkbenchSwitcherSummary: Identifiable, Equatable, Sendable {
     package let summary: WorkbenchSummary
     /// `blocked` targets on the workbench's own board.
     package let blockedTargets: Int
-    package let sessionCount: Int
     /// `MAX(last_active_at)` of its sessions; empty when it has none.
     package let lastSessionActivity: String
 

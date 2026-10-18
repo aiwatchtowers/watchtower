@@ -39,6 +39,47 @@ until the next morning's hour.
      site with a picked board counts for all; Go skips per account). On Home
      it is a waiting card, never a source row, so it keeps the Getting ready
      zone open (`GettingReadyPolicy.entries`);
+  3b. `needsDigests` (#575, after 3a; the two never meet: their features are disjoint) — no content, the feature `runsOnlyWithDigests`
+     (tracks, people cards) and `slack-digests` is in `disabledFeatureIDs`.
+     Dual path with the daemon's compound gates (`phaseTracksAndRollups`,
+     `phaseCustomTrackScan`, `phasePeopleCards` in `internal/daemon/daemon.go`,
+     the people backfill hook in `history_backfill.go`); the Go guard rows
+     `tracks_starved_without_digest` / `people_starved_without_digest` pin the
+     gates, and `FeatureReadinessTests.testRunsOnlyWithDigestsMatchesTheDaemonGates`
+     scans every non-test `internal/daemon/*.go` file (any line joining
+     `Digest.Enabled` with another `X.Enabled` by `&&`/`||`) and fails when
+     such a gate appears or goes without a matching `runsOnlyWithDigests`
+     entry. Content beats it so
+     a tab with data keeps showing it and Home keeps "Ready — Open". Line
+     "Needs Slack Digests" (every place that shows it follows it with a
+     **Turn on Slack Digests** button, named because it starts a heavy,
+     different feature). `FeatureReadiness.turnOnFeatureID` picks what Turn on
+     switches on and keys its progress/error by: `slack-digests` while the
+     feature waits on it **and** while a Slack Digests Turn on has an error
+     (an enable whose restart failed leaves Digests on, the state moves on to
+     `scheduled`, and only the retry restarts — the tab and the Home card keep
+     the error and **Try again**). A failed restart's error
+     (`featureWasOn`) is cleared by any later successful restart or start:
+     `AppState.clearRestartFailedTurnOnErrors` runs from the start queue's
+     `DaemonStartQueue.onSuccess` (every successful `restart`, so
+     `restartOnChain` and the account-change `restartLogging` too, and every
+     start the app reports with `succeeded()`: the banner's Start/Retry, the
+     background bring-up, `ensureDaemonRunning`, the LLM-data reset), from
+     `DaemonManager.onRunningChanged(true)`, and after a successful empty-state
+     Turn on — so a stop timeout (old daemon still running, no flip) clears on
+     the next successful restart too. Home shows that error and its
+     **Try again** once, on the first card it concerns
+     (`GettingReadyZoneView.digestsOfferingCards`). Home's card button goes through
+     `HomeLink.turnOn` → `performEmptyStateAction(.turnOn)` with the same busy,
+     progress and error (`AppState.digestsTurnOnState`). Onboarding's Customize
+     row of a feature on while Slack Digests is off shows **Needs Slack
+     Digests** with a **Turn on Slack Digests** button
+     (`OnboardingFeatureSelection.waitsOnSlackDigests`) — an offer, never a
+     silent switch. Settings → Features' cascade dialog for Slack Digests adds
+     "Tracks and People Cards stop running too while Slack Digests is off"
+     (`FeatureManagerSection.cascadeMessage`). The launch is not decoupled
+     (owner, ask #307), so token spend changes only when the owner turns Slack
+     Digests on;
   4. `daemonStopped` (#577, owner ask #307 q4) — the daemon is not running and
      has been seen down for `daemonDownGrace` (30 s) or longer
      (`ReadinessInputs.daemonNotRunningSince` = `DaemonManager.notRunningSince`,

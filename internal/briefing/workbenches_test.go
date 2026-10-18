@@ -50,7 +50,7 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 
 	feature := seedWorkbenchTarget(t, d, busy, 0, "Payments feature", "in_progress", "2026-09-29T09:00:00Z")
 	seedWorkbenchTarget(t, d, busy, feature, "Task 3: wire the API", "blocked", "2026-09-29T09:00:00Z")
-	seedWorkbenchTarget(t, d, busy, feature, "Task 1: schema", "done", "2026-09-29T07:00:00Z")
+	schema := seedWorkbenchTarget(t, d, busy, feature, "Task 1: schema", "done", "2026-09-29T07:00:00Z")
 	seedWorkbenchTarget(t, d, busy, feature, "Task 0: spike", "done", "2026-09-20T07:00:00Z")
 	// Not every open task is blocked, so the feature rolls up to in_progress
 	// (PROJ-05) rather than blocked.
@@ -60,6 +60,13 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 	_, err := d.AddWorkbenchComment(db.WorkbenchComment{
 		WorkbenchID: busy, TargetID: sql.NullInt64{Int64: feature, Valid: true},
 		Author: "agent", Body: "Which currency list?",
+	})
+	require.NoError(t, err)
+	// A closed target's comment (here the done summary) stays out of the
+	// count, as in the Desktop badges (ask #339).
+	_, err = d.AddWorkbenchComment(db.WorkbenchComment{
+		WorkbenchID: busy, TargetID: sql.NullInt64{Int64: schema, Valid: true},
+		Author: "agent", Body: "Done: schema migrated.",
 	})
 	require.NoError(t, err)
 
@@ -253,4 +260,26 @@ func TestGetPrompt_CustomizedV8TemplateStillRenders(t *testing.T) {
 	assert.Contains(t, gen.systemMsg, "=== PROJECTS ===\n--- [project_id=")
 	assert.Contains(t, gen.systemMsg, "Payments feature")
 	assert.NotContains(t, gen.systemMsg, "%!")
+}
+
+// A workbench whose only unread agent comments sit on closed targets has
+// nothing to report: those comments are not activity (ask #339).
+func TestGatherProjects_SkipsCommentsOnClosedTargets(t *testing.T) {
+	d := testDB(t)
+	pid := seedWorkbench(t, d, "acme")
+	for _, status := range []string{"done", "dismissed"} {
+		id := seedWorkbenchTarget(t, d, pid, 0, "Closed "+status, status, "2026-09-01T00:00:00Z")
+		_, err := d.AddWorkbenchComment(db.WorkbenchComment{
+			WorkbenchID: pid, TargetID: sql.NullInt64{Int64: id, Valid: true},
+			Author: "agent", Body: "Summary",
+		})
+		require.NoError(t, err)
+	}
+
+	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
+	pipe.shown = newShownIDs()
+	ctx, has := pipe.gatherWorkbenches(time.Now().Add(-24 * time.Hour))
+
+	assert.False(t, has)
+	assert.Equal(t, noWorkbenchActivity, ctx)
 }

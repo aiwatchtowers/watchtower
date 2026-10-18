@@ -141,6 +141,19 @@ final class WorkbenchQueriesTests: XCTestCase {
         }
     }
 
+    /// Ask #339: a closed target's comments stay out of the badges — the
+    /// done summary an agent leaves on closing is never opened.
+    func testUnreadCountsSkipClosedTargets() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            for status in ["todo", "in_progress", "in_review", "blocked", "done", "dismissed"] {
+                let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: status, status: status)
+                _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: t)
+            }
+            XCTAssertEqual(try WorkbenchQueries.unreadCounts(d), [p: 4], "the four open targets only")
+        }
+    }
+
     func testBoardBuildsTheTreeInStatusOrderWithCounters() throws {
         try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
@@ -183,10 +196,10 @@ final class WorkbenchQueriesTests: XCTestCase {
     func testSummariesCountOpenAndInProgressTargetsAndUnreadComments() throws {
         try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
-            _ = try TestDatabase.insertWorkbenchTarget(d, projectID: p, status: "in_progress")
+            let active = try TestDatabase.insertWorkbenchTarget(d, projectID: p, status: "in_progress")
             _ = try TestDatabase.insertWorkbenchTarget(d, projectID: p, status: "blocked")
-            let done = try TestDatabase.insertWorkbenchTarget(d, projectID: p, status: "done")
-            _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: done)
+            _ = try TestDatabase.insertWorkbenchTarget(d, projectID: p, status: "done")
+            _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: active)
             _ = try TestDatabase.insertOwnerAsk(d, projectID: p)
             _ = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}")
             _ = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "withdrawn")

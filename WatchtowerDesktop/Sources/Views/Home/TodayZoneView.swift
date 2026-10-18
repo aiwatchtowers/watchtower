@@ -9,8 +9,16 @@ struct TodayZoneView: View {
     let nothingNeedsYou: Bool
     let readFailed: Bool
     let onLink: (HomeLink) -> Void
+    let onDecideSuggestion: (Int64, Bool) async -> String?
 
-    init(cards: [TodayCard], nothingNeedsYou: Bool, readFailed: Bool, onLink: @escaping (HomeLink) -> Void) {
+    init(
+        cards: [TodayCard],
+        nothingNeedsYou: Bool,
+        readFailed: Bool,
+        onLink: @escaping (HomeLink) -> Void,
+        onDecideSuggestion: @escaping (Int64, Bool) async -> String? = { _, _ in nil }
+    ) {
+        self.onDecideSuggestion = onDecideSuggestion
         self.cards = cards
         self.nothingNeedsYou = nothingNeedsYou
         self.readFailed = readFailed
@@ -24,7 +32,8 @@ struct TodayZoneView: View {
                 if !cards.isEmpty {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)], spacing: 12) {
                         ForEach(cards, id: \.kind) { card in
-                            TodayCardView(card: card, onLink: onLink)
+                            TodayCardView(card: card, onLink: onLink, onDecideSuggestion: onDecideSuggestion)
+                                .id(card.suggestionID)
                         }
                     }
                 } else if readFailed {

@@ -22,6 +22,13 @@ extension AppState {
         daemonStartQueue.enqueue(operation)
     }
 
+    /// A successful start or restart, on any path that reports it to the
+    /// queue (`DaemonStartQueue.succeeded`), also drops the empty states'
+    /// failed-restart errors: that daemon picked their feature up (#575).
+    func wireDaemonStartQueue() {
+        daemonStartQueue.onSuccess = { [weak self] in self?.clearRestartFailedTurnOnErrors() }
+    }
+
     /// Starts (or, with `startOnly` false, restarts) the daemon in the
     /// background, on the start queue.
     func bringUpDaemonInBackground(startOnly: Bool) {
@@ -31,7 +38,11 @@ extension AppState {
                 ? true
                 : await OnboardingFinishPlan.bringUpDaemon(daemon)
             guard let self else { return }
-            daemonStartFailure = up ? nil : Self.daemonStartFailureText(daemonManager.errorMessage)
+            if up {
+                daemonStartQueue.succeeded()
+            } else {
+                daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
+            }
         }
     }
 
@@ -57,7 +68,7 @@ extension AppState {
                     // Inside this item: never `restartOnChain`, which would
                     // enqueue behind it.
                     try await daemon.restartWaiting()
-                    self?.daemonStartFailure = nil
+                    self?.daemonStartQueue.succeeded()
                 } catch {
                     self?.daemonStartFailure = Self.daemonRestartFailureText(error)
                 }
@@ -69,7 +80,11 @@ extension AppState {
                 return
             }
             let up = await Self.waitUntilRunning(daemon, bound: bound, interval: interval)
-            self?.daemonStartFailure = up ? nil : Self.daemonDiedAfterStartText
+            if up {
+                self?.daemonStartQueue.succeeded()
+            } else {
+                self?.daemonStartFailure = Self.daemonDiedAfterStartText
+            }
         }
     }
 

@@ -226,6 +226,24 @@ final class OnboardingFeaturePlanTests: XCTestCase {
         XCTAssertEqual(selection, OnboardingFeatureSelection(goals: [.meetings]))
     }
 
+    /// #575: Tracks or People Cards on with Slack Digests off is flagged
+    /// (the Customize row offers Turn on Slack Digests); nothing else is.
+    func testTracksAndPeopleWithoutDigestsWaitOnSlackDigests() {
+        var selection = OnboardingFeatureSelection(goals: [.development])
+        selection.setFeature("tracks", enabled: true)
+        selection.setFeature("people-cards", enabled: true)
+        selection.setFeature("ideas", enabled: true)
+        XCTAssertTrue(selection.waitsOnSlackDigests("tracks"))
+        XCTAssertTrue(selection.waitsOnSlackDigests("people-cards"))
+        XCTAssertFalse(selection.waitsOnSlackDigests("ideas"))
+        XCTAssertFalse(selection.waitsOnSlackDigests("memory"), "off features wait on nothing")
+
+        selection.setFeature("slack-digests", enabled: true)
+        XCTAssertFalse(selection.waitsOnSlackDigests("tracks"))
+        XCTAssertFalse(selection.waitsOnSlackDigests("people-cards"))
+        XCTAssertFalse(OnboardingFeatureSelection(goals: [.workCommunication]).waitsOnSlackDigests("tracks"))
+    }
+
     func testUnmanagedOrAlwaysOnIDsAreIgnored() {
         var selection = OnboardingFeatureSelection(goals: [.development])
         selection.setFeature("knowledge-connectors", enabled: true)
