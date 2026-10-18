@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import WatchtowerCore
 
@@ -60,6 +61,8 @@ extension AppState {
     func openHomeLink(_ link: HomeLink) {
         switch link {
         case .inbox: selectedDestination = .inbox
+        case .permalink(let url):
+            if AllowedURLSchemes.permits(url) { NSWorkspace.shared.open(url) }
         case .calendarEvent(let id): navigateToCalendarEvent(id)
         case .briefing(let id): navigateToBriefing(id)
         case .targets: selectedDestination = .targets

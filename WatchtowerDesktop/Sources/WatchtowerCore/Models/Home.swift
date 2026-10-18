@@ -102,6 +102,8 @@ package struct HomeInstructionSuggestion: Equatable, Sendable {
 /// Where a click goes. Core has no SidebarDestination; AppState.openHomeLink maps these.
 package enum HomeLink: Equatable, Sendable {
     case inbox
+    /// Slack / mail / Jira open the item's own permalink.
+    case permalink(URL)
     case calendarEvent(id: String)
     case briefing(id: Int)
     case targets
