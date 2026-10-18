@@ -1840,8 +1840,9 @@ final class AppState {
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
-        workbenchesViewModel?.asks.stop()
+        workbenchesViewModel?.stop()
         workbenchesViewModel = vm
+        workbenchNotificationCenter?.stop()
         workbenchNotificationCenter = notices
         sessionAgentStateCenter?.stop()
         sessionAgentStateCenter = agentStates

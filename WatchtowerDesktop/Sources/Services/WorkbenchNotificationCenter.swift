@@ -76,6 +76,9 @@ final class WorkbenchNotificationCenter {
         pollTask = nil
     }
 
+    /// Whether `start` runs the poll (until `stop`).
+    var isPolling: Bool { pollTask != nil }
+
     /// The owner changed `subject`: the next poll must not report it.
     func recordOwnerWrite(projectID: Int64, subject: WorkbenchSubject) {
         ownerTouched[projectID, default: []].insert(subject)
