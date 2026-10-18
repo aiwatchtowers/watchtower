@@ -68,6 +68,13 @@ final class SessionCleanupCenter {
     /// a view, so a sheet torn down when the owner leaves the page neither
     /// stops the CLI nor fails the plan.
     @ObservationIgnored private var planRuns: [SessionCleanupScope: (token: UUID, task: Task<Void, Never>)] = [:]
+    /// Per scope, the time limit its running plan was stopped at; that
+    /// plan's cancellation then reads as a failure, not as nothing to show.
+    @ObservationIgnored private var stoppedAtLimit: [SessionCleanupScope: Duration] = [:]
+    /// Per scope, when its ready plan landed.
+    @ObservationIgnored private var readyAt: [SessionCleanupScope: Date] = [:]
+    /// A seam for tests.
+    @ObservationIgnored var now: () -> Date = { Date() }
 
     init(runner: (any SessionCleanupRunning)?) {
         self.runner = runner
@@ -101,21 +108,45 @@ final class SessionCleanupCenter {
     }
 
     /// Starts the sweep plan of workbench `workbenchID` (spec §9) in a task
-    /// the center owns, as `startPlan` does for a session.
+    /// the center owns, as `startPlan` does for a session. With `timeLimit`
+    /// a plan still running after it is stopped and fails (a read stalled
+    /// on a dead mount never keeps the sheet waiting, board #704).
     @discardableResult
-    func startSweepPlan(workbenchID: Int64) -> Task<Void, Never> {
-        startOwnedPlan(.workbench(workbenchID)) { center in
+    func startSweepPlan(workbenchID: Int64, timeLimit: Duration? = nil) -> Task<Void, Never> {
+        startOwnedPlan(.workbench(workbenchID), timeLimit: timeLimit) { center in
             await center.planSweep(workbenchID: workbenchID)
         }
     }
 
+    /// The plan `startPlan`/`startSweepPlan` still runs for the scope.
+    func runningPlan(for scope: SessionCleanupScope) -> Task<Void, Never>? {
+        planRuns[scope]?.task
+    }
+
+    /// How long ago the scope's ready plan landed; nil when it has none.
+    func readyPlanAge(for scope: SessionCleanupScope) -> TimeInterval? {
+        guard case .ready = cleanupPhase(for: scope), let at = readyAt[scope] else { return nil }
+        return now().timeIntervalSince(at)
+    }
+
     private func startOwnedPlan(
-        _ scope: SessionCleanupScope, _ body: @escaping @MainActor (SessionCleanupCenter) async -> Void
+        _ scope: SessionCleanupScope,
+        timeLimit: Duration? = nil,
+        _ body: @escaping @MainActor (SessionCleanupCenter) async -> Void
     ) -> Task<Void, Never> {
         let token = UUID()
         let run = Task<Void, Never> { [weak self] in
             guard let self else { return }
+            let watchdog = timeLimit.map { limit in
+                Task { [weak self] in
+                    try? await Task.sleep(for: limit)
+                    guard !Task.isCancelled, let self, let run = planRuns[scope], run.token == token else { return }
+                    stoppedAtLimit[scope] = limit
+                    run.task.cancel()
+                }
+            }
             await body(self)
+            watchdog?.cancel()
             if planRuns[scope]?.token == token { planRuns[scope] = nil }
         }
         planRuns.updateValue((token, run), forKey: scope)?.task.cancel()
@@ -160,13 +191,20 @@ final class SessionCleanupCenter {
         let serial = beginRun(scope, phase: .planning)
         let outcome = await runCleanup(args)
         guard runSerials[scope] == serial else { return nil }
-        // A cancelled caller is not a failed plan: nothing to show.
+        // A cancelled caller is not a failed plan: nothing to show — unless
+        // its time limit stopped it.
         guard !Task.isCancelled else {
+            if let limit = stoppedAtLimit.removeValue(forKey: scope) {
+                phases[scope] = .failed(Self.overLimitText(limit))
+                return serial
+            }
             phases[scope] = nil
             return nil
         }
         switch outcome {
-        case let .success(plan): phases[scope] = .ready(plan)
+        case let .success(plan):
+            phases[scope] = .ready(plan)
+            readyAt[scope] = now()
         case let .failure(message): phases[scope] = .failed(message)
         }
         return serial
@@ -236,6 +274,7 @@ final class SessionCleanupCenter {
     private func beginRun(_ scope: SessionCleanupScope, phase: SessionCleanupPhase) -> Int {
         let serial = runSerials[scope, default: 0] + 1
         runSerials[scope] = serial
+        stoppedAtLimit[scope] = nil
         phases[scope] = phase
         return serial
     }
@@ -254,6 +293,12 @@ final class SessionCleanupCenter {
         } catch {
             return .failure(error.localizedDescription)
         }
+    }
+
+    /// The failure of a plan its time limit stopped.
+    nonisolated static func overLimitText(_ limit: Duration) -> String {
+        let minutes = max(1, Int(limit.components.seconds / 60))
+        return "Checking took longer than \(minutes) min and was stopped (a worktree may be unreadable)."
     }
 
     /// `base` without `WATCHTOWER_TERMINAL_SESSION_ID` (spec §4).

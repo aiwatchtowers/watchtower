@@ -42,10 +42,13 @@ const strandedDetail = "stranded provisional row: outcome unknown (a proposal or
 // dispatchBudget is one Run's shared compose allowance. It counts AI calls, not
 // ledger rows: a candidate whose emoji maps to no built-in tool (or to a tool
 // the registry does not hold) is recorded `skipped` before compose is reached
-// and costs nothing, so it must not consume a slot.
+// and costs nothing, so it must not consume a slot. It also carries the run's
+// issue-routing cache, so the tracker prefixes are read once per Run, by the
+// first issue reaction that reaches compose.
 type dispatchBudget struct {
 	remaining int
 	deferred  int
+	prefixes  prefixCache
 }
 
 // take claims one compose call, reporting false once the run's budget is spent.
@@ -294,7 +297,7 @@ func (p *Pipeline) dispatchOne(ctx context.Context, u db.OwnerReaction, c candid
 		budget.refund()
 		return false // a concurrent poll already holds this key
 	}
-	status, actionID, detail, step := p.dispatch(ctx, c, tool)
+	status, actionID, detail, step := p.dispatch(ctx, c, tool, &budget.prefixes)
 	switch step {
 	case stepRelease:
 		p.release(id, u.Emoji)
@@ -360,21 +363,30 @@ func (p *Pipeline) resolveTool(c candidate) (tool *tools.Tool, detail string, ok
 // agent-action id (0 unless dispatched) and a detail string; stepRelease marks
 // a TRANSIENT failure that produced no action (the caller releases the row so
 // the next poll retries instead of burning it), stepStrand one whose outcome
-// is unknown.
-func (p *Pipeline) dispatch(ctx context.Context, c candidate, tool *tools.Tool) (status string, actionID int64, detail string, step ledgerStep) {
-	args, transient, err := p.compose(ctx, c)
+// is unknown. An issue tool is first routed to the tracker the channel's keys
+// belong to (routeIssue) — free, and only for a candidate that won a budget
+// slot and its claim.
+func (p *Pipeline) dispatch(ctx context.Context, c candidate, tool *tools.Tool, prefixes *prefixCache) (status string, actionID int64, detail string, step ledgerStep) {
+	var thread []string
+	if c.ThreadTS != "" {
+		thread = p.threadContext(c)
+	}
+	if isIssueTool(tool.Name) {
+		tool = p.routeIssue(c, tool, prefixes, thread)
+	}
+	args, transient, err := p.compose(ctx, c, tool.Name, thread)
 	if err != nil {
 		if transient {
-			p.logf("reaction-commands: transient compose failure for :%s: (%s), will retry: %v", c.Emoji, c.Mapping.Tool, err)
+			p.logf("reaction-commands: transient compose failure for :%s: (%s), will retry: %v", c.Emoji, tool.Name, err)
 			return "", 0, "", stepRelease
 		}
 		return "failed", 0, "compose: " + err.Error(), stepFinalize
 	}
 	// Surface "reaction" keeps these proposals out of any chat conversation;
 	// the External-never-auto-execute rule (AGENT-03) and trust per tool and
-	// surface are
-	// enforced inside Propose, so a create_jira_issue reaction always lands as
-	// a pending proposal even if create_target is execute-trusted.
+	// surface are enforced inside Propose, so a create_jira_issue or
+	// create_linear_issue reaction always lands as a pending proposal even if
+	// create_target is execute-trusted.
 	binding := tools.Binding{
 		Surface:     reactionSurface,
 		ContextType: "reaction",
@@ -426,26 +438,19 @@ func (p *Pipeline) afterProposeError(c candidate, toolName, contextID string, fl
 // argument JSON. transient=true means the generator itself failed (provider
 // down / timeout) and the caller should retry later rather than record a
 // terminal failure; a reply that arrived but carried no JSON is terminal.
-func (p *Pipeline) compose(ctx context.Context, c candidate) (args json.RawMessage, transient bool, err error) {
+// thread is the thread's lines (threadContext); the first maxThreadLines go
+// into the brief.
+func (p *Pipeline) compose(ctx context.Context, c candidate, toolName string, thread []string) (args json.RawMessage, transient bool, err error) {
 	system, _ := p.getPrompt(prompts.ReactionCommand)
-	var jiraProjects []string
-	if c.Mapping.Tool == "create_jira_issue" {
-		if jiraProjects, err = p.db.ListSyncedJiraProjectKeys(); err != nil {
-			p.logf("reaction-commands: listing jira projects (composing without them): %v", err)
-			jiraProjects = nil
-		}
-	}
-	var threadLines []string
-	if c.ThreadTS != "" {
-		threadLines = p.threadContext(c)
-	}
+	choices := p.issueChoices(toolName)
+	threadLines := thread[:min(len(thread), maxThreadLines)]
 	// The daemon runs in the owner's TZ (the create_target due precedent), so
 	// time.Local is the owner's zone — both the date and the clock below are
 	// the owner's, so "tomorrow" cannot straddle a UTC midnight.
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	ownerNow := now.Format("2006-01-02T15:04:05-07:00 (MST)")
-	userMsg := buildComposeUserMessage(c, argGuide(c.Mapping.Tool), threadLines, jiraProjects, today, ownerNow, prompts.Directive(p.language()))
+	userMsg := buildComposeUserMessage(toolName, c, argGuide(toolName), threadLines, choices, today, ownerNow, prompts.Directive(p.language()))
 
 	reply, _, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.ReactionCommand), system, userMsg, "")
 	if err != nil {
@@ -458,16 +463,43 @@ func (p *Pipeline) compose(ctx context.Context, c candidate) (args json.RawMessa
 	return json.RawMessage(obj), false, nil
 }
 
-// threadContext returns a few surrounding thread messages for grounding.
-// Best-effort: any error or a message outside the sync window just yields a
-// thinner brief, never a failure.
+// issueChoices lists the projects (Jira) or teams (Linear) an issue tool may
+// file into, for grounding; nil for any other tool. Best-effort: a read
+// error composes without the list.
+func (p *Pipeline) issueChoices(toolName string) []string {
+	switch toolName {
+	case toolJiraIssue:
+		keys, err := p.db.ListSyncedJiraProjectKeys()
+		if err != nil {
+			p.logf("reaction-commands: listing jira projects (composing without them): %v", err)
+			return nil
+		}
+		return keys
+	case toolLinearIssue:
+		teams, err := p.db.ListReactionLinearTeams()
+		if err != nil {
+			p.logf("reaction-commands: listing linear teams (composing without them): %v", err)
+			return nil
+		}
+		return formatLinearTeams(teams)
+	default:
+		return nil
+	}
+}
+
+// maxThreadLines caps the thread lines the compose brief carries.
+const maxThreadLines = 10
+
+// threadContext returns the thread's non-empty messages as "user: text"
+// lines, oldest first: compose grounds on the first maxThreadLines, issue
+// routing scans them all. Best-effort: any error or a message outside the
+// sync window just yields a thinner brief, never a failure.
 func (p *Pipeline) threadContext(c candidate) []string {
 	msgs, err := p.db.GetThreadReplies(c.ChannelID, c.ThreadTS)
 	if err != nil {
 		p.logf("reaction-commands: thread context for :%s: unavailable (composing without it): %v", c.Emoji, err)
 		return nil
 	}
-	const maxLines = 10
 	var out []string
 	for _, m := range msgs {
 		text := strings.TrimSpace(m.Text)
@@ -475,9 +507,6 @@ func (p *Pipeline) threadContext(c candidate) []string {
 			continue
 		}
 		out = append(out, fmt.Sprintf("%s: %s", m.UserID, text))
-		if len(out) >= maxLines {
-			break
-		}
 	}
 	return out
 }
