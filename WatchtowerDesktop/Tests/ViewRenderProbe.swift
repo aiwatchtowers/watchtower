@@ -38,6 +38,11 @@ struct ViewRenderProbe {
         return bitmap
     }
 
+    /// `render`'s bitmap as PNG data, for the design shots (`DesignShotsTests`).
+    func png(_ view: some View, _ appearance: NSAppearance) throws -> Data {
+        try XCTUnwrap(render(view, appearance).representation(using: .png, properties: [:]))
+    }
+
     func pixel(_ bitmap: NSBitmapImageRep, x: Int, y: Int) throws -> RGBA {
         let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
         func byte(_ value: CGFloat) -> Int { Int((value * 255).rounded()) }
