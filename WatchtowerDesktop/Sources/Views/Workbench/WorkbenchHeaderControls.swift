@@ -137,7 +137,7 @@ struct WorkbenchHeaderControls: View {
             // One symbol in both states: the accent highlight says "split on".
             Image(systemName: "rectangle.split.2x1")
         }
-        .buttonStyle(HeaderIconButtonStyle(isOn: isSplit))
+        .buttonStyle(.kitIcon(isOn: isSplit))
         .help(isSplit ? "Show one pane" : "Split: show two panes side by side")
         .accessibilityLabel(isSplit ? "Single Pane" : "Split")
     }
@@ -212,7 +212,7 @@ struct WorkbenchHeaderControls: View {
             Image(systemName: "ellipsis")
         }
         .menuStyle(.button)
-        .buttonStyle(HeaderIconButtonStyle(isOn: false))
+        .buttonStyle(.kitIcon(isOn: false))
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Workbench actions")
@@ -268,7 +268,7 @@ private extension WorkbenchHeaderControls {
 /// A view button inside the header capsule: on = accent tint behind an
 /// accent icon, off = secondary with a light highlight under the pointer.
 /// Hover comes from the controls so Terminal and its chevron share it.
-private struct HeaderSegmentStyle: ToggleStyle {
+struct HeaderSegmentStyle: ToggleStyle {
     static let animation: Animation = .snappy(duration: 0.15)
 
     /// Terminal's: the sessions chevron continues the segment on the right.
@@ -317,37 +317,6 @@ private struct HeaderSegmentStyle: ToggleStyle {
         .animation(Self.animation, value: isHovered)
         // The role `.toggleStyle(.button)` gave the view buttons.
         .accessibilityAddTraits(isOn ? [.isToggle, .isSelected] : .isToggle)
-    }
-}
-
-/// Split and ⋯ beside the capsule: a 26pt icon square, highlighted under
-/// the pointer; `isOn` (split) tints it like an on segment.
-private struct HeaderIconButtonStyle: ButtonStyle {
-    var isOn: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        IconSquare(configuration: configuration, isOn: isOn)
-    }
-
-    private struct IconSquare: View {
-        let configuration: Configuration
-        let isOn: Bool
-        @State private var isHovered = false
-
-        var body: some View {
-            configuration.label
-                .font(.system(size: 14))
-                .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
-                .frame(width: 26, height: 26)
-                .background(
-                    HeaderSegmentStyle.fill(isOn: isOn, isHovered: isHovered || configuration.isPressed),
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                )
-                .contentShape(Rectangle())
-                .onHover { isHovered = $0 }
-                .animation(HeaderSegmentStyle.animation, value: isOn)
-                .animation(HeaderSegmentStyle.animation, value: isHovered)
-        }
     }
 }
 

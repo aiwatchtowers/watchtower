@@ -194,7 +194,7 @@ struct CodeQuestionPopover: View {
                 let workbenchID = workbenchID
                 Task { await questions.applyProposal(workbenchID: workbenchID) }
             }
-            .buttonStyle(.popoverPrimary)
+            .buttonStyle(.kitPrimary)
         }
         .controlSize(.small)
         .padding(.horizontal, 12)

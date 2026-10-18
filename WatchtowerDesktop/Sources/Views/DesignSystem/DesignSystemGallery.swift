@@ -17,6 +17,7 @@ struct DesignSystemGalleryContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.wide) {
             GallerySection(title: "Tokens") { GalleryTokens() }
+            GallerySection(title: "Buttons") { GalleryButtons() }
         }
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -117,6 +118,40 @@ private struct GalleryTokens: View {
     private func group<Body: View>(_ title: String, @ViewBuilder _ body: () -> Body) -> some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(title).font(.subheadline).foregroundStyle(.secondary)
+            body()
+        }
+    }
+}
+
+/// Every promoted button style, enabled and disabled, small and regular where
+/// the style reacts to the control size.
+private struct GalleryButtons: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            row("kitPrimary") {
+                Button("Save") {}.buttonStyle(.kitPrimary)
+                Button("Save") {}.buttonStyle(.kitPrimary).disabled(true)
+            }
+            row("kitDestructive, small") {
+                Button("Stop") {}.buttonStyle(.kitDestructive).controlSize(.small)
+                Button("Stop") {}.buttonStyle(.kitDestructive).controlSize(.small).disabled(true)
+            }
+            row("kitDestructive, regular") {
+                Button("Stop") {}.buttonStyle(.kitDestructive)
+                Button("Stop") {}.buttonStyle(.kitDestructive).disabled(true)
+            }
+            row("kitIcon, off / on / disabled") {
+                Button {} label: { Image(systemName: "ellipsis") }.buttonStyle(.kitIcon(isOn: false))
+                Button {} label: { Image(systemName: "rectangle.split.2x1") }.buttonStyle(.kitIcon(isOn: true))
+                Button {} label: { Image(systemName: "ellipsis") }.buttonStyle(.kitIcon(isOn: false)).disabled(true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func row<Body: View>(_ name: String, @ViewBuilder _ body: () -> Body) -> some View {
+        HStack(spacing: Spacing.medium) {
+            Text(name).font(.caption).foregroundStyle(.secondary).frame(width: 170, alignment: .leading)
             body()
         }
     }

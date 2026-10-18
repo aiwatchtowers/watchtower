@@ -254,10 +254,10 @@ enum DesignShotFixtures {
 
     static func buttons() -> AnyView {
         AnyView(HStack(spacing: 10) {
-            Button("Save") {}.buttonStyle(.popoverPrimary)
-            Button("Save") {}.buttonStyle(.popoverPrimary).disabled(true)
-            Button("Stop") {}.buttonStyle(.destructivePrimary).controlSize(.small)
-            Button("Stop") {}.buttonStyle(.destructivePrimary)
+            Button("Save") {}.buttonStyle(.kitPrimary)
+            Button("Save") {}.buttonStyle(.kitPrimary).disabled(true)
+            Button("Stop") {}.buttonStyle(.kitDestructive).controlSize(.small)
+            Button("Stop") {}.buttonStyle(.kitDestructive)
             Spacer(minLength: 0)
         })
     }
