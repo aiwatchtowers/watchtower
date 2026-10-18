@@ -32,7 +32,7 @@
 
 **Status:** Enforced
 
-**Observable:** The feed holds owner messages, agent `text`, ask answers, Watchtower-typed lines, the start brief, subagent markers and separators. No tool call, tool result, meta record, thinking block, system reminder or hook output appears as an entry. Streamed duplicates of one assistant message collapse to one entry.
+**Observable:** The feed holds owner messages, agent `text`, ask answers, Watchtower-typed lines, the start brief, subagent markers and separators, plus Claude Code notices (`<task-notification>`, `<teammate-message …>` user records) as `event` entries; a notice never appears as an owner entry. No tool call, tool result, meta record, thinking block, system reminder or hook output appears as an entry. Streamed duplicates of one assistant message collapse to one entry.
 
 **Why locked:** Noise and duplicates are the failure the feature exists to remove.
 
@@ -40,6 +40,7 @@
 - `internal/sessionfeed/parse_test.go::TestParse_OwnerAndAgentOnly`
 - `internal/sessionfeed/parse_test.go::TestParse_StreamedMessageOnce`
 - `internal/sessionfeed/parse_test.go::TestParse_StripsSystemReminder`
+- `internal/sessionfeed/parse_test.go::TestParse_NoticesAreEvents`
 - `internal/sessionfeed/codex_test.go::TestParseCodex_OwnerAgentBriefAskAnswer` (Codex: dialog only)
 
 **Locked since:** 2026-10-16
@@ -48,7 +49,7 @@
 
 **Status:** Enforced
 
-**Observable:** `workbench session-feed --json` emits `session_id`, `cursor`, `entries`, `subagents`, `skipped`, `unknown_records`; an entry has `id`, `kind`, `at`, `text`, `conversation` and, when set, `ask_id`, `title`, `via`, `subagent`; a `subagent` object has `tool_use_id`, `agent_id`, `type`, `description`, `status`. The Desktop decodes these; renaming a key breaks the app silently.
+**Observable:** `workbench session-feed --json` emits `session_id`, `cursor`, `entries`, `subagents`, `skipped`, `unknown_records`; an entry has `id`, `kind`, `at`, `text`, `conversation` and, when set, `ask_id`, `title`, `via`, `event_type`, `subagent`; a `subagent` object has `tool_use_id`, `agent_id`, `type`, `description`, `status`. The Desktop decodes these; renaming a key breaks the app silently.
 
 **Test guards:**
 - `cmd/workbench_session_feed_test.go::TestSessionFeedJSON_PinnedKeys`
@@ -93,3 +94,5 @@
 - 2026-10-17: FEED-01..03 now cover Codex sessions (`ParseCodex`/`LocateCodex`, agent instructions Task 6); `codex sessions are not supported yet` refusal removed.
 - 2026-10-18 (board #486, final review): FEED-05 guard `testOnlyFeedKindsPublished` added (the payload filters to the FEED-02 kinds before the cut); text unchanged.
 - 2026-10-18 (board #486, owner approval ask #379): FEED-05 added; mobile POC I-4 amended (session chat exception). Spec `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`.
+
+- 2026-10-19 (board #711, owner approval ask #400): FEED-02 amended — Claude Code notices are event entries. FEED-03 lists `event_type`. Spec `docs/superpowers/specs/2026-10-18-workchat-design.md`.

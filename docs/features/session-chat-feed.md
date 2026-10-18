@@ -18,10 +18,11 @@ The Desktop runs the CLI with `--json` and decodes it; there is no Swift twin of
 
 ## Entry kinds (agent-neutral)
 
-`owner`, `agent`, `ask_answer`, `watchtower` (`via` = `review` or `handoff`), `brief`, `subagent`, `separator`. Every entry has a stable `id`, an `at` time, `text` and the tab's `conversation` (agent session id).
+`owner`, `agent`, `ask_answer`, `watchtower` (`via` = `review` or `handoff`), `brief`, `subagent`, `separator`, `event` (`event_type` = `task` or `teammate`; `title` and `text`). Every entry has a stable `id`, an `at` time, `text` and the tab's `conversation` (agent session id).
 
 Record rules (`parse.go`):
 - `user` records with string or `text` content are `owner`. Dropped: `isMeta`, `isCompactSummary`, any record holding a `tool_result` block, `<local-command…>` wrappers, `[Request interrupted…` lines, and sidechain records outside a subagent file. `<system-reminder>` blocks are stripped; images become `[image]` (unless the text already has an `[Image #N]` marker); a slash command becomes `/name args`.
+- A `user` record whose text starts with `<task-notification>` or `<teammate-message …>` is an `event`, not an owner line (a task notification: title = `<summary>`, text = one `tag: value` line per child; a teammate message: title = the `summary="…"` attribute, text = the body; fallback title = first non-empty text line, else `Notice`, capped at 200 runes). Owner text before a wrapper keeps the record an `owner` line. The phone drops `event` entries (unknown kind).
 - `Ask #N answered …` is `ask_answer`; the CLI joins it to `owner_asks` (title and answer text), **only for an ask of the session's own workbench** (FEED-04). An ask that cannot be read keeps the bare typed line.
 - `Review round #…` and `From a Watchtower code question:` lines are `watchtower` entries (`via` review / handoff). Hook feedback is not a chat line and is dropped with the meta records.
 - The start brief is not a `user` record: it is an `attachment` with `hookEvent` `SessionStart` whose `stdout` starts `Watchtower workbench #`; other SessionStart outputs are dropped. One collapsed `brief` entry.

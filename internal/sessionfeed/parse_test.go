@@ -158,3 +158,45 @@ func TestParse_PastedImageMarkerNotDoubled(t *testing.T) {
 func TestParse_ReviewPrefixMatchesDeliveryLine(t *testing.T) {
 	assert.True(t, strings.HasPrefix(reviewdiff.DeliveryLine(3, 2), reviewPrefix))
 }
+
+func TestParse_NoticesAreEvents(t *testing.T) {
+	res := parseStr(t, join(
+		userStr("n1", "<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n<summary>Background command \"Wait for CI\" completed (exit code 0)</summary>\n</task-notification>"),
+		userStr("n2", "<teammate-message teammate_id=\"lane-1\" color=\"green\" summary=\"#1 PR opened\">\n#1 is ready: PR #2\n</teammate-message>"),
+	), 0)
+	require.Len(t, res.Entries, 2)
+	for _, e := range res.Entries {
+		assert.Equal(t, KindEvent, e.Kind)
+	}
+	task, mate := res.Entries[0], res.Entries[1]
+	assert.Equal(t, EventTask, task.EventType)
+	assert.Equal(t, `Background command "Wait for CI" completed (exit code 0)`, task.Title)
+	assert.Contains(t, task.Text, "status: completed")
+	assert.Contains(t, task.Text, "task-id: t1")
+	assert.NotContains(t, task.Text, "<task-id>")
+	assert.Equal(t, EventTeammate, mate.EventType)
+	assert.Equal(t, "#1 PR opened", mate.Title)
+	assert.Equal(t, "#1 is ready: PR #2", mate.Text)
+	assert.Equal(t, "n2", mate.ID)
+	assert.Equal(t, "conv1", mate.Conversation)
+}
+
+func TestParse_NoticeWithoutSummaryHasFallbackTitle(t *testing.T) {
+	res := parseStr(t, join(
+		userStr("n1", "<task-notification>\n<task-id>t2</task-id>\n</task-notification>"),
+		userStr("n2", "<teammate-message teammate_id=\"x\">\n\nhello\n</teammate-message>"),
+		userStr("n3", "<task-notification></task-notification>"),
+	), 0)
+	require.Len(t, res.Entries, 3)
+	assert.Equal(t, "task-id: t2", res.Entries[0].Title)
+	assert.Equal(t, "hello", res.Entries[1].Title)
+	assert.Equal(t, "Notice", res.Entries[2].Title)
+}
+
+func TestParse_NoticeAfterOwnerTextStaysOwner(t *testing.T) {
+	text := "please look\n<task-notification>\n<task-id>t1</task-id>\n</task-notification>"
+	res := parseStr(t, join(userStr("u1", text)), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, KindOwner, res.Entries[0].Kind)
+	assert.Equal(t, text, res.Entries[0].Text)
+}

@@ -72,6 +72,7 @@ type sessionFeedEntryJSON struct {
 	AskID        int64                    `json:"ask_id,omitempty"`
 	Title        string                   `json:"title,omitempty"`
 	Via          string                   `json:"via,omitempty"`
+	EventType    string                   `json:"event_type,omitempty"`
 	Subagent     *sessionfeed.SubagentRef `json:"subagent,omitempty"`
 }
 
@@ -80,7 +81,7 @@ func toSessionFeedEntries(es []sessionfeed.Entry) []sessionFeedEntryJSON {
 	for _, e := range es {
 		out = append(out, sessionFeedEntryJSON{
 			ID: e.ID, Kind: e.Kind, At: e.At, Text: e.Text, Conversation: e.Conversation,
-			AskID: e.AskID, Title: e.Title, Via: e.Via, Subagent: e.Subagent,
+			AskID: e.AskID, Title: e.Title, Via: e.Via, EventType: e.EventType, Subagent: e.Subagent,
 		})
 	}
 	return out
@@ -303,6 +304,8 @@ func printSessionFeed(w io.Writer, entries []sessionFeedEntryJSON) {
 			if e.Text != "" {
 				fmt.Fprintln(w, indentFeedText(e.Text))
 			}
+		case sessionfeed.KindEvent:
+			fmt.Fprintf(w, "· %s\n", e.Title)
 		case sessionfeed.KindSubagent:
 			if r := e.Subagent; r != nil {
 				fmt.Fprintf(w, "%s  Subagent %s: %s [%s]\n", at, r.Type, r.Description, r.Status)
