@@ -280,7 +280,7 @@ func gateFake(t *testing.T, requests ...string) *gateFixture {
 	fx.status = filepath.Join(filepath.Dir(f.argv), "mcp_status")
 	fx.setStatus(t, testConnectors)
 	opts.Env = append(opts.Env, "FAKE_CLAUDE_GATE_REQUESTS="+fx.requests, "FAKE_MCP_STATUS="+fx.status)
-	opts.ClaudeAI = ClaudeAIMode{On: true, Connectors: true}
+	opts.ClaudeAI = ClaudeAIMode{On: true, Connectors: true, Sandbox: testSandbox(t)}
 	opts.Gate = &GateOptions{Sink: fx.sink, Publish: pub,
 		Policy: connectorpolicy.Policy{Disabled: map[string]bool{}}, PollInterval: 10 * time.Millisecond}
 	fx.opts = opts

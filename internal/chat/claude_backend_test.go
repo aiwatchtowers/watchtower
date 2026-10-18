@@ -480,7 +480,7 @@ func forEachClaudeAIMode(t *testing.T, f func(t *testing.T, mode ClaudeAIMode)) 
 	for _, c := range []struct {
 		name string
 		mode ClaudeAIMode
-	}{{"off", ClaudeAIMode{}}, {"claude.ai", ClaudeAIMode{On: true, Connectors: true}}} {
+	}{{"off", ClaudeAIMode{}}, {"claude.ai", ClaudeAIMode{On: true, Connectors: true, Sandbox: testSandbox(t)}}} {
 		t.Run(c.name, func(t *testing.T) { f(t, c.mode) })
 	}
 }

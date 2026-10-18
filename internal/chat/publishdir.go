@@ -92,8 +92,10 @@ func (d *PublishDir) Path() string { return d.path }
 
 // Check accepts p only when it names the publish dir or a place inside it.
 // The decision is lexical first, so a path outside is refused without a
-// single syscall — nothing outside the dir is ever stat'ed (no TCC prompt
-// for a path in ~/Documents). A relative p resolves against the work dir
+// single syscall: Check itself never stats anything outside the dir. The CLI
+// does, before it asks the gate (it lists a Write target's folder and
+// inspects an Artifact source); ChildSandbox, not Check, keeps that out of
+// the TCC-guarded folders. A relative p resolves against the work dir
 // (the CLI's cwd), not the publish dir, so "~/…" (which the CLI expands to
 // the home folder) lands outside. Any ".." component is refused outright, so
 // cleaning can never hide a component the walk below should have seen. Then
