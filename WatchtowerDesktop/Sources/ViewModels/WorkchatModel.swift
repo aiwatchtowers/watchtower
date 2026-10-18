@@ -24,6 +24,9 @@ final class WorkchatModel {
     @ObservationIgnored private let now: () -> Date
     /// Feed entries that stood for a line already: one echo, one line.
     @ObservationIgnored private var claimedEntries: Set<String> = []
+    /// The feed as `reconcile` last saw it: a line settled after the read
+    /// that already held its echo is matched against it.
+    @ObservationIgnored private var lastEntries: [SessionFeedEntry] = []
 
     init(sessionID: Int64, control: SessionControl, lineDelivery: SessionLineDelivery, now: @escaping () -> Date = Date.init) {
         self.sessionID = sessionID
@@ -32,10 +35,12 @@ final class WorkchatModel {
         self.now = now
     }
 
-    /// Sends the trimmed draft; an empty or whitespace-only one is not sent.
-    /// The field clears at once; a line that cannot go comes back to it.
+    /// Sends the draft as one line (PROJ-12: each whitespace run, line
+    /// breaks included, becomes one space, so the bubble, the typed text and
+    /// its echo agree); an empty or whitespace-only one is not sent. The
+    /// field clears at once; a line that cannot go comes back to it.
     func send() async {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = draft.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         guard !text.isEmpty else { return }
         draft = ""
         let id = UUID()
@@ -61,18 +66,20 @@ final class WorkchatModel {
     }
 
     /// The feed changed: a line whose owner entry it now shows leaves. A
-    /// submitted line past `echoWindow` without one stays as a plain bubble;
-    /// a typed or copied line waits for the owner's Return however long.
+    /// submitted line whose echo is not dated within `echoWindow` of its
+    /// delivery stays as a plain bubble — judged by the echo's time, so a
+    /// feed read late (the pane off screen) still matches; a typed or
+    /// copied line waits for the owner's Return however long.
     func reconcile(with entries: [SessionFeedEntry]) {
+        lastEntries = entries
         let owners = entries.filter { $0.kind == "owner" && !claimedEntries.contains($0.id) }
         guard !owners.isEmpty else { return }
-        let current = now()
         var kept: [WorkchatOutgoing] = []
         var claimed = Set<String>()
         for line in outgoing {
-            guard Self.awaitsEcho(line, now: current),
-                  let echo = owners.first(where: { !claimed.contains($0.id) && WorkchatOutgoing.matches($0, line: line) })
-            else {
+            guard let echo = owners.first(where: {
+                !claimed.contains($0.id) && WorkchatOutgoing.matches($0, line: line) && Self.isTimelyEcho($0, of: line)
+            }) else {
                 kept.append(line)
                 continue
             }
@@ -95,11 +102,13 @@ final class WorkchatModel {
         }
     }
 
-    private static func awaitsEcho(_ line: WorkchatOutgoing, now: Date) -> Bool {
+    /// Whether `entry` (already a match) can be the line's echo: a
+    /// submitted line's echo is dated within `echoWindow` of its delivery.
+    private static func isTimelyEcho(_ entry: SessionFeedEntry, of line: WorkchatOutgoing) -> Bool {
         switch line.state {
         case .sent:
-            guard let delivered = line.deliveredAt else { return true }
-            return now.timeIntervalSince(delivered) <= WorkchatOutgoing.echoWindow
+            guard let delivered = line.deliveredAt, let at = entry.at else { return true }
+            return at.timeIntervalSince(delivered) <= WorkchatOutgoing.echoWindow
         case .typed, .copied: return true
         case .sending, .queued, .notSent: return false
         }
@@ -126,7 +135,11 @@ final class WorkchatModel {
         }
         outgoing[index].state = state
         switch state {
-        case .sent, .typed, .copied: outgoing[index].deliveredAt = now()
+        case .sent, .typed, .copied:
+            outgoing[index].deliveredAt = now()
+            // The feed read that holds its echo may have come while it was
+            // still on its way; no later read would bring it again.
+            reconcile(with: lastEntries)
         case .notSent: if draft.isEmpty { draft = outgoing[index].text }
         case .sending, .queued: break
         }
