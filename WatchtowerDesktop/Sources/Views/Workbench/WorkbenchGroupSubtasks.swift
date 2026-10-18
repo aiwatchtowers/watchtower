@@ -78,7 +78,7 @@ struct WorkbenchGroupSubtasks: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: target.statusIcon)
                         .font(.caption)
-                        .foregroundStyle(WorkbenchBoardColors.status(target.statusColor))
+                        .foregroundStyle(Tone.status(target.statusColor))
                     Text(WorkbenchTargetNumber.label(target.id))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)

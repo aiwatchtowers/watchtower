@@ -257,7 +257,7 @@ struct WorkbenchTargetPanel: View {
             WorkbenchDetailMenuLabel(
                 text: shown?.title ?? WorkbenchBoardCard.statusLabel(target.status),
                 systemImage: target.statusIcon,
-                color: WorkbenchBoardColors.status(target.statusColor)
+                color: Tone.status(target.statusColor)
             )
         }
         .menuStyle(.borderlessButton)
@@ -271,7 +271,7 @@ struct WorkbenchTargetPanel: View {
         WorkbenchDetailMenuLabel(
             text: "\(WorkbenchBoardCard.statusLabel(target.status)) · from sub-tasks",
             systemImage: target.statusIcon,
-            color: WorkbenchBoardColors.status(target.statusColor),
+            color: Tone.status(target.statusColor),
             isMenu: false
         )
         .fixedSize()
@@ -290,7 +290,7 @@ struct WorkbenchTargetPanel: View {
             WorkbenchDetailMenuLabel(
                 text: target.priority.capitalized,
                 systemImage: "flag.fill",
-                color: WorkbenchBoardColors.priority(target.priority)
+                color: Tone.priority(target.priority)
             )
         }
         .menuStyle(.borderlessButton)

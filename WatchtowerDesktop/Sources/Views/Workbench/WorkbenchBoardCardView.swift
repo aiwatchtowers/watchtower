@@ -27,7 +27,7 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
         let card = card
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: target.statusIcon)
-                .foregroundStyle(WorkbenchBoardColors.status(target.statusColor))
+                .foregroundStyle(Tone.status(target.statusColor))
             VStack(alignment: .leading, spacing: 5) {
                 Text(card.title.isEmpty ? "Untitled" : card.title)
                     .font(row.hasChildren ? .callout.weight(.semibold) : .callout)
@@ -125,12 +125,12 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
                 .help("Target number — right-click to copy it")
             WorkbenchBoardChip(
                 text: target.priority.capitalized,
-                color: WorkbenchBoardColors.priority(target.priority),
+                color: Tone.priority(target.priority),
                 dot: true
             )
             WorkbenchBoardChip(
                 text: WorkbenchBoardCard.statusLabel(target.status),
-                color: WorkbenchBoardColors.status(target.statusColor)
+                color: Tone.status(target.statusColor)
             )
             if row.node.archived {
                 WorkbenchBoardChip(text: "Archived", color: .secondary)
@@ -200,30 +200,6 @@ struct WorkbenchBoardChip: View {
         .padding(.vertical, 2)
         .foregroundStyle(dot ? Color.primary : color)
         .background(color.opacity(0.14), in: Capsule())
-    }
-}
-
-/// The Targets tab's colours for status and priority.
-enum WorkbenchBoardColors {
-    /// Maps `Target.statusColor`'s name to a colour; an unknown status is neutral.
-    static func status(_ name: String) -> Color {
-        switch name {
-        case "blue": .blue
-        case "teal": .teal
-        case "red": .red
-        case "green": .green
-        case "gray": .gray
-        case "purple": .purple
-        default: .secondary
-        }
-    }
-
-    static func priority(_ priority: String) -> Color {
-        switch priority {
-        case "high": .red
-        case "low": .blue
-        default: .orange
-        }
     }
 }
 

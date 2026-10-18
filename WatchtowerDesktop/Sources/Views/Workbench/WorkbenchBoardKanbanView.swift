@@ -282,7 +282,7 @@ private struct WorkbenchBoardKanbanLaneView: View {
             if let root = lane.root {
                 WorkbenchBoardChip(
                     text: WorkbenchBoardCard.statusLabel(root.target.status),
-                    color: WorkbenchBoardColors.status(root.target.statusColor)
+                    color: Tone.status(root.target.statusColor)
                 )
             }
         }
