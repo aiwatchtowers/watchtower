@@ -81,8 +81,10 @@ final class SessionChatRequestHandler {
             // relay got to the record.
             let age = self.now().timeIntervalSince(action.createdAt)
             let watch = Double(self.runner.timing.watch.components.seconds)
-            guard age <= watch + RelayProcessor.maxClockSkew else { return .applied() }
-            let remaining = Duration.seconds(max(0, min(watch, watch - age)))
+            // A phone clock ahead of the Mac (negative age) still gets a full
+            // watch; a request older than the watch opens none.
+            guard age < watch else { return .applied() }
+            let remaining = Duration.seconds(min(watch, watch - age))
             self.runner.request(
                 sessionID: sessionID, agentID: agentID, toolUseID: toolUseID,
                 expires: self.runner.clock() + remaining
