@@ -319,3 +319,12 @@ func TestClaudeSessionOptions_QC02PerToolAllowlist(t *testing.T) {
 		assert.NotEqual(t, "mcp__acme", tok, "the whole server must never be granted")
 	}
 }
+
+// The warm claude session fences its Quick Connections in the system prompt
+// as external server data (board #556); without one the prompt is unchanged.
+func TestClaudeSessionOptions_FencesExternalServersInPrompt(t *testing.T) {
+	w := sessionWiring{cfg: &config.Config{}, dbPath: "/tmp/wt.db", conv: &db.ChatConversation{}, prompt: "sys"}
+	assert.Equal(t, "sys", claudeSessionOptions(w, nil).SystemPrompt)
+	ext := []ai.ExternalMCPServer{{Name: "acme", Kind: "http", URL: "https://example.com/mcp", AllowTools: []string{"getIssue"}}}
+	assert.Equal(t, "sys\n\n"+ai.ExternalDataRule(ext), claudeSessionOptions(w, ext).SystemPrompt)
+}

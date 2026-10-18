@@ -226,8 +226,8 @@ func validateConnectionAddFlags(name, kind, command, url string) error {
 		return fmt.Errorf("--name %q is invalid: must match %s (letters, digits, underscore, hyphen only)",
 			name, connectionNamePattern.String())
 	}
-	if strings.EqualFold(name, "watchtower") {
-		return fmt.Errorf(`--name "watchtower" is reserved (the built-in MCP server); choose another name`)
+	if externalmcp.ReservedName(name) {
+		return fmt.Errorf(`--name %q is reserved: "watchtower" and names starting with "watchtower_" belong to the built-in MCP server; choose another name`, name)
 	}
 	switch kind {
 	case "stdio":
@@ -485,6 +485,10 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 	}
 	if conn.Kind != "http" {
 		return fmt.Errorf("connection %d is %q; OAuth sign-in applies to http servers only", id, conn.Kind)
+	}
+	if externalmcp.ReservedName(conn.Name) {
+		recordReservedName(database, conn)
+		return fmt.Errorf("connection %d: %w — remove it and add it again under another name", id, errReservedName)
 	}
 
 	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)
