@@ -85,6 +85,83 @@ Tracks, digests and people cards stay off Home: they are reading
 material, not "needs you now", and would turn Home into the retired
 Dashboard.
 
+## 4a. Mockups
+
+Full-fidelity mockups (dark theme, the app's card grid, sample data):
+`2026-10-18-home-today-mockups.html` (open in Files → **Preview**) and its
+render `2026-10-18-home-today-mockups.png`. Four screens: the reported
+case before/after, a work install on a weekday, the owner's install after
+a day off, and the evening all-clear. They show the recommended D1–D4.
+
+![Home Today mockups](2026-10-18-home-today-mockups.png)
+
+The same screens as sketches:
+
+**1. The reported case — Sunday 21:10, work install (now → proposed)**
+
+```
+NOW                                   PROPOSED
+Home                                  Home
+Sunday, October 18                    Sunday, October 18
+
+Today                                 Today
+┌──────────────────────────────┐      ┌──────────────────────────────────────┐
+│ NEXT MEETING · TOMORROW 09:30│      │ WAITING ON YOU · 6    Open Catch-Up →│
+│ Sync | Platform              │      │ [Mention] Colleague B · #release     │
+│ 09:30–10:00 · Room 6, A +10  │      │   can you approve the hotfix…  Fri   │
+└──────────────────────────────┘      │ [DM] Colleague C                     │
+                                      │   shared the Q4 plan draft…    Fri   │
+                                      │ [Thread] #platform · 3 messages      │
+                                      │   Colleague D: so do we roll…  Fri   │
+                                      └──────────────────────────────────────┘
+                                      ┌──────────────────────────────┐
+                                      │ BRIEFING · FRI               │
+                                      │ Release 4.2 is blocked on…   │
+                                      └──────────────────────────────┘
+                                      Coming up  Tomorrow
+                                      ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┐
+                                        MONDAY
+                                      │ 09:30–10:00 Sync | Platform  [Prep ready]
+                                        12:00–12:30 1:1 colleague C  │
+                                      │ 15:00–16:00 Release review
+                                      └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘
+```
+
+**2. Work install, weekday 10:40**
+
+```
+Today
+┌──────────────────────────────────────────────────────────────────────┐
+│ WAITING ON YOU · 12                                  Open Catch-Up → │
+│ [Mention] Colleague B · #release  is the payments review done?  10:12│
+│ [DM]      Colleague E             can we move our 1:1 to Thu?   09:58│
+│ [Email]   Vendor X · Contract     confirm the seat count        09:20│
+└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐
+│ MEETINGS TODAY · 3 left  │ │ BRIEFING             │ │ DAY PLAN · 2 of 6    │
+│ 09:30 Daily standup (dim)│ │ The payments review  │ │ ▓▓▓░░░░░░            │
+│▶11:00 in 20 min Payments │ │ is the last blocker… │ │ Next: Sign off the   │
+│       review [Prep ready]│ └──────────────────────┘ │   payments review    │
+│ 14:00 1:1 colleague E    │                          │ Then: Reply to X     │
+│ 16:00 Q4 planning [Prep] │                          └──────────────────────┘
+└──────────────────────────┘
+┌──────────────────────────────┐
+│ PROPOSALS & REMINDERS · 1    │
+│ [Reminder] Send the Q4 draft │
+└──────────────────────────────┘
+```
+
+**3. Owner's install after a day off** — screen 2 plus, in order: *Since
+you were away* first (wide), then Waiting on you, Meetings today,
+Briefing, My targets, Agents waiting.
+
+**4. Weekday evening, nothing left** — "✓ Nothing needs you right now."
+under Today; tomorrow's meetings under *Coming up*.
+
+Card order: Since you were away → Waiting on you → Meetings today →
+Briefing → Day plan → Proposals & reminders → My targets → Agents waiting
+→ Instructions. A card with no content is not shown, as now.
+
 ## 5. Order and size
 
 Desktop only, WatchtowerCore queries + builder + views, no migration:
