@@ -293,6 +293,21 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         XCTAssertEqual(stored?.map(\.done), [true])
     }
 
+    /// A row whose text is on several rows cannot be found again once an
+    /// earlier write changed the list: its edit is refused, never guessed.
+    func testAChecklistToggleOfADuplicateAfterAQueuedRemoveIsRefused() async throws {
+        let shown = try makeTarget(subItems: #"[{"text":"dup","done":false},{"text":"dup","done":false}]"#)
+        let vm = TargetsViewModel(dbManager: dbManager)
+
+        let removed = await vm.removeSubItem(shown, index: 0)
+        let toggled = await vm.toggleSubItem(shown, index: 1)
+
+        XCTAssertTrue(removed, "the list was as shown: the slot is the row")
+        XCTAssertFalse(toggled)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertEqual(try storedTarget(shown.id)?.decodedSubItems.map(\.done), [false])
+    }
+
     /// A composer cleared at submit gets its text back on a failure, ahead
     /// of what was typed since (F1).
     func testAFailedComposerWritePutsTheTextBackAheadOfNewText() {

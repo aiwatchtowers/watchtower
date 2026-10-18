@@ -298,12 +298,13 @@ final class TargetsViewModel {
                 // it was dropped on, both found where they are now; anything
                 // that cannot be told apart is refused rather than shuffled.
                 guard source.count == 1, let dragged = source.first,
-                      let from = Self.currentIndex(of: texts[dragged], shownAt: dragged, in: fresh) else {
+                      let from = Self.currentIndex(of: texts[dragged], shownAt: dragged, shown: texts, in: fresh) else {
                     throw TargetSubItemsChangedError()
                 }
                 var to = fresh.count
                 if destination < texts.count {
-                    guard let anchor = Self.currentIndex(of: texts[destination], shownAt: destination, in: fresh) else {
+                    guard let anchor = Self.currentIndex(of: texts[destination], shownAt: destination, shown: texts,
+                                                         in: fresh) else {
                         throw TargetSubItemsChangedError()
                     }
                     to = anchor
@@ -336,8 +337,9 @@ final class TargetsViewModel {
     /// in the chain, the agent, another window) is kept. An edit of one item
     /// (`shown`, at `index` when the owner acted) applies to that item where
     /// it is now (`change` gets its current index): an earlier write may
-    /// have moved it. It is refused when the item cannot be told apart any
-    /// more, so it never lands on the wrong one.
+    /// have moved it. It is refused when the list changed and the item
+    /// cannot be told apart (gone, or its text on several rows), so it never
+    /// lands on the wrong one — not even on a duplicate of it.
     private func mutateSubItems(
         _ target: Target,
         shown: TargetSubItem? = nil,
@@ -346,11 +348,13 @@ final class TargetsViewModel {
     ) async -> Bool {
         let id = target.id
         let shownText = shown?.text
+        let shownTexts = target.decodedSubItems.map(\.text)
         return await write("update sub-items") { db in
             var items = try Self.freshSubItems(db, id: id)
             var at = index
             if let shownText {
-                guard let current = Self.currentIndex(of: shownText, shownAt: index, in: items.map(\.text)) else {
+                guard let current = Self.currentIndex(of: shownText, shownAt: index, shown: shownTexts,
+                                                      in: items.map(\.text)) else {
                     throw TargetSubItemsChangedError()
                 }
                 at = current
@@ -360,13 +364,15 @@ final class TargetsViewModel {
         }
     }
 
-    /// Where the entry shown at `index` with `key` is now: the same slot when
-    /// it still holds it, else the one slot holding it; nil when it is gone
-    /// or several slots hold it.
-    nonisolated static func currentIndex(of key: String, shownAt index: Int, in keys: [String]) -> Int? {
-        if index < keys.count, keys[index] == key { return index }
+    /// Where the entry shown at `index` with `key` is now: its slot while
+    /// the list is as shown; after a change, the one slot holding a key that
+    /// was unique when shown too; nil otherwise (gone, or a duplicate that
+    /// cannot be told apart).
+    nonisolated static func currentIndex(of key: String, shownAt index: Int, shown: [String], in keys: [String]) -> Int? {
+        if keys == shown { return index < keys.count ? index : nil }
         let matches = keys.indices.filter { keys[$0] == key }
-        return matches.count == 1 ? matches[0] : nil
+        guard matches.count == 1, shown.filter({ $0 == key }).count == 1 else { return nil }
+        return matches[0]
     }
 
     nonisolated private static func freshSubItems(_ db: Database, id: Int) throws -> [TargetSubItem] {
@@ -397,10 +403,12 @@ final class TargetsViewModel {
         let shown = target.decodedNotes
         guard index >= 0, index < shown.count else { return false }
         let (text, createdAt) = (shown[index].text, shown[index].createdAt)
+        let shownKeys = shown.map { "\($0.createdAt)|\($0.text)" }
         return await mutateNotes(target) { notes in
             // The note where it is now; refused once it cannot be found (see mutateSubItems).
             let keys = notes.map { "\($0.createdAt)|\($0.text)" }
-            guard let at = Self.currentIndex(of: "\(createdAt)|\(text)", shownAt: index, in: keys) else {
+            guard let at = Self.currentIndex(of: "\(createdAt)|\(text)", shownAt: index, shown: shownKeys,
+                                             in: keys) else {
                 throw TargetNotesChangedError()
             }
             notes.remove(at: at)

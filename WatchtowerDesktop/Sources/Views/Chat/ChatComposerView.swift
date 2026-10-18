@@ -40,7 +40,8 @@ struct ChatComposerView: View {
                 text: $chatVM.draft,
                 isStreaming: chatVM.isBusy,
                 onSend: { Task { await chatVM.sendDraft() } },
-                onStop: { chatVM.stop() },
+                // Nothing to stop while the turn's rows are being written.
+                onStop: chatVM.isStartingTurn ? nil : { chatVM.stop() },
                 placeholder: "Ask about your work…",
                 dictationTargetID: "chat.workspace",
                 maxHeight: maxHeight,

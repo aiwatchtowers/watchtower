@@ -198,7 +198,7 @@ final class WorkbenchBoardViewModel {
     /// The comment composers' one-send-at-a-time guard.
     let pendingWrites = PendingWrites()
     /// The description save under way per target, until its draft settled.
-    private var savingDescriptions: [Int: Task<Bool, Never>] = [:]
+    private var savingDescriptions: [Int: (task: Task<Bool, Never>, draft: DescriptionDraft)] = [:]
     /// The last status or card move queued per target, until it settled.
     @ObservationIgnored private var queuedPlacements: [Int: (placement: Placement, token: Int)] = [:]
     @ObservationIgnored private var placementToken = 0
@@ -872,7 +872,10 @@ final class WorkbenchBoardViewModel {
     private func descriptionWrite(for id: Int) -> Task<Bool, Never> {
         if let running = savingDescriptions[id] {
             return Task { [self] in
-                _ = await running.value
+                let saved = await running.task.value
+                // A failed save of the very draft still open is not retried:
+                // it would fail the same way behind its own error.
+                if !saved, descriptionDrafts[id] == running.draft { return false }
                 return await descriptionWrite(for: id).value
             }
         }
@@ -894,7 +897,7 @@ final class WorkbenchBoardViewModel {
             settleDescriptionDraft(id, sent: draft, saved: saved)
             return saved && descriptionDrafts[id] == nil
         }
-        savingDescriptions[id] = saving
+        savingDescriptions[id] = (saving, draft)
         return saving
     }
 

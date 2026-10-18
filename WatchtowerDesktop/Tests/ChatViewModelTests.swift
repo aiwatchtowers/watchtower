@@ -1704,6 +1704,32 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isOnLanding)
     }
 
+    /// Board #670: a paste on the landing lands after its conversation is
+    /// written; Enter right after it waits for it, so the file goes out with
+    /// that message rather than the next one.
+    func testASendRightAfterALandingPasteCarriesThePaste() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("chat-files-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude, defaults: defaults,
+                               attachmentsRoot: root) { "turn-1" }
+        vm.draft = "what is in it?"
+        let held = HeldWriter(dbManager.dbPool)
+        defer { held.release() }
+
+        let pasting = Task { await vm.attachPasted(Data("plain words".utf8), name: "Pasted text.txt") }
+        let landing = await eventually { vm.isPasting }
+        XCTAssertTrue(landing)
+        let sending = Task { await vm.sendDraft() }
+        held.release()
+        let attached = await pasting.value
+        await sending.value
+
+        XCTAssertTrue(attached)
+        let sent = try XCTUnwrap(fakes.last?.turns.last)
+        XCTAssertEqual(sent.attachments.map(\.name), ["Pasted text.txt"])
+        XCTAssertTrue(vm.composerAttachments.pending.isEmpty)
+    }
+
     /// Board #670: on the landing a paste waits for its conversation. When
     /// that cannot be written nothing is attached and the answer is false,
     /// so a long text paste stays in the field instead of vanishing.

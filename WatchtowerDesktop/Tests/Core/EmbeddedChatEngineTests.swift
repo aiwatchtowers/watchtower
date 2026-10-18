@@ -279,10 +279,14 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertFalse(engine.send("again"), "no second turn meanwhile")
         var finished = false
         let waiting = Task { await engine.finished(); finished = true }
-        try await Task.sleep(for: .milliseconds(20))
+        // postTurn is still parked on its continuation (never resumed yet),
+        // so the turn cannot have ended: finished() must not have returned.
+        XCTAssertNotNil(release)
+        XCTAssertTrue(engine.isFinishing)
         XCTAssertFalse(finished, "finished() waits for postTurn")
         release?.resume()
         await waiting.value
+        XCTAssertTrue(finished)
 
         XCTAssertFalse(engine.isFinishing)
         XCTAssertFalse(engine.isStreaming, "the turn has ended once finished() returned")

@@ -168,6 +168,10 @@ final class ChatViewModel {
     /// The composer's conversation being created: one at a time, so a
     /// keystroke, a paperclip and a send in quick succession make one row.
     @ObservationIgnored private var creatingConversation: Task<Int64?, Never>?
+    /// Pastes being attached (on the landing, after its conversation).
+    @ObservationIgnored private var pastesInFlight: [UUID: Task<Bool, Never>] = [:]
+    /// A paste is still being attached.
+    var isPasting: Bool { !pastesInFlight.isEmpty }
 
     @ObservationIgnored private let dbManager: DatabaseManager
     @ObservationIgnored private let cliRunner: CLIRunnerProtocol?
@@ -181,6 +185,7 @@ final class ChatViewModel {
         provider: AIProvider = .claude,
         cliRunner: CLIRunnerProtocol? = nil,
         defaults: UserDefaults = .standard,
+        attachmentsRoot: URL? = ChatAttachmentStore.defaultRootDir(),
         makeTurnID: @escaping () -> String = { UUID().uuidString }
     ) {
         self.defaults = defaults
@@ -191,7 +196,7 @@ final class ChatViewModel {
         self.makeTurnID = makeTurnID
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
         self.composerAttachments = ComposerAttachments(
-            store: ChatAttachmentStore.defaultRootDir().map { ChatAttachmentStore(db: dbManager.dbPool, rootDir: $0) }
+            store: attachmentsRoot.map { ChatAttachmentStore(db: dbManager.dbPool, rootDir: $0) }
         )
         let dbPool = dbManager.dbPool
         self.composer = ComposerPickerModel(
@@ -645,6 +650,7 @@ final class ChatViewModel {
     /// its text back ahead of it, and only the files that went out leave
     /// the composer.
     func sendDraft(screen: ScreenContext? = nil) async {
+        for paste in pastesInFlight.values { _ = await paste.value }
         let attachments = composerAttachments.pending
         let batchID = conversationID
         let typed = draft
@@ -705,10 +711,19 @@ final class ChatViewModel {
     /// conversation is written first; a failure there (the chat's error says
     /// why) attaches nothing and answers false, so a long paste stays in the
     /// field.
+    ///
+    /// A send waits for the pastes under way (`sendDraft`), so a paste
+    /// followed at once by Enter goes out with that message.
     @discardableResult
     func attachPasted(_ data: Data, name: String) async -> Bool {
-        guard let id = await conversationIDCreatingIfNeeded() else { return false }
-        return composerAttachments.addPasted(data, name: name, conversationID: id)
+        let key = UUID()
+        let paste = Task { [self] () -> Bool in
+            guard let id = await conversationIDCreatingIfNeeded() else { return false }
+            return composerAttachments.addPasted(data, name: name, conversationID: id)
+        }
+        pastesInFlight[key] = paste
+        defer { pastesInFlight[key] = nil }
+        return await paste.value
     }
 
     /// `mentions` are the composer's picked candidates (Task 25); only those
