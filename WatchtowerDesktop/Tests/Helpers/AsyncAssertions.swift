@@ -14,6 +14,23 @@ func assertThrowsAsync<T>(
     } catch {}
 }
 
+/// As above, and `handler` checks the error (`XCTAssertThrowsError`'s
+/// trailing closure).
+@MainActor
+func assertThrowsAsync<T>(
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ expression: () async throws -> T,
+    _ handler: (Error) -> Void
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("expected an error", file: file, line: line)
+    } catch {
+        handler(error)
+    }
+}
+
 /// As above, and the error is `expected`.
 @MainActor
 func assertThrowsAsync<E: Error & Equatable, T>(

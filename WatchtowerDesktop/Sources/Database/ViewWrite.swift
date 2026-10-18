@@ -89,10 +89,32 @@ final class SerialWrites {
 
     @discardableResult
     func run<T>(_ body: @escaping @MainActor () async -> T) async -> T {
-        let task = enqueue { await body() }
-        switch await task.result {
-        case .success(let value): return value
-        case .failure: preconditionFailure("a body that cannot throw threw")
+        await start(body).value
+    }
+
+    /// Queues `body` right away, without waiting: the caller may be
+    /// synchronous (a panel move saving the draft it leaves). Awaiting the
+    /// task is `run`.
+    @discardableResult
+    func start<T>(_ body: @escaping @MainActor () async -> T) -> Task<T, Never> {
+        let previous = last
+        depth += 1
+        let task = Task { @MainActor () -> T in
+            await previous?.value
+            defer { self.depth -= 1 }
+            return await body()
+        }
+        last = Task { _ = await task.value }
+        return task
+    }
+
+    /// Returns once every body queued so far, and any queued meanwhile, has
+    /// finished — what a test awaits after a synchronous caller queued one.
+    func idle() async {
+        var awaited: Task<Void, Never>?
+        while let current = last, current != awaited {
+            awaited = current
+            await current.value
         }
     }
 

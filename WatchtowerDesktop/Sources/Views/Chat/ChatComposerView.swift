@@ -38,9 +38,10 @@ struct ChatComposerView: View {
             )
             ChatComposerBar(input: ChatComposerField(
                 text: $chatVM.draft,
-                isStreaming: chatVM.isStreaming,
-                onSend: { chatVM.sendDraft() },
-                onStop: { chatVM.stop() },
+                isStreaming: chatVM.isBusy,
+                onSend: { Task { await chatVM.sendDraft() } },
+                // Nothing to stop while the turn's rows are being written.
+                onStop: chatVM.isStartingTurn ? nil : { chatVM.stop() },
                 placeholder: "Ask about your work…",
                 dictationTargetID: "chat.workspace",
                 maxHeight: maxHeight,
@@ -49,7 +50,7 @@ struct ChatComposerView: View {
                 attachments: chatVM.composerAttachments.pending,
                 attachmentError: chatVM.composerAttachments.errorMessage,
                 onAttachFiles: { chatVM.attachFiles($0) },
-                onPasteData: { chatVM.attachPasted($0, name: $1) },
+                onPasteData: { await chatVM.attachPasted($0, name: $1) },
                 onRemoveAttachment: { chatVM.composerAttachments.remove(id: $0) },
                 onCursorChange: { text, cursor in
                     lastCursor = cursor
@@ -63,7 +64,7 @@ struct ChatComposerView: View {
             }
         }
         .onChange(of: chatVM.draft) { old, new in
-            if old.isEmpty, !new.isEmpty { chatVM.draftStarted() }
+            if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
         }
     }
 

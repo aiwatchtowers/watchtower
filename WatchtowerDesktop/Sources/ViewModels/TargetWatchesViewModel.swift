@@ -174,7 +174,7 @@ final class TargetWatchesViewModel {
                 reportWriteFailure("apply", RowNotFoundError(kind: "track event", id: event.id))
                 return
             }
-            _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
+            _ = try await TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
             try await chained { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
         } catch { reportWriteFailure("apply", error) }
     }

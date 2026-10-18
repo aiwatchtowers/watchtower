@@ -42,7 +42,9 @@ struct TargetsListView: View {
                     if let id = selectedItemID,
                        let item = loaded.first(where: { $0.id == id }) ?? vm.itemByID(id) {
                         TargetDetailView(target: item, viewModel: vm) {
-                            selectedItemID = nil
+                            // A late close (a delete that waited for the writer)
+                            // leaves another target the owner opened meanwhile.
+                            if selectedItemID == id { selectedItemID = nil }
                         }
                         .id(id)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -109,12 +111,19 @@ struct TargetsListView: View {
         ) { target in
             Button("Delete", role: .destructive) {
                 pendingDeleteTarget = nil
-                // A failed delete keeps the task, its chat and its briefs.
-                guard viewModel?.deleteTarget(target) == true else { return }
-                if selectedItemID == target.id { selectedItemID = nil }
-                // Its chat stops with it, and a brief still waiting for it never runs.
-                appState.targetAssistantCenter.drop(targetID: target.id)
-                appState.targetBriefCenter.drop(targetID: target.id)
+                guard let viewModel else { return }
+                Task {
+                    // A failed delete keeps the task, its chat and its briefs;
+                    // one delete of a task at a time.
+                    let deleted = await viewModel.pendingWrites.run(TargetsViewModel.deleteKey(target.id)) {
+                        await viewModel.deleteTarget(target)
+                    }
+                    guard deleted == true else { return }
+                    if selectedItemID == target.id { selectedItemID = nil }
+                    // Its chat stops with it, and a brief still waiting for it never runs.
+                    appState.targetAssistantCenter.drop(targetID: target.id)
+                    appState.targetBriefCenter.drop(targetID: target.id)
+                }
             }
             Button("Cancel", role: .cancel) {
                 pendingDeleteTarget = nil
@@ -399,7 +408,7 @@ struct TargetsListView: View {
 
                 Button {
                     if target.isActive {
-                        vm.markDone(target)
+                        Task { await vm.markDone(target) }
                     }
                 } label: {
                     Image(systemName: target.statusIcon)
@@ -453,8 +462,8 @@ struct TargetsListView: View {
     @ViewBuilder
     private func contextMenu(_ target: Target, vm: TargetsViewModel) -> some View {
         if target.isActive {
-            Button("Mark Done") { vm.markDone(target) }
-            Button("Dismiss") { vm.dismiss(target) }
+            Button("Mark Done") { Task { await vm.markDone(target) } }
+            Button("Dismiss") { Task { await vm.dismiss(target) } }
 
             Menu("Snooze") {
                 Button("Tomorrow") { snoozeTarget(target, vm: vm, days: 1) }
@@ -470,14 +479,14 @@ struct TargetsListView: View {
                 id: \.self
             ) { status in
                 Button(status.replacingOccurrences(of: "_", with: " ").capitalized) {
-                    vm.updateStatus(target, to: status)
+                    Task { await vm.updateStatus(target, to: status) }
                 }
             }
         }
         Menu("Priority") {
             ForEach(["high", "medium", "low"], id: \.self) { priority in
                 Button(priority.capitalized) {
-                    vm.updatePriority(target, to: priority)
+                    Task { await vm.updatePriority(target, to: priority) }
                 }
             }
         }
@@ -489,7 +498,7 @@ struct TargetsListView: View {
 
     private func snoozeTarget(_ target: Target, vm: TargetsViewModel, days: Int) {
         let date = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date()
-        vm.snooze(target, until: date)
+        Task { await vm.snooze(target, until: date) }
     }
 
     // MARK: - Empty State

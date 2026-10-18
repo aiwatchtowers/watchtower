@@ -67,41 +67,19 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
 
     /// Board #670 phase 2: the view models under `Sources/ViewModels/` and
     /// `DatabaseManager` (whose star toggles the Digests and People screens
-    /// call) are main-actor code too.
+    /// call) are main-actor code too — every one of them, since phase 2b
+    /// moved the last four (targets, target assistant tabs, main chat,
+    /// workbench board) and the synchronous contracts behind them (the
+    /// embedded chat engine's `postTurn`, `TargetActionExecutor`, the brief
+    /// center's chat factory) to awaited writes.
     func testNoSynchronousDatabaseWriteInViewModels() throws {
-        let viewModels = Self.sources.appendingPathComponent("ViewModels")
-        let (scanned, _) = try scan(viewModels) { url in
-            url.pathExtension == "swift" && !Self.viewModelsStillSynchronous.contains(url.lastPathComponent)
-        }
+        let (scanned, _) = try scan(Self.sources.appendingPathComponent("ViewModels")) { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(scanned, 40, "the scan found too few view models: wrong path?")
         let (manager, _) = try scan(Self.sources.appendingPathComponent("Database")) {
             $0.lastPathComponent == "DatabaseManager.swift"
         }
         XCTAssertEqual(manager, 1, "DatabaseManager.swift moved: point the scan at it")
-        let write = try NSRegularExpression(pattern: Self.syncWrite)
-        for name in Self.viewModelsStillSynchronous {
-            let text = try String(contentsOf: viewModels.appendingPathComponent(name), encoding: .utf8)
-            XCTAssertNotNil(write.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-                            "\(name) no longer writes synchronously: drop it from viewModelsStillSynchronous")
-        }
     }
-
-    /// View models not converted yet, each tied to a synchronous contract
-    /// that has to change first (board #670 phase 2b): `TargetsViewModel`'s
-    /// mutators run inside the embedded chat engine's synchronous `postTurn`
-    /// (execute-mode actions through `TargetActionExecutor`);
-    /// `TargetAssistantViewModel` creates a target's first chat tab inside its
-    /// synchronous `load()`; `ChatViewModel`'s landing draft and turn
-    /// persistence sit on the main chat's send path; `WorkbenchBoardViewModel`
-    /// saves a description draft synchronously on every panel move. A file
-    /// listed here must still hold a synchronous write, so the list only
-    /// shrinks.
-    private static let viewModelsStillSynchronous: Set<String> = [
-        "TargetsViewModel.swift",
-        "TargetAssistantViewModel.swift",
-        "ChatViewModel.swift",
-        "WorkbenchBoardViewModel.swift"
-    ]
 
     /// The one synchronous write that never runs on the main thread, by
     /// file and its exact line: `OwnerPresenceCenter.databaseWriter`'s
