@@ -167,7 +167,8 @@ the agent's reply lives in `review_comments.agent_reply`/`agent_reply_at` (Plan 
 
 **Undo (`workbench review revert-hunk`, `reviewdiff.Repo.RevertHunk`; REVIEW-01, REVIEW-02).**
 The owner presses Undo on one hunk of the diff page. Refused under an agent marker
-(`refuseUnderAgent`), on a round that is not open ("the round is not open"), while the
+(`refuseUnderAgent`), without the owner's Confirm in the running Desktop (AGENT-07,
+`confirmWithOwner`; the Desktop's own Undo press is confirmed at once), on a round that is not open ("the round is not open"), while the
 session's `agent_state` is `working` ("the agent is working in this session — undo when it
 stops"), for a hunk already undone ("this hunk was already undone in this round"), for a
 hunk not in the round's diff (`--since` takes it from the since view), and for a renamed,

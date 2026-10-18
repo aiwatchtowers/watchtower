@@ -13,6 +13,10 @@ final class ChatHistoryViewModel {
     @ObservationIgnored var now: () -> Date = Date.init
 
     private let dbManager: DatabaseManager
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
+    /// One pending pin write per chat (board #670).
+    let pendingWrites = PendingWrites()
     /// `chat_files/` root for post-delete cleanup; nil without an active
     /// workspace, matching `ChatAttachmentStore.defaultRootDir()`.
     private let attachmentsRoot: URL?
@@ -51,20 +55,27 @@ final class ChatHistoryViewModel {
         return true
     }
 
-    func rename(_ id: Int64, title: String) {
+    func rename(_ id: Int64, title: String) async {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        mutate { db in try ChatConversationQueries.rename(db, id: id, title: String(trimmed.prefix(120))) }
+        await mutate { db in try ChatConversationQueries.rename(db, id: id, title: String(trimmed.prefix(120))) }
     }
 
-    func togglePin(_ id: Int64) {
-        let pinned = conversations.first { $0.id == id }?.pinned ?? false
-        mutate { db in try ChatConversationQueries.pin(db, id: id, pinned: !pinned) }
+    /// A second press while the pin is written does nothing (board #670).
+    func togglePin(_ id: Int64) async {
+        await pendingWrites.run("pin:\(id)") {
+            let pinned = conversations.first { $0.id == id }?.pinned ?? false
+            await mutate { db in try ChatConversationQueries.pin(db, id: id, pinned: !pinned) }
+        }
     }
 
-    func archive(_ id: Int64) {
-        mutate { db in try ChatConversationQueries.archive(db, id: id) }
+    /// The selection moves on only once the chat is archived.
+    /// - Returns: whether it was archived (`lastError` says why not).
+    @discardableResult
+    func archive(_ id: Int64) async -> Bool {
+        guard await mutate({ db in try ChatConversationQueries.archive(db, id: id) }) else { return false }
         if selectedConversationID == id { selectedConversationID = conversations.first?.id }
+        return true
     }
 
     /// ⌘K. A read failure is reported, not shown as "no results".
@@ -77,15 +88,18 @@ final class ChatHistoryViewModel {
         }
     }
 
-    private func mutate(_ write: (Database) throws -> Void) {
+    @discardableResult
+    private func mutate(_ write: @escaping @Sendable (Database) throws -> Void) async -> Bool {
         do {
-            try dbManager.dbPool.write { db in try write(db) }
+            try await chained { db in try write(db) }
             lastError = nil
             reloadSynchronously()
+            return true
         } catch {
             // A chat deleted elsewhere leaves the list instead of lingering.
             if error is RowNotFoundError { reloadSynchronously() }
             lastError = error.localizedDescription
+            return false
         }
     }
 
@@ -111,9 +125,9 @@ final class ChatHistoryViewModel {
         }
     }
 
-    func createConversation() -> ChatConversation? {
+    func createConversation() async -> ChatConversation? {
         do {
-            let conv = try dbManager.dbPool.write { db in
+            let conv = try await chained { db in
                 try ChatConversationQueries.create(db)
             }
             conversations.insert(conv, at: 0)
@@ -124,9 +138,9 @@ final class ChatHistoryViewModel {
         }
     }
 
-    func deleteConversation(_ id: Int64) {
+    func deleteConversation(_ id: Int64) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try ChatConversationQueries.delete(db, id: id)
             }
             // Rows are already gone by FK cascade; only the files remain.
@@ -142,10 +156,10 @@ final class ChatHistoryViewModel {
         }
     }
 
-    func updateTitle(_ id: Int64, title: String) {
+    func updateTitle(_ id: Int64, title: String) async {
         let trimmed = String(title.prefix(80))
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try ChatConversationQueries.updateTitle(db, id: id, title: trimmed)
             }
             reloadSynchronously()
@@ -154,9 +168,9 @@ final class ChatHistoryViewModel {
         }
     }
 
-    func updateSessionID(_ id: Int64, sessionID: String) {
+    func updateSessionID(_ id: Int64, sessionID: String) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try ChatConversationQueries.updateSessionID(db, id: id, sessionID: sessionID)
             }
             reloadSynchronously()
@@ -165,9 +179,9 @@ final class ChatHistoryViewModel {
         }
     }
 
-    func touch(_ id: Int64) {
+    func touch(_ id: Int64) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try ChatConversationQueries.touch(db, id: id)
             }
             reloadSynchronously()
@@ -181,5 +195,11 @@ final class ChatHistoryViewModel {
             try ChatConversationQueries.fetchStandalone(db)
         }
         conversations = items ?? []
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }

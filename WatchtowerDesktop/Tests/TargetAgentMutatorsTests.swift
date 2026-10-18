@@ -5,6 +5,12 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 final class TargetAgentMutatorsTests: XCTestCase {
+    /// A synchronous read: in an async test GRDB's async `read` overload
+    /// would otherwise win inside an `XCTUnwrap` autoclosure.
+    private func fetchTarget(_ manager: DatabaseManager, id: Int) throws -> Target? {
+        try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
+    }
+
     func testUpdateProgressClampsAndPersists() throws {
         let queue = try TestDatabase.create()
         let id = try queue.write { db in
@@ -33,18 +39,19 @@ final class TargetAgentMutatorsTests: XCTestCase {
     }
 
     @MainActor
-    func testCreateChildInheritsPeriodAndParent() throws {
+    func testCreateChildInheritsPeriodAndParent() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let parentID = try manager.dbPool.write { db in
+        let parentID = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "parent", periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
-        let parent = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: parentID) })
+        let parent = try XCTUnwrap(fetchTarget(manager, id: parentID))
         let vm = TargetsViewModel(dbManager: manager)
 
-        let childID = try XCTUnwrap(vm.createChild(parent, text: "child", intent: "do x", priority: "high"))
+        let childIDResult = await vm.createChild(parent, text: "child", intent: "do x", priority: "high")
+        let childID = try XCTUnwrap(childIDResult)
 
-        let child = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: childID) })
+        let child = try XCTUnwrap(fetchTarget(manager, id: childID))
         XCTAssertEqual(child.parentId, parentID)
         XCTAssertEqual(child.periodStart, "2026-06-01")
         XCTAssertEqual(child.periodEnd, "2026-06-30")

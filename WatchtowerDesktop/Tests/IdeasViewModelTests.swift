@@ -53,8 +53,8 @@ final class IdeasViewModelTests: XCTestCase {
 
     // MARK: - approve()
 
-    func testApproveMovesItemOutOfReviewAndKeepsSelectionValid() throws {
-        let id = try dbManager.dbPool.write {
+    func testApproveMovesItemOutOfReviewAndKeepsSelectionValid() async throws {
+        let id = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, title: "Proposed", status: "proposed")
         }
         let vm = IdeasViewModel(dbManager: dbManager)
@@ -62,7 +62,7 @@ final class IdeasViewModelTests: XCTestCase {
         let idea = try XCTUnwrap(vm.reviewItems.first)
         vm.select(idea.id)
 
-        vm.approve(idea)
+        await vm.approve(idea)
 
         XCTAssertTrue(vm.reviewItems.isEmpty)
         XCTAssertEqual(vm.registryItems.map(\.id), [Int(id)])
@@ -71,8 +71,8 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertNil(vm.errorMessage)
     }
 
-    func testApproveOnUnselectedItemLeavesSelectionAlone() throws {
-        let (selectedIdeaID, otherID) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testApproveOnUnselectedItemLeavesSelectionAlone() async throws {
+        let (selectedIdeaID, otherID) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let selected = try TestDatabase.insertIdea(db, title: "Selected", status: "proposed")
             let other = try TestDatabase.insertIdea(db, title: "Other", status: "proposed")
             return (selected, other)
@@ -82,7 +82,7 @@ final class IdeasViewModelTests: XCTestCase {
         vm.select(Int(selectedIdeaID))
         let other = try XCTUnwrap(vm.reviewItems.first { $0.id == Int(otherID) })
 
-        vm.approve(other)
+        await vm.approve(other)
 
         XCTAssertEqual(vm.selectedID, Int(selectedIdeaID))
         XCTAssertEqual(vm.reviewItems.map(\.id), [Int(selectedIdeaID)])
@@ -90,40 +90,40 @@ final class IdeasViewModelTests: XCTestCase {
 
     // MARK: - reject() / drop() / reverse()
 
-    func testRejectSetsStatusRejected() throws {
-        let id = try dbManager.dbPool.write {
+    func testRejectSetsStatusRejected() async throws {
+        let id = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, status: "proposed")
         }
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
         let idea = try XCTUnwrap(vm.reviewItems.first)
 
-        vm.reject(idea)
+        await vm.reject(idea)
 
         let all = vm.registryItems + vm.reviewItems
         XCTAssertEqual(all.first { $0.id == Int(id) }?.status, .rejected)
     }
 
-    func testDropSetsStatusDropped() throws {
-        let id = try dbManager.dbPool.write {
+    func testDropSetsStatusDropped() async throws {
+        let id = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, status: "active")
         }
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
         let idea = try XCTUnwrap(vm.registryItems.first)
 
-        vm.drop(idea)
+        await vm.drop(idea)
 
         XCTAssertEqual(vm.registryItems.first { $0.id == Int(id) }?.status, .dropped)
     }
 
     // MARK: - createManual()
 
-    func testCreateManualAddsAnActiveOwnerIdeaToTheRegistry() throws {
+    func testCreateManualAddsAnActiveOwnerIdeaToTheRegistry() async throws {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
 
-        let newID = vm.createManual(kind: "idea", title: "Ship it", essence: "Because it's ready")
+        let newID = await vm.createManual(kind: "idea", title: "Ship it", essence: "Because it's ready")
 
         XCTAssertNotNil(newID)
         XCTAssertEqual(vm.registryItems.map(\.title), ["Ship it"])
@@ -156,14 +156,15 @@ final class IdeasViewModelTests: XCTestCase {
     /// owner had narrowed the list down to: it is born `active`, so a
     /// "Proposed" status filter (or a stale search) would swallow it and the
     /// create would look like it silently failed.
-    func testCreateManual_SwitchesSegmentAndSelects() throws {
+    func testCreateManual_SwitchesSegmentAndSelects() async throws {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
         XCTAssertEqual(vm.kindMode, "idea")
         vm.statusFilter = "proposed"
         vm.searchText = "something else entirely"
 
-        let newID = try XCTUnwrap(vm.createManual(kind: "note", title: "A note", essence: "typed by the owner"))
+        let newIDRow = await vm.createManual(kind: "note", title: "A note", essence: "typed by the owner")
+        let newID = try XCTUnwrap(newIDRow)
 
         XCTAssertEqual(vm.kindMode, "note", "the new entry's segment must be the visible one")
         XCTAssertNil(vm.statusFilter, "a status filter that would hide the new entry is cleared")
@@ -172,12 +173,13 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertEqual(vm.registryItems.map(\.title), ["A note"])
     }
 
-    func testCreateManualIdeaSwitchesBackFromTheNotesSegment() throws {
+    func testCreateManualIdeaSwitchesBackFromTheNotesSegment() async throws {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.kindMode = "note"
         vm.load()
 
-        let newID = try XCTUnwrap(vm.createManual(kind: "idea", title: "An idea", essence: "typed by the owner"))
+        let newIDRow = await vm.createManual(kind: "idea", title: "An idea", essence: "typed by the owner")
+        let newID = try XCTUnwrap(newIDRow)
 
         XCTAssertEqual(vm.kindMode, "idea")
         XCTAssertEqual(vm.selectedID, newID)
@@ -186,11 +188,12 @@ final class IdeasViewModelTests: XCTestCase {
 
     /// The Decisions ledger creates through this same VM; a decision has no
     /// segment on the Ideas tab, so creating one must leave it where it was.
-    func testCreateManualDecisionLeavesSegmentAlone() throws {
+    func testCreateManualDecisionLeavesSegmentAlone() async throws {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
 
-        XCTAssertNotNil(vm.createManual(kind: "decision", title: "Use SQLite", essence: "simple"))
+        let result = await vm.createManual(kind: "decision", title: "Use SQLite", essence: "simple")
+        XCTAssertNotNil(result)
 
         XCTAssertEqual(vm.kindMode, "idea")
     }
@@ -224,8 +227,8 @@ final class IdeasViewModelTests: XCTestCase {
 
     // MARK: - deleteIdea()
 
-    func testDeleteIdea_ReloadsAndMovesSelection() throws {
-        let (doomedID, survivorID) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testDeleteIdea_ReloadsAndMovesSelection() async throws {
+        let (doomedID, survivorID) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let doomed = try TestDatabase.insertIdea(db, title: "Throw this away", status: "active")
             try TestDatabase.insertIdeaMention(db, ideaID: doomed, quote: "said once")
             let survivor = try TestDatabase.insertIdea(db, title: "Keep this", status: "active")
@@ -236,22 +239,22 @@ final class IdeasViewModelTests: XCTestCase {
         let doomed = try XCTUnwrap(vm.registryItems.first { $0.id == Int(doomedID) })
         vm.select(doomed.id)
 
-        vm.deleteIdea(doomed)
+        await vm.deleteIdea(doomed)
 
         XCTAssertNil(vm.errorMessage)
         XCTAssertEqual(vm.registryItems.map(\.title), ["Keep this"])
         XCTAssertEqual(vm.selectedID, Int(survivorID), "selection moves off the deleted idea")
 
-        let gone = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(doomedID)) }
+        let gone = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(doomedID)) }
         XCTAssertNil(gone)
-        let mentions = try dbManager.dbPool.read { try IdeaQueries.fetchMentions($0, ideaID: Int(doomedID)) }
+        let mentions = try await dbManager.dbPool.read { try IdeaQueries.fetchMentions($0, ideaID: Int(doomedID)) }
         XCTAssertTrue(mentions.isEmpty)
     }
 
     /// Deleting a merge survivor takes its husks with it, so the review queue
     /// and registry can't be left showing rows whose survivor is gone.
-    func testDeleteIdea_TakesMergedChildrenWithIt() throws {
-        let (survivorID, mergedID) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testDeleteIdea_TakesMergedChildrenWithIt() async throws {
+        let (survivorID, mergedID) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let survivor = try TestDatabase.insertIdea(db, title: "Canonical", status: "active")
             let merged = try TestDatabase.insertIdea(
                 db, title: "Merged away", status: "merged", mergedIntoID: Int(survivor))
@@ -261,34 +264,35 @@ final class IdeasViewModelTests: XCTestCase {
         vm.load()
         let survivor = try XCTUnwrap(vm.registryItems.first { $0.id == Int(survivorID) })
 
-        vm.deleteIdea(survivor)
+        await vm.deleteIdea(survivor)
 
         XCTAssertNil(vm.errorMessage)
         XCTAssertTrue(vm.registryItems.isEmpty, "both the survivor and its husk are gone from the list")
-        XCTAssertNil(try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(mergedID)) })
+        let row = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(mergedID)) }
+        XCTAssertNil(row)
         XCTAssertEqual(vm.totalCount, 0)
     }
 
     // MARK: - convertToTarget()
 
-    func testConvertToTargetCreatesTargetAndMarksIdeaConverted() throws {
-        let ideaID = try dbManager.dbPool.write {
+    func testConvertToTargetCreatesTargetAndMarksIdeaConverted() async throws {
+        let ideaID = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, title: "Adopt the new onboarding flow", essence: "Cuts drop-off", status: "active")
         }
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
         let idea = try XCTUnwrap(vm.registryItems.first)
 
-        let targetID = vm.convertToTarget(idea)
+        let targetID = await vm.convertToTarget(idea)
 
         let newTargetID = try XCTUnwrap(targetID)
         XCTAssertNil(vm.errorMessage)
-        let target = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: newTargetID) }
+        let target = try await dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: newTargetID) }
         XCTAssertEqual(target?.text, "Adopt the new onboarding flow")
         XCTAssertEqual(target?.sourceType, "idea")
         XCTAssertEqual(target?.sourceID, String(ideaID))
 
-        let convertedIdea = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
+        let convertedIdea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
         XCTAssertEqual(convertedIdea?.status, .converted)
         XCTAssertEqual(convertedIdea?.convertedTargetID, newTargetID)
     }
@@ -299,8 +303,8 @@ final class IdeasViewModelTests: XCTestCase {
     /// review queue. The owner must have an action that gets it back OUT —
     /// "Activate" is the one the detail pane offers for `rejected`/`dropped`.
     /// Without it the item is stuck in "For review" permanently.
-    func testIdeas04_ResurfacedRejectedIdeaLeavesReviewQueueViaActivate() throws {
-        let ideaID = try dbManager.dbPool.write {
+    func testIdeas04_ResurfacedRejectedIdeaLeavesReviewQueueViaActivate() async throws {
+        let ideaID = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, title: "Weekly metrics email", status: "rejected",
                                         needsReview: true, reviewReason: "brought up again: slack C1|1.1")
         }
@@ -311,20 +315,20 @@ final class IdeasViewModelTests: XCTestCase {
                        "a resurfaced rejected idea starts in the review queue")
         let flagged = try XCTUnwrap(vm.reviewItems.first)
 
-        vm.activate(flagged)
+        await vm.activate(flagged)
 
         XCTAssertNil(vm.errorMessage)
         XCTAssertTrue(vm.reviewItems.isEmpty, "the owner's action must clear it out of the review queue")
         XCTAssertEqual(vm.registryItems.map(\.title), ["Weekly metrics email"])
 
-        let idea = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
+        let idea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
         XCTAssertEqual(idea?.status, .active)
         XCTAssertEqual(idea?.needsReview, false)
     }
 
     /// The same reachability, via the other action `rejected`/`dropped` offers.
-    func testIdeas04_ResurfacedDroppedIdeaLeavesReviewQueueViaMerge() throws {
-        let (droppedID, survivorID) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+    func testIdeas04_ResurfacedDroppedIdeaLeavesReviewQueueViaMerge() async throws {
+        let (droppedID, survivorID) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let dropped = try TestDatabase.insertIdea(db, title: "Dropped idea", status: "dropped",
                                                       needsReview: true, reviewReason: "brought up again: jira WT-1")
             let survivor = try TestDatabase.insertIdea(db, title: "Canonical idea", status: "active")
@@ -334,12 +338,12 @@ final class IdeasViewModelTests: XCTestCase {
         vm.load()
         let flagged = try XCTUnwrap(vm.reviewItems.first { $0.id == Int(droppedID) })
 
-        vm.merge(flagged, into: Int(survivorID))
+        await vm.merge(flagged, into: Int(survivorID))
 
         XCTAssertNil(vm.errorMessage)
         XCTAssertTrue(vm.reviewItems.isEmpty)
 
-        let idea = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(droppedID)) }
+        let idea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(droppedID)) }
         XCTAssertEqual(idea?.status, .merged)
         XCTAssertEqual(idea?.needsReview, false)
     }

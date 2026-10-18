@@ -15,6 +15,9 @@ type SessionOutcome struct {
 	Summary    string // finish_summary of a finished session
 	AgentError string // non-empty: the agent failed (agent_failed_at, agent_error)
 	Stopped    bool   // the process ended unfinished (`automations session-ended stopped`)
+	// LaunchFailed: the Desktop could not launch it (`session-ended
+	// launch_failed --error LaunchFailed`); session() throws NotAvailable.
+	LaunchFailed string
 }
 
 // SessionLaunch is one session FakeSessionDesk launched: the step it was for,
@@ -76,6 +79,13 @@ func (d *FakeSessionDesk) launch(p db.PendingSessionStep) error {
 	}
 	l := SessionLaunch{Step: p, Prompt: args.Prompt, Agent: args.Agent, Title: args.Title}
 	d.mu.Unlock()
+	if out.LaunchFailed != "" {
+		ok, err := d.DB.EndAutomationSessionStep(p.StepID, db.SessionStepLaunchFailed, out.LaunchFailed)
+		if err == nil && !ok {
+			err = fmt.Errorf("ending step %d launch_failed was refused", p.StepID)
+		}
+		return d.record(l, err)
+	}
 
 	wb, err := d.DB.GetWorkbench(p.WorkbenchID)
 	if err != nil {

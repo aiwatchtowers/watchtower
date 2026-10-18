@@ -30,7 +30,7 @@ struct ReviewMeaningView: View {
                     Spacer()
                     Button("Add design comment…") {
                         compose(.init(title: "Design comment", lensChoice: true) { body, lens in
-                            try model.addDesignComment(body: body, lens: lens)
+                            try await model.addDesignComment(body: body, lens: lens)
                         })
                     }
                     .disabled(model.round?.status != "open")
@@ -91,7 +91,7 @@ private struct DesignCommentRow: View {
                 Text(comment.status.rawValue.capitalized).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 if comment.status == .draft {
-                    Button("Delete", role: .destructive) { try? model.deleteComment(id: comment.id) }
+                    Button("Delete", role: .destructive) { Task { try? await model.deleteComment(id: comment.id) } }
                         .controlSize(.small)
                 }
             }
@@ -102,7 +102,7 @@ private struct DesignCommentRow: View {
                     .scrollContentBackground(.hidden)
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color(nsColor: .separatorColor)))
                 if text != comment.body {
-                    Button("Save") { try? model.editComment(id: comment.id, body: text) }
+                    Button("Save") { let body = text; Task { try? await model.editComment(id: comment.id, body: body) } }
                         .controlSize(.small)
                         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }

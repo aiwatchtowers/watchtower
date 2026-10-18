@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/tools"
 )
 
@@ -737,6 +738,15 @@ func TestActions_DismissSessionCallWithUnknownOutcome(t *testing.T) {
 	assert.Contains(t, err.Error(), "CLAUDECODE")
 	assert.Empty(t, dismissedAt(id), "refused under an agent, nothing written")
 	require.NoError(t, os.Unsetenv("CLAUDECODE"))
+
+	asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+	_, err = runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not confirm")
+	assert.Empty(t, dismissedAt(id), "the owner denied in the Desktop, nothing written")
+	require.Len(t, *asked, 1)
+	assert.Equal(t, "dismiss an action", (*asked)[0].Verb)
+	withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
 
 	out, err := runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
 	require.NoError(t, err, out)

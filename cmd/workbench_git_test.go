@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/http/cgi" //nolint:gosec // test-only server for git http-backend; Go is far past 1.6.3
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,7 +89,10 @@ var (
 		"upstream", "ahead", "behind", "dirty", "changes", "operation", "top_level", "git_dir", "common_dir",
 		"status_ok", "status_error", "folder_requested", "folder_scope", "folder_root", "worktree_name")
 	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "note", "current", "branches", "branches_ok", "branches_error",
-		"refused", "refused_detail")
+		"refused", "refused_detail", "remote_only", "remote_only_error")
+	gitRemoteBranchKeys = sorted("name", "ref", "head", "committed_at")
+	gitFetchKeys        = sorted("workbench_id", "git_available", "git", "note", "remote", "no_remote", "fetched", "fetched_at",
+		"timed_out", "error", "refused", "refused_detail")
 	gitBranchKeys = sorted("name", "current", "head", "committed_at", "upstream", "upstream_gone", "ahead", "behind", "worktree", "worktree_name")
 	gitSwitchKeys = sorted("workbench_id", "branch", "switched", "already", "created", "needs_confirmation", "changes",
 		"refused", "refused_detail", "stashed", "stash_message", "stash_restored", "stash_error", "error", "warning", "status")
@@ -122,6 +127,91 @@ func TestWorkbenchGit_EnvelopeKeys(t *testing.T) {
 	assert.Equal(t, gitSwitchKeys, keysOf(cr))
 	assert.Equal(t, true, cr["created"])
 	assert.Equal(t, "topic", cr["status"].(map[string]any)["branch"])
+	assert.Equal(t, []any{}, br["remote_only"], "no remote-only branches marshals as []")
+
+	fe := gitJSON(t, id, "fetch")
+	assert.Equal(t, gitFetchKeys, keysOf(fe))
+	assert.Equal(t, true, fe["no_remote"])
+	assert.Nil(t, fe["fetched_at"])
+
+	co := gitJSON(t, id, "checkout", "--branch", "nope")
+	assert.Equal(t, gitSwitchKeys, keysOf(co))
+	assert.Equal(t, "unknown_branch", co["refused"])
+}
+
+// gitOrigin gives the repository a bare origin holding main, served over
+// git's smart HTTP backend (a fetch may not use a path remote), and pushes a
+// branch "topic" to it from another clone: topic is remote-only once
+// fetched.
+func gitOrigin(t *testing.T, dir string) {
+	t.Helper()
+	bin, _ := gitbin.Locate()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	origin, other := filepath.Join(parent, "origin.git"), filepath.Join(parent, "other")
+	git := func(in string, args ...string) {
+		c := exec.Command(bin, args...)
+		c.Dir = in
+		out, err := c.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	git(parent, "init", "-q", "--bare", "-b", "main", origin)
+	git(dir, "remote", "add", "origin", origin)
+	git(dir, "push", "-q", "-u", "origin", "main")
+	git(parent, "clone", "-q", origin, other)
+	git(other, "switch", "-q", "-c", "topic")
+	require.NoError(t, os.WriteFile(filepath.Join(other, "topic.txt"), []byte("topic\n"), 0o644))
+	git(other, "add", "topic.txt")
+	git(other, "commit", "-q", "-m", "topic")
+	git(other, "push", "-q", "origin", "topic")
+	srv := httptest.NewServer(&cgi.Handler{
+		Path: bin, Args: []string{"http-backend"}, Dir: parent,
+		Env: []string{"GIT_PROJECT_ROOT=" + parent, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull},
+	})
+	t.Cleanup(srv.Close)
+	git(dir, "remote", "set-url", "origin", srv.URL+"/origin.git")
+}
+
+// PROJ-10 (board #563): fetch updates origin's refs only; a branch only on
+// origin is listed as remote-only and checked out as a local tracking
+// branch behind the switch's confirmations.
+func TestProj10_FetchAndCheckOutARemoteOnlyBranch(t *testing.T) {
+	database := writeActionsConfig(t)
+	dir := gitBranchRepo(t)
+	id, err := database.CreateWorkbench("acme", dir)
+	require.NoError(t, err)
+	gitOrigin(t, dir)
+
+	assert.Equal(t, []any{}, gitJSON(t, id, "branches")["remote_only"], "not fetched yet")
+	fe := gitJSON(t, id, "fetch")
+	assert.Equal(t, true, fe["fetched"], "%v", fe)
+	assert.NotEmpty(t, fe["fetched_at"])
+	br := gitJSON(t, id, "branches")
+	remote := br["remote_only"].([]any)
+	require.Len(t, remote, 1)
+	assert.Equal(t, gitRemoteBranchKeys, keysOf(remote[0]))
+	assert.Equal(t, "topic", remote[0].(map[string]any)["name"])
+	assert.Equal(t, "origin/topic", remote[0].(map[string]any)["ref"])
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("edited\n"), 0o644))
+	co := gitJSON(t, id, "checkout", "--branch", "topic", "--agent-running")
+	assert.Equal(t, []any{"uncommitted_changes", "agent_running"}, co["needs_confirmation"])
+	assert.Equal(t, false, co["switched"])
+	assert.Equal(t, "main", gitJSON(t, id, "status")["branch"], "nothing was written")
+
+	co = gitJSON(t, id, "checkout", "--branch", "topic", "--stash", "--agent-running", "--confirm-agent")
+	assert.Equal(t, true, co["switched"], "%v", co)
+	assert.Equal(t, true, co["created"])
+	st := co["status"].(map[string]any)
+	assert.Equal(t, "topic", st["branch"])
+	assert.Equal(t, "origin/topic", st["upstream"])
+	assert.Equal(t, []any{}, gitJSON(t, id, "branches")["remote_only"])
+
+	co = gitJSON(t, id, "checkout", "--branch", "main")
+	assert.Equal(t, "exists", co["refused"])
+	fe = gitJSON(t, id, "fetch", "--folder", filepath.Join(dir, "gone"))
+	assert.Equal(t, "folder_not_a_worktree", fe["refused"])
+	assert.Equal(t, false, fe["fetched"])
 }
 
 func TestWorkbenchGit_SwitchGuardsAndFlags(t *testing.T) {
@@ -172,7 +262,7 @@ func TestWorkbenchGit_UnresolvedWorkbenchFails(t *testing.T) {
 	dir := gitBranchRepo(t)
 	id, err := database.CreateWorkbench("acme", dir)
 	require.NoError(t, err)
-	for _, sub := range []string{"status", "branches", "switch", "create"} {
+	for _, sub := range []string{"status", "branches", "switch", "create", "fetch", "checkout"} {
 		_, err := runWorkbenchGit(t, sub, "--workbench", "999", "--json")
 		assert.Error(t, err, "%s: an unknown workbench", sub)
 		_, err = runWorkbenchGit(t, sub, "--json")
@@ -185,7 +275,7 @@ func TestWorkbenchGit_UnresolvedWorkbenchFails(t *testing.T) {
 
 func TestWorkbenchGit_EverySubcommandTakesWorkbenchAndJSON(t *testing.T) {
 	subs := workbenchGitCmd.Commands()
-	require.Len(t, subs, 4)
+	require.Len(t, subs, 6)
 	for _, c := range subs {
 		assert.NotNil(t, c.Flags().Lookup("workbench"), c.Name())
 		assert.NotNil(t, c.Flags().Lookup("json"), c.Name())
@@ -195,8 +285,10 @@ func TestWorkbenchGit_EverySubcommandTakesWorkbenchAndJSON(t *testing.T) {
 	}
 	for _, f := range []string{"branch", "stash", "agent-running", "confirm-agent"} {
 		assert.NotNil(t, workbenchGitSwitchCmd.Flags().Lookup(f), f)
+		assert.NotNil(t, workbenchGitCheckoutCmd.Flags().Lookup(f), f)
 	}
 	assert.NotNil(t, workbenchGitCreateCmd.Flags().Lookup("name"))
+	assert.NotNil(t, workbenchGitFetchCmd.Flags().Lookup("unattended"))
 }
 
 func TestWorkbenchGit_TextStatusLeadsWithTheError(t *testing.T) {

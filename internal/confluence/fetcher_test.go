@@ -874,7 +874,7 @@ func TestEXT01_FetcherReachesOnlyTheGETAPI(t *testing.T) {
 	for method := range fetcherType.Methods() {
 		fetcherMethods = append(fetcherMethods, method.Name)
 	}
-	assert.Equal(t, []string{"All", "Changed", "Comments", "Containers", "Download", "Fetch", "SetLogger", "Users"}, fetcherMethods,
+	assert.Equal(t, []string{"All", "Changed", "Comments", "Containers", "Download", "Fetch", "RecentSpaceKeys", "SetLogger", "Users"}, fetcherMethods,
 		"a new Fetcher method must be exercised by this guard")
 
 	api := newFakeAPI(t)
@@ -899,6 +899,8 @@ func TestEXT01_FetcherReachesOnlyTheGETAPI(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, rc.Close())
 	_, err = f.Users(ctx, []string{"acc-1"})
+	require.NoError(t, err)
+	_, err = f.RecentSpaceKeys(ctx)
 	require.NoError(t, err)
 
 	rs := api.requests()

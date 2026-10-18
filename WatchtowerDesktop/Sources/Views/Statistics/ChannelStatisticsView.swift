@@ -23,9 +23,10 @@ struct ChannelStatisticsView: View {
         .onAppear {
             if let db = appState.databaseManager, viewModel == nil {
                 viewModel = ChannelStatsViewModel(dbManager: db)
-                viewModel?.startObserving()
             }
+            viewModel?.startObserving()
         }
+        .onDisappear { viewModel?.stopObserving() }
     }
 
     private func channelContent(_ vm: ChannelStatsViewModel) -> some View {
@@ -36,11 +37,15 @@ struct ChannelStatisticsView: View {
             if vm.isLoading && vm.stats.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = vm.errorMessage {
+            } else if vm.stats.isEmpty, let error = vm.errorMessage {
                 ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
             } else if vm.stats.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {
+                // A failed toggle keeps the table and says why (board #670).
+                if let error = vm.errorMessage {
+                    WriteErrorBanner(message: error) { vm.errorMessage = nil }
+                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         // Summary cards
@@ -442,7 +447,7 @@ struct ChannelStatisticsView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button(actionButtonLabel(rec.action)) {
-                        vm.applyRecommendation(rec)
+                        Task { await vm.applyRecommendation(rec) }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -502,6 +507,33 @@ struct ChannelStatisticsView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(.quaternary, lineWidth: 1)
         )
+    }
+
+    /// The row's mute and favorite toggles; each waits while its write does.
+    private func channelActions(_ stat: ChannelStat, vm: ChannelStatsViewModel) -> some View {
+        // Action buttons
+        HStack(spacing: 4) {
+            Button {
+                Task { await vm.toggleMute(channelID: stat.id) }
+            } label: {
+                Image(systemName: stat.isMutedForLLM ? "speaker.wave.2" : "speaker.slash")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .disabled(vm.isMutePending(stat.id))
+            .help(stat.isMutedForLLM ? "Unmute for AI" : "Mute for AI")
+
+            Button {
+                Task { await vm.toggleFavorite(channelID: stat.id) }
+            } label: {
+                Image(systemName: stat.isFavorite ? "star.slash" : "star")
+                    .font(.caption)
+            }
+            .disabled(vm.isFavoritePending(stat.id))
+            .buttonStyle(.borderless)
+            .help(stat.isFavorite ? "Remove favorite" : "Add favorite")
+        }
+        .frame(width: 60, alignment: .center)
     }
 
     private func channelRow(_ stat: ChannelStat, vm: ChannelStatsViewModel) -> some View {
@@ -579,27 +611,7 @@ struct ChannelStatisticsView: View {
             }
             .frame(width: 70, alignment: .center)
 
-            // Action buttons
-            HStack(spacing: 4) {
-                Button {
-                    vm.toggleMute(channelID: stat.id)
-                } label: {
-                    Image(systemName: stat.isMutedForLLM ? "speaker.wave.2" : "speaker.slash")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .help(stat.isMutedForLLM ? "Unmute for AI" : "Mute for AI")
-
-                Button {
-                    vm.toggleFavorite(channelID: stat.id)
-                } label: {
-                    Image(systemName: stat.isFavorite ? "star.slash" : "star")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .help(stat.isFavorite ? "Remove favorite" : "Add favorite")
-            }
-            .frame(width: 60, alignment: .center)
+            channelActions(stat, vm: vm)
         }
         .font(.body)
         .padding(.horizontal, 8)

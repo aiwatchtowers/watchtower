@@ -112,7 +112,7 @@ func TestReactionCmd_DispatchesNewCommandAsProposal(t *testing.T) {
 	}
 	p := newTestPipeline(t, database, gen, items)
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Equal(t, 1, gen.calls)
@@ -142,11 +142,11 @@ func TestReactionCmd_Idempotent(t *testing.T) {
 	}
 	p := newTestPipeline(t, database, gen, items)
 
-	n1, err := p.Run(context.Background())
+	n1, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, n1)
 
-	n2, err := p.Run(context.Background())
+	n2, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n2, "re-poll dispatches nothing")
 	assert.Equal(t, 1, gen.calls, "no second compose call")
@@ -166,7 +166,7 @@ func TestReactionCmd_ExternalStaysPending(t *testing.T) {
 	}
 	p := newTestPipeline(t, database, gen, items)
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 	assert.Equal(t, 1, countAgentActions(t, database, "pending"))
@@ -182,7 +182,7 @@ func TestReactionCmd_ComposeFailureMarksFailed(t *testing.T) {
 	}
 	p := newTestPipeline(t, database, gen, items)
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, countAgentActions(t, database, "pending"))
@@ -205,7 +205,7 @@ func TestReactionCmd_TransientFailureRetries(t *testing.T) {
 	}
 	p := newTestPipeline(t, database, gen, items)
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "transient failure dispatches nothing")
 
@@ -219,7 +219,7 @@ func TestReactionCmd_TransientFailureRetries(t *testing.T) {
 	gen.out = `{"text":"Handle the deploy","reason":"owner flagged it"}`
 	gen.mu.Unlock()
 
-	n2, err := p.Run(context.Background())
+	n2, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n2, "the retry succeeds")
 	assert.Equal(t, 1, countAgentActions(t, database, "pending"))
@@ -232,7 +232,7 @@ func TestReactionCmd_NoDictionaryIsNoOp(t *testing.T) {
 	gen := &mockGenerator{out: `{}`}
 	p := newTestPipeline(t, database, gen, nil)
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, gen.calls)
@@ -295,7 +295,7 @@ func TestReactionCmd_DispatchCapDefersOverflow(t *testing.T) {
 	logs := new(bytes.Buffer)
 	p := newLoggingTestPipeline(t, database, gen, items, logs)
 
-	n1, err := p.Run(context.Background())
+	n1, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, maxDispatchPerRun, n1)
 	// The deferred count is the only operator-visible evidence that a backlog is
@@ -310,7 +310,7 @@ func TestReactionCmd_DispatchCapDefersOverflow(t *testing.T) {
 	assert.Equal(t, maxDispatchPerRun+1, countRows(t, database, "reaction_commands"))
 
 	logs.Reset()
-	n2, err := p.Run(context.Background())
+	n2, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, n2, "the deferred remainder drains on the next poll")
 	assert.NotContains(t, logs.String(), "deferred", "a run that stays under the cap defers nothing")
@@ -330,7 +330,7 @@ func TestReactionCmd_DispatchCapIsSharedAcrossAccounts(t *testing.T) {
 		2: dictionaryReactions("C2", maxDispatchPerRun),
 	})
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, maxDispatchPerRun, n, "the cap is shared, not per account")
 	assert.Equal(t, maxDispatchPerRun, gen.calls)
@@ -344,7 +344,7 @@ func TestReactionCmd_UnderCapDispatchesEverything(t *testing.T) {
 	gen := &mockGenerator{out: `{"text":"Handle this","reason":"owner flagged it"}`}
 	p := newTestPipeline(t, database, gen, dictionaryReactions("C1", 3))
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 3, n)
 	assert.Equal(t, 3, gen.calls)
@@ -400,7 +400,7 @@ func TestReactionCmd_FinalizeFailureAfterProposeNeverRedispatches(t *testing.T) 
 	p := newLoggingTestPipeline(t, database, gen, items, &logs)
 
 	drop := addAbortTrigger(t, database, "UPDATE")
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "the side effect happened, so it counts as dispatched")
 	require.Equal(t, 1, gen.calls)
@@ -410,7 +410,7 @@ func TestReactionCmd_FinalizeFailureAfterProposeNeverRedispatches(t *testing.T) 
 	assert.Contains(t, logs.String(), "will not re-dispatch")
 
 	drop()
-	n2, err := p.Run(context.Background())
+	n2, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n2, "the next poll dispatches nothing")
 	assert.Equal(t, 1, gen.calls, "no second compose call")
@@ -438,7 +438,7 @@ func TestReactionCmd_ClaimFailureProposesNothingAndRetries(t *testing.T) {
 	c := candidate{AccountID: 1, ChannelID: u.ChannelID, MessageTS: u.MessageTS, Emoji: u.Emoji, Mapping: testDict()["white_check_mark"]}
 	assert.False(t, p.dispatchOne(context.Background(), u, c, budget))
 	assert.Equal(t, 1, budget.remaining, "a failed claim refunds its slot")
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, gen.calls, "no compose without a claimed row")
@@ -446,7 +446,7 @@ func TestReactionCmd_ClaimFailureProposesNothingAndRetries(t *testing.T) {
 	assert.Empty(t, ledgerStatuses(t, database))
 
 	drop()
-	n2, err := p.Run(context.Background())
+	n2, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n2, "retried on the next poll")
 	assert.Equal(t, 1, countAgentActions(t, database, "pending"))
@@ -469,7 +469,7 @@ func TestReactionCmd_ReleaseFailureAfterTransientStrandsInsteadOfRetrying(t *tes
 
 	drop := addAbortTrigger(t, database, "DELETE")
 	defer drop()
-	_, err := p.Run(context.Background())
+	_, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, []string{db.ReactionCommandProvisional}, ledgerStatuses(t, database))
 	assert.Contains(t, logs.String(), "will NOT be retried")
@@ -478,7 +478,7 @@ func TestReactionCmd_ReleaseFailureAfterTransientStrandsInsteadOfRetrying(t *tes
 	gen.err = nil
 	gen.out = `{"text":"Handle the deploy","reason":"owner flagged it"}`
 	gen.mu.Unlock()
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 1, gen.calls, "the stranded claim is not re-composed")
@@ -508,7 +508,7 @@ func TestReactionCmd_StrandedProvisionalRowSurfacesAsFailed(t *testing.T) {
 	var logs bytes.Buffer
 	p := newLoggingTestPipeline(t, database, gen, items, &logs)
 
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, gen.calls, "neither row is re-dispatched")
@@ -568,7 +568,7 @@ func TestReactionCmd_ProposeErrorAfterRecordingNeverRedispatches(t *testing.T) {
 	p := bulbPipeline(t, database, gen, &logs)
 
 	drop := addAgentActionAbortTrigger(t, database, "UPDATE")
-	_, err := p.Run(context.Background())
+	_, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	drop()
 	require.Equal(t, 1, countAllAgentActions(t, database), "Propose recorded its row before failing")
@@ -580,7 +580,7 @@ func TestReactionCmd_ProposeErrorAfterRecordingNeverRedispatches(t *testing.T) {
 	assert.Equal(t, "dispatched", status)
 	assert.Equal(t, recorded, actionID, "the ledger links the action Propose recorded")
 
-	_, err = p.Run(context.Background())
+	_, err = p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, gen.calls, "no second compose call")
 	assert.Equal(t, 1, countAllAgentActions(t, database), "no second proposal")
@@ -597,13 +597,13 @@ func TestReactionCmd_ProposeErrorBeforeRecordingRetries(t *testing.T) {
 	p := bulbPipeline(t, database, gen, &logs)
 
 	drop := addAgentActionAbortTrigger(t, database, "INSERT")
-	n, err := p.Run(context.Background())
+	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	drop()
 	assert.Equal(t, 0, n)
 	assert.Empty(t, ledgerStatuses(t, database), "the claim was released")
 
-	n, err = p.Run(context.Background())
+	n, err = p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "retried on the next poll")
 	assert.Equal(t, 1, countAllAgentActions(t, database))
@@ -622,14 +622,14 @@ func TestReactionCmd_ProposeValidationErrorMarksFailed(t *testing.T) {
 	}
 	p := newTestPipeline(t, database, gen, items)
 
-	_, err := p.Run(context.Background())
+	_, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	var status, errText string
 	require.NoError(t, database.QueryRow(`SELECT status, error FROM reaction_commands`).Scan(&status, &errText))
 	assert.Equal(t, "failed", status)
 	assert.Contains(t, errText, "propose")
 
-	_, err = p.Run(context.Background())
+	_, err = p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, gen.calls, "a terminal failure is not re-composed")
 }
@@ -692,7 +692,7 @@ func TestReactionCmd_ToolNotOnReactionSurfaceIsRefused(t *testing.T) {
 	gen := &mockGenerator{out: `{"text":"forwarded","reason":"owner reacted"}`}
 	p := New(database, &config.Config{}, gen, reg, accountsFn, nil)
 
-	_, err = p.Run(context.Background())
+	_, err = p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, countAllAgentActions(t, database))
 	assert.Zero(t, executed)

@@ -13,6 +13,11 @@ import WatchtowerTestSupport
 /// translated into the `move(fromOffsets:toOffset:)` offset, which is one PAST
 /// the destination when the item travels downwards.
 final class TargetSubItemDragTests: XCTestCase {
+    /// A synchronous read: in an async test GRDB's async `read` overload
+    /// would otherwise win inside an `XCTUnwrap` autoclosure.
+    private func fetchTarget(_ manager: DatabaseManager, id: Int) throws -> Target? {
+        try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
+    }
 
     // MARK: - Payload scoping
 
@@ -122,25 +127,25 @@ final class TargetSubItemDragTests: XCTestCase {
     /// a CLI write, another window, a Remove that shortened the list mid-drag —
     /// and `move(fromOffsets:toOffset:)` trapping.
     @MainActor
-    func testMoveSubItemIgnoresOutOfRangeIndices() throws {
+    func testMoveSubItemIgnoresOutOfRangeIndices() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try manager.dbPool.write { db in
+        let id = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "ship feature", intent: "x",
                                      periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
         let items = [TargetSubItem(text: "a", done: false), TargetSubItem(text: "b", done: false)]
-        try manager.dbPool.write { db in
+        try await manager.dbPool.write { db in
             try TargetQueries.updateSubItems(db, id: id, subItems: items)
         }
-        let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
+        let target = try XCTUnwrap(fetchTarget(manager, id: id))
         let vm = TargetsViewModel(dbManager: manager)
 
-        vm.moveSubItem(target, from: IndexSet(integer: 0), to: 99)
-        vm.moveSubItem(target, from: IndexSet(integer: 7), to: 1)
-        vm.moveSubItem(target, from: IndexSet(integer: 0), to: -1)
+        await vm.moveSubItem(target, from: IndexSet(integer: 0), to: 99)
+        await vm.moveSubItem(target, from: IndexSet(integer: 7), to: 1)
+        await vm.moveSubItem(target, from: IndexSet(integer: 0), to: -1)
 
-        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
+        let after = try XCTUnwrap(fetchTarget(manager, id: id))
         XCTAssertEqual(after.decodedSubItems.map(\.text), ["a", "b"], "an out-of-range drop must change nothing")
         XCTAssertNil(vm.errorMessage)
     }

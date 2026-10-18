@@ -562,3 +562,67 @@ func TestLoadExternalMCPServers_StaticHeadersOverRemoteHTTPNotMounted(t *testing
 	require.Contains(t, err.Error(), "must use https")
 	require.NotContains(t, err.Error(), "sign in again")
 }
+
+// A connection stored under a reserved name before add refused it is never
+// mounted — the mcp__watchtower allow token would cover its tools (QC-02,
+// board #556) — nor listed (its server never starts), and its row tells the
+// owner to add it again under another name, written once; other connections
+// still mount.
+func TestLoadExternalMCPServers_ReservedNameNotMounted(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	calls := stubToolsList(t, []db.ExternalTool{{Name: "get_item", Annotated: true, ReadOnlyHint: true}}, nil)
+
+	// Never listed: a listing would have to start the server.
+	bad, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "watchtower__x", Kind: "stdio", Command: "srv", Enabled: true,
+	})
+	require.NoError(t, err)
+	good, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "tracker", Kind: "stdio", Command: "srv", Enabled: true,
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, good)
+
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Len(t, servers, 1)
+	require.Equal(t, "tracker", servers[0].Name)
+	conn, err := database.GetExternalConnection(bad)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
+	require.Equal(t, reservedReasonPrefix+reservedNameReason(conn), conn.Error)
+	require.Contains(t, conn.Error, `The name "watchtower__x" is reserved`)
+	require.Contains(t, conn.Error, "add it again under another name")
+	require.Empty(t, *calls, "a reserved connection's server is never started")
+
+	// A second launch finds the row saying so already and writes nothing.
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	require.Len(t, loadExternalMCPServers(cfg, cfg.DBPath()), 1)
+	require.NotContains(t, logged.String(), "watchtower__x", "an unchanged row is not written again")
+}
+
+// Under codex the reserved check runs before the env probe: a reserved
+// connection whose variable would also clash says it is reserved, not
+// "not available in the codex chat" (board #556).
+func TestLoadExternalMCPServers_ReservedNameBeforeCodexEnvSkip(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "watchtower_x", Kind: "stdio", Command: "srv", Enabled: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Save(
+		&externalmcp.Secret{Env: map[string]string{"HTTPS_PROXY": "http://proxy.example.com:3128"}}))
+
+	require.Empty(t, loadExternalMCPServersFrom(cfg, database, []string{"HOME=/home/acme"}))
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
+	require.True(t, strings.HasPrefix(conn.Error, reservedReasonPrefix), conn.Error)
+}

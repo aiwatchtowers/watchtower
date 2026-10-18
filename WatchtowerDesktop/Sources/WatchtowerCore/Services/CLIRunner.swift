@@ -165,6 +165,9 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
 
         do {
             try process.run()
+            // A command the Desktop starts is the owner's (AGENT-07, board
+            // #568): its owner-only gesture is confirmed without a window.
+            OwnerConfirmGrants.shared.register(args, pid: process.processIdentifier)
         } catch {
             // The binary store mid-replace, or a copy that lost its exec bit:
             // ~30 call sites turn this into one line of UI and nothing else.
@@ -193,6 +196,7 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
             let stdoutData = await stdoutRead.value
             let stderrData = await stderrRead.value
             await ProcessPipes.offPool { process.waitUntilExit() }
+            OwnerConfirmGrants.shared.revoke(pid: process.processIdentifier)
 
             if Task.isCancelled {
                 throw CancellationError()

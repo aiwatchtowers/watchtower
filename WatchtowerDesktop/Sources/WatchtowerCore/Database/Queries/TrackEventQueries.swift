@@ -13,6 +13,12 @@ package enum TrackEventQueries {
             """, arguments: [trackId, limit])
     }
 
+    /// Event count per track (tracks with no events are absent).
+    package static func countsByTrack(_ db: Database) throws -> [Int: Int] {
+        let rows = try Row.fetchAll(db, sql: "SELECT track_id, COUNT(*) AS n FROM track_events GROUP BY track_id")
+        return Dictionary(uniqueKeysWithValues: rows.map { (($0["track_id"] as Int), ($0["n"] as Int)) })
+    }
+
     package static func unreadCount(_ db: Database, trackId: Int) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM track_events

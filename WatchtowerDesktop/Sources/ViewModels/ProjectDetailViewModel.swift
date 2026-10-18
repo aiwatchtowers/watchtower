@@ -33,6 +33,10 @@ final class ProjectDetailViewModel {
     private var savedInstructions = ""
 
     private let dbPool: DatabasePool
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
+    /// One pending delete (board #670).
+    private let pendingWrites = PendingWrites()
     private let debounce: Duration
     private let importFile: (URL, Int64) throws -> ChatAttachment
     /// `chat_files` root: a deleted project's (now empty) directory goes too.
@@ -76,7 +80,7 @@ final class ProjectDetailViewModel {
                 try? await Task.sleep(for: delay)
             }
             guard !Task.isCancelled else { return }
-            self?.saveInstructions()
+            await self?.saveInstructions()
         }
     }
 
@@ -88,26 +92,27 @@ final class ProjectDetailViewModel {
     func flush() async -> Bool {
         pendingSave?.cancel()
         pendingSave = nil
-        return saveInstructions()
+        return await saveInstructions()
     }
 
-    func rename(_ name: String) {
-        write { db, id in try ChatProjectQueries.rename(db, id: id, name: name) }
-        nameDraft = project?.name ?? nameDraft
+    func rename(_ name: String) async {
+        await write { db, id in try ChatProjectQueries.rename(db, id: id, name: name) }
+        // Text typed while the rename waited stays.
+        if nameDraft == name { nameDraft = project?.name ?? nameDraft }
     }
 
-    func addSource(_ hit: ChatEntityHit) {
+    func addSource(_ hit: ChatEntityHit) async {
         guard let kind = ChatProjectSource.Kind(entity: hit.kind) else { return }
-        var added = false
-        let committed = write { db, id in
-            added = try ChatProjectQueries.addSource(db, projectID: id, kind: kind, ref: hit.ref, label: hit.label)
+        let (ref, label) = (hit.ref, hit.label)
+        let added = await write { db, id in
+            try ChatProjectQueries.addSource(db, projectID: id, kind: kind, ref: ref, label: label)
         }
-        if committed, added { onPromptChanged(projectID) }
+        if added == true { onPromptChanged(projectID) }
     }
 
-    func removeSource(_ source: ChatProjectSource) {
-        var removed = false
-        if write({ db, _ in removed = try ChatProjectQueries.removeSource(db, id: source.id) }), removed {
+    func removeSource(_ source: ChatProjectSource) async {
+        let sourceID = source.id
+        if await write({ db, _ in try ChatProjectQueries.removeSource(db, id: sourceID) }) == true {
             onPromptChanged(projectID)
         }
     }
@@ -126,9 +131,10 @@ final class ProjectDetailViewModel {
         errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
     }
 
-    func removeFile(_ file: ChatAttachment) {
+    func removeFile(_ file: ChatAttachment) async {
+        let fileID = file.id
         do {
-            let result = try dbPool.write { try ChatProjectQueries.removeFile($0, id: file.id) }
+            let result = try await chained { try ChatProjectQueries.removeFile($0, id: fileID) }
             if result.removed { onPromptChanged(projectID) }
             if let path = result.orphanPath { Self.removeFromDisk([path]) }
             if refresh() { errorMessage = nil }
@@ -139,12 +145,18 @@ final class ProjectDetailViewModel {
 
     /// Deletes the project (chats survive, detached; files go post-commit).
     /// Returns false on a write failure, with `errorMessage` set.
-    func deleteProject() -> Bool {
+    /// A second press while the delete waits does nothing (false).
+    func deleteProject() async -> Bool {
+        await pendingWrites.run("delete") { await deleteNow() } ?? false
+    }
+
+    private func deleteNow() async -> Bool {
         pendingSave?.cancel()
         pendingSave = nil
+        // The delete is in the chain: a save asked for before it lands first.
         do {
             let id = projectID
-            let paths = try dbPool.write { try ChatProjectQueries.delete($0, id: id) }
+            let paths = try await chained { try ChatProjectQueries.delete($0, id: id) }
             Self.removeFromDisk(paths)
             if let attachmentsRoot {
                 ChatAttachmentStore.removeFiles(for: .project(id), rootDir: attachmentsRoot)
@@ -182,8 +194,17 @@ final class ProjectDetailViewModel {
         }
     }
 
+    /// Saves run in the view model's chain (board #670): each reads the draft
+    /// when its turn comes, so the newest text lands last and a save that
+    /// finds it already stored writes nothing. The chain runs the write in its
+    /// own task, so a debounce cancelled meanwhile never cancels a write under
+    /// way.
     @discardableResult
-    private func saveInstructions() -> Bool {
+    private func saveInstructions() async -> Bool {
+        await writes.run { await self.writeInstructions() }
+    }
+
+    private func writeInstructions() async -> Bool {
         guard draftsLoaded else { return true }
         let text = instructionsDraft
         guard text != savedInstructions else {
@@ -192,7 +213,8 @@ final class ProjectDetailViewModel {
         }
         let id = projectID
         do {
-            try dbPool.write { try ChatProjectQueries.updateInstructions($0, id: id, instructions: text) }
+            // Already in the chain: the pool directly, or it would wait for itself.
+            try await dbPool.write { try ChatProjectQueries.updateInstructions($0, id: id, instructions: text) }
             pendingSave = nil
             savedInstructions = text
             onPromptChanged(id)
@@ -206,17 +228,17 @@ final class ProjectDetailViewModel {
         }
     }
 
-    /// Returns whether the write committed.
+    /// The write's value, nil when it did not commit.
     @discardableResult
-    private func write(_ body: (Database, Int64) throws -> Void) -> Bool {
+    private func write<T: Sendable>(_ body: @escaping @Sendable (Database, Int64) throws -> T) async -> T? {
         let id = projectID
         do {
-            try dbPool.write { try body($0, id) }
+            let value = try await chained { try body($0, id) }
             if refresh() { errorMessage = nil }
-            return true
+            return value
         } catch {
             errorMessage = error.localizedDescription
-            return false
+            return nil
         }
     }
 
@@ -245,5 +267,11 @@ extension ProjectDetailViewModel {
         guard let rootDir else { return { _, _ in throw ImportError.noWorkspace } }
         let store = ChatAttachmentStore(db: dbPool, rootDir: rootDir)
         return { url, projectID in try store.importFile(url: url, projectID: projectID) }
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbPool.write(body) }
     }
 }

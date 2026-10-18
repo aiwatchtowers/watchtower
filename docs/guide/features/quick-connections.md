@@ -16,6 +16,8 @@ If the server does not say, a tool is allowed when its name starts with get, lis
 
 **Where it works.** Only chats that can use tools see a connection: the main AI Chat and a target's chat. Draft-only chats never do. Automations can call the same allowed tools through their `mcp()` function. Quick Connections work with the Claude and Codex AI providers; under Ollama the Settings card says so, and enabled connections do nothing.
 
+**The server's text is not an instruction.** A connection's tool descriptions, its own instructions and the answers its tools return come from outside Watchtower. The assistant is told to treat them as data from that server, never to follow orders found in them, and to send the server only what your question needs.
+
 **Secrets.** An API key or header never goes in the database or on a command line. It lives in a private file on your Mac, readable only by you. For servers that offer sign-in, OAuth is used instead and Watchtower refreshes the token before each chat.
 
 **Your own codex and Claude Code servers.** The chat never loads the MCP servers you set up for codex (`~/.codex/config.toml`) or Claude Code (`~/.claude.json`); your codex sign-in and model settings still apply. Import those servers to use them here: they then follow the same read-only rules. Under Codex, when your codex config has MCP servers, the Quick Connections card reminds you once.
@@ -38,14 +40,15 @@ Only add stdio commands you trust: a local process has the same access to your M
 
 The status dot shows the state: green is OK, orange is a problem the next chat retries (hover for the reason), red means the sign-in was revoked.
 
-- **Orange, no usable tools.** The server's tools could not be listed, or none is read-only. The connection is not offered to the chat. Fix the server, then toggle **Enabled** or press **Refresh list**.
+- **Orange, no usable tools.** The server's tools could not be listed, or none is read-only. The connection is not offered to the chat. Fix the server, then toggle **Enabled** or press **Refresh list**. If the reason says the name is reserved, neither helps: see **Add says the name is reserved** below.
 - **Red, with Sign in again.** The server revoked the grant. Click **Sign in again**.
 - **A tool you need is missing.** It is marked as a write, or it was added to the server after the last listing. Press **Refresh list**; a declared write stays off.
 - **The assistant ignores the connection.** Check the provider: Quick Connections need Claude or Codex.
 - **A server from codex or Claude Code is missing from the chat.** The chat does not read those configs. Use **Import from codex and Claude Code…**.
-- **Import says "Can't import".** The reason follows: an SSE server, a server that runs in a set working folder, a variable such as `$API_TOKEN` that neither the app nor your login shell sets, a `${…}` variable in a command or URL, or a key sent over plain http. Add that server with **Add Connection** instead.
+- **Import says "Can't import".** The reason follows: an SSE server, a server that runs in a set working folder, a variable such as `$API_TOKEN` that neither the app nor your login shell sets, a `${…}` variable in a command or URL, a key sent over plain http, or **it is Watchtower's own server** (a server named `watchtower` in your codex or Claude Code config is Watchtower itself, which the chat already has). Add any other such server with **Add Connection** instead.
 - **A connection says "not available in the codex chat".** One of its environment variables (a proxy, certificate, path or codex setting, for example) would change how codex itself runs. Rename the variable on the server side, or use the Claude provider for it.
-- **An imported server has a different name.** Names hold only letters, digits, `-` and `_`, and two servers cannot share one; the list says what was renamed.
+- **Add says the name is reserved.** `watchtower` and any name starting with `watchtower_` belong to Watchtower's own tools. Pick another name. A connection added under such a name earlier shows orange, is not offered to the chat or to automations, and toggling **Enabled**, **Refresh list** or signing in does not change that: remove it and add it again under another name.
+- **An imported server has a different name.** Names hold only letters, digits, `-` and `_`, two servers cannot share one, and a name starting with `watchtower_` gets `ext-` in front; the list says what was renamed.
 
 ## Related
 

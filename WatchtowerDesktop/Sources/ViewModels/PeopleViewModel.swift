@@ -20,6 +20,10 @@ final class PeopleViewModel {
     private(set) var interactions: [UserInteraction] = []
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
+    /// One pending star write per person (board #670).
+    let pendingWrites = PendingWrites()
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored let writes = SerialWrites()
 
     init(dbManager: DatabaseManager) {
         self.dbManager = dbManager
@@ -183,47 +187,58 @@ final class PeopleViewModel {
     /// Profile writes go by the owner's profile key
     /// (`ProfileQueries.ownerProfileWriteKey`), never `currentUserID` — that
     /// is the Slack id the cards and the graph are keyed by.
-    func updateConnections(reports: [String], peers: [String], manager: String) {
+    /// Saves run one after another (board #670), so an older pick never
+    /// lands after a newer one.
+    func updateConnections(reports: [String], peers: [String], manager: String) async {
+        await writes.run { await self.writeConnections(reports: reports, peers: peers, manager: manager) }
+    }
+
+    private func writeConnections(reports: [String], peers: [String], manager: String) async {
         do {
             let encoder = JSONEncoder()
             let reportsJSON = String(data: try encoder.encode(reports), encoding: .utf8) ?? "[]"
             let peersJSON = String(data: try encoder.encode(peers), encoding: .utf8) ?? "[]"
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 let userID = try ProfileQueries.ownerProfileWriteKey(db)
                 try ProfileQueries.updateField(db, slackUserID: userID, field: "reports", value: reportsJSON)
                 try ProfileQueries.updateField(db, slackUserID: userID, field: "peers", value: peersJSON)
                 try ProfileQueries.updateField(db, slackUserID: userID, field: "manager", value: manager)
             }
             // Reload profile
-            currentProfile = try dbManager.dbPool.read { db in
+            currentProfile = try await dbManager.dbPool.read { db in
                 try ProfileQueries.fetchCurrentProfile(db)
             }
+            errorMessage = nil
         } catch {
             errorMessage = "Failed to update connections: \(error.localizedDescription)"
         }
     }
 
-    func toggleStarredPerson(_ personUserID: String) {
-        let wasStarred = starredPeopleIDs.contains(personUserID)
-        // Optimistic update
-        if wasStarred {
-            starredPeopleIDs.remove(personUserID)
-        } else {
-            starredPeopleIDs.insert(personUserID)
+    /// The star changes only once the write landed; a second press while it
+    /// waits does nothing (board #670).
+    func toggleStarredPerson(_ personUserID: String) async {
+        await pendingWrites.run("star:\(personUserID)") {
+            await writeStar(personUserID)
         }
+    }
+
+    /// The star of `personUserID` is being written: its button waits.
+    func isStarPending(_ personUserID: String) -> Bool {
+        pendingWrites.isPending("star:\(personUserID)")
+    }
+
+    private func writeStar(_ personUserID: String) async {
+        let wasStarred = starredPeopleIDs.contains(personUserID)
         do {
             if wasStarred {
-                try dbManager.removeStarredPerson(personUserID)
-            } else {
-                try dbManager.addStarredPerson(personUserID)
-            }
-        } catch {
-            // Revert on failure
-            if wasStarred {
-                starredPeopleIDs.insert(personUserID)
-            } else {
+                try await writes.runThrowing { try await self.dbManager.removeStarredPerson(personUserID) }
                 starredPeopleIDs.remove(personUserID)
+            } else {
+                try await writes.runThrowing { try await self.dbManager.addStarredPerson(personUserID) }
+                starredPeopleIDs.insert(personUserID)
             }
+            errorMessage = nil
+        } catch {
             errorMessage = "Failed to update starred person: \(error.localizedDescription)"
         }
     }

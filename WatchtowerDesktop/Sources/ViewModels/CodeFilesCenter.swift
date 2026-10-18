@@ -111,7 +111,7 @@ final class CodeFilesCenter {
     /// the page hands over late, however late, still lands (never on disk)
     /// and, once it makes a buffer dirty, joins `orphanedEdits`.
     @ObservationIgnored private var removedBuffers: [String: OrphanedEdit] = [:]
-    @ObservationIgnored private var watchers: [CodeRoot: FolderWatcher] = [:]
+    @ObservationIgnored private(set) var watchers: [CodeRoot: FolderWatcher] = [:]
     /// Whether the UI is on screen (`setOnScreen`); off it the streams'
     /// batches wait in `heldBatches`.
     @ObservationIgnored private(set) var isOnScreen = true
@@ -234,6 +234,13 @@ final class CodeFilesCenter {
         watchErrors[root] = nil
         showing[root] = nil
         gitPending.remove(root)
+    }
+
+    /// The view model is being replaced (`WorkbenchesViewModel.stop`):
+    /// every root's FSEvents stream goes now, not when the center is
+    /// released. Buffers and tabs stay untouched.
+    func stopWatchingFolders() {
+        for root in watched { unwatchRoot(root) }
     }
 
     /// What the views showed of a root that is gone for good (a stale main

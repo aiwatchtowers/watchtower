@@ -126,12 +126,12 @@ final class CodeHandoffCenterTests: XCTestCase {
     }
 
     /// A code question with one answer, and one reply still streaming.
-    private func storedQuestion(_ project: Workbench) throws -> CodeQuestionRef {
+    private func storedQuestion(_ project: Workbench) async throws -> CodeQuestionRef {
         let origin = CodeQuestionOrigin(path: "Sources/App.swift", line: 12, selection: nil)
-        let id = try CodeQuestionSurface.createConversation(
+        let id = try await CodeQuestionSurface.createConversation(
             workbenchID: project.id, origin: origin, choice: .init(provider: .claude, model: ""), dbPool: pool)
         let now = Date().timeIntervalSince1970
-        try pool.write { db in
+        try await pool.write { db in
             let first = try ChatMessageQueries.beginEmbeddedTurn(db, conversationID: id, ownerText: "Why save twice?",
                                                                  turnID: "t1", provider: "claude", now: now)
             try ChatMessageQueries.finalizeEmbedded(db, messageID: first.assistantID, text: "See Sources/Store.swift:40.",
@@ -156,7 +156,7 @@ final class CodeHandoffCenterTests: XCTestCase {
 
     func testTheRequestIsBuiltFromTheStoredMessagesLeavingTheStreamingReplyOut() async throws {
         let (handoff, _, project) = try await makeHandoffFixture()
-        await handoff.handConversation(try storedQuestion(project))
+        await handoff.handConversation(try await storedQuestion(project))
         let text = try XCTUnwrap(handoff.requests[project.id]?.text)
         XCTAssertTrue(text.hasPrefix(HandoffText.header + "\nAsked at Sources/App.swift:12"))
         XCTAssertTrue(text.contains("Question: Why save twice?\n\nAnswer:\nSee Sources/Store.swift:40."))
@@ -176,7 +176,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         stored.storeAgentState(session.id, "waiting")
         await agentStates.poll()
         vm.setLayout(filesAlone, projectID: project.id)
-        await handoff.handConversation(try storedQuestion(project))
+        await handoff.handConversation(try await storedQuestion(project))
         let text = try XCTUnwrap(handoff.requests[project.id]?.text)
         XCTAssertEqual(handoff.defaultTarget(workbenchID: project.id), .session(session.id))
 
@@ -204,7 +204,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         await agentStates.poll()
         XCTAssertEqual(vm.sessionState(session).kind, .background)
         vm.setLayout(filesAlone, projectID: project.id)
-        await handoff.handConversation(try storedQuestion(project))
+        await handoff.handConversation(try await storedQuestion(project))
         let text = try XCTUnwrap(handoff.requests[project.id]?.text)
         XCTAssertEqual(handoff.defaultTarget(workbenchID: project.id), .session(session.id))
 
@@ -605,7 +605,7 @@ final class CodeHandoffCenterTests: XCTestCase {
 
     func testNothingToHandBeepsAndOpensNoSheet() async throws {
         let (handoff, _, project) = try await makeHandoffFixture()
-        let empty = try CodeQuestionSurface.createConversation(
+        let empty = try await CodeQuestionSurface.createConversation(
             workbenchID: project.id, origin: CodeQuestionOrigin(path: "a.go", line: 1, selection: nil),
             choice: .init(provider: .claude, model: ""), dbPool: pool)
         await handoff.handConversation(CodeQuestionRef(

@@ -68,6 +68,13 @@ package final class EmbeddedChatEngine {
     @ObservationIgnored package var onTurnFinished: ((TurnOutcome) -> Void)?
 
     package var isStreaming: Bool { liveTurn != nil }
+    /// The reply streamed to its end and `postTurn` is acting on it (board
+    /// #670: an action surface's writes await the writer). Nothing can stop
+    /// it any more — Stop does nothing and the composer says so — and it
+    /// ends by itself once its writes landed (`finished()`).
+    package var isFinishing: Bool { finishing != nil }
+    /// The running `postTurn` and the turn's end after it.
+    private var finishing: Task<Void, Never>?
     package var isBusy: Bool { isStreaming || isQueued }
     /// Busy, or holding follow-ups for a later turn — the center keeps such
     /// an engine even when no view has shown it for a while.
@@ -242,6 +249,12 @@ package final class EmbeddedChatEngine {
                                   alreadyApplied: appliedBeforeFailure)
         guard !request.promptText.isEmpty else { return }
         start(request)
+    }
+
+    /// Returns once a finishing turn (`isFinishing`) has ended: what a
+    /// surface awaits before deleting the conversation under it.
+    package func finished() async {
+        await finishing?.value
     }
 
     /// Re-reads the rows (another surface wrote to the conversation).
@@ -473,6 +486,12 @@ package final class EmbeddedChatEngine {
 
     /// Ends the running turn exactly once: cancels its stream and watchdog,
     /// writes its final state, frees its slot, then starts what waits.
+    ///
+    /// A reply that streamed to its end runs the surface's `postTurn`, which
+    /// may await database writes (board #670): until it returns, the turn is
+    /// still live (`isStreaming`, its slot held) but no longer running, so
+    /// Stop, a quit or a late stream event cannot end it a second time. A
+    /// stopped or failed turn ends here and now.
     private func endRunningTurn() {
         guard let current = running else { return }
         running = nil
@@ -484,7 +503,22 @@ package final class EmbeddedChatEngine {
         // it ran or ended (a notice or reload that failed) stays visible.
         let earlierBanner = bannerError
         bannerError = nil
-        let outcome = finalize(current)
+        switch endNow(current) {
+        case .ended(let outcome):
+            settle(current, outcome: outcome, earlierBanner: earlierBanner)
+        case .completed(let reply):
+            // Its own task: the stream's task that got here is cancelled.
+            finishing = Task { [self] in
+                let outcome = await finalizeCompleted(current, reply: reply)
+                finishing = nil
+                settle(current, outcome: outcome, earlierBanner: earlierBanner)
+            }
+        }
+    }
+
+    /// The turn's end once its final state is written: the slot freed and
+    /// what waits started.
+    private func settle(_ current: RunningTurn, outcome: TurnOutcome, earlierBanner: String?) {
         liveTurn = nil
         gate.release(current.request.slot)
         refreshRows()
@@ -508,28 +542,40 @@ package final class EmbeddedChatEngine {
         onTurnFinished?(outcome)
     }
 
-    private func finalize(_ current: RunningTurn) -> TurnOutcome {
+    /// How a turn ends: now (stopped, failed, or a reply that could not be
+    /// saved), or through `postTurn` with the reply on disk.
+    private enum TurnEnd {
+        case ended(TurnOutcome)
+        case completed(reply: String)
+    }
+
+    private func endNow(_ current: RunningTurn) -> TurnEnd {
         let turn = current.turn
         let text = turn.fullText
         if current.stopRequested {
             turn.finish(.interrupted, at: clock())
             persistFinal(turn, text: text, status: "partial", failure: nil)
-            return .stopped(messageID: turn.messageID)
+            return .ended(.stopped(messageID: turn.messageID))
         }
         if let failure = current.failure {
-            return failTurn(turn, text: text, failure: failure)
+            return .ended(failTurn(turn, text: text, failure: failure))
         }
         // The reply must be on disk before postTurn acts on it.
         do {
             try store.saveProgress(messageID: turn.messageID, text: text)
         } catch {
             report(error, prefix: "Couldn't save the reply")
-            return failTurn(turn, text: text, failure: .init(
+            return .ended(failTurn(turn, text: text, failure: .init(
                 code: .internalError, message: "Couldn't save the reply: \(error.localizedDescription)", retryable: false),
-                persist: false)
+                persist: false))
         }
-        let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID,
-                                                     alreadyApplied: current.request.alreadyApplied))
+        return .completed(reply: text)
+    }
+
+    private func finalizeCompleted(_ current: RunningTurn, reply text: String) async -> TurnOutcome {
+        let turn = current.turn
+        let result = await spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID,
+                                                           alreadyApplied: current.request.alreadyApplied))
         // An action surface may answer with tool proposals only and show a
         // placeholder; a reply that still has nothing to show is an error.
         if result.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

@@ -65,7 +65,7 @@ struct TargetWatchTabView: View {
         HStack(spacing: 8) {
             Toggle(isOn: Binding(
                 get: { watch.enabled },
-                set: { viewModel.setCollecting(watch, $0) }
+                set: { on in Task { await viewModel.setCollecting(watch, on) } }
             )) { EmptyView() }
             .toggleStyle(.switch)
             .controlSize(.mini)
@@ -90,7 +90,7 @@ struct TargetWatchTabView: View {
             .fixedSize()
             .disabled(viewModel.isScanning(watch.id))
 
-            Button(role: .destructive) { viewModel.deleteWatch(watch) } label: {
+            Button(role: .destructive) { Task { await viewModel.deleteWatch(watch) } } label: {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
@@ -111,7 +111,7 @@ struct TargetWatchTabView: View {
             } else {
                 ForEach(viewModel.events) { event in
                     TargetWatchEventRow(event: event, viewModel: viewModel, onDiscuss: onDiscuss)
-                        .onAppear { viewModel.markRead(event) }
+                        .onAppear { Task { await viewModel.markRead(event) } }
                 }
             }
         }
@@ -154,10 +154,11 @@ private struct TargetWatchEventRow: View {
                 HStack(spacing: 8) {
                     Text(action.reason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     Spacer()
-                    Button("Apply") { viewModel.applyAction(for: event) }.controlSize(.small)
-                    Button("Dismiss") { viewModel.dismissAction(for: event) }
+                    Button("Apply") { Task { await viewModel.applyAction(for: event) } }.controlSize(.small)
+                    Button("Dismiss") { Task { await viewModel.dismissAction(for: event) } }
                         .controlSize(.small).buttonStyle(.borderless)
                 }
+                .disabled(viewModel.pendingWrites.isPending(event.id))
             } else if event.actionStatus == "applied" {
                 Label("Applied", systemImage: "checkmark.circle.fill")
                     .font(.caption2).foregroundStyle(.green)

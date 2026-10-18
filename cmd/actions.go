@@ -432,6 +432,9 @@ func runActionsApprove(cmd *cobra.Command, args []string) error {
 	if err := refuseUnderAgent("approve an action"); err != nil {
 		return err
 	}
+	if err := confirmWithOwner("approve an action", actionConfirmDetail(args[0])); err != nil {
+		return err
+	}
 	return decideAndMaybeApply(cmd, args[0], []string{"pending"}, "approved", true)
 }
 
@@ -441,10 +444,14 @@ func runActionsReject(cmd *cobra.Command, args []string) error {
 
 // runActionsDismiss acknowledges a claude.ai connector call whose session
 // ended while it ran (tools.Registry.DismissSessionCall): the row leaves the
-// Desktop's Inbox badge. Refused under an agent (AGENT-07): only the owner
-// says they checked whether the call ran.
+// Desktop's Inbox badge. An owner gesture (AGENT-07): refused under an agent,
+// and otherwise run only on the owner's Confirm in the Desktop — only the
+// owner says they checked whether the call ran.
 func runActionsDismiss(cmd *cobra.Command, args []string) error {
 	if err := refuseUnderAgent("dismiss an action"); err != nil {
+		return err
+	}
+	if err := confirmWithOwner("dismiss an action", actionConfirmDetail(args[0])); err != nil {
 		return err
 	}
 	id, err := parseActionID(args[0])
@@ -480,12 +487,15 @@ func runActionsApply(cmd *cobra.Command, args []string) error {
 	if err := refuseUnderAgent("apply an action"); err != nil {
 		return err
 	}
+	if err := confirmWithOwner("apply an action", actionConfirmDetail(args[0])); err != nil {
+		return err
+	}
 	return decideAndMaybeApply(cmd, args[0], nil, "", true)
 }
 
 func runActionsTrust(cmd *cobra.Command, args []string) error {
 	if tools.Trust(args[1]) == tools.TrustExecute {
-		if err := refuseUnderAgent("grant execute trust"); err != nil {
+		if err := requireOwner("grant execute trust"); err != nil {
 			return err
 		}
 	}

@@ -93,3 +93,14 @@ func TestResolveTools(t *testing.T) {
 		assert.Len(t, denied, 4)
 	})
 }
+
+func TestReservedName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"watchtower": true, "Watchtower": true, "watchtower_": true, "watchtower__x": true, "WATCHTOWER_x": true,
+		"watchtowerx": false, "watchtower-x": false, "my-watchtower": false, "ext-watchtower__x": false,
+	} {
+		if got := ReservedName(name); got != want {
+			t.Errorf("ReservedName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

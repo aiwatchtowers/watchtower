@@ -234,7 +234,10 @@ func TestSandbox_InterruptIsNotCatchable(t *testing.T) {
 		budget       Budget
 		external     bool
 	}{
-		{"external interrupt", "while (true) { try { echo(1) } catch (e) {} }", Budget{}, true},
+		// The loop paces its SDK calls so the run's step cap
+		// (MaxStepsPerRun, board #562) does not end it before the
+		// interrupt lands; the interrupt still hits inside the try.
+		{"external interrupt", "while (true) { try { echo(1); for (let i = 0; i < 20000; i++) {} } catch (e) {} }", Budget{}, true},
 		{"debit crosses the budget", "while (true) { try { spend(30000) } catch (e) {} }", Budget{}, false},
 		{"spent budget refuses and the catch does not help",
 			"while (true) { try { refuse() } catch (e) {} finally {} }", Budget{Tokens: 0, Minutes: 5}, false},

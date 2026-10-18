@@ -428,6 +428,14 @@ final class WorkbenchesViewModel {
     var switchingBranch: [GitRootKey: String] = [:]
     /// A switch Go refused until the owner confirms (dirty tree, live agent).
     var pendingBranchConfirmation: [GitRootKey: BranchSwitchConfirmation] = [:]
+    /// The popover's `git fetch origin` per repository (board #563), keyed
+    /// by its common dir: one fetch at a time, shared by its worktrees.
+    var gitFetchStates: [String: GitFetchState] = [:]
+    /// The fetch in flight per repository: owned here, not by the popover,
+    /// so closing it never cancels a fetch half way.
+    @ObservationIgnored var gitFetchTasks: [String: Task<Void, Never>] = [:]
+    /// A seam for tests: the fetch's clock.
+    @ObservationIgnored var gitFetchNow: () -> Date = Date.init
     /// The header's label when Go asked: a status showing anything else
     /// means the branch moved since, and the question is dropped.
     @ObservationIgnored var pendingBranchBase: [GitRootKey: String] = [:]
@@ -444,6 +452,9 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitWatchedDirs: [GitRootKey: [String]] = [:]
     @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored var gitActivationObserver: NSObjectProtocol?
+    /// Set for good by `stop()` (the view model was replaced): no page
+    /// watching starts or arms again, even one in flight across an await.
+    @ObservationIgnored var isStopped = false
     /// Seams for tests: the refs watcher, the dirty-dot poll's wait, the
     /// notification center, the clipboard.
     @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor (GitRefsChange) -> Void)

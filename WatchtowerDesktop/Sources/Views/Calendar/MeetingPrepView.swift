@@ -91,6 +91,8 @@ struct MeetingPrepDetailView: View {
                 Divider()
                     .padding(.vertical, 4)
 
+                // Created fresh per event: both hosts key this pane by `.id`
+                // (CalendarEventsView, DayPlanView), so no onChange(of: eventID).
                 MeetingNotesView(eventID: eventID)
             }
             .padding()
