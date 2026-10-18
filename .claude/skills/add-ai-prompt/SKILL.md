@@ -24,7 +24,7 @@ type Generator interface {
 
 2. **Pick the model tier** via the *source tag*, not a hardcoded model:
    - Lightweight (classify/prioritize/rollup) → route to Haiku / `gpt-5.6-luna`. Add your source name to the switch in BOTH `internal/digest/models.go` (`ModelForSource`) and `internal/codex/models.go`.
-   - Quality-critical (summaries/analysis) → default (Opus / `gpt-6-astra`), no change needed.
+   - Quality-critical (summaries/analysis) → default (Opus / `gpt-5.6-sol`), no change needed.
 
 3. **Build and split the prompt**, then call the generator with a source-tagged context:
    ```go
@@ -50,7 +50,7 @@ type Generator interface {
 ## Gotchas
 
 - **Codex never resumes sessions** — it returns an empty sessionID and runs `--ephemeral`. Don't persist/`--resume` a sessionID; keep any multi-turn state in your own DB.
-- **No source tag = default model.** Forgetting `digest.WithSource` silently routes the call to Opus/`gpt-6-astra` (costlier/slower for light tasks).
+- **No source tag = default model.** Forgetting `digest.WithSource` silently routes the call to Opus/`gpt-5.6-sol` (costlier/slower for light tasks).
 - **Both providers, always.** The factory (`cmd/generator.go`: `cliGenerator` / `cliPooledGenerator` / `newAIClient`) picks the provider from `cfg.AI.Provider`; `applyProviderOverride(cfg)` honors the `--provider` flag and MUST run before the generator is built.
 - **`Provider` ≠ `Generator`.** `internal/ai/provider.go` (`Query`/`QuerySync`) is for interactive `ask`/`chat` (streaming, sessions). Batch pipelines use `digest.Generator`. Don't mix them.
 - **Editing a shipped template without bumping its version** means existing users keep the old prompt from their DB.

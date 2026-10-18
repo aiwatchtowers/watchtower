@@ -22,7 +22,7 @@ Every AI call is routed to one of two tiers, and each provider has a model per t
 Defaults:
 
 - **Claude:** the aliases `haiku` (light) and `opus` (strong), which move to the newest model of each class without a Watchtower update.
-- **Codex:** `gpt-5.6-luna` (light) and `gpt-6-astra` (strong). A Codex tool too old for `gpt-6-astra` refuses it, so Watchtower retries the call once with `gpt-5.6-sol`; the background sync then goes straight to it. The same happens for any model your Codex refuses: light falls back to `gpt-5.6-luna`, strong to `gpt-5.6-sol`. Run `codex update` to get the newer model.
+- **Codex:** `gpt-5.6-luna` (light) and `gpt-5.6-sol` (strong), the models the Codex tool offers on a ChatGPT sign-in. A newer model such as `gpt-6-astra` needs an up-to-date Codex: run `codex update`, then type it into **Strong Model**.
 - **Ollama / Local:** none, so pick a model; one model then serves both tiers.
 
 Override either tier in **Light Model** and **Strong Model**, or press **Default** to clear it.

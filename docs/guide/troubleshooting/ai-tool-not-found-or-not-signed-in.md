@@ -8,7 +8,7 @@ Chat replies fail, digests and briefings report "Didn't work yet", or Setup keep
 - In **Settings → System → AI**, a red cross by **Claude CLI Path** or **Codex CLI Path** ("Claude CLI not found"), or after **Test Connection**: "Not authenticated. Run 'claude' in Terminal."
 - In a Workbench: "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart." or "Codex was not found."
 - A status line "Didn't work yet — retries automatically" whose reason names the tool.
-- A reason that names a Codex model: "**Codex needs an update to use** gpt-6-astra" or "gpt-6-astra **isn't available on your Codex account**". Watchtower has already retried once with its fallback model; this shows when that failed too.
+- A reason or a **Test Connection** line that names a Codex model: "**Codex needs an update to use** gpt-6-astra" or "gpt-6-astra **isn't available on your Codex account**".
 
 ## Why
 

@@ -78,7 +78,7 @@ func TestAIModels_JSONShape(t *testing.T) {
 
 	codexP := parsed.Providers[byID["codex"]]
 	assert.Equal(t, "gpt-5.6-luna", codexP.ResolvedLight)
-	assert.Equal(t, "gpt-6-astra", codexP.ResolvedStrong)
+	assert.Equal(t, "gpt-5.6-sol", codexP.ResolvedStrong)
 
 	// Ollama ships no default model: unconfigured resolves empty, and the
 	// live list flows through from the (stubbed) server.

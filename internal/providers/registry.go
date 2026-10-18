@@ -29,11 +29,6 @@ type Provider struct {
 	// suggest them (e.g. claude's opus). Not serialized directly: `ai models`
 	// folds it into the same `models` field the live listing uses.
 	KnownModels []string `json:"-"`
-	// FallbackLight/FallbackStrong are the per-tier models a call retries
-	// once with when the CLI refuses its model (a CLI too old for it, or an
-	// account that does not offer it); "" = no retry. See FallbackModel.
-	FallbackLight  string `json:"-"`
-	FallbackStrong string `json:"-"`
 }
 
 // registry order is the display order in UIs.
@@ -50,15 +45,12 @@ var registry = []Provider{
 		ID:          "codex",
 		DisplayName: "Codex",
 		Kind:        "cli",
-		// gpt-6-astra is the current strong model, but a Codex CLI older
-		// than its release refuses it ("requires a newer version of
-		// Codex"), so the strong tier falls back to gpt-5.6-sol. The light
-		// default is gpt-5.6-luna: gpt-6-luna is refused on ChatGPT
-		// sign-in (checked 2026-10-18, board #666).
-		DefaultLight:   "gpt-5.6-luna",
-		DefaultStrong:  "gpt-6-astra",
-		FallbackLight:  "gpt-5.6-luna",
-		FallbackStrong: "gpt-5.6-sol",
+		// Models codex-cli 0.145 lists (`codex debug models`). It refuses
+		// gpt-6-astra ("requires a newer version of Codex") and, on
+		// ChatGPT sign-in, gpt-6-luna (board #666); a newer model stays
+		// one pin away in Settings.
+		DefaultLight:  "gpt-5.6-luna",
+		DefaultStrong: "gpt-5.6-sol",
 	},
 	{
 		ID:          "ollama",
@@ -87,21 +79,6 @@ func ByID(id string) Provider {
 		}
 	}
 	return registry[0]
-}
-
-// FallbackModel returns the model to retry a call once with after the
-// provider's CLI refused model: the tier's fallback (light or strong), or ""
-// when the provider has none or model already is it.
-func FallbackModel(providerID, model string, light bool) string {
-	p := ByID(providerID)
-	fb := p.FallbackStrong
-	if light {
-		fb = p.FallbackLight
-	}
-	if fb == model {
-		return ""
-	}
-	return fb
 }
 
 // ResolveModelsFor returns the concrete light/strong models the given

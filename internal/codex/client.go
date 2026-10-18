@@ -163,10 +163,7 @@ func (c *Client) processDir() string {
 }
 
 // Query sends a streaming request via the Codex CLI and returns channels
-// for text chunks, errors, and the session ID (always empty for Codex). A
-// model codex refuses is retried once with the strong tier's fallback
-// (providers.FallbackModel) — the refusal comes before any text, so the
-// consumer sees only the fallback's answer.
+// for text chunks, errors, and the session ID (always empty for Codex).
 func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
 	textCh := make(chan ai.StreamChunk, 64)
 	errCh := make(chan error, 1)
@@ -177,17 +174,112 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(errCh)
 		defer close(sidCh)
 
-		run := c.withModel(modelFor(c.model))
-		sent, err := run.stream(ctx, systemPrompt, userMessage, textCh)
-		if fb := fallbackFor(run.model, false, err); fb != "" && !sent {
-			first := err
-			_, err = c.withModel(fb).stream(ctx, systemPrompt, userMessage, textCh)
-			err = withFallbackErr(first, fb, err)
-		}
-		if err != nil {
-			errCh <- err
+		// Set up MCP config if database path is provided.
+		workDir, cleanup, mcpErr := c.workDir()
+		if mcpErr != nil {
+			errCh <- mcpErr
 			return
 		}
+		defer cleanup()
+
+		args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, workDir)
+		if buildErr != nil {
+			errCh <- buildErr
+			return
+		}
+		if promptFile != "" {
+			// Every return below comes after the child is reaped or never
+			// started, so the file is never removed while codex reads it.
+			defer os.Remove(promptFile)
+		}
+
+		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
+		cmd.Stdin = strings.NewReader(promptStdin)
+		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		defer reap()
+		cmd.Dir = c.processDir()
+		cmd.Env = c.childEnviron()
+
+		var stderrBuf strings.Builder
+		cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			errCh <- fmt.Errorf("creating stdout pipe: %w", err)
+			return
+		}
+
+		if err := cmd.Start(); err != nil {
+			errCh <- classifyError(err, "", c.codexCmd)
+			return
+		}
+
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		// Top-level "error" events, kept for runError: they explain a run
+		// that exits non-zero without a turn.failed event.
+		var errLines []byte
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			var event CodexEvent
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				continue
+			}
+
+			if event.Error != nil {
+				_ = cmd.Wait()
+				errCh <- turnError(c.model, event.Error.Message)
+				return
+			}
+			if event.Type == "error" {
+				errLines = append(append(errLines, line...), '\n')
+			}
+
+			// A tool call interrupts the turn: signal a boundary so the consumer
+			// drops the pre-tool preamble and starts the answer fresh from what
+			// follows the tool (the ai.Client tool_use precedent). Codex wraps one
+			// item across item.started/updated/completed, so a single tool call
+			// fires a boundary per stage — deliberately unfiltered by stage, since
+			// it is idempotent: each extra boundary just re-clears an
+			// already-empty accumulator on the consumer side.
+			if event.Item != nil && (event.Item.Type == "mcp_tool_call" || event.Item.Type == "command_execution") {
+				select {
+				case textCh <- ai.StreamChunk{ToolBoundary: true}:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					errCh <- ctx.Err()
+					return
+				}
+			}
+
+			// Stream agent_message content as it arrives.
+			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.MessageText() != "" {
+				select {
+				case textCh <- ai.StreamChunk{Text: event.Item.MessageText()}:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					errCh <- ctx.Err()
+					return
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			_ = cmd.Wait()
+			errCh <- fmt.Errorf("reading codex output: %w", err)
+			return
+		}
+
+		if err := cmd.Wait(); err != nil {
+			errCh <- runError(c.model, errLines, err, stderrBuf.String(), c.codexCmd)
+		}
+
 		// Codex doesn't support session resumption — emit empty session ID.
 		sidCh <- ""
 	}()
@@ -195,133 +287,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 	return textCh, errCh, sidCh
 }
 
-// stream runs one streaming `codex exec` turn on c.model, sending its
-// chunks to textCh; sent reports whether any chunk went out.
-func (c *Client) stream(ctx context.Context, systemPrompt, userMessage string, textCh chan<- ai.StreamChunk) (sent bool, err error) {
-	// Set up MCP config if database path is provided.
-	workDir, cleanup, err := c.workDir()
-	if err != nil {
-		return false, err
-	}
-	defer cleanup()
-
-	args, promptStdin, promptFile, err := c.buildArgs(systemPrompt, userMessage, workDir)
-	if err != nil {
-		return false, err
-	}
-	if promptFile != "" {
-		// Every return below comes after the child is reaped or never
-		// started, so the file is never removed while codex reads it.
-		defer os.Remove(promptFile)
-	}
-
-	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
-	cmd.Stdin = strings.NewReader(promptStdin)
-	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
-	defer reap()
-	cmd.Dir = c.processDir()
-	cmd.Env = c.childEnviron()
-
-	var stderrBuf strings.Builder
-	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return false, fmt.Errorf("creating stdout pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return false, classifyError(err, "", c.codexCmd)
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-	for scanner.Scan() {
-		chunk, done, err := c.streamEvent(scanner.Text())
-		if err != nil || done {
-			_ = cmd.Wait()
-			return sent, err
-		}
-		if chunk == nil {
-			continue
-		}
-		select {
-		case textCh <- *chunk:
-			sent = true
-		case <-ctx.Done():
-			_ = cmd.Wait()
-			return sent, ctx.Err()
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		_ = cmd.Wait()
-		return sent, fmt.Errorf("reading codex output: %w", err)
-	}
-
-	if err := cmd.Wait(); err != nil {
-		return sent, classifyError(err, stderrBuf.String(), c.codexCmd)
-	}
-	return sent, nil
-}
-
-// streamEvent turns one JSONL line of a streaming run into the chunk to
-// send (nil = none), or the turn's error.
-func (c *Client) streamEvent(line string) (chunk *ai.StreamChunk, done bool, err error) {
-	if line == "" {
-		return nil, false, nil
-	}
-	var event CodexEvent
-	if json.Unmarshal([]byte(line), &event) != nil {
-		return nil, false, nil //nolint:nilerr // a non-JSON line is skipped, not a failed turn
-	}
-	if event.Error != nil {
-		return nil, true, turnError(c.model, event.Error.Message)
-	}
-	if event.Item == nil {
-		return nil, false, nil
-	}
-	// A tool call interrupts the turn: signal a boundary so the consumer
-	// drops the pre-tool preamble and starts the answer fresh from what
-	// follows the tool (the ai.Client tool_use precedent). Codex wraps one
-	// item across item.started/updated/completed, so a single tool call
-	// fires a boundary per stage — deliberately unfiltered by stage, since
-	// it is idempotent: each extra boundary just re-clears an
-	// already-empty accumulator on the consumer side.
-	if event.Item.Type == "mcp_tool_call" || event.Item.Type == "command_execution" {
-		return &ai.StreamChunk{ToolBoundary: true}, false, nil
-	}
-	// Stream agent_message content as it arrives.
-	if event.Item.Type == "agent_message" && event.Item.MessageText() != "" {
-		return &ai.StreamChunk{Text: event.Item.MessageText()}, false, nil
-	}
-	return nil, false, nil
-}
-
-// withModel is c running model instead (a refused model's fallback).
-func (c *Client) withModel(model string) *Client {
-	cc := *c
-	cc.model = model
-	return &cc
-}
-
 // QuerySync sends a non-streaming request via the Codex CLI and returns
-// the full response text and token usage. A model codex refuses is
-// retried once with the strong tier's fallback (providers.FallbackModel).
+// the full response text and token usage.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *ai.Usage, error) {
-	run := c.withModel(modelFor(c.model))
-	result, usage, err := run.querySync(ctx, systemPrompt, userMessage)
-	if fb := fallbackFor(run.model, false, err); fb != "" {
-		first := err
-		result, usage, err = c.withModel(fb).querySync(ctx, systemPrompt, userMessage)
-		err = withFallbackErr(first, fb, err)
-	}
-	return result, usage, err
-}
-
-// querySync runs one non-streaming `codex exec` turn on c.model.
-func (c *Client) querySync(ctx context.Context, systemPrompt, userMessage string) (string, *ai.Usage, error) {
 	// Set up MCP config if database path is provided.
 	workDir, cleanup, mcpErr := c.workDir()
 	if mcpErr != nil {
