@@ -460,6 +460,11 @@ func (db *DB) schemaCurrent() bool {
 	return true
 }
 
+// SchemaCurrent is schemaCurrent for callers outside the package: true when
+// every embedded migration is applied and the file is in WAL mode, by reads
+// only. A failed read reads false.
+func (db *DB) SchemaCurrent() bool { return db.schemaCurrent() }
+
 func (db *DB) migrate() error {
 	// Before goose: adopt Swift-created chat tables into the shape 00076
 	// expects (see normalizeLegacyChatTables).
