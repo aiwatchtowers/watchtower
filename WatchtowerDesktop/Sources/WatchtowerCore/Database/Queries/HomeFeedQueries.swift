@@ -22,7 +22,7 @@ package struct HomeFeedData: Equatable, Sendable {
     package var proposals: [AgentAction] = []
     /// Overdue or due today, never a workbench target (PROJ-01).
     package var targets: [Target] = []
-    /// Timed, not cancelled, not declined by the owner; today and the next days.
+    /// Today and the next days, only the events `HomeFeedQueries.isShownEvent` accepts.
     package var events: [CalendarEvent] = []
     /// Events with a prep, for the ones still to start today and the next day's.
     package var prepEventIDs: Set<String> = []
@@ -180,9 +180,7 @@ package enum HomeFeedQueries {
     ) throws -> ([CalendarEvent], Set<String>) {
         let startOfDay = calendar.startOfDay(for: now)
         let end = calendar.date(byAdding: .day, value: calendarDays, to: startOfDay) ?? now
-        let events = try CalendarQueries.fetchEvents(db, from: startOfDay, to: end).filter {
-            !$0.isAllDay && $0.eventStatus != "cancelled" && !ownerDeclined($0)
-        }
+        let events = try CalendarQueries.fetchEvents(db, from: startOfDay, to: end).filter(isShownEvent)
         // Prep is read for the events still to start today and the next day's only.
         let nextDay = (1...nextDayHorizon).lazy
             .compactMap { calendar.date(byAdding: .day, value: $0, to: startOfDay) }
@@ -196,6 +194,11 @@ package enum HomeFeedQueries {
             prep.insert(event.id)
         }
         return (events, prep)
+    }
+
+    /// Whether Home shows an event: timed, not cancelled, not declined by the owner.
+    package static func isShownEvent(_ event: CalendarEvent) -> Bool {
+        !event.isAllDay && event.eventStatus != "cancelled" && !ownerDeclined(event)
     }
 
     /// The owner is the attendee whose email is the event's account email.

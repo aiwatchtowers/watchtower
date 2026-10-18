@@ -247,6 +247,25 @@ final class HomeFeedQueriesTests: XCTestCase {
         XCTAssertEqual(ids, ["keep", "accepted"])
     }
 
+    func testIsShownEvent() throws {
+        func event(allDay: Bool = false, status: String = "confirmed", response: String = "accepted") throws -> CalendarEvent {
+            let attendees = #"[{"email":"Me@Example.com","display_name":"","response_status":"\#(response)","slack_user_id":""}]"#
+            return try db.write { d in
+                let accountID = try TestDatabase.insertGoogleAccount(d, email: "me@example.com", calendarEnabled: true)
+                try TestDatabase.ensureCalendar(d, id: "cal\(accountID)", accountID: accountID)
+                try TestDatabase.insertCalendarEvent(
+                    d, id: "e\(accountID)", calendarID: "cal\(accountID)", isAllDay: allDay,
+                    attendees: attendees, eventStatus: status
+                )
+                return try XCTUnwrap(try CalendarQueries.fetchEvent(d, id: "e\(accountID)"))
+            }
+        }
+        XCTAssertTrue(HomeFeedQueries.isShownEvent(try event()))
+        XCTAssertFalse(HomeFeedQueries.isShownEvent(try event(allDay: true)))
+        XCTAssertFalse(HomeFeedQueries.isShownEvent(try event(status: "cancelled")))
+        XCTAssertFalse(HomeFeedQueries.isShownEvent(try event(response: "declined")))
+    }
+
     func testPrepIsReadForTodayAndTheNextDayOnly() throws {
         try db.write { d in
             try self.insertEvent(d, "today", start: self.now.addingTimeInterval(3600))
