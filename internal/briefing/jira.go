@@ -10,54 +10,110 @@ import (
 	"watchtower/internal/jira"
 )
 
-// gatherJiraContext collects Jira data for the briefing prompt based on
-// enabled feature toggles. Returns an empty string when Jira is disabled
-// or no relevant data exists (graceful degradation).
+// trackerLabels are one tracker's briefing section headings. The Jira ones
+// are the pre-Linear headings, unchanged.
+type trackerLabels struct {
+	myIssues, awaiting, iteration, stale, overdue string
+}
+
+var briefingLabels = map[string]trackerLabels{
+	db.TrackerJira: {
+		myIssues:  "=== MY JIRA ISSUES ===",
+		awaiting:  "=== AWAITING MY INPUT ===",
+		iteration: "=== SPRINT PROGRESS ===",
+		stale:     "STALE JIRA ISSUES",
+		overdue:   "OVERDUE JIRA ISSUES",
+	},
+	db.TrackerLinear: {
+		myIssues:  "=== MY LINEAR ISSUES ===",
+		awaiting:  "=== AWAITING MY INPUT (LINEAR) ===",
+		iteration: "=== CYCLE PROGRESS ===",
+		stale:     "STALE LINEAR ISSUES",
+		overdue:   "OVERDUE LINEAR ISSUES",
+	},
+}
+
+// reportedLimit caps the "reported by you" list per tracker.
+const reportedLimit = 20
+
+// gatherJiraContext collects the issue-tracker data (Jira, then Linear) for
+// the briefing prompt based on enabled feature toggles. Each tracker reads
+// tracker_issues and contributes only when its integration is enabled; the
+// Jira feature toggles govern both (spec §3.5). Returns an empty string when
+// no tracker is enabled or no relevant data exists (graceful degradation).
 func (p *Pipeline) gatherJiraContext(owner db.Owner) string {
-	if !p.cfg.Jira.Enabled {
-		return ""
+	var sections []string
+	if p.cfg.Jira.Enabled {
+		sections = append(sections, p.trackerSections(owner, db.TrackerJira)...)
+	}
+	if p.cfg.Linear.Enabled {
+		sections = append(sections, p.trackerSections(owner, db.TrackerLinear)...)
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// trackerSections renders one tracker's briefing sections.
+func (p *Pipeline) trackerSections(owner db.Owner, tracker string) []string {
+	labels := briefingLabels[tracker]
+	feature := func(name string) bool {
+		on, _ := jira.FeatureValue(&p.cfg.Jira.Features, name)
+		return on
 	}
 
 	// Load assigned issues once — reused by multiple sub-functions (C2 fix).
-	assignedIssues, err := p.db.GetOwnerAssignedJiraIssues(owner)
+	assigned, err := p.db.OwnerAssignedTrackerIssues(owner, tracker)
 	if err != nil {
-		p.logger.Printf("briefing: error loading Jira issues for user: %v", err)
-		assignedIssues = nil
+		p.logger.Printf("briefing: error loading %s issues for user: %v", tracker, err)
+		assigned = nil
 	}
+	assignedIssues := asJiraIssues(assigned)
 
 	var sections []string
 
 	// My Issues — issues assigned to user.
-	if jira.IsFeatureEnabled(p.cfg, "my_issues") {
+	if feature("my_issues") {
 		if ctx := formatMyIssues(assignedIssues); ctx != "" {
-			sections = append(sections, "=== MY JIRA ISSUES ===\n"+ctx)
+			sections = append(sections, labels.myIssues+"\n"+ctx)
 		}
 	}
 
 	// Awaiting My Input — issues reported by user still in progress, or blocked issues assigned to user.
-	if jira.IsFeatureEnabled(p.cfg, "awaiting_input") {
-		if ctx := p.gatherAwaitingInput(owner, assignedIssues); ctx != "" {
-			sections = append(sections, "=== AWAITING MY INPUT ===\n"+ctx)
+	if feature("awaiting_input") {
+		if ctx := p.gatherAwaitingInput(owner, tracker, assigned); ctx != "" {
+			sections = append(sections, labels.awaiting+"\n"+ctx)
 		}
 	}
 
-	// Sprint/Iteration Progress — stats for active sprints on selected boards.
-	if jira.IsFeatureEnabled(p.cfg, "iteration_progress") {
-		if ctx := p.gatherSprintProgress(); ctx != "" {
-			sections = append(sections, "=== SPRINT PROGRESS ===\n"+ctx)
+	// Sprint/Iteration Progress — Jira: active sprints on selected boards;
+	// Linear: active cycles.
+	if feature("iteration_progress") {
+		ctx := ""
+		if tracker == db.TrackerJira {
+			ctx = p.gatherSprintProgress()
+		} else {
+			ctx = p.gatherCycleProgress()
+		}
+		if ctx != "" {
+			sections = append(sections, labels.iteration+"\n"+ctx)
 		}
 	}
 
-	// Always include stale and overdue issues when Jira is enabled.
-	if ctx := gatherStaleAndOverdue(assignedIssues, p.logger); ctx != "" {
+	// Always include stale and overdue issues when the tracker is enabled.
+	if ctx := gatherStaleAndOverdueLabeled(assignedIssues, time.Now(), p.logger, labels); ctx != "" {
 		sections = append(sections, ctx)
 	}
+	return sections
+}
 
-	if len(sections) == 0 {
-		return ""
+func asJiraIssues(issues []db.TrackerIssue) []db.JiraIssue {
+	if len(issues) == 0 {
+		return nil
 	}
-
-	return strings.Join(sections, "\n\n")
+	out := make([]db.JiraIssue, len(issues))
+	for i, t := range issues {
+		out[i] = t.AsJiraIssue()
+	}
+	return out
 }
 
 // formatMyIssues returns formatted issues assigned to the user.
@@ -71,22 +127,24 @@ func formatMyIssues(issues []db.JiraIssue) string {
 // gatherAwaitingInput returns issues where the user is the reporter and
 // the issue is still in todo/in_progress (they may need to follow up),
 // plus blocked issues assigned to the user.
-func (p *Pipeline) gatherAwaitingInput(owner db.Owner, assignedIssues []db.JiraIssue) string {
+func (p *Pipeline) gatherAwaitingInput(owner db.Owner, tracker string, assigned []db.TrackerIssue) string {
 	var parts []string
 
 	// Issues reported by user that are still active (todo or in_progress).
-	reported := p.queryReportedActiveIssues(owner)
+	reported, err := p.db.OwnerReportedActiveTrackerIssues(owner, tracker, reportedLimit)
+	if err != nil {
+		p.logger.Printf("briefing: error querying reported %s issues: %v", tracker, err)
+	}
 	if len(reported) > 0 {
 		parts = append(parts, "Reported by you (still open):")
-		parts = append(parts, jira.BuildIssueContext(reported))
+		parts = append(parts, jira.BuildIssueContext(asJiraIssues(reported)))
 	}
 
 	// Blocked issues assigned to the user.
 	var blocked []db.JiraIssue
-	for _, issue := range assignedIssues {
-		if strings.EqualFold(issue.Status, "blocked") ||
-			strings.Contains(strings.ToLower(issue.Status), "block") {
-			blocked = append(blocked, issue)
+	for _, issue := range assigned {
+		if isBlocked(issue) {
+			blocked = append(blocked, issue.AsJiraIssue())
 		}
 	}
 	if len(blocked) > 0 {
@@ -97,58 +155,33 @@ func (p *Pipeline) gatherAwaitingInput(owner db.Owner, assignedIssues []db.JiraI
 	return strings.Join(parts, "\n")
 }
 
-// ownerReporterMatch picks the reporter column and key identifying the owner:
-// their Atlassian account id when known, else their Slack id. An empty key
-// means "unknown" — reporter columns default to the empty string, so it must never be
-// queried (it would match every unmapped issue).
-func ownerReporterMatch(owner db.Owner) (column, key string) {
-	switch {
-	case owner.JiraAccountID != "":
-		return "reporter_account_id", owner.JiraAccountID
-	case owner.SlackUserID != "":
-		return "reporter_slack_id", owner.SlackUserID
-	default:
-		return "", ""
+// isBlocked is Jira's status-name rule (unchanged) or, for Linear, the view's
+// is_blocked: an incoming blocks relation from an issue that is not done.
+func isBlocked(issue db.TrackerIssue) bool {
+	if issue.Tracker == db.TrackerLinear {
+		return issue.IsBlocked
 	}
+	return strings.EqualFold(issue.Status, "blocked") ||
+		strings.Contains(strings.ToLower(issue.Status), "block")
 }
 
-// queryReportedActiveIssues queries for issues where the owner is reporter
-// and status_category is todo or in_progress.
-func (p *Pipeline) queryReportedActiveIssues(owner db.Owner) []db.JiraIssue {
-	column, key := ownerReporterMatch(owner)
-	if key == "" {
-		return nil
-	}
-	rows, err := p.db.Query(`SELECT key, summary, status, status_category, priority, due_date, sprint_name
-		FROM jira_issues
-		WHERE `+column+` = ? AND status_category IN ('todo', 'in_progress') AND is_deleted = 0
-		ORDER BY updated_at DESC LIMIT 20`, key)
+// gatherCycleProgress returns the progress of every active Linear cycle.
+func (p *Pipeline) gatherCycleProgress() string {
+	stats, err := p.db.ActiveTrackerIterationStats(db.TrackerLinear)
 	if err != nil {
-		p.logger.Printf("briefing: error querying reported issues: %v", err)
-		return nil
+		p.logger.Printf("briefing: error loading Linear cycle stats: %v", err)
+		return ""
 	}
-	defer rows.Close()
-
-	var issues []db.JiraIssue
-	for rows.Next() {
-		var issue db.JiraIssue
-		var sprintName, dueDate, priority *string
-		if err := rows.Scan(&issue.Key, &issue.Summary, &issue.Status, &issue.StatusCategory, &priority, &dueDate, &sprintName); err != nil {
-			p.logger.Printf("briefing: error scanning reported issue: %v", err)
-			continue
+	lines := make([]string, 0, len(stats))
+	for _, s := range stats {
+		daysLabel := "days left"
+		if s.DaysLeft == 1 {
+			daysLabel = "day left"
 		}
-		if priority != nil {
-			issue.Priority = *priority
-		}
-		if dueDate != nil {
-			issue.DueDate = *dueDate
-		}
-		if sprintName != nil {
-			issue.SprintName = *sprintName
-		}
-		issues = append(issues, issue)
+		lines = append(lines, fmt.Sprintf("[%s] %q: %d total (%d done, %d in progress, %d todo), %d %s",
+			s.ProjectKey, s.SprintName, s.Total, s.Done, s.InProgress, s.Todo, s.DaysLeft, daysLabel))
 	}
-	return issues
+	return strings.Join(lines, "\n")
 }
 
 // gatherSprintProgress returns sprint stats for all selected boards across
@@ -185,14 +218,15 @@ func (p *Pipeline) gatherSprintProgress() string {
 	return strings.Join(lines, "\n")
 }
 
-// gatherStaleAndOverdue returns issues that are stale (in_progress for >7 days
-// without status change) or overdue (past due date, not done).
-func gatherStaleAndOverdue(issues []db.JiraIssue, logger *log.Logger) string {
-	return gatherStaleAndOverdueAt(issues, time.Now(), logger)
+// gatherStaleAndOverdueAt returns the Jira issues that are stale (in_progress
+// for >7 days without status change) or overdue (past due date, not done) —
+// accepts explicit "now" for deterministic tests.
+func gatherStaleAndOverdueAt(issues []db.JiraIssue, now time.Time, logger *log.Logger) string {
+	return gatherStaleAndOverdueLabeled(issues, now, logger, briefingLabels[db.TrackerJira])
 }
 
-// gatherStaleAndOverdueAt is the testable core — accepts explicit "now" for deterministic tests.
-func gatherStaleAndOverdueAt(issues []db.JiraIssue, now time.Time, logger *log.Logger) string {
+// gatherStaleAndOverdueLabeled is the core, headed with one tracker's labels.
+func gatherStaleAndOverdueLabeled(issues []db.JiraIssue, now time.Time, logger *log.Logger, labels trackerLabels) string {
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	staleCutoff := now.AddDate(0, 0, -7)
 
@@ -221,10 +255,10 @@ func gatherStaleAndOverdueAt(issues []db.JiraIssue, now time.Time, logger *log.L
 
 	var parts []string
 	if len(stale) > 0 {
-		parts = append(parts, "=== STALE JIRA ISSUES (in_progress >7 days) ===\n"+jira.BuildIssueContext(stale))
+		parts = append(parts, "=== "+labels.stale+" (in_progress >7 days) ===\n"+jira.BuildIssueContext(stale))
 	}
 	if len(overdue) > 0 {
-		parts = append(parts, "=== OVERDUE JIRA ISSUES ===\n"+jira.BuildIssueContext(overdue))
+		parts = append(parts, "=== "+labels.overdue+" ===\n"+jira.BuildIssueContext(overdue))
 	}
 
 	return strings.Join(parts, "\n\n")
