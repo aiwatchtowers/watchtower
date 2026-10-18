@@ -9,7 +9,7 @@
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/sessionfeed/` + `internal/db/terminal_session_agent_sessions.go` + `internal/db/migrations/00127_*.sql` + `cmd/workbench_session_feed.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionFeed.swift,Services/SessionFeedStore.swift,Services/SessionFeedPoller.swift}` + `WatchtowerDesktop/Sources/Views/Workbench/SessionChat*.swift`
+**Module:** `internal/sessionfeed/` + `internal/db/terminal_session_agent_sessions.go` + `internal/db/migrations/00127_*.sql` + `cmd/workbench_session_feed.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionFeed.swift,Services/SessionFeedStore.swift,Services/SessionFeedPoller.swift}` + `WatchtowerDesktop/Sources/Views/Workbench/SessionChat*.swift` + the phone path: `WatchtowerDesktop/Sources/Services/MobileHub/{Slices/SessionChatPayload.swift,Slices/SessionChatRunner.swift,Slices/SessionChatSlice.swift,Handlers/SessionChatRequestHandler.swift}` + `WatchtowerKit/Sources/WatchtowerKit/Models/SessionChat.swift` (+ `WorkbenchActionParams.swift` `SessionChatRequestParams`) + `WatchtowerKit/Tests/Fixtures/workbench/session_chat*.json` + `WatchtowerMobile/Sources/Features/Workbench/{SessionChatView,SessionChatViewModel,TellSessionBar}.swift`
 **Last full audit:** 2026-10-16
 
 ## FEED-01 — No transcript text in SQLite; transcripts are read-only
@@ -69,7 +69,27 @@
 
 **Locked since:** 2026-10-16
 
+## FEED-05 — The chat reaches the phone only on request
+
+**Status:** Enforced
+
+**Observable:** A `session_chat` record (kind `session_chat`, record `session_chat-<session id>` or `session_chat-<session id>-<agent id>`) exists in the owner's iCloud only for a session or subagent the phone asked for with `session_chat_request` in the last 5 minutes, and only while a phone is linked. It holds FEED-02 entries only (no tool call, tool output, thinking or hook text), at most 300 entries, 4000 characters per text and 600 000 bytes. With no watch the slice publishes nothing; when the watch expires the entries leave the window and the publisher deletes the record from the zone. The hub keeps the payload in memory only: not in `watchtower.db` (FEED-01) and not in the hub sidecar. Stopping the hub or unlinking the last phone drops it.
+
+**Why locked:** The mobile POC's I-4 forbids publishing transcript text. The owner amended it (ask #379, 2026-10-18) for exactly this exception: dialog entries, on request, short-lived. Widening any of those (background publishing, tool output, longer lifetime) reopens the privacy decision.
+
+**Test guards:**
+- `WatchtowerDesktop/Tests/MobileHub/SessionChatSliceTests.swift::testNoWatchPublishesNothing`
+- `WatchtowerDesktop/Tests/MobileHub/SessionChatRunnerTests.swift::testExpiredWatchLeavesWindow`
+- `WatchtowerDesktop/Tests/MobileHub/SessionChatRunnerTests.swift::testUnlinkedPhoneDropsPayloadsForGood`
+- `WatchtowerDesktop/Tests/MobileHub/SessionChatPayloadTests.swift::testMatchesKitFixtureKeys`
+- `WatchtowerDesktop/Tests/MobileHub/SessionChatPayloadTests.swift::testOnlyFeedKindsPublished`
+
+**Locked since:** 2026-10-18
+
 ## Changelog
+
 
 - 2026-10-16 (board #477..#485): file created, FEED-01..04. Spec `docs/superpowers/specs/2026-10-16-session-chat-feed-design.md`.
 - 2026-10-17: FEED-01..03 now cover Codex sessions (`ParseCodex`/`LocateCodex`, agent instructions Task 6); `codex sessions are not supported yet` refusal removed.
+- 2026-10-18 (board #486, final review): FEED-05 guard `testOnlyFeedKindsPublished` added (the payload filters to the FEED-02 kinds before the cut); text unchanged.
+- 2026-10-18 (board #486, owner approval ask #379): FEED-05 added; mobile POC I-4 amended (session chat exception). Spec `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`.

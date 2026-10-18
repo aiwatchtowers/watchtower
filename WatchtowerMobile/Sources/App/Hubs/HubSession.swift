@@ -148,6 +148,8 @@ final class HubSession {
     /// `session_report_request` on opening a session detail, throttled per
     /// session for the app's lifetime.
     let reportRequests: SessionReportRequester
+    /// `session_chat_request`, repeating while a chat screen is open.
+    let chatRequests: SessionChatRequester
     /// The phone's board writes (status, priority, comments, new targets).
     let boardWriter: BoardWriter
     /// The owner's unsent ask answers, per ask: they survive navigation.
@@ -433,6 +435,7 @@ final class HubSession {
         let outbox = ActionOutbox(transport: secure, store: store, deviceID: device?.deviceID)
         self.outbox = outbox
         reportRequests = SessionReportRequester.sending(through: outbox)
+        chatRequests = SessionChatRequester.sending(through: outbox, store: store)
         boardWriter = BoardWriter.sending(through: outbox, store: store)
         askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
