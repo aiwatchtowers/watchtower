@@ -194,7 +194,8 @@ func setYAMLPath(root *yaml.Node, path []string, value bool) {
 
 		var valNode *yaml.Node
 		for j := 0; j+1 < len(node.Content); j += 2 {
-			if node.Content[j].Value == seg {
+			// Viper reads keys case-insensitively; match the same way.
+			if strings.EqualFold(node.Content[j].Value, seg) {
 				valNode = node.Content[j+1]
 				break
 			}
@@ -232,7 +233,7 @@ func deleteYAMLPath(root *yaml.Node, path []string) {
 		}
 		idx := -1
 		for j := 0; j+1 < len(node.Content); j += 2 {
-			if node.Content[j].Value == seg {
+			if strings.EqualFold(node.Content[j].Value, seg) {
 				idx = j
 				break
 			}

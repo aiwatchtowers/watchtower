@@ -80,3 +80,20 @@ func TestRemoveLegacyAutomationsKey_AbsentIsNoOp(t *testing.T) {
 	assert.Equal(t, content, string(raw))
 	require.NoError(t, RemoveLegacyAutomationsKey(filepath.Join(t.TempDir(), "missing.yaml")))
 }
+
+// Viper reads keys case-insensitively, so a capitalised key is detected; the
+// removal must find it too, or every start would pause the recipes again.
+func TestRemoveLegacyAutomationsKey_CapitalisedKey(t *testing.T) {
+	path := writeTestConfig(t, "Automations:\n  Enabled: false\ndigest:\n  enabled: true\n")
+	off, err := LegacyAutomationsOff(path)
+	require.NoError(t, err)
+	require.True(t, off)
+
+	require.NoError(t, RemoveLegacyAutomationsKey(path))
+	off, err = LegacyAutomationsOff(path)
+	require.NoError(t, err)
+	assert.False(t, off, "the capitalised key is gone")
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "digest:")
+}
