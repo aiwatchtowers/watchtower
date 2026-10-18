@@ -216,7 +216,7 @@ final class ChatViewModelTests: XCTestCase {
         fake.emit(.sessionReady(sessionID: "sess-1", provider: "claude", model: "m"))
         fake.emit(.textDelta(turnID: "turn-1", text: "half"))
         fake.exit(status: 9)
-        let persisted = await waitForCondition { (try? self.lastAssistant(convID))?.status == "partial" && !vm.isStreaming }
+        let persisted = await waitForCondition { (try? self.lastAssistant(convID))?.status == "partial" && !vm.isBusy }
         XCTAssertTrue(persisted)
         XCTAssertEqual(try lastAssistant(convID)?.text, "half")
 
@@ -650,7 +650,7 @@ final class ChatViewModelTests: XCTestCase {
         await vm.send(text: "q")
         let fake = try lastFake()
         fake.emit(.turnDone(turnID: "turn-1", status: .interrupted, sessionID: nil))
-        _ = await waitForCondition { !vm.isStreaming }
+        _ = await waitForCondition { !vm.isBusy }
         await vm.continueStopped(messageID: try XCTUnwrap(vm.thread.last?.id))
         XCTAssertEqual(fake.turns.last?.text, "Continue")
     }
@@ -842,7 +842,7 @@ final class ChatViewModelTests: XCTestCase {
         _ = await waitForCondition { runner.invocations.count == 1 }
         await vm.send(text: "q2")
         try lastFake().emit(.turnDone(turnID: "turn-2", status: .interrupted, sessionID: nil))
-        _ = await waitForCondition { !vm.isStreaming }
+        _ = await waitForCondition { !vm.isBusy }
         let stillNeeded = try await dbManager.dbPool.read { d in try ChatConversationQueries.needsAITitle(d, id: convID) }
         XCTAssertTrue(stillNeeded)
         try await Task.sleep(for: .milliseconds(50))
