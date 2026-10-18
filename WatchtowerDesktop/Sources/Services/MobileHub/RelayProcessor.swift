@@ -118,7 +118,9 @@ final class RelayProcessor: Sendable {
     ]
     /// Echoed `received` as soon as they are dequeued (§5.2 rule 6).
     static let receivedEchoKinds: Set<ActionKind> = [.sessionStart, .sessionInput, .boardTargetCreate]
-    private static let sessionRequestKinds: Set<ActionKind> = [.sessionInput, .sessionFinishRequest, .sessionStart]
+    private static let sessionRequestKinds: Set<ActionKind> = [
+        .sessionInput, .sessionFinishRequest, .sessionStart, .sessionChatRequest
+    ]
     /// The pre-POC Today/task kinds: refused until sub-project D.
     static let refusedKinds: Set<ActionKind> = [.targetDone, .targetSnooze, .taskCreate]
     /// The recording ingest's own deadline (copying ≤ 90 MB plus a main-actor

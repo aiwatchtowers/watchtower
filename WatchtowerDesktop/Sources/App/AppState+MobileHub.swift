@@ -56,6 +56,12 @@ extension AppState {
             SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar, isActive: hasPhone)
         }
         if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
+        // The chat of a session the phone watches (`session-feed --json`);
+        // no CLI, no chat.
+        let chats = workbenchesViewModel?.cli.map {
+            SessionChatRunner.live($0.runner, isLive: { liveness.current.liveIDs.contains($0) }, isActive: hasPhone)
+        }
+        if let chats { SessionChatRequestHandler(dbPool: dbPool, runner: chats, sessions: sessions).register(on: dispatcher) }
         let sources: [any SliceSource] = [
             WorkbenchSlice(
                 gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) },
@@ -73,6 +79,7 @@ extension AppState {
             SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
             DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID(), keyring: storage.keyring)
         ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
+            + (chats.map { [SessionChatSlice(runner: $0)] } ?? [])
         let transport = storage.transport
         // The publisher seals through the storage's secure transport; without hub keys (nil) it publishes nothing.
         let publisher = SlicePublisher(
@@ -94,7 +101,7 @@ extension AppState {
             },
             sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
         )
-        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, inputs]
+        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, chats, inputs]
         let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
         let hub = try assembleMobileHub(
             storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,

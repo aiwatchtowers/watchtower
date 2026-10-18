@@ -327,6 +327,7 @@ final class AppEnvironment {
     var store: ReplicaStore { activeSession.store }
     var outbox: ActionOutbox { activeSession.outbox }
     var reportRequests: SessionReportRequester { activeSession.reportRequests }
+    var chatRequests: SessionChatRequester { activeSession.chatRequests }
     var boardWriter: BoardWriter { activeSession.boardWriter }
     var askDrafts: AskDraftStore { activeSession.askDrafts }
     var askAnswerer: AskAnswerer { activeSession.askAnswerer }

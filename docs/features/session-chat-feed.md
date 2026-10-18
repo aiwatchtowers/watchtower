@@ -1,6 +1,6 @@
-# Session chat feed — the dialog of a workbench session (2026-10-16, phases 1-2; iPhone pending)
+# Session chat feed — the dialog of a workbench session (2026-10-16, phases 1-3)
 
-Spec: `docs/superpowers/specs/2026-10-16-session-chat-feed-design.md`. Contracts: FEED-01..04 in [docs/inventory/session-feed.md](../inventory/session-feed.md).
+Spec: `docs/superpowers/specs/2026-10-16-session-chat-feed-design.md`. Contracts: FEED-01..05 in [docs/inventory/session-feed.md](../inventory/session-feed.md).
 
 A workbench session's transcript holds hundreds of tool calls; the owner wants the conversation only. The feed is built on demand by a deterministic Go reader from the Claude Code transcript JSONL. No AI call, no transcript text stored anywhere, nothing written to the transcript files.
 
@@ -54,7 +54,7 @@ Session row context menu **Show Chat**; the session header **Chat** toggle; the 
 ## v1 limits
 
 - Codex sessions (2026-10-17): `sessionfeed.ParseCodex`/`LocateCodex` read the rollout (`$CODEX_HOME/sessions/*/*/*/rollout-*-<id>.jsonl`, the stored `transcript_path` first) in both owner dialects (paginated `item_completed` `UserMessage`/`AgentMessage`, legacy `user_message`/`agent_message`); user text is classified like Claude's (brief, ask answer, Watchtower line). Legacy lines carry no id, so their entry id is `L<line byte offset>`. No subagent markers for Codex; a zstd-compressed rollout yields no entries (`unknown_records["<zstd>"]`).
-- No search, export or sharing. The iPhone chat is pending (phase 3: tail of a feed in the 900 000-byte envelope, subagent feeds on request).
+- No search, export or sharing. The iPhone shows the tail of a feed only (phase 3 below), no paging into older entries.
 - Zero time means no time: the separator, a report entry and a meta-only subagent marker may carry `0001-01-01T00:00:00Z`; the Desktop treats it as unknown and shows no timestamp.
 - `--after` and `--subagent` are mutually exclusive (the command refuses both). `skipped` and `unknown_records` count only what that call read.
 - A marker whose `meta.json` is not written yet is missing from `subagents` until it appears (it is still in `entries` when its call is after the cursor); a meta-only marker has no time or parent report until its transcript part is parsed.
@@ -63,3 +63,26 @@ Session row context menu **Show Chat**; the session header **Chat** toggle; the 
 - An owner message with a pasted image can read `[Image #1] …` followed by `[image]`.
 - The in-flight CLI read is not cancelled when the pane goes away; the result is discarded.
 - The format of the transcripts is undocumented: a drift degrades to skipped/unknown counts, never a failure.
+
+## Phase 3 — the chat on the iPhone (2026-10-18, board #486)
+
+Spec: `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`. Contract: FEED-05; the mobile POC's I-4 is amended for this one exception (the chat crosses to the owner's iCloud, on request only). Transport: [mobile-companion.md](mobile-companion.md).
+
+**Flow.** Opening **Chat** on a session's detail screen enqueues the relay action `session_chat_request` `{session_id?, subagent_id?, tool_use_id?}` (entity = the `terminal_session-<id>` record; `SessionChatRequestHandler` needs no grant, since it only reads). The phone repeats it every 60 s while the screen is open (`SessionChatRequester`, stop keyed by screen so a push/pop does not stop the top screen's loop). An unknown session answers `.notFound` with message `unknown_session`. A subagent request carries both ids (`subagent_id` names the record, `tool_use_id` is what the CLI's `--subagent` takes; one without the other is `invalid_params`), and a `session_id` that differs from the entity is `invalid_params`. The handler replies `.applied()` at once and tells `SessionChatRunner` to watch the session or subagent. The watch counts from when the phone asked (`created_at`): a request older than the watch applies without opening a watch, a younger one ends `created_at` + 5 min (at most now + 5 min) (`.sessionChatRequest` is a session request kind for the relay's 24 h expiry). The phone does not queue a repeat while an earlier `session_chat_request` for the same chat still waits in its outbox.
+
+**Lifetime.** A watch lasts 5 minutes from the last request. The runner runs `watchtower workbench session-feed --session N --json` (or `--subagent <tool_use_id>`) off the main actor, every 10 s while the agent is live and once per watch for a finished session, bounded at 30 s. The result is clipped to the caps and kept **in memory only**: never in the clear on disk (not in `watchtower.db`, FEED-01; not in the hub sidecar) — only the sealed slice record waits in the hub's transport queue. When the watch expires the entries leave the slice window and the publisher deletes the record from the zone. Stopping the runner, and any time no phone is linked, drops every payload for good. `SessionChatSlice` (kind `session_chat`, record `session_chat-<session id>` or `session_chat-<session id>-<agent id>`) publishes on the normal 30 s full tick: not an urgent kind, no fast lane. A live chat is up to ~40 s behind.
+
+**Caps** (`SessionChatPayload`, I-8): FEED-02 kinds only (a tool call, thinking or a kind a newer CLI adds is dropped before the cut and not counted), newest 300 entries (`entries_more` counts the cut ones), entry text 4000 characters (`text_clipped`), titles and subagent descriptions 200, and a payload over 600 000 bytes drops the oldest entries until it fits (counted into `entries_more`; each entry is measured once and the payload is encoded once). The payload carries no clock, so an unchanged feed is byte-identical and is not uploaded again. A subagent marker carries `tool_use_id` besides `agent_id`; the phone shows no link for a marker missing either.
+
+**Phone.** Kit mirror `SessionChat` (`Models/SessionChat.swift`, fixtures `session_chat.json`, `session_chat_subagent.json`). Session detail has a **Chat** row; `SessionChatView` shows owner bubbles right, agent text left, ask answers and Watchtower lines marked "via Watchtower", the brief collapsed, separators, and subagent markers that push the subagent's own chat. Waiting states: "Asking your Mac…", then after 60 s without a record "Your Mac has not sent this chat yet. Is it awake?". **The Tell bar (`TellSessionBar`) shows only on the main chat**, and only for a device allowed to type (PROJ-16): a line typed from a subagent screen would reach the main agent, not the subagent. A sent line shows as a pending bubble while it waits in the outbox, then as a local bubble after the Mac applied it, until an `owner` entry with the same text dated at or after the send arrives or 90 s pass.
+
+| Piece | Where |
+|---|---|
+| Payload and caps | `Services/MobileHub/Slices/SessionChatPayload.swift` |
+| Runner | `Services/MobileHub/Slices/SessionChatRunner.swift` |
+| Slice | `Services/MobileHub/Slices/SessionChatSlice.swift` |
+| Request handler | `Services/MobileHub/Handlers/SessionChatRequestHandler.swift` |
+| Kit | `WatchtowerKit/Models/SessionChat.swift`, `SessionChatRequestParams` in `WorkbenchActionParams.swift` |
+| Phone | `WatchtowerMobile/Sources/Features/Workbench/{SessionChatView,SessionChatViewModel,TellSessionBar}.swift` |
+
+Limits: no search, no paging, no chat of a session the owner did not open, no copy beyond the replica record.
