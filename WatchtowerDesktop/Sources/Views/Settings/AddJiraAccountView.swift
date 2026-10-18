@@ -41,11 +41,25 @@ struct AddJiraAccountView: View {
     @State private var accountIDsBefore: Set<Int>?
     /// Set on the click, before any await, so a double click starts one connect.
     @State private var starting = false
+    /// "Also connect Confluence" (#573): the same consent asks for
+    /// Confluence, and the board step selects the spaces the owner works in.
+    /// On by default; unchecking it keeps the connect Jira-only. A refusal
+    /// never costs the Jira connect: `jira add` retries Jira-only, and the
+    /// board step's line says Confluence isn't enabled.
+    @State private var withConfluence = JiraAccountsViewModel.alsoConnectConfluenceByDefault
+    /// The board step's Confluence selection, made when a connect that
+    /// asked for Confluence succeeds.
+    @State private var confluenceSelection: ConfluenceConnectSelection?
+    /// The last attempt asked for Confluence and was cancelled or timed out
+    /// (`ConfluenceConnectStep.suggestsUntick`); cleared by the next Connect.
+    @State private var showsUntickHint = false
 
     var body: some View {
         Group {
             if choosingBoards {
-                JiraBoardChoiceView(accountIDsBefore: accountIDsBefore) { dismiss() }
+                JiraBoardChoiceView(
+                    accountIDsBefore: accountIDsBefore, confluence: confluenceSelection
+                ) { dismiss() }
                     .padding(20)
                     .frame(width: 420, height: 420)
             } else {
@@ -79,12 +93,17 @@ struct AddJiraAccountView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Toggle("Also connect Confluence", isOn: $withConfluence)
+                .toggleStyle(.checkbox)
+                .disabled(vm?.isConnecting == true || starting)
+                .help("The same sign-in also grants Confluence. The spaces you wrote in or viewed lately become searchable.")
+
             Spacer()
 
             HStack {
                 if vm?.isConnecting == true {
                     ProgressView().controlSize(.small)
-                    Text("Connecting...")
+                    Text(vm?.connectStatus ?? "Connecting...")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -108,23 +127,49 @@ struct AddJiraAccountView: View {
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
             }
+            if showsUntickHint {
+                Text(ConfluenceConnectStep.untickHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(20)
-        .frame(width: 360, height: 220)
+        .frame(width: 360, height: 290)
     }
 
     private func connect() {
         guard let vm, !starting else { return }
         starting = true
         cancelled = false
+        showsUntickHint = false
+        let askConfluence = withConfluence
         let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
-            let result = await vm.addAccountHoldingRestart(site: trimmedSite, daemonPolicy: daemonPolicy)
+            let result = await vm.addAccountHoldingRestart(
+                site: trimmedSite, withConfluence: askConfluence, daemonPolicy: daemonPolicy
+            )
             starting = false
             accountIDsBefore = result.accountIDsBefore
+            // An Atlassian error page that never redirects back leaves only
+            // Cancel or the login timeout: name the way out, and untick.
+            if ConfluenceConnectStep.suggestsUntick(
+                askedConfluence: askConfluence,
+                connected: result.connected && !cancelled,
+                cancelled: cancelled || result.cancelled,
+                timedOut: result.timedOut
+            ) {
+                showsUntickHint = true
+                withConfluence = false
+            }
             // A user Cancel clears error (SIGTERM/SIGKILL branch) and returns
             // false; `cancelled` also covers a Cancel before the launch.
             if result.connected && !cancelled {
+                if askConfluence, let pool = appState.databaseManager?.dbPool {
+                    let features = appState.featureManager
+                    confluenceSelection = ConfluenceConnectSelection(
+                        dbPool: pool, runner: ProcessCLIRunner.makeDefault()
+                    ) { ConfluenceSpacesSection.isFeatureOff(features) }
+                }
                 choosingBoards = true
             }
         }

@@ -29,7 +29,7 @@ If the check fails, a box shows the install command and three helpers: **Check a
 
 Only the sources your goals need, as cards: Slack, Google ("Mail and calendar") and Jira.
 
-A Google account always brings mail and calendar together here. **Connect** opens the same sheet as **Settings → Connections**, and a connected card shows a check mark and the account name. After Jira connects, the sheet asks which boards to sync (**Choose Boards**); only those boards sync, and **Skip** leaves Jira's tabs saying "Choose Jira boards to get this" until you pick some. The step says "You can continue without any" and **Continue** is on even with nothing connected.
+A Google account always brings mail and calendar together here. **Connect** opens the same sheet as **Settings → Connections**, and a connected card shows a check mark and the account name. The Jira sheet's **Also connect Confluence** box (ticked) adds Confluence to the same sign-in and selects up to five spaces you wrote in or viewed lately. After Jira connects, the sheet asks which boards to sync (**Choose Boards**); only those boards sync, and **Skip** leaves Jira's tabs saying "Choose Jira boards to get this" until you pick some. The step says "You can continue without any" and **Continue** is on even with nothing connected.
 
 After Slack connects, Watchtower loads its people list in the background ("Loading people… N") so Day Plan, Inbox and People know who is who. If your goals need no source (Workbench only), this step is skipped.
 

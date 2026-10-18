@@ -71,6 +71,18 @@ final class JiraAccountsViewModelTests: XCTestCase {
         XCTAssertEqual(args, ["jira", "add", "--app-return", "--site", "acme.atlassian.net"])
     }
 
+    // #573: "Also connect Confluence" widens the same consent.
+    func testAddArgsWithConfluence() {
+        XCTAssertEqual(
+            JiraAccountsViewModel.addArgs(withConfluence: true),
+            ["jira", "add", "--app-return", "--with-confluence"]
+        )
+        XCTAssertEqual(
+            JiraAccountsViewModel.addArgs(site: "acme.atlassian.net", withConfluence: true),
+            ["jira", "add", "--app-return", "--site", "acme.atlassian.net", "--with-confluence"]
+        )
+    }
+
     // MARK: - removeArgs (pure)
 
     func testRemoveArgs() {
@@ -181,6 +193,49 @@ extension JiraAccountsViewModelTests {
         XCTAssertNotNil(vm.error)
         XCTAssertNil(vm.daemonRestartTask)
         XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    // MARK: - Also connect Confluence (#573)
+
+    // The owner's ask: the box starts checked; unticking it is the opt-out.
+    func testAlsoConnectConfluenceIsOnByDefault() {
+        XCTAssertTrue(JiraAccountsViewModel.alsoConnectConfluenceByDefault)
+    }
+
+    /// A stand-in CLI that writes its argv to a file and exits 0.
+    private func argvRecordingCLI() throws -> (cli: String, argv: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let argv = dir.appendingPathComponent("argv")
+        let cli = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\necho \"$@\" > '\(argv.path)'\n".write(to: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        return (cli.path, argv)
+    }
+
+    func testHoldingConnectPassesTheConfluenceFlagThrough() async throws {
+        let stub = try argvRecordingCLI()
+        let (vm, _, _) = try makeVM(cli: stub.cli)
+        _ = await vm.addAccountHoldingRestart(withConfluence: true, daemonPolicy: .deferred)
+        XCTAssertEqual(try String(contentsOf: stub.argv, encoding: .utf8), "jira add --app-return --with-confluence\n")
+
+        _ = await vm.addAccountHoldingRestart(withConfluence: false, daemonPolicy: .deferred)
+        XCTAssertEqual(try String(contentsOf: stub.argv, encoding: .utf8), "jira add --app-return\n")
+    }
+
+    // F11: `jira add`'s stable timeout exit code reaches the sheet as timedOut.
+    func testHoldingConnectReportsTheLoginTimeout() async throws {
+        let stub = try argvRecordingCLI()
+        try "#!/bin/sh\necho 'jira login: login timed out after 5m0s' >&2\nexit 75\n"
+            .write(toFile: stub.cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.cli)
+        let (vm, _, _) = try makeVM(cli: stub.cli)
+        let result = await vm.addAccountHoldingRestart(withConfluence: true, daemonPolicy: .deferred)
+        XCTAssertFalse(result.connected)
+        XCTAssertTrue(result.timedOut)
+        XCTAssertFalse(result.cancelled)
+        XCTAssertNil(vm.connectStatus)
     }
 
     // MARK: - Board step (#572)
