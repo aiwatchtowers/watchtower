@@ -174,4 +174,28 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertTrue(store.entries.isEmpty)
         XCTAssertNil(store.error)
     }
+
+    func testFollowGoesOffScreenAndBackInsideTheLoop() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        // Checks: the first read, then ticks 1-4; ticks 2 and 3 are off screen.
+        var check = 0
+        let screen = [true, true, false, false, true]
+        await store.follow(interval: .milliseconds(1), isActive: activeFor(4)) {
+            defer { check += 1 }
+            return screen[check]
+        }
+        XCTAssertEqual(runner.calls.count, 3, "the two off-screen ticks spawn nothing")
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 3, "the on-screen tick already caught up")
+    }
+
+    func testIdlePaneOpenedOffScreenReadsOnceOnReturn() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.follow(interval: .milliseconds(1), isActive: activeFor(0)) { false }
+        XCTAssertEqual(runner.calls.count, 0, "the first read is skipped off screen")
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 1)
+    }
 }

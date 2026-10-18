@@ -46,8 +46,8 @@ package final class SessionFeedStore: ObservableObject {
         }
     }
 
-    /// The main window's visibility changed: back on screen after a skipped
-    /// read, the feed is read now.
+    /// The app's windows went on or off screen (`UIVisibilityCenter`): back
+    /// on screen after a skipped read, the feed is read now.
     package func screenChanged(_ onScreen: Bool) async {
         guard !runnerMissing, screenGate.setOnScreen(onScreen) else { return }
         await poller.refresh()

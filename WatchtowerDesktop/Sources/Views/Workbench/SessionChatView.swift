@@ -5,6 +5,7 @@ import WatchtowerCore
 /// right in a tinted bubble, the agent left without one, Watchtower's own
 /// lines marked "via Watchtower", subagents as cards opening a sheet.
 struct SessionChatView: View {
+    @Environment(AppState.self) private var appState
     let vm: WorkbenchesViewModel
     let sessionID: Int64
     let projectID: Int64
@@ -48,8 +49,10 @@ struct SessionChatView: View {
         .task(id: stateKind) {
             await store.follow(isActive: { isActive }, isOnScreen: { vm.isTabOnScreen() })
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { _ in
-            Task { await store.screenChanged(vm.isTabOnScreen()) }
+        // The app's visibility hub (#731): back on screen after a skipped
+        // read, the feed is read at once. Bound to the pane's lifetime.
+        .task(id: appState.uiVisibility.isOnScreen) {
+            await store.screenChanged(appState.uiVisibility.isOnScreen)
         }
         .sheet(item: $openedSubagent) { entry in
             SessionChatSubagentSheet(store: store, entry: entry)
