@@ -111,6 +111,7 @@ func (db *DB) GetMessages(opts MessageOpts) ([]Message, error) {
 		return name
 	}
 
+	conditions = append(conditions, col("is_deleted")+" = 0")
 	if opts.ExcludeDMs {
 		conditions = append(conditions, "c.type NOT IN ('dm', 'group_dm')")
 	}
@@ -171,6 +172,10 @@ func msgColumns(prefixed bool) string {
 // watermark has advanced past what was rendered. Newest-first truncation
 // would strand the older remainder permanently, because the watermark never
 // moves back over it.
+//
+// Tombstones (is_deleted = 1) deliberately stay in the load: the digest's
+// considered-mark is computed from it, so dropping a channel's trailing
+// tombstones would leave the mark stuck and the channel re-offered each cycle.
 //
 // The caller passes DefaultTimeRangeLimit normally and BoundarySecondRowLimit
 // for the one case that must overshoot it — see trimPartialBoundarySecond.
@@ -307,7 +312,7 @@ func (db *DB) GetThreadReplies(channelID, threadTS string) ([]Message, error) {
 	rows, err := db.Query(`
 		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
-		WHERE channel_id = ? AND (ts = ? OR thread_ts = ?)
+		WHERE channel_id = ? AND is_deleted = 0 AND (ts = ? OR thread_ts = ?)
 		ORDER BY ts_unix ASC
 		LIMIT 200`,
 		channelID, threadTS, threadTS,
@@ -327,7 +332,7 @@ func (db *DB) GetMessageNear(channelID string, tsUnix float64) (*Message, error)
 	row := db.QueryRow(`
 		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
-		WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?
+		WHERE channel_id = ? AND is_deleted = 0 AND ts_unix >= ? AND ts_unix <= ?
 		ORDER BY ABS(ts_unix - ?) ASC
 		LIMIT 1`,
 		channelID, tsUnix-tolerance, tsUnix+tolerance, tsUnix,
@@ -364,7 +369,7 @@ func (db *DB) GetMessagesByTS(channelID string, timestamps []string) ([]Message,
 	rows, err := db.Query(`
 		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix
 		FROM messages
-		WHERE channel_id = ? AND ts IN (`+strings.Join(placeholders, ",")+`)
+		WHERE channel_id = ? AND is_deleted = 0 AND ts IN (`+strings.Join(placeholders, ",")+`)
 		ORDER BY ts_unix ASC`,
 		args...,
 	)

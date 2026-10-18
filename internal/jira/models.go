@@ -228,6 +228,6 @@ type IssueComment struct {
 type CommentList struct {
 	StartAt    int            `json:"startAt"`
 	MaxResults int            `json:"maxResults"`
-	Total      int            `json:"total"`
+	Total      *int           `json:"total"` // nil: the API sent no total
 	Comments   []IssueComment `json:"comments"`
 }

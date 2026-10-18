@@ -673,6 +673,76 @@ func (db *DB) UpsertJiraComments(comments []JiraComment) error {
 	return nil
 }
 
+// ReplaceJiraIssueComments stores a complete comment listing of one issue:
+// it upserts every comment, then deletes the issue's stored comments that are
+// not in the list (an empty list clears the issue). One transaction. Only for
+// a listing known to be complete; an incomplete one goes through
+// UpsertJiraComments. Returns how many stored comments were removed.
+func (db *DB) ReplaceJiraIssueComments(accountID int64, issueKey string, comments []JiraComment) (removed int, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("beginning jira comment replace: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	keep := make(map[string]struct{}, len(comments))
+	for _, c := range comments {
+		keep[c.ID] = struct{}{}
+		_, err := tx.Exec(`INSERT INTO jira_comments (account_id, issue_key, id, author, author_account_id, body_text, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(account_id, id) DO UPDATE SET
+				issue_key = excluded.issue_key,
+				author = excluded.author,
+				author_account_id = excluded.author_account_id,
+				body_text = excluded.body_text,
+				created_at = excluded.created_at,
+				updated_at = excluded.updated_at,
+				synced_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`,
+			accountID, issueKey, c.ID, c.Author, c.AuthorAccountID, c.BodyText, c.CreatedAt, c.UpdatedAt)
+		if err != nil {
+			return 0, fmt.Errorf("upserting jira comment %s/%s: %w", issueKey, c.ID, err)
+		}
+	}
+
+	// Diff in Go: a long listing would otherwise hit SQLite's bound-variable limit.
+	stale, err := staleJiraCommentIDs(tx, accountID, issueKey, keep)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range stale {
+		if _, err := tx.Exec(`DELETE FROM jira_comments WHERE account_id = ? AND issue_key = ? AND id = ?`, accountID, issueKey, id); err != nil {
+			return 0, fmt.Errorf("deleting jira comment %s/%s: %w", issueKey, id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing jira comment replace: %w", err)
+	}
+	return len(stale), nil
+}
+
+// staleJiraCommentIDs lists the stored comment ids of an issue absent from keep.
+func staleJiraCommentIDs(tx *sql.Tx, accountID int64, issueKey string, keep map[string]struct{}) ([]string, error) {
+	rows, err := tx.Query(`SELECT id FROM jira_comments WHERE account_id = ? AND issue_key = ?`, accountID, issueKey)
+	if err != nil {
+		return nil, fmt.Errorf("listing stored jira comments for %s: %w", issueKey, err)
+	}
+	defer rows.Close()
+	var stale []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning stored jira comment id: %w", err)
+		}
+		if _, ok := keep[id]; !ok {
+			stale = append(stale, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing stored jira comments for %s: %w", issueKey, err)
+	}
+	return stale, nil
+}
+
 // jiraCommentsPerWindowLimit bounds how many comments one ideas Jira
 // pre-digest window loads. Without it a burst of comment activity across the
 // window's issues is unbounded input for renderJiraBlock.

@@ -444,8 +444,9 @@ func runActionsReject(cmd *cobra.Command, args []string) error {
 
 // runActionsDismiss acknowledges a claude.ai connector call whose session
 // ended while it ran (tools.Registry.DismissSessionCall): the row leaves the
-// Desktop's Inbox badge. Refused under an agent and confirmed in the Desktop
-// (AGENT-07): only the owner says they checked whether the call ran.
+// Desktop's Inbox badge. An owner gesture (AGENT-07): refused under an agent,
+// and otherwise run only on the owner's Confirm in the Desktop — only the
+// owner says they checked whether the call ran.
 func runActionsDismiss(cmd *cobra.Command, args []string) error {
 	if err := refuseUnderAgent("dismiss an action"); err != nil {
 		return err

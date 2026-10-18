@@ -366,7 +366,7 @@ final class ChatViewModelTests: XCTestCase {
     func testWaitingStepSurvivesNavigation() async throws {
         var vm: ChatViewModel? = try makeViewModel()
         let created = await vm?.newConversation()
-        let convID = try XCTUnwrap(created.flatMap { $0 })
+        let convID = try XCTUnwrap(created)
         let sent = await vm?.send(text: "send it")
         XCTAssertEqual(sent, true)
         let fake = try lastFake()

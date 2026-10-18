@@ -6,7 +6,7 @@ package enum MessageQueries {
             db,
             sql: """
                 SELECT * FROM messages
-                WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?
+                WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ? AND is_deleted = 0
                 ORDER BY ts_unix ASC
                 """,
             arguments: [channelID, from, to]
