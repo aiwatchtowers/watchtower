@@ -535,35 +535,29 @@ final class AutomationSessionCenterTests: XCTestCase {
         XCTAssertTrue(go.invocations.isEmpty, "\(go.invocations)")
     }
 
-    func testAppStateRunsTheCenterOnlyWhileTheFeatureIsOn() async throws {
+    func testAppStateRunsTheCenterOnlyOnceTheFeaturesAreLoaded() async throws {
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
-        appState.featureVisibility.isLoaded = true
-        appState.featureVisibility.disabledFeatureIDs = ["automations"]
+        appState.featureVisibility.isLoaded = false
         appState.initWorkbenches(dbPool: pool, cliRunner: go, notifier: RecordingWorkbenchNotifier(),
                                  sessionNotifier: RecordingSessionNotifier())
         defer { stopWorkbenchWiring(appState) }
         let center = try XCTUnwrap(appState.automationSessionCenter)
         XCTAssertFalse(center.isRunning)
 
-        appState.featureVisibility.disabledFeatureIDs = []
+        appState.featureVisibility.isLoaded = true
         appState.syncAutomationSessionCenter()
         XCTAssertTrue(center.isRunning)
 
-        // The fail-open empty set before any load is not "on".
+        // The fail-open empty set before any load is not "ready".
         appState.featureVisibility.isLoaded = false
-        appState.syncAutomationSessionCenter()
-        XCTAssertFalse(center.isRunning)
-        appState.featureVisibility.isLoaded = true
-
-        appState.featureVisibility.disabledFeatureIDs = ["automations"]
         appState.syncAutomationSessionCenter()
         XCTAssertFalse(center.isRunning)
     }
 
     /// The feature state is unknown until `features list` loads: the center
     /// neither reconciles nor polls before that, a failed load leaves it
-    /// stopped, and the first successful one (the feature on) starts it.
+    /// stopped, and the first successful one starts it.
     func testCenterWaitsForASuccessfulFeatureLoad() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt asc \(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

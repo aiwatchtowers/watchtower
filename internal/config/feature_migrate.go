@@ -25,8 +25,14 @@ var legacyDigestOffFeatureKeys = []string{
 	"briefing.enabled",
 	"day_plan.enabled",
 	"targets.next_step.enabled",
-	// Automations postdate the legacy switch, but an owner whose install
-	// means "all AI off" must not get recipes running either.
+	// Automations postdate the legacy switch and have had no switch of their
+	// own since board #671, but an owner whose install means "all AI off"
+	// must not get recipes running either. The key is written false only as
+	// a durable signal for the daemon's one-time upgrade step
+	// (cmd/automations_upgrade.go), which pauses every enabled recipe and
+	// then removes the key; nothing else reads it. It has no in-memory
+	// counterpart in ApplyLegacyDigestOff: the daemon passes
+	// MigrateFeatureGates' result to that step directly.
 	"automations.enabled",
 }
 
@@ -105,8 +111,9 @@ func MigrateFeatureGates(configPath string) (bool, error) {
 // tokens spent to prove it. Nothing is persisted: the next start retries the
 // real migration.
 //
-// The field list mirrors legacyDigestOffFeatureKeys one-for-one and is kept
-// in lockstep by TestApplyLegacyDigestOff_MatchesOnDiskMigration.
+// The field list mirrors legacyDigestOffFeatureKeys one-for-one — except
+// automations.enabled, the upgrade step's signal with no config field — and
+// is kept in lockstep by TestApplyLegacyDigestOff_MatchesOnDiskMigration.
 // digest.enabled itself is already false on such a config — that is the
 // signature — so it is not repeated here.
 func ApplyLegacyDigestOff(cfg *Config) {
@@ -119,7 +126,6 @@ func ApplyLegacyDigestOff(cfg *Config) {
 	cfg.Briefing.Enabled = false
 	cfg.DayPlan.Enabled = false
 	cfg.Targets.NextStep.Enabled = false
-	cfg.Automations.Enabled = false
 }
 
 // patchConfigYAML sets each dotted key in sets to its bool value by editing
@@ -188,7 +194,8 @@ func setYAMLPath(root *yaml.Node, path []string, value bool) {
 
 		var valNode *yaml.Node
 		for j := 0; j+1 < len(node.Content); j += 2 {
-			if node.Content[j].Value == seg {
+			// Viper reads keys case-insensitively; match the same way.
+			if strings.EqualFold(node.Content[j].Value, seg) {
 				valNode = node.Content[j+1]
 				break
 			}
@@ -226,7 +233,7 @@ func deleteYAMLPath(root *yaml.Node, path []string) {
 		}
 		idx := -1
 		for j := 0; j+1 < len(node.Content); j += 2 {
-			if node.Content[j].Value == seg {
+			if strings.EqualFold(node.Content[j].Value, seg) {
 				idx = j
 				break
 			}

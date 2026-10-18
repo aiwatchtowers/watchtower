@@ -128,13 +128,6 @@ type ReactionCommandsConfig struct {
 	IntervalHours int  `mapstructure:"interval_hours"` // throttle between reactions.list polls; <= 0 = every daemon cycle (default: 0)
 }
 
-// AutomationsConfig controls Automations — owner-written recipes the daemon
-// runs on a schedule or on demand (spec 2026-10-14). On by default (§20 D12):
-// nothing runs until the owner confirms a recipe.
-type AutomationsConfig struct {
-	Enabled bool `mapstructure:"enabled"` // start the scheduler and executor in the daemon (default: true)
-}
-
 // PlanUsageConfig controls Claude plan limits — the daemon polls the owner's
 // 5-hour and weekly Claude limits (spec 2026-10-15). No AI, no cost.
 type PlanUsageConfig struct {
@@ -395,7 +388,6 @@ type Config struct {
 	Ideas            IdeasConfig                 `mapstructure:"ideas"`
 	Streams          StreamsConfig               `mapstructure:"streams"`
 	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
-	Automations      AutomationsConfig           `mapstructure:"automations"`
 	PlanUsage        PlanUsageConfig             `mapstructure:"plan_usage"`
 	Tracks           TracksConfig                `mapstructure:"tracks"`
 	People           PeopleConfig                `mapstructure:"people"`
@@ -479,7 +471,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("streams.interval_hours", DefaultStreamsIntervalHours)
 	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
 	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
-	v.SetDefault("automations.enabled", DefaultAutomationsEnabled)
 	v.SetDefault("plan_usage.enabled", DefaultPlanUsageEnabled)
 	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
@@ -637,7 +628,7 @@ func resolveActiveWorkspace(cfg *Config) {
 		cfg.workspaceLookupErr = err
 		return
 	}
-	candidates, err := workspaceDirsWithDatabase(root)
+	candidates, err := WorkspaceDirsWithDatabase(root)
 	if err != nil {
 		cfg.workspaceLookupErr = err
 		return
@@ -651,7 +642,7 @@ func resolveActiveWorkspace(cfg *Config) {
 	}
 }
 
-// workspaceDirsWithDatabase lists the workspace names under root that hold a
+// WorkspaceDirsWithDatabase lists the workspace names under root that hold a
 // watchtower.db, sorted — the same candidate set the Desktop's
 // Constants.workspacesWithDatabase builds (same name pattern) for
 // DatabaseManager.resolveDBPath and Constants.activeWorkspaceDir.
@@ -660,7 +651,7 @@ func resolveActiveWorkspace(cfg *Config) {
 // FileManager.fileExists does, while a plain file or a dangling symlink
 // simply has no database under it. A missing root is a fresh install (no
 // candidates, no error); any other read failure is returned.
-func workspaceDirsWithDatabase(root string) ([]string, error) {
+func WorkspaceDirsWithDatabase(root string) ([]string, error) {
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -707,7 +698,7 @@ func WorkspaceDatabaseWarning(name string) string {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Sprintf("could not check workspace %q for a database: %v", name, err)
 	}
-	candidates, err := workspaceDirsWithDatabase(root)
+	candidates, err := WorkspaceDirsWithDatabase(root)
 	if err != nil {
 		return fmt.Sprintf("workspace %q has no database (%s), and existing workspaces could not be listed: %v", name, dbPath, err)
 	}

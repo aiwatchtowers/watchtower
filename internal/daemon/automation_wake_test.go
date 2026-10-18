@@ -101,16 +101,13 @@ func receiveWithin(t *testing.T, ch <-chan struct{}, msg string) {
 }
 
 // newAutomationTestDaemon is a daemon over the counting test orchestrator
-// with a long poll interval (only the initial sync fires), automations
-// enabled or not, fake runners and an injected wake channel.
-func newAutomationTestDaemon(t *testing.T, enabled bool, syncCount *atomic.Int32) (*Daemon, *fakeAutomationRunner, *fakeAutomationRunner, chan struct{}) {
+// with a long poll interval (only the initial sync fires), fake runners and an
+// injected wake channel.
+func newAutomationTestDaemon(t *testing.T, syncCount *atomic.Int32) (*Daemon, *fakeAutomationRunner, *fakeAutomationRunner, chan struct{}) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	orch, _ := newTestOrchestrator(t, syncCount)
-	cfg := &config.Config{
-		Sync:        config.SyncConfig{PollInterval: 10 * time.Second},
-		Automations: config.AutomationsConfig{Enabled: enabled},
-	}
+	cfg := &config.Config{Sync: config.SyncConfig{PollInterval: 10 * time.Second}}
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	sched, exec := &fakeAutomationRunner{}, &fakeAutomationRunner{}
@@ -122,7 +119,7 @@ func newAutomationTestDaemon(t *testing.T, enabled bool, syncCount *atomic.Int32
 
 func TestDaemon_AutomationWakeSignalDoesNotStartSync(t *testing.T) {
 	var syncCount atomic.Int32
-	d, sched, exec, wakeCh := newAutomationTestDaemon(t, true, &syncCount)
+	d, sched, exec, wakeCh := newAutomationTestDaemon(t, &syncCount)
 
 	sent := false
 	err := runDaemonUntil(t, d, func() bool {
@@ -142,38 +139,13 @@ func TestDaemon_AutomationWakeSignalDoesNotStartSync(t *testing.T) {
 	assert.True(t, exec.stopped.Load(), "executor goroutine was not reaped before Run returned")
 }
 
-func TestDaemon_AutomationsDisabledStartsNothing(t *testing.T) {
-	var syncCount atomic.Int32
-	d, sched, exec, wakeCh := newAutomationTestDaemon(t, false, &syncCount)
-
-	var sentAt time.Time
-	err := runDaemonUntil(t, d, func() bool {
-		if sentAt.IsZero() && syncCount.Load() >= 1 {
-			wakeCh <- struct{}{}
-			sentAt = time.Now()
-		}
-		// Give a (wrongly) started runner time to see the wake.
-		return !sentAt.IsZero() && time.Since(sentAt) > 200*time.Millisecond
-	})
-	require.NoError(t, err)
-
-	assert.False(t, sched.started.Load(), "scheduler started with automations disabled")
-	assert.False(t, exec.started.Load(), "executor started with automations disabled")
-	assert.Zero(t, sched.wakes.Load())
-	assert.Zero(t, exec.wakes.Load())
-	assert.Equal(t, int32(1), syncCount.Load(), "a wake runs no sync")
-}
-
-// Enabled but never wired (no SetAutomations): Run must neither panic nor
-// start anything.
+// Never wired (no SetAutomations — the upgrade step failed closed): Run must
+// neither panic nor start anything.
 func TestDaemon_AutomationsUnwiredStartsNothing(t *testing.T) {
 	var syncCount atomic.Int32
 	t.Setenv("HOME", t.TempDir())
 	orch, _ := newTestOrchestrator(t, &syncCount)
-	d := newDaemon(orch, &config.Config{
-		Sync:        config.SyncConfig{PollInterval: 10 * time.Second},
-		Automations: config.AutomationsConfig{Enabled: true},
-	})
+	d := newDaemon(orch, &config.Config{Sync: config.SyncConfig{PollInterval: 10 * time.Second}})
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	wakeCh := make(chan struct{}, 1)
 	d.automationWakeCh = wakeCh
@@ -187,7 +159,7 @@ func TestDaemon_AutomationsUnwiredStartsNothing(t *testing.T) {
 // would just wait for its next poll).
 func TestDaemon_AdvertisesAutomationWakeCapability(t *testing.T) {
 	var syncCount atomic.Int32
-	d, _, _, _ := newAutomationTestDaemon(t, true, &syncCount)
+	d, _, _, _ := newAutomationTestDaemon(t, &syncCount)
 	pidPath := t.TempDir() + "/daemon.pid"
 	d.SetPIDPath(pidPath)
 
@@ -203,37 +175,24 @@ func TestDaemon_AdvertisesAutomationWakeCapability(t *testing.T) {
 	assert.NoFileExists(t, CapsPath(pidPath), "removed with the PID file")
 }
 
-// With automations off, or the scheduler/executor never wired, the daemon
-// starts neither and advertises no wake: the CLI then says it could not wake
-// it instead of signalling a daemon that would drop the wake.
+// With the scheduler/executor never wired (the upgrade step failed closed),
+// the daemon starts neither and advertises no wake: the CLI then says it
+// could not wake it instead of signalling a daemon that would drop the wake.
 func TestDaemon_InactiveAutomationsAdvertiseNoWake(t *testing.T) {
-	for name, mk := range map[string]func(t *testing.T, syncCount *atomic.Int32) *Daemon{
-		"disabled": func(t *testing.T, syncCount *atomic.Int32) *Daemon {
-			d, _, _, _ := newAutomationTestDaemon(t, false, syncCount)
-			return d
-		},
-		"unwired": func(t *testing.T, syncCount *atomic.Int32) *Daemon {
-			d, _, _, _ := newAutomationTestDaemon(t, true, syncCount)
-			d.SetAutomations(nil, nil)
-			return d
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var syncCount atomic.Int32
-			d := mk(t, &syncCount)
-			pidPath := t.TempDir() + "/daemon.pid"
-			d.SetPIDPath(pidPath)
-			err := runDaemonUntil(t, d, func() bool {
-				if syncCount.Load() < 1 {
-					return false
-				}
-				assert.FileExists(t, pidPath, "the daemon is running")
-				assert.NoFileExists(t, CapsPath(pidPath), "no wake advertised")
-				return true
-			})
-			require.NoError(t, err)
-		})
-	}
+	var syncCount atomic.Int32
+	d, _, _, _ := newAutomationTestDaemon(t, &syncCount)
+	d.SetAutomations(nil, nil)
+	pidPath := t.TempDir() + "/daemon.pid"
+	d.SetPIDPath(pidPath)
+	err := runDaemonUntil(t, d, func() bool {
+		if syncCount.Load() < 1 {
+			return false
+		}
+		assert.FileExists(t, pidPath, "the daemon is running")
+		assert.NoFileExists(t, CapsPath(pidPath), "no wake advertised")
+		return true
+	})
+	require.NoError(t, err)
 }
 
 func TestHasCapability_StaleOrMissingFileAdvertisesNothing(t *testing.T) {

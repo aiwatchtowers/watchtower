@@ -50,14 +50,12 @@ final class QuickRunCenterTests: XCTestCase {
     private var pool: DatabasePool!
     private var path = ""
     private var notifier: RecordingNotifier!
-    private var featureOn = true
     private let now = Date(timeIntervalSince1970: 1_792_152_000) // 2026-10-16T12:00:00Z
 
     override func setUp() async throws {
         try await super.setUp()
         (pool, path) = try TestDatabase.createPool()
         notifier = RecordingNotifier()
-        featureOn = true
     }
 
     override func tearDown() async throws {
@@ -70,9 +68,7 @@ final class QuickRunCenterTests: XCTestCase {
         let now = self.now
         let cli = AutomationsCLI(runner: runner)
         let vm = AutomationsViewModel(dbPool: pool, cli: cli, now: { now }, sleep: { _ in })
-        let center = QuickRunCenter(dbPool: pool, viewModel: vm, cli: cli, notifier: notifier) { [weak self] in
-            self?.featureOn ?? false
-        }
+        let center = QuickRunCenter(dbPool: pool, viewModel: vm, cli: cli, notifier: notifier)
         return (center, vm)
     }
 
@@ -188,26 +184,13 @@ final class QuickRunCenterTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [])
     }
 
-    func testFeatureOffRefusesWithoutCLI() async throws {
-        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
-        let runner = FakeCLIRunner(stdout: Self.runJSON(1))
-        let (center, _) = make(runner)
-        let runnable = try row(center, id)
-        featureOn = false
-
-        let outcome = await center.activate(runnable, origin: .palette)
-        XCTAssertEqual(outcome, .refused("Automations are turned off in Settings → Features"))
-        XCTAssertEqual(center.lastError, "Automations are turned off in Settings → Features")
-        XCTAssertEqual(runner.invocations, [])
-    }
-
     func testCLIRefusalSurfacesStderr() async throws {
         let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
-        let stderr = "automations are turned off in Settings → Features; turn them on to run this\n"
+        let stderr = "cannot run: automation 7 is not confirmed\n"
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
         let (center, _) = make(runner)
         let outcome = await center.activate(try row(center, id), origin: .palette)
-        let text = "automations are turned off in Settings → Features; turn them on to run this"
+        let text = "cannot run: automation 7 is not confirmed"
         XCTAssertEqual(outcome, .refused(text))
         XCTAssertEqual(center.lastError, text)
         XCTAssertFalse(center.hasWatchedRuns)

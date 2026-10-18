@@ -13,17 +13,12 @@ import (
 
 // errDaemonCannotWake is wakeAutomations' answer for a running daemon that
 // does not advertise daemon.AutomationWakeCapability: one built before
-// automations, or one started while automations were off. Either would
+// automations, or one whose start-up upgrade step failed (it then wires no
+// automations, see pauseAutomationsTurnedOff). Either would
 // silently ignore SIGUSR2 and the run would just wait for its next poll, so
 // the CLI does not signal it and tells the owner to restart it instead.
-var errDaemonCannotWake = errors.New("the running daemon is older, or was started with automations off, and can't be woken; " +
+var errDaemonCannotWake = errors.New("the running daemon is older, or could not start automations (see its log), and can't be woken; " +
 	"restart it (`watchtower sync stop`, then `watchtower sync --daemon --detach`) — the run starts on its next poll")
-
-// automationsOffWakeNote is what wake prints with automations.enabled off:
-// the daemon runs no scheduler or executor, so there is nothing to wake, and
-// enabling the feature cancels the runs queued meanwhile (FEAT-03 hook).
-const automationsOffWakeNote = "automations are turned off in Settings → Features; the daemon was not woken — " +
-	"a queued run stays queued and is cancelled when you turn them on"
 
 // wakeAutomations sends the daemon its automation wake signal (SIGUSR2,
 // spec §7.4), so the scheduler rescans and the executor polls now. No
@@ -80,10 +75,6 @@ func runAutomationsWake(cmd *cobra.Command, _ []string) error {
 	cfg, err := loadAutomationsConfig()
 	if err != nil {
 		return err
-	}
-	if !cfg.Automations.Enabled {
-		fmt.Fprintln(cmd.OutOrStdout(), automationsOffWakeNote)
-		return nil
 	}
 	running, err := wakeAutomations(cfg)
 	note, ok := wakeNote(running, err, "daemon not running")

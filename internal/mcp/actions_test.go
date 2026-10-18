@@ -194,7 +194,6 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	if err := reg.Register(authoring.NewDraftAutomation(authoring.Deps{
 		DB:       database,
 		Backends: func() automations.Backends { return automations.Backends{Generator: gen, Registry: reg} },
-		Enabled:  func() bool { return true },
 		Clock:    automations.RealClock{},
 	})); err != nil {
 		t.Fatal(err)

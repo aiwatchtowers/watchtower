@@ -18,8 +18,6 @@ type Deps struct {
 	// Backends builds the dry run's SDK backends per call (the generator and
 	// the tool registry may change while the process runs).
 	Backends func() automations.Backends
-	// Enabled reports the automations feature (cfg.Automations.Enabled).
-	Enabled func() bool
 	// Clock is the dry run's clock when Backends().Clock is nil.
 	Clock automations.Clock
 	// Workbench resolves save_automation's workbench_id to its folder.

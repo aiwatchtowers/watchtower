@@ -37,7 +37,7 @@ package enum KeyboardShortcutCatalog {
         Area("Global", [
             Entry("⌘B", "Collapse or expand the menu"),
             Entry("⌘/", "Ask Watchtower: the chat over any tab"),
-            Entry("⌃⌘R", "Run Automation… (with Automations turned on)"),
+            Entry("⌃⌘R", "Run Automation…"),
             Entry("⌃⌥D", "New Voice Idea, from anywhere in macOS"),
             Entry("⌘,", "Settings"),
             Entry("⌘Q", "Quit Watchtower")

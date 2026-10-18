@@ -66,11 +66,6 @@ const (
 	DefaultReactionCommandsEnabled       = true
 	DefaultReactionCommandsIntervalHours = 0
 
-	// Automations defaults (spec 2026-10-14 §20 D12): on — a recipe runs
-	// only after the owner confirms it. No daily token cap (D25, ask #294):
-	// each run is bounded by its own token and time budget.
-	DefaultAutomationsEnabled = true
-
 	// Claude plan limits (spec 2026-10-15): on — no AI, no cost.
 	DefaultPlanUsageEnabled = true
 

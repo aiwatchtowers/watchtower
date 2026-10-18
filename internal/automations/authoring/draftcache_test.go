@@ -20,7 +20,6 @@ func (f *draftFixture) cacheTool(workspaceDir string) *tools.Tool {
 		DB:           f.d,
 		WorkspaceDir: workspaceDir,
 		Backends:     func() automations.Backends { return automations.Backends{Generator: f.gen, Registry: f.reg} },
-		Enabled:      func() bool { return f.enabled },
 		Clock:        automationstest.NewFakeClock(draftNow),
 	})
 }

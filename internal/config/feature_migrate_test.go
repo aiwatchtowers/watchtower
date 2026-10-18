@@ -36,7 +36,7 @@ func writeConfigKey(t *testing.T, path, key string, value any) {
 	require.NoError(t, v.WriteConfigAs(path))
 }
 
-// assertNoFeatureKeysWritten asserts that none of the nine legacy-mapping
+// assertNoFeatureKeysWritten asserts that none of the legacy-mapping
 // keys is present in the file at all — the difference between "off" and
 // "never written", which Load cannot see because it fills in defaults.
 func assertNoFeatureKeysWritten(t *testing.T, v *viper.Viper, why string) {
@@ -336,7 +336,7 @@ func TestMigrateFeatureGates_LegacyDetectedEvenWhenWriteFails(t *testing.T) {
 	assert.False(t, v.IsSet("features.migrated"), "nothing was persisted, so the next start retries")
 }
 
-func TestApplyLegacyDigestOff_FlipsTenGatesAndNothingElse(t *testing.T) {
+func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
 	base := Config{
 		ActiveWorkspace: "keep-me",
 		Digest:          DigestConfig{Enabled: false, MinMessages: 7, Language: "English"},
@@ -349,7 +349,6 @@ func TestApplyLegacyDigestOff_FlipsTenGatesAndNothingElse(t *testing.T) {
 		Briefing:        BriefingConfig{Enabled: true, Hour: 9},
 		DayPlan:         DayPlanConfig{Enabled: true, Hour: 8},
 		Targets:         TargetsConfig{NextStep: TargetsNextStepConfig{Enabled: true}},
-		Automations:     AutomationsConfig{Enabled: true},
 		Calendar:        CalendarConfig{Enabled: true},
 		Gmail:           GmailConfig{Enabled: true},
 		Jira:            JiraConfig{Enabled: true},
@@ -363,13 +362,12 @@ func TestApplyLegacyDigestOff_FlipsTenGatesAndNothingElse(t *testing.T) {
 		"tracks": got.Tracks.Enabled, "people": got.People.Enabled,
 		"ideas": got.Ideas.Enabled, "memory": got.Memory.Enabled,
 		"briefing": got.Briefing.Enabled, "day_plan": got.DayPlan.Enabled,
-		"next_step":   got.Targets.NextStep.Enabled,
-		"automations": got.Automations.Enabled,
+		"next_step": got.Targets.NextStep.Enabled,
 	} {
 		assert.False(t, on, "%s must be forced off", name)
 	}
 
-	// Nothing else moved: restoring exactly the ten gates must reproduce
+	// Nothing else moved: restoring exactly the nine gates must reproduce
 	// the original config field for field — including the integration
 	// switches (calendar/gmail/jira), which are deliberately NOT part of
 	// the mapping (stopping an owner's data sync is worse than a degraded
@@ -383,8 +381,7 @@ func TestApplyLegacyDigestOff_FlipsTenGatesAndNothingElse(t *testing.T) {
 	got.Briefing.Enabled = true
 	got.DayPlan.Enabled = true
 	got.Targets.NextStep.Enabled = true
-	got.Automations.Enabled = true
-	assert.Equal(t, base, got, "ApplyLegacyDigestOff must touch nothing but the ten feature gates")
+	assert.Equal(t, base, got, "ApplyLegacyDigestOff must touch nothing but the nine feature gates")
 }
 
 // TestApplyLegacyDigestOff_MatchesOnDiskMigration is the lockstep pin: the

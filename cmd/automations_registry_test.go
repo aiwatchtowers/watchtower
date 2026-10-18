@@ -136,9 +136,6 @@ func TestAutomationAuthoringDeps_UseTheAutomationRegistry(t *testing.T) {
 	cfg, database := newAutomationRegistryEnv(t)
 	deps := automationAuthoringDeps(cfg, database)
 	assert.Equal(t, cfg.WorkspaceDir(), deps.WorkspaceDir)
-	assert.False(t, deps.Enabled(), "off while automations.enabled is off")
-	cfg.Automations.Enabled = true
-	assert.True(t, deps.Enabled(), "read per call, not captured at build")
 	b := deps.Backends()
 	require.NotNil(t, b.Generator)
 	reg, ok := b.Registry.(*tools.Registry)

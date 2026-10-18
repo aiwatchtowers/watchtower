@@ -90,7 +90,7 @@ func NewSaveAutomation(d Deps) *tools.Tool {
 		AlwaysAsk:   true,
 		Surfaces:    []string{"main", tools.AutomationEditorSurface},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			_, _, err := parseSave(d, raw)
+			_, _, err := parseSave(raw)
 			return err
 		},
 		Normalize: func(ctx context.Context, _ *db.DB, raw json.RawMessage) (json.RawMessage, error) {
@@ -113,11 +113,8 @@ func saveSchema() *jsonschema.Schema {
 // parseSave checks the call's args and parses its recipe in its scope — the
 // workbench's with workbench_id, personal without; every refusal is a
 // *tools.ValidationError (no row).
-func parseSave(d Deps, raw json.RawMessage) (saveArgs, *automations.Recipe, error) {
+func parseSave(raw json.RawMessage) (saveArgs, *automations.Recipe, error) {
 	var a saveArgs
-	if d.Enabled == nil || !d.Enabled() {
-		return a, nil, &tools.ValidationError{Msg: msgFeatureOff}
-	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return a, nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
@@ -208,7 +205,7 @@ func recipeFileNow(path string) (data []byte, hash string, exists bool, err erro
 }
 
 func normalizeSave(ctx context.Context, d Deps, raw json.RawMessage) (json.RawMessage, error) {
-	a, r, err := parseSave(d, raw)
+	a, r, err := parseSave(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -252,9 +249,6 @@ func normalizeSave(ctx context.Context, d Deps, raw json.RawMessage) (json.RawMe
 // file on disk is the one the proposal saw. It never touches
 // automation_tool_grants.
 func executeSave(ctx context.Context, d Deps, raw json.RawMessage) (*SaveResult, error) {
-	if d.Enabled == nil || !d.Enabled() {
-		return nil, &tools.ValidationError{Msg: msgFeatureOff}
-	}
 	var p savePinned
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("save_automation: stored args: %w", err)

@@ -26,7 +26,7 @@ import (
 // (spec §20 D8) and the executor leaves an unconfirmed recipe alone.
 func TestNewDaemonAutomations_IndexesPersonalFolder(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	cfg := &config.Config{ActiveWorkspace: "acme", Automations: config.AutomationsConfig{Enabled: true}}
+	cfg := &config.Config{ActiveWorkspace: "acme"}
 	dir := automations.PersonalDir(cfg.WorkspaceDir())
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	recipe := "---\nname: Morning note\ntrigger:\n  schedule: \"0 9 * * 1-5\"\npermissions:\n  - llm:light\noutputs: [inbox]\n---\n\n```js\noutput.inbox({ title: \"Hi\", body: llm(\"Say hi\") });\n```\n"
@@ -50,40 +50,76 @@ func TestNewDaemonAutomations_IndexesPersonalFolder(t *testing.T) {
 }
 
 // TestRunSyncDaemon_WiresAutomations pins the one call that gives the daemon
-// its scheduler and executor (the TestRunSyncDaemon_CallsTheJiraFeatureKeyMigration
-// precedent: runSyncDaemon cannot run in a test, so its body is parsed with
-// comments discarded — a commented-out call reads as missing).
+// its scheduler and executor, the board #671 upgrade step that must run
+// before it, and the fail-closed gate: every wireAutomations call sits inside
+// an `if <ok>` whose condition is the ident the step's result is assigned to
+// (the TestRunSyncDaemon_CallsTheJiraFeatureKeyMigration precedent:
+// runSyncDaemon cannot run in a test, so its body is parsed with comments
+// discarded — a commented-out call reads as missing).
 func TestRunSyncDaemon_WiresAutomations(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "sync.go", nil, 0)
 	require.NoError(t, err)
-	var called bool
+	isCall := func(n ast.Node, name string) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		id, ok := call.Fun.(*ast.Ident)
+		return ok && id.Name == name
+	}
+	var called, upgradeFirst bool
+	var okName string
+	var calls, gated int
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Recv != nil || fn.Name.Name != "runSyncDaemon" {
 			continue
 		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok {
-				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "wireAutomations" {
-					called = true
+			if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == 1 && len(as.Rhs) == 1 && isCall(as.Rhs[0], "runAutomationsUpgradeStep") {
+				if id, ok := as.Lhs[0].(*ast.Ident); ok {
+					okName = id.Name
 				}
+			}
+			switch {
+			case isCall(n, "runAutomationsUpgradeStep"):
+				upgradeFirst = !called
+			case isCall(n, "wireAutomations"):
+				called = true
+				calls++
 			}
 			return true
 		})
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ifs, ok := n.(*ast.IfStmt)
+			if !ok || okName == "" {
+				return true
+			}
+			if cond, ok := ifs.Cond.(*ast.Ident); !ok || cond.Name != okName {
+				return true
+			}
+			ast.Inspect(ifs.Body, func(m ast.Node) bool {
+				if isCall(m, "wireAutomations") {
+					gated++
+				}
+				return true
+			})
+			return false
+		})
 	}
 	assert.True(t, called, "runSyncDaemon must call wireAutomations")
+	assert.True(t, upgradeFirst, "runSyncDaemon must run runAutomationsUpgradeStep before wireAutomations")
+	require.NotEmpty(t, okName, "runSyncDaemon must assign runAutomationsUpgradeStep's result to a variable")
+	assert.Equal(t, calls, gated, "every wireAutomations call must sit inside `if %s { … }` (fail closed)", okName)
 }
 
-// With automations.enabled off the daemon gets no event bus (FEAT-01) and
-// its sync cycle publishes nothing; on, the bus is wired beside the runners.
-func TestDaemon_AutomationsDisabledNoBus(t *testing.T) {
+// wireAutomations always gives the daemon its event bus beside the runners
+// (board #671: there is no feature switch to leave it off).
+func TestDaemon_AutomationsWiredWithBus(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	database := db.OpenTestDB(t)
-	logger := log.New(io.Discard, "", 0)
-	for _, enabled := range []bool{false, true} {
-		cfg := &config.Config{ActiveWorkspace: "acme", Automations: config.AutomationsConfig{Enabled: enabled}}
-		d := daemon.New(cfg)
-		wireAutomations(d, cfg, database, &automationstest.FakeGenerator{}, logger)
-		assert.Equal(t, enabled, d.HasAutomationEvents(), "automations.enabled=%v", enabled)
-	}
+	cfg := &config.Config{ActiveWorkspace: "acme"}
+	d := daemon.New(cfg)
+	wireAutomations(d, cfg, database, &automationstest.FakeGenerator{}, log.New(io.Discard, "", 0))
+	assert.True(t, d.HasAutomationEvents())
 }

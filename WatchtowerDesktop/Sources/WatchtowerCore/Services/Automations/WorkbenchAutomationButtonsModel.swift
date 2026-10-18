@@ -16,11 +16,6 @@ package enum WorkbenchAutomationButtonsModel {
         case openCard
     }
 
-    /// No buttons while the `automations` feature is off.
-    package static func shown(_ buttons: [AutomationHeaderButton], featureEnabled: Bool) -> [AutomationHeaderButton] {
-        featureEnabled ? buttons : []
-    }
-
     /// The first `maxVisible` in the header, the rest in the "More" menu —
     /// both in the given (slug) order.
     package static func layout(

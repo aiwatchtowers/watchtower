@@ -34,7 +34,7 @@ func newSaveFixture(t *testing.T) *saveFixture {
 	t.Cleanup(func() { _ = d.Close() })
 	f := &saveFixture{d: d, ws: t.TempDir(), reg: tools.New(d)}
 	if err := f.reg.Register(NewSaveAutomation(Deps{
-		DB: d, WorkspaceDir: f.ws, Enabled: func() bool { return true },
+		DB: d, WorkspaceDir: f.ws,
 		Clock: automationstest.NewFakeClock(draftNow),
 	})); err != nil {
 		t.Fatal(err)
@@ -492,24 +492,6 @@ func TestSaveAutomation_DryRunSummaryClipped(t *testing.T) {
 	}
 	if got := len(f.pinned(t, rc.ActionID).DryRunSummary); got != 2*1024 {
 		t.Errorf("dry_run_summary = %d bytes; want 2048", got)
-	}
-}
-
-func TestSaveAutomation_FeatureOffRefused(t *testing.T) {
-	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
-	reg := tools.New(d)
-	if err := reg.Register(NewSaveAutomation(Deps{DB: d, WorkspaceDir: t.TempDir()})); err != nil { // Enabled nil = off
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(map[string]any{"recipe_text": recipeText(nil, "", `return 1`), "slug": "foo", "reason": "r"})
-	_, err = reg.Propose(context.Background(), "save_automation", raw, tools.Binding{Surface: "main"})
-	var ve *tools.ValidationError
-	if !errors.As(err, &ve) || ve.Msg != msgFeatureOff {
-		t.Fatalf("propose = %v; want %q", err, msgFeatureOff)
 	}
 }
 

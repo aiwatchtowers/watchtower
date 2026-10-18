@@ -28,7 +28,6 @@ const draftSlug = "draft"
 
 // Messages the chat model sees verbatim.
 const (
-	msgFeatureOff        = "Automations are turned off in Settings → Features"
 	msgUnconfirmedRecipe = "This recipe is not confirmed yet; only you can dry-run it, from its card in Automations"
 )
 
@@ -138,9 +137,6 @@ func draftSchema() *jsonschema.Schema {
 // error, so an older draft never stays the newest — for the Desktop's Draft
 // panel (draftcache.go).
 func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
-	if d.Enabled == nil || !d.Enabled() {
-		return nil, &tools.ValidationError{Msg: msgFeatureOff}
-	}
 	var a draftArgs
 	if err := json.Unmarshal(call.Args, &a); err != nil {
 		return nil, &tools.ValidationError{Msg: "invalid arguments"}

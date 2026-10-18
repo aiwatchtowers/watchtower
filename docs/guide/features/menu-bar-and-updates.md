@@ -36,7 +36,7 @@ Installing replaces the app in place and restarts it. Before it swaps anything, 
 ### Menu items
 
 - **Sync Now** asks the running daemon to sync immediately. It is greyed out when no daemon runs, and a sync already in progress finishes first.
-- **Run automation** appears while Automations is on. It lists your recipes with their last result; clicking one runs it without opening the window. **Open Automations…** opens the tab.
+- **Run automation** lists your recipes with their last result; clicking one runs it without opening the window. **Open Automations…** opens the tab.
 - **New Voice Idea** opens Quick Capture and starts dictating. The shortcut is **⌃⌥D** from anywhere.
 - **Voices to label (N)** shows while the queue is not empty. **Review voices** and **Train voices** open the Voices window.
 - **Open Watchtower** brings back the window and the Dock icon. **Settings…** opens Settings without the main window.

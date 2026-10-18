@@ -12,7 +12,7 @@ Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows 
 |---|---|
 | **⌘B** | Collapse or expand the menu |
 | **⌘/** | Ask Watchtower: the chat over any tab |
-| **⌃⌘R** | Run Automation… (with Automations turned on) |
+| **⌃⌘R** | Run Automation… |
 | **⌃⌥D** | New Voice Idea, from anywhere in macOS |
 | **⌘,** | Settings |
 | **⌘Q** | Quit Watchtower |

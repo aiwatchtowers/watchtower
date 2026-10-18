@@ -51,11 +51,11 @@ The tab also shows your reaction commands and custom tracks next to your recipes
 
 ## When it's empty or wrong
 
-- **Tab missing.** The feature is off (Settings, Features). That also hides **Run Automation…** and the tray submenu.
 - **"No automations yet".** You have none; click **New automation** (or **+ New** in the header).
 - **Needs your confirmation.** Open **Review…**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
 - **Disabled.** Use **⋯**, then **Enable**.
-- **Nothing ran on schedule.** The recipe must be confirmed and enabled, with the daemon running. Slots missed before you enabled or confirmed it, or before you turned the feature on, are never made up.
+- **Recipes turned off after the update.** Automations used to have an on/off switch in Settings → Features. If yours was off, the update turned off each recipe you had enabled, once, so nothing starts spending on its own; a notice may tell you so. In the Automations tab, use **⋯**, then **Enable** on the ones you want.
+- **Nothing ran on schedule.** The recipe must be confirmed and enabled, with the daemon running. Slots missed before you enabled or confirmed it are never made up.
 - **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work. Calls, outputs and sessions are [capped](../troubleshooting/automation-run-limits.md) too.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
