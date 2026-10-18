@@ -121,7 +121,7 @@ func TestChatClaudeAI_OneShotKeepsStrictMCPConfig(t *testing.T) {
 		if readFolder {
 			cl.SetReadFolder(t.TempDir())
 		}
-		args, _, err := cl.buildArgs("sys", "hi", "stream-json", "")
+		args, _, err := buildArgsT(t, cl, "sys", "hi", "stream-json", "")
 		require.NoError(t, err)
 		assert.Contains(t, args, "--strict-mcp-config", "readFolder=%v", readFolder)
 		assert.NotContains(t, args, "--permission-prompt-tool", "readFolder=%v", readFolder)
