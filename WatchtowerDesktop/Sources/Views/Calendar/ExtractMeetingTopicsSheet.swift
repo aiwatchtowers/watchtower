@@ -17,6 +17,7 @@ struct ExtractMeetingTopicsSheet: View {
     @State private var result: MeetingTopicsExtractResult?
     @State private var selected: Set<Int> = []
     @State private var errorMessage: String?
+    @State private var isSaving = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,6 +32,7 @@ struct ExtractMeetingTopicsSheet: View {
             footer
         }
         .frame(width: 560, height: 560)
+        .interactiveDismissDisabled(isSaving)
     }
 
     // MARK: - Header
@@ -42,6 +44,7 @@ struct ExtractMeetingTopicsSheet: View {
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isSaving)
         }
         .padding()
     }
@@ -204,7 +207,7 @@ struct ExtractMeetingTopicsSheet: View {
                 Button("Add \(selected.count) selected") { applySelected() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(selected.isEmpty)
+                    .disabled(selected.isEmpty || isSaving)
             }
         }
         .padding()
@@ -238,25 +241,29 @@ struct ExtractMeetingTopicsSheet: View {
             errorMessage = "Database not available"
             return
         }
-        let picked = selected.sorted().map { result.topics[$0] }
-        do {
-            try db.dbPool.write { dbConn in
-                var next = existingTopicSortOrderCeiling + 1
-                for topic in picked {
+        let picked = selected.sorted().map { result.topics[$0].text }
+        let eventID = eventID
+        let firstSortOrder = existingTopicSortOrderCeiling + 1
+        // Off the main thread: a busy database never freezes the sheet. Add,
+        // Cancel and Esc wait while the write is pending, so nothing is added
+        // twice and the sheet never closes on a write still in flight.
+        Task {
+            await ViewWrite.run(db.dbPool, pending: $isSaving, { dbConn in
+                var next = firstSortOrder
+                for text in picked {
                     _ = try MeetingNoteQueries.create(
                         dbConn,
                         eventID: eventID,
                         type: .question,
-                        text: topic.text,
+                        text: text,
                         sortOrder: next
                     )
                     next += 1
                 }
-            }
-            onCreated()
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
+            }, onSuccess: {
+                onCreated()
+                dismiss()
+            }, onFailure: { errorMessage = $0.localizedDescription })
         }
     }
 }

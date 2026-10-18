@@ -64,6 +64,8 @@ final class QuickCaptureViewModel {
     var result: DictationCleanResult?
     var savedIdeaID: Int64?
     var error: String?
+    /// True while an idea's write is in flight (see `insertIdea`).
+    private(set) var isSaving = false
 
     private var center: DictationCenter?
 
@@ -145,33 +147,39 @@ final class QuickCaptureViewModel {
     /// Inserts the cleaned result as a manual, owner-authored idea. A nil or
     /// empty result (nothing dictated, or a cleanup that came back empty)
     /// inserts nothing and surfaces an error instead.
-    func save(dbPool: DatabasePool) {
+    func save(dbPool: DatabasePool) async {
         guard let result else {
             error = "Nothing was dictated."
             return
         }
-        insertIdea(text: result.text, title: result.title, dbPool: dbPool)
+        await insertIdea(text: result.text, title: result.title, dbPool: dbPool)
     }
 
     /// Saves whatever was transcribed before a cleanup (or later) failure —
     /// the "never lose the speech" fallback for the `.failed` state, using
     /// `center.lastRaw` since no `DictationCleanResult` was ever produced.
-    func saveRaw(dbPool: DatabasePool) {
+    func saveRaw(dbPool: DatabasePool) async {
         guard let raw = center?.lastRaw else {
             error = "Nothing was dictated."
             return
         }
-        insertIdea(text: raw, title: nil, dbPool: dbPool)
+        await insertIdea(text: raw, title: nil, dbPool: dbPool)
     }
 
-    private func insertIdea(text: String, title: String?, dbPool: DatabasePool) {
+    /// The write runs off the main thread (a database busy with the daemon
+    /// never freezes the window); a second Save while one is pending is
+    /// ignored, so one dictation saves one idea.
+    private func insertIdea(text: String, title: String?, dbPool: DatabasePool) async {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = "Nothing was dictated."
             return
         }
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
         let finalTitle = title ?? String(text.prefix(80))
         do {
-            savedIdeaID = try dbPool.write { db in
+            savedIdeaID = try await dbPool.write { db in
                 try IdeaQueries.createManual(db, kind: "idea", title: finalTitle, essence: text)
             }
         } catch {
@@ -420,7 +428,7 @@ struct QuickCaptureView: View {
             viewModel.error = "No database available."
             return
         }
-        viewModel.save(dbPool: dbPool)
+        Task { await viewModel.save(dbPool: dbPool) }
     }
 
     private func saveRaw() {
@@ -428,6 +436,6 @@ struct QuickCaptureView: View {
             viewModel.error = "No database available."
             return
         }
-        viewModel.saveRaw(dbPool: dbPool)
+        Task { await viewModel.saveRaw(dbPool: dbPool) }
     }
 }

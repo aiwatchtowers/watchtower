@@ -22,7 +22,9 @@ struct TracksListView: View {
 
                 if let id = selectedItemID, let item = vm.itemByID(id) {
                     Divider()
-                    TrackDetailView(track: item, viewModel: vm) { selectedItemID = nil }
+                    // A delete closes the pane after its write lands: only
+                    // while this watch is still the one selected.
+                    TrackDetailView(track: item, viewModel: vm) { if selectedItemID == id { selectedItemID = nil } }
                         .id(id)
                         .frame(minWidth: 400, idealWidth: 500)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
