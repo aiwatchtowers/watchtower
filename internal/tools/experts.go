@@ -20,6 +20,7 @@ var expertWeights = map[string]float64{
 	"messages": 1.0,
 	"thread":   1.5,
 	"jira":     2.0,
+	"linear":   2.0, // a Linear issue role or comment, weighed like Jira's
 	"code":     2.5,
 }
 
@@ -31,7 +32,7 @@ const expertMessageScanLimit = 200
 
 type findExpertsArgs struct {
 	Topic    string   `json:"topic,omitempty" jsonschema:"free-text subject, e.g. 'payment retries'"`
-	IssueKey string   `json:"issue_key,omitempty" jsonschema:"Jira issue key to find the people around"`
+	IssueKey string   `json:"issue_key,omitempty" jsonschema:"Jira or Linear issue key to find the people around"`
 	Emails   []string `json:"emails,omitempty" jsonschema:"email addresses (e.g. git commit authors) to resolve to people"`
 	Limit    int      `json:"limit,omitempty" jsonschema:"max candidates, 0 = default (10)"`
 }
@@ -75,14 +76,16 @@ type expertsResult struct {
 	Notes           []string           `json:"notes,omitempty"`
 }
 
-// NewFindExperts finds who to go to about a topic, a Jira issue, or a set of
-// email addresses, returning ranked candidates with the evidence behind each.
+// NewFindExperts finds who to go to about a topic, a Jira or Linear issue, or a
+// set of email addresses, returning ranked candidates with the evidence behind
+// each. An issue key is looked up in Jira first (unchanged), then in Linear by
+// its current or a previous key.
 func NewFindExperts() *Tool {
 	return &Tool{
 		Name: "find_experts",
-		Description: "Find who to go to about a topic, a Jira issue, or a set of email addresses " +
+		Description: "Find who to go to about a topic, a Jira or Linear issue, or a set of email addresses " +
 			"(e.g. git commit authors). Returns ranked candidates with the evidence behind each " +
-			"one — messages, thread participation, Jira roles — plus their decision role and " +
+			"one — messages, thread participation, Jira and Linear roles — plus their decision role and " +
 			"communication guide where known. Evidence, not verdicts: judge it yourself.",
 		InputSchema: mustSchema[findExpertsArgs]("find_experts"),
 		Access:      AccessRead,
@@ -109,8 +112,7 @@ func NewFindExperts() *Tool {
 				result.Notes = collectMessageEvidence(d, args.Topic, acc, result.Notes)
 			}
 			if args.IssueKey != "" {
-				result.Notes = collectIssueEvidence(d, args.IssueKey, acc, result.Notes)
-				result.Notes = collectLinkedThreadEvidence(d, args.IssueKey, acc, result.Notes)
+				result.Notes = collectIssueKeyEvidence(d, args.IssueKey, acc, result.Notes)
 			}
 			if len(args.Emails) > 0 {
 				result.UnmatchedEmails, result.Notes = collectCodeEvidence(d, args.Emails, acc, result.Notes)
@@ -361,6 +363,12 @@ func collectLinkedThreadEvidence(d *db.DB, key string, acc *expertAccumulator, n
 	if err != nil {
 		return append(notes, "linked threads unavailable: "+err.Error())
 	}
+	return threadEvidenceFromLinks(d, key, links, acc, notes)
+}
+
+// threadEvidenceFromLinks scores every participant of the Slack threads the
+// links name — the shared body of the Jira and Linear linked-thread evidence.
+func threadEvidenceFromLinks(d *db.DB, key string, links []db.IssueSlackLink, acc *expertAccumulator, notes []string) []string {
 	seen := map[string]bool{}
 	for _, l := range links {
 		if l.ChannelID == "" || l.MessageTS == "" {
