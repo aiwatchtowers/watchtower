@@ -70,9 +70,10 @@ Briefing, day plan, inbox and targets read Linear through `tracker_*` and the Go
 - The mention node name `suggestion_userMentions` (`attrs.id`) is unconfirmed against live data.
 - Slack mapping is by email only.
 - Briefing, day plan, inbox and targets read Linear (above); the other consumers of spec §6 and the Desktop tabs come in the other Plan 2 lanes and Plan 3.
-- Cycle progress lists every active cycle in `tracker_iterations`, including a team deselected after its cycles synced (its cycles stop refreshing and close by date).
-- The inbox's own-comment read uses `linear_comments.issue_key` as stored; after a team move it is current once the reconcile refetched the issue's comments (the same pass).
-- An inbox item keeps the key it was minted under; after a team move its auto-resolve looks for own comments under that old key.
+- Cycle progress lists the active cycles of selected teams on enabled, non-removed accounts only.
+- The inbox's own-comment read uses `linear_comments.issue_key` as stored, the key at the comment's last sync. A comment is refetched only when it changes (the move reconcile refetches only comments updated since its bound, and a move between selected teams refetches none), so after a team move older own comments stay under the old key: they neither suppress an own-comment bump nor resolve an item under the new key.
+- An inbox item keeps the key it was minted under. After a team move, a pending `linear_assigned` item stays under the old key, and the next update under the new key can mint a second pending item; auto-resolve of the old item looks for own comments under the old key.
+- Keys carry no account, as for Jira across sites: the same key on two Linear workspaces shares the inbox dedup (one pending item per key), the own-comment cache and auto-resolve. The targets resolver tells equal keys apart by the URL's workspace; when several workspaces carry the key and none matches, it resolves nothing, and only a key that no issue carries any more falls back to `previous_keys`.
 - The write tools cannot create labels, move an issue between teams, delete issues or touch cycles, projects, estimates other than whole numbers, or relations; they act through the mirror, so a team that is not selected for sync has no states to choose from.
 - An API key is per person and has no scopes: the workspace permissions of its owner apply.
 - The OAuth app must register the five redirect URIs above; release builds need `LINEAR_ID`.

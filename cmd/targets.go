@@ -637,7 +637,7 @@ func runTargetsLink(cmd *cobra.Command, args []string) error {
 	}
 	if targetsFlagLinkExternal != "" {
 		if !targets.IsValidExternalRef(targetsFlagLinkExternal) {
-			return fmt.Errorf("invalid --external ref %q: must start with 'jira:' or 'slack:'", targetsFlagLinkExternal)
+			return fmt.Errorf("invalid --external ref %q: must start with 'jira:', 'linear:' or 'slack:'", targetsFlagLinkExternal)
 		}
 		link.ExternalRef = targetsFlagLinkExternal
 	}

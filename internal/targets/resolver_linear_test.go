@@ -41,6 +41,10 @@ func TestLinearResolver_ResolvesFromTrackerIssues(t *testing.T) {
 	assert.Equal(t, "- [ENG-12 status=In Progress priority=High] Fix login", got[0].Body)
 	assert.Equal(t, "local", got[0].Source)
 
+	got = r.Resolve(context.Background(), Extract("https://linear.app/third/issue/ENG-12"))
+	require.Len(t, got, 1)
+	assert.Equal(t, "[linear issue not in local DB]", got[0].Body, "two workspaces carry the key, neither is the URL's: no guess")
+
 	got = r.Resolve(context.Background(), Extract("https://linear.app/acme/issue/ENG-99"))
 	require.Len(t, got, 1)
 	assert.Equal(t, "[linear issue not in local DB]", got[0].Body)

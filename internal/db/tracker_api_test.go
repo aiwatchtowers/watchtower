@@ -151,13 +151,23 @@ func TestActiveTrackerIterationStats_LinearCycle(t *testing.T) {
 	d := openTestDB(t)
 	la, err := d.CreateLinearAccount("")
 	require.NoError(t, err)
-	require.NoError(t, d.UpsertLinearTeams(la, []LinearTeam{{ID: "t-1", Key: "ENG", Name: "Eng"}}, nil))
+	require.NoError(t, d.UpsertLinearTeams(la, []LinearTeam{{ID: "t-1", Key: "ENG", Name: "Eng"}, {ID: "t-2", Key: "OPS", Name: "Ops"}},
+		map[string]bool{"t-1": true}))
+	off, err := d.CreateLinearAccount("off")
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertLinearTeams(off, []LinearTeam{{ID: "t-9", Key: "OFF", Name: "Off"}}, map[string]bool{"t-9": true}))
+	require.NoError(t, d.SetLinearAccountEnabled(off, false))
 	now := time.Now().UTC()
+	active := func(acct int64, id, team string, number int) LinearCycle {
+		return LinearCycle{AccountID: acct, ID: id, TeamID: team, Number: number, StartsAt: now.AddDate(0, 0, -3).Format(time.RFC3339),
+			EndsAt: now.Add(36 * time.Hour).Format(time.RFC3339)}
+	}
 	require.NoError(t, d.UpsertLinearCycles([]LinearCycle{
-		{AccountID: la, ID: "c-1", TeamID: "t-1", Number: 4, StartsAt: now.AddDate(0, 0, -3).Format(time.RFC3339),
-			EndsAt: now.Add(36 * time.Hour).Format(time.RFC3339)},
+		active(la, "c-1", "t-1", 4),
 		{AccountID: la, ID: "c-0", TeamID: "t-1", Number: 3, StartsAt: now.AddDate(0, 0, -20).Format(time.RFC3339),
 			EndsAt: now.AddDate(0, 0, -6).Format(time.RFC3339)},
+		active(la, "c-ops", "t-2", 8),  // a deselected team
+		active(off, "c-off", "t-9", 2), // a disabled account
 	}))
 	for i, cat := range []string{"done", "in_progress", "todo", "todo"} {
 		require.NoError(t, d.UpsertLinearIssue(LinearIssue{AccountID: la, ID: string(rune('a' + i)), Key: "ENG-" + string(rune('1'+i)),
@@ -165,7 +175,7 @@ func TestActiveTrackerIterationStats_LinearCycle(t *testing.T) {
 	}
 	got, err := d.ActiveTrackerIterationStats(TrackerLinear)
 	require.NoError(t, err)
-	require.Len(t, got, 1, "the past cycle is closed")
+	require.Len(t, got, 1, "the past cycle is closed; a deselected team's and a disabled account's are left out")
 	assert.Equal(t, "ENG", got[0].ProjectKey)
 	assert.Equal(t, SprintStats{SprintName: "Cycle 4", Total: 4, Done: 1, InProgress: 1, Todo: 2, DaysLeft: 2}, got[0].SprintStats)
 }

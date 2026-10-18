@@ -291,7 +291,8 @@ type TrackerIterationStats struct {
 }
 
 // ActiveTrackerIterationStats returns every active iteration of tracker from
-// tracker_iterations with its issues counted by status category, ordered by
+// tracker_iterations — on enabled, non-removed accounts; for Linear, of
+// selected teams — with its issues counted by status category, ordered by
 // project key and start.
 func (db *DB) ActiveTrackerIterationStats(tracker string) ([]TrackerIterationStats, error) {
 	// Fully read before the per-iteration counts (MaxOpenConns(1)).
@@ -316,8 +317,15 @@ type activeIteration struct {
 }
 
 func (db *DB) activeIterations(tracker string) ([]activeIteration, error) {
-	rows, err := db.Query(`SELECT account_id, id, name, ends_at, project_key FROM tracker_iterations
-		WHERE tracker = ? AND state = 'active' ORDER BY project_key, starts_at`, tracker)
+	// Only enabled, non-removed accounts (tracker_accounts), and for Linear
+	// only cycles of a team still selected for sync.
+	rows, err := db.Query(`SELECT it.account_id, it.id, it.name, it.ends_at, it.project_key
+		FROM tracker_iterations it
+		JOIN tracker_accounts a ON a.tracker = it.tracker AND a.id = it.account_id
+		WHERE it.tracker = ? AND it.state = 'active'
+		  AND (it.tracker != 'linear' OR EXISTS (SELECT 1 FROM linear_teams t
+		       WHERE t.account_id = it.account_id AND t.key = it.project_key AND t.is_selected = 1))
+		ORDER BY it.project_key, it.starts_at`, tracker)
 	if err != nil {
 		return nil, fmt.Errorf("listing active %s iterations: %w", tracker, err)
 	}
@@ -450,8 +458,12 @@ func linearMentionQuery(nIDs int) string {
 // given Linear issue keys. It reads linear_comments directly through
 // idx_linear_comments_issue_author: tracker_comments derives the Linear
 // issue_key from the issue row, which no index serves (spec §10). The stored
-// key is refreshed whenever the issue's comments are refetched, which the
-// team-move reconcile does every pass.
+// key is the issue's key when the comment was last synced: a comment is
+// refetched only when it changes (or, for an issue moved out of the selected
+// teams, when it changed since the reconcile's bound), so after a team move
+// older comments keep the old key and are not found under the new one. Keys
+// carry no account: the same key on two workspaces merges their comments
+// (the Jira multi-site limit).
 func (db *DB) LinearOwnComments(keys, authorIDs []string) ([]TrackerComment, error) {
 	if len(keys) == 0 || len(authorIDs) == 0 {
 		return nil, nil

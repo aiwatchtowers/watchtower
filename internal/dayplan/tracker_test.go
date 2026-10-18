@@ -40,6 +40,40 @@ func TestRun_LinearOwnerGathersOwnAssignedIssue(t *testing.T) {
 	assert.Empty(t, p.gatherJira(owner))
 }
 
+// Spec §5: one tracker's read error leaves that tracker out of the prompt,
+// keeps the other's issues, and the run still succeeds. A value the scan
+// cannot read (points stored as text) breaks exactly one tracker's rows.
+func TestRun_OneTrackerReadErrorKeepsTheOther(t *testing.T) {
+	owner := db.Owner{ID: "jira:acc-me", JiraAccountID: "acc-me", LinearUserIDs: []string{"lin-me"}}
+	cases := map[string]struct {
+		breakIt, want, gone string
+	}{
+		"linear broken": {`UPDATE linear_issues SET estimate = 'x' WHERE key = 'ENG-7'`, "MINE-7", "ENG-7"},
+		"jira broken":   {`UPDATE jira_issues SET story_points = 'x' WHERE key = 'MINE-7'`, "ENG-7", "MINE-7"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := gatherTestDB(t)
+			seedDayPlanLinear(t, d)
+			_, err := d.CreateJiraAccount(db.JiraAccount{CloudID: "c1", Enabled: true})
+			require.NoError(t, err)
+			require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{AccountID: 1, Key: "MINE-7", ProjectKey: "P", Summary: "Jira MINE-7",
+				Status: "In Progress", StatusCategory: "in_progress", AssigneeAccountID: "acc-me", Labels: `[]`, Components: `[]`,
+				CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-01T12:00:00Z", SyncedAt: "2026-04-01T12:00:00Z"}))
+			_, err = d.Exec(tc.breakIt)
+			require.NoError(t, err)
+
+			gen := &promptCapturingGenerator{response: validResponse()}
+			p := newTestPipeline(d, gen)
+			p.cfg.Linear.Enabled = true
+			_, err = p.Run(context.Background(), RunOptions{UserID: owner.ID, Owner: owner, Date: "2026-04-23"})
+			require.NoError(t, err)
+			assert.Contains(t, gen.prompt, tc.want)
+			assert.NotContains(t, gen.prompt, tc.gone)
+		})
+	}
+}
+
 // The model names an issue item "jira" (the template predates Linear); the
 // item is stored under the tracker its key belongs to. A key both trackers
 // carry keeps the model's choice; an unknown key is dropped.

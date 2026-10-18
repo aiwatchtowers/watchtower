@@ -145,7 +145,7 @@ func TestInbox09_LinearReadErrorFreezesWatermark(t *testing.T) {
 		wantErr string
 	}{
 		"mention read":  {`DROP VIEW tracker_comments`, "linear comment mentions"},
-		"own comments":  {`DROP INDEX idx_linear_comments_issue_author; ALTER TABLE linear_comments RENAME COLUMN author_id TO author_gone`, "linear"},
+		"own comments":  {`DROP INDEX idx_linear_comments_issue_author; ALTER TABLE linear_comments RENAME COLUMN author_id TO author_gone`, "own linear comment query"},
 		"identity read": {`DROP TABLE linear_user_map`, "linear ids"},
 		"assigned write": {`CREATE TRIGGER fail_linear BEFORE INSERT ON inbox_items WHEN NEW.trigger_type = 'linear_assigned'
 			BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`, "linear_assigned"},

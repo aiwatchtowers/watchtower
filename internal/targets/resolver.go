@@ -376,6 +376,12 @@ func (l *LinearResolver) find(m URLMatch) (*db.TrackerIssue, error) {
 	if len(found) == 1 {
 		return &found[0], nil
 	}
+	if len(found) > 1 {
+		// Several workspaces carry the key and none matches the URL's: do not guess.
+		return nil, nil
+	}
+	// No issue carries the key now: it may have moved team (LINEAR-04), so
+	// resolve it through previous_keys.
 	return l.db.UnambiguousTrackerIssue(db.TrackerLinear, m.Key)
 }
 

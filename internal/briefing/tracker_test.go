@@ -76,7 +76,7 @@ func seedLinearBriefing(t *testing.T, d *db.DB) {
 	t.Helper()
 	la, err := d.CreateLinearAccount("")
 	require.NoError(t, err)
-	require.NoError(t, d.UpsertLinearTeams(la, []db.LinearTeam{{ID: "t-1", Key: "ENG", Name: "Eng"}}, nil))
+	require.NoError(t, d.UpsertLinearTeams(la, []db.LinearTeam{{ID: "t-1", Key: "ENG", Name: "Eng"}}, map[string]bool{"t-1": true}))
 	now := time.Now().UTC()
 	require.NoError(t, d.UpsertLinearCycles([]db.LinearCycle{{AccountID: la, ID: "c-1", TeamID: "t-1", Number: 5,
 		StartsAt: now.AddDate(0, 0, -2).Format(time.RFC3339), EndsAt: now.Add(60 * time.Hour).Format(time.RFC3339)}}))
@@ -134,4 +134,36 @@ func TestGatherJiraContext_BothTrackers(t *testing.T) {
 	pipe := New(database, cfg, &mockGenerator{}, discardLogger())
 	got := pipe.gatherJiraContext(db.Owner{ID: "jira:acc-me", JiraAccountID: "acc-me", LinearUserIDs: []string{"lin-me"}})
 	require.True(t, strings.HasPrefix(got, jiraBriefingWant+"\n\n=== MY LINEAR ISSUES ==="), got)
+}
+
+// Spec §5: one tracker's read error fails that tracker's sections, never the
+// other tracker's. A value the scan cannot read (points stored as text)
+// breaks exactly one tracker's rows.
+func TestGatherJiraContext_OneTrackerReadErrorKeepsTheOther(t *testing.T) {
+	owner := db.Owner{ID: "jira:acc-me", JiraAccountID: "acc-me", LinearUserIDs: []string{"lin-me"}}
+	setup := func(t *testing.T) (*Pipeline, *db.DB) {
+		database := testDB(t)
+		seedJiraBriefing(t, database)
+		seedLinearBriefing(t, database)
+		cfg := jiraTestConfig()
+		cfg.Linear.Enabled = true
+		return New(database, cfg, &mockGenerator{}, discardLogger()), database
+	}
+
+	t.Run("linear broken", func(t *testing.T) {
+		pipe, database := setup(t)
+		_, err := database.Exec(`UPDATE linear_issues SET estimate = 'not a number' WHERE key = 'ENG-1'`)
+		require.NoError(t, err)
+		got := pipe.gatherJiraContext(owner)
+		assert.True(t, strings.HasPrefix(got, jiraBriefingWant), got)
+		assert.NotContains(t, got, "MY LINEAR ISSUES")
+	})
+	t.Run("jira broken", func(t *testing.T) {
+		pipe, database := setup(t)
+		_, err := database.Exec(`UPDATE jira_issues SET story_points = 'not a number' WHERE key = 'ABC-2'`)
+		require.NoError(t, err)
+		got := pipe.gatherJiraContext(owner)
+		assert.NotContains(t, got, "MY JIRA ISSUES")
+		assert.Contains(t, got, "=== MY LINEAR ISSUES ===\n- [ENG-1")
+	})
 }

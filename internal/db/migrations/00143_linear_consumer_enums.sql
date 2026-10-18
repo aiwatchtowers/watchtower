@@ -11,8 +11,12 @@
 -- and trigger with it, so they are recreated verbatim; the
 -- workbench_target_archive view reads targets, so it is dropped first (a
 -- RENAME refuses a schema whose view names a missing table) and recreated
--- last. The Down maps a linear target to 'manual' and deletes the Linear
--- day-plan and inbox rows the old CHECKs cannot hold.
+-- last. Each rebuild carries the AUTOINCREMENT high-water mark in
+-- sqlite_sequence (the 00100/00135 pattern), so a deleted top id is never
+-- reused. The Down maps a linear target to 'manual' and deletes the Linear
+-- day-plan and inbox rows the old CHECKs cannot hold, with the inbox rows'
+-- situation_signals children deleted explicitly (foreign keys are off, so no
+-- cascade runs).
 
 PRAGMA foreign_keys = OFF;
 
@@ -60,6 +64,10 @@ CREATE TABLE targets_new (
 );
 
 INSERT INTO targets_new SELECT * FROM targets;
+
+DELETE FROM sqlite_sequence WHERE name = 'targets_new';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'targets_new', seq FROM sqlite_sequence WHERE name = 'targets';
 
 DROP TABLE targets;
 
@@ -327,6 +335,10 @@ CREATE TABLE day_plan_items_new (
 
 INSERT INTO day_plan_items_new SELECT * FROM day_plan_items;
 
+DELETE FROM sqlite_sequence WHERE name = 'day_plan_items_new';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'day_plan_items_new', seq FROM sqlite_sequence WHERE name = 'day_plan_items';
+
 DROP TABLE day_plan_items;
 
 ALTER TABLE day_plan_items_new RENAME TO day_plan_items;
@@ -378,6 +390,10 @@ CREATE TABLE inbox_items_new (
 );
 
 INSERT INTO inbox_items_new SELECT * FROM inbox_items;
+
+DELETE FROM sqlite_sequence WHERE name = 'inbox_items_new';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'inbox_items_new', seq FROM sqlite_sequence WHERE name = 'inbox_items';
 
 DROP TABLE inbox_items;
 
@@ -478,6 +494,10 @@ CREATE TABLE targets_old (
 );
 
 INSERT INTO targets_old SELECT * FROM targets;
+
+DELETE FROM sqlite_sequence WHERE name = 'targets_old';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'targets_old', seq FROM sqlite_sequence WHERE name = 'targets';
 
 DROP TABLE targets;
 
@@ -747,6 +767,10 @@ CREATE TABLE day_plan_items_old (
 
 INSERT INTO day_plan_items_old SELECT * FROM day_plan_items;
 
+DELETE FROM sqlite_sequence WHERE name = 'day_plan_items_old';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'day_plan_items_old', seq FROM sqlite_sequence WHERE name = 'day_plan_items';
+
 DROP TABLE day_plan_items;
 
 ALTER TABLE day_plan_items_old RENAME TO day_plan_items;
@@ -755,6 +779,8 @@ CREATE INDEX IF NOT EXISTS idx_day_plan_items_plan ON day_plan_items(day_plan_id
 
 CREATE INDEX IF NOT EXISTS idx_day_plan_items_source ON day_plan_items(source_type, source_id);
 
+DELETE FROM situation_signals WHERE inbox_item_id IN
+    (SELECT id FROM inbox_items WHERE trigger_type IN ('linear_assigned','linear_comment_mention'));
 DELETE FROM inbox_items WHERE trigger_type IN ('linear_assigned','linear_comment_mention');
 
 CREATE TABLE inbox_items_old (
@@ -799,6 +825,10 @@ CREATE TABLE inbox_items_old (
 );
 
 INSERT INTO inbox_items_old SELECT * FROM inbox_items;
+
+DELETE FROM sqlite_sequence WHERE name = 'inbox_items_old';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'inbox_items_old', seq FROM sqlite_sequence WHERE name = 'inbox_items';
 
 DROP TABLE inbox_items;
 
