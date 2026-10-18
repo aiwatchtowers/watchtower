@@ -29,6 +29,9 @@ struct SessionChatRoute: Hashable {
 @MainActor
 final class SessionChatRequester {
     static let interval: TimeInterval = 60
+    /// How long a still-queued request counts as covering the repeat: one
+    /// minute short of the Mac's five-minute watch.
+    nonisolated static let queuedRequestFreshness: TimeInterval = 240
 
     private let send: (SessionChatRoute) async throws -> Void
     private let ticks: () -> AsyncStream<Void>
@@ -60,8 +63,12 @@ final class SessionChatRequester {
             let params = try SessionChatRequestParams(
                 sessionID: route.sessionID, subagentID: route.agentID, toolUseID: route.toolUseID
             ).wireParams()
+            // A queued request older than this would reach the Mac too late
+            // to open a watch (it opens none past five minutes), so a fresh
+            // one goes out beside it.
             let queued = try store.pendingActions(forEntity: entity).contains {
                 $0.state == .pending && $0.action.kind == SessionChatRequestParams.actionKind && $0.action.params == params
+                    && Date().timeIntervalSince($0.createdAt) < Self.queuedRequestFreshness
             }
             guard !queued else { return }
             try await outbox.enqueue(kind: SessionChatRequestParams.actionKind, entityRecordName: entity, params: params)

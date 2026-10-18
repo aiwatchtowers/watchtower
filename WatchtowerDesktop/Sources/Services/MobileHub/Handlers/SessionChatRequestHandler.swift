@@ -8,9 +8,9 @@ import WatchtowerSync
 /// together or not at all; `session_id`, when sent, must be the entity).
 /// Opens or extends the five-minute watch of the session's chat (or one
 /// subagent's) in `SessionChatRunner`, counted from when the phone asked: a
-/// request older than the watch plus the relay's clock skew is stale and
-/// applies without a watch (the phone repeats it every minute while its Chat
-/// screen is open). Idempotent: a re-run only extends the watch. The result is `{}`; the chat reaches the phone through the
+/// request older than the watch is stale and applies without a watch (the
+/// phone repeats it every minute while its Chat screen is open). Idempotent:
+/// a re-run only extends the watch. The result is `{}`; the chat reaches the phone through the
 /// `session_chat` slice. Needs no grant: reading is what the phone's link
 /// already allows, like the session report.
 ///
