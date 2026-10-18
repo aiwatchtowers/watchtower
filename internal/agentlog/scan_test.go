@@ -696,3 +696,23 @@ func TestScan_StoresContextPartsAndSkillListing(t *testing.T) {
 	assert.Equal(t, int64(2), skills)
 	assert.Equal(t, int64(5), perSkill)
 }
+
+func TestScan_StoresSubagentMeta(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "s1/subagents/agent-a1.jsonl", call(t, "s1", f.folder, "u2", "m2", "r2", 4))
+	f.write(f.folder, "s1/subagents/agent-a1.meta.json", `{"agentType":"Plan","description":"SENTINEL-DESC","spawnDepth":2,"finished":false}`)
+	f.scan()
+	var typ string
+	var depth int
+	var finished sql.NullBool
+	require.NoError(t, f.al.QueryRow(`SELECT agent_type, depth, finished FROM agent_log_subagents WHERE session_uuid = 's1' AND agent_id = 'a1'`).
+		Scan(&typ, &depth, &finished))
+	assert.Equal(t, "Plan", typ)
+	assert.Equal(t, 2, depth)
+	assert.True(t, finished.Valid)
+	assert.False(t, finished.Bool)
+	var n int
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents`).Scan(&n))
+	assert.Equal(t, 1, n)
+}

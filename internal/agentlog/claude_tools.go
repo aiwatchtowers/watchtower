@@ -155,8 +155,6 @@ const (
 	ClassOther          = "other"
 )
 
-// errorClass classifies a failed tool result's text; the specific classes are
-// checked before the generic exit_code / not_found / timeout ones.
 // resultSize is the byte length of a tool_result content: a string, or the
 // sum of its text blocks; nil (not measured) when it has no text at all
 // (an image or a tool reference).
@@ -186,6 +184,8 @@ func resultSize(raw json.RawMessage) *int64 {
 	return &n
 }
 
+// errorClass classifies a failed tool result's text; the specific classes are
+// checked before the generic exit_code / not_found / timeout ones.
 func errorClass(text string) string {
 	t := strings.ToLower(text)
 	has := func(subs ...string) bool {

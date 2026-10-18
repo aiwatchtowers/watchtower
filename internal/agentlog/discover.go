@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,9 @@ import (
 type TranscriptFile struct {
 	Path, SessionUUID, AgentID string // AgentID "" for main files
 	Subagent                   bool
+	AgentType                  string // subagent meta; "" when unknown
+	Depth                      int    // subagent meta spawnDepth; 0 when unknown
+	Finished                   *bool  // subagent meta; nil when absent
 	Size                       int64
 	MTime                      string
 }
@@ -111,11 +115,38 @@ func listSubagentFiles(dir, sessionDir string) []TranscriptFile {
 		if f, ok := statTranscript(filepath.Join(subDir, sn)); ok {
 			f.SessionUUID, f.Subagent = sessionDir, true
 			f.AgentID = strings.TrimSuffix(strings.TrimPrefix(sn, "agent-"), ".jsonl")
+			f.AgentType, f.Depth, f.Finished = readSubagentMeta(filepath.Join(subDir, "agent-"+f.AgentID+".meta.json"))
 			out = append(out, f)
 		}
 	}
 	return out
 }
+
+// readSubagentMeta reads agentType, spawnDepth and finished from the meta file
+// beside a subagent transcript. Only those three keys are decoded: the
+// description and the rest are never read into memory as fields (AGENTLOG-01).
+// A missing, special or invalid file gives zero values.
+func readSubagentMeta(path string) (agentType string, depth int, finished *bool) {
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxMetaBytes {
+		return "", 0, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, nil
+	}
+	var m struct {
+		AgentType  string `json:"agentType"`
+		SpawnDepth int    `json:"spawnDepth"`
+		Finished   *bool  `json:"finished"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return "", 0, nil
+	}
+	return m.AgentType, m.SpawnDepth, m.Finished
+}
+
+// maxMetaBytes bounds a subagent meta file; real ones are a few hundred bytes.
+const maxMetaBytes = 1 << 20
 
 func statTranscript(path string) (TranscriptFile, bool) {
 	fi, err := os.Lstat(path)

@@ -322,12 +322,26 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	if err := resolveTerminalSessions(st.main, sessions); err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
-	applied, err := st.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
-		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions})
+	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
+		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions}
+	if tf.Subagent && tf.AgentID != "" && hasSession(sessions, tf.SessionUUID) { // the row references its session
+		b.Subagents = []agentlogdb.AgentSubagent{{SessionUUID: tf.SessionUUID, AgentID: tf.AgentID,
+			AgentType: tf.AgentType, Depth: tf.Depth, Finished: tf.Finished}}
+	}
+	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
 	return f.ReadOffset, applied, nil
+}
+
+func hasSession(sessions []agentlogdb.AgentLogSession, uuid string) bool {
+	for _, s := range sessions {
+		if s.SessionUUID == uuid {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveTerminalSessions sets each session's TerminalSessionID to the Claude
