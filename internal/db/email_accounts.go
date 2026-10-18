@@ -204,7 +204,8 @@ func ImapChannelPrefix(accountID, uidValidity int64) string {
 // DeleteImapMessages removes the given UIDs of one (account, UIDVALIDITY) in a
 // single transaction, using IN lists of at most 500. Returns the rows deleted.
 // The inbox items made from them stay, but their copies of the mail (snippet,
-// context, raw_text) are blanked, as TombstoneSlackMessages does for Slack.
+// context, raw_text) are blanked, as TombstoneSlackMessages does for Slack —
+// for every given UID, also one whose row is already gone.
 func (db *DB) DeleteImapMessages(accountID, uidValidity int64, uids []int64) (int, error) {
 	if len(uids) == 0 {
 		return 0, nil

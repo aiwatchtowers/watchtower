@@ -262,7 +262,8 @@ func (db *DB) GmailStoredIDs(accountID int64) (ids []string, oldestUnix float64,
 // DeleteGmailMessages removes the given messages of accountID in one
 // transaction and returns how many rows went. The inbox items made from them
 // stay, but their copies of the mail (snippet, context, raw_text) are
-// blanked, as TombstoneSlackMessages does for Slack. The gmail_messages
+// blanked, as TombstoneSlackMessages does for Slack — for every given id, also
+// one whose row is already gone. The gmail_messages
 // delete trigger marks the affected KB threads.
 func (db *DB) DeleteGmailMessages(accountID int64, ids []string) (int, error) {
 	if len(ids) == 0 {

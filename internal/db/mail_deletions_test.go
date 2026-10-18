@@ -38,7 +38,7 @@ func TestDeleteGmailMessages_BlanksInboxCopies(t *testing.T) {
 	}
 	gone := mailInboxItem(t, d, GmailChannelID(a, "t1"), "m1")
 	kept := mailInboxItem(t, d, GmailChannelID(a, "t1"), "m2")
-	otherAcct := mailInboxItem(t, d, GmailChannelID(a*10+1, "t1"), "m1")
+	otherAcct := mailInboxItem(t, d, GmailChannelID(a*10, "t1"), "m1") // same leading digits, another account
 
 	if n, err := d.DeleteGmailMessages(a, []string{"m1"}); err != nil || n != 1 {
 		t.Fatalf("deleted %d, err %v; want 1", n, err)
