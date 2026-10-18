@@ -54,8 +54,16 @@ func DefaultClaudeDir() string {
 // One file that fails to read or store is counted in FailedFiles and the scan
 // goes on; Scan returns an error only for setup and bookkeeping failures.
 // It only reads main (watchtower.db: workbenches, the worktree ledger,
-// terminal sessions) and writes al (agentlog.db).
+// terminal sessions) and writes al (agentlog.db). Until agentlogdb.MoveFromMain
+// completed it refuses with agentlogdb.ErrNotMoved and writes nothing.
 func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Options) (*Result, error) {
+	moved, err := al.Moved()
+	if err != nil {
+		return nil, err
+	}
+	if !moved {
+		return nil, agentlogdb.ErrNotMoved
+	}
 	if o.ClaudeDir == "" {
 		o.ClaudeDir = DefaultClaudeDir()
 	}

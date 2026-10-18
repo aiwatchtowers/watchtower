@@ -35,6 +35,7 @@ func newFixture(t *testing.T) *fixture {
 	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { al.Close() })
+	require.NoError(t, agentlogdb.MoveFromMain(context.Background(), d, al, filepath.Join(dir, "agentlog.db.move.lock")))
 	folder := t.TempDir()
 	folder, _ = filepath.EvalSymlinks(folder)
 	wb, err := d.CreateWorkbench("app", folder)
@@ -502,4 +503,31 @@ func TestScan_NoWriteTxOnMain(t *testing.T) {
 	assert.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
 	calls, _ := f.totals()
 	assert.Equal(t, int64(1), calls)
+}
+
+// Spec D4: before the move a scan would reparse every transcript from 0, so
+// it refuses and stores nothing.
+func TestScan_RefusesBeforeMove(t *testing.T) {
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "w.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { d.Close() })
+	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { al.Close() })
+	folder, _ := filepath.EvalSymlinks(t.TempDir())
+	wb, err := d.CreateWorkbench("app", folder)
+	require.NoError(t, err)
+	f := &fixture{t: t, d: d, al: al, claude: t.TempDir(), folder: folder, wb: wb}
+	f.write(folder, "s1.jsonl", call(t, "s1", folder, "u1", "m1", "r1", 5))
+
+	_, err = Scan(context.Background(), d, al, wb, Options{ClaudeDir: f.claude})
+	require.ErrorIs(t, err, agentlogdb.ErrNotMoved)
+	var n int
+	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_files`).Scan(&n))
+	assert.Zero(t, n)
+
+	require.NoError(t, agentlogdb.MoveFromMain(context.Background(), d, al, filepath.Join(dir, "agentlog.db.move.lock")))
+	r := f.scan()
+	assert.Equal(t, 1, r.Sessions, "the scan runs once the move is done")
 }

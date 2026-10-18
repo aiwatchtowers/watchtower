@@ -861,16 +861,15 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// settings, once per workbench; the app restarts the daemon on an update,
 	// so sessions kept by the session host pick the values up.
 	carryOverWorkflowChecks(database, logger.Writer())
+	// Board #849: agent analytics live in agentlog.db; their rows move out
+	// of watchtower.db once, before the daemon can scan.
+	al := openAgentLog(ctx, cfg, database, logger)
 
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
 	d.SetLogger(logger)
 	d.SetDB(database)
-	// Agent analytics write to their own file (#849). A failed open leaves
-	// the analytics phase off for this run; everything else syncs.
-	if al, err := agentlogdb.Open(agentlogdb.PathFor(cfg.DBPath())); err != nil {
-		logger.Printf("agent analytics: %v; analytics are skipped until the next start", err)
-	} else {
+	if al != nil {
 		defer al.Close()
 		d.SetAgentLogDB(al)
 	}
@@ -954,6 +953,25 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)
 	return d.Run(ctx)
+}
+
+// openAgentLog opens the agentlog.db beside database's file and runs the
+// one-time move of its rows out of watchtower.db (agentlogdb.MoveFromMain).
+// A failed open returns nil: the analytics phase stays off for this run and
+// everything else syncs. A failed move is logged and does not stop the
+// daemon: the marker stays unset, the analytics phase skips every cycle, and
+// the next start (or `agents enable`/`scan`) retries.
+func openAgentLog(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) *agentlogdb.DB {
+	path := agentlogdb.PathFor(cfg.DBPath())
+	al, err := agentlogdb.Open(path)
+	if err != nil {
+		logger.Printf("agent analytics: %v; analytics are skipped until the next start", err)
+		return nil
+	}
+	if err := agentlogdb.MoveFromMain(ctx, database, al, agentlogdb.MoveLockPath(path)); err != nil {
+		logger.Printf("agent analytics: moving rows out of watchtower.db: %v; analytics are skipped until a later start moves them", err)
+	}
+	return al
 }
 
 // wireSlackSyncers builds one sync.Orchestrator per connected, enabled Slack

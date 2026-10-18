@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"log"
 	"os"
@@ -22,9 +23,11 @@ func newAgentAnalyticsTestDaemon(t *testing.T) (*Daemon, *db.DB) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-agent-analytics] ", 0))
 	d.SetDB(database)
-	al, err := agentlogdb.Open(filepath.Join(t.TempDir(), "agentlog.db"))
+	path := filepath.Join(t.TempDir(), "agentlog.db")
+	al, err := agentlogdb.Open(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = al.Close() })
+	require.NoError(t, agentlogdb.MoveFromMain(context.Background(), database, al, agentlogdb.MoveLockPath(path)))
 	d.SetAgentLogDB(al)
 	return d, database
 }
@@ -81,4 +84,25 @@ func TestPhaseAgentAnalytics_NilAgentlogSkips(t *testing.T) {
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
 	assert.Zero(t, n)
+}
+
+// Spec D4: before the one-time move the phase skips (logged), with no
+// pipeline_runs row and no scan.
+func TestPhaseAgentAnalytics_SkipsBeforeMove(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	al, err := agentlogdb.Open(filepath.Join(t.TempDir(), "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	d.SetAgentLogDB(al)
+	enableAgentAnalyticsWorkbench(t, database)
+	var logBuf bytes.Buffer
+	d.SetLogger(log.New(&logBuf, "", 0))
+
+	d.phaseAgentAnalytics(context.Background())
+
+	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
+	var n int
+	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_files`).Scan(&n))
+	assert.Zero(t, n)
+	assert.Contains(t, logBuf.String(), agentlogdb.ErrNotMoved.Error())
 }

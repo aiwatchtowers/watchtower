@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentlogdb"
 )
 
 // agentAnalyticsBudget bounds one cycle; a big first backfill normally ran
@@ -18,8 +19,8 @@ var agentAnalyticsClaudeDir = agentlog.DefaultClaudeDir
 // phaseAgentAnalytics keeps agentlog.db current for every workbench with
 // agent_analytics = 1. Inert (no pipeline_runs row) when none is enabled —
 // gated by the workbench column, not a config key (FEAT-01 note) — and when
-// agentlog.db did not open (logged here every cycle; never a fallback to
-// watchtower.db).
+// agentlog.db did not open or the one-time move out of watchtower.db has not
+// completed (both logged here every cycle; never a fallback to watchtower.db).
 func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -34,6 +35,14 @@ func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 	}
 	if d.agentLog == nil {
 		d.logger.Printf("agent analytics: agentlog.db is not open; skipped (%d workbench(es) enabled)", len(ids))
+		return
+	}
+	switch moved, err := d.agentLog.Moved(); {
+	case err != nil:
+		d.logger.Printf("agent analytics: %v; skipped", err)
+		return
+	case !moved:
+		d.logger.Printf("%v; skipped until the move succeeds (%d workbench(es) enabled)", agentlogdb.ErrNotMoved, len(ids))
 		return
 	}
 	d.trackedPipelineRun("agent-analytics", func() pipelineRunStats {

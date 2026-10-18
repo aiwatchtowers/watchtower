@@ -601,3 +601,13 @@ func (db *DB) setConnPragma(pragma string, change func(*connState)) error {
 	}
 	return nil
 }
+
+// HasTable reports whether the database has a table named name.
+func (db *DB) HasTable(name string) (bool, error) {
+	var ok bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)`, name).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("checking table %s: %w", name, err)
+	}
+	return ok, nil
+}

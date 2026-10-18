@@ -50,28 +50,40 @@ func init() {
 	rootCmd.AddCommand(agentsCmd)
 }
 
-// openAgentsDBs opens watchtower.db and the agentlog.db beside it. An
-// agentlog.db that fails to open is the command's error: analytics never
-// fall back to watchtower.db.
-func openAgentsDBs() (*db.DB, *agentlogdb.DB, error) {
+// openAgentsDBs opens watchtower.db and the agentlog.db beside it, and
+// returns agentlog.db's path. An agentlog.db that fails to open is the
+// command's error: analytics never fall back to watchtower.db.
+func openAgentsDBs() (*db.DB, *agentlogdb.DB, string, error) {
 	cfg, err := workspaceConfigFromFlags()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening database: %w", err)
+		return nil, nil, "", fmt.Errorf("opening database: %w", err)
 	}
-	al, err := agentlogdb.Open(agentlogdb.PathFor(cfg.DBPath()))
+	path := agentlogdb.PathFor(cfg.DBPath())
+	al, err := agentlogdb.Open(path)
 	if err != nil {
 		database.Close()
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return database, al, nil
+	return database, al, path, nil
+}
+
+// moveAgentLogRows runs the one-time move of the analytics rows out of
+// watchtower.db (#849) for the writing agents commands, so a CLI-only
+// install moves too. report and stats never call it: the Desktop polls
+// report, which must neither start a copy nor write watchtower.db.
+func moveAgentLogRows(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB, path string) error {
+	if err := agentlogdb.MoveFromMain(cmd.Context(), database, al, agentlogdb.MoveLockPath(path)); err != nil {
+		return fmt.Errorf("moving agent analytics out of watchtower.db: %w", err)
+	}
+	return nil
 }
 
 func runAgentsEnable(cmd *cobra.Command, _ []string) error {
-	database, al, err := openAgentsDBs()
+	database, al, path, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
@@ -79,6 +91,9 @@ func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 	defer al.Close()
 	// FEAT-03 exception (ask #153): enabling loads history at once.
 	if err := database.SetWorkbenchAgentAnalytics(flagAgentsWorkbench, true); err != nil {
+		return err
+	}
+	if err := moveAgentLogRows(cmd, database, al, path); err != nil {
 		return err
 	}
 	return printAgentsScan(cmd, database, al)
@@ -98,7 +113,7 @@ func runAgentsDisable(cmd *cobra.Command, _ []string) error {
 }
 
 func runAgentsScan(cmd *cobra.Command, _ []string) error {
-	database, al, err := openAgentsDBs()
+	database, al, path, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
@@ -110,6 +125,9 @@ func runAgentsScan(cmd *cobra.Command, _ []string) error {
 	}
 	if !on {
 		return errors.New("agent analytics is off for this workbench (watchtower agents enable --workbench N)")
+	}
+	if err := moveAgentLogRows(cmd, database, al, path); err != nil {
+		return err
 	}
 	return printAgentsScan(cmd, database, al)
 }
@@ -141,7 +159,7 @@ type agentsStatsJSON struct {
 }
 
 func runAgentsStats(cmd *cobra.Command, _ []string) error {
-	database, al, err := openAgentsDBs()
+	database, al, _, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
@@ -178,7 +196,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	case flagAgentsDays > 0:
 		since = now.AddDate(0, 0, -flagAgentsDays)
 	}
-	database, al, err := openAgentsDBs()
+	database, al, _, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
