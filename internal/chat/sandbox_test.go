@@ -42,7 +42,7 @@ func testSandbox(t *testing.T) *ChildSandbox {
 // The profile denies every protected folder of every home and the volume
 // roots, and carries no home path itself: the homes are -D parameters.
 func TestChildSandbox_ProfileCoversEveryHomeAndProtectedFolder(t *testing.T) {
-	s := &ChildSandbox{exec: "/x/sandbox-exec", homes: []string{"/h/one", "/h/two \"q\""}}
+	s := &ChildSandbox{exec: "/x/sandbox-exec", roots: protectedRoots, homes: []string{"/h/one", "/h/two \"q\""}}
 	name, argv := s.command("/bin/claude", []string{"-p", "--verbose"})
 	assert.Equal(t, "/x/sandbox-exec", name)
 	require.Len(t, argv, 10)
@@ -88,6 +88,17 @@ func TestChildSandbox_Homes(t *testing.T) {
 	assert.Error(t, err)
 	_, err = NewChildSandboxAt(bin, []string{"/Volumes/External/home"})
 	assert.ErrorContains(t, err, "/Volumes")
+	_, err = NewChildSandboxAt(bin, []string{"/home/someone"})
+	assert.ErrorContains(t, err, "/home")
+
+	// Each root is denied by its resolved spelling too (macOS's /home is a
+	// symlink to where autofs mounts).
+	for _, root := range protectedRoots {
+		assert.Contains(t, s.roots, root)
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			assert.Contains(t, s.roots, resolved)
+		}
+	}
 	_, err = NewChildSandboxAt(filepath.Join(t.TempDir(), "missing"), []string{home})
 	assert.ErrorContains(t, err, "does not run")
 }

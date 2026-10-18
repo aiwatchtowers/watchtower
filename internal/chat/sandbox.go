@@ -40,14 +40,15 @@ var protectedRoots = []string{"/Volumes", "/Network", "/home", "/net"}
 
 // ChildSandbox runs the claude.ai-mode child under a macOS sandbox profile
 // that denies every file access — stat and existence tests included — in the
-// TCC-guarded folders. The CLI touches a model-chosen path before it sends can_use_tool
-// (it resolves symlinks for Read and Write, and reads and hashes an Artifact
-// publish source to pin it), so the permission gate alone cannot keep a path
-// in ~/Documents unread. A sandbox denial is decided before TCC is consulted:
+// TCC-guarded folders. The CLI touches a model-chosen path before it sends
+// can_use_tool (it stats a Write target and lists its folder, and inspects
+// and hashes an Artifact publish source to pin it), so the permission gate
+// alone cannot keep a path in ~/Documents untouched. A sandbox denial is decided before TCC is consulted:
 // the access fails with EPERM and no privacy prompt appears. The profile is
 // inherited by everything the child starts (MCP servers included).
 type ChildSandbox struct {
 	exec  string   // sandbox-exec
+	roots []string // protectedRoots, each also as its symlink-resolved spelling
 	homes []string // the home directories whose protected folders are denied
 }
 
@@ -80,19 +81,23 @@ func accountHomes() []string {
 // deduplicated. It checks the profile runs by starting /usr/bin/true under
 // it.
 func NewChildSandboxAt(execPath string, homes []string) (*ChildSandbox, error) {
-	s := &ChildSandbox{exec: execPath}
+	// A denied symlink spelling does not deny its target (macOS's /home
+	// is a symlink to where autofs mounts), so each root goes in both ways.
+	s := &ChildSandbox{exec: execPath, roots: withResolved(protectedRoots)}
 	for _, h := range homes {
 		if !filepath.IsAbs(h) {
 			continue
 		}
+		for _, spelling := range withResolved([]string{filepath.Clean(h)}) {
+			for _, root := range s.roots {
+				if spelling == root || strings.HasPrefix(spelling, root+"/") {
+					return nil, fmt.Errorf("the file sandbox cannot cover a home on %s (%s)", root, h)
+				}
+			}
+		}
 		h = filepath.Clean(h)
 		if resolved, err := filepath.EvalSymlinks(h); err == nil {
 			h = resolved
-		}
-		for _, root := range protectedRoots {
-			if h == root || strings.HasPrefix(h, root+"/") {
-				return nil, fmt.Errorf("the file sandbox cannot cover a home on %s (%s)", root, h)
-			}
 		}
 		if !slices.Contains(s.homes, h) {
 			s.homes = append(s.homes, h)
@@ -108,6 +113,18 @@ func NewChildSandboxAt(execPath string, homes []string) (*ChildSandbox, error) {
 	return s, nil
 }
 
+// withResolved is paths plus the symlink-resolved spelling of each that has
+// a different one.
+func withResolved(paths []string) []string {
+	out := slices.Clone(paths)
+	for _, p := range paths {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil && !slices.Contains(out, resolved) {
+			out = append(out, resolved)
+		}
+	}
+	return out
+}
+
 // command wraps bin and args in the sandbox: the program to start and its
 // argv. Home paths travel as -D parameters, never inside the profile text.
 func (s *ChildSandbox) command(bin string, args []string) (string, []string) {
@@ -120,11 +137,11 @@ func (s *ChildSandbox) command(bin string, args []string) (string, []string) {
 }
 
 // profile is the SBPL text: everything allowed except file reads, writes and
-// existence tests under protectedRoots and each home's protectedHomeDirs.
+// existence tests under the roots and each home's protectedHomeDirs.
 func (s *ChildSandbox) profile() string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n(deny file-read* file-write* file-test-existence")
-	for _, root := range protectedRoots {
+	for _, root := range s.roots {
 		fmt.Fprintf(&b, "\n  (subpath %q)", root)
 	}
 	for i := range s.homes {
