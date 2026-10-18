@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -339,5 +340,125 @@ func TestSyncRecordsACleartextRefusal(t *testing.T) {
 	}
 	if updated.Status != "error" || !strings.HasPrefix(updated.Error, netsec.StatusPrefix) {
 		t.Errorf("want status=error with the %q prefix, got status=%q error=%q", netsec.StatusPrefix, updated.Status, updated.Error)
+	}
+}
+
+func storedUIDs(t *testing.T, database *db.DB, acctID, uidValidity int64) []int64 {
+	t.Helper()
+	uids, err := database.ImapStoredUIDs(acctID, uidValidity)
+	if err != nil {
+		t.Fatalf("ImapStoredUIDs: %v", err)
+	}
+	return uids
+}
+
+func syncedValidity(t *testing.T, database *db.DB, acctID int64) int64 {
+	t.Helper()
+	_, v, err := database.GetImapWatermark(acctID)
+	if err != nil {
+		t.Fatalf("watermark: %v", err)
+	}
+	return v
+}
+
+func TestSync_ExpungedMessageIsDeleted(t *testing.T) {
+	ts := startTestServer(t)
+	u1 := ts.seedMessage(t, rawMessageSubject("one"))
+	ts.seedMessage(t, rawMessageSubject("two"))
+	ts.seedMessage(t, rawMessageSubject("three"))
+	database := db.OpenTestDB(t)
+	syncer, acct := newTestSyncer(t, database, ts)
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	ts.expungeUIDs(t, u1)
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("second Sync: %v", err)
+	}
+	got := storedUIDs(t, database, acct.ID, syncedValidity(t, database, acct.ID))
+	if len(got) != 2 {
+		t.Fatalf("stored = %v, want 2 rows", got)
+	}
+	for _, u := range got {
+		if u == int64(u1) {
+			t.Fatalf("expunged uid %d still stored", u1)
+		}
+	}
+}
+
+func TestSync_EmptyMailboxDeletesNothing(t *testing.T) {
+	ts := startTestServer(t)
+	u1 := ts.seedMessage(t, rawMessageSubject("one"))
+	u2 := ts.seedMessage(t, rawMessageSubject("two"))
+	database := db.OpenTestDB(t)
+	syncer, acct := newTestSyncer(t, database, ts)
+	var logs strings.Builder
+	syncer.logger = log.New(&logs, "", 0)
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	ts.expungeUIDs(t, u1, u2)
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("second Sync: %v", err)
+	}
+	if got := storedUIDs(t, database, acct.ID, syncedValidity(t, database, acct.ID)); len(got) != 2 {
+		t.Fatalf("stored = %v, want 2 rows kept", got)
+	}
+	if !strings.Contains(logs.String(), "refus") {
+		t.Errorf("log lacks the refusal: %q", logs.String())
+	}
+}
+
+func TestSync_OverHalfGoneDeletesNothing(t *testing.T) {
+	ts := startTestServer(t)
+	var uids []uint32
+	for i := 0; i < 4; i++ {
+		uids = append(uids, ts.seedMessage(t, rawMessageSubject(fmt.Sprintf("m%d", i))))
+	}
+	database := db.OpenTestDB(t)
+	syncer, acct := newTestSyncer(t, database, ts)
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	ts.expungeUIDs(t, uids[0], uids[1], uids[2])
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("second Sync: %v", err)
+	}
+	if got := storedUIDs(t, database, acct.ID, syncedValidity(t, database, acct.ID)); len(got) != 4 {
+		t.Fatalf("stored = %v, want 4 rows kept", got)
+	}
+}
+
+func TestSync_UIDValidityCleanupKeepsCurrentEpoch(t *testing.T) {
+	ts := startTestServer(t)
+	ts.seedMessage(t, rawMessageSubject("one"))
+	ts.seedMessage(t, rawMessageSubject("two"))
+	database := db.OpenTestDB(t)
+	syncer, acct := newTestSyncer(t, database, ts)
+
+	const old = int64(999999937) // a value the in-memory server never assigns
+	for uid := int64(1); uid <= 3; uid++ {
+		if err := database.UpsertImapMessage(db.ImapMessage{
+			AccountID: acct.ID, UID: uid, UIDValidity: old, Subject: "old",
+		}, "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	if err := database.SetImapWatermark(acct.ID, 3, old); err != nil {
+		t.Fatalf("seed watermark: %v", err)
+	}
+
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if got := storedUIDs(t, database, acct.ID, old); len(got) != 0 {
+		t.Fatalf("rows under the old epoch remain: %v", got)
+	}
+	cur := syncedValidity(t, database, acct.ID)
+	if cur == old {
+		t.Fatalf("watermark validity did not move")
+	}
+	if got := storedUIDs(t, database, acct.ID, cur); len(got) != 2 {
+		t.Fatalf("current-epoch rows = %v, want 2", got)
 	}
 }

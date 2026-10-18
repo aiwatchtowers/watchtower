@@ -1579,7 +1579,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
-        startSessionHost() // before the workbenches: their reattach waits for it
+        startHostServices(databasePath: manager.dbPool.path) // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         applyUIVisibility(uiVisibility.isOnScreen)

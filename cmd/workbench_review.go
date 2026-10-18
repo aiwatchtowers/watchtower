@@ -15,7 +15,8 @@ import (
 	"watchtower/internal/tools"
 )
 
-const workbenchReviewBudget = 30 * time.Second
+// workbenchReviewBudget bounds a review command's git work; a var for tests.
+var workbenchReviewBudget = 30 * time.Second
 
 // errNoOpenReviewRound: start --refresh found no open round; only a plain
 // start opens the next one (the Desktop's single path that carries comments).

@@ -153,7 +153,10 @@ final class CustomTrackTimelineViewModel {
     }
 
     /// Human "Last scanned" line for the header: relative age of the watermark.
-    var lastScannedText: String {
+    var lastScannedText: String { Self.lastScannedText(lastRunAt: lastRunAt) }
+
+    /// The same line for any track's `last_run_at` (the Automations → Tracks rows).
+    static func lastScannedText(lastRunAt: String) -> String {
         guard !lastRunAt.isEmpty else { return "Not scanned yet" }
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime]

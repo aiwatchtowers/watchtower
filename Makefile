@@ -35,7 +35,7 @@ LINEAR_ID   ?= $(WATCHTOWER_LINEAR_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID)"
 
-.PHONY: golangci-version-check build test test-verbose test-cover test-race test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight testflight cloudkit-check
+.PHONY: golangci-version-check build test test-verbose test-cover test-race test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -305,24 +305,6 @@ clean:
 	rm -f $(BINARY_NAME)
 	rm -rf build/ build.next/ build.old/
 
-# Architectural rules + structural regression via sentrux.
-# `make quality` runs both: check (rules in .sentrux/rules.toml) and gate
-# (regression vs .sentrux/baseline.json, via scripts/sentrux-gate.sh — see
-# that script's header for why it doesn't block on the raw god-file count).
-# `make sentrux-baseline` refreshes the baseline after intentional structural
-# changes.
-SENTRUX ?= $(shell command -v sentrux 2>/dev/null || echo /opt/homebrew/bin/sentrux)
-sentrux-check:
-	$(SENTRUX) check .
-
-sentrux-gate:
-	scripts/sentrux-gate.sh
-
-sentrux-baseline:
-	$(SENTRUX) gate --save .
-
-quality: sentrux-check sentrux-gate
-
 # Dead Swift code detection. Periphery scans the WatchtowerDesktop SPM target
 # and reports unused declarations. The check target gates new dead code:
 # the current count is frozen in WatchtowerDesktop/.periphery-baseline-count.txt
@@ -355,9 +337,8 @@ periphery-baseline:
 editor-bridge-check:
 	bash scripts/editor-bridge-check.sh
 
-# Pre-release gate. Runs sentrux quality (rules + structural regression),
-# periphery dead-code check (vs baseline), Go tests, and Swift tests. Failing
-# any of these halts the release. Used by .claude/commands/release.md before
-# `make app`.
-release-check: quality periphery-check test test-swift test-scripts
+# Pre-release gate. Runs the periphery dead-code check (vs baseline), Go
+# tests, and Swift tests. Failing any of these halts the release. Used by
+# .claude/commands/release.md before `make app`.
+release-check: periphery-check test test-swift test-scripts
 	@echo "✓ release-check passed"

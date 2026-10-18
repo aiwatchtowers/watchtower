@@ -8,7 +8,7 @@ Some chores repeat: a Monday Jira summary, a digest of new mail, a Friday team r
 
 ## How it works
 
-A recipe is one Markdown file: settings (when it runs, what it may touch, where results go, its budget) plus one short script. The daemon runs it, so the Mac must be awake with Watchtower's daemon running. A schedule fires in your local time; if the Mac was asleep, the recipe can run once on wake or skip the slot. An event trigger fires after a sync brings new Slack messages, mail, Jira or calendar changes, or Confluence pages, at most once per sync cycle ([Event triggers](automations-recipes.md#event-triggers)).
+A recipe is one Markdown file: settings (when it runs, what it may touch, where results go, its budget) plus one short script. The daemon runs it, so the Mac must be awake with Watchtower's daemon running. A schedule fires in your local time; if the Mac was asleep, the recipe can run once on wake or skip the slot. An event trigger fires after a sync brings new Slack messages, mail, Jira or calendar changes, or Confluence pages, or when you react to a Slack message, at most once per sync cycle ([Event triggers](automations-recipes.md#event-triggers)).
 
 A recipe never runs until you confirm it, every run has its own token and time budget, and writes wait for your approval. The details are in [Confirmation, budgets and writes](automations-safety.md).
 
@@ -45,6 +45,10 @@ The **Automations** badge counts automations whose last run failed, until you op
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 
+### Reactions and tracks
+
+The tab also shows your reaction commands and custom tracks next to your recipes: see [Reactions and tracks in Automations](automations-rules.md).
+
 ## When it's empty or wrong
 
 - **Tab missing.** The feature is off (Settings, Features). That also hides **Run Automation…** and the tray submenu.
@@ -62,6 +66,7 @@ The **Automations** badge counts automations whose last run failed, until you op
 ## Related
 
 - [Recipes and templates](automations-recipes.md)
+- [Reactions and tracks in Automations](automations-rules.md)
 - [Confirmation, budgets and writes](automations-safety.md)
 
 For developers: [docs/features/automations.md](../../features/automations.md)

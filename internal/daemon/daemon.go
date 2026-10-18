@@ -82,6 +82,16 @@ type mailSyncer interface {
 	FirstSyncFrom() (time.Time, bool)
 }
 
+// deletionsChecker is the optional daily source-deletions diff a mailSyncer
+// may offer (*gmail.Syncer does; IMAP and test fakes need not).
+type deletionsChecker interface {
+	CheckDeletions(ctx context.Context, now time.Time) (int, error)
+}
+
+// The Gmail syncer must keep offering the optional check; a signature drift
+// would otherwise silently drop the daily diff.
+var _ deletionsChecker = (*gmail.Syncer)(nil)
+
 // minPollInterval is the minimum allowed poll interval. Values below this
 // (e.g. nanosecond-scale durations from misconfigured integer values) are
 // replaced with DefaultPollInterval. Tests may lower this for fast execution.
@@ -872,8 +882,18 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 		}
 		if err != nil {
 			d.logger.Printf("gmail sync error: %v", err)
-		} else if n > 0 {
-			d.logger.Printf("gmail: %d messages synced", n)
+		} else {
+			if n > 0 {
+				d.logger.Printf("gmail: %d messages synced", n)
+			}
+			// Outside observePhase: deletions publish no event.
+			if c, ok := s.(deletionsChecker); ok {
+				if removed, derr := c.CheckDeletions(ctx, time.Now()); derr != nil {
+					d.logger.Printf("gmail deletions check error (%d removed before it): %v", removed, derr)
+				} else if removed > 0 {
+					d.logger.Printf("gmail: %d deleted messages removed", removed)
+				}
+			}
 		}
 	}
 }
@@ -1666,6 +1686,10 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 // re-polls and re-dispatches nothing already seen.
 func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 	if !d.config.ReactionCommands.Enabled {
+		// Nobody polls, so reactions placed now must not fire when the
+		// feature comes back: clear the event seed stamps (a no-op read when
+		// none is set).
+		d.resetReactionEventSeeds()
 		return
 	}
 	if d.reactionCmdPipe == nil || d.db == nil {
@@ -1686,12 +1710,18 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 	if d.config.ReactionCommands.IntervalHours > 0 {
 		interval := time.Duration(d.config.ReactionCommands.IntervalHours) * time.Hour
 		if !d.lastReactionCmd.IsZero() && now.Sub(d.lastReactionCmd) < interval {
+			// A throttled cycle polls nothing, but nobody listening still
+			// means reactions placed now must not fire later.
+			if d.reactionEventsUnheard() {
+				d.resetReactionEventSeeds()
+			}
 			return
 		}
 	}
 
+	sink := d.reactionEventSink()
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
-		dispatched, err := d.reactionCmdPipe.Run(ctx)
+		dispatched, err := d.reactionCmdPipe.Run(ctx, sink)
 		if err != nil {
 			d.logger.Printf("reaction-commands error: %v", err)
 		} else if dispatched > 0 {
@@ -1701,6 +1731,49 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		return pipelineRunStats{items: dispatched, err: err}
 	})
 }
+
+// resetReactionEventSeeds clears the reaction-event seed stamps; an error is
+// logged.
+func (d *Daemon) resetReactionEventSeeds() {
+	if d.db == nil {
+		return
+	}
+	if err := d.db.ResetReactionEventsSeeded(); err != nil {
+		d.logger.Printf("reaction-commands: resetting event seeds: %v", err)
+	}
+}
+
+// reactionEventSink is the reaction poll's sink: the cycle's bus. With no bus
+// wired, a sink nobody listens on (never a typed nil) so the pipeline clears
+// its event seed stamps. With a bus wired whose Begin failed this cycle, nil:
+// the state is left alone, because a reset would drop the reactions placed
+// meanwhile.
+func (d *Daemon) reactionEventSink() reactioncmd.EventSink {
+	switch {
+	case d.cycleEvents != nil:
+		return d.cycleEvents
+	case d.automationEvents == nil:
+		return noReactionBus{}
+	}
+	return nil
+}
+
+// reactionEventsUnheard reports that no recipe can receive reaction events
+// this cycle: no bus is wired, or the cycle's bus has no listener. A wired
+// bus whose Begin failed (cycleEvents nil) is unknown, not unheard.
+func (d *Daemon) reactionEventsUnheard() bool {
+	if d.automationEvents == nil {
+		return true
+	}
+	return d.cycleEvents != nil && !d.cycleEvents.Wants(automations.SlackReactionAdded)
+}
+
+// noReactionBus is the reaction poll's sink when the cycle has no event bus
+// (automations off): it wants nothing and drops everything.
+type noReactionBus struct{}
+
+func (noReactionBus) Wants(string) bool            { return false }
+func (noReactionBus) Publish(...automations.Event) {}
 
 // memoryBackfillWaitMax is how long memory waits for a running history
 // backfill row, counted from the row's started_at (#578). Dual path with the

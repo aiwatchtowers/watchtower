@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -257,4 +258,87 @@ func TestSyncer_Sync_CommentFetchAuthRevokedAborts(t *testing.T) {
 	_, err := s.Sync(context.Background())
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrAuthRevoked))
+}
+
+// swappableCommentsServer serves PROJ-1's comment endpoint from a body and
+// status the test can change between syncs.
+func swappableCommentsServer(t *testing.T) (srv *httptest.Server, set func(status int, body string)) {
+	t.Helper()
+	var mu sync.Mutex
+	status, body := http.StatusOK, `{"total":0,"comments":[]}`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		st, b := status, body
+		mu.Unlock()
+		w.WriteHeader(st)
+		_, _ = w.Write([]byte(b))
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, func(st int, b string) {
+		mu.Lock()
+		status, body = st, b
+		mu.Unlock()
+	}
+}
+
+const (
+	commentC1 = `{"id":"c1","author":{"displayName":"A","accountId":"a"},"body":"one","created":"2026-01-01T00:00:00.000Z","updated":"2026-01-01T00:00:00.000Z"}`
+	commentC2 = `{"id":"c2","author":{"displayName":"A","accountId":"a"},"body":"two","created":"2026-01-01T00:00:00.000Z","updated":"2026-01-01T00:00:00.000Z"}`
+)
+
+func storedCommentIDs(t *testing.T, database *db.DB) []string {
+	t.Helper()
+	got, err := database.ListJiraCommentsSince(1, []string{"PROJ-1"}, "2020-01-01T00:00:00Z")
+	require.NoError(t, err)
+	ids := []string{}
+	for _, c := range got {
+		ids = append(ids, c.ID)
+	}
+	return ids
+}
+
+func syncCommentsTwice(t *testing.T, second func(set func(int, string))) []string {
+	t.Helper()
+	database := syncerDBWithBoard(t, "PROJ")
+	srv, set := swappableCommentsServer(t)
+	s := quietSyncer(t, database, srv.URL)
+	s.SetCommentSyncLimit(10)
+
+	set(http.StatusOK, `{"total":2,"comments":[`+commentC1+`,`+commentC2+`]}`)
+	require.NoError(t, s.syncComments(context.Background(), []string{"PROJ-1"}))
+	require.ElementsMatch(t, []string{"c1", "c2"}, storedCommentIDs(t, database))
+
+	second(set)
+	require.NoError(t, s.syncComments(context.Background(), []string{"PROJ-1"}))
+	return storedCommentIDs(t, database)
+}
+
+func TestSyncComments_DeletedCommentDisappears(t *testing.T) {
+	ids := syncCommentsTwice(t, func(set func(int, string)) {
+		set(http.StatusOK, `{"total":1,"comments":[`+commentC2+`]}`)
+	})
+	assert.Equal(t, []string{"c2"}, ids)
+}
+
+func TestSyncComments_LastCommentDeleted(t *testing.T) {
+	ids := syncCommentsTwice(t, func(set func(int, string)) {
+		set(http.StatusOK, `{"total":0,"comments":[]}`)
+	})
+	assert.Empty(t, ids)
+}
+
+func TestSyncComments_IncompleteListingDeletesNothing(t *testing.T) {
+	ids := syncCommentsTwice(t, func(set func(int, string)) {
+		set(http.StatusOK, `{"total":5,"comments":[]}`)
+	})
+	assert.ElementsMatch(t, []string{"c1", "c2"}, ids)
+}
+
+func TestSyncComments_FetchErrorDeletesNothing(t *testing.T) {
+	ids := syncCommentsTwice(t, func(set func(int, string)) {
+		set(http.StatusInternalServerError, `{}`)
+	})
+	assert.ElementsMatch(t, []string{"c1", "c2"}, ids)
 }

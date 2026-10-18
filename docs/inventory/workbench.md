@@ -854,13 +854,13 @@ separation of boards.
 
 ## PROJ-10 — a branch switch from the header never loses work, never runs unconfirmed, never pops the install dialog
 
-**Status:** Enforced (Go and Desktop; the rule lives in Go; owner approved 2026-10-03; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #569)
+**Status:** Enforced (Go and Desktop; the rule lives in Go; owner approved 2026-10-03; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #569; amended 2026-10-16 for fetching origin and checking out a remote-only branch, owner approved 2026-10-12, ask #175, board #563)
 
 **Observable:** Branch switching from the Workbench header never loses work,
 never switches without the owner's confirmation, and never runs git where it
 could pop the developer-tools install dialog. The branch button and popover
 never run git in the Desktop: every branch read and write is `watchtower
-workbench git status|branches|switch|create --workbench N --json`
+workbench git status|branches|switch|create|fetch|checkout --workbench N --json`
 (`cmd/workbench_git.go`, `internal/workbenchgit`). Known exception outside the
 branch UI: the code viewer's FILES git marks (`CodeFilesCenter.refreshGit` →
 `GitStatusSnapshot.read`, WatchtowerCore) run `git status` from the Desktop.
@@ -916,13 +916,79 @@ rule, not the marks reader's.
   envelope names the entry and its sha, and the Desktop shows the
   `git stash apply <sha>` that brings it back.
 
+Since 2026-10-16 (board #563, owner approved 2026-10-12, ask #175):
+- **Fetch moves only origin's refs and never asks for anything.** `workbench
+  git fetch` runs `git fetch --prune --no-recurse-submodules
+  --no-auto-maintenance --upload-pack=git-upload-pack origin` — the
+  remote-tracking refs of origin only (a branch deleted there is pruned, so
+  a local branch tracking it reads `upstream_gone`); the work tree, the
+  index, the stash and every local branch stay as they are, and no pull,
+  merge or push ever runs. It is bounded at 20 s (`timed_out`) and killed
+  with its whole process group (git's ssh or remote-http child included).
+  No prompt or dialog can come from git, ssh or a credential helper:
+  `GIT_TERMINAL_PROMPT=0`,
+  `GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10`, empty
+  `GIT_ASKPASS`/`SSH_ASKPASS` with `SSH_ASKPASS_REQUIRE=never` (an empty
+  `GIT_ASKPASS` outranks `core.askPass`), and `-c credential.helper=`, which
+  clears every credential helper — the folder's and the owner's global ones
+  (osxkeychain and gh read the Keychain, which can raise a system dialog). It
+  also runs nothing the folder's config names: the background read's `-c`
+  set (no fsmonitor, no hooks), `-c core.alternateRefsCommand=true` (git runs
+  the folder's through the shell while negotiating when the repository has
+  alternates), git's own upload-pack (`--upload-pack`: `-c` cannot override
+  `remote.origin.uploadpack`), no proxy command (`GIT_PROXY_COMMAND=`), and
+  only the network transports (`GIT_ALLOW_PROTOCOL=git:http:https:ssh` — no
+  `ext::`, no remote helper, and no path remote: a `file` origin, or one an
+  `insteadOf` rewrites to a path, could read any folder on the Mac, and one
+  macOS guards would raise a privacy prompt attributed to Watchtower). A
+  custom `core.sshCommand` is therefore not used by this fetch
+  (`~/.ssh/config` still is). The automatic fetch (`--unattended`, the
+  Desktop's background one) also keeps ssh away from the owner's ssh agent
+  and the Keychain (`SSH_AUTH_SOCK=` and `-o IdentityAgent=none -o
+  ProxyJump=none -o ProxyCommand=none -o IgnoreUnknown=* -o UseKeychain=no`;
+  command-line options outrank `~/.ssh/config`, and no jump-host ssh or
+  proxy program from it runs), so an agent set up to approve each use (a
+  password manager's agent, `ssh-add -c`) is never asked and never shows its
+  prompt — an origin reachable only through a jump host then fetches from
+  the Fetch button only; only a fetch the owner starts (the Fetch
+  button) may use the agent, whose approval the owner then expects. A remote that needs a password, a locked key or
+  a host-key confirmation fails with git's words in `error`; the Desktop
+  shows a quiet "Couldn't fetch origin: …" in the popover and the branch list
+  keeps working on the local refs. A repository without an origin remote
+  answers `no_remote` and runs no fetch. The `--folder` rule below applies.
+- **The Desktop fetches rarely and one at a time.** Opening the popover
+  fetches in the background only when the last try for that repository (its
+  common dir, shared by its worktrees) started over 5 minutes ago — a failed
+  try counts, so an offline Mac does not retry on every open, and so does
+  one that found no origin (checked again once due); that fetch is sent
+  `--unattended`. The Fetch button fetches at once, as the owner's own. A fetch never starts while one runs for the same
+  repository, and the view model, not the popover, owns it: closing the
+  popover never cancels a fetch half way. The list shows at once and is read
+  again after a successful fetch.
+- **A remote-only branch is checked out behind every rule above.**
+  `workbench git branches` lists `remote_only` — origin's branches no local
+  branch is named after or tracks (origin/HEAD is not a branch) — and
+  `workbench git checkout --branch B` makes the local branch B tracking
+  `origin/B` and switches to it with `git switch --no-guess
+  --no-overwrite-ignore --track=direct -c B refs/remotes/origin/B`. Guards,
+  in order: status readable → an exact remote-only name (option-like names
+  never match; a local branch of that name is refused as `exists`) → no
+  operation in progress and no unmerged paths → the owner's confirmations
+  (`uncommitted_changes` without `--stash`, `agent_running` without
+  `--confirm-agent`); a missing confirmation writes nothing, not even the
+  branch. The stash, its nonce-tagged message, its restore by sha after a
+  failed switch and the no-force rule are the switch's; checkout fetches
+  nothing (the remote-tracking ref is the last fetch's). The Desktop sends it
+  through the switch's flow: the code viewer's edits saved first, a first
+  call without a confirmation flag, the dialog's flags resent as `checkout`.
+
 Since 2026-10-12 (board #565/#569, owner approved 2026-10-12, ask #188): the
 branch button and popover work on the worktree of the session the page shows
 — the workbench folder when the page holds no session or the session's place
 is the main folder, unknown, stale, outside the repository or removed.
 `workbench git status|branches|switch|create` take `--folder F` (the Desktop
 passes it for a worktree root only, so the main folder's argv is unchanged;
-the `fetch` of board #563 takes the same rule when it lands). Go first lists
+since board #563 `fetch` and `checkout` take the same rule). Go first lists
 the repository's worktrees with git run in the workbench folder and accepts F
 only when it is the workbench folder, inside it, or inside a listed worktree
 (the longest match wins; paths compare case-insensitively on macOS); anything
@@ -982,6 +1048,7 @@ attributed to Watchtower.
   `testProj10_AnEditorThatDoesNotAnswerHoldsTheSwitch`, `testProj10_AnEditorThatTimesOutHoldsTheSwitch`
 - `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
 - Board #565, the session's worktree (2026-10-12, ask #188): `internal/workbenchgit/folder_test.go::TestProj10_FolderOutsideTheWorktreesIsRefusedBeforeGit`; `internal/workbenchgit/switch_test.go::TestProj10_GuardsRunInTheSessionsWorktree` (two worktrees of one repo: a dirty worktree refuses without `--stash` while the main folder is clean; a branch checked out in the main folder is refused there); `cmd/workbench_git_test.go::TestProj10_FolderFlagEnvelopeAndRefusal`; `WatchtowerDesktop/Tests/WorkbenchesViewModelGitTests.swift` — `testProj10_TheBranchMenuFollowsTheSessionsWorktree`, `testProj10_ASessionInAnotherWorktreeIsNotReportedAnUnknownOneIs`, `testProj10_ASwitchInAWorktreeSavesThatWorktreesEdits`; supporting: `internal/workbenchgit/folder_test.go` (`TestResolveFolderScopes`, `TestResolveFolderUnreadableRequestedIsUnresolved`, `TestResolveFolderGitFailureIsAnError`, `TestResolveFolderIgnoresCaseOnMacOS`), `cmd/workbench_git_test.go` (`TestWorkbenchGitStatusWithoutFolderIsUnchanged`, `TestWorkbenchGit_FolderUnreadable`, `TestWorkbenchGit_FolderListingFailure`); every existing `TestProj10_*`/`testProj10_*` above unchanged
+- Board #563, fetch and remote-only checkout (2026-10-16, ask #175): `internal/workbenchgit/checkout_test.go` — `TestProj10_CheckoutMakesALocalTrackingBranch`, `TestProj10_CheckoutRefusesDirtyWithoutStash`, `TestProj10_CheckoutStashesWhatTheOwnerConfirmed`, `TestProj10_CheckoutRefusesALocalOrUnknownName`, `TestProj10_CheckoutOperationInProgressIsRefused`, `TestProj10_FailedCheckoutRestoresTheStash`, `TestProj10_CheckoutNeverForcesOrFetches`; `cmd/workbench_git_test.go::TestProj10_FetchAndCheckOutARemoteOnlyBranch`; `WatchtowerDesktop/Tests/WorkbenchesViewModelGitFetchTests.swift` — `testProj10_ACheckOutWaitsForTheOwnerAndResendsWhatTheyConfirmed`, `testProj10_ARefusedCheckOutSaysWhy`; supporting: `internal/workbenchgit/fetch_test.go` (`TestFetch_UpdatesTheCountersAndNeverTheWorkTree`, `TestFetch_NoOriginRunsNoFetch`, `TestFetch_OutsideARepositoryRunsNoGit`, `TestFetch_UnreachableRemoteRunsNoFolderCommand`, `TestFetch_AuthenticationRunsNoHelperOrPrompt`, `TestFetch_SSHRunsInBatchModeWithNoAskpass`, `TestFetch_PathRemoteIsRefused`, `TestFetch_RunsNoAlternateRefsCommand`, `TestFetch_TimeoutIsReported`), `internal/gitbin/run_test.go` (`TestExecFetch_NoPromptEnvironment`, `TestExecFetch_KillsTheProcessGroup`), `WatchtowerDesktop/Tests/WorkbenchesViewModelGitFetchTests.swift` (the background fetch, its rarity, one fetch per repository outliving the popover, the quiet failure note), `WatchtowerDesktop/Tests/Core/WorkbenchFetchTests.swift`; every existing `TestProj10_*`/`testProj10_*` and `TestProj07_*` unchanged
 
 **Locked since:** 2026-10-03 (proposed 2026-10-02)
 
@@ -2403,6 +2470,7 @@ owner never saw.
 - 2026-10-17 (board #496, final review): **PROJ-20 text corrected — no guard changed or relaxed.** Every build shares one host (the "another bundle id lives in its own host" limit was false); a takeover tells the losing pane, which neither reattaches nor reports an exit; an exited-while-away run is attached for its last output before its one exit report; the local fallback applies only when the host is unreachable at app launch; an update and a log-out never ask about sessions (a recording or unsent ask answers still prompt); the idle exit ignores the app's control connection.
 
 - 2026-10-17 (board #496, workbench sessions survive an app restart; spec `docs/superpowers/specs/2026-10-17-workbench-sessions-survive-restart-design.md`; owner asks #246/#247): **PROJ-20 added** — a hosted session survives an update and a Keep Sessions quit and is adopted without a relaunch. Quit path changed: an update and a system log-out/restart/shutdown detach without asking, a plain quit with live hosted sessions offers Keep Sessions and Quit / Stop Sessions and Quit / Cancel, **Reset All Data** always stops sessions. No other contract text or guard changed; the CHAT-03 quit order is unchanged. Guards: `TestSessionHost20_SessionSurvivesClientDisconnect`, `testProj20_ReattachAdoptsRunningSessionWithoutRelaunch`, `testProj20_UpdateQuitDetachesHostedSessions`.
+- 2026-10-16 (board #563; **owner approved 2026-10-12, ask #175**): **PROJ-10 amended** — appended, nothing weakened. The branch popover fetches origin (`workbench git fetch`: `git fetch --prune origin`, 20 s, its process group killed at the deadline; no credential helper, askpass, ssh prompt, proxy command, folder upload-pack or alternate-refs command, path remote or non-network transport can run, so no dialog from git, ssh or a helper; the automatic fetch never reaches the ssh agent or the Keychain, only the owner's Fetch button may use the agent) in the background when the last try is over 5 minutes old and from a Fetch button, one fetch at a time per repository, held by the view model; a failure is a quiet note and the list keeps working on local refs. A "Remote only" section lists origin's branches with no local copy, and **Check out** (`workbench git checkout`) makes a local tracking branch and switches to it behind the switch's guards and confirmations (no Pull button: that would write the work tree). New guards listed under PROJ-10; every existing `TestProj10_*`/`testProj10_*` and `TestProj07_*` unchanged.
 - 2026-10-16 (board #376, **PROJ-04 amended, owner approved in ask #312**): a pre-rename folder whose `watchtower-workbench` registration fails (a failed `claude mcp add`, no claude CLI) is no longer left entirely on its old skill, hooks and registration: the old setup no longer runs since the aliases were removed, so the install migrates the files as a successful migration does (new skill, hooks and allow rule in; our un-edited old skill, old hook entries and the old skill's exclude line out; an edited old skill still kept) and reports the registration failure on its own. The old registration still goes only once the new one is in, so `integrate status` keeps reporting the folder `legacy` and Repair stays offered while claude can see it; without claude nothing legacy is left that status can see, so Repair no longer loops. `devpack.keptLegacySetup`/`keptLegacySkill` are removed and `resync --json`'s `legacy_skill` no longer reads `unchanged`. Supporting tests rewritten to the new contract: `TestInstallWorkbench_FailedAddLeavesTheWholeLegacySetup` → `TestInstallWorkbench_FailedAddStillMigratesTheFiles`, `TestInstallWorkbench_LegacyFolderWithoutClaudeNamesBothCommands` (now asserts the migrated files and a non-legacy status), `cmd`'s `TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration` and the `legacy folder whose registration failed` subtest of `TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary`; Desktop `WorkbenchCLITests.testLegacyFolderWithoutClaudeRepairSettles` added. `TestProj04_ResyncKeepsAnEditedLegacySkill` and `TestProj02_RemoveLegacyFolderLeavesNothingInstalled` run unchanged.
 - 2026-10-16 (board #376, owner decision in ask #312): **tombstone for the pre-rename spellings** — strengthening, no guard relaxed. The aliases stay removed; `watchtower project …` and `mcp --project N` now reach a tombstone instead of failing as unknown: `project brief` prints one stdout line ("Watchtower: this folder was set up before the Workbench rename and its setup no longer runs — ask the owner to run Repair install in Watchtower (or 'watchtower workbench resync N').", the parenthesis only when the argv names N), every other `project …` prints that line on stderr only with empty stdout, all exit 0 and read no config or database; `mcp --project N` fails with the same line and serves nothing. This replaces the 2026-10-15 entry's "fails as an unknown command with exit 1" for the old Stop hook. The naming note says so and PROJ-07 gains a note; guard `cmd/workbench_test.go::TestWorkbench_NoPreRenameCommandOrFlag` (rewritten to the tombstone, its never-`exitCodeError` assertion kept) is listed as supporting under PROJ-07.
 - 2026-10-16 (diff reviewer Plan 3, board #328, **owner approved in ask #214** as a marker bump only; renumbered v11 → v12 because board #267 took v11 on main first): **PROJ-04** — the core workbench skill's pack marker moves `v11 → v12` only; the install rules are unchanged (the shipped v10 and v11 texts join the DEV-04 re-install fixtures as `watchtower-workbench-v10.md` and `watchtower-workbench-v11.md`, so an un-edited v1–v11 copy is updated by resync/Repair and an edited one is kept, with board #267's preset rule for an edited v10 unchanged). v12's "Review rounds" teaches reading `.watchtower/review.md` and calling `annotate_changes` before handing work back, answering every comment with `reply_review_comment` (`resolved: true` once fixed; the owner can reopen), and not redoing hunks `get_review` lists as undone by the owner. **PROJ-12 unchanged**: the round's delivery line is the same; reverts reach the agent through `get_review`. No guard relaxed (`TestWorkbenchSkill_TeachesFinishingASession` asserts v12; `TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne` gains the v10 and v11 fixtures).

@@ -228,9 +228,44 @@ package struct WorkbenchGitBranch: Decodable, Equatable, Sendable, Identifiable 
     }
 }
 
+/// One of origin's branches with no local copy (board #563): no local branch
+/// is named after it or tracks it. As of the last fetch.
+package struct WorkbenchGitRemoteBranch: Decodable, Equatable, Sendable, Identifiable {
+    /// Without `origin/`: what `workbench git checkout --branch` takes.
+    package var name: String
+    /// `origin/<name>`.
+    package var ref: String
+    package var head: String
+    package var committedAt: Date?
+
+    package var id: String { name }
+
+    package init(name: String, ref: String = "", head: String = "", committedAt: Date? = nil) {
+        self.name = name
+        self.ref = ref.isEmpty ? "origin/" + name : ref
+        self.head = head
+        self.committedAt = committedAt
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        ref = try c.decodeIfPresent(String.self, forKey: .ref) ?? "origin/" + name
+        head = try c.decodeIfPresent(String.self, forKey: .head) ?? ""
+        committedAt = WorkbenchGitBranch.parseTime(try c.decodeIfPresent(String.self, forKey: .committedAt) ?? "")
+    }
+
+    package enum CodingKeys: String, CodingKey {
+        case name, ref, head
+        case committedAt = "committed_at"
+    }
+}
+
 /// `workbench git branches --workbench N --json`. `branchesOK == false` means
 /// the listing failed (`branchesError`, or `note` when the folder is not a
-/// work tree); `branches` is then empty.
+/// work tree); `branches` is then empty. `remoteOnly` (board #563) lists
+/// origin's branches with no local copy; a failed listing of them leaves it
+/// empty with `remoteOnlyError`, the local list still stands.
 package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
     package var workbenchID: Int64
     package var gitAvailable: Bool
@@ -245,6 +280,8 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
     /// `--folder` asked for could not be used (board #565); nothing listed.
     package var refused: String
     package var refusedDetail: String
+    package var remoteOnly: [WorkbenchGitRemoteBranch]
+    package var remoteOnlyError: String
 
     package init(
         workbenchID: Int64 = 0,
@@ -256,7 +293,9 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         branchesOK: Bool = true,
         branchesError: String = "",
         refused: String = "",
-        refusedDetail: String = ""
+        refusedDetail: String = "",
+        remoteOnly: [WorkbenchGitRemoteBranch] = [],
+        remoteOnlyError: String = ""
     ) {
         self.workbenchID = workbenchID
         self.gitAvailable = gitAvailable
@@ -268,6 +307,8 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         self.branchesError = branchesError
         self.refused = refused
         self.refusedDetail = refusedDetail
+        self.remoteOnly = remoteOnly
+        self.remoteOnlyError = remoteOnlyError
     }
 
     package init(from decoder: Decoder) throws {
@@ -277,6 +318,8 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         gitAvailable = try c.decodeIfPresent(Bool.self, forKey: .gitAvailable) ?? true
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
         current = try c.decodeIfPresent(String.self, forKey: .current) ?? ""
+        remoteOnly = try c.decodeIfPresent([WorkbenchGitRemoteBranch].self, forKey: .remoteOnly) ?? []
+        remoteOnlyError = try c.decodeIfPresent(String.self, forKey: .remoteOnlyError) ?? ""
         branches = try c.decodeIfPresent([WorkbenchGitBranch].self, forKey: .branches) ?? []
         branchesOK = try c.decodeIfPresent(Bool.self, forKey: .branchesOK) ?? true
         branchesError = try c.decodeIfPresent(String.self, forKey: .branchesError) ?? ""
@@ -291,10 +334,85 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         case branchesOK = "branches_ok"
         case branchesError = "branches_error"
         case refusedDetail = "refused_detail"
+        case remoteOnly = "remote_only"
+        case remoteOnlyError = "remote_only_error"
     }
 }
 
-/// `workbench git switch|create --json`. Every refusal arrives as exit 0
+/// `workbench git fetch --workbench N --json` (board #563): `git fetch
+/// --prune origin`, which moves only origin's remote-tracking refs. Go never
+/// lets it ask for anything (no credential helper, askpass or ssh prompt),
+/// so a remote that needs a password fails with git's words in `error`.
+/// Exit 0 with this envelope for every outcome once the workbench resolves.
+package struct WorkbenchGitFetchResult: Decodable, Equatable, Sendable {
+    package var workbenchID: Int64
+    package var gitAvailable: Bool
+    package var git: Bool
+    package var note: String
+    /// The repository has no origin remote; nothing ran.
+    package var noRemote: Bool
+    package var fetched: Bool
+    /// When this fetch finished; nil unless `fetched`.
+    package var fetchedAt: Date?
+    package var timedOut: Bool
+    package var error: String
+    /// The `--folder` asked for could not be used (board #565); nothing ran.
+    package var refused: String
+    package var refusedDetail: String
+
+    package init(
+        workbenchID: Int64 = 0,
+        gitAvailable: Bool = true,
+        git: Bool = true,
+        note: String = "",
+        noRemote: Bool = false,
+        fetched: Bool = false,
+        fetchedAt: Date? = nil,
+        timedOut: Bool = false,
+        error: String = "",
+        refused: String = "",
+        refusedDetail: String = ""
+    ) {
+        self.workbenchID = workbenchID
+        self.gitAvailable = gitAvailable
+        self.git = git
+        self.note = note
+        self.noRemote = noRemote
+        self.fetched = fetched
+        self.fetchedAt = fetchedAt
+        self.timedOut = timedOut
+        self.error = error
+        self.refused = refused
+        self.refusedDetail = refusedDetail
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fetched = try c.decode(Bool.self, forKey: .fetched)
+        workbenchID = try c.decodeIfPresent(Int64.self, forKey: .workbenchID) ?? 0
+        gitAvailable = try c.decodeIfPresent(Bool.self, forKey: .gitAvailable) ?? true
+        git = try c.decodeIfPresent(Bool.self, forKey: .git) ?? true
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        noRemote = try c.decodeIfPresent(Bool.self, forKey: .noRemote) ?? false
+        fetchedAt = WorkbenchGitBranch.parseTime(try c.decodeIfPresent(String.self, forKey: .fetchedAt) ?? "")
+        timedOut = try c.decodeIfPresent(Bool.self, forKey: .timedOut) ?? false
+        error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
+        refused = try c.decodeIfPresent(String.self, forKey: .refused) ?? ""
+        refusedDetail = try c.decodeIfPresent(String.self, forKey: .refusedDetail) ?? ""
+    }
+
+    package enum CodingKeys: String, CodingKey {
+        case git, note, fetched, error, refused
+        case workbenchID = "workbench_id"
+        case gitAvailable = "git_available"
+        case noRemote = "no_remote"
+        case fetchedAt = "fetched_at"
+        case timedOut = "timed_out"
+        case refusedDetail = "refused_detail"
+    }
+}
+
+/// `workbench git switch|create|checkout --json`. Every refusal arrives as exit 0
 /// with this envelope (`ProcessCLIRunner` drops stdout on a non-zero exit):
 /// `needsConfirmation` asks the owner first (resend with `--stash` /
 /// `--confirm-agent`), `refused` cannot be overridden, `error` is git's own
@@ -312,7 +430,7 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
     package var switched: Bool
     /// Already on the branch: nothing was written.
     package var already: Bool
-    /// `create` only.
+    /// `create`, and `checkout` once its local branch was made.
     package var created: Bool
     package var needsConfirmation: [Confirmation]
     /// `needs_confirmation` values this app does not know (a newer CLI's

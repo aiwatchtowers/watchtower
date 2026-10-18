@@ -2,9 +2,11 @@ import Foundation
 
 /// What the owner confirms before a branch switch Go refused to make on its
 /// own (`needs_confirmation`): the dialog's text and the flags the resent
-/// `workbench git switch` carries.
+/// `workbench git switch` (or `checkout`, for a remote-only branch) carries.
 package struct BranchSwitchConfirmation: Equatable, Sendable {
     package let branch: String
+    /// A remote-only branch (board #563): resent as `workbench git checkout`.
+    package var checkout = false
     package let title: String
     package let message: String
     package let primaryLabel: String
@@ -125,6 +127,15 @@ package enum WorkbenchBranchPresentation {
         return branches.filter { $0.name.range(of: needle, options: .caseInsensitive) != nil }
     }
 
+    /// `matchingBranches` for origin's remote-only branches (board #563).
+    package static func matchingRemoteBranches(
+        _ branches: [WorkbenchGitRemoteBranch], query: String
+    ) -> [WorkbenchGitRemoteBranch] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return branches }
+        return branches.filter { $0.name.range(of: needle, options: .caseInsensitive) != nil }
+    }
+
     /// The row's caption for a branch whose upstream was deleted: it is not
     /// level with it, there is nothing left to compare.
     package static func upstreamCaption(_ branch: WorkbenchGitBranch) -> String? {
@@ -154,7 +165,11 @@ package enum WorkbenchBranchPresentation {
     /// confirm (it switched, was already there, or was refused outright).
     /// `stashing`: the refused call already carried `--stash` (the owner
     /// confirmed it, then a session started) — the resend keeps it.
-    package static func confirmation(for result: WorkbenchGitSwitchResult, stashing: Bool) -> BranchSwitchConfirmation? {
+    /// `checkout`: the call was `workbench git checkout` of a remote-only
+    /// branch (board #563), resent the same way.
+    package static func confirmation(
+        for result: WorkbenchGitSwitchResult, stashing: Bool, checkout: Bool = false
+    ) -> BranchSwitchConfirmation? {
         guard !result.switched, !result.already, !result.needsConfirmation.isEmpty else { return nil }
         let dirty = stashing || result.needsConfirmation.contains(.uncommittedChanges)
         let agent = result.needsConfirmation.contains(.agentRunning)
@@ -171,11 +186,13 @@ package enum WorkbenchBranchPresentation {
             parts.append("\(subject) will be stashed (untracked files included) and stay in the stash list — "
                          + "Watchtower does not restore them after the switch.")
         }
+        let verb = checkout ? "check out" : "switch"
         return BranchSwitchConfirmation(
             branch: result.branch,
-            title: "Switch to \(result.branch)?",
+            checkout: checkout,
+            title: checkout ? "Check out \(result.branch) from origin?" : "Switch to \(result.branch)?",
             message: parts.joined(separator: "\n\n"),
-            primaryLabel: dirty ? "Stash and switch" : "Switch anyway",
+            primaryLabel: dirty ? "Stash and \(verb)" : (checkout ? "Check out anyway" : "Switch anyway"),
             stash: dirty,
             confirmAgent: agent
         )

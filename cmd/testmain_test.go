@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/extract"
 	"watchtower/internal/gittest"
+	"watchtower/internal/ownerconfirm"
 )
 
 // TestMain installs the db schema template cache before running tests and
@@ -63,6 +64,11 @@ func TestMain(m *testing.M) {
 	// The test binary as the real CLI (os.Args[1:] are its arguments), for
 	// tests that need a process: signals, stdin EOF, exit codes.
 	if os.Getenv(runCLIEnv) == "1" {
+		// The owner-confirm argv test's listener is this test binary, not
+		// the signed app: its subprocess trusts the peer (test binary only).
+		if os.Getenv(trustTestPeerEnv) == "1" {
+			ownerconfirm.VerifyPeer = func(context.Context, int) error { return nil }
+		}
 		os.Exit(Execute())
 	}
 	// The test binary as a stdio MCP server, a Quick Connection's command
@@ -83,6 +89,13 @@ func TestMain(m *testing.M) {
 	codexFindBinary = func() (string, error) { return "", devpack.ErrCodexNotFound }
 	codexAppServerStart = func(context.Context, string, []string, []string) (codex.AppServer, error) {
 		return nil, errors.New("the codex app-server is stubbed out in cmd tests")
+	}
+	// No cmd test may ask a running Desktop for the owner's confirmation
+	// (AGENT-07): by default the owner confirms, as their click in the
+	// Desktop would. The AGENT-07 tests answer otherwise (withOwnerDesktop);
+	// the agent-marker refusal comes first and never asks.
+	askOwnerDesktop = func(context.Context, string, ownerconfirm.Request) (ownerconfirm.Reply, error) {
+		return ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil
 	}
 	// No git a cmd test starts may leave maintenance writing into a
 	// t.TempDir repository after it returns.

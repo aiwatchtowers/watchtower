@@ -64,8 +64,11 @@ The two exceptions, both pressed by the owner in the Desktop:
   lesson stays `proposed`.
 
 Both commands refuse to run under an AI agent's environment marker
-(`refuseUnderAgent`, the AGENT-07 marker set), so "owner-pressed" holds: an
-agent in the session cannot undo a hunk or write a house rule through the CLI.
+(`refuseUnderAgent`, the AGENT-07 marker set) and, without one, run only after
+the owner's Confirm in the running Desktop (`confirmWithOwner`, board #568; the
+Desktop's own press is confirmed at once, the window shows the hunk or the
+lesson text), so "owner-pressed" holds: an agent in the session cannot undo a
+hunk or write a house rule through the CLI.
 
 **Why locked:** The reviewer runs over the owner's live work while an agent may
 be editing it. A staged file, a moved ref or a rewritten file under the owner's
@@ -260,3 +263,4 @@ agent (or a cloned repository) planted, with no owner action.
 - 2026-10-16 (board #328, final review fix wave): REVIEW-01 — the temp index is seeded from a read-only copy of the owner's index (read-tree HEAD fallback). REVIEW-03 — outdated rows are carried as outdated; a sent round takes no comment and only `open()` opens the next round (`start --refresh` never creates one). REVIEW-04 — Go's `sent: false` now shows "This round was already sent"; `get_review` marks delivered only after the comments read.
 - 2026-10-16 (board #328, owner ask #183): REVIEW-01 — the temp index is forced unsplit (`core.splitIndex=false` via `GIT_CONFIG_*` env); no `sharedindex.*` is written into the owner's `$GIT_DIR`.
 - 2026-10-16 (board #328, diff reviewer Plan 3, **owner approved in ask #214**): REVIEW-01 amended — Undo (one hunk's work-tree file, `apply -R` from the repository top, never `--index`/`--cached`, symlinked parents refused) and Accept (`.watchtower/review.md` in the workbench folder, `AppendLessonRule` only) are the two owner-pressed writes; both CLI commands refuse under the AGENT-07 agent markers (`refuseUnderAgent`). REVIEW-02 added (Undo's preconditions: open round, agent not working — Go `agent_state`, Desktop working/Agents working —, not undone yet, blob unchanged, `apply --check -R`). REVIEW-03 amended — the agent may resolve a comment with `reply_review_comment`; it is not carried but stays listed under Resolved by the agent with Reopen. REVIEW-05 strengthened — `apply` and `hash-object` join `contentReads`. Module list gains migration 00128 (`review_agent_ai`, renumbered from 00125 at the merges with main, which took 00125–00127; 00124 is Plan 2's `review_checks`), `internal/reviewai/`, `internal/db/review_agent.go`, the new cmd and tools files. No guard relaxed or renamed. `agent-actions.md` needs no change: `annotate_changes` and `reply_review_comment` are ordinary audited workbench writes under DEV-06's DirectApply, and the two refusals reuse the AGENT-07 marker set without widening AGENT-07's list (their guards live here).
+- 2026-10-18 (board #568, AGENT-07 amended, owner approved in ask #357): strengthening, no guard changed. Undo and the lessons commands keep the marker refusal; without a marker they also need the owner's Confirm in the running Desktop (`confirmWithOwner`), whose window shows the hunk or the lesson text.

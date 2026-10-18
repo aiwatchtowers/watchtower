@@ -392,6 +392,9 @@ func runActionsApprove(cmd *cobra.Command, args []string) error {
 	if err := refuseUnderAgent("approve an action"); err != nil {
 		return err
 	}
+	if err := confirmWithOwner("approve an action", actionConfirmDetail(args[0])); err != nil {
+		return err
+	}
 	return decideAndMaybeApply(cmd, args[0], []string{"pending"}, "approved", true)
 }
 
@@ -403,12 +406,15 @@ func runActionsApply(cmd *cobra.Command, args []string) error {
 	if err := refuseUnderAgent("apply an action"); err != nil {
 		return err
 	}
+	if err := confirmWithOwner("apply an action", actionConfirmDetail(args[0])); err != nil {
+		return err
+	}
 	return decideAndMaybeApply(cmd, args[0], nil, "", true)
 }
 
 func runActionsTrust(cmd *cobra.Command, args []string) error {
 	if tools.Trust(args[1]) == tools.TrustExecute {
-		if err := refuseUnderAgent("grant execute trust"); err != nil {
+		if err := requireOwner("grant execute trust"); err != nil {
 			return err
 		}
 	}
