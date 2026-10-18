@@ -75,6 +75,45 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         XCTAssertEqual(daemon.starts, 1)
     }
 
+    /// Starts enqueued before the step began, held behind a slow item, re-check
+    /// the gate when they run: none starts a daemon while the step compacts.
+    func testQueuedStartsRecheckTheGateWhenTheyRun() async throws {
+        let made = makeAppState(due: true)
+        let appState = made.appState
+        let daemon = made.daemon
+        let blocker = LaunchFakeSleeper()
+        appState.enqueueDaemonStart { await blocker.sleep() }
+        await until { blocker.pendingCount == 1 }
+
+        appState.ensureDaemonRunning()
+        appState.bringUpDaemonInBackground(startOnly: false)
+        appState.startDaemonFromBanner()
+        let beforeRestart = appState.daemonStartChain
+        let restart = Task { try await appState.restartOnChain(daemon) }
+        await until { appState.daemonStartChain != beforeRestart }
+        let beforeDisconnect = appState.daemonStartChain
+        let disconnect = Task {
+            await appState.disconnectSlackOnQueue(stop: {}, disconnect: { true }, start: { self.calls.append("slackStart") })
+        }
+        await until { appState.daemonStartChain != beforeDisconnect }
+        XCTAssertTrue(appState.isStartingDaemon, "the banner Start is queued, not refused")
+
+        let launch = Task { await appState.migrateCompactOpen() }
+        await until { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
+        blocker.releaseAll()
+        try await restart.value
+        let disconnected = await disconnect.value
+        await appState.daemonStartChain?.value
+        XCTAssertTrue(disconnected)
+        XCTAssertEqual(daemon.starts, 0)
+        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertFalse(appState.isStartingDaemon)
+        XCTAssertFalse(calls.items.contains("slackStart"))
+
+        child.exit(status: 0)
+        _ = await launch.value
+    }
+
     func testDaemonStartsWorkAgainAfterStep() async {
         let made = makeAppState(due: false)
         _ = await made.appState.migrateCompactOpen()
