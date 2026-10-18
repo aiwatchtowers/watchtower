@@ -1,0 +1,107 @@
+import Foundation
+
+/// Where the branch popover's `git fetch origin` stands for one repository
+/// (board #563). In memory only: the first popover after launch fetches.
+package struct GitFetchState: Equatable, Sendable {
+    /// A fetch is in flight; no second one starts.
+    package var running = false
+    /// When the last fetch started, whatever its outcome — what the
+    /// background fetch's rarity counts from, so an offline Mac does not
+    /// retry on every open.
+    package var lastAttemptAt: Date?
+    /// When the last successful fetch finished.
+    package var lastFetchedAt: Date?
+    /// The quiet note of the last failed fetch; nil after a success.
+    package var failure: String?
+    /// The repository has no origin remote: nothing to fetch.
+    package var noRemote = false
+
+    package init(
+        running: Bool = false,
+        lastAttemptAt: Date? = nil,
+        lastFetchedAt: Date? = nil,
+        failure: String? = nil,
+        noRemote: Bool = false
+    ) {
+        self.running = running
+        self.lastAttemptAt = lastAttemptAt
+        self.lastFetchedAt = lastFetchedAt
+        self.failure = failure
+        self.noRemote = noRemote
+    }
+}
+
+/// The branch popover's fetch row (board #563): when a background fetch is
+/// due, the "Fetched 2m ago" caption and the quiet failure note. Pure.
+package enum WorkbenchFetchPresentation {
+    /// A popover opening fetches in the background only when the last try
+    /// is older than this.
+    package static let backgroundInterval: TimeInterval = 5 * 60
+
+    /// Whether opening the popover starts a background fetch: never while
+    /// one runs or without an origin, otherwise when the last try is older
+    /// than `backgroundInterval` (or there was none).
+    package static func isBackgroundFetchDue(_ state: GitFetchState?, now: Date) -> Bool {
+        guard let state else { return true }
+        guard !state.running, !state.noRemote else { return false }
+        guard let last = state.lastAttemptAt else { return true }
+        return now.timeIntervalSince(last) >= backgroundInterval
+    }
+
+    /// `Fetching…`, `Fetched just now`, `Fetched 2m ago`, `Not fetched yet`;
+    /// nil without an origin remote.
+    package static func caption(_ state: GitFetchState?, now: Date) -> String? {
+        if state?.noRemote == true { return nil }
+        if state?.running == true { return "Fetching origin…" }
+        guard let fetched = state?.lastFetchedAt else { return "Not fetched yet" }
+        return "Fetched " + ago(now.timeIntervalSince(fetched))
+    }
+
+    private static func ago(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds))
+        switch s {
+        case ..<60: return "just now"
+        case ..<3600: return "\(s / 60)m ago"
+        case ..<86400: return "\(s / 3600)h ago"
+        default: return "\(s / 86400)d ago"
+        }
+    }
+
+    /// The quiet note of a fetch that did not happen, nil for a success or
+    /// a repository without origin. git's first line, without its
+    /// `fatal: ` — the branch list still works on the local data.
+    package static func failure(_ result: WorkbenchGitFetchResult) -> String? {
+        guard !result.fetched, !result.noRemote else { return nil }
+        let detail: String
+        if result.timedOut {
+            detail = "it did not answer within 20 s"
+        } else if !result.refused.isEmpty {
+            detail = WorkbenchBranchPresentation.refusalText(refused: result.refused, detail: result.refusedDetail)
+        } else if !result.error.isEmpty {
+            detail = firstLine(result.error)
+                + (needsCredentials(result.error) ? " — Watchtower never asks for a password or key; fetch once from a terminal" : "")
+        } else if !result.note.isEmpty {
+            detail = result.note
+        } else {
+            detail = "git gave no reason"
+        }
+        return "Couldn't fetch origin: \(detail)"
+    }
+
+    /// A call that did not come back with an envelope.
+    package static func failure(callError text: String) -> String {
+        "Couldn't fetch origin: \(text)"
+    }
+
+    /// git's words for a remote that wanted a password, a key passphrase
+    /// or a host key confirmation the fetch was not allowed to ask for.
+    private static func needsCredentials(_ error: String) -> Bool {
+        ["terminal prompts disabled", "Permission denied", "Host key verification failed"].contains { error.contains($0) }
+    }
+
+    private static func firstLine(_ error: String) -> String {
+        let line = error.split(whereSeparator: \.isNewline).first.map(String.init) ?? error
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return trimmed.hasPrefix("fatal: ") ? String(trimmed.dropFirst("fatal: ".count)) : trimmed
+    }
+}

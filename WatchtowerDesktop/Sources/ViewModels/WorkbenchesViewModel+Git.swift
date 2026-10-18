@@ -92,6 +92,18 @@ extension WorkbenchesViewModel {
         await runSwitch(branch, project: project, root: root, stash: false, confirmAgent: false)
     }
 
+    /// "Check out" on a remote-only branch (board #563): `workbench git
+    /// checkout` makes a local branch tracking origin's and switches to it,
+    /// through exactly the switch's flow — the code viewer's edits saved
+    /// first, the first call without a confirmation flag, the owner's
+    /// confirmations resent.
+    func checkOutRemoteBranch(_ branch: String, project: Workbench, root: CodeRoot? = nil) async {
+        let root = root ?? activeCodeRoot(project: project)
+        guard switchingBranch[root] == nil else { return }
+        pendingBranchConfirmation[root] = nil
+        await runSwitch(branch, project: project, root: root, stash: false, confirmAgent: false, checkout: true)
+    }
+
     /// The owner confirmed a switch: resend it with exactly the flags the
     /// dialog named, in the root it was asked in. The live-session fact is
     /// read again, so an agent started since the first try is still asked
@@ -104,7 +116,7 @@ extension WorkbenchesViewModel {
         guard switchingBranch[root] == nil else { return }
         pendingBranchConfirmation[root] = nil
         await runSwitch(confirmation.branch, project: project, root: root,
-                        stash: confirmation.stash, confirmAgent: confirmation.confirmAgent)
+                        stash: confirmation.stash, confirmAgent: confirmation.confirmAgent, checkout: confirmation.checkout)
     }
 
     func cancelPendingSwitch(key: GitRootKey) {
@@ -245,7 +257,10 @@ extension WorkbenchesViewModel {
             && TerminalCenter.resolvedPath(status.folderRoot) == TerminalCenter.resolvedPath(folder)
     }
 
-    private func runSwitch(_ branch: String, project: Workbench, root: CodeRoot, stash: Bool, confirmAgent: Bool) async {
+    /// `checkout`: a remote-only branch, sent as `workbench git checkout`.
+    private func runSwitch(
+        _ branch: String, project: Workbench, root: CodeRoot, stash: Bool, confirmAgent: Bool, checkout: Bool = false
+    ) async {
         let id = project.id
         let key = GitRootKey(root)
         // A worktree root without its own status (Go answered with the main
@@ -270,23 +285,25 @@ extension WorkbenchesViewModel {
         } ?? false
         let result: WorkbenchGitSwitchResult
         do {
-            result = try await cli.gitSwitch(projectID: id, branch: branch, stash: stash, agentRunning: agentRunning,
-                                             confirmAgent: confirmAgent && agentRunning, folder: key.worktreeFolder)
+            let send = checkout ? cli.gitCheckout : cli.gitSwitch
+            result = try await send(id, branch, stash, agentRunning, confirmAgent && agentRunning, key.worktreeFolder)
         } catch {
-            gitErrors[key] = "Could not switch to \(branch): \(gitFailureText(error, command: "switch", workbenchID: id))"
+            let command = checkout ? "checkout" : "switch"
+            let action = checkout ? "check out" : "switch to"
+            gitErrors[key] = "Could not \(action) \(branch): \(gitFailureText(error, command: command, workbenchID: id))"
             await refreshGitStatus(key: key)
             return
         }
         // Go wrote nothing: wait for the owner, no further call. A stash
         // the owner already agreed to rides along with what Go asks now.
-        if let confirmation = WorkbenchBranchPresentation.confirmation(for: result, stashing: stash) {
+        if let confirmation = WorkbenchBranchPresentation.confirmation(for: result, stashing: stash, checkout: checkout) {
             pendingBranchConfirmation[key] = confirmation
             pendingBranchBase[key] = gitStatus[key].map { WorkbenchBranchPresentation.label($0).text }
             return
         }
         let outcome = WorkbenchBranchPresentation.outcome(result)
         let moved = result.switched || result.already
-        gitErrors[key] = outcome.error ?? (moved ? nil : "Not switched to \(branch).")
+        gitErrors[key] = outcome.error ?? (moved ? nil : (checkout ? "Not checked out: \(branch)." : "Not switched to \(branch)."))
         gitNotices[key] = outcome.notice
         if let stash = outcome.stash { gitStashNotes[key] = stash }
         await afterGitWrite(project: project, root: root)
@@ -322,7 +339,7 @@ extension WorkbenchesViewModel {
     /// The branch list, then the board's branch targets for the badges. A
     /// failed list keeps the last good one (shown as stale); a failed
     /// badge read drops the old badges rather than show them as current.
-    private func reloadBranchList(project: Workbench, root: CodeRoot) async {
+    func reloadBranchList(project: Workbench, root: CodeRoot) async {
         let id = project.id
         let key = GitRootKey(root)
         guard let cli else {

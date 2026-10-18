@@ -6,7 +6,10 @@ import WatchtowerCore
 /// the CLI; a dirty tree or a live Claude Code session comes back as a
 /// confirmation, shown here — never a discard or a force. Errors stay as
 /// text in the popover. It works on `root`, the folder the page shows: the
-/// session's worktree or the main folder (board #565).
+/// session's worktree or the main folder (board #565). Since board #563 it
+/// fetches origin (in the background when due, or from the Fetch button —
+/// the view model holds the fetch) and lists origin's remote-only branches
+/// to check out.
 struct WorkbenchBranchPopover: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
@@ -31,10 +34,12 @@ struct WorkbenchBranchPopover: View {
             TextField("Find branch", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .focused($searchFocused)
+            fetchRow
             Text("LOCAL BRANCHES")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
             branchList
+            remoteOnlyList
             Divider()
             newBranchRow
             Button {
@@ -50,6 +55,7 @@ struct WorkbenchBranchPopover: View {
         .task(id: key) {
             searchFocused = true
             await vm.loadBranches(project: project, root: root)
+            vm.fetchOriginIfDue(project: project, root: root)
         }
         .confirmationDialog(
             pending?.title ?? "",
@@ -114,6 +120,75 @@ struct WorkbenchBranchPopover: View {
             }
         } else if failed == nil {
             ProgressView().controlSize(.small)
+        }
+    }
+
+    /// "Fetched 2m ago" and the Fetch button; a failed fetch is a quiet
+    /// note under it. Nothing without an origin remote, or before a status
+    /// placed the repository.
+    @ViewBuilder
+    private var fetchRow: some View {
+        let key = GitRootKey(root)
+        if vm.gitFetchRepository(key) != nil {
+            let state = vm.gitFetchState(key)
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                if let caption = WorkbenchFetchPresentation.caption(state, now: context.date) {
+                    HStack(spacing: 4) {
+                        Text(caption)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        if state?.running == true {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Button {
+                                vm.fetchOrigin(project: project, root: root)
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Fetch origin (git fetch --prune origin) — never asks for a password")
+                            .accessibilityLabel("Fetch origin")
+                        }
+                    }
+                }
+            }
+            if let failure = state?.failure { caption(failure, color: .secondary) }
+        }
+    }
+
+    /// Origin's branches with no local copy (board #563); a row checks one
+    /// out as a local tracking branch behind the switch's confirmations.
+    @ViewBuilder
+    private var remoteOnlyList: some View {
+        let key = GitRootKey(root)
+        if let list = vm.gitBranches[key] {
+            let rows = WorkbenchBranchPresentation.matchingRemoteBranches(list.remoteOnly, query: query)
+            if !rows.isEmpty || !list.remoteOnlyError.isEmpty {
+                Text("REMOTE ONLY")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+            }
+            if !list.remoteOnlyError.isEmpty {
+                caption("Could not list origin's branches: \(list.remoteOnlyError)", color: .secondary)
+            }
+            if !rows.isEmpty {
+                let failed = if case .failed = vm.branchListStates[key] ?? .loading { true } else { false }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(rows) { branch in
+                            WorkbenchRemoteBranchRow(branch: branch, switching: vm.switchingBranch[key]) {
+                                Task { await vm.checkOutRemoteBranch(branch.name, project: project, root: root) }
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 140)
+                .fixedSize(horizontal: false, vertical: true)
+                .disabled(failed || !vm.gitRootIsPlaced(key))
+            }
         }
     }
 
@@ -188,6 +263,46 @@ struct WorkbenchBranchPopover: View {
                 newName = ""
             }
         }
+    }
+}
+
+/// One of origin's remote-only branches: its name, when its tip was
+/// committed and a "Check out" action.
+struct WorkbenchRemoteBranchRow: View {
+    let branch: WorkbenchGitRemoteBranch
+    /// The branch a switch or checkout is running for, if any.
+    let switching: String?
+    let onCheckOut: () -> Void
+
+    var body: some View {
+        Button(action: onCheckOut) {
+            HStack(spacing: 6) {
+                Image(systemName: "icloud")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text(branch.name)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                if switching == branch.name { ProgressView().controlSize(.mini) }
+                if let committed = branch.committedAt {
+                    Text(TimeFormatting.relativeTime(from: committed))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Check out")
+                    .font(.caption2)
+                    .foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(switching != nil)
+        .help("Check out \(branch.ref) as a local branch tracking it")
     }
 }
 

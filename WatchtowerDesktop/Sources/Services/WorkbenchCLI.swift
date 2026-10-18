@@ -852,6 +852,38 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
     }
 
+    /// Checks out one of origin's remote-only branches (board #563): a local
+    /// branch tracking `origin/<branch>`, switched to behind the same guards
+    /// and confirmations as `gitSwitch`.
+    func gitCheckout(
+        projectID: Int64,
+        branch: String,
+        stash: Bool,
+        agentRunning: Bool,
+        confirmAgent: Bool,
+        folder: String? = nil
+    ) async throws -> WorkbenchGitSwitchResult {
+        var args = ["workbench", "git", "checkout", "--workbench", String(projectID), "--branch", branch]
+        if stash { args.append("--stash") }
+        if agentRunning { args.append("--agent-running") }
+        if confirmAgent { args.append("--confirm-agent") }
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
+    }
+
+    /// `git fetch --prune origin` (board #563): only origin's remote-tracking
+    /// refs move. Go never lets it prompt; every outcome is an exit-0
+    /// envelope. `folder`: in a session's worktree (board #565).
+    func gitFetch(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitFetchResult {
+        var args = ["workbench", "git", "fetch", "--workbench", String(projectID)]
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(WorkbenchGitFetchResult.self, from: data)
+    }
+
     /// Creates a branch from HEAD and switches to it (`git switch -c`): no
     /// files change, so no guard applies.
     /// `folder`: in a session's worktree (board #565).
