@@ -2101,6 +2101,10 @@ CREATE TABLE IF NOT EXISTS kb_dirty (
     gen    INTEGER NOT NULL DEFAULT 0, -- bumped on every re-mark; the drain deletes only the gen it rendered
     PRIMARY KEY (source, key)
 );
+CREATE TABLE IF NOT EXISTS db_maintenance (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (

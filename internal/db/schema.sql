@@ -3170,3 +3170,11 @@ CREATE TABLE IF NOT EXISTS instruction_suggestions (
     decided_at      TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
+
+-- Database maintenance (00142, #850): compaction state for `watchtower db compact`.
+-- Keys: last_compacted_version, compacted_at (RFC 3339 UTC), compact_failures,
+-- compact_failures_version. Absent key = never compacted / no failures.
+CREATE TABLE IF NOT EXISTS db_maintenance (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

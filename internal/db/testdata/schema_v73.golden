@@ -1083,6 +1083,12 @@ UNIQUE (user_id, plan_date),
 FOREIGN KEY (briefing_id) REFERENCES briefings(id) ON DELETE SET NULL
 )
 
+table	db_maintenance
+CREATE TABLE db_maintenance (
+key TEXT PRIMARY KEY,
+value TEXT NOT NULL
+)
+
 table	decision_reads
 CREATE TABLE decision_reads (
 digest_id INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
@@ -4035,6 +4041,10 @@ GROUP BY up.ancestor
 12	read_at	TEXT	notnull=0	dflt=NULL	pk=0
 13	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 14	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## db_maintenance
+0	key	TEXT	notnull=0	dflt=NULL	pk=1
+1	value	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## decision_reads
 0	digest_id	INTEGER	notnull=1	dflt=NULL	pk=1
