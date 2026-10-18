@@ -377,9 +377,9 @@ func (p *Pipeline) dispatch(ctx context.Context, c candidate, tool *tools.Tool) 
 	}
 	// Surface "reaction" keeps these proposals out of any chat conversation;
 	// the External-never-auto-execute rule (AGENT-03) and trust per tool and
-	// surface are
-	// enforced inside Propose, so a create_jira_issue or create_linear_issue
-	// reaction always lands as a pending proposal even if create_target is execute-trusted.
+	// surface are enforced inside Propose, so a create_jira_issue or
+	// create_linear_issue reaction always lands as a pending proposal even if
+	// create_target is execute-trusted.
 	binding := tools.Binding{
 		Surface:     reactionSurface,
 		ContextType: "reaction",
