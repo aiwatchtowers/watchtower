@@ -32,12 +32,6 @@ import (
 // window well below "for weeks."
 const knownKeysTTL = time.Hour
 
-// Trackers, in the order a prefix known to both writes its links.
-const (
-	trackerJira   = "jira"
-	trackerLinear = "linear"
-)
-
 // KeyDetector detects issue keys in text and links them to Slack messages,
 // tracks and digest decisions.
 type KeyDetector struct {
@@ -61,7 +55,7 @@ type KeyDetector struct {
 
 // NewKeyDetector creates a KeyDetector over both trackers.
 func NewKeyDetector(database *db.DB) *KeyDetector {
-	return newKeyDetector(database, []string{trackerJira, trackerLinear})
+	return newKeyDetector(database, []string{db.TrackerJira, db.TrackerLinear})
 }
 
 func newKeyDetector(database *db.DB, trackers []string) *KeyDetector {
@@ -106,10 +100,10 @@ func (d *KeyDetector) SetLogger(l *log.Logger) {
 func NewKeyDetectorIfEnabled(cfg *config.Config, database *db.DB) *KeyDetector {
 	var trackers []string
 	if cfg.Jira.Enabled {
-		trackers = append(trackers, trackerJira)
+		trackers = append(trackers, db.TrackerJira)
 	}
 	if cfg.Linear.Enabled {
-		trackers = append(trackers, trackerLinear)
+		trackers = append(trackers, db.TrackerLinear)
 	}
 	if len(trackers) == 0 {
 		return nil
@@ -331,7 +325,7 @@ func (d *KeyDetector) refreshKnownKeys() bool {
 // loadPrefixes reads one tracker's known prefixes: Jira project keys or Linear
 // team keys.
 func (d *KeyDetector) loadPrefixes(tracker string) ([]string, error) {
-	if tracker == trackerJira {
+	if tracker == db.TrackerJira {
 		return d.db.GetKnownProjectKeys()
 	}
 	return d.db.GetKnownLinearTeamKeys()

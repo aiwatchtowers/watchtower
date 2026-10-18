@@ -191,8 +191,8 @@ func runTracks(cmd *cobra.Command, args []string) error {
 	// The track_linking toggle governs Jira and Linear links alike (spec 3.5),
 	// each only while its tracker is enabled.
 	linkScope, jiraEnabled := jira.TrackerFeatureScope(cfg, "track_linking")
-	jiraLinks := jiraEnabled && jira.ScopeCovers(linkScope, "jira")
-	linearLinks := jiraEnabled && jira.ScopeCovers(linkScope, "linear")
+	jiraLinks := jiraEnabled && jira.ScopeCovers(linkScope, db.TrackerJira)
+	linearLinks := jiraEnabled && jira.ScopeCovers(linkScope, db.TrackerLinear)
 
 	if (tracksFlagJira || tracksFlagNoJira) && !jiraEnabled {
 		fmt.Fprintln(out, "Jira track linking is not enabled. Ignoring --jira/--no-jira flags.")
@@ -894,7 +894,7 @@ func setTrackEnabled(cmd *cobra.Command, args []string, enabled bool) error {
 // printTrackLinkedLinearIssues lists the Linear issues a track links to
 // (issue_slack_links, tracker 'linear'), under the same track_linking toggle.
 func printTrackLinkedLinearIssues(out io.Writer, database *db.DB, cfg *config.Config, track *db.Track) {
-	if scope, ok := jira.TrackerFeatureScope(cfg, "track_linking"); !ok || !jira.ScopeCovers(scope, "linear") {
+	if scope, ok := jira.TrackerFeatureScope(cfg, "track_linking"); !ok || !jira.ScopeCovers(scope, db.TrackerLinear) {
 		return
 	}
 	byTrack, err := database.GetLinearIssuesForTracks([]int{track.ID})

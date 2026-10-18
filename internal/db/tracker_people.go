@@ -59,7 +59,7 @@ func (db *DB) GetTrackerDeliveryStats(tracker, slackID string, from, to string) 
 		return nil, fmt.Errorf("tracker delivery: open issues: %w", err)
 	}
 
-	if tracker == "" || tracker == "jira" {
+	if tracker == "" || tracker == TrackerJira {
 		stats.Components, err = db.distinctJSONValues(`SELECT DISTINCT components FROM jira_issues
 			WHERE `+closedBase+` AND components != '[]'`, slackID, from, to)
 		if err != nil {

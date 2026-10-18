@@ -115,7 +115,7 @@ func loadAttendeeJira(database *db.DB, scope string, ids []string, today time.Ti
 // isBlocked keeps the Jira status-name rule and adds Linear's blocking
 // relation (tracker_issues.is_blocked for a Linear row).
 func isBlocked(iss db.TrackerIssue) bool {
-	if iss.Tracker == "linear" && iss.IsBlocked {
+	if iss.Tracker == db.TrackerLinear && iss.IsBlocked {
 		return true
 	}
 	return strings.EqualFold(iss.Status, "Blocked") || strings.Contains(strings.ToLower(iss.Status), "blocked")

@@ -1,6 +1,9 @@
 package jira
 
-import "watchtower/internal/config"
+import (
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+)
 
 // TrackerScope names the trackers a tracker-neutral read may cover (spec
 // 2026-10-15-linear-integration-design §3.5): "jira" when only jira.enabled is
@@ -16,9 +19,9 @@ func TrackerScope(cfg *config.Config) (tracker string, ok bool) {
 	case cfg.Jira.Enabled && cfg.Linear.Enabled:
 		return "", true
 	case cfg.Jira.Enabled:
-		return "jira", true
+		return db.TrackerJira, true
 	case cfg.Linear.Enabled:
-		return "linear", true
+		return db.TrackerLinear, true
 	}
 	return "", false
 }

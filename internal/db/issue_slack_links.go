@@ -66,8 +66,8 @@ const (
 func issueSlackLinkUpsert(link IssueSlackLink) (IssueSlackLink, string, error) {
 	switch link.Tracker {
 	case "":
-		link.Tracker = "jira"
-	case "jira", "linear":
+		link.Tracker = TrackerJira
+	case TrackerJira, TrackerLinear:
 	default:
 		return link, "", fmt.Errorf("upserting issue slack link %s: unknown tracker %q", link.IssueKey, link.Tracker)
 	}
@@ -199,12 +199,12 @@ func (db *DB) GetIssueSlackLinksByKeys(tracker string, keys []string) ([]IssueSl
 
 // GetJiraSlackLinksByIssue returns all Slack links for a given Jira issue key.
 func (db *DB) GetJiraSlackLinksByIssue(issueKey string) ([]IssueSlackLink, error) {
-	return db.GetIssueSlackLinksByKeys("jira", []string{issueKey})
+	return db.GetIssueSlackLinksByKeys(TrackerJira, []string{issueKey})
 }
 
 // GetJiraSlackLinksByIssueKeys returns all Jira Slack links for a set of issue keys.
 func (db *DB) GetJiraSlackLinksByIssueKeys(keys []string) ([]IssueSlackLink, error) {
-	return db.GetIssueSlackLinksByKeys("jira", keys)
+	return db.GetIssueSlackLinksByKeys(TrackerJira, keys)
 }
 
 // GetJiraSlackLinksByMessage returns all Jira links for a specific Slack message.
