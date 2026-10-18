@@ -27,7 +27,8 @@ func newAgentAnalyticsTestDaemon(t *testing.T) (*Daemon, *db.DB) {
 	al, err := agentlogdb.Open(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = al.Close() })
-	require.NoError(t, agentlogdb.MoveFromMain(context.Background(), database, al, agentlogdb.MoveLockPath(path)))
+	_, err = agentlogdb.MoveFromMain(context.Background(), database, al, agentlogdb.MoveLockPath(path))
+	require.NoError(t, err)
 	d.SetAgentLogDB(al)
 	return d, database
 }

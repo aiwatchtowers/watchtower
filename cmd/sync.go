@@ -968,8 +968,12 @@ func openAgentLog(ctx context.Context, cfg *config.Config, database *db.DB, logg
 		logger.Printf("agent analytics: %v; analytics are skipped until the next start", err)
 		return nil
 	}
-	if err := agentlogdb.MoveFromMain(ctx, database, al, agentlogdb.MoveLockPath(path)); err != nil {
+	res, err := agentlogdb.MoveFromMain(ctx, database, al, agentlogdb.MoveLockPath(path))
+	switch {
+	case err != nil:
 		logger.Printf("agent analytics: moving rows out of watchtower.db: %v; analytics are skipped until a later start moves them", err)
+	case res != nil:
+		logger.Print(res)
 	}
 	return al
 }

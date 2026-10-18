@@ -35,7 +35,8 @@ func newFixture(t *testing.T) *fixture {
 	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { al.Close() })
-	require.NoError(t, agentlogdb.MoveFromMain(context.Background(), d, al, filepath.Join(dir, "agentlog.db.move.lock")))
+	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, filepath.Join(dir, "agentlog.db.move.lock"))
+	require.NoError(t, err)
 	folder := t.TempDir()
 	folder, _ = filepath.EvalSymlinks(folder)
 	wb, err := d.CreateWorkbench("app", folder)
@@ -527,7 +528,8 @@ func TestScan_RefusesBeforeMove(t *testing.T) {
 	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_files`).Scan(&n))
 	assert.Zero(t, n)
 
-	require.NoError(t, agentlogdb.MoveFromMain(context.Background(), d, al, filepath.Join(dir, "agentlog.db.move.lock")))
+	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, filepath.Join(dir, "agentlog.db.move.lock"))
+	require.NoError(t, err)
 	r := f.scan()
 	assert.Equal(t, 1, r.Sessions, "the scan runs once the move is done")
 }

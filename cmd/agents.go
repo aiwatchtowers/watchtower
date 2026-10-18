@@ -74,10 +74,15 @@ func openAgentsDBs() (*db.DB, *agentlogdb.DB, string, error) {
 // moveAgentLogRows runs the one-time move of the analytics rows out of
 // watchtower.db (#849) for the writing agents commands, so a CLI-only
 // install moves too. report and stats never call it: the Desktop polls
-// report, which must neither start a copy nor write watchtower.db.
+// report, which must neither start a copy nor write watchtower.db. A move
+// that did something prints its counts on stderr.
 func moveAgentLogRows(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB, path string) error {
-	if err := agentlogdb.MoveFromMain(cmd.Context(), database, al, agentlogdb.MoveLockPath(path)); err != nil {
+	res, err := agentlogdb.MoveFromMain(cmd.Context(), database, al, agentlogdb.MoveLockPath(path))
+	if err != nil {
 		return fmt.Errorf("moving agent analytics out of watchtower.db: %w", err)
+	}
+	if res != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), res)
 	}
 	return nil
 }

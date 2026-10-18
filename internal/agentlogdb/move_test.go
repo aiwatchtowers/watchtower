@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +40,8 @@ func (f *moveFixture) lockPath() string { return MoveLockPath(filepath.Join(f.di
 
 func (f *moveFixture) move(t *testing.T) error {
 	t.Helper()
-	return MoveFromMain(context.Background(), f.main, f.al, f.lockPath())
+	_, err := MoveFromMain(context.Background(), f.main, f.al, f.lockPath())
+	return err
 }
 
 // seed writes files and sessions (one transcript each, none on disk) into
@@ -228,10 +231,57 @@ func TestMoveFromMain_FreshInstall(t *testing.T) {
 	f.assertMainEmpty(t)
 }
 
+// copySteps counts the committed copy chunks of one MoveFromMain run on a
+// fresh fixture seeded like the two-mover test.
+func copySteps(t *testing.T) int {
+	t.Helper()
+	f := newMoveFixture(t)
+	f.seed(t, 3, 50)
+	var n int
+	moveHook = func(step string) error {
+		if strings.HasPrefix(step, "copy ") {
+			n++
+		}
+		return nil
+	}
+	require.NoError(t, f.move(t))
+	return n
+}
+
+// Two movers on one data directory, each on its own handles: the flock lets
+// one copy; the other waits, finds the marker and copies nothing. The first
+// mover holds its first chunk until the second reaches a copy chunk or
+// 500 ms pass, so without the lock both would copy (INSERT OR IGNORE would
+// hide that in the counts; the copy steps do not).
 func TestMoveFromMain_TwoMoversOneCopy(t *testing.T) {
+	setMoveSeams(t, 10, nil)
+	oneMover := copySteps(t)
+	require.Positive(t, oneMover)
+
 	f := newMoveFixture(t)
 	f.seed(t, 3, 50)
 	want := f.counts(t, f.main)
+	var steps atomic.Int64
+	var first atomic.Bool
+	second := make(chan struct{}, 1)
+	moveHook = func(step string) error {
+		if !strings.HasPrefix(step, "copy ") {
+			return nil
+		}
+		steps.Add(1)
+		if first.CompareAndSwap(false, true) {
+			select {
+			case <-second:
+			case <-time.After(500 * time.Millisecond):
+			}
+			return nil
+		}
+		select {
+		case second <- struct{}{}:
+		default:
+		}
+		return nil
+	}
 
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
@@ -249,18 +299,50 @@ func TestMoveFromMain_TwoMoversOneCopy(t *testing.T) {
 				return
 			}
 			defer al.Close()
-			errs[i] = MoveFromMain(context.Background(), main, al, f.lockPath())
+			_, errs[i] = MoveFromMain(context.Background(), main, al, f.lockPath())
 		})
 	}
 	wg.Wait()
 	require.NoError(t, errs[0])
 	require.NoError(t, errs[1])
+	assert.Equal(t, int64(oneMover), steps.Load(), "only one mover copies")
 	assert.Equal(t, want, f.counts(t, f.al))
 	var dup int
 	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) - COUNT(DISTINCT key) FROM agent_log_events`).Scan(&dup))
 	assert.Zero(t, dup)
 	f.assertMainEmpty(t)
 	f.assertMoved(t)
+}
+
+// The result counts what moved, including an orphan event (its session gone,
+// written with foreign keys off) that is deleted but never copied; a second
+// call has nothing to do and returns nil.
+func TestMoveFromMain_ResultCounts(t *testing.T) {
+	f := newMoveFixture(t)
+	f.seed(t, 2, 3)
+	_, err := f.main.Exec(`PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	_, err = f.main.Exec(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, src_path, src_offset)
+		VALUES ('gone', 'gone:0', 'api_call', '2026-10-01T10:30:00Z', '/gone/x.jsonl', 0)`)
+	require.NoError(t, err)
+	_, err = f.main.Exec(`PRAGMA foreign_keys = ON`)
+	require.NoError(t, err)
+
+	res, err := MoveFromMain(context.Background(), f.main, f.al, f.lockPath())
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, MoveCounts{Files: 2, Sessions: 2, Events: 6}, res.Copied)
+	assert.Equal(t, MoveCounts{Files: 2, Sessions: 2, Events: 7}, res.Deleted)
+	assert.Equal(t, int64(1), res.OrphanEvents)
+	assert.Positive(t, res.Elapsed)
+	assert.Contains(t, res.String(), "copied 2 files, 2 sessions, 6 events")
+	assert.Contains(t, res.String(), "1 orphan events dropped")
+	f.assertMainEmpty(t)
+
+	again, err := MoveFromMain(context.Background(), f.main, f.al, f.lockPath())
+	require.NoError(t, err)
+	assert.Nil(t, again)
+	assert.Empty(t, again.String())
 }
 
 func TestMoveFromMain_DeleteSlicesShortTx(t *testing.T) {

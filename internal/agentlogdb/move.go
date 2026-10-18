@@ -57,6 +57,33 @@ var moveTables = []moveTable{
 // MoveLockPath is the move's flock beside the agentlog.db at path.
 func MoveLockPath(path string) string { return path + ".move.lock" }
 
+// MoveCounts is a row count per moved table.
+type MoveCounts struct{ Files, Sessions, Events int64 }
+
+// at is the count of moveTables[i].
+func (c *MoveCounts) at(i int) *int64 { return [...]*int64{&c.Files, &c.Sessions, &c.Events}[i] }
+
+// MoveResult is what one MoveFromMain call did, for its caller's log line.
+type MoveResult struct {
+	Copied  MoveCounts // rows inserted into agentlog.db
+	Deleted MoveCounts // rows deleted from watchtower.db
+	// OrphanEvents are watchtower.db events whose session was gone (written
+	// with foreign keys off): deleted, never copied.
+	OrphanEvents int64
+	Elapsed      time.Duration
+}
+
+// String is the move's one log line; "" for a nil result.
+func (r *MoveResult) String() string {
+	if r == nil {
+		return ""
+	}
+	return fmt.Sprintf("agent analytics: moved out of watchtower.db in %s: copied %d files, %d sessions, %d events; "+
+		"deleted %d files, %d sessions, %d events from watchtower.db; %d orphan events dropped",
+		r.Elapsed.Round(time.Millisecond), r.Copied.Files, r.Copied.Sessions, r.Copied.Events,
+		r.Deleted.Files, r.Deleted.Sessions, r.Deleted.Events, r.OrphanEvents)
+}
+
 // Moved reports whether MoveFromMain completed for this agentlog.db.
 func (d *DB) Moved() (bool, error) {
 	var ok bool
@@ -76,44 +103,54 @@ func (d *DB) Moved() (bool, error) {
 // transaction — the only analytics write to watchtower.db. The tables stay,
 // empty: an older binary on the same data directory still declares them.
 // Interrupted anywhere, the next call resumes (keys are unique; a marked
-// move skips straight to the delete).
-func MoveFromMain(ctx context.Context, main *db.DB, al *DB, lockPath string) error {
+// move skips straight to the delete). The result is nil when there was
+// nothing to do: already marked and watchtower.db's tables already empty.
+func MoveFromMain(ctx context.Context, main *db.DB, al *DB, lockPath string) (*MoveResult, error) {
+	start := time.Now()
 	lockCtx, cancel := context.WithTimeout(ctx, moveLockWait)
 	defer cancel()
 	unlock, err := fsutil.LockFile(lockCtx, lockPath)
 	if err != nil {
-		return fmt.Errorf("taking the move lock: %w", err)
+		return nil, fmt.Errorf("taking the move lock: %w", err)
 	}
 	defer unlock()
 	has, err := main.HasTable(moveTables[0].name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	moved, err := al.Moved()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	res := &MoveResult{}
 	switch {
 	case !moved && !has:
 		if err := al.withTx(setMoved); err != nil {
-			return fmt.Errorf("setting the move marker: %w", err)
+			return nil, fmt.Errorf("setting the move marker: %w", err)
 		}
 	case !moved:
 		for i, t := range moveTables {
-			if err := copyTable(ctx, main, al, t, i == len(moveTables)-1); err != nil {
-				return fmt.Errorf("copying %s: %w", t.name, err)
+			if err := copyTable(ctx, main, al, t, i == len(moveTables)-1, res.Copied.at(i)); err != nil {
+				return nil, fmt.Errorf("copying %s: %w", t.name, err)
 			}
 		}
 	}
-	if !has {
-		return nil
-	}
-	for i := len(moveTables) - 1; i >= 0; i-- {
-		if err := deleteRows(ctx, main, moveTables[i].name); err != nil {
-			return fmt.Errorf("deleting %s from watchtower.db: %w", moveTables[i].name, err)
+	if has {
+		if err := main.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_log_events
+			WHERE session_uuid NOT IN (SELECT session_uuid FROM agent_log_sessions)`).Scan(&res.OrphanEvents); err != nil {
+			return nil, fmt.Errorf("counting orphan events: %w", err)
+		}
+		for i := len(moveTables) - 1; i >= 0; i-- {
+			if err := deleteRows(ctx, main, moveTables[i].name, res.Deleted.at(i)); err != nil {
+				return nil, fmt.Errorf("deleting %s from watchtower.db: %w", moveTables[i].name, err)
+			}
 		}
 	}
-	return nil
+	if moved && res.Deleted == (MoveCounts{}) {
+		return nil, nil
+	}
+	res.Elapsed = time.Since(start)
+	return res, nil
 }
 
 // setMoved writes the move marker.
@@ -124,8 +161,9 @@ func setMoved(tx *sql.Tx) error {
 }
 
 // copyTable copies t from main into al by key order, one write transaction
-// per chunk; when last, the final chunk (possibly empty) also sets the marker.
-func copyTable(ctx context.Context, main *db.DB, al *DB, t moveTable, last bool) error {
+// per chunk, adding the rows inserted to copied; when last, the final chunk
+// (possibly empty) also sets the marker.
+func copyTable(ctx context.Context, main *db.DB, al *DB, t moveTable, last bool, copied *int64) error {
 	cols := strings.Join(t.cols, ", ")
 	//nolint:gosec // G202: table and column names are moveTables' constants; every value is a bound arg.
 	insert := `INSERT OR IGNORE INTO ` + t.name + ` (` + cols + `) VALUES (?` + strings.Repeat(", ?", len(t.cols)-1) + `)`
@@ -136,6 +174,7 @@ func copyTable(ctx context.Context, main *db.DB, al *DB, t moveTable, last bool)
 			return err
 		}
 		done := len(rows) < moveChunk
+		var n int64
 		err = al.withTx(func(tx *sql.Tx) error {
 			stmt, err := tx.Prepare(insert)
 			if err != nil {
@@ -143,9 +182,15 @@ func copyTable(ctx context.Context, main *db.DB, al *DB, t moveTable, last bool)
 			}
 			defer stmt.Close()
 			for _, r := range rows {
-				if _, err := stmt.Exec(r...); err != nil {
+				res, err := stmt.Exec(r...)
+				if err != nil {
 					return err
 				}
+				k, err := res.RowsAffected()
+				if err != nil {
+					return err
+				}
+				n += k
 			}
 			if done && last {
 				return setMoved(tx)
@@ -155,6 +200,7 @@ func copyTable(ctx context.Context, main *db.DB, al *DB, t moveTable, last bool)
 		if err != nil {
 			return err
 		}
+		*copied += n
 		if err := hook("copy " + t.name); err != nil {
 			return err
 		}
@@ -210,8 +256,9 @@ func readChunk(ctx context.Context, main *db.DB, t moveTable, after any) ([][]an
 	return out, rows.Err()
 }
 
-// deleteRows empties table in main, moveChunk rows per write transaction.
-func deleteRows(ctx context.Context, main *db.DB, table string) error {
+// deleteRows empties table in main, moveChunk rows per write transaction,
+// adding the rows deleted to deleted.
+func deleteRows(ctx context.Context, main *db.DB, table string, deleted *int64) error {
 	for {
 		var left bool
 		if err := main.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM `+table+`)`).Scan(&left); err != nil {
@@ -223,9 +270,15 @@ func deleteRows(ctx context.Context, main *db.DB, table string) error {
 		if err := hook("delete " + table); err != nil {
 			return err
 		}
-		if _, err := main.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (SELECT rowid FROM `+table+` ORDER BY rowid LIMIT ?)`, moveChunk); err != nil {
+		res, err := main.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (SELECT rowid FROM `+table+` ORDER BY rowid LIMIT ?)`, moveChunk)
+		if err != nil {
 			return err
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		*deleted += n
 	}
 }
 

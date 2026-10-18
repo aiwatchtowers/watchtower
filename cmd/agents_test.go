@@ -7,7 +7,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -293,8 +292,10 @@ func TestSyncDaemon_MovesBeforeDaemonStarts(t *testing.T) {
 	seedMainAgentLog(t, database, wb)
 	cfg, err := workspaceConfigFromFlags()
 	require.NoError(t, err)
-	al := openAgentLog(context.Background(), cfg, database, log.New(io.Discard, "", 0))
+	var logBuf bytes.Buffer
+	al := openAgentLog(context.Background(), cfg, database, log.New(&logBuf, "", 0))
 	require.NotNil(t, al)
+	assert.Contains(t, logBuf.String(), "copied 1 files, 1 sessions, 1 events", "a move logs its counts")
 	t.Cleanup(func() { _ = al.Close() })
 	ok, err := al.Moved()
 	require.NoError(t, err)
