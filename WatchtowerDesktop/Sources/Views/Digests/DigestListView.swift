@@ -302,6 +302,11 @@ struct DigestListView: View {
             // Selection toolbar
             selectionToolbar(vm)
 
+            // A failed write (a star, a read mark) over a list with content.
+            if let error = vm.errorMessage, !vm.feedEntries.isEmpty || !vm.ledgerDecisions.isEmpty {
+                WriteErrorBanner(message: error) { vm.errorMessage = nil }
+            }
+
             // List content
             switch activeTab {
             case .digests:
@@ -705,6 +710,19 @@ struct DigestListView: View {
         }
     }
 
+    /// The channel's star; it waits while its write does.
+    @ViewBuilder
+    private func channelStar(_ digest: Digest, vm: DigestViewModel) -> some View {
+        if !digest.channelID.isEmpty {
+            StarToggleButton(
+                isStarred: vm.isChannelStarred(digest.channelID)
+            ) {
+                Task { await vm.toggleStarredChannel(digest.channelID) }
+            }
+            .disabled(vm.isStarPending(digest.channelID))
+        }
+    }
+
     private func digestRow(_ digest: Digest, vm: DigestViewModel) -> some View {
         let expanded = expandedDigestIDs.contains(digest.id)
         return VStack(alignment: .leading, spacing: 6) {
@@ -727,13 +745,7 @@ struct DigestListView: View {
                 .fontWeight(digest.isRead ? .regular : .medium)
                 .lineLimit(1)
 
-                if !digest.channelID.isEmpty {
-                    StarToggleButton(
-                        isStarred: vm.isChannelStarred(digest.channelID)
-                    ) {
-                        Task { await vm.toggleStarredChannel(digest.channelID) }
-                    }
-                }
+                channelStar(digest, vm: vm)
 
                 Spacer()
 

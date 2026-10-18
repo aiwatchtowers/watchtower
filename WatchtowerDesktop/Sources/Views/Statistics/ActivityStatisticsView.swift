@@ -34,11 +34,15 @@ struct ActivityStatisticsView: View {
             if vm.isLoading && vm.stats.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = vm.errorMessage {
+            } else if vm.stats.isEmpty, let error = vm.errorMessage {
                 ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
             } else if vm.stats.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {
+                // A failed toggle keeps the table and says why (board #670).
+                if let error = vm.errorMessage {
+                    WriteErrorBanner(message: error) { vm.errorMessage = nil }
+                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         summaryCards(vm)
@@ -353,6 +357,7 @@ struct ActivityStatisticsView: View {
                     .foregroundStyle(bot.isMutedForLLM ? .green : .red)
             }
             .buttonStyle(.borderless)
+            .disabled(vm.isMutePending(bot.id))
             .help(bot.isMutedForLLM ? "Unmute for AI" : "Mute for AI")
             .frame(width: 80, alignment: .center)
         }

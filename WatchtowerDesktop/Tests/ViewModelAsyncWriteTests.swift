@@ -44,6 +44,71 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         XCTAssertFalse(pending.isPending("k"))
     }
 
+    /// A slow body asked for first still finishes before a fast one asked
+    /// for after it: without the chain the fast one would land first.
+    func testSerialWritesRunInTheOrderAskedFor() async {
+        let writes = SerialWrites()
+        let gate = AsyncGate()
+        var order: [String] = []
+        let slow = Task { await writes.run { await gate.wait(); order.append("first") } }
+        let fast = Task { await writes.run { order.append("second") } }
+        let queued = await eventually { writes.depth == 2 }
+        XCTAssertTrue(queued)
+        let early: Void? = await boundedValue(Task { () }, timeout: .seconds(1))
+        XCTAssertNotNil(early)
+        XCTAssertEqual(order, [], "the second body waits for the first")
+        gate.release()
+        await slow.value
+        await fast.value
+        XCTAssertEqual(order, ["first", "second"])
+        XCTAssertEqual(writes.depth, 0)
+    }
+
+    /// A failed body does not stop the chain.
+    func testSerialWritesGoOnAfterAFailure() async {
+        struct Refused: Error {}
+        let writes = SerialWrites()
+        let failed = try? await writes.runThrowing { () throws -> Int in throw Refused() }
+        XCTAssertNil(failed)
+        let next = await writes.run { 7 }
+        XCTAssertEqual(next, 7)
+    }
+
+    /// A sub-item toggle re-reads the row in its own transaction: another
+    /// item checked elsewhere after the list loaded stays checked.
+    func testTrackSubItemToggleKeepsAnotherItemChangedMeanwhile() async throws {
+        let items = #"[{"text":"one","status":"open"},{"text":"two","status":"open"}]"#
+        let id = try await dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db)
+            return try TestDatabase.insertTrack(db, text: "two items", subItems: items)
+        }
+        let vm = TracksViewModel(dbManager: dbManager)
+        vm.load()
+        let shown = try XCTUnwrap((vm.updatedTracks + vm.allTracks).first { Int64($0.id) == id })
+        try await dbManager.dbPool.write { db in
+            let done = #"[{"text":"one","status":"open"},{"text":"two","status":"done"}]"#
+            try db.execute(sql: "UPDATE tracks SET sub_items = ? WHERE id = ?", arguments: [done, id])
+        }
+
+        await vm.toggleSubItem(shown, at: 0)
+
+        XCTAssertNil(vm.errorMessage)
+        let stored = try await dbManager.dbPool.read { db in
+            try TrackQueries.fetchByID(db, id: Int(id))?.decodedSubItems.map(\.status)
+        }
+        XCTAssertEqual(stored, ["done", "done"])
+    }
+
+    /// A failed archive says so and leaves the selection where it was.
+    func testArchiveFailureKeepsTheSelection() async throws {
+        let history = ChatHistoryViewModel(dbManager: dbManager, attachmentsRoot: nil)
+        history.selectedConversationID = 999
+        let archived = await history.archive(999)
+        XCTAssertFalse(archived)
+        XCTAssertNotNil(history.lastError)
+        XCTAssertEqual(history.selectedConversationID, 999)
+    }
+
     /// The star shows only once it is stored, and a second press while the
     /// write waits does not flip it back.
     func testChannelStarWhileTheWriterIsBusy() async throws {
@@ -98,8 +163,8 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         defer { held.release() }
         let older = Task { await vm.updateConnections(reports: [], peers: [], manager: "U-old") }
         let newer = Task { await vm.updateConnections(reports: [], peers: [], manager: "U-new") }
-        let running = await boundedValue(Task { true }, timeout: .seconds(1))
-        XCTAssertEqual(running, true, "the main actor runs while both saves wait")
+        let queued = await eventually { vm.writes.depth == 2 }
+        XCTAssertTrue(queued, "both saves wait in the chain, the newer behind the older")
         held.release()
         let olderDone: Void? = await boundedValue(older)
         let newerDone: Void? = await boundedValue(newer)
@@ -115,7 +180,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
     /// Convert to Target pressed twice while the writer is busy makes one
     /// target.
     func testConvertToTargetTwiceWhileTheWriterIsBusyMakesOneTarget() async throws {
-        try await dbManager.dbPool.write {
+        _ = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, title: "Adopt the flow", essence: "Cuts drop-off", status: "active")
         }
         let vm = IdeasViewModel(dbManager: dbManager)

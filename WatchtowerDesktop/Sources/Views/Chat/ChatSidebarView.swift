@@ -176,6 +176,7 @@ struct ChatSidebarView: View {
             renaming = conv
         }
         Button(conv.pinned ? "Unpin" : "Pin") { Task { await historyVM.togglePin(conv.id) } }
+            .disabled(historyVM.pendingWrites.isPending("pin:\(conv.id)"))
         if !chatVM.projects.isEmpty || conv.projectID != nil {
             Menu("Move to Project") {
                 Button("None") { chatVM.moveConversation(conv.id, toProject: nil) }

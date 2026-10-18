@@ -95,10 +95,18 @@ final class ReviewChangesModel {
     var breakHintDismissed = false
     /// The active seconds the round row holds.
     private var savedActiveSeconds = 0
-    /// The last round-state save, which the next one waits for, and the
-    /// periodic save under way (board #670).
-    @ObservationIgnored private var stateSave: Task<Void, Error>?
+    /// Every write of the model, one after another (board #670), and the
+    /// periodic save under way.
+    @ObservationIgnored private let writes = SerialWrites()
     @ObservationIgnored private var periodicSave: Task<Void, Never>?
+    /// A mode, phase or chapter asked for and not saved yet. A round-state
+    /// save writes these when its turn comes, so a save queued earlier
+    /// never writes an older value over a newer one of another field.
+    @ObservationIgnored private var pendingMode: Mode?
+    @ObservationIgnored private var pendingPhase: ReviewPhase?
+    @ObservationIgnored private var pendingChapterKey: String?
+    /// One pending Viewed toggle per file.
+    @ObservationIgnored private let pendingViewed = PendingWrites()
 
     // The overview, the agent's notes, undo and answers (Plan 3).
     private(set) var overview: OverviewState = .idle
@@ -326,7 +334,7 @@ final class ReviewChangesModel {
             let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
             if !stale.isEmpty {
                 let plan = try await plan(stale, round: info)
-                try await db.write { db in
+                try await write { db in
                     for c in stale {
                         if let place = plan.moved[c.id] {
                             try ReviewQueries.replace(db, id: c.id, placement: place, treeSHA: info.treeSha)
@@ -379,7 +387,7 @@ final class ReviewChangesModel {
             guard selectedPath == path, let sides = currentSides else { throw ModelError.fileNotLoaded(path) }
             let text = side == "old" ? sides.old.text : sides.new.text
             let anchor = ReviewCommentAnchor.anchor(text: text, startLine: startLine, endLine: endLine)
-            _ = try await db.write {
+            _ = try await write {
                 try ReviewQueries.addDraft($0, roundID: info.id, path: path, side: side, startLine: startLine,
                                            endLine: endLine, anchor: anchor, treeSHA: info.treeSha, body: body, lens: lens)
             }
@@ -391,7 +399,7 @@ final class ReviewChangesModel {
         try await run {
             guard let info = round else { throw ModelError.noRound }
             guard info.status == "open" else { throw ModelError.roundNotOpen }
-            try await db.write { try ReviewQueries.updateDraft($0, id: id, body: body) }
+            try await write { try ReviewQueries.updateDraft($0, id: id, body: body) }
             try reloadComments()
         }
     }
@@ -400,25 +408,33 @@ final class ReviewChangesModel {
         try await run {
             // A carried comment is closed, not deleted: a deleted one would be carried again on reopen.
             let carried = comments.first { $0.id == id }?.status == .carried
-            try await db.write { carried ? try ReviewQueries.resolve($0, id: id) : try ReviewQueries.deleteDraft($0, id: id) }
+            try await write { carried ? try ReviewQueries.resolve($0, id: id) : try ReviewQueries.deleteDraft($0, id: id) }
             try reloadComments()
         }
     }
 
     func resolve(id: Int64) async throws {
         try await run {
-            try await db.write { try ReviewQueries.resolve($0, id: id) }
+            try await write { try ReviewQueries.resolve($0, id: id) }
             try reloadComments()
         }
     }
 
+    /// A second toggle of the file while one waits does nothing (board #670);
+    /// the toggle flips the stored mark, read in the same transaction.
     func toggleViewed(_ path: String) async throws {
         try await run {
             guard let info = round else { throw ModelError.noRound }
             guard let file = allFiles.first(where: { $0.path == path }) else { throw ModelError.unknownFile(path) }
-            let key = viewed[path] == Self.contentKey(file) ? nil : Self.contentKey(file)
-            try await db.write { try ReviewQueries.setViewed($0, roundID: info.id, path: path, contentSHA: key) }
-            viewed = try await db.read { try ReviewQueries.viewed($0, roundID: info.id) }
+            let content = Self.contentKey(file)
+            let marks = try await pendingViewed.runThrowing(path) {
+                try await self.write { db in
+                    let stored = try ReviewQueries.viewed(db, roundID: info.id)[path]
+                    try ReviewQueries.setViewed(db, roundID: info.id, path: path, contentSHA: stored == content ? nil : content)
+                    return try ReviewQueries.viewed(db, roundID: info.id)
+                }
+            }
+            if let marks { viewed = marks }
         }
     }
 
@@ -465,7 +481,9 @@ final class ReviewChangesModel {
 
     func setMode(_ m: Mode) async throws {
         try await run {
-            try await saveState(mode: m, phase: phase, chapterKey: persistedChapterKey)
+            pendingMode = m
+            defer { if pendingMode == m { pendingMode = nil } }
+            try await saveState()
             mode = m
         }
         // Deep makes its overview by itself: switching to it asks for one
@@ -477,7 +495,11 @@ final class ReviewChangesModel {
     func setPhase(_ p: ReviewPhase) async throws {
         try await run {
             // A sent round only moves on screen; the position is saved while it is open.
-            if round?.status == "open" { try await saveState(mode: mode, phase: p, chapterKey: persistedChapterKey) }
+            if round?.status == "open" {
+                pendingPhase = p
+                defer { if pendingPhase == p { pendingPhase = nil } }
+                try await saveState()
+            }
             phase = p
         }
     }
@@ -487,7 +509,11 @@ final class ReviewChangesModel {
         guard let chapter = chapters.first(where: { $0.key == key }) else { return }
         try await run {
             // A sent round only moves on screen; the position is saved while it is open.
-            if round?.status == "open" { try await saveState(mode: mode, phase: phase, chapterKey: key) }
+            if round?.status == "open" {
+                pendingChapterKey = key
+                defer { if pendingChapterKey == key { pendingChapterKey = nil } }
+                try await saveState()
+            }
             currentChapterKey = key
             awaitedAIChapterKey = nil
         }
@@ -543,7 +569,7 @@ final class ReviewChangesModel {
     func addDesignComment(body: String, lens: String) async throws {
         try await run {
             let info = try openRound()
-            try await db.write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
+            try await write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
             try reloadComments()
         }
     }
@@ -744,7 +770,7 @@ final class ReviewChangesModel {
     func flushState() async {
         guard round?.status == "open" else { return }
         do {
-            try await saveState(mode: mode, phase: phase, chapterKey: persistedChapterKey)
+            try await saveState()
         } catch {
             lastError = error.localizedDescription
         }
@@ -762,27 +788,30 @@ final class ReviewChangesModel {
     /// write back and closes the round here, as `saveState` does.
     private func writeInOpenRound(_ body: @escaping @Sendable (Database) throws -> Void) async throws {
         do {
-            try await db.write(body)
+            try await write(body)
         } catch ReviewQueries.ReviewQueryError.roundNotOpen {
             round?.status = "sent"
             throw ModelError.roundClosed
         }
     }
 
-    /// State saves run one after another (board #670), so an older position
-    /// never lands after a newer one.
-    private func saveState(mode: Mode, phase: ReviewPhase, chapterKey: String?) async throws {
-        let previous = stateSave
-        let save = Task {
-            _ = await previous?.result
-            try await writeState(mode: mode, phase: phase, chapterKey: chapterKey)
-        }
-        stateSave = save
-        try await save.value
+    /// A database write in the model's chain (board #670): it starts only
+    /// once every write asked for before it finished.
+    private func write<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.db.write(body) }
     }
 
-    private func writeState(mode: Mode, phase: ReviewPhase, chapterKey: String?) async throws {
+    /// Saves the round state in the chain. What it writes is read when its
+    /// turn comes: the pending mode, phase and chapter over the shown ones.
+    private func saveState() async throws {
+        try await writes.runThrowing { try await self.writeState() }
+    }
+
+    private func writeState() async throws {
         let info = try openRound()
+        let mode = pendingMode ?? self.mode
+        let phase = pendingPhase ?? self.phase
+        let chapterKey = pendingChapterKey ?? persistedChapterKey
         let seconds = pace.activeSeconds
         let saved = try await db.write {
             try ReviewQueries.saveRoundState($0, roundID: info.id, mode: mode.rawValue, phase: phase,
@@ -957,7 +986,7 @@ final class ReviewChangesModel {
         let plan = try await plan(open, round: info)
         let oldMarks = try await db.read { try ReviewQueries.viewed($0, roundID: previousID) }
         let keys = allFiles.reduce(into: [String: String]()) { $0[$1.path] = Self.contentKey($1) }
-        try await db.write { db in
+        try await write { db in
             try ReviewQueries.carry(db, from: previous, into: info.id, plan: plan, treeSHA: info.treeSha)
             for (path, key) in oldMarks where keys[path] == key {
                 try ReviewQueries.setViewed(db, roundID: info.id, path: path, contentSHA: key)

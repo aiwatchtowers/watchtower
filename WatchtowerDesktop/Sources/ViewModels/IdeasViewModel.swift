@@ -60,6 +60,8 @@ final class IdeasViewModel {
     private let registryLimit = 200
 
     private let dbManager: DatabaseManager
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
     /// One pending create or conversion (board #670).
     let pendingWrites = PendingWrites()
     private var observationTask: Task<Void, Never>?
@@ -331,7 +333,7 @@ final class IdeasViewModel {
 
     private func insertManual(kind: String, title: String, essence: String) async -> Int? {
         do {
-            let newID = try await dbManager.dbPool.write { db in
+            let newID = try await chained { db in
                 try IdeaQueries.createManual(db, kind: kind, title: title, essence: essence)
             }
             // Show what was just created: switch to its segment, clear the
@@ -368,7 +370,7 @@ final class IdeasViewModel {
     private func convert(_ idea: Idea) async -> Int? {
         do {
             let today = Self.dateFormatter.string(from: Date())
-            let newTargetID = try await dbManager.dbPool.write { db -> Int in
+            let newTargetID = try await chained { db -> Int in
                 let targetID = try TargetQueries.create(
                     db,
                     text: idea.title,
@@ -397,7 +399,7 @@ final class IdeasViewModel {
     @discardableResult
     private func write(_ label: String, _ body: @escaping @Sendable (Database) throws -> Void) async -> Bool {
         do {
-            try await dbManager.dbPool.write(body)
+            try await chained(body)
             load()
             return true
         } catch {
@@ -544,6 +546,12 @@ final class IdeasViewModel {
         guard let text = String(data: data, encoding: .utf8) else { return nil }
         guard let lastLine = text.split(separator: "\n", omittingEmptySubsequences: true).last else { return nil }
         return try? JSONDecoder().decode(IdeasDisabledEnvelope.self, from: Data(lastLine.utf8))
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }
 

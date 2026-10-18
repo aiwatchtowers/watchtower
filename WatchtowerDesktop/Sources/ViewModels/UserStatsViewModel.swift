@@ -28,8 +28,10 @@ final class UserStatsViewModel {
     var errorMessage: String?
 
     private let dbManager: DatabaseManager
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
     /// One pending toggle per row (board #670).
-    private let pendingWrites = PendingWrites()
+    let pendingWrites = PendingWrites()
     private(set) var observationTask: Task<Void, Never>?
 
     init(dbManager: DatabaseManager) {
@@ -156,11 +158,14 @@ final class UserStatsViewModel {
         await pendingWrites.run("bot:\(userID)") { await writeBotOverride(userID: userID) }
     }
 
+    func isMutePending(_ userID: String) -> Bool { pendingWrites.isPending("mute:\(userID)") }
+    func isBotPending(_ userID: String) -> Bool { pendingWrites.isPending("bot:\(userID)") }
+
     private func writeMute(userID: String) async {
         guard let stat = stats.first(where: { $0.id == userID }) else { return }
         let newValue = !stat.isMutedForLLM
         do {
-            try await dbManager.dbPool.write { db in
+            try await chained { db in
                 try UserStatsQueries.setMutedForLLM(db, userID: userID, muted: newValue)
             }
             load()
@@ -180,7 +185,7 @@ final class UserStatsViewModel {
             finalValue = newValue
         }
         do {
-            try await dbManager.dbPool.write { db in
+            try await chained { db in
                 try UserStatsQueries.setBotOverride(db, userID: userID, isBot: finalValue)
             }
             load()
@@ -192,5 +197,11 @@ final class UserStatsViewModel {
     func stopObserving() {
         observationTask?.cancel()
         observationTask = nil
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }

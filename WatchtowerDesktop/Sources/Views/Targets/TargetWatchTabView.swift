@@ -158,6 +158,7 @@ private struct TargetWatchEventRow: View {
                     Button("Dismiss") { Task { await viewModel.dismissAction(for: event) } }
                         .controlSize(.small).buttonStyle(.borderless)
                 }
+                .disabled(viewModel.pendingWrites.isPending(event.id))
             } else if event.actionStatus == "applied" {
                 Label("Applied", systemImage: "checkmark.circle.fill")
                     .font(.caption2).foregroundStyle(.green)

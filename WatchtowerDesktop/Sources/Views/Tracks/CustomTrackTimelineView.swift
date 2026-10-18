@@ -193,6 +193,7 @@ private struct TrackEventRow: View {
                     Button("Dismiss") { Task { await viewModel.dismissAction(for: event) } }
                         .controlSize(.small).buttonStyle(.borderless)
                 }
+                .disabled(viewModel.pendingWrites.isPending(event.id))
                 .padding(.top, 2)
             } else if event.actionStatus == "applied" {
                 Label("Applied", systemImage: "checkmark.circle.fill")

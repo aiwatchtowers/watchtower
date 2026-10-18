@@ -10,6 +10,8 @@ import WatchtowerCore
 final class TargetWatchesViewModel {
     let target: Target
     private let dbPool: DatabasePool
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
     /// One pending apply or dismiss per event (board #670).
     let pendingWrites = PendingWrites()
     private let scanCenter: TrackScanCenter
@@ -173,14 +175,14 @@ final class TargetWatchesViewModel {
                 return
             }
             _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
-            try await dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
+            try await chained { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
         } catch { reportWriteFailure("apply", error) }
     }
 
     private func dismissNow(_ event: TrackEvent) async {
         errorMessage = nil
         do {
-            try await dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") }
+            try await chained { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") }
         } catch { reportWriteFailure("dismiss", error) }
     }
 
@@ -199,7 +201,7 @@ final class TargetWatchesViewModel {
 
     func markRead(_ event: TrackEvent) async {
         guard event.isUnread else { return }
-        try? await dbPool.write { db in try TrackEventQueries.markRead(db, id: event.id) }
+        try? await chained { db in try TrackEventQueries.markRead(db, id: event.id) }
     }
 
     // MARK: - Watch management
@@ -207,13 +209,19 @@ final class TargetWatchesViewModel {
     func setCollecting(_ watch: Track, _ on: Bool) async {
         errorMessage = nil
         do {
-            try await dbPool.write { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
+            try await chained { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
         } catch {
             reportWriteFailure("update the watch", error)
         }
     }
 
     func deleteWatch(_ watch: Track) async {
-        try? await dbPool.write { db in try TrackQueries.delete(db, id: watch.id) }
+        try? await chained { db in try TrackQueries.delete(db, id: watch.id) }
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbPool.write(body) }
     }
 }

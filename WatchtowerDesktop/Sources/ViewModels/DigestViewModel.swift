@@ -125,6 +125,8 @@ final class DigestViewModel {
     private(set) var slackLinks: SlackLinkResolver?
     private(set) var starredChannelIDs: Set<String> = []
     private let dbManager: DatabaseManager
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
     private var observationTask: Task<Void, Never>?
     private var streamsObservationTask: Task<Void, Never>?
     private var decisionsObservationTask: Task<Void, Never>?
@@ -326,7 +328,7 @@ final class DigestViewModel {
 
     func markDigestRead(_ digestID: Int) async {
         do {
-            try await dbManager.dbPool.write { db in
+            try await chained { db in
                 try DigestQueries.markDigestRead(db, id: digestID)
                 // Cascade: mark all decisions embedded in this digest's raw JSON
                 // read. Vestigial for the ledger (which tracks seen_at on the
@@ -355,7 +357,7 @@ final class DigestViewModel {
     /// `isRead` and the segment's unread count update immediately.
     func markStreamRead(id: Int) async {
         do {
-            try await dbManager.dbPool.write { db in try StreamDigestQueries.markRead(db, id: id) }
+            try await chained { db in try StreamDigestQueries.markRead(db, id: id) }
             reloadStreams()
         } catch {
             errorMessage = "Failed to mark stream digest read: \(error.localizedDescription)"
@@ -380,7 +382,7 @@ final class DigestViewModel {
 
     func markDigestsRead(_ ids: Set<Int>) async {
         do {
-            try await dbManager.dbPool.write { db in
+            try await chained { db in
                 for id in ids {
                     try DigestQueries.markDigestRead(db, id: id)
                     // Cascade: mark all decisions in each digest as read
@@ -402,7 +404,7 @@ final class DigestViewModel {
 
     func submitBatchFeedback(entityType: String, entityIDs: [String], rating: Int) async {
         do {
-            try await dbManager.dbPool.write { db in
+            try await chained { db in
                 for entityID in entityIDs {
                     try FeedbackQueries.addFeedback(db, entityType: entityType, entityID: entityID, rating: rating)
                 }
@@ -418,7 +420,7 @@ final class DigestViewModel {
     /// and unread badge update immediately.
     func markDecisionSeen(id: Int) async {
         do {
-            try await dbManager.dbPool.write { db in try IdeaQueries.markDecisionSeen(db, id: id) }
+            try await chained { db in try IdeaQueries.markDecisionSeen(db, id: id) }
             reloadLedger()
         } catch {
             errorMessage = "Failed to mark decision seen: \(error.localizedDescription)"
@@ -428,7 +430,7 @@ final class DigestViewModel {
     /// Stamps every not-yet-seen decision as seen.
     func markAllDecisionsSeen() async {
         do {
-            try await dbManager.dbPool.write { db in try IdeaQueries.markAllDecisionsSeen(db) }
+            try await chained { db in try IdeaQueries.markAllDecisionsSeen(db) }
             reloadLedger()
         } catch {
             errorMessage = "Failed to mark decisions seen: \(error.localizedDescription)"
@@ -437,7 +439,7 @@ final class DigestViewModel {
 
     func supersede(id: Int, by newID: Int? = nil) async {
         do {
-            try await dbManager.dbPool.write { db in try IdeaQueries.supersede(db, id: id, by: newID) }
+            try await chained { db in try IdeaQueries.supersede(db, id: id, by: newID) }
             reloadLedger()
         } catch {
             reportLedgerWriteFailure("supersede decision", error)
@@ -446,7 +448,7 @@ final class DigestViewModel {
 
     func reverse(id: Int) async {
         do {
-            try await dbManager.dbPool.write { db in try IdeaQueries.setStatus(db, id: id, status: "reversed") }
+            try await chained { db in try IdeaQueries.setStatus(db, id: id, status: "reversed") }
             reloadLedger()
         } catch {
             reportLedgerWriteFailure("reverse decision", error)
@@ -459,7 +461,7 @@ final class DigestViewModel {
     @discardableResult
     func setRating(id: Int, rating: Int, comment: String = "") async -> Bool {
         do {
-            try await dbManager.dbPool.write { db in try IdeaQueries.setRating(db, id: id, rating: rating, comment: comment) }
+            try await chained { db in try IdeaQueries.setRating(db, id: id, rating: rating, comment: comment) }
             reloadLedger()
             return true
         } catch {
@@ -595,14 +597,19 @@ final class DigestViewModel {
         }
     }
 
+    /// The star of `channelID` is being written: its button waits.
+    func isStarPending(_ channelID: String) -> Bool {
+        pendingWrites.isPending("star:\(channelID)")
+    }
+
     private func writeStar(_ channelID: String) async {
         let wasStarred = starredChannelIDs.contains(channelID)
         do {
             if wasStarred {
-                try await dbManager.removeStarredChannel(channelID)
+                try await writes.runThrowing { try await self.dbManager.removeStarredChannel(channelID) }
                 starredChannelIDs.remove(channelID)
             } else {
-                try await dbManager.addStarredChannel(channelID)
+                try await writes.runThrowing { try await self.dbManager.addStarredChannel(channelID) }
                 starredChannelIDs.insert(channelID)
             }
         } catch {
@@ -613,5 +620,11 @@ final class DigestViewModel {
     /// Check if a channel is starred
     func isChannelStarred(_ channelID: String) -> Bool {
         starredChannelIDs.contains(channelID)
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }

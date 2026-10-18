@@ -37,11 +37,15 @@ struct UserStatisticsView: View {
             if vm.isLoading && vm.stats.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = vm.errorMessage {
+            } else if vm.stats.isEmpty, let error = vm.errorMessage {
                 ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
             } else if vm.stats.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {
+                // A failed toggle keeps the table and says why (board #670).
+                if let error = vm.errorMessage {
+                    WriteErrorBanner(message: error) { vm.errorMessage = nil }
+                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         summaryCards(vm)
@@ -317,6 +321,36 @@ struct UserStatisticsView: View {
         )
     }
 
+    /// The row's bot and mute toggles; each waits while its write does.
+    private func userActions(_ stat: UserStat, vm: UserStatsViewModel) -> some View {
+        // Actions
+        HStack(spacing: 4) {
+            Button {
+                Task { await vm.toggleBotOverride(userID: stat.id) }
+            } label: {
+                Image(systemName: stat.effectiveIsBot ? "person" : "cpu")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .disabled(vm.isBotPending(stat.id))
+            .help(stat.effectiveIsBot ? "Mark as human" : "Mark as bot")
+
+            if stat.effectiveIsBot {
+                Button {
+                    Task { await vm.toggleMuteForLLM(userID: stat.id) }
+                } label: {
+                    Image(systemName: stat.isMutedForLLM ? "speaker.wave.2" : "speaker.slash")
+                        .font(.caption)
+                        .foregroundStyle(stat.isMutedForLLM ? .green : .orange)
+                }
+                .disabled(vm.isMutePending(stat.id))
+                .buttonStyle(.borderless)
+                .help(stat.isMutedForLLM ? "Unmute for AI" : "Mute for AI")
+            }
+        }
+        .frame(width: 60, alignment: .center)
+    }
+
     private func userRow(_ stat: UserStat, vm: UserStatsViewModel) -> some View {
         HStack(spacing: 0) {
             // User name
@@ -387,30 +421,7 @@ struct UserStatisticsView: View {
             }
             .frame(width: 80, alignment: .center)
 
-            // Actions
-            HStack(spacing: 4) {
-                Button {
-                    Task { await vm.toggleBotOverride(userID: stat.id) }
-                } label: {
-                    Image(systemName: stat.effectiveIsBot ? "person" : "cpu")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .help(stat.effectiveIsBot ? "Mark as human" : "Mark as bot")
-
-                if stat.effectiveIsBot {
-                    Button {
-                        Task { await vm.toggleMuteForLLM(userID: stat.id) }
-                    } label: {
-                        Image(systemName: stat.isMutedForLLM ? "speaker.wave.2" : "speaker.slash")
-                            .font(.caption)
-                            .foregroundStyle(stat.isMutedForLLM ? .green : .orange)
-                    }
-                    .buttonStyle(.borderless)
-                    .help(stat.isMutedForLLM ? "Unmute for AI" : "Mute for AI")
-                }
-            }
-            .frame(width: 60, alignment: .center)
+            userActions(stat, vm: vm)
         }
         .font(.body)
         .padding(.horizontal, 8)

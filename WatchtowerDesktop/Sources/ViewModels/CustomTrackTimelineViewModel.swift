@@ -15,6 +15,8 @@ import WatchtowerCore
 final class CustomTrackTimelineViewModel {
     let track: Track
     private let dbPool: DatabasePool
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
     /// One pending apply or dismiss per event (board #670).
     let pendingWrites = PendingWrites()
     /// Optional: only present (and only usable) when the track is linked to a
@@ -181,7 +183,7 @@ final class CustomTrackTimelineViewModel {
 
     func markRead(_ event: TrackEvent) async {
         guard event.isUnread else { return }
-        try? await dbPool.write { db in try TrackEventQueries.markRead(db, id: event.id) }
+        try? await chained { db in try TrackEventQueries.markRead(db, id: event.id) }
     }
 
     /// Applies a confirmed proposed action to the LINKED target via the shared
@@ -224,7 +226,7 @@ final class CustomTrackTimelineViewModel {
                 return
             }
             _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
-            try await dbPool.write { db in
+            try await chained { db in
                 try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied")
             }
         } catch {
@@ -234,7 +236,7 @@ final class CustomTrackTimelineViewModel {
 
     private func dismissNow(_ event: TrackEvent) async {
         do {
-            try await dbPool.write { db in
+            try await chained { db in
                 try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed")
             }
         } catch {
@@ -265,5 +267,11 @@ final class CustomTrackTimelineViewModel {
             errorMessage = error.localizedDescription
             return nil
         }
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbPool.write(body) }
     }
 }

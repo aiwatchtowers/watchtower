@@ -31,8 +31,10 @@ final class ChannelStatsViewModel {
     private(set) var slackLinks: SlackLinkResolver?
 
     private let dbManager: DatabaseManager
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
     /// One pending toggle per row (board #670).
-    private let pendingWrites = PendingWrites()
+    let pendingWrites = PendingWrites()
     private(set) var observationTask: Task<Void, Never>?
 
     init(dbManager: DatabaseManager) {
@@ -172,9 +174,12 @@ final class ChannelStatsViewModel {
         }
     }
 
+    func isMutePending(_ channelID: String) -> Bool { pendingWrites.isPending("mute:\(channelID)") }
+    func isFavoritePending(_ channelID: String) -> Bool { pendingWrites.isPending("favorite:\(channelID)") }
+
     private func setMuted(channelID: String, muted: Bool) async {
         do {
-            try await dbManager.dbPool.write { db in
+            try await chained { db in
                 try ChannelStatsQueries.toggleMuteForLLM(db, channelID: channelID, muted: muted)
             }
             load()
@@ -185,7 +190,7 @@ final class ChannelStatsViewModel {
 
     private func setFavorite(channelID: String, favorite: Bool) async {
         do {
-            try await dbManager.dbPool.write { db in
+            try await chained { db in
                 try ChannelStatsQueries.toggleFavorite(db, channelID: channelID, favorite: favorite)
             }
             load()
@@ -214,5 +219,11 @@ final class ChannelStatsViewModel {
     func stopObserving() {
         observationTask?.cancel()
         observationTask = nil
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }

@@ -48,8 +48,10 @@ enum ViewWrite {
 /// while the first still waits. `run` does nothing (returns nil) while a
 /// write under the same key is pending: a toggle is never flipped twice, a
 /// create never runs twice, and a read-modify-write of one row never builds
-/// on the snapshot the first write is about to replace.
+/// on the snapshot the first write is about to replace. It is observable, so
+/// a view disables (or marks pending) the control whose key `isPending`.
 @MainActor
+@Observable
 final class PendingWrites {
     private var keys: Set<AnyHashable> = []
 
@@ -63,5 +65,52 @@ final class PendingWrites {
         guard keys.insert(key).inserted else { return nil }
         defer { keys.remove(key) }
         return await body()
+    }
+
+    @discardableResult
+    func runThrowing<T>(_ key: AnyHashable, _ body: @MainActor () async throws -> T) async throws -> T? {
+        guard keys.insert(key).inserted else { return nil }
+        defer { keys.remove(key) }
+        return try await body()
+    }
+}
+
+/// A view model's writes, one after another in the order they were asked
+/// for (board #670). Each body starts only once the one before it finished,
+/// whether that one succeeded or failed, so two edits of one row never land
+/// in the wrong order. A body runs in its own task: cancelling the caller
+/// never cancels a write under way. A body must not call `run` on the same
+/// chain (it would wait for itself).
+@MainActor
+final class SerialWrites {
+    private var last: Task<Void, Never>?
+    /// Bodies asked for and not finished yet, the running one included.
+    private(set) var depth = 0
+
+    @discardableResult
+    func run<T>(_ body: @escaping @MainActor () async -> T) async -> T {
+        let task = enqueue { await body() }
+        switch await task.result {
+        case .success(let value): return value
+        case .failure: preconditionFailure("a body that cannot throw threw")
+        }
+    }
+
+    @discardableResult
+    func runThrowing<T>(_ body: @escaping @MainActor () async throws -> T) async throws -> T {
+        let task = enqueue { try await body() }
+        return try await task.value
+    }
+
+    private func enqueue<T>(_ body: @escaping @MainActor () async throws -> T) -> Task<T, Error> {
+        let previous = last
+        depth += 1
+        let task = Task { @MainActor () throws -> T in
+            await previous?.value
+            defer { self.depth -= 1 }
+            return try await body()
+        }
+        last = Task { _ = await task.result }
+        return task
     }
 }

@@ -251,12 +251,16 @@ struct ChatSplitView: View {
         if wasShown { showLanding() }
     }
 
-    /// Archiving the chat on screen lands, like deleting it.
+    /// Archiving the chat on screen lands, like deleting it — once the
+    /// archive is written. A failed one keeps the chat open, and the history
+    /// column says why (`lastError`).
     private func archive(_ id: Int64) {
-        let wasShown = id == chatVM.conversationID
-        chatVM.forget(conversationID: id)
-        Task { await historyVM.archive(id) }
-        if wasShown { showLanding() }
+        Task {
+            guard await historyVM.archive(id) else { return }
+            let wasShown = id == chatVM.conversationID
+            chatVM.forget(conversationID: id)
+            if wasShown { showLanding() }
+        }
     }
 
     private func open(_ hit: ChatSearchHit) {

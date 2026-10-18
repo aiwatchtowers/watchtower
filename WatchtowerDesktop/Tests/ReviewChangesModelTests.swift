@@ -904,28 +904,35 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertFalse(h.model.breakHintDismissed)
     }
 
-    /// Board #670: two phase picks while the database is busy land in order,
-    /// and the phase shown changes only once its save landed.
-    func testPhasePicksWhileTheWriterIsBusyLandInOrder() async throws {
+    /// Board #670: a phase pick, a mode switch and a second phase pick while
+    /// the database is busy all persist. Each save writes the pending values
+    /// when its turn comes, so the last save (queued while the mode was still
+    /// quick on screen) does not write the old mode back over the new one.
+    func testModeAndPhasePicksWhileTheWriterIsBusyAllPersist() async throws {
         let h = try harness()
         h.baseScript()
         await h.model.open()
         let before = h.model.phase
+        XCTAssertEqual(h.model.mode, .quick)
         XCTAssertNotEqual(before, .wrapup)
         let held = HeldWriter(h.db)
         defer { held.release() }
-        let first = Task { try? await h.model.setPhase(.chapters) }
-        let second = Task { try? await h.model.setPhase(.wrapup) }
-        let waiting = await boundedValue(Task { h.model.phase }, timeout: .seconds(1))
-        XCTAssertEqual(waiting, before, "the main actor runs, and the phase waits for its save")
+        let first = Task { _ = try? await h.model.setPhase(.chapters) }
+        let mode = Task { _ = try? await h.model.setMode(.deep) }
+        let last = Task { _ = try? await h.model.setPhase(.wrapup) }
+        let waiting = await boundedValue(Task { (h.model.mode, h.model.phase) }, timeout: .seconds(1))
+        XCTAssertEqual(waiting?.0, .quick, "the main actor runs, and the mode waits for its save")
+        XCTAssertEqual(waiting?.1, before)
         held.release()
-        let firstDone = await boundedValue(first)
-        let secondDone = await boundedValue(second)
-        XCTAssertNotNil(firstDone)
-        XCTAssertNotNil(secondDone)
+        for task in [first, mode, last] {
+            let done = await boundedValue(task)
+            XCTAssertNotNil(done)
+        }
+        XCTAssertEqual(h.model.mode, .deep)
         XCTAssertEqual(h.model.phase, .wrapup)
-        let row = try await h.db.read { try String.fetchOne($0, sql: "SELECT phase FROM review_rounds WHERE id = 7") }
-        XCTAssertEqual(row, "wrapup", "the newer pick lands last")
+        let row = try await h.db.read { try Row.fetchOne($0, sql: "SELECT mode, phase FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(row?["mode"] as String?, "deep", "a save queued before the switch never writes the old mode")
+        XCTAssertEqual(row?["phase"] as String?, "wrapup", "the newer pick lands last")
     }
 
     private func activeSeconds(_ h: Harness) async throws -> Int? {

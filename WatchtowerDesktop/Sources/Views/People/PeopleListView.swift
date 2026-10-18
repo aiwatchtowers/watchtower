@@ -105,6 +105,9 @@ struct PeopleListView: View {
             } else if vm.cards.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {
+                if let error = vm.errorMessage {
+                    WriteErrorBanner(message: error) { vm.errorMessage = nil }
+                }
                 userListScrollView(vm)
             }
         }
@@ -344,6 +347,7 @@ struct PeopleListView: View {
                 StarToggleButton(isStarred: vm.isPersonStarred(card.userID)) {
                     Task { await vm.toggleStarredPerson(card.userID) }
                 }
+                .disabled(vm.isStarPending(card.userID))
 
                 Spacer()
 

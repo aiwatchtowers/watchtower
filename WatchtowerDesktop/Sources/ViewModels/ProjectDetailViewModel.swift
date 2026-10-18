@@ -33,8 +33,8 @@ final class ProjectDetailViewModel {
     private var savedInstructions = ""
 
     private let dbPool: DatabasePool
-    /// The instructions saves, in order (board #670).
-    private var saveChain: Task<Bool, Never>?
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
     /// One pending delete (board #670).
     private let pendingWrites = PendingWrites()
     private let debounce: Duration
@@ -134,7 +134,7 @@ final class ProjectDetailViewModel {
     func removeFile(_ file: ChatAttachment) async {
         let fileID = file.id
         do {
-            let result = try await dbPool.write { try ChatProjectQueries.removeFile($0, id: fileID) }
+            let result = try await chained { try ChatProjectQueries.removeFile($0, id: fileID) }
             if result.removed { onPromptChanged(projectID) }
             if let path = result.orphanPath { Self.removeFromDisk([path]) }
             if refresh() { errorMessage = nil }
@@ -153,11 +153,10 @@ final class ProjectDetailViewModel {
     private func deleteNow() async -> Bool {
         pendingSave?.cancel()
         pendingSave = nil
-        // A save already writing lands first, never after the delete.
-        _ = await saveChain?.value
+        // The delete is in the chain: a save asked for before it lands first.
         do {
             let id = projectID
-            let paths = try await dbPool.write { try ChatProjectQueries.delete($0, id: id) }
+            let paths = try await chained { try ChatProjectQueries.delete($0, id: id) }
             Self.removeFromDisk(paths)
             if let attachmentsRoot {
                 ChatAttachmentStore.removeFiles(for: .project(id), rootDir: attachmentsRoot)
@@ -195,19 +194,14 @@ final class ProjectDetailViewModel {
         }
     }
 
-    /// Saves run one after another (board #670): each reads the draft when
-    /// its turn comes, so the newest text lands last and a save that finds it
-    /// already stored writes nothing. The write runs in its own task, so a
-    /// debounce cancelled meanwhile never cancels a write under way.
+    /// Saves run in the view model's chain (board #670): each reads the draft
+    /// when its turn comes, so the newest text lands last and a save that
+    /// finds it already stored writes nothing. The chain runs the write in its
+    /// own task, so a debounce cancelled meanwhile never cancels a write under
+    /// way.
     @discardableResult
     private func saveInstructions() async -> Bool {
-        let previous = saveChain
-        let save = Task {
-            _ = await previous?.value
-            return await writeInstructions()
-        }
-        saveChain = save
-        return await save.value
+        await writes.run { await self.writeInstructions() }
     }
 
     private func writeInstructions() async -> Bool {
@@ -219,6 +213,7 @@ final class ProjectDetailViewModel {
         }
         let id = projectID
         do {
+            // Already in the chain: the pool directly, or it would wait for itself.
             try await dbPool.write { try ChatProjectQueries.updateInstructions($0, id: id, instructions: text) }
             pendingSave = nil
             savedInstructions = text
@@ -238,7 +233,7 @@ final class ProjectDetailViewModel {
     private func write<T: Sendable>(_ body: @escaping @Sendable (Database, Int64) throws -> T) async -> T? {
         let id = projectID
         do {
-            let value = try await dbPool.write { try body($0, id) }
+            let value = try await chained { try body($0, id) }
             if refresh() { errorMessage = nil }
             return value
         } catch {
@@ -272,5 +267,11 @@ extension ProjectDetailViewModel {
         guard let rootDir else { return { _, _ in throw ImportError.noWorkspace } }
         let store = ChatAttachmentStore(db: dbPool, rootDir: rootDir)
         return { url, projectID in try store.importFile(url: url, projectID: projectID) }
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbPool.write(body) }
     }
 }

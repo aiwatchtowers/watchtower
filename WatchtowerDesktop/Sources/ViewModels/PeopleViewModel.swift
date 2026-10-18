@@ -22,7 +22,8 @@ final class PeopleViewModel {
     private var observationTask: Task<Void, Never>?
     /// One pending star write per person (board #670).
     let pendingWrites = PendingWrites()
-    private var connectionsSave: Task<Void, Never>?
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored let writes = SerialWrites()
 
     init(dbManager: DatabaseManager) {
         self.dbManager = dbManager
@@ -189,13 +190,7 @@ final class PeopleViewModel {
     /// Saves run one after another (board #670), so an older pick never
     /// lands after a newer one.
     func updateConnections(reports: [String], peers: [String], manager: String) async {
-        let previous = connectionsSave
-        let save = Task {
-            await previous?.value
-            await writeConnections(reports: reports, peers: peers, manager: manager)
-        }
-        connectionsSave = save
-        await save.value
+        await writes.run { await self.writeConnections(reports: reports, peers: peers, manager: manager) }
     }
 
     private func writeConnections(reports: [String], peers: [String], manager: String) async {
@@ -226,14 +221,19 @@ final class PeopleViewModel {
         }
     }
 
+    /// The star of `personUserID` is being written: its button waits.
+    func isStarPending(_ personUserID: String) -> Bool {
+        pendingWrites.isPending("star:\(personUserID)")
+    }
+
     private func writeStar(_ personUserID: String) async {
         let wasStarred = starredPeopleIDs.contains(personUserID)
         do {
             if wasStarred {
-                try await dbManager.removeStarredPerson(personUserID)
+                try await writes.runThrowing { try await self.dbManager.removeStarredPerson(personUserID) }
                 starredPeopleIDs.remove(personUserID)
             } else {
-                try await dbManager.addStarredPerson(personUserID)
+                try await writes.runThrowing { try await self.dbManager.addStarredPerson(personUserID) }
                 starredPeopleIDs.insert(personUserID)
             }
         } catch {

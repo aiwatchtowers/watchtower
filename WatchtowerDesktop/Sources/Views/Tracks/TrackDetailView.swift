@@ -464,6 +464,9 @@ struct TrackDetailView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .disabled(viewModel.pendingWrites.isPending(
+                        TracksViewModel.subItemKey(trackID: track.id, index: index)
+                    ))
                 }
             }
         }
