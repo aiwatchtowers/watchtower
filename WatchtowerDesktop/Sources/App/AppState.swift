@@ -127,7 +127,6 @@ final class AppState {
     @ObservationIgnored private let embeddedChats = EmbeddedChatEngineFactory()
     /// Once a minute: idle embedded chats and code indexes are released.
     @ObservationIgnored private var idleReleaseSweep: Timer?
-    @ObservationIgnored var ownerConfirmServer: OwnerConfirmServer? // AGENT-07 owner-confirm socket (#568)
     var embeddedChatCenter: EmbeddedChatCenter { embeddedChats.center }
 
     /// App-wide, single-slot registry for the creation-time "brief the
@@ -1580,8 +1579,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
-        startOwnerConfirm(databasePath: manager.dbPool.path)
-        startSessionHost() // before the workbenches: their reattach waits for it
+        startHostServices(databasePath: manager.dbPool.path) // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         applyUIVisibility(uiVisibility.isOnScreen)
