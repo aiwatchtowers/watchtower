@@ -52,9 +52,9 @@ final class HomeFeedBuilderTests: XCTestCase {
         Reminder(row: Row(["id": id, "note": "Call back", "status": "pending", "remind_at": iso(date)]))
     }
 
-    private func proposal(_ id: Int64, status: String = "pending") -> AgentAction {
+    private func proposal(_ id: Int64, status: String = "pending", reason: String = "Draft a reply") -> AgentAction {
         AgentAction(row: Row([
-            "id": id, "tool": "create_target", "reason": "Draft a reply", "status": status,
+            "id": id, "tool": "create_target", "reason": reason, "status": status,
             "created_at": iso(now.addingTimeInterval(-600))
         ]))
     }
@@ -107,6 +107,47 @@ final class HomeFeedBuilderTests: XCTestCase {
         data.inbox = [inbox(1, minutesAgo: 5, read: true)]
         let row = try XCTUnwrap(build(data).waiting.first)
         XCTAssertTrue(row.read)
+    }
+
+    func testRowContentMatchesTheMockup() throws {
+        var data = HomeFeedData()
+        data.proposals = [proposal(5), proposal(6, reason: "")]
+        data.dueReminders = [reminder(3, at: now.addingTimeInterval(-300))]
+        data.targets = [target(4, due: "2026-10-19")]
+        let rows = build(data).waiting
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        let first = try XCTUnwrap(byID[.proposal(5)])
+        XCTAssertEqual(first.who, "Draft a reply")
+        XCTAssertEqual(first.text, "Drafted by the assistant \u{00B7} review in Inbox")
+        XCTAssertEqual(try XCTUnwrap(byID[.proposal(6)]).who, ReactionToolCatalog.title(for: "create_target"))
+        let reminderRow = try XCTUnwrap(byID[.reminder(3)])
+        XCTAssertEqual(reminderRow.who, "Call back")
+        XCTAssertEqual(reminderRow.text, "Reminder")
+        let targetRow = try XCTUnwrap(byID[.target(4)])
+        XCTAssertEqual(targetRow.who, "Ship it")
+        XCTAssertEqual(targetRow.text, "My target")
+    }
+
+    func testNewestFirstWithinAKind() {
+        var data = HomeFeedData()
+        data.inbox = [inbox(1, minutesAgo: 60), inbox(2, minutesAgo: 5)]
+        data.dueReminders = [reminder(10, at: now.addingTimeInterval(-3600)), reminder(11, at: now.addingTimeInterval(-60))]
+        data.targets = [target(20, due: "2026-10-18"), target(21, due: "2026-10-19")]
+        let ids = build(data).waiting.map(\.id)
+        XCTAssertEqual(ids, [.inbox(2), .inbox(1), .reminder(11), .reminder(10), .target(21), .target(20)])
+    }
+
+    func testHiddenRefsLeaveBelowNowToo() throws {
+        var data = HomeFeedData()
+        data.targets = [target(4, due: "2026-10-20T16:00")]
+        data.laterReminders = [reminder(9, at: try at(day: 20, hour: 14))]
+        XCTAssertTrue(build(data, hidden: [.target(4), .reminder(9)]).laterToday.isEmpty)
+    }
+
+    func testMeetingUnderAMinuteSaysNow() throws {
+        var data = HomeFeedData()
+        data.events = [event("a", start: now.addingTimeInterval(30))]
+        XCTAssertEqual(build(data).laterToday.first?.chip, "now")
     }
 
     func testProposalHasNoActions() throws {

@@ -23,7 +23,7 @@ package enum HomeFeedBuilder {
     ) -> HomeFeed {
         let rows = waitingRows(data, now: now, calendar: calendar).filter { !hidden.contains($0.id) }
         let shown = expanded ? rows : Array(rows.prefix(waitingLimit))
-        let today = events(data, now: now, calendar: calendar)
+        let today = events(data, now: now, calendar: calendar, hidden: hidden)
         return HomeFeed(
             waiting: shown,
             hiddenWaiting: rows.count - shown.count,
@@ -41,15 +41,15 @@ package enum HomeFeedBuilder {
         var rows = data.inbox.map(inboxRow)
         rows += data.dueReminders.map { reminder in
             FeedRow(
-                id: .reminder(reminder.id), kind: .reminder, chip: "Reminder", who: "You", whereText: nil,
-                text: reminder.note.isEmpty ? "Reminder" : reminder.note,
+                id: .reminder(reminder.id), kind: .reminder, chip: "Reminder",
+                who: reminder.note.isEmpty ? "Reminder" : reminder.note, whereText: nil, text: "Reminder",
                 stamp: instant(reminder.remindAt), read: false, actions: [.done, .hide], link: .inbox)
         }
         rows += data.proposals.map { action in
             FeedRow(
                 id: .proposal(action.id), kind: .proposal, chip: action.status == "failed" ? "Failed" : "Proposal",
-                who: "Assistant", whereText: nil,
-                text: action.reason.isEmpty ? ReactionToolCatalog.title(for: action.tool) : action.reason,
+                who: action.reason.isEmpty ? ReactionToolCatalog.title(for: action.tool) : action.reason,
+                whereText: nil, text: "Drafted by the assistant \u{00B7} review in Inbox",
                 stamp: instant(action.createdAt), read: false, actions: [], link: .inbox)
         }
         for target in data.targets {
@@ -58,8 +58,8 @@ package enum HomeFeedBuilder {
             if target.dueDate.contains("T"), due > now { continue }
             let overdue = target.dueDate.contains("T") ? due <= now : String(target.dueDate.prefix(10)) < dayString(now, calendar)
             rows.append(FeedRow(
-                id: .target(target.id), kind: .target, chip: overdue ? "Overdue" : "Due", who: "You", whereText: nil,
-                text: target.text, stamp: due, read: false, actions: [.done, .hide], link: .target(id: target.id)))
+                id: .target(target.id), kind: .target, chip: overdue ? "Overdue" : "Due", who: target.text, whereText: nil,
+                text: "My target", stamp: due, read: false, actions: [.done, .hide], link: .target(id: target.id)))
         }
         // Kind order, newest first; the sort is stable via the offset.
         return rows.enumerated()
@@ -98,7 +98,7 @@ package enum HomeFeedBuilder {
     // MARK: - Below NOW
 
     private static func events(
-        _ data: HomeFeedData, now: Date, calendar: Calendar
+        _ data: HomeFeedData, now: Date, calendar: Calendar, hidden: Set<FeedRef>
     ) -> (ongoing: FeedEvent?, later: [FeedEvent]) {
         var ongoing: FeedEvent?
         var later: [FeedEvent] = []
@@ -118,7 +118,7 @@ package enum HomeFeedBuilder {
             let old = later[first]
             later[first] = FeedEvent(
                 id: old.id, start: old.start, end: old.end, title: old.title,
-                chip: minutes < soonMinutes ? "in \(minutes) min" : old.chip,
+                chip: minutes < 1 ? "now" : minutes < soonMinutes ? "in \(minutes) min" : old.chip,
                 prepReady: old.prepReady, isNext: true, isOngoing: false, link: old.link)
         }
         for target in data.targets where target.dueDate.contains("T") {
@@ -138,7 +138,7 @@ package enum HomeFeedBuilder {
         let sorted = later.enumerated().sorted { lhs, rhs in
             lhs.element.start != rhs.element.start ? lhs.element.start < rhs.element.start : lhs.offset < rhs.offset
         }
-        return (ongoing, sorted.map(\.element))
+        return (ongoing, sorted.map(\.element).filter { !hidden.contains($0.id) })
     }
 
     /// The first day after today with meetings, within the horizon; meetings only.
