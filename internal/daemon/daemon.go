@@ -1668,6 +1668,13 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 	if d.config.ReactionCommands.IntervalHours > 0 {
 		interval := time.Duration(d.config.ReactionCommands.IntervalHours) * time.Hour
 		if !d.lastReactionCmd.IsZero() && now.Sub(d.lastReactionCmd) < interval {
+			// A throttled cycle polls nothing, but nobody listening still
+			// means reactions placed now must not fire later.
+			if d.reactionEventsUnheard() {
+				if err := d.db.ResetReactionEventsSeeded(); err != nil {
+					d.logger.Printf("reaction-commands: resetting event seeds: %v", err)
+				}
+			}
 			return
 		}
 	}
@@ -1693,6 +1700,16 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		d.lastReactionCmd = now
 		return pipelineRunStats{items: dispatched, err: err}
 	})
+}
+
+// reactionEventsUnheard reports that no recipe can receive reaction events
+// this cycle: no bus is wired, or the cycle's bus has no listener. A wired
+// bus whose Begin failed (cycleEvents nil) is unknown, not unheard.
+func (d *Daemon) reactionEventsUnheard() bool {
+	if d.automationEvents == nil {
+		return true
+	}
+	return d.cycleEvents != nil && !d.cycleEvents.Wants(automations.SlackReactionAdded)
 }
 
 // noReactionBus is the reaction poll's sink when the cycle has no event bus

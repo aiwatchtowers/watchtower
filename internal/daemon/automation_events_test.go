@@ -583,6 +583,25 @@ func TestDaemon_ReactionPollWithoutBusResetsEventSeeds(t *testing.T) {
 	assert.False(t, reactionSeeded(t, database, id), "no bus, no listener: the stamp is cleared")
 }
 
+// A throttled cycle (interval_hours > 0) polls nothing, but with nobody
+// listening it still clears the event seed stamps.
+func TestDaemon_ReactionThrottledCycleResetsEventSeeds(t *testing.T) {
+	d, database, _ := newEventsTestDaemon(t, nil)
+	id, err := database.CreateSlackAccount(db.SlackAccount{TeamDomain: "acme", Label: "work", CurrentUserID: "1:UOWNER"})
+	require.NoError(t, err)
+	d.config.ReactionCommands.Enabled = true
+	d.config.ReactionCommands.IntervalHours = 1
+	d.lastReactionCmd = time.Now()
+	polls := reactionProbe(t, d, database, d.config)
+	stampReactionSeed(t, database)
+	require.True(t, reactionSeeded(t, database, id))
+
+	d.phaseReactionCommands(context.Background())
+
+	assert.Zero(t, *polls, "throttled: no poll")
+	assert.False(t, reactionSeeded(t, database, id), "nobody listens: the stamp is cleared")
+}
+
 // With the feature off nothing polls, and the stamps are cleared so
 // reactions placed meanwhile do not replay when it comes back on.
 func TestDaemon_ReactionCommandsOffResetsEventSeeds(t *testing.T) {
