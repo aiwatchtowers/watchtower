@@ -183,6 +183,33 @@ final class JiraAccountsViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isConnecting)
     }
 
+    // F7 (#574 review): the sheet goes away after Continue. The owner chose
+    // the site, so the CLI is left to finish, and the finished connect
+    // applies the restart once by itself.
+    func testClosingTheSheetAfterContinueLetsTheConnectFinish() async throws {
+        let stub = try sitePickerCLI()
+        let (vm, daemon, _) = try makeVM(cli: stub.cli)
+
+        let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .restart) }
+        let sites = try await waitForSiteChoices(vm)
+        vm.chooseSite(sites[0])
+        // The sheet's onDisappear.
+        vm.abandonConnect()
+        vm.finishBoardStep()
+        XCTAssertTrue(vm.isConnecting, "an answered connect is not cancelled")
+
+        let result = await connect.value
+        XCTAssertTrue(result.connected)
+        XCTAssertFalse(result.cancelled)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(try String(contentsOf: stub.answer, encoding: .utf8), "https://alpha.example.com\n")
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+        vm.finishBoardStep()
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1, "nothing is left held to fire twice")
+    }
+
     // F2: closing the sheet while the consent is still in the browser
     // cancels the flow too.
     func testClosingTheSheetMidConsentCancels() async throws {

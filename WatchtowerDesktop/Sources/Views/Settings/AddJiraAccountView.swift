@@ -86,8 +86,12 @@ struct AddJiraAccountView: View {
                     .font(.title2)
                     .fontWeight(.bold)
                 Spacer()
-                Button("Close") { dismiss() }
-                    .buttonStyle(.plain)
+                // Hidden while connecting (#574 review F8): Cancel is the one
+                // way to stop a sign-in, so nothing ends it silently.
+                if vm?.isConnecting != true && !starting {
+                    Button("Close") { dismiss() }
+                        .buttonStyle(.plain)
+                }
             }
 
             Text("""
