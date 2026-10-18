@@ -59,7 +59,7 @@ func configValues(args []string) []string {
 func TestClient_BuildArgs_ReadFolder(t *testing.T) {
 	c := NewClient("gpt-5.4", "/data/wt.db", "codex")
 	c.SetReadFolder("/work/acme")
-	args, _ := clientArgsT(t, c, "sys", "hello", c.readFolder)
+	args := c.ArgsForTest("sys", "hello")
 
 	cd := slices.Index(args, "--cd")
 	require.GreaterOrEqual(t, cd, 0)
@@ -83,10 +83,8 @@ func TestClient_BuildArgs_ReadFolder(t *testing.T) {
 	} {
 		assert.Contains(t, cfg, off)
 	}
-	// The read-only watchtower server is mounted by -c (the folder is the
-	// working root, so the temp .codex/config.toml route is not available).
-	assert.Contains(t, cfg, "mcp_servers.watchtower.command="+strconv.Quote(watchtowerBinary()))
-	assert.Contains(t, cfg, `mcp_servers.watchtower.args=["mcp", "--db-path", "/data/wt.db"]`)
+	// The read-only watchtower server is mounted by the -c override.
+	assert.Contains(t, cfg, `mcp_servers={"watchtower"={command=`+TOMLString(watchtowerBinary())+`,args=["mcp","--db-path","/data/wt.db"],enabled=true,default_tools_approval_mode="approve"}}`)
 	assert.Equal(t, "-", args[len(args)-1], "the turn travels on stdin")
 }
 

@@ -179,12 +179,6 @@ func TestSessionFeed_Errors(t *testing.T) {
 	_, _, err = runWorkbench(t, "session-feed", "--session", strconv.FormatInt(shell, 10))
 	assert.EqualError(t, err, fmt.Sprintf("session %d is not an agent session", shell))
 
-	res, err = fx.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (?, 'codex', 'cx', '/tmp/acme')`, fx.wb)
-	require.NoError(t, err)
-	codex, _ := res.LastInsertId()
-	_, _, err = runWorkbench(t, "session-feed", "--session", strconv.FormatInt(codex, 10))
-	assert.EqualError(t, err, fmt.Sprintf("session %d: codex sessions are not supported yet", codex))
-
 	_, err = fx.run(t, "--subagent", "toolu_nope")
 	assert.EqualError(t, err, "subagent toolu_nope not found")
 }
@@ -245,4 +239,36 @@ func TestSessionFeed_AfterAndSubagentExclusive(t *testing.T) {
 	_, err := fx.run(t, "--after", "conv-1:0", "--subagent", "toolu_x")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "none of the others can be")
+}
+
+func TestSessionFeed_CodexSessionReturnsEntries(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	home := t.TempDir()
+	prev := terminalCodexHome
+	terminalCodexHome = func() string { return home }
+	t.Cleanup(func() { terminalCodexHome = prev })
+
+	id := "01a10000-0000-7000-8000-000000000101"
+	day := filepath.Join(home, "sessions", "2026", "10", "12")
+	require.NoError(t, os.MkdirAll(day, 0o755))
+	line := func(typ, id, text string) string {
+		return jsonRec(map[string]any{"timestamp": "2026-10-12T12:00:00Z", "type": "event_msg", "payload": map[string]any{
+			"type": "item_completed", "item": map[string]any{"type": typ, "id": id, "content": []map[string]any{{"type": "text", "text": text}}}}})
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(day, "rollout-2026-10-12T12-00-00-"+id+".jsonl"),
+		[]byte(line("UserMessage", "u1", "hello codex")+line("AgentMessage", "m1", "hi owner")), 0o600))
+	res, err := fx.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+		VALUES (?, 'codex', 'cx', '/tmp/acme', ?)`, fx.wb, id)
+	require.NoError(t, err)
+	codex, _ := res.LastInsertId()
+
+	out, _, err := runWorkbench(t, "session-feed", "--session", strconv.FormatInt(codex, 10), "--json")
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	entries := got["entries"].([]any)
+	require.Len(t, entries, 2)
+	assert.Equal(t, "hello codex", entries[0].(map[string]any)["text"])
+	assert.Equal(t, "agent", entries[1].(map[string]any)["kind"])
+	assert.NotEmpty(t, got["cursor"])
 }

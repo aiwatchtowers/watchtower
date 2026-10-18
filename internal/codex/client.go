@@ -27,7 +27,7 @@ type Client struct {
 	mcpEnvVars []string
 	// readFolder, when set (SetReadFolder), is the run's working root
 	// (`--cd`, and the process cwd) under the read-only sandbox. Empty =
-	// today's run in a temp dir holding the MCP config.
+	// a run in os.TempDir() with no --cd.
 	readFolder string
 	// childEnv replaces the os.Environ() base of the child's environment
 	// when childEnvSet (SetChildEnv); processGroup runs the child in its own
@@ -35,7 +35,32 @@ type Client struct {
 	childEnv     []string
 	childEnvSet  bool
 	processGroup bool
+	// loadExternal yields the owner's enabled Quick Connections, called once
+	// per launch (SetExternalMCPServers / SetExternalMCPLoader).
+	loadExternal func() []ai.ExternalMCPServer
+	// serversFromHome: the child's CODEX_HOME declares its servers itself
+	// (SetServersFromHome); no -c override is added.
+	serversFromHome bool
 }
+
+// SetServersFromHome is for a child whose CODEX_HOME (SetChildEnv) is a
+// scrubbed per-run home that already declares exactly its servers (the
+// automation agent() child): the run adds no mcp_servers override.
+func (c *Client) SetServersFromHome() { c.serversFromHome = true }
+
+// SetExternalMCPServers mounts the owner's enabled Quick Connections next to
+// the watchtower server, each limited to its QC-02 allowed tools
+// (mcpOverride). Only a run that mounts the watchtower server (a database
+// path) gets them.
+func (c *Client) SetExternalMCPServers(servers []ai.ExternalMCPServer) {
+	c.loadExternal = func() []ai.ExternalMCPServer { return servers }
+}
+
+// SetExternalMCPLoader is SetExternalMCPServers for a client that launches
+// codex once per turn (the chat session): load runs before every launch, so
+// the connection set and each OAuth token are as fresh as a claude launch's
+// (QC-04).
+func (c *Client) SetExternalMCPLoader(load func() []ai.ExternalMCPServer) { c.loadExternal = load }
 
 // SetChildEnv replaces the inherited environment of the child with env (the
 // rich PATH is still appended last). Unset = os.Environ() as today.
@@ -48,20 +73,25 @@ func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, tr
 func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
 
 // childEnviron is the child's environment: the base (os.Environ() unless
-// replaced) without PATH, then the rich PATH.
-func (c *Client) childEnviron() []string {
-	base := os.Environ()
-	if c.childEnvSet {
-		base = c.childEnv
-	}
+// replaced) without PATH, then extra (the run's Quick Connection secrets,
+// mcpOverride), then the rich PATH.
+func (c *Client) childEnviron(extra []string) []string {
 	var env []string
-	for _, e := range base {
+	for _, e := range c.baseEnv() {
 		if strings.HasPrefix(e, "PATH=") {
 			continue
 		}
 		env = append(env, e)
 	}
+	env = append(env, extra...)
 	return append(env, "PATH="+RichPATH())
+}
+
+func (c *Client) baseEnv() []string {
+	if c.childEnvSet {
+		return c.childEnv
+	}
+	return os.Environ()
 }
 
 // SetReadFolder makes the run a read-only look at dir (`ai query
@@ -70,10 +100,28 @@ func (c *Client) childEnviron() []string {
 // off), with its shell on — codex reads files only through it — and every
 // other local tool and web search off. The sandbox lets the shell read
 // outside dir (accepted by the owner, spec 2026-10-02 §9.1) but never write
-// or reach the network. The watchtower MCP server is mounted with -c
-// overrides, since dir — not a temp dir — is the working root. dir must
-// already be resolved to a workbench folder (cmd's resolveReadFolder).
+// or reach the network. The watchtower MCP server is mounted by the same
+// -c override as any run (mount), which also disables the servers of dir's
+// own .codex/config.toml. dir must already be resolved to a workbench folder (cmd's resolveReadFolder).
 func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
+
+// ArgsForTest returns the argv a Query would run (tests outside this
+// package: cmd's `ai query` wiring tests). A system-prompt file it may
+// write is removed.
+func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
+	m, err := c.mount()
+	if err != nil {
+		return nil
+	}
+	args, _, promptFile, err := c.buildRunArgs(systemPrompt, userMessage, c.readFolder, m.args)
+	if promptFile != "" {
+		_ = os.Remove(promptFile)
+	}
+	if err != nil {
+		return nil
+	}
+	return args
+}
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
 func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
@@ -83,8 +131,8 @@ func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 func (c *Client) SetMCPEnvVars(names []string) { c.mcpEnvVars = names }
 
 // NewClient creates a new AI client that invokes the Codex CLI.
-// dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
-// server is configured via .codex/config.toml.
+// dbPath is the path to the SQLite database; when non-empty, the watchtower
+// MCP server is mounted by a -c mcp_servers override (mount).
 // codexPath is an optional explicit path to the codex binary; pass "" for default lookup.
 func NewClient(model, dbPath, codexPath string) *Client {
 	return &Client{
@@ -103,7 +151,13 @@ func NewClient(model, dbPath, codexPath string) *Client {
 // child has exited. workDir is an optional working directory to pass via
 // --cd.
 func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) (args []string, stdin, promptFile string, err error) {
-	args = c.execArgs()
+	return c.buildRunArgs(systemPrompt, userMessage, workDir, nil)
+}
+
+// buildRunArgs is buildArgs with the run's MCP mount flags (mount) after
+// the exec prefix.
+func (c *Client) buildRunArgs(systemPrompt, userMessage, workDir string, mount []string) (args []string, stdin, promptFile string, err error) {
+	args = append(c.execArgs(), mount...)
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
 	}
@@ -116,7 +170,8 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) (args []st
 }
 
 // execArgs is the `codex exec` prefix: the shared execArgs, or for a
-// read-folder run the read-only sandbox with the shell on (SetReadFolder).
+// read-folder run the read-only sandbox with the shell on and web search
+// off (SetReadFolder). The MCP servers come from mount.
 func (c *Client) execArgs() []string {
 	if c.readFolder == "" {
 		return execArgs(c.model)
@@ -127,28 +182,37 @@ func (c *Client) execArgs() []string {
 			args[i] = "features.shell_tool=true"
 		}
 	}
-	args = append(args, "--sandbox", "read-only", "-c", `web_search="disabled"`)
-	if c.dbPath != "" {
-		args = append(args, mcpConfigOverrides(c.dbPath, c.mcpArgs)...)
-	}
-	return args
+	return append(args, "--sandbox", "read-only", "-c", `web_search="disabled"`)
 }
 
-// workDir prepares where the run works: the read folder as is, or a temp
-// dir holding the MCP config when there is a database (removed by the
-// returned cleanup), or none.
-func (c *Client) workDir() (dir string, cleanup func(), err error) {
-	if c.readFolder != "" {
-		return c.readFolder, func() {}, nil
+// runMount is one launch's MCP mount: the -c flags and the environment the
+// mounted servers read their secrets from.
+type runMount struct{ args, env []string }
+
+// mount builds the launch's MCP servers in place of the owner's own codex
+// config ones, keeping the owner's CODEX_HOME (sign-in, model provider,
+// profiles): a run with a database disables every server of the owner's
+// codex config layers and mounts the watchtower server plus the Quick
+// Connections (mcpOverride). A run with none (a plain query), or whose
+// CODEX_HOME declares its servers (SetServersFromHome), is left as codex
+// configures it.
+func (c *Client) mount() (runMount, error) {
+	if c.serversFromHome || c.dbPath == "" {
+		return runMount{}, nil
 	}
-	if c.dbPath == "" {
-		return "", func() {}, nil
-	}
-	tmpDir, err := mcpWorkDir(c.dbPath, c.mcpArgs, c.mcpEnvVars)
+	base := c.baseEnv()
+	owner, err := ownerServerNames(codexHomeIn(envMap(base)["CODEX_HOME"]), c.processDir())
 	if err != nil {
-		return "", func() {}, err
+		return runMount{}, err
 	}
-	return tmpDir, func() { _ = os.RemoveAll(tmpDir) }, nil
+	var external []ai.ExternalMCPServer
+	if c.loadExternal != nil {
+		external = c.loadExternal()
+	}
+	// The caller already left out what EnvConflicts refuses; anything the
+	// override still skips is only logged.
+	override, env, _ := mcpOverride(c.dbPath, c.mcpArgs, c.mcpEnvVars, external, owner, base)
+	return runMount{args: []string{"-c", override}, env: env}, nil
 }
 
 // processDir is the subprocess cwd: the read folder, or a TCC-neutral
@@ -174,15 +238,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(errCh)
 		defer close(sidCh)
 
-		// Set up MCP config if database path is provided.
-		workDir, cleanup, mcpErr := c.workDir()
-		if mcpErr != nil {
-			errCh <- mcpErr
+		m, mountErr := c.mount()
+		if mountErr != nil {
+			errCh <- mountErr
 			return
 		}
-		defer cleanup()
-
-		args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, workDir)
+		args, promptStdin, promptFile, buildErr := c.buildRunArgs(systemPrompt, userMessage, c.readFolder, m.args)
 		if buildErr != nil {
 			errCh <- buildErr
 			return
@@ -198,7 +259,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 		defer reap()
 		cmd.Dir = c.processDir()
-		cmd.Env = c.childEnviron()
+		cmd.Env = c.childEnviron(m.env)
 
 		var stderrBuf strings.Builder
 		cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
@@ -290,14 +351,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // QuerySync sends a non-streaming request via the Codex CLI and returns
 // the full response text and token usage.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *ai.Usage, error) {
-	// Set up MCP config if database path is provided.
-	workDir, cleanup, mcpErr := c.workDir()
-	if mcpErr != nil {
-		return "", nil, mcpErr
+	m, mountErr := c.mount()
+	if mountErr != nil {
+		return "", nil, mountErr
 	}
-	defer cleanup()
-
-	args, promptStdin, promptFile, err := c.buildArgs(systemPrompt, userMessage, workDir)
+	args, promptStdin, promptFile, err := c.buildRunArgs(systemPrompt, userMessage, c.readFolder, m.args)
 	if err != nil {
 		return "", nil, err
 	}
@@ -310,7 +368,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
 	defer reap()
 	cmd.Dir = c.processDir()
-	cmd.Env = c.childEnviron()
+	cmd.Env = c.childEnviron(m.env)
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}

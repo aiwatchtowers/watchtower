@@ -306,7 +306,7 @@ reads under the current name in `get_action`. A folder registered as
 resync (the Desktop's Repair) migrates it: its `mcp --project N` reaches a
 hidden `--project` flag whose only effect is that `mcp` fails with the
 "run Repair install" line (since 2026-10-16, ask #312) — it binds and serves
-nothing. Three rules keep it narrow:
+nothing. Since 2026-10-17 (PROJ-22) `update_target` has one additive result key, `procedure`: the owner's target procedure text, present only on a call whose `status` is `in_progress` and only when a procedure text exists; no existing key changed and no tool was added. Three rules keep it narrow:
 
 1. **Only workbench N's rows.** Every workbench write resolves what it touches —
    target, parent, source, comment, ask (its target, its `previous_ask_id`) —

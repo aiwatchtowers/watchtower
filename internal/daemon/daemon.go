@@ -128,29 +128,30 @@ type Daemon struct {
 	// stage-1 drain got to, so its retry starts there (backfillStreams).
 	// In memory only: a restart re-drains the chunk once. Touched only by
 	// the sequential history-backfill phase.
-	backfillResume      map[backfillResumeKey]time.Time
-	backfillCursor      int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
-	nextStepPipe        *targets.Pipeline
-	customTracksPipe    *customtracks.Pipeline
-	reactionCmdPipe     *reactioncmd.Pipeline
-	calendarSyncers     []*calendar.Syncer
-	calDAVSyncers       []*caldav.Syncer
-	gmailSyncers        []mailSyncer
-	imapSyncers         []mailSyncer
-	jiraSyncers         []jiraAccountSyncer
-	externalSync        ExternalSyncRunner
-	dayPlanPipeline     DayPlanRunner
-	lastJira            time.Time
-	linearSyncers       []linearAccountSyncer
-	lastLinear          time.Time
-	lastPeople          time.Time // when people cards last ran (once per day)
-	lastBriefing        time.Time // when briefing last ran (once per day)
-	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
-	lastIdeasLockSkip   time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
-	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
-	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
-	lastReactionCmd     time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
-	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
+	backfillResume             map[backfillResumeKey]time.Time
+	backfillCursor             int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
+	nextStepPipe               *targets.Pipeline
+	customTracksPipe           *customtracks.Pipeline
+	reactionCmdPipe            *reactioncmd.Pipeline
+	calendarSyncers            []*calendar.Syncer
+	calDAVSyncers              []*caldav.Syncer
+	gmailSyncers               []mailSyncer
+	imapSyncers                []mailSyncer
+	jiraSyncers                []jiraAccountSyncer
+	externalSync               ExternalSyncRunner
+	dayPlanPipeline            DayPlanRunner
+	lastJira                   time.Time
+	linearSyncers              []linearAccountSyncer
+	lastLinear                 time.Time
+	lastPeople                 time.Time // when people cards last ran (once per day)
+	lastBriefing               time.Time // when briefing last ran (once per day)
+	lastIdeas                  time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
+	lastInstructionSuggestions time.Time // when the instruction suggestion miner last ran (once per day)
+	lastIdeasLockSkip          time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
+	lastStreams                time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
+	lastStreamsLockSkip        time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
+	lastReactionCmd            time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
+	lastDayPlanDate            string    // YYYY-MM-DD of last generation, for dedup
 
 	// Real-failure attempt budgets for day plan / briefing / daily rollup (max
 	// 3/day, see maxDailyAIAttempts). Loaded from disk at daemon start
@@ -399,6 +400,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadLastPeople()
 	d.loadLastBriefing()
 	d.loadLastIdeas()
+	d.loadLastInstructionSuggestions()
 	d.loadLastStreams()
 	d.loadDayPlanAttempts()
 	d.loadBriefingAttempts()
@@ -566,6 +568,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
 	d.phaseHistoryBackfill(ctx)
+	d.phaseInstructionSuggestions(ctx)
 }
 
 // sampleLockStats writes this cycle's WAL and connection-pool wait sample to

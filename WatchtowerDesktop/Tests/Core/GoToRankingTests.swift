@@ -16,7 +16,6 @@ final class GoToRankingTests: XCTestCase {
             summary: WorkbenchSummary(project: project, openTargets: 0, inProgressTargets: 0,
                                       unreadAgentComments: 0),
             blockedTargets: 0,
-            sessionCount: 0,
             lastSessionActivity: lastActivity
         )
     }

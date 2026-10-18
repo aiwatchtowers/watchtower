@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
@@ -165,6 +167,31 @@ func TestNewQueryClientSkipsExternalConnectionsOnAutomationEditor(t *testing.T) 
 	assert.Empty(t, servers(tools.AutomationEditorSurface), "no external server on automation_editor")
 	assert.Len(t, servers("main"), 1, "main still mounts the owner's connections")
 	assert.Len(t, servers("target"), 1, "target still mounts the owner's connections")
+
+	// The codex client (board #594) follows the same rule, limited to the
+	// allowed tools (QC-02).
+	t.Setenv("CODEX_HOME", t.TempDir())
+	cfg.AI.Provider = "codex"
+	override := func(surface string) string {
+		aiFlagSurface = surface
+		client, cleanup, err := newQueryClient(cfg, dbPath)
+		require.NoError(t, err)
+		defer cleanup()
+		c, ok := client.(*codex.Client)
+		require.True(t, ok, "codex provider must build *codex.Client, got %T", client)
+		for _, a := range c.ArgsForTest("sys", "msg") {
+			if strings.HasPrefix(a, "mcp_servers=") {
+				return a
+			}
+		}
+		return ""
+	}
+	assert.NotContains(t, override(tools.AutomationEditorSurface), `"trello"`, "no external server on automation_editor")
+	for _, surface := range []string{"main", "target"} {
+		got := override(surface)
+		assert.Contains(t, got, `"trello"={command="npx"`, surface)
+		assert.Contains(t, got, `enabled_tools=["list_boards"]`, surface)
+	}
 }
 
 // TestNewQueryClientExternalConnectionsMissingTableDegradesGracefully makes
