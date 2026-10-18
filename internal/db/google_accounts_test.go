@@ -311,3 +311,23 @@ func TestGoogleAccount_GetSelectedCalendarIDs_ScopedAndExcludesNonGoogle(t *test
 	require.NoError(t, err)
 	assert.Equal(t, []string{"cal-a1"}, ids)
 }
+
+func TestGmailDeletionsCheckedAt_RoundTrip(t *testing.T) {
+	d := OpenTestDB(t)
+	id, err := d.CreateGoogleAccount(GoogleAccount{Email: "a@example.com", Label: "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GmailDeletionsCheckedAt(id)
+	if err != nil || !got.IsZero() {
+		t.Fatalf("fresh account: %v, %v", got, err)
+	}
+	want := time.Date(2026, 10, 18, 3, 4, 5, 0, time.UTC)
+	if err := d.SetGmailDeletionsCheckedAt(id, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err = d.GmailDeletionsCheckedAt(id)
+	if err != nil || !got.Equal(want) {
+		t.Fatalf("got %v, %v want %v", got, err, want)
+	}
+}

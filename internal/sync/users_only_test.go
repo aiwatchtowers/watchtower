@@ -111,7 +111,8 @@ func TestRunUsersOnly_NextRegularSyncSkipsTheRoster(t *testing.T) {
 	daemonOrch := NewOrchestrator(ts.db, ts.orch.slackClient, ts.orch.config, ts.accountID)
 	daemonOrch.SetLogger(ts.orch.logger)
 	require.NoError(t, daemonOrch.Run(context.Background(), SyncOptions{}))
-	assert.Equal(t, 1, calls.count("/search.messages"), "the regular sync still searches")
+	// The live search plus the rolling deletion sweep's one stored day.
+	assert.Equal(t, 2, calls.count("/search.messages"), "the regular sync still searches")
 	assert.Equal(t, 1, calls.count("/users.list"), "the roster fetched by users-only is not fetched again within the day")
 }
 
