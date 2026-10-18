@@ -56,10 +56,11 @@ func TestHints_ActionInBothLanguages(t *testing.T) {
 	for _, l := range []Lang{English, Russian} {
 		in, _ := allRulesInput()
 		ctx := contextRulesInput()
-		in.Lang, ctx.Lang = l, l
-		hs := append(Hints(in), Hints(ctx)...)
+		sk := skillsRulesInput(UnusedMinSessions)
+		in.Lang, ctx.Lang, sk.Lang = l, l, l
+		hs := append(append(Hints(in), Hints(ctx)...), Hints(sk)...)
 		require.NotEmpty(t, hs)
-		for _, id := range []string{"H1", "H2", "H3", "H4", "H5", "H6", "H7", "C1", "C2", "C3"} {
+		for _, id := range []string{"H1", "H2", "H3", "H4", "H5", "H6", "H7", "C1", "C2", "C3", "S1"} {
 			assert.NotEmpty(t, hintsOf(hs, id), id)
 		}
 		for _, h := range hs {

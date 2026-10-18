@@ -33,11 +33,13 @@ const (
 	SourceShareMin       = 0.10            // C2: a source above this share of the growth ...
 	SourceTokensMin      = 50_000          // C2: ... and above this many tokens
 	RepeatTokensMin      = 20_000          // C3: the repeated reads added more than this many tokens
+	UnusedMinSessions    = 5               // S1: measured sessions in the period ...
+	UnusedMinDays        = 7               // S1: ... covering at least this many days
 	evidenceMax          = 5               // evidence items a hint lists; the rest are counted in MoreEvidence
 )
 
-// Evidence is what a hint rests on: Kind is session, target or command and Ref
-// the session uuid, "#<target id>" or the command verb.
+// Evidence is what a hint rests on: Kind is session, target, command or skill
+// and Ref the session uuid, "#<target id>", the command verb or the skill name.
 type Evidence struct {
 	Kind  string `json:"kind"`
 	Ref   string `json:"ref"`
@@ -87,10 +89,12 @@ type SessionView struct {
 
 // HintInput is the period the hints judge; Events are keyed by session uuid.
 // Targets (with their status history) and Now give H1 the targets' windows,
-// as in Tasks. Context feeds C1–C3. Lang is the language of the sentences.
+// as in Tasks. Context feeds C1–C3, Skills S1. Lang is the language of the
+// sentences.
 type HintInput struct {
 	Lang     Lang
 	Context  ContextReport
+	Skills   SkillsReport
 	Sessions map[string]SessionView
 	Tasks    []TaskRow
 	Targets  []db.AgentReportTarget
@@ -98,7 +102,7 @@ type HintInput struct {
 	Now      time.Time
 }
 
-// Hints runs the rules H1–H7 and C1–C3 over the period and ranks what fired
+// Hints runs the rules H1–H7, C1–C3 and S1 over the period and ranks what fired
 // by the estimate: time, then money, then tokens; a hint with no estimate is
 // dropped.
 func Hints(in HintInput) []Hint {
@@ -121,6 +125,7 @@ func Hints(in HintInput) []Hint {
 	all = append(all, instructionsHeavy(in)...)
 	all = append(all, bigSources(in)...)
 	all = append(all, repeatedReads(in)...)
+	all = append(all, unusedSkills(in)...)
 
 	out := slices.DeleteFunc(all, func(h Hint) bool { return h.EstimateMS <= 0 && h.EstimateUSD <= 0 && h.EstimateTokens <= 0 })
 	for i := range out {
@@ -669,6 +674,26 @@ func repeatedReads(in HintInput) []Hint {
 	}) {
 		h.Evidence = append(h.Evidence, sessionEv(sid, l.f("c3.label", l.tok(bySession[sid]))))
 	}
+	return []Hint{h}
+}
+
+// S1: skills listed in the period's measured sessions and never used, once
+// UnusedMinSessions+ sessions over UnusedMinDays+ days were measured. One
+// hint; the never-used skills are its evidence, the largest listing first,
+// and its estimate is their listing tokens over every session.
+func unusedSkills(in HintInput) []Hint {
+	sk := in.Skills
+	if len(sk.NeverUsed) == 0 || sk.FactsSessions < UnusedMinSessions || sk.span < UnusedMinDays*24*time.Hour {
+		return nil
+	}
+	l := in.Lang
+	h := Hint{ID: "S1", Action: l.f("s1.action")}
+	for _, u := range sk.NeverUsed {
+		h.EstimateTokens += u.total
+		h.Evidence = append(h.Evidence, Evidence{Kind: "skill", Ref: u.Name, Label: l.f("s1.label", l.tok(u.ListingTokens))})
+	}
+	h.Finding = l.f("s1.finding", len(sk.NeverUsed), l.count(sk.Listed, "skill.of"), l.tok(h.EstimateTokens),
+		l.count(sk.FactsSessions, "session.in"))
 	return []Hint{h}
 }
 

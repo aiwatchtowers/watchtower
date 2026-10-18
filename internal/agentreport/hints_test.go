@@ -289,6 +289,10 @@ func TestHints_CiteEvidence(t *testing.T) {
 					"%s cites unknown target %q", h.ID, e.Ref)
 			case "command":
 				assert.True(t, verbs[e.Ref], "%s cites unknown command %q", h.ID, e.Ref)
+			case "skill":
+				assert.True(t, slices.ContainsFunc(in.Skills.NeverUsed, func(u UnusedSkill) bool { return u.Name == e.Ref }) ||
+					slices.ContainsFunc(in.Skills.Rows, func(r SkillRow) bool { return r.Name == e.Ref }),
+					"%s cites unknown skill %q", h.ID, e.Ref)
 			default:
 				t.Errorf("%s: unknown evidence kind %q", h.ID, e.Kind)
 			}

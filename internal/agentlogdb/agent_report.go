@@ -31,6 +31,7 @@ type AgentReportEvent struct {
 	ResultBytes                                                                           *int64 // nil = not measured
 	ThinkingTokens                                                                        int64
 	PreTokens, PostTokens                                                                 *int64 // compaction context size before and after; nil = not measured
+	Skill                                                                                 string // api_call/tool: the skill it ran under (attributionSkill)
 }
 
 // AgentReportSession is one session of the report window.
@@ -97,7 +98,7 @@ func (d *DB) AgentReportEvents(sessionUUIDs []string) ([]AgentReportEvent, error
 		err := d.agentLogRows(`SELECT session_uuid, kind, ts, agent_id, name, target, trigger, outcome,
 			spawned_agent_id, background, duration_ms, cost_usd, cost_estimated,
 			input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
-			src_path, src_offset, error_class, result_bytes, thinking_tokens, pre_tokens, post_tokens
+			src_path, src_offset, error_class, result_bytes, thinking_tokens, pre_tokens, post_tokens, skill
 			FROM agent_log_events WHERE session_uuid IN (?`+strings.Repeat(",?", len(chunk)-1)+`)
 			ORDER BY session_uuid, ts, src_path, src_offset, key`, args,
 			func(r *sql.Rows) error {
@@ -106,7 +107,7 @@ func (d *DB) AgentReportEvents(sessionUUIDs []string) ([]AgentReportEvent, error
 				if err := r.Scan(&e.SessionUUID, &e.Kind, &e.TS, &e.AgentID, &e.Name, &e.Target, &e.Trigger, &e.Outcome,
 					&e.SpawnedAgentID, &e.Background, &dur, &e.CostUSD, &e.CostEstimated,
 					&e.InputTokens, &e.OutputTokens, &e.CacheReadTokens, &e.CacheWrite5mTokens, &e.CacheWrite1hTokens,
-					&e.SrcPath, &e.SrcOffset, &e.ErrorClass, &resultBytes, &e.ThinkingTokens, &pre, &post); err != nil {
+					&e.SrcPath, &e.SrcOffset, &e.ErrorClass, &resultBytes, &e.ThinkingTokens, &pre, &post, &e.Skill); err != nil {
 					return err
 				}
 				if dur.Valid {

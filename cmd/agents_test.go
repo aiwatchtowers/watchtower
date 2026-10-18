@@ -193,9 +193,10 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	runAgentsCmd(t, "scan", "--workbench", wb)
 	out := runAgentsCmd(t, "report", "--workbench", wb, "--days", "0", "--json")
 	assert.Equal(t, []string{"commands", "context", "enabled", "hints", "import", "models", "old_format_sessions", "sessions", "since",
-		"subagents", "tasks", "time", "totals", "until", "workbench_id"}, jsonKeys(t, out))
+		"skills", "subagents", "tasks", "time", "totals", "until", "workbench_id"}, jsonKeys(t, out))
 	var ov struct {
 		Context  map[string]json.RawMessage `json:"context"`
+		Skills   map[string]json.RawMessage `json:"skills"`
 		Totals   map[string]json.RawMessage `json:"totals"`
 		Import   map[string]json.RawMessage `json:"import"`
 		Sessions []map[string]json.RawMessage
@@ -205,6 +206,7 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	assert.Equal(t, []string{"files_stored", "state", "updated_at"}, mapKeys(ov.Import))
 	assert.Equal(t, []string{"baseline", "compactions", "disk", "facts_sessions", "growth", "repeated_reads", "sessions",
 		"subagent_baseline", "top_sources"}, mapKeys(ov.Context))
+	assert.Equal(t, []string{"facts_sessions", "listed", "listing_tokens", "never_used", "rows", "used"}, mapKeys(ov.Skills))
 	var ctx struct {
 		Baseline    map[string]json.RawMessage `json:"baseline"`
 		Compactions map[string]json.RawMessage `json:"compactions"`

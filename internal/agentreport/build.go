@@ -49,6 +49,7 @@ type Overview struct {
 	Models            []ModelRow    `json:"models"`
 	Hints             []Hint        `json:"hints"`
 	Context           ContextReport `json:"context"`
+	Skills            SkillsReport  `json:"skills"`
 	Tasks             []TaskRow     `json:"tasks"`
 	Sessions          []SessionRow  `json:"sessions"`
 	OldFormatSessions int           `json:"old_format_sessions"`
@@ -230,7 +231,7 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	if err != nil {
 		return nil, err
 	}
-	ov.Context, err = loadContext(al, sessions, allEvents, wb.FolderPath)
+	ov.Context, ov.Skills, err = loadBlocks(al, sessions, allEvents, wb.FolderPath)
 	if err != nil {
 		return nil, err
 	}
@@ -255,17 +256,17 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	ov.Models = nonNil(Models(flatten(allEvents)))
 	ov.Commands = nonNil(Commands(flatten(b.events)))
 	ov.Tasks = touched(Tasks(targets, b.segments, b.events, now))
-	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ov.Context, Sessions: b.views, Tasks: ov.Tasks, Targets: targets,
-		Events: b.events, Now: now}))
+	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ov.Context, Skills: ov.Skills, Sessions: b.views, Tasks: ov.Tasks,
+		Targets: targets, Events: b.events, Now: now}))
 	ov.Sessions = b.rows
 	return ov, nil
 }
 
-// loadContext reads the baseline parts of the sessions with the v2 facts and
-// measures the context block; folder is the workbench folder for the disk
-// sizes ("" = none).
-func loadContext(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
-	folder string) (ContextReport, error) {
+// loadBlocks reads the baseline parts and the skill listing of the sessions
+// with the v2 facts and measures the context and skills blocks; folder is the
+// workbench folder for the disk sizes ("" = none).
+func loadBlocks(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
+	folder string) (ContextReport, SkillsReport, error) {
 	var facts []string
 	for _, s := range sessions {
 		if s.Facts {
@@ -273,13 +274,17 @@ func loadContext(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, ev
 		}
 	}
 	var parts []agentlogdb.AgentContextPart
+	var listing []agentlogdb.AgentSkillListed
 	if len(facts) > 0 {
 		var err error
 		if parts, err = al.AgentReportContextParts(facts); err != nil {
-			return ContextReport{}, err
+			return ContextReport{}, SkillsReport{}, err
+		}
+		if listing, err = al.AgentReportSkillListing(facts); err != nil {
+			return ContextReport{}, SkillsReport{}, err
 		}
 	}
-	return Context(sessions, events, parts, folder), nil
+	return Context(sessions, events, parts, folder), Skills(sessions, events, parts, listing), nil
 }
 
 // touched keeps the task rows the period's sessions worked on (agent time,
@@ -321,12 +326,12 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 		det.Lanes = append(det.Lanes, Lane{AgentID: "", Segments: nonNil(segs)})
 		det.Lanes = append(det.Lanes, b.lanes[sessionUUID]...)
 	}
-	ctx, err := loadContext(al, all[i:i+1], by, "")
+	ctx, skills, err := loadBlocks(al, all[i:i+1], by, "")
 	if err != nil {
 		return nil, err
 	}
 	tasks := Tasks(targets, b.segments, b.events, now)
-	det.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ctx, Sessions: b.views, Tasks: tasks, Targets: targets,
+	det.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ctx, Skills: skills, Sessions: b.views, Tasks: tasks, Targets: targets,
 		Events: b.events, Now: now}))
 	return det, nil
 }

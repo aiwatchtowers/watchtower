@@ -82,7 +82,7 @@ func TestAgentReportEvents_V2Facts(t *testing.T) {
 			{SessionUUID: "a", Key: "tool:t1", Kind: "tool", TS: "2026-10-01T10:00:01.000Z", Name: "Bash", Outcome: "error",
 				ErrorClass: "exit_code", ResultBytes: &size, SrcPath: "/x/a.jsonl", SrcOffset: 1},
 			{SessionUUID: "a", Key: "a:m1", Kind: "api_call", TS: "2026-10-01T10:00:02.000Z", Name: "m",
-				ThinkingTokens: 42, SrcPath: "/x/a.jsonl", SrcOffset: 2},
+				ThinkingTokens: 42, Skill: "review", SrcPath: "/x/a.jsonl", SrcOffset: 2},
 			{SessionUUID: "a", Key: "compact:1", Kind: "compaction", TS: "2026-10-01T10:00:03.000Z",
 				PreTokens: &pre, PostTokens: &post, SrcPath: "/x/a.jsonl", SrcOffset: 3},
 		}
@@ -98,6 +98,7 @@ func TestAgentReportEvents_V2Facts(t *testing.T) {
 	require.NotNil(t, evs[0].ResultBytes)
 	assert.Equal(t, int64(1234), *evs[0].ResultBytes)
 	assert.Equal(t, int64(42), evs[1].ThinkingTokens)
+	assert.Equal(t, "review", evs[1].Skill)
 	assert.Nil(t, evs[1].ResultBytes)
 	require.NotNil(t, evs[2].PreTokens)
 	require.NotNil(t, evs[2].PostTokens)

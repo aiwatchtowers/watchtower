@@ -93,6 +93,12 @@ var msgs = map[string][2]string{
 		"Повторные чтения %s (%d+ раз в одной сессии) добавили %s; больше всего — %s, прочитан %s в сессии %s"},
 	"c3.action": {"Read the file once and keep notes, or read only the range you need.",
 		"Прочитай файл один раз и запиши заметки или читай только нужный диапазон."},
+
+	"s1.label": {"%s a session", "%s за сессию"},
+	"s1.finding": {"%d of %s were never used; listing them took %s in %s",
+		"%d из %s ни разу не использовались; их описания заняли %s в %s"},
+	"s1.action": {"Disable or remove them, or rewrite the description of the ones that should trigger.",
+		"Отключи или удали их либо перепиши описание тех, что должны срабатывать."},
 }
 
 // f formats the message key in the language.
@@ -121,6 +127,7 @@ var nouns = map[string]struct {
 	"session.in": {[2]string{"session", "sessions"}, [3]string{"сессии", "сессиях", "сессиях"}},
 	"task.in":    {[2]string{"task", "tasks"}, [3]string{"задаче", "задачах", "задачах"}},
 	"file.of":    {[2]string{"file", "files"}, [3]string{"файла", "файлов", "файлов"}},
+	"skill.of":   {[2]string{"listed skill", "listed skills"}, [3]string{"навыка в списке", "навыков в списке", "навыков в списке"}},
 	"token":      {[2]string{"token", "tokens"}, [3]string{"токен", "токена", "токенов"}},
 }
 

@@ -248,7 +248,7 @@ func (a *contextAcc) session(sid string, evs []agentlogdb.AgentReportEvent) {
 		case "api_call":
 			if !ls.seen {
 				firstCtx[e.AgentID] = ctxTokens(e)
-				ls.perToken = a.perToken(sid, e.AgentID, ctxTokens(e))
+				ls.perToken = tokensPerByte(a.partsFor[sid], e.AgentID, ctxTokens(e))
 			} else {
 				a.attribute(ls, ctxTokens(e)-ctxTokens(ls.prev), max(ls.prev.OutputTokens-ls.prev.ThinkingTokens, 0))
 			}
@@ -308,10 +308,11 @@ func (a *contextAcc) session(sid string, evs []agentlogdb.AgentReportEvent) {
 	}
 }
 
-// perToken is the lane's tokens per byte: its first call's context over its
-// baseline parts' bytes, else 1 / defaultBytesPerToken.
-func (a *contextAcc) perToken(sid, agent string, first int64) float64 {
-	for _, lp := range a.partsFor[sid] {
+// tokensPerByte is a lane's tokens per byte: its first call's context over
+// its baseline parts' bytes (lps = the session's lanes), else 1 /
+// defaultBytesPerToken.
+func tokensPerByte(lps []laneParts, agent string, first int64) float64 {
+	for _, lp := range lps {
 		if lp.agent == agent && lp.bytes > 0 && first > 0 {
 			return float64(first) / float64(lp.bytes)
 		}

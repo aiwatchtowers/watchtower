@@ -191,6 +191,14 @@
       "rules_bytes": 0
     }
   },
+  "skills": {
+    "facts_sessions": 0,
+    "listed": 0,
+    "used": 0,
+    "listing_tokens": 0,
+    "rows": [],
+    "never_used": []
+  },
   "tasks": [
     {
       "target_id": 1,
