@@ -208,6 +208,7 @@ final class PeopleViewModel {
             currentProfile = try await dbManager.dbPool.read { db in
                 try ProfileQueries.fetchCurrentProfile(db)
             }
+            errorMessage = nil
         } catch {
             errorMessage = "Failed to update connections: \(error.localizedDescription)"
         }
@@ -236,6 +237,7 @@ final class PeopleViewModel {
                 try await writes.runThrowing { try await self.dbManager.addStarredPerson(personUserID) }
                 starredPeopleIDs.insert(personUserID)
             }
+            errorMessage = nil
         } catch {
             errorMessage = "Failed to update starred person: \(error.localizedDescription)"
         }

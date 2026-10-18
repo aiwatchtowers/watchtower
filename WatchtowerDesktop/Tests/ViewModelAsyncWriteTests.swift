@@ -148,6 +148,12 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         await vm.toggleStarredChannel("1:C1")
         XCTAssertFalse(vm.isChannelStarred("1:C1"))
         XCTAssertNotNil(vm.errorMessage)
+
+        // The next star that lands clears the banner.
+        try await dbManager.dbPool.write { try $0.execute(sql: "DROP TRIGGER refuse_profiles") }
+        await vm.toggleStarredChannel("1:C1")
+        XCTAssertTrue(vm.isChannelStarred("1:C1"))
+        XCTAssertNil(vm.errorMessage)
     }
 
     /// Two connection saves while the writer is busy land in order: the

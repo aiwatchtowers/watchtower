@@ -302,8 +302,9 @@ struct DigestListView: View {
             // Selection toolbar
             selectionToolbar(vm)
 
-            // A failed write (a star, a read mark) over a list with content.
-            if let error = vm.errorMessage, !vm.feedEntries.isEmpty || !vm.ledgerDecisions.isEmpty {
+            // A failed write (a star, a read mark) over a list with content;
+            // an empty Digests feed shows the same message full page instead.
+            if let error = vm.errorMessage, !(activeTab == .digests && vm.feedEntries.isEmpty) {
                 WriteErrorBanner(message: error) { vm.errorMessage = nil }
             }
 

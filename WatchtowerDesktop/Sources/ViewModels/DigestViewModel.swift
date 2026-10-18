@@ -612,6 +612,7 @@ final class DigestViewModel {
                 try await writes.runThrowing { try await self.dbManager.addStarredChannel(channelID) }
                 starredChannelIDs.insert(channelID)
             }
+            errorMessage = nil
         } catch {
             errorMessage = "Failed to update starred channel: \(error.localizedDescription)"
         }
