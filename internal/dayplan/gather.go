@@ -165,18 +165,28 @@ func (p *Pipeline) gatherBriefing(userID, date string) *db.Briefing {
 	return nil
 }
 
-// gatherJira returns active Jira issues assigned to the owner (their Jira
-// account id first, else their Slack id, else none).
-// Errors are logged and an empty slice is returned (graceful degradation).
-func (p *Pipeline) gatherJira(owner db.Owner) []db.JiraIssue {
-	issues, err := p.db.GetOwnerAssignedJiraIssues(owner)
-	if err != nil {
-		if p.logger != nil {
-			p.logger.Printf("dayplan: gatherJira: %v", err)
-		}
-		return nil
+// gatherJira returns the open issues assigned to the owner from
+// tracker_issues: Jira's (their Jira account id first, else their Slack id,
+// else none), then Linear's when linear.enabled (their Linear ids, else their
+// Slack id). A tracker whose read fails is logged and left out (graceful
+// degradation); the other still contributes.
+func (p *Pipeline) gatherJira(owner db.Owner) []db.TrackerIssue {
+	trackers := []string{db.TrackerJira}
+	if p.cfg != nil && p.cfg.Linear.Enabled {
+		trackers = append(trackers, db.TrackerLinear)
 	}
-	return issues
+	var out []db.TrackerIssue
+	for _, tracker := range trackers {
+		issues, err := p.db.OwnerAssignedTrackerIssues(owner, tracker)
+		if err != nil {
+			if p.logger != nil {
+				p.logger.Printf("dayplan: gatherJira: %s: %v", tracker, err)
+			}
+			continue
+		}
+		out = append(out, issues...)
+	}
+	return out
 }
 
 // gatherPeople returns the latest active people cards.

@@ -12,7 +12,7 @@ import (
 func TestNewResolver_DefaultsTimeout(t *testing.T) {
 	r := NewResolver(nil, nil, 0)
 	assert.Equal(t, 10*time.Second, r.timeout, "non-positive timeout falls back to 10s")
-	assert.Len(t, r.resolvers, 2, "Slack + Jira resolvers registered")
+	assert.Len(t, r.resolvers, 3, "Slack + Jira + Linear resolvers registered")
 }
 
 func TestNewResolver_CustomTimeout(t *testing.T) {

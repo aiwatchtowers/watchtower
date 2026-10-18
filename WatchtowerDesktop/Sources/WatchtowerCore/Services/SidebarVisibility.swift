@@ -8,6 +8,9 @@ package enum SidebarSource: Sendable {
     /// A Google account with Calendar, or a CalDAV/ICS calendar.
     case calendar
     case jira
+    /// A Linear workspace: the tracker-neutral tabs (Blockers) read it next
+    /// to Jira through the `tracker_*` views.
+    case linear
 }
 
 /// Which sources are connected, read from the account tables.
@@ -16,27 +19,30 @@ package struct ConnectedSources: Equatable, Sendable {
     package var mail: Bool
     package var calendar: Bool
     package var jira: Bool
+    package var linear: Bool
 
-    package init(slack: Bool = false, mail: Bool = false, calendar: Bool = false, jira: Bool = false) {
+    package init(slack: Bool = false, mail: Bool = false, calendar: Bool = false, jira: Bool = false, linear: Bool = false) {
         self.slack = slack
         self.mail = mail
         self.calendar = calendar
         self.jira = jira
+        self.linear = linear
     }
 
     package static let none = Self()
     /// Fail-open default until the first read: every tab visible.
-    package static let all = Self(slack: true, mail: true, calendar: true, jira: true)
+    package static let all = Self(slack: true, mail: true, calendar: true, jira: true, linear: true)
 
     package func provides(_ source: SidebarSource) -> Bool {
         switch source {
         case .messages: slack || mail
         case .calendar: calendar
         case .jira: jira
+        case .linear: linear
         }
     }
 
-    /// Reads the account tables. Removed Slack/Jira accounts don't count;
+    /// Reads the account tables. Removed Slack/Jira/Linear accounts don't count;
     /// Google, IMAP and calendar accounts are deleted on removal. A paused
     /// account (`enabled = 0`, not removed) counts as connected on purpose:
     /// its synced data is still there to show — unlike
@@ -52,7 +58,8 @@ package struct ConnectedSources: Equatable, Sendable {
                 || any("SELECT 1 FROM email_accounts"),
             calendar: try any("SELECT 1 FROM google_accounts WHERE calendar_enabled = 1")
                 || any("SELECT 1 FROM calendar_accounts"),
-            jira: try any("SELECT 1 FROM jira_accounts WHERE status != 'removed'")
+            jira: try any("SELECT 1 FROM jira_accounts WHERE status != 'removed'"),
+            linear: try any("SELECT 1 FROM linear_accounts WHERE status != 'removed'")
         )
     }
 }

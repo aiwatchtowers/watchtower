@@ -22,29 +22,6 @@ package struct JiraDeliveryStats {
     package let labels: [String]
 }
 
-package struct EpicProgressRow: Codable, FetchableRecord, Identifiable {
-    package var id: String { epicKey }
-    package var epicKey: String
-    package var epicName: String
-    package var totalIssues: Int
-    package var doneIssues: Int
-    package var inProgressIssues: Int
-    package var progressPct: Double
-    package var weeklyResolvedCount: Int
-    package var monthlyResolvedCount: Int
-
-    package enum CodingKeys: String, CodingKey {
-        case epicKey = "epic_key"
-        case epicName = "epic_name"
-        case totalIssues = "total_issues"
-        case doneIssues = "done_issues"
-        case inProgressIssues = "in_progress_issues"
-        case progressPct = "progress_pct"
-        case weeklyResolvedCount = "weekly_resolved_count"
-        case monthlyResolvedCount = "monthly_resolved_count"
-    }
-}
-
 package struct WithoutJiraRow: Codable, FetchableRecord, Identifiable {
     package var id: String { channelID }
     package var channelID: String
@@ -680,61 +657,6 @@ package enum JiraQueries {
 
     // MARK: - Blocker Map Queries
 
-    /// Fetch all blocked issues (status contains "block", not done).
-    package static func fetchBlockedIssues(_ db: Database) throws -> [JiraIssue] {
-        try JiraIssue.fetchAll(
-            db,
-            sql: """
-                SELECT *
-                FROM jira_issues
-                WHERE LOWER(status) LIKE '%block%'
-                  AND status_category != 'done'
-                  AND is_deleted = 0
-                ORDER BY updated_at DESC
-                """
-        )
-    }
-
-    /// Fetch stale issues (in_progress, status_category_changed_at > staleDays ago).
-    package static func fetchStaleIssues(
-        _ db: Database,
-        staleDays: Int = 7
-    ) throws -> [JiraIssue] {
-        try JiraIssue.fetchAll(
-            db,
-            sql: """
-                SELECT *
-                FROM jira_issues
-                WHERE status_category = 'in_progress'
-                  AND status_category_changed_at != ''
-                  AND julianday('now') - julianday(status_category_changed_at) > ?
-                  AND is_deleted = 0
-                ORDER BY status_category_changed_at ASC
-                """,
-            arguments: [staleDays]
-        )
-    }
-
-    /// Fetch issue links for a set of issue keys (for chain building).
-    package static func fetchIssueLinksForKeys(
-        _ db: Database,
-        keys: [String]
-    ) throws -> [JiraIssueLink] {
-        guard !keys.isEmpty else { return [] }
-        let placeholders = keys.map { _ in "?" }.joined(separator: ",")
-        return try JiraIssueLink.fetchAll(
-            db,
-            sql: """
-                SELECT id, source_key, target_key, link_type, synced_at
-                FROM jira_issue_links
-                WHERE source_key IN (\(placeholders))
-                   OR target_key IN (\(placeholders))
-                ORDER BY id
-                """,
-            arguments: StatementArguments(keys + keys)
-        )
-    }
-
     /// Fetch the latest Slack message text referencing an issue (via issue_slack_links).
     package static func fetchSlackContextForIssue(
         _ db: Database,
@@ -753,44 +675,6 @@ package enum JiraQueries {
                 LIMIT 1
                 """,
             arguments: [issueKey]
-        )
-    }
-
-    // MARK: - Epic Progress
-
-    /// Aggregate epic progress: total/done/in-progress counts plus resolved in 7 and 28 days.
-    package static func fetchEpicProgress(_ db: Database) throws -> [EpicProgressRow] {
-        let sevenDaysAgo = dayFormatter.string(
-            from: Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        )
-        let twentyEightDaysAgo = dayFormatter.string(
-            from: Calendar.current.date(byAdding: .day, value: -28, to: Date()) ?? Date()
-        )
-
-        let sql = """
-            SELECT
-                ji.epic_key,
-                COALESCE(epic.summary, ji.epic_key) AS epic_name,
-                COUNT(*) AS total_issues,
-                COUNT(*) FILTER (WHERE ji.status_category = 'done') AS done_issues,
-                COUNT(*) FILTER (WHERE ji.status_category = 'in_progress') AS in_progress_issues,
-                CASE WHEN COUNT(*) > 0
-                     THEN CAST(COUNT(*) FILTER (WHERE ji.status_category = 'done') AS REAL) / COUNT(*)
-                     ELSE 0 END AS progress_pct,
-                COUNT(*) FILTER (WHERE ji.status_category = 'done' AND ji.resolved_at >= ?) AS weekly_resolved_count,
-                COUNT(*) FILTER (WHERE ji.status_category = 'done' AND ji.resolved_at >= ?) AS monthly_resolved_count
-            FROM jira_issues ji
-            LEFT JOIN jira_issues epic ON epic.key = ji.epic_key AND epic.is_deleted = 0
-            WHERE ji.epic_key != '' AND ji.is_deleted = 0
-            GROUP BY ji.epic_key
-            HAVING COUNT(*) >= 3
-            ORDER BY progress_pct DESC, total_issues DESC
-            """
-
-        return try EpicProgressRow.fetchAll(
-            db,
-            sql: sql,
-            arguments: [sevenDaysAgo, twentyEightDaysAgo]
         )
     }
 

@@ -110,8 +110,8 @@ struct DigestDetailView: View {
                     }
                 }
 
-                // Load epic progress for weekly digests
-                if jiraConnected && digest.type == "weekly" {
+                // Load epic/project progress for weekly digests (Jira or Linear)
+                if trackerConnected && digest.type == "weekly" {
                     let vm = EpicProgressViewModel(dbManager: dbManager)
                     vm.load()
                     epicProgressVM = vm
@@ -441,12 +441,29 @@ struct DigestDetailView: View {
         }
     }
 
+    /// Jira (config) or a Linear workspace: the progress section reads both
+    /// through the tracker views.
+    private var trackerConnected: Bool {
+        Self.showsTrackerProgress(jiraConnected: jiraConnected, connected: appState.featureVisibility.connectedSources)
+    }
+
+    /// A weekly digest's progress section shows with Jira or Linear.
+    static func showsTrackerProgress(jiraConnected: Bool, connected: ConnectedSources) -> Bool {
+        jiraConnected || connected.linear
+    }
+
+    /// The "without Jira" warning is about Jira alone: never on a
+    /// Linear-only install.
+    static func showsWithoutJiraWarning(jiraConnected: Bool, detectionEnabled: Bool) -> Bool {
+        jiraConnected && detectionEnabled
+    }
+
     @ViewBuilder
     private var epicProgressAndWarningsSection: some View {
-        if digest.type == "weekly", jiraConnected, let vm = epicProgressVM {
+        if digest.type == "weekly", trackerConnected, let vm = epicProgressVM {
             EpicProgressSection(viewModel: vm)
 
-            if withoutJiraEnabled {
+            if Self.showsWithoutJiraWarning(jiraConnected: jiraConnected, detectionEnabled: withoutJiraEnabled) {
                 WithoutJiraWarningView(warnings: vm.withoutJiraWarnings)
             }
         }

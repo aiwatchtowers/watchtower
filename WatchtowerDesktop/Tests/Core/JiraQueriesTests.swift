@@ -107,40 +107,6 @@ final class JiraQueriesTests: XCTestCase {
         XCTAssertTrue(stats.labels.isEmpty)
     }
 
-    // MARK: - Stale / blocked
-
-    func testStaleIssuesAreInProgressPastTheThresholdOldestFirst() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let acct = try TestDatabase.insertJiraAccount(db)
-            try issue(db, acct, "PROJ-1") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(10) }
-            try issue(db, acct, "PROJ-2") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(20) }
-            try issue(db, acct, "PROJ-3") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(3) }
-            try issue(db, acct, "PROJ-4") { $0.category = "in_progress" }
-            try issue(db, acct, "PROJ-5") { $0.category = "done"; $0.categoryChanged = self.daysAgo(30) }
-            try issue(db, acct, "PROJ-6") {
-                $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(30); $0.deleted = true
-            }
-        }
-
-        let stale = try queue.read { db in try JiraQueries.fetchStaleIssues(db, staleDays: 7) }
-        XCTAssertEqual(stale.map(\.key), ["PROJ-2", "PROJ-1"])
-    }
-
-    func testBlockedIssuesMatchTheStatusNameAndSkipDone() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let acct = try TestDatabase.insertJiraAccount(db)
-            try issue(db, acct, "PROJ-1") { $0.status = "Blocked"; $0.category = "in_progress" }
-            try issue(db, acct, "PROJ-2") { $0.status = "Waiting (blocker)" }
-            try issue(db, acct, "PROJ-3") { $0.status = "Blocked"; $0.category = "done" }
-            try issue(db, acct, "PROJ-4") { $0.status = "In Progress"; $0.category = "in_progress" }
-        }
-
-        let blocked = try queue.read { db in try JiraQueries.fetchBlockedIssues(db) }
-        XCTAssertEqual(Set(blocked.map(\.key)), ["PROJ-1", "PROJ-2"])
-    }
-
     // MARK: - Team workload
 
     func testTeamWorkloadAggregatesPerAssignee() throws {
@@ -173,45 +139,6 @@ final class JiraQueriesTests: XCTestCase {
         XCTAssertEqual(ann.overdueCount, 1)
         XCTAssertEqual(ann.blockedCount, 1)
         XCTAssertEqual(ann.avgCycleTimeDays, 4, accuracy: 0.01)
-    }
-
-    // MARK: - Epic progress
-
-    func testEpicProgressNeedsThreeChildrenAndCountsRecentResolutions() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let acct = try TestDatabase.insertJiraAccount(db)
-            try issue(db, acct, "PROJ-100") { $0.typeCategory = "epic"; $0.summary = "Payments" }
-            for (key, ago) in [("PROJ-1", 2.0), ("PROJ-2", 20), ("PROJ-3", 40)] {
-                try issue(db, acct, key) { $0.category = "done"; $0.resolved = self.daysAgo(ago); $0.epicKey = "PROJ-100" }
-            }
-            try issue(db, acct, "PROJ-4") { $0.category = "in_progress"; $0.epicKey = "PROJ-100" }
-            // Two children are below the floor of three.
-            try issue(db, acct, "PROJ-5") { $0.epicKey = "PROJ-200" }
-            try issue(db, acct, "PROJ-6") { $0.epicKey = "PROJ-200" }
-        }
-
-        let rows = try queue.read { db in try JiraQueries.fetchEpicProgress(db) }
-        XCTAssertEqual(rows.map(\.epicKey), ["PROJ-100"])
-        let epic = try XCTUnwrap(rows.first)
-        XCTAssertEqual(epic.epicName, "Payments")
-        XCTAssertEqual(epic.totalIssues, 4)
-        XCTAssertEqual(epic.doneIssues, 3)
-        XCTAssertEqual(epic.inProgressIssues, 1)
-        XCTAssertEqual(epic.progressPct, 0.75, accuracy: 0.001)
-        XCTAssertEqual(epic.weeklyResolvedCount, 1)
-        XCTAssertEqual(epic.monthlyResolvedCount, 2)
-    }
-
-    func testEpicProgressNamesAnEpicWithoutItsOwnRowByKey() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let acct = try TestDatabase.insertJiraAccount(db)
-            for n in 1...3 { try issue(db, acct, "PROJ-\(n)") { $0.epicKey = "PROJ-300" } }
-        }
-        let rows = try queue.read { db in try JiraQueries.fetchEpicProgress(db) }
-        XCTAssertEqual(rows.first?.epicName, "PROJ-300")
-        XCTAssertEqual(rows.first?.progressPct, 0)
     }
 
     // MARK: - Links

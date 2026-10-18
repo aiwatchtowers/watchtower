@@ -131,7 +131,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     package let subItems: String        // JSON []
     package let notes: String           // JSON []
     package let progress: Double        // 0.0..1.0
-    package let sourceType: String      // "extract","briefing","manual","chat","inbox","jira","slack"
+    package let sourceType: String      // "extract","briefing","manual","chat","inbox","jira","linear","slack"
     package let sourceID: String
     package let aiLevelConfidence: Double?
     package let createdAt: String
