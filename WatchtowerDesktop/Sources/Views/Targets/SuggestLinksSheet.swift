@@ -34,6 +34,7 @@ struct SuggestLinksSheet: View {
             footer
         }
         .frame(width: 480, height: 420)
+        .interactiveDismissDisabled(isSaving)
     }
 
     private var header: some View {
@@ -43,6 +44,7 @@ struct SuggestLinksSheet: View {
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isSaving)
         }
         .padding()
     }
@@ -124,33 +126,26 @@ struct SuggestLinksSheet: View {
             errorMessage = "Database not available"
             return
         }
-        guard !isSaving else { return }
         let targetID = targetID
         let parentID = applyParent ? suggestions.parentID : nil
         let links = selectedLinks.sorted().map { suggestions.secondaryLinks[$0] }
-        // Off the main thread: a busy database never freezes the sheet; Apply
-        // stays disabled until the write lands, so nothing is linked twice.
-        isSaving = true
+        // Off the main thread: a busy database never freezes the sheet. Apply,
+        // Cancel and Esc wait while the write is pending, so nothing is linked
+        // twice and the sheet never closes on a write still in flight.
         Task {
-            defer { isSaving = false }
-            do {
-                try await db.dbPool.write { dbConn in
-                    if let parentID {
-                        try TargetQueries.updateParent(dbConn, id: targetID, parentID: parentID)
-                    }
-                    for link in links {
-                        // target_links CHECK requires at least one of target_target_id / external_ref.
-                        guard link.targetId != nil || !link.externalRef.isEmpty else { continue }
-                        try TargetQueries.createLink(
-                            dbConn, sourceID: targetID, targetID: link.targetId,
-                            externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
-                        )
-                    }
+            await ViewWrite.run(db.dbPool, pending: $isSaving, { dbConn in
+                if let parentID {
+                    try TargetQueries.updateParent(dbConn, id: targetID, parentID: parentID)
                 }
-                dismiss()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+                for link in links {
+                    // target_links CHECK requires at least one of target_target_id / external_ref.
+                    guard link.targetId != nil || !link.externalRef.isEmpty else { continue }
+                    try TargetQueries.createLink(
+                        dbConn, sourceID: targetID, targetID: link.targetId,
+                        externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
+                    )
+                }
+            }, onSuccess: { dismiss() }, onFailure: { errorMessage = $0.localizedDescription })
         }
     }
 }

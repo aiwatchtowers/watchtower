@@ -14,6 +14,7 @@ struct LinkTranscriptSheet: View {
     @State private var events: [CalendarEvent] = []
     @State private var selectedEventID: String?
     @State private var errorMessage: String?
+    @State private var isSaving = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -46,13 +47,15 @@ struct LinkTranscriptSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .disabled(isSaving)
                 Button("Link") { link() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(selectedEventID == nil)
+                    .disabled(selectedEventID == nil || isSaving)
             }
         }
         .padding()
         .frame(width: 440)
+        .interactiveDismissDisabled(isSaving)
         .onAppear(perform: load)
     }
 
@@ -87,17 +90,15 @@ struct LinkTranscriptSheet: View {
     private func link() {
         guard let eventID = selectedEventID, let id = transcript.id,
               let db = appState.databaseManager else { return }
-        // Off the main thread: a busy database never freezes the sheet.
+        // Off the main thread: a busy database never freezes the sheet. Link,
+        // Cancel and Esc wait while the write is pending.
         Task {
-            do {
-                try await db.dbPool.write { conn in
-                    try MeetingTranscriptQueries.linkToEvent(conn, id: id, eventID: eventID)
-                }
+            await ViewWrite.run(db.dbPool, pending: $isSaving, { conn in
+                try MeetingTranscriptQueries.linkToEvent(conn, id: id, eventID: eventID)
+            }, onSuccess: {
                 onLinked()
                 dismiss()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+            }, onFailure: { errorMessage = $0.localizedDescription })
         }
     }
 

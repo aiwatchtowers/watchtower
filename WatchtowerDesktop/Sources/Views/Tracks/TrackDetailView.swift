@@ -206,17 +206,13 @@ struct TrackDetailView: View {
         guard !text.isEmpty, let db = appState.databaseManager else { return }
         let trackID = track.id
         Task {
-            do {
-                try await db.dbPool.write { database in
-                    try TrackQueries.updateInstruction(database, id: trackID, instruction: text)
-                }
-            } catch {
-                reportWatchEditFailure("save the instruction", error)
-                return
-            }
-            watchEditError = nil
-            displayedInstruction = text
-            isEditingInstruction = false
+            await ViewWrite.run(db.dbPool, { database in
+                try TrackQueries.updateInstruction(database, id: trackID, instruction: text)
+            }, onSuccess: {
+                watchEditError = nil
+                displayedInstruction = text
+                isEditingInstruction = false
+            }, onFailure: { reportWatchEditFailure("save the instruction", $0) })
         }
     }
 
@@ -233,16 +229,12 @@ struct TrackDetailView: View {
         guard let db = appState.databaseManager else { return }
         let trackID = track.id
         Task {
-            do {
-                try await db.dbPool.write { database in
-                    try TrackQueries.setEnabled(database, id: trackID, enabled: on)
-                }
-            } catch {
-                reportWatchEditFailure("update collecting", error)
-                return
-            }
-            watchEditError = nil
-            collecting = on
+            await ViewWrite.run(db.dbPool, { database in
+                try TrackQueries.setEnabled(database, id: trackID, enabled: on)
+            }, onSuccess: {
+                watchEditError = nil
+                collecting = on
+            }, onFailure: { reportWatchEditFailure("update collecting", $0) })
         }
     }
 

@@ -32,6 +32,7 @@ struct ExtractMeetingTopicsSheet: View {
             footer
         }
         .frame(width: 560, height: 560)
+        .interactiveDismissDisabled(isSaving)
     }
 
     // MARK: - Header
@@ -43,6 +44,7 @@ struct ExtractMeetingTopicsSheet: View {
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isSaving)
         }
         .padding()
     }
@@ -239,34 +241,29 @@ struct ExtractMeetingTopicsSheet: View {
             errorMessage = "Database not available"
             return
         }
-        guard !isSaving else { return }
         let picked = selected.sorted().map { result.topics[$0].text }
         let eventID = eventID
         let firstSortOrder = existingTopicSortOrderCeiling + 1
-        // Off the main thread: a busy database never freezes the sheet; the
-        // button stays disabled until the write lands, so nothing is added twice.
-        isSaving = true
+        // Off the main thread: a busy database never freezes the sheet. Add,
+        // Cancel and Esc wait while the write is pending, so nothing is added
+        // twice and the sheet never closes on a write still in flight.
         Task {
-            defer { isSaving = false }
-            do {
-                try await db.dbPool.write { dbConn in
-                    var next = firstSortOrder
-                    for text in picked {
-                        _ = try MeetingNoteQueries.create(
-                            dbConn,
-                            eventID: eventID,
-                            type: .question,
-                            text: text,
-                            sortOrder: next
-                        )
-                        next += 1
-                    }
+            await ViewWrite.run(db.dbPool, pending: $isSaving, { dbConn in
+                var next = firstSortOrder
+                for text in picked {
+                    _ = try MeetingNoteQueries.create(
+                        dbConn,
+                        eventID: eventID,
+                        type: .question,
+                        text: text,
+                        sortOrder: next
+                    )
+                    next += 1
                 }
+            }, onSuccess: {
                 onCreated()
                 dismiss()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+            }, onFailure: { errorMessage = $0.localizedDescription })
         }
     }
 }

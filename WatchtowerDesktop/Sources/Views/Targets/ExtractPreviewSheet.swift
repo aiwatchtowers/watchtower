@@ -1,4 +1,5 @@
 import SwiftUI
+import GRDB
 import WatchtowerCore
 
 // MARK: - Proposed Target (input model for the preview)
@@ -85,6 +86,7 @@ struct ExtractPreviewSheet: View {
             footer
         }
         .frame(width: 620, height: 640)
+        .interactiveDismissDisabled(isSaving)
     }
 
     // MARK: - Header
@@ -99,6 +101,7 @@ struct ExtractPreviewSheet: View {
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isSaving)
         }
         .padding()
     }
@@ -169,59 +172,57 @@ struct ExtractPreviewSheet: View {
             errorMessage = "Database not available"
             return
         }
-        guard !isSaving else { return }
         let toCreate = selectedItems
         let today = dateFormatter.string(from: Date())
-        // Off the main thread: a busy database never freezes the sheet; the
-        // button stays disabled until the write lands, so nothing is created twice.
-        isSaving = true
+        // Off the main thread: a busy database never freezes the sheet. Create,
+        // Cancel and Esc wait while the write is pending, so nothing is created
+        // twice and the sheet never closes on a write still in flight.
         Task {
-            defer { isSaving = false }
-            do {
-                try await Self.create(toCreate, today: today, db: db)
+            await ViewWrite.run(db.dbPool, pending: $isSaving, { dbConn in
+                try Self.create(toCreate, today: today, in: dbConn)
+            }, onSuccess: {
                 onCreateSelected(toCreate)
                 dismiss()
-            } catch {
+            }, onFailure: { error in
                 // The write rolled back as a whole, so nothing was created: keep
                 // the sheet open with the reason (e.g. a parent deleted meanwhile).
                 errorMessage = error.localizedDescription
-            }
+            })
         }
     }
 
-    /// Creates the picked targets and their links in ONE write transaction.
-    nonisolated private static func create(_ toCreate: [ProposedTarget], today: String, db: DatabaseManager) async throws {
-        try await db.dbPool.write { dbConn in
-            for item in toCreate {
-                do {
-                    let start = item.periodStart.isEmpty ? today : item.periodStart
-                    let end = item.periodEnd.isEmpty ? today : item.periodEnd
-                    let subItemsJSON = Self.encodeSubItems(item.subItems)
-                    let newID = try TargetQueries.create(
-                        dbConn,
-                        text: item.text,
-                        intent: item.intent,
-                        level: item.level,
-                        customLabel: item.customLabel,
-                        periodStart: start,
-                        periodEnd: end,
-                        parentId: item.parentId,
-                        priority: item.priority,
-                        subItems: subItemsJSON,
-                        sourceType: "extract",
-                        aiLevelConfidence: item.levelConfidence
-                    )
-                    for link in item.secondaryLinks {
-                        if link.targetId != nil || !link.externalRef.isEmpty {
-                            try TargetQueries.createLink(
-                                dbConn, sourceID: newID, targetID: link.targetId,
-                                externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
-                            )
-                        }
+    /// Creates the picked targets and their links; the caller's ONE write
+    /// transaction rolls all of them back on any failure.
+    nonisolated private static func create(_ toCreate: [ProposedTarget], today: String, in dbConn: Database) throws {
+        for item in toCreate {
+            do {
+                let start = item.periodStart.isEmpty ? today : item.periodStart
+                let end = item.periodEnd.isEmpty ? today : item.periodEnd
+                let subItemsJSON = Self.encodeSubItems(item.subItems)
+                let newID = try TargetQueries.create(
+                    dbConn,
+                    text: item.text,
+                    intent: item.intent,
+                    level: item.level,
+                    customLabel: item.customLabel,
+                    periodStart: start,
+                    periodEnd: end,
+                    parentId: item.parentId,
+                    priority: item.priority,
+                    subItems: subItemsJSON,
+                    sourceType: "extract",
+                    aiLevelConfidence: item.levelConfidence
+                )
+                for link in item.secondaryLinks {
+                    if link.targetId != nil || !link.externalRef.isEmpty {
+                        try TargetQueries.createLink(
+                            dbConn, sourceID: newID, targetID: link.targetId,
+                            externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
+                        )
                     }
-                } catch {
-                    throw ExtractCreateError(itemText: item.text, underlying: error)
                 }
+            } catch {
+                throw ExtractCreateError(itemText: item.text, underlying: error)
             }
         }
     }

@@ -10,6 +10,8 @@ struct MeetingNotesView: View {
     @State private var newNoteText = ""
     @State private var creatingTaskForID: Int64?
     @State private var errorMessage: String?
+    /// A note, topic or action-item insert is in flight (`insertNote`).
+    @State private var isSavingNote = false
     @State private var showExtractSheet = false
     @State private var recap: MeetingRecap?
     @State private var showRecapSheet = false
@@ -338,6 +340,7 @@ struct MeetingNotesView: View {
                                 .font(.caption2)
                         }
                         .buttonStyle(.borderless)
+                        .disabled(isSavingNote)
                     }
                 }
             }
@@ -352,22 +355,13 @@ struct MeetingNotesView: View {
         return rel.localizedString(for: date, relativeTo: Date())
     }
 
-    // Every write below runs off the main thread (`await dbPool.write`): a
-    // database busy with the daemon never freezes the meeting pane, and the
-    // list reloads once the write lands.
+    // Every write below runs off the main thread (`ViewWrite` / `await
+    // dbPool.write`): a database busy with the daemon never freezes the
+    // meeting pane, and the list reloads once the write lands.
 
     private func addActionItemToNotes(idx: Int, text: String) {
-        guard let db = appState.databaseManager else { return }
         let nextSort = (freeformNotes.last?.sortOrder ?? -1) + 1
-        Task {
-            do {
-                try await Self.createNote(db, eventID: eventID, type: .note, text: text, sortOrder: nextSort)
-                addedActionItems.insert(idx)
-                loadNotes()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
+        insertNote(type: .note, text: text, sortOrder: nextSort) { addedActionItems.insert(idx) }
     }
 
     // MARK: - Data Operations
@@ -390,45 +384,41 @@ struct MeetingNotesView: View {
     private func addQuestion() {
         let trimmed = newQuestionText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let db = appState.databaseManager else { return }
+        let typed = newQuestionText
         let sortOrder = (questions.last?.sortOrder ?? -1) + 1
-        // Cleared up front so a second Enter while the write is pending adds
-        // nothing twice; a failed write puts the text back.
-        newQuestionText = ""
-        Task {
-            do {
-                try await Self.createNote(db, eventID: eventID, type: .question, text: trimmed, sortOrder: sortOrder)
-                loadNotes()
-            } catch {
-                if newQuestionText.isEmpty { newQuestionText = trimmed }
-                errorMessage = error.localizedDescription
-            }
+        // The text stays in the field until the row exists: a failed write
+        // loses nothing, and text typed meanwhile is never wiped.
+        insertNote(type: .question, text: trimmed, sortOrder: sortOrder) {
+            if newQuestionText == typed { newQuestionText = "" }
         }
     }
 
     private func addNote() {
         let trimmed = newNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let db = appState.databaseManager else { return }
+        let typed = newNoteText
         let sortOrder = (freeformNotes.last?.sortOrder ?? -1) + 1
-        // Cleared up front, as in `addQuestion`.
-        newNoteText = ""
-        Task {
-            do {
-                try await Self.createNote(db, eventID: eventID, type: .note, text: trimmed, sortOrder: sortOrder)
-                loadNotes()
-            } catch {
-                if newNoteText.isEmpty { newNoteText = trimmed }
-                errorMessage = error.localizedDescription
-            }
+        // As in `addQuestion`: cleared only once the row exists.
+        insertNote(type: .note, text: trimmed, sortOrder: sortOrder) {
+            if newNoteText == typed { newNoteText = "" }
         }
     }
 
-    private static func createNote(
-        _ db: DatabaseManager, eventID: String, type: MeetingNote.NoteType, text: String, sortOrder: Int
-    ) async throws {
-        try await db.dbPool.write { dbConn in
-            _ = try MeetingNoteQueries.create(dbConn, eventID: eventID, type: type, text: text, sortOrder: sortOrder)
+    /// One pending insert at a time (`isSavingNote`): a second Enter while
+    /// the first waits adds nothing twice, and the next sort order is read
+    /// only after the previous row is on the list.
+    private func insertNote(type: MeetingNote.NoteType, text: String, sortOrder: Int, onSuccess: @escaping () -> Void) {
+        guard !isSavingNote, let db = appState.databaseManager else { return }
+        let eventID = eventID
+        Task {
+            await ViewWrite.run(db.dbPool, pending: $isSavingNote, { dbConn in
+                _ = try MeetingNoteQueries.create(dbConn, eventID: eventID, type: type, text: text, sortOrder: sortOrder)
+            }, onSuccess: {
+                onSuccess()
+                loadNotes()
+            }, onFailure: { error in
+                errorMessage = error.localizedDescription
+            })
         }
     }
 

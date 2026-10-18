@@ -58,6 +58,13 @@ struct RecordingDetailView: View {
     @State private var linkTarget: MeetingTranscript?
     @State private var errorMessage: String?
     @State private var transcriptScrollTarget: Int?
+    /// The recording this pane shows now. `MeetingDetailView` reuses one
+    /// pane across an event's recordings, and a write's completion runs
+    /// against the struct it started from — so after an `await`, a write
+    /// touches the screen only while `isShowing(_:)` its own recording.
+    @State private var shownTranscriptID: Int64?
+    /// The last notes save handed to the writer (`saveNotes`).
+    @State private var lastNotesSave: Task<Void, Never>?
     @State private var followup: FollowupState?
     /// `CallAudioGapNote` for this recording, read off-main from its
     /// activity sidecar in `load()`. Gone once retention sweeps the audio
@@ -121,6 +128,7 @@ struct RecordingDetailView: View {
             }
         }
         .task(id: transcriptID) {
+            shownTranscriptID = transcriptID
             tab = .recap
             chatConversationID = nil
             chatError = nil
@@ -369,7 +377,8 @@ struct RecordingDetailView: View {
     /// `MeetingTranscriptQueries.setUtteranceDeleted`), then a reload so
     /// every tab sees the rebuilt text. Returns whether the write landed —
     /// the transcript tab gates its "deleted" toast on it. The write runs off
-    /// the main thread, so a busy database never freezes the screen.
+    /// the main thread, so a busy database never freezes the screen; a pane
+    /// that moved to another recording meanwhile shows no toast for it.
     private func setUtteranceDeleted(idx: Int, deleted: Bool) async -> Bool {
         guard let db = appState.databaseManager else { return false }
         let transcriptID = transcriptID
@@ -382,12 +391,17 @@ struct RecordingDetailView: View {
             // render (`MeetingChatSurface.spec`), so a later first turn never
             // carries the deleted utterance; a reply in flight keeps going.
             onChanged()
+            guard isShowing(transcriptID) else { return false }
             Task { await load() }
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            if isShowing(transcriptID) { errorMessage = error.localizedDescription }
             return false
         }
+    }
+
+    private func isShowing(_ id: Int64) -> Bool {
+        shownTranscriptID == id
     }
 
     /// Whether speaker names changed after the recap on screen was generated
@@ -471,8 +485,10 @@ struct RecordingDetailView: View {
             } catch MeetingTranscriptQueries.ActionItemConversionError.alreadyConverted {
                 // Benign double-click / stale view — reload to show the stamp.
             } catch {
-                errorMessage = error.localizedDescription
+                if isShowing(transcriptID) { errorMessage = error.localizedDescription }
             }
+            // Another recording on screen now: its own load stands.
+            guard isShowing(transcriptID) else { return }
             await load()
         }
     }
@@ -518,13 +534,17 @@ struct RecordingDetailView: View {
         }
     }
 
-    /// Saves in its own task (not the caller's): the tab cancels its debounce
-    /// task freely, and a save already handed over still lands — saves run on
-    /// the writer queue in the order they were made.
+    /// Saves in its own task (not the caller's), so the tab cancels its
+    /// debounce task freely and a save already handed over still lands. Each
+    /// save awaits the one before it (`lastNotesSave`): an older draft can
+    /// never land after a newer one (the debounced save, then the flush as
+    /// the pane goes away).
     private func saveNotes(_ markdown: String) {
         guard let db = appState.databaseManager else { return }
         let transcriptID = transcriptID
-        Task {
+        let previous = lastNotesSave
+        lastNotesSave = Task {
+            await previous?.value
             do {
                 try await db.dbPool.write { conn in
                     try MeetingTranscriptQueries.saveNotes(conn, id: transcriptID, markdown: markdown)
@@ -534,7 +554,7 @@ struct RecordingDetailView: View {
                 // The final flush runs as the pane goes away, with nobody left to
                 // read `errorMessage`: keep a trace as well.
                 NSLog("RecordingDetailView: could not save notes: %@", error.localizedDescription)
-                errorMessage = error.localizedDescription
+                if isShowing(transcriptID) { errorMessage = error.localizedDescription }
             }
         }
     }
@@ -556,9 +576,11 @@ struct RecordingDetailView: View {
                 if let audioPath {
                     try? FileManager.default.removeItem(atPath: audioPath)
                 }
-                onDeleted()
+                // The pane moved to another of the event's recordings
+                // meanwhile: keep it open, only refresh the list.
+                if isShowing(transcriptID) { onDeleted() } else { onChanged() }
             } catch {
-                errorMessage = error.localizedDescription
+                if isShowing(transcriptID) { errorMessage = error.localizedDescription }
             }
         }
     }
