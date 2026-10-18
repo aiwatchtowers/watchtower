@@ -37,6 +37,7 @@ var EventFields = map[string][]string{
 	"jira.issue_changed":      {"account", "key", "project", "field"},
 	"calendar.event_changed":  {"account", "event_id", "change"},
 	"confluence.page_changed": {"space", "page_id"},
+	SlackReactionAdded:        {"account", "channel_id", "emoji"},
 }
 
 // MatchWhere reports whether e satisfies every where key: the event carries

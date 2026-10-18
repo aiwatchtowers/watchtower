@@ -1544,6 +1544,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     reaction_commands_seeded_at TEXT NOT NULL DEFAULT '',  -- when the reaction-commands ledger was seeded with this account's history; '' = never
+    reaction_events_seeded_at TEXT NOT NULL DEFAULT '',  -- when reaction_events was seeded with this account's existing reactions (no events fired); '' = never
     roster_synced_at  TEXT NOT NULL DEFAULT ''  -- last full users.list roster fetch (sync and sync --users-only); '' = never
 );
 
@@ -2092,6 +2093,17 @@ CREATE TABLE IF NOT EXISTS reaction_commands (
     UNIQUE(account_id, channel_id, message_ts, emoji)
 );
 CREATE INDEX IF NOT EXISTS idx_reaction_commands_status ON reaction_commands(status);
+
+-- Owner reactions already published as slack.reaction_added automation events
+-- (exactly once per key; a row means seen). Independent of reaction_commands.
+CREATE TABLE IF NOT EXISTS reaction_events (
+    account_id INTEGER NOT NULL,
+    channel_id TEXT    NOT NULL,
+    message_ts TEXT    NOT NULL,
+    emoji      TEXT    NOT NULL,
+    seen_at    TEXT    NOT NULL,
+    PRIMARY KEY (account_id, channel_id, message_ts, emoji)
+);
 
 -- Owner-managed external MCP servers ("Quick Connections"). Read-only tools
 -- surfaced in the chat on demand; nothing is synced. Secrets live in 0600

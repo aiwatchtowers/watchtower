@@ -214,4 +214,15 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
         }
         XCTAssertEqual(status, "dismissed")
     }
+
+    func testLastScannedTextEmptyMeansNotScannedYet() {
+        XCTAssertEqual(CustomTrackTimelineViewModel.lastScannedText(lastRunAt: ""), "Not scanned yet")
+    }
+
+    func testLastScannedTextRendersRelativeAgeForAValidTimestamp() {
+        let iso = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-7200))
+        let text = CustomTrackTimelineViewModel.lastScannedText(lastRunAt: iso)
+        XCTAssertTrue(text.hasPrefix("Last scanned "), text)
+        XCTAssertFalse(text.contains(iso), "relative text, not the raw timestamp")
+    }
 }

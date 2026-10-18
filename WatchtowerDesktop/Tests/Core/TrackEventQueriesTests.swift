@@ -72,4 +72,19 @@ final class TrackEventQueriesTests: XCTestCase {
             XCTAssertNil(try TrackEventQueries.sourcePermalink(db, sourceType: "digest", sourceId: "1"))
         }
     }
+
+    func testCountsByTrackGroupsPerTrackAndOmitsEmptyOnes() throws {
+        let dbQueue = try makeDB()
+        try dbQueue.write { db in
+            for (track, n) in [(1, 3), (2, 1)] {
+                for i in 0..<n {
+                    try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, ?)",
+                                   arguments: [track, "e\(i)"])
+                }
+            }
+            let counts = try TrackEventQueries.countsByTrack(db)
+            XCTAssertEqual(counts, [1: 3, 2: 1])
+            XCTAssertNil(counts[3], "a track with no events is absent")
+        }
+    }
 }
