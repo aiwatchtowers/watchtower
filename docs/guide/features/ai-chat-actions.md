@@ -57,7 +57,7 @@ When the chat wants to write through a connector (send a mail, create an event, 
 2. **Approve** sends it once, from the chat that asked. **Reject** cancels it and the chat says nothing was sent.
 3. Answer within 15 minutes. After that the call is cancelled ("Cancelled — not approved in time"). **Stop** on the reply cancels it too ("Cancelled — chat stopped").
 
-The card can be approved only while that reply is still running. Once the chat's session is gone the card says **Chat session ended** and nothing is sent; to send it, ask the chat again. These cards have no **Retry** and are not part of **Approve all**. They also wait in the Inbox while the reply runs.
+The card can be approved only while that reply is still running. Once the chat's session is gone the card says **Chat session ended** and nothing is sent; to send it, ask the chat again. These cards have no **Retry** and are not part of **Approve all**. They also wait in the Inbox while the reply runs. A card that says **Chat session ended — outcome unknown** and offers **Dismiss** stays on the Inbox badge until you click it: the call may or may not have reached the connector, so check there first. (The button appears once the chat starts again after the session that ran the call ended.)
 
 ## When it's empty or wrong
 
@@ -66,6 +66,7 @@ The card can be approved only while that reply is still running. Once the chat's
 - **An archived page.** It can be read but not edited; restore it in Confluence first.
 - **A Confluence card says the edit "may have been saved".** The page moved one version but not to this edit. Ask the assistant to read the page again before trying again.
 - **A connector card says "Chat session ended".** The chat stopped, quit or restarted before the call ran, so it was not sent. Ask again.
+- **A connector card says "Chat session ended — outcome unknown".** The chat ended while the call was running. Check the connector to see whether it ran, then click **Dismiss** to take the card off the Inbox badge.
 - **The chat says a connector is switched off or not connected.** Turn it on, or click **Connect on claude.ai**, in **Settings → Profile → claude.ai tools**, then ask again.
 - **A chat offers no proposals.** You are in a draft-only chat. Use the main chat or the target's chat.
 

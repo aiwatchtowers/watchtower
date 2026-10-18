@@ -93,6 +93,33 @@ final class ActionStripViewModelTests: XCTestCase {
         XCTAssertTrue(vm.actionRows.isEmpty, "an applied (terminal) row must drop out of fetchStrip's non-terminal filter")
     }
 
+    /// Dismiss on an unknown-outcome connector call (ask #342) goes through
+    /// the composed feed's CLI too (STRIP-03), and the dismissed row leaves
+    /// the strip's waiting group on the re-read.
+    func testDismissDelegatesToTheComposedAgentActionFeed() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: ConnectorCallProposal.tool, external: true, status: "failed",
+                                               error: ConnectorCallProposal.sessionEndedWhileRunning)
+        }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"error":""}"#.utf8))
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
+        vm.refresh()
+        XCTAssertEqual(vm.actionRows.map(\.id), [id], "an undismissed unknown outcome waits on the strip")
+
+        let otherPool = try DatabasePool(path: path)
+        try await otherPool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET dismissed_at = '2026-01-02T00:00:00Z' WHERE id = ?",
+                           arguments: [id])
+        }
+        await vm.dismiss(id)
+
+        XCTAssertEqual(runner.invocations, [["actions", "dismiss", String(id), "--json"]])
+        XCTAssertNil(vm.lastError)
+        XCTAssertTrue(vm.actionRows.isEmpty, "a call failed and dismissed long ago is outside the terminal tail")
+    }
+
     /// Regression for the sticky-error review finding: a failed CLI call must
     /// not leave the card's error stuck forever — a later SUCCESSFUL call must
     /// clear it back to nil. `FakeCLIRunner.shouldThrow` is a `var`, so one

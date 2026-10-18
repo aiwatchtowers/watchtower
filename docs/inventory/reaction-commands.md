@@ -203,9 +203,9 @@ drift between what the strip shows and what `Registry.Apply` actually did.
 
 **Status:** Enforced
 
-**Observable:** `ActionStripViewModel.approve`/`reject`/`retry` delegate
+**Observable:** `ActionStripViewModel.approve`/`reject`/`retry`/`dismiss` delegate
 directly to the composed `AgentActionFeed` — the same object the chat
-surfaces use — which drives `watchtower actions approve|reject|apply` (the
+surfaces use — which drives `watchtower actions approve|reject|apply|dismiss` (the
 CLI face of `Registry.Apply`, AGENT-05's exactly-once claim). The strip adds
 no new write path for agent-action rows; only reminder Done/Snooze (a
 different entity, §5.3 of the Wave 2 design) are direct GRDB writes.
@@ -215,7 +215,7 @@ bypass the CAS claim (`approved|failed → executing`) that makes AGENT-05's
 "exactly once" true, reopening the double-apply risk that guard exists to
 close.
 
-**Test guards:** `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testApproveDelegatesToTheComposedAgentActionFeed`, `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testApproveClearsAPriorErrorOnSubsequentSuccess`; transitively, every AGENT-05 guard in `docs/inventory/agent-actions.md`.
+**Test guards:** `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testApproveDelegatesToTheComposedAgentActionFeed`, `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testApproveClearsAPriorErrorOnSubsequentSuccess`, `::testDismissDelegatesToTheComposedAgentActionFeed`; transitively, every AGENT-05 guard in `docs/inventory/agent-actions.md`.
 
 **Locked since:** 2026-09-06
 
@@ -263,6 +263,7 @@ surface must never grow an implicit Slack-write side effect.
 
 ## Changelog
 
+- 2026-10-18 (board #737, owner decision in ask #342): the Inbox badge (`AgentActionQueries.awaitingOwnerCount`), Home's Waiting on you (`awaitingOwner`) and the strip's waiting group (`fetchStrip`) count a `claude_ai_connector_call` that failed with "session ended while the call ran; outcome unknown" until the owner dismisses it; every other failed session call stays settled (`settledSessionCall`). **STRIP-01** holds (the owner elicited the call). **STRIP-02** holds (`refresh()` is still one pure read). **STRIP-03** holds: the card's **Dismiss** goes through the composed `AgentActionFeed` → `watchtower actions dismiss` (Go writes `dismissed_at`); the strip adds no write path. Guards added: `ActionStripViewModelTests::testDismissDelegatesToTheComposedAgentActionFeed`, `ConnectorCallProposalTests::testOutcomeUnknownAwaitsTheOwnerUntilDismissed`; `testFailedSessionCallIsNotAwaitingTheOwner` extended with the stopped and connector-error reasons.
 - 2026-10-16 (Automations P3, board #753; spec §12.5, §14.4, D10, approved in ask #270): **STRIP-01 amended** — `automation_outputs` with `kind='inbox'` are the strip's third source (the "From your automations" section), gesture-gated by construction (they exist only because the owner confirmed a recipe declaring `outputs: [inbox]`, AUTO-06); `context_type='automation_run'` proposals carry the "⚙ <automation name> · run #<n>" label. New guard `ActionStripAutomationOutputTests`. **STRIP-02**: outputs are backing rows, not a strip store — Done writes only `read_at`, Dismiss only `dismissed_at`, and `refresh()` stays one pure read (the Observable's former "two SELECTs" now reads "one pure read"; the read gained the outputs and the run labels). The Inbox badge also counts unread inbox outputs. No guard relaxed.
 - 2026-10-15 (Automations P2, board #753/#814): `agent_actions` rows with `context_type='automation_run'` reach the strip through `Registry.Propose` from a recipe the owner confirmed (AUTO-06), per the approved design §6.3 (`docs/superpowers/specs/2026-10-14-automations-design.md`); the STRIP-01 three-table amendment (spec §14.4, `automation_outputs`) lands with P3. STRIP-01's Observable text is not edited in P2; no guard changed.
 - 2026-10-14 (target 167, approved by the owner 2026-10-14, ask #109; AGENT-01 amended in `agent-actions.md`): trust is now per (tool, surface) — migration 00112 keeps the 00065 seeds (`create_idea`/`remind_me`/`brief_context` = `execute`, `create_track` = `ask`) on every surface the tool is on, so the reaction path and the main chat run exactly as before (owner decision 2026-10-14, ask #118: upgrade keeps today's behaviour); trust only becomes editable per surface. This supersedes the 2026-09-26 trust note below ("trust is per tool, not per surface"). REACT-01..05 and their guards unchanged.

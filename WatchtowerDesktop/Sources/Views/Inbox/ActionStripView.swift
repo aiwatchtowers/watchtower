@@ -253,6 +253,7 @@ struct ActionStripActionsView: View {
             onReconnectSlack: onReconnectSlack,
             contextLabel: vm.actionLabels[action.id],
             onOpenContext: openContext(action),
+            onDismiss: { Task { await vm.dismiss(action.id) } },
             sessionHoldsCall: sessionHoldsCall?(action) ?? false
         )
     }

@@ -170,6 +170,13 @@ package final class AgentActionFeed {
         await run("apply", id: id)
     }
 
+    /// Dismiss on a session call whose outcome is unknown
+    /// (`ConnectorCallProposal.awaitsDismissal`): `actions dismiss` stamps
+    /// `dismissed_at`, which takes it off the Inbox badge.
+    package func dismiss(_ id: Int64) async {
+        await run("dismiss", id: id)
+    }
+
     /// The rows "Approve all" covers. A session-applied call is left to its
     /// own card, which offers Approve only while its chat session holds it
     /// and the call is readable.
