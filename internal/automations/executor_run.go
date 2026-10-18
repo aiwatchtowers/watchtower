@@ -311,7 +311,7 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	}
 	e.logger.Printf("automations: run %d of %q: its script did not stop after the interrupt and was abandoned; automation disabled (%s)",
 		runID, a.Slug, runawayDisabledReason)
-	if err := e.db.SetAutomationEnabled(a.ID, false, now); err != nil {
+	if err := e.db.DisableRunawayAutomation(a.ID, runawayDisabledReason, now); err != nil {
 		e.logger.Printf("automations: disabling runaway automation %q: %v", a.Slug, err)
 	}
 }
