@@ -563,12 +563,12 @@ final class AppState {
     /// "Change it in words" for one automation: its engine comes from
     /// `embeddedChatCenter`, so a turn outlives the sheet. Nil while the
     /// database is not open or the automation is gone.
-    func automationEditorChat(automationID: Int64) throws -> AutomationEditorChat? {
+    func automationEditorChat(automationID: Int64) async throws -> AutomationEditorChat? {
         guard let pool = databaseManager?.dbPool,
-              let automation = try pool.read({ db in try AutomationQueries.fetchAutomation(db, id: automationID) })
+              let automation = try await pool.read({ db in try AutomationQueries.fetchAutomation(db, id: automationID) })
         else { return nil }
         let provider = Constants.aiProviderID()
-        let conversationID = try AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+        let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
         return makeAutomationEditorChat(
             conversationID: conversationID, pool: pool, provider: provider,
             onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
@@ -582,10 +582,10 @@ final class AppState {
     /// The "New automation" sheet's chat, keyed by the draft id
     /// `automationsViewModel` keeps, so a half-written draft survives the
     /// sheet. Once its save lands, the next **+ New** starts a fresh draft.
-    func newAutomationEditorChat() throws -> AutomationEditorChat? {
+    func newAutomationEditorChat() async throws -> AutomationEditorChat? {
         guard let pool = databaseManager?.dbPool, let draftID = automationsViewModel?.newDraftID else { return nil }
         let provider = Constants.aiProviderID()
-        let conversationID = try AutomationEditorChatSurface.newConversationID(draftID: draftID, dbPool: pool)
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(draftID: draftID, dbPool: pool)
         let onSaved: () -> Void = { [weak self] in
             self?.automationsViewModel?.refresh()
             self?.automationsViewModel?.startNewDraft()
@@ -709,8 +709,8 @@ final class AppState {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    // A reply streaming in an embedded chat keeps what it has, as `partial`.
-                    self?.embeddedChatCenter.finishAllAsPartial()
+                    // Embedded chats' replies were kept as `partial` in the quit's async
+                    // phase (`finishAllAsPartialForQuit`, #670): their writes need awaiting.
                     // Edits in the code viewer not yet on disk are written now.
                     self?.workbenchesViewModel?.codeFiles.flushAll()
                     self?.stopCodeNavigationChildren()
@@ -1577,7 +1577,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
-        startSessionHost() // before the workbenches: their reattach waits for it
+        startHostServices(databasePath: manager.dbPool.path) // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         applyUIVisibility(uiVisibility.isOnScreen)

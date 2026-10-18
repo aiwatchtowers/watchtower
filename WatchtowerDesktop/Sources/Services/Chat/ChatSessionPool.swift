@@ -234,8 +234,9 @@ final class ChatSessionPool {
     ///
     /// Ordering is load-bearing: the retirement is recorded BEFORE
     /// `abandon()`, because abandoning a busy client finishes its turn, which
-    /// fires `onTurnFinished` → `admit()` synchronously — and admission must
-    /// already see this process as holding a slot (CHAT-03).
+    /// fires `onTurnFinished` → `admit()` once the turn's final write landed
+    /// (board #670) — and admission must already see this process as
+    /// holding a slot (CHAT-03).
     private func retire(_ client: ChatSessionClient) -> Bool {
         guard client.hasLiveProcess else {
             client.abandon()

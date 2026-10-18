@@ -53,6 +53,9 @@ struct RecordingDetailView: View {
     /// recordings or leaving never stops a reply.
     @State private var chatConversationID: Int64?
     @State private var chatError: String?
+    /// Recordings whose first chat is being written (board #670), keyed by
+    /// recording: another recording opened meanwhile starts its own.
+    @State private var chatCreates = ChatCreateGate()
     @State private var isRetryingRecap = false
     @State private var showDeleteConfirm = false
     @State private var linkTarget: MeetingTranscript?
@@ -414,18 +417,42 @@ struct RecordingDetailView: View {
         transcript?.recapPredatesSpeakerNames(shownRecap: shownRecap) ?? false
     }
 
+    /// An existing conversation opens at once (a read); a recording's first
+    /// chat is created off the main thread (board #670) and shows once
+    /// written, while this pane still shows that recording. The spinner stays
+    /// meanwhile; one create per recording at a time.
     private func openChat(_ transcript: MeetingTranscript) {
         guard let db = appState.databaseManager else {
             chatError = "Couldn't open the chat: the database isn't open."
             return
         }
+        let id = transcriptID
         do {
-            chatConversationID = try MeetingChatSurface.conversationID(
-                transcriptID: transcriptID, title: transcript.title, dbPool: db.dbPool)
+            if let existing = try MeetingChatSurface.existingConversationID(transcriptID: id, dbPool: db.dbPool) {
+                chatConversationID = existing
+                return
+            }
         } catch {
-            NSLog("RecordingDetailView: opening the chat of recording %lld failed: %@", transcriptID, String(describing: error))
-            chatError = "Couldn't open the chat: \(error.localizedDescription)"
+            chatOpenFailed(error, transcriptID: id)
+            return
         }
+        let key = String(id)
+        guard chatCreates.begin(key) else { return }
+        Task {
+            defer { chatCreates.end(key) }
+            do {
+                let created = try await MeetingChatSurface.conversationID(
+                    transcriptID: id, title: transcript.title, dbPool: db.dbPool)
+                if isShowing(id) { chatConversationID = created }
+            } catch {
+                if isShowing(id) { chatOpenFailed(error, transcriptID: id) }
+            }
+        }
+    }
+
+    private func chatOpenFailed(_ error: Error, transcriptID id: Int64) {
+        NSLog("RecordingDetailView: opening the chat of recording %lld failed: %@", id, String(describing: error))
+        chatError = "Couldn't open the chat: \(error.localizedDescription)"
     }
 
     private func retryRecap() {

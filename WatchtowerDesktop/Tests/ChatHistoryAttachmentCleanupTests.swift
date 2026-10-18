@@ -18,7 +18,7 @@ final class ChatHistoryAttachmentCleanupTests: XCTestCase {
         let src = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).md")
         try Data("x".utf8).write(to: src)
         defer { try? FileManager.default.removeItem(at: src) }
-        let att = try ChatAttachmentStore(db: dbManager.dbPool, rootDir: root).importFile(url: src, conversationID: conversation.id)
+        let att = try await ChatAttachmentStore(db: dbManager.dbPool, rootDir: root).importFile(url: src, conversationID: conversation.id)
 
         await history.deleteConversation(conversation.id)
 

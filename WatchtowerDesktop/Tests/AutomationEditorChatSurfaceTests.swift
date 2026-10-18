@@ -32,14 +32,14 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         }
     }
 
-    private func spec(_ automation: Automation, provider: String = "claude") throws -> ChatSurfaceSpec {
-        let conversationID = try AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+    private func spec(_ automation: Automation, provider: String = "claude") async throws -> ChatSurfaceSpec {
+        let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
         return AutomationEditorChatSurface.spec(automation: automation, provider: provider,
                                                 conversationID: conversationID, dbPool: pool, skillsDir: nil)
     }
 
-    private func newSpec(draftID: String = "draft-1", provider: String = "claude") throws -> ChatSurfaceSpec {
-        let conversationID = try AutomationEditorChatSurface.newConversationID(draftID: draftID, dbPool: pool)
+    private func newSpec(draftID: String = "draft-1", provider: String = "claude") async throws -> ChatSurfaceSpec {
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(draftID: draftID, dbPool: pool)
         return AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID,
                                                    conversationID: conversationID, skillsDir: nil)
     }
@@ -60,8 +60,8 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     // MARK: - AGENT-04 (amended)
 
-    func testSpecIsActionsAutomationEditor() throws {
-        let spec = try spec(try makeAutomation())
+    func testSpecIsActionsAutomationEditor() async throws {
+        let spec = try await spec(try makeAutomation())
         XCTAssertEqual(spec.toolAccess, .actions(surface: "automation_editor"))
         XCTAssertEqual(spec.key.contextType, "automation")
         XCTAssertEqual(spec.persistence, .database(conversationID: try XCTUnwrap(spec.key.conversationID)))
@@ -75,9 +75,10 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     func testToolModeCarriesAutomationEditorSurfaceAndContext() async throws {
         let automation = try makeAutomation()
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let spec = try spec(automation)
+        let spec = try await spec(automation)
         let engine = makeSurfaceEngine(spec, dbPool: pool, ai: mock)
         engine.send("make it run at 10")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 
@@ -91,10 +92,11 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     func testOllamaIsDraftOnly() async throws {
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let spec = try spec(try makeAutomation(), provider: "ollama")
+        let spec = try await spec(try makeAutomation(), provider: "ollama")
         XCTAssertEqual(spec.toolAccess, .draftOnly)
         let engine = makeSurfaceEngine(spec, dbPool: pool, ai: mock)
         engine.send("hello")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
         XCTAssertEqual(mock.toolModes, [nil])
@@ -103,10 +105,11 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     func testNewSpecHasNoAutomationContext() async throws {
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let spec = try newSpec()
+        let spec = try await newSpec()
         XCTAssertEqual(spec.key.contextType, "automation_draft")
         let engine = makeSurfaceEngine(spec, dbPool: pool, ai: mock)
         engine.send("every weekday at 9, digest my mail")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 
@@ -122,9 +125,10 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     func testPerTurnPromptCarriesCurrentRecipeText() async throws {
         let automation = try makeAutomation()
         let mock = MockClaudeService(eventSequence: [[.text("one"), .done], [.text("two"), .done]])
-        let engine = makeSurfaceEngine(try spec(automation), dbPool: pool, ai: mock)
+        let engine = makeSurfaceEngine(try await spec(automation), dbPool: pool, ai: mock)
 
         engine.send("first")
+        await engine.finished()
         var done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
         XCTAssertTrue(mock.prompts[0].contains("first text"))
@@ -134,6 +138,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
                            arguments: ["---\nname: \"Digest\"\n---\nedited on disk\n", automation.id])
         }
         engine.send("second")
+        await engine.finished()
         done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
         XCTAssertEqual(mock.prompts.count, 2)
@@ -142,34 +147,35 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(mock.prompts[1].hasSuffix("second"))
     }
 
-    func testConversationNotInMainChatHistory() throws {
+    func testConversationNotInMainChatHistory() async throws {
         let automation = try makeAutomation()
-        let editor = try AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
-        let draft = try AutomationEditorChatSurface.newConversationID(draftID: "draft-1", dbPool: pool)
-        let history = try pool.read { db in try ChatConversationQueries.fetchStandalone(db) }.map(\.id)
+        let editor = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+        let draft = try await AutomationEditorChatSurface.newConversationID(draftID: "draft-1", dbPool: pool)
+        let history = try await pool.read { db in try ChatConversationQueries.fetchStandalone(db) }.map(\.id)
         XCTAssertFalse(history.contains(editor))
         XCTAssertFalse(history.contains(draft))
     }
 
     // MARK: - Lifetime
 
-    func testNewDraftSurvivesClosingTheSheet() throws {
+    func testNewDraftSurvivesClosingTheSheet() async throws {
         let center = center(MockClaudeService())
-        let first = controller(center, spec: try newSpec(draftID: "draft-1"))
+        let first = controller(center, spec: try await newSpec(draftID: "draft-1"))
         first.close()
-        let again = controller(center, spec: try newSpec(draftID: "draft-1"))
+        let again = controller(center, spec: try await newSpec(draftID: "draft-1"))
         XCTAssertTrue(first.engine === again.engine, "the same draft id reopens the same chat")
         XCTAssertEqual(first.conversationID, again.conversationID)
-        let other = controller(center, spec: try newSpec(draftID: "draft-2"))
+        let other = controller(center, spec: try await newSpec(draftID: "draft-2"))
         XCTAssertFalse(other.engine === again.engine)
     }
 
     func testEditorChatSurvivesNavigation() async throws {
         let mock = MockClaudeService(events: [.text("drafting…")], thenAwaitsRelease: true)
         let center = center(mock)
-        let spec = try spec(try makeAutomation())
+        let spec = try await spec(try makeAutomation())
         let open = controller(center, spec: spec)
         open.engine.send("add 14:00")
+        await open.engine.finished()
         let streaming = await eventually { open.engine.isStreaming }
         XCTAssertTrue(streaming)
 
@@ -186,7 +192,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     func testDraftPanelReloadsAfterATurn() async throws {
         let mock = MockClaudeService(events: [.text("drafted"), .done])
-        let spec = try newSpec()
+        let spec = try await newSpec()
         let chat = controller(center(mock), spec: spec)
         XCTAssertTrue(chat.draft.isEmpty)
         let url = AutomationDraftEntry.cacheURL(databasePath: pool.path, conversationID: chat.conversationID)
@@ -204,7 +210,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     }
 
     func testAppliedSaveRefreshesTheList() async throws {
-        let spec = try newSpec()
+        let spec = try await newSpec()
         var saves = 0
         let chat = controller(center(MockClaudeService()), spec: spec) { saves += 1 }
         let conversationID = chat.conversationID
@@ -221,25 +227,26 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     }
 
     /// J12: a recipe gone from the index and a failed read are told apart.
-    func testCurrentRecipeBlockTellsGoneFromUnreadable() throws {
+    func testCurrentRecipeBlockTellsGoneFromUnreadable() async throws {
         let automation = try makeAutomation()
         XCTAssertTrue(AutomationEditorChatSurface.currentRecipeBlock(automationID: automation.id, dbPool: pool)
             .contains("first text"))
         XCTAssertEqual(AutomationEditorChatSurface.currentRecipeBlock(automationID: 999_999, dbPool: pool),
                        AutomationEditorChatSurface.goneRecipeBlock)
-        try pool.write { db in try db.execute(sql: "ALTER TABLE automations RENAME TO automations_away") }
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE automations RENAME TO automations_away") }
         let unreadable = AutomationEditorChatSurface.currentRecipeBlock(automationID: automation.id, dbPool: pool)
         XCTAssertNotEqual(unreadable, AutomationEditorChatSurface.goneRecipeBlock)
         XCTAssertTrue(unreadable.contains("could not be read"), unreadable)
-        try pool.write { db in try db.execute(sql: "ALTER TABLE automations_away RENAME TO automations") }
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE automations_away RENAME TO automations") }
     }
 
     /// J13: Save… while a turn is still running is refused by the engine —
     /// the panel says so instead of dropping the click.
     func testRefusedSendIsSaid() async throws {
         let mock = MockClaudeService(events: [.text("drafting…")], thenAwaitsRelease: true)
-        let chat = controller(center(mock), spec: try newSpec())
+        let chat = controller(center(mock), spec: try await newSpec())
         chat.engine.send("a digest of my mail")
+        await chat.engine.finished()
         let streaming = await eventually { chat.engine.isStreaming }
         XCTAssertTrue(streaming)
 
@@ -259,9 +266,10 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     func testReturnShowsTheDraftCachedWhileAway() async throws {
         let mock = MockClaudeService(events: [.text("drafting…")], thenAwaitsRelease: true)
         let center = center(mock)
-        let spec = try newSpec()
+        let spec = try await newSpec()
         let open = controller(center, spec: spec)
         open.engine.send("a digest of my mail")
+        await open.engine.finished()
         let streaming = await eventually { open.engine.isStreaming }
         XCTAssertTrue(streaming)
         open.close()

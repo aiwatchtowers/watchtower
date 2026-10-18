@@ -184,7 +184,7 @@ func (s *SlackResolver) Resolve(ctx context.Context, m URLMatch) (*Enrichment, e
 
 	var row msgRow
 	err := s.db.QueryRowContext(ctx,
-		`SELECT text, user_id, channel_id, COALESCE(thread_ts,'') FROM messages WHERE channel_id = ? AND ts = ?`,
+		`SELECT text, user_id, channel_id, COALESCE(thread_ts,'') FROM messages WHERE channel_id = ? AND ts = ? AND is_deleted = 0`,
 		m.ChannelID, m.TS,
 	).Scan(&row.Text, &row.UserID, &row.ChannelID, &row.ThreadTS)
 

@@ -9,6 +9,13 @@ import Observation
 /// once more at the terminal event; tool steps are written as they happen
 /// (CHAT-02). A turn ends exactly once: `turn_done`, a turn-scoped `error`,
 /// or `finishRunningAsPartial` (stop watchdog, process death, eviction, quit).
+///
+/// Every write is queued as it happens, in order, and awaits the writer off
+/// the main thread (board #670), so a write lock held by another process
+/// never freezes the UI. An ended turn stays `liveTurn` (no longer running,
+/// its full text still shown) while its terminal write is under way
+/// (`isFinishing`); `onTurnFinished` fires once that write landed, so what a
+/// reload reads is the turn's final state.
 @MainActor
 @Observable
 package final class ChatTurnDriver {
@@ -17,6 +24,11 @@ package final class ChatTurnDriver {
     package private(set) var liveTurn: LiveTurn?
     package private(set) var sessionID: String?
     package private(set) var lastSessionError: ChatSessionError?
+    /// The turn ended and its terminal write is under way: the turn can no
+    /// longer be stopped, and no next turn starts until it landed.
+    package private(set) var isFinishing = false
+    /// A turn is running or finishing.
+    package var isBusy: Bool { liveTurn?.isRunning == true || isFinishing }
 
     @ObservationIgnored package let conversationID: Int64
     /// The chat project the session was spawned for: its session id is
@@ -28,6 +40,7 @@ package final class ChatTurnDriver {
     @ObservationIgnored private var lastFlush = Date.distantPast
     /// False once the session's prompt is stale (`stopRecordingSession`).
     @ObservationIgnored private var recordsSession = true
+    @ObservationIgnored private let writes = SerialWrites()
 
     package init(
         conversationID: Int64,
@@ -105,6 +118,12 @@ package final class ChatTurnDriver {
         finalize(.interrupted)
     }
 
+    /// Returns once every write queued so far has landed: a closing session
+    /// (quit, eviction) and tests await it.
+    package func writesSettled() async {
+        await writes.idle()
+    }
+
     // MARK: - Private
 
     private func running(_ turnID: String) -> LiveTurn? {
@@ -115,10 +134,14 @@ package final class ChatTurnDriver {
     private func recordSession(_ sid: String?) {
         guard recordsSession, let sid, !sid.isEmpty, sid != sessionID else { return }
         sessionID = sid
-        do {
-            try store.saveSessionID(conversationID: conversationID, sessionID: sid, projectID: projectID)
-        } catch {
-            liveTurn?.persistError = "Couldn't save the session id: \(error.localizedDescription)"
+        let turn = liveTurn
+        let (store, conversationID, projectID) = (store, conversationID, projectID)
+        writes.start {
+            do {
+                try await store.saveSessionID(conversationID: conversationID, sessionID: sid, projectID: projectID)
+            } catch {
+                turn?.persistError = "Couldn't save the session id: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -126,14 +149,16 @@ package final class ChatTurnDriver {
         guard let turn = running(start.turnID) else { return }
         let now = clock()
         let seq = turn.startStep(start, at: now)
-        persist(turn) { try store.stepStarted(messageID: turn.messageID, seq: seq, start: start, at: now) }
+        let store = store
+        persist(turn) { try await store.stepStarted(messageID: turn.messageID, seq: seq, start: start, at: now) }
     }
 
     private func stepFinished(_ end: ChatToolEnd) {
         guard let turn = running(end.turnID) else { return }
         let now = clock()
         turn.finishStep(end, at: now)
-        persist(turn) { try store.stepFinished(messageID: turn.messageID, end: end, at: now) }
+        let store = store
+        persist(turn) { try await store.stepFinished(messageID: turn.messageID, end: end, at: now) }
         flush(turn, status: "partial", errorCode: nil)
     }
 
@@ -155,17 +180,21 @@ package final class ChatTurnDriver {
 
     private func flush(_ turn: LiveTurn, status: String, errorCode: String?) {
         lastFlush = clock()
+        let (store, text, usage) = (store, turn.fullText, turn.usage)
         persist(turn) {
-            try store.saveProgress(messageID: turn.messageID, text: turn.fullText, status: status,
-                                   usage: turn.usage, errorCode: errorCode)
+            try await store.saveProgress(messageID: turn.messageID, text: text, status: status,
+                                         usage: usage, errorCode: errorCode)
         }
     }
 
-    private func persist(_ turn: LiveTurn, _ write: () throws -> Void) {
-        do {
-            try write()
-        } catch {
-            turn.persistError = "Couldn't save the reply: \(error.localizedDescription)"
+    /// Queues `write` behind the ones asked for before it.
+    private func persist(_ turn: LiveTurn, _ write: @escaping @MainActor () async throws -> Void) {
+        writes.start {
+            do {
+                try await write()
+            } catch {
+                turn.persistError = "Couldn't save the reply: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -180,22 +209,29 @@ package final class ChatTurnDriver {
         case .interrupted, .running:
             finalizePersist(turn, status: "partial", failure: nil)
         }
-        liveTurn = nil
-        onTurnFinished?(turn)
     }
 
     /// The terminal write: message state + `:::artifact` versions (CHAT-05
     /// storage side) commit together in one transaction (`ChatTurnStore.
     /// finalizeTurn`) — a crash or write failure can never leave one without
     /// the other. An errored turn writes no artifacts (the store skips the
-    /// parse for `status == "error"`).
+    /// parse for `status == "error"`). The turn leaves `liveTurn`, and
+    /// `onTurnFinished` fires, once it landed.
     private func finalizePersist(_ turn: LiveTurn, status: String, failure: ChatSessionError?) {
         lastFlush = clock()
-        do {
-            try store.finalizeTurn(conversationID: conversationID, messageID: turn.messageID, text: turn.fullText,
-                                   status: status, usage: turn.usage, error: failure)
-        } catch {
-            turn.persistError = "Couldn't finalize the reply: \(error.localizedDescription)"
+        isFinishing = true
+        let (store, conversationID, text, usage) = (store, conversationID, turn.fullText, turn.usage)
+        writes.start { [weak self] in
+            do {
+                try await store.finalizeTurn(conversationID: conversationID, messageID: turn.messageID, text: text,
+                                             status: status, usage: usage, error: failure)
+            } catch {
+                turn.persistError = "Couldn't finalize the reply: \(error.localizedDescription)"
+            }
+            guard let self else { return }
+            if self.liveTurn === turn { self.liveTurn = nil }
+            self.isFinishing = false
+            self.onTurnFinished?(turn)
         }
     }
 }

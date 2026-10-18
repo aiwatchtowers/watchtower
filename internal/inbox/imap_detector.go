@@ -55,7 +55,7 @@ func detectImapAccount(database *db.DB, acct db.EmailAccount, sinceISO string) (
 
 	created := 0
 	for _, m := range msgs {
-		channelID := fmt.Sprintf("imap:%d:%d:%s", acct.ID, m.UIDValidity, acct.Folder)
+		channelID := db.ImapChannelPrefix(acct.ID, m.UIDValidity) + ":" + acct.Folder
 		var to, cc []string
 		_ = json.Unmarshal([]byte(m.ToJSON), &to)
 		_ = json.Unmarshal([]byte(m.CcJSON), &cc)

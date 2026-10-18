@@ -42,8 +42,8 @@ final class IdeaChatSurfaceTests: XCTestCase {
         return try XCTUnwrap(conv).id
     }
 
-    private func engine(for idea: Idea, ai: any AIServiceProtocol, mentions: [IdeaMention] = []) throws -> EmbeddedChatEngine {
-        let conv = try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+    private func engine(for idea: Idea, ai: any AIServiceProtocol, mentions: [IdeaMention] = []) async throws -> EmbeddedChatEngine {
+        let conv = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
         return makeSurfaceEngine(IdeaChatSurface.spec(idea: idea, mentions: mentions, conversationID: conv,
                                                       dbPool: dbManager.dbPool),
                                  dbPool: dbManager.dbPool, ai: ai)
@@ -51,26 +51,27 @@ final class IdeaChatSurfaceTests: XCTestCase {
 
     // MARK: - Conversation lifecycle
 
-    func testCreatesConversationWithIdeaContext() throws {
+    func testCreatesConversationWithIdeaContext() async throws {
         let idea = try makeIdea()
-        _ = try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+        _ = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
 
-        let conv = try dbManager.dbPool.read { db in
+        let conv = try await dbManager.dbPool.read { db in
             try ChatConversationQueries.fetchByContext(db, type: "idea", id: String(idea.id))
         }
         let unwrapped = try XCTUnwrap(conv)
         XCTAssertTrue(unwrapped.title.hasPrefix("Idea:"))
     }
 
-    func testReopensExistingConversationWithHistory() throws {
+    func testReopensExistingConversationWithHistory() async throws {
         let idea = try makeIdea()
-        let first = try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
-        try dbManager.dbPool.write { db in
+        let first = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+        try await dbManager.dbPool.write { db in
             _ = try ChatMessageQueries.insert(db, conversationID: first, role: "user", text: "earlier question")
         }
 
-        XCTAssertEqual(try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool), first)
-        let engine = try engine(for: idea, ai: MockClaudeService())
+        let again = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+        XCTAssertEqual(again, first)
+        let engine = try await engine(for: idea, ai: MockClaudeService())
         XCTAssertEqual(engine.messages.map(\.message.text), ["earlier question"])
     }
 
@@ -79,10 +80,11 @@ final class IdeaChatSurfaceTests: XCTestCase {
     func testSendStreamsUserIntentVerbatim() async throws {
         let idea = try makeIdea()
         let mock = MockClaudeService(events: [.text("Draft reply"), .done])
-        let engine = try engine(for: idea, ai: mock)
+        let engine = try await engine(for: idea, ai: mock)
 
         engine.draft = "what's the risk here?"
         engine.sendDraft()
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 
@@ -104,9 +106,10 @@ final class IdeaChatSurfaceTests: XCTestCase {
             try ChatConversationQueries.updateSessionID(db, id: conv.id, sessionID: "s1")
         }
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let engine = try engine(for: idea, ai: mock)
+        let engine = try await engine(for: idea, ai: mock)
 
         engine.send("again")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 
@@ -120,19 +123,20 @@ final class IdeaChatSurfaceTests: XCTestCase {
     func testFirstTurnSendsTheSystemPrompt() async throws {
         let idea = try makeIdea()
         let mock = MockClaudeService(events: [.sessionID("s9"), .text("ok"), .done])
-        let engine = try engine(for: idea, ai: mock)
+        let engine = try await engine(for: idea, ai: mock)
         engine.send("hello")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
         XCTAssertTrue(try XCTUnwrap(mock.systemPrompts.first.flatMap { $0 }).contains("=== IDEA ==="))
-        let conv = try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+        let conv = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
         let sessionID = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: conv)?.sessionID }
         XCTAssertEqual(sessionID, "s9")
     }
 
     /// The Go prompt (internal/ai/prompt.go) and this Swift copy are a
     /// deliberate dual path: the tool list must mention search_knowledge.
-    func testSystemPromptBriefsSearchKnowledge() throws {
+    func testSystemPromptBriefsSearchKnowledge() async throws {
         let idea = try makeIdea()
         let prompt = IdeaChatSurface.buildSystemPrompt(idea: idea, mentions: [], dbPool: dbManager.dbPool)
         XCTAssertTrue(prompt.contains("search_knowledge"))
@@ -142,9 +146,10 @@ final class IdeaChatSurfaceTests: XCTestCase {
     func testStreamErrorSurfacesInline() async throws {
         let idea = try makeIdea()
         struct Boom: LocalizedError { var errorDescription: String? { "boom" } }
-        let engine = try engine(for: idea, ai: MockClaudeService(error: Boom()))
+        let engine = try await engine(for: idea, ai: MockClaudeService(error: Boom()))
 
         engine.send("hello")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 
@@ -155,24 +160,28 @@ final class IdeaChatSurfaceTests: XCTestCase {
 
     func testStopKeepsThePartialReply() async throws {
         let idea = try makeIdea()
-        let engine = try engine(for: idea, ai: MockClaudeService(events: [.text("half")], thenHangs: true))
+        let engine = try await engine(for: idea, ai: MockClaudeService(events: [.text("half")], thenHangs: true))
         engine.send("q")
+        await engine.finished()
         let streamed = await eventually { engine.liveTurn?.fullText == "half" }
         XCTAssertTrue(streamed)
         engine.stop()
+        await engine.finished()
         XCTAssertEqual(engine.messages.last?.message.status, "partial")
         XCTAssertEqual(engine.messages.last?.message.text, "half")
     }
 
-    func testPersistedMessageCount() throws {
+    func testPersistedMessageCount() async throws {
         let idea = try makeIdea()
-        XCTAssertEqual(try dbManager.dbPool.read { try IdeaChatSurface.persistedMessageCount($0, ideaID: idea.id) }, 0)
+        let before = try await dbManager.dbPool.read { try IdeaChatSurface.persistedMessageCount($0, ideaID: idea.id) }
+        XCTAssertEqual(before, 0)
 
-        let convID = try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
-        try dbManager.dbPool.write { db in
+        let convID = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+        try await dbManager.dbPool.write { db in
             _ = try ChatMessageQueries.insert(db, conversationID: convID, role: "user", text: "hi")
         }
-        XCTAssertEqual(try dbManager.dbPool.read { try IdeaChatSurface.persistedMessageCount($0, ideaID: idea.id) }, 1)
+        let after = try await dbManager.dbPool.read { try IdeaChatSurface.persistedMessageCount($0, ideaID: idea.id) }
+        XCTAssertEqual(after, 1)
     }
 
     /// Collapsing the Discuss section only hides the rows: the center keeps
@@ -183,10 +192,11 @@ final class IdeaChatSurfaceTests: XCTestCase {
         let pool = dbManager.dbPool
         let center = EmbeddedChatCenter { spec, _ in makeSurfaceEngine(spec, dbPool: pool, ai: mock) }
         var state = IdeaDiscussState(isExpanded: true,
-                                     conversationID: try IdeaChatSurface.conversationID(for: idea, dbPool: pool))
+                                     conversationID: try await IdeaChatSurface.conversationID(for: idea, dbPool: pool))
         let engine = try XCTUnwrap(state.engine(idea: idea, mentions: [], dbManager: dbManager, center: center))
         center.markShown(engine.spec.key)
         engine.send("q")
+        await engine.finished()
         state.isExpanded = false
         center.markHidden(engine.spec.key)
         XCTAssertNil(state.engine(idea: idea, mentions: [], dbManager: dbManager, center: center))
@@ -201,7 +211,7 @@ final class IdeaChatSurfaceTests: XCTestCase {
 
     // MARK: - Context block
 
-    func testIdeaContextBlockContainsEssenceAndMentionQuote() throws {
+    func testIdeaContextBlockContainsEssenceAndMentionQuote() async throws {
         let idea = try makeIdea(essence: "Automate weekly stakeholder updates")
         let mention = try makeMention(ideaID: Int64(idea.id), quote: "we should really automate this")
 
@@ -226,7 +236,7 @@ final class IdeaChatSurfaceTests: XCTestCase {
     }
 
     /// The question card is taught on this surface too (spec 2026-10-02).
-    func testSystemPromptTeachesTheQuestionCard() throws {
+    func testSystemPromptTeachesTheQuestionCard() async throws {
         let idea = try makeIdea()
         let prompt = IdeaChatSurface.buildSystemPrompt(idea: idea, mentions: [], dbPool: dbManager.dbPool)
         XCTAssertTrue(prompt.hasSuffix(ChatQuestionsContract.promptBlock))

@@ -30,8 +30,10 @@ given — except `project_doc`, which also lists and reads the workbench
 folder's text files, read-only and inside the folder; for it the rebuild equivalence holds over an
 unchanged folder). A from-scratch `kb reindex` produces byte-identical
 `kb_documents`/`kb_chunks` content to incremental indexing over the same
-data, across writes, in-place Slack edits/deletes inside the 48h tail rescan,
-thread promotion (a top-level message older than the tail gaining its first
+data, across writes, in-place Slack edits/deletes (inside the 48h tail rescan,
+or older: the `kb_dirty` marks written by the source tables' triggers are drained
+by `drainDirty` in `internal/kb/dirty.go`; so are Gmail and Jira comment hard
+deletes, and a mark whose source document is gone is a delete), thread promotion (a top-level message older than the tail gaining its first
 reply: every Slack reply row also marks its root's channel-day, so the day
 document the root left is re-rendered), hard deletes (caught by the
 reconcile, `reconcileIfDue` in `internal/kb/indexer.go`), and the
@@ -44,9 +46,7 @@ indexed as its title; only a nil `Build` means "gone". Deletions leave search
 within one daemon cycle for every source but Slack, which reconciles once per
 UTC day (its key listing scans every message).
 
-**Accepted v1 limits that qualify "derived":** a Slack in-place edit/delete
-older than the 48h tail (outside thread promotion) is caught only by
-`kb reindex`; a name joined in at render time from another table (digest
+**Accepted v1 limits that qualify "derived":** a name joined in at render time from another table (digest
 channel name, recap event title) refreshes only on the parent row's own next
 change or a `kb reindex`, not on a rename of the joined row; every non-Slack
 source is one change-range, so the 60s cycle budget can be overshot by a
@@ -134,6 +134,7 @@ DEV-01.
 ## Changelog
 
 - 2026-10-17 (in-app help, board #426; owner, ask #244): a thirteenth source, `guide` — the user guide embedded in the binary (`docs/guide`, `internal/kb/source_guide.go`, doc ids `guide:<path>`, cursor = `guide.Hash()` + "@" + the link base `guide.BaseURL(guide.Version)`, so a new release version relinks every page). KB-01 note: this source is rebuilt from the binary, not from database rows, so its rebuild-equivalence holds over the embedded files; it has no `Time` and is exempt from the recency floor (`hitRecency`, `TestSearchGuideNotPenalisedForAge`). `phaseKnowledgeIndex` indexes `guide` even when Knowledge search is off — that run writes no `pipeline_runs` row, and the switch never deletes guide rows (`TestPhaseKnowledgeIndex_DisabledWritesNothing` is narrowed to owner-data sources, `TestPhaseKnowledgeIndexGuideRunsWhenKnowledgeOff`). The empty-index note ignores guide rows. KB-03's fixture covers the source and requires every guide page reachable. KB-01..03 otherwise unchanged.
+- 2026-10-18 (source deletions, board #640, ask #342 Q1): KB-01 amended — the limit "a Slack in-place edit/delete older than the 48h tail is caught only by `kb reindex`" is dropped. Migration 00139's triggers mark `kb_dirty` (Slack text/`is_deleted` change, Gmail and Jira-comment delete) and the indexer drains the marks after a source catches up, before the reconcile; a missing source document is a delete. Guard `TestKB01_IncrementalEqualsRebuild` gains an old-message edit in its incremental pass; no assertion weakened. New tests `internal/kb/dirty_test.go`.
 - 2026-10-03 (workbench owner asks, PROJ-08 amended in `workbench.md`): `project_doc` indexes every `.md`/`.markdown`/`.txt` file of a workbench folder that git does not ignore (≤ 2000, key `wbdoc:<project_id>:<rel_path>`, the shared `internal/kb/fileset.go` mechanism) instead of attached documents; migration `00100` deletes the old `project_doc:<document id>` entries. KB-01's wording follows ("lists and reads the folder's text files"); its rebuild-equivalence rule and every KB guard are unchanged.
 - 2026-10-02 (board target #209): a chat project's chat scopes `search_knowledge` too — `ai session --project-id N` passes `--chat-project N` to the chat MCP server (`tools.Binding.ChatProjectID`), and the project's `slack_channel`/`jira_project`/`confluence_space` pins (`chat_project_sources`, `confluence_space` added by migration 00096) resolve through the same rules as a workbench's sources (`tools.chatProjectKnowledgeScope`, shared `knowledgeScope`) into the same `kb.Request.Scope`/`ScopeOnly`. Outside a workbench session or a project chat nothing changes; `project_doc` stays workbench-only (PROJ-08). KB-01..03 unchanged.
 

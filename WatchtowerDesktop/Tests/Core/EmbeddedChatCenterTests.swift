@@ -49,6 +49,7 @@ final class EmbeddedChatCenterTests: XCTestCase {
         center.markShown(spec.key)
         let engine = center.engine(for: spec)
         engine.send("What changed?")
+        await engine.finished()
         center.markHidden(spec.key)
         clock.advance(3600)
         center.sweep()
@@ -87,13 +88,15 @@ final class EmbeddedChatCenterTests: XCTestCase {
         XCTAssertNotNil(center.loaded(spec.key))
     }
 
-    func testDropContextStopsQuietly() throws {
+    func testDropContextStopsQuietly() async throws {
         let spec = try trackSpec(9)
         let engine = center.engine(for: spec)
         engine.send("q")
+        await engine.finished()
         let conv = try XCTUnwrap(spec.key.conversationID)
-        try pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
+        try await pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
         center.dropContext(type: "track", id: "9")
+        await engine.finished()
         XCTAssertNil(center.loaded(spec.key))
         XCTAssertFalse(engine.isBusy)
         XCTAssertNil(engine.bannerError)
@@ -102,15 +105,17 @@ final class EmbeddedChatCenterTests: XCTestCase {
 
     /// One deleted conversation of a context (a code question) stops
     /// quietly; another conversation of the same context keeps running.
-    func testDropStopsOneConversationQuietlyAndSparesItsSibling() throws {
+    func testDropStopsOneConversationQuietlyAndSparesItsSibling() async throws {
         let deleted = try trackSpec(4)
         let sibling = try trackSpec(4)
         let engine = center.engine(for: deleted)
         engine.send("q")
+        await engine.finished()
         let other = center.engine(for: sibling)
         let conv = try XCTUnwrap(deleted.key.conversationID)
-        try pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
+        try await pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
         center.drop(deleted.key)
+        await engine.finished()
         XCTAssertNil(center.loaded(deleted.key))
         XCTAssertFalse(engine.isBusy)
         XCTAssertNil(engine.bannerError, "quiet: the conversation is gone")
@@ -130,9 +135,10 @@ final class EmbeddedChatCenterTests: XCTestCase {
         let spec = try trackSpec()
         let engine = center.engine(for: spec)
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("streamed"))
         expectTrue(await waitForCondition { engine.liveTurn?.fullText == "streamed" })
-        center.finishAllAsPartial()
+        await center.finishAllAsPartialForQuit()
         XCTAssertFalse(engine.isStreaming)
         XCTAssertEqual(engine.messages.last?.message.status, "partial")
         XCTAssertEqual(engine.messages.last?.message.text, "streamed")
@@ -161,13 +167,14 @@ final class EmbeddedChatCenterSpecTests: XCTestCase {
 
     /// A surface asking again gets the same engine with its fresh closures —
     /// never the first screen's snapshot.
-    func testAskingAgainRefreshesTheSpec() {
+    func testAskingAgainRefreshesTheSpec() async {
         let ai = ScriptedAIService()
         let center = center(ai: ai)
         let first = center.engine(for: spec("1", hint: "old"))
         let again = center.engine(for: spec("1", hint: "new"))
         XCTAssertTrue(first === again)
         again.send("q")
+        await again.finished()
         XCTAssertEqual(ai.calls.first?.prompt, "new: q", "the latest spec's closures build the turn")
     }
 
@@ -188,8 +195,11 @@ final class EmbeddedChatCenterSpecTests: XCTestCase {
         let key = spec("1", hint: "").key
         let engine = center.engine(for: spec("1", hint: ""))
         engine.send("q")
+        await engine.finished()
         engine.sendFollowUp(prompt: "Action applied.")
+        await engine.finished()
         engine.stop()
+        await engine.finished()
         center.sweep(now: Date().addingTimeInterval(3600))
         XCTAssertNotNil(center.loaded(key), "its follow-up still has to reach the assistant")
     }

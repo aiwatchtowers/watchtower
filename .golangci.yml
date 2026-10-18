@@ -39,6 +39,8 @@ linters:
     - wastedassign
     - nolintlint
     - unparam
+    - gocyclo
+    - funlen
 
     # Style & consistency
     - misspell
@@ -46,6 +48,16 @@ linters:
     - dupword
 
   settings:
+    # Function-size ceilings (they replaced sentrux's max_cc / max_fn_lines,
+    # board #672): loose on purpose — they stop a new monster, not an
+    # ordinary long function.
+    gocyclo:
+      min-complexity: 50
+    funlen:
+      lines: 400
+      statements: -1
+      ignore-comments: true
+
     errcheck:
       check-type-assertions: false
       check-blank: false

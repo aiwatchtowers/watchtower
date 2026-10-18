@@ -716,6 +716,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         await center.quickAction(.suggestChange, workbenchID: project.id)
         let popoverEngine = try XCTUnwrap(center.engine(workbenchID: project.id))
+        await popoverEngine.started()
         let conversationID = try XCTUnwrap(center.sessions[project.id]?.conversationID)
         center.reloadQuestionList(workbenchID: project.id)
         let item = try XCTUnwrap(center.questionLists[project.id]?.first)

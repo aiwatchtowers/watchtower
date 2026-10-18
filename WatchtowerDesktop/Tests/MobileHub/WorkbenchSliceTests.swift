@@ -458,7 +458,7 @@ final class WorkbenchSliceTests: XCTestCase {
                 listings.withLock { $0 += 1 }
                 return [7]
             },
-            timing: .init(every: .seconds(120), minSpacing: .seconds(30), timeout: .seconds(5), wake: .milliseconds(10)),
+            timing: .init(every: .seconds(120), minSpacing: .seconds(30), timeout: .seconds(5), idle: .milliseconds(10)),
             isActive: isActive
         )
         refresher.start()
@@ -531,7 +531,7 @@ final class WorkbenchSliceTests: XCTestCase {
         return WorkbenchGitRefresher(
             fetch: fetch,
             workbenchIDs: { [7] },
-            timing: .init(every: .seconds(120), minSpacing: .seconds(30), timeout: timeout, wake: .seconds(5)),
+            timing: .init(every: .seconds(120), minSpacing: .seconds(30), timeout: timeout, idle: .seconds(5)),
             clock: now
         )
     }

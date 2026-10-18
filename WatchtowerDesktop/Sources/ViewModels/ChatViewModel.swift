@@ -160,9 +160,19 @@ final class ChatViewModel {
     /// An owner turn's rows are being written (board #670): the composer's
     /// send is refused meanwhile, so one Enter never sends twice.
     private(set) var isStartingTurn = false
+    /// Sends waiting for the files dropped or pasted just before them
+    /// (board #670), each with the chat it was pressed in.
+    private var attachmentWaits: [UUID: (conversationID: Int64?, fromLanding: Bool)] = [:]
+    /// The shown chat's send waits for its files: the composer says so, and
+    /// a second Enter there does nothing. Another chat is not affected.
+    var isWaitingForAttachments: Bool {
+        attachmentWaits.values.contains { wait in
+            wait.conversationID == conversationID || (wait.fromLanding && isOnLanding)
+        }
+    }
     /// A turn is running or about to: what the composer and the actions
     /// that start a turn wait for.
-    var isBusy: Bool { isStreaming || isStartingTurn }
+    var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn }
     /// Every write of this view model, one after another (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// The composer's conversation being created: one at a time, so a
@@ -220,6 +230,12 @@ final class ChatViewModel {
     var liveTurn: LiveTurn? { pool.client(for: conversationID)?.liveTurn }
     /// A turn is running — or held by the pool waiting for a session.
     var isStreaming: Bool { liveTurn?.isRunning == true }
+    /// The shown chat's turn ended and its final state is being written
+    /// (board #670): nothing can stop it, and the next send waits for it.
+    var isFinishingTurn: Bool { pool.client(for: conversationID)?.driver.isFinishing == true }
+    /// Whether the composer offers Stop: never while the turn's rows or its
+    /// end are being written — nothing could stop it then.
+    var canStop: Bool { !isStartingTurn && !isFinishingTurn }
     /// Every live session is busy with another conversation's turn: this
     /// turn is held (not lost) until one finishes. The UI says so.
     var isWaitingForSession: Bool {
@@ -365,6 +381,8 @@ final class ChatViewModel {
     /// a synchronous caller queued one, e.g. a landing draft's discard).
     func writesSettled() async {
         await writes.idle()
+        // The shown chat's turn writes too (its driver's, board #670).
+        await pool.client(for: conversationID)?.driver.writesSettled()
     }
 
     /// The composer's first keystroke: prewarm the session. On the landing
@@ -399,9 +417,9 @@ final class ChatViewModel {
         }
         do {
             let pending = try dbManager.dbPool.read { try ChatAttachmentQueries.fetchPending($0, conversationID: id) }
-            composerAttachments.replacePending(with: pending)
+            composerAttachments.replacePending(with: pending, conversationID: id)
         } catch {
-            composerAttachments.replacePending(with: [])
+            composerAttachments.replacePending(with: [], conversationID: id)
             errorMessage = "Couldn't load this chat's unsent files: \(error.localizedDescription)"
         }
     }
@@ -650,7 +668,21 @@ final class ChatViewModel {
     /// its text back ahead of it, and only the files that went out leave
     /// the composer.
     func sendDraft(screen: ScreenContext? = nil) async {
-        for paste in pastesInFlight.values { _ = await paste.value }
+        guard !isWaitingForAttachments else { return }
+        let shown = conversationID
+        let fromLanding = isOnLanding
+        // Files dropped, pasted or removed just before Enter land first
+        // (board #670); the composer says the send waits for them.
+        if composerAttachments.isBusy || !pastesInFlight.isEmpty {
+            let wait = UUID()
+            attachmentWaits[wait] = (shown, fromLanding)
+            for paste in pastesInFlight.values { _ = await paste.value }
+            await composerAttachments.settled()
+            attachmentWaits[wait] = nil
+        }
+        // The owner opened another chat meanwhile: nothing goes out, and the
+        // text stays where the switch left it, as for a switch before Enter.
+        guard conversationID == shown || (fromLanding && isOnLanding) else { return }
         let attachments = composerAttachments.pending
         let batchID = conversationID
         let typed = draft
@@ -719,7 +751,7 @@ final class ChatViewModel {
         let key = UUID()
         let paste = Task { [self] () -> Bool in
             guard let id = await conversationIDCreatingIfNeeded() else { return false }
-            return composerAttachments.addPasted(data, name: name, conversationID: id)
+            return await composerAttachments.addPasted(data, name: name, conversationID: id)
         }
         pastesInFlight[key] = paste
         defer { pastesInFlight[key] = nil }
@@ -1091,7 +1123,7 @@ final class ChatViewModel {
     /// next turn spawns a matching one (Claude keeps `--resume`, the others
     /// replay). Never mid-turn — the picker is disabled while streaming.
     private func recycleSession() {
-        guard !applyingConversationSettings, !isStreaming, let id = conversationID else { return }
+        guard !applyingConversationSettings, !isStreaming, !isFinishingTurn, let id = conversationID else { return }
         pool.close(conversationID: id)
     }
 

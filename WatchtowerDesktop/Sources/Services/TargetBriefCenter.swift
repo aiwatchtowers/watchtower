@@ -205,7 +205,7 @@ final class TargetBriefCenter {
             return
         }
         setVM(chatVM, for: next.id)
-        guard send(next.request.text, on: chatVM) else {
+        guard await send(next.request.text, on: chatVM) else {
             let returned = Self.returnBrief(next.request.text, to: chatVM)
             failToStart(next.id, message: (chatVM.errorMessage ?? "The brief could not be sent")
                 + (returned ? Self.backInTheBox : " — re-ask here."))
@@ -217,8 +217,10 @@ final class TargetBriefCenter {
     /// Send the brief through the VM's input field and report whether a
     /// stream actually started (`send()` flips `isStreaming` synchronously;
     /// still false means the send was a no-op, which must not pass for a
-    /// finished brief).
-    private func send(_ text: String, on chatVM: TargetChatViewModel) -> Bool {
+    /// finished brief). The turn's rows are written off the main thread
+    /// (board #670), so this waits for them: a turn whose rows could not be
+    /// written did not start either.
+    private func send(_ text: String, on chatVM: TargetChatViewModel) async -> Bool {
         // The live VM may carry an error from an earlier OWNER turn; `finish`
         // reads `errorMessage` as this brief's outcome, so start it clean.
         chatVM.errorMessage = nil
@@ -228,7 +230,24 @@ final class TargetBriefCenter {
         chatVM.inputText = text
         chatVM.send()
         chatVM.inputText = draft
-        return chatVM.isStreaming
+        guard chatVM.isStreaming else { return false }
+        await chatVM.engine.started()
+        if chatVM.isStreaming { return true }
+        // The engine gave the brief back ahead of whatever the field holds
+        // now (the draft, and anything typed meanwhile); the caller puts it
+        // after that, once, as for any brief that never went out.
+        chatVM.inputText = Self.withoutReturnedBrief(chatVM.inputText, brief: text)
+        return false
+    }
+
+    /// `field` without the brief the engine put back at its start (a failed
+    /// send's text goes back ahead of the field's text, `"<brief>\n<rest>"`).
+    static func withoutReturnedBrief(_ field: String, brief: String) -> String {
+        let sent = brief.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sent.isEmpty else { return field }
+        if field == sent { return "" }
+        guard field.hasPrefix(sent + "\n") else { return field }
+        return String(field.dropFirst(sent.count + 1))
     }
 
     private static let backInTheBox = " — the brief is back in the message box; send it from there."
@@ -252,7 +271,12 @@ final class TargetBriefCenter {
         // A cancelled watcher still settles its job and drains, so it can
         // never strand the queue — but it stops its stream first, or the
         // next brief would start while this one still runs unobserved.
-        if Task.isCancelled { chatVM.cancelStream() }
+        if Task.isCancelled {
+            chatVM.cancelStream()
+            // Its end is written off the main thread (board #670): the next
+            // brief starts once this one has ended.
+            await chatVM.engine.finished()
+        }
         finish(jobID, vm: chatVM)
         drain()
     }

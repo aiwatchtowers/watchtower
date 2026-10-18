@@ -1289,14 +1289,16 @@ func TestSearchSyncThrottlesReadStateAndRoster(t *testing.T) {
 		require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
 	}
 
+	// Each cycle sends two search.messages calls: the live search and the
+	// rolling deletion sweep's one stored day.
 	run(0)
-	assert.Equal(t, int32(1), searchCalls.Load())
+	assert.Equal(t, int32(2), searchCalls.Load())
 	firstInfo, firstList := infoCalls.Load(), listCalls.Load()
 	require.Greater(t, firstInfo, int32(0), "the first run refreshes the read cursor")
 	require.Greater(t, firstList, int32(0), "the first run fetches the roster")
 
 	run(30 * time.Minute)
-	assert.Equal(t, int32(2), searchCalls.Load(), "messages sync every cycle")
+	assert.Equal(t, int32(4), searchCalls.Load(), "messages sync every cycle")
 	assert.Equal(t, firstInfo, infoCalls.Load(), "read state is not refreshed again within the hour")
 	assert.Equal(t, firstList, listCalls.Load(), "the roster is not refetched within the day")
 

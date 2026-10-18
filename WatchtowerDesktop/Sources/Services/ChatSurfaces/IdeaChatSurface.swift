@@ -20,10 +20,16 @@ enum IdeaChatSurface {
         ChatStarterPrompt(title: "Make the case for it", text: "Make the strongest case for this.", sendsImmediately: true)
     ]
 
+    /// The idea's conversation when it already has one (a read, at once).
+    static func existingConversationID(for idea: Idea, dbPool: DatabasePool) throws -> Int64? {
+        try DatabaseEmbeddedChatStore.existingConversationID(dbPool: dbPool, contextType: contextType,
+                                                             contextID: String(idea.id))
+    }
+
     /// The idea's conversation, created on first use (the title the old view
     /// model gave it, so existing history keeps opening).
-    static func conversationID(for idea: Idea, dbPool: DatabasePool) throws -> Int64 {
-        try DatabaseEmbeddedChatStore.conversationID(
+    static func conversationID(for idea: Idea, dbPool: DatabasePool) async throws -> Int64 {
+        try await DatabaseEmbeddedChatStore.conversationID(
             dbPool: dbPool, contextType: contextType, contextID: String(idea.id),
             title: "Idea: \(String(idea.title.prefix(60)))")
     }

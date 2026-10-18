@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/netsec"
+	"watchtower/internal/sourcediff"
 )
 
 // Syncer fetches new messages for one connected mailbox (email_accounts row)
@@ -217,6 +218,14 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	// regardless of what order the server returned FETCH responses in.
 	sort.Slice(msgs, func(i, j int) bool { return msgs[i].UID < msgs[j].UID })
 
+	// Read before the listing: mail arriving in between is never in stored.
+	var stored []int64
+	if st, err := s.db.ImapStoredUIDs(s.account.ID, int64(newUIDValidity)); err != nil {
+		s.logger.Printf("imap account %d: reading stored uids for deletion diff: %v", s.account.ID, err)
+	} else {
+		stored = st
+	}
+
 	upsert := s.upsertFunc()
 
 	now := time.Now().UTC()
@@ -253,7 +262,56 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			s.logger.Printf("imap account %d: advancing watermark: %v", s.account.ID, err)
 		}
 	}
+	if ctx.Err() == nil {
+		s.reconcileDeletions(client, int64(newUIDValidity), stored)
+	}
 	return count, nil
+}
+
+// reconcileDeletions drops local rows whose message is gone from the folder
+// (expunged, or moved to another folder, which counts as deleted) and rows
+// stored under a dead UIDVALIDITY. stored was read before this listing. It
+// runs only when the persisted UIDVALIDITY equals the one just synced, so it
+// never follows a failed SetImapWatermark. Failures are logged, never
+// returned; nothing is deleted from a failed listing.
+func (s *Syncer) reconcileDeletions(client *Client, validity int64, stored []int64) {
+	_, persisted, err := s.db.GetImapWatermark(s.account.ID)
+	if err != nil {
+		s.logger.Printf("imap account %d: deletion diff skipped: reading watermark: %v", s.account.ID, err)
+		return
+	}
+	if persisted != validity {
+		return
+	}
+	listed, err := client.SearchAll()
+	if err != nil {
+		s.logger.Printf("imap account %d: deletion diff skipped: %v", s.account.ID, err)
+		return
+	}
+	onServer := make(map[int64]struct{}, len(listed))
+	for _, u := range listed {
+		onServer[int64(u)] = struct{}{}
+	}
+	var missing []int64
+	for _, u := range stored {
+		if _, ok := onServer[u]; !ok {
+			missing = append(missing, u)
+		}
+	}
+	if ok, reason := sourcediff.Check(len(stored), len(stored)-len(missing), len(missing), sourcediff.MailFloors); ok {
+		if n, err := s.db.DeleteImapMessages(s.account.ID, validity, missing); err != nil {
+			s.logger.Printf("imap account %d: deleting expunged messages: %v", s.account.ID, err)
+		} else if n > 0 {
+			s.logger.Printf("imap account %d: removed %d messages gone from the folder", s.account.ID, n)
+		}
+	} else if reason != "" {
+		s.logger.Printf("imap account %d: deletion diff refused: %s", s.account.ID, reason)
+	}
+	if n, err := s.db.DeleteImapMessagesOutsideUIDValidity(s.account.ID, validity); err != nil {
+		s.logger.Printf("imap account %d: cleaning old uidvalidity rows: %v", s.account.ID, err)
+	} else if n > 0 {
+		s.logger.Printf("imap account %d: removed %d rows of an old uidvalidity", s.account.ID, n)
+	}
 }
 
 // recordAuthResult persists the account's connect/auth state. Pass err=nil to

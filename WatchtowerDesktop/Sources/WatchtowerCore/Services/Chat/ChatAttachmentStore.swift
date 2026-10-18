@@ -5,7 +5,11 @@ import GRDB
 /// Copies owner-chosen files into `<workspace>/chat_files/<conversations|projects>/<id>/`
 /// (0700 dirs, 0600 files) and records them in `chat_attachments`. Go reads
 /// the stored path from the `turn` command's stdin (CHAT-04: never argv).
-package final class ChatAttachmentStore {
+///
+/// Every call is `async` and runs off the main actor (board #670): the file
+/// is read, hashed and copied there, and the row awaits the writer, so a
+/// big file or another process's write lock never freezes the UI.
+package final class ChatAttachmentStore: Sendable {
     package let db: any DatabaseWriter
     package let rootDir: URL
 
@@ -26,28 +30,28 @@ package final class ChatAttachmentStore {
         rootDir.appendingPathComponent(owner.directoryName, isDirectory: true)
     }
 
-    package func importFile(url: URL, conversationID: Int64) throws -> ChatAttachment {
-        try importFile(url: url, owner: .conversation(conversationID))
+    package func importFile(url: URL, conversationID: Int64) async throws -> ChatAttachment {
+        try await importFile(url: url, owner: .conversation(conversationID))
     }
 
-    package func importFile(url: URL, projectID: Int64) throws -> ChatAttachment {
-        try importFile(url: url, owner: .project(projectID))
+    package func importFile(url: URL, projectID: Int64) async throws -> ChatAttachment {
+        try await importFile(url: url, owner: .project(projectID))
     }
 
-    package func importFile(url: URL, owner: ChatAttachmentOwner) throws -> ChatAttachment {
+    package func importFile(url: URL, owner: ChatAttachmentOwner) async throws -> ChatAttachment {
         let kind = try AttachmentValidator.validate(url: url).get()
         let data = try Data(contentsOf: url)
-        return try store(data: data, name: url.lastPathComponent, kind: kind, owner: owner)
+        return try await store(data: data, name: url.lastPathComponent, kind: kind, owner: owner)
     }
 
-    package func importData(_ data: Data, name: String, owner: ChatAttachmentOwner) throws -> ChatAttachment {
+    package func importData(_ data: Data, name: String, owner: ChatAttachmentOwner) async throws -> ChatAttachment {
         let kind = try AttachmentValidator.validate(data: data, fileName: name).get()
-        return try store(data: data, name: name, kind: kind, owner: owner)
+        return try await store(data: data, name: name, kind: kind, owner: owner)
     }
 
     /// Removes a pending attachment's row, and its file once no row points at it.
-    package func discard(_ attachment: ChatAttachment) throws {
-        let stillReferenced = try db.write { db -> Bool in
+    package func discard(_ attachment: ChatAttachment) async throws {
+        let stillReferenced = try await db.write { db -> Bool in
             try ChatAttachmentQueries.delete(db, id: attachment.id)
             return try ChatAttachmentQueries.referenceCount(db, path: attachment.path) > 0
         }
@@ -63,13 +67,13 @@ package final class ChatAttachmentStore {
         try? FileManager.default.removeItem(at: rootDir.appendingPathComponent(owner.directoryName, isDirectory: true))
     }
 
-    private func store(data: Data, name: String, kind: AttachmentKind, owner: ChatAttachmentOwner) throws -> ChatAttachment {
+    private func store(data: Data, name: String, kind: AttachmentKind, owner: ChatAttachmentOwner) async throws -> ChatAttachment {
         let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let existing = try db.read { try ChatAttachmentQueries.existingPath($0, owner: owner, sha256: sha) }
+        let existing = try await db.read { try ChatAttachmentQueries.existingPath($0, owner: owner, sha256: sha) }
         let reused = existing.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
         let path = try reused ?? writeFile(data: data, ext: kind.fileExtension(fallbackName: name), owner: owner)
         do {
-            return try db.write { db in
+            return try await db.write { db in
                 let row = try ChatAttachmentQueries.insert(db, owner: owner, name: name, mime: kind.mime,
                                                            size: Int64(data.count), path: path, sha256: sha)
                 if case let .project(projectID) = owner {

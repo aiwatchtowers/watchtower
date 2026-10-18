@@ -45,6 +45,24 @@ final class InboxLearnedRulesViewModelTests: XCTestCase {
         XCTAssertTrue(vm.boosts.allSatisfy { $0.weight > 0 }, "All boosts should have positive weight")
     }
 
+    /// Board #670: a rule that cannot be stored is not swallowed: the add
+    /// answers false (the sheet stays open) and says why for the sheet.
+    @MainActor
+    func testAFailedAddSaysWhyForTheSheet() async throws {
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_rule BEFORE INSERT ON inbox_learned_rules
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+        let vm = InboxLearnedRulesViewModel(db: pool)
+        let stored = await vm.addRule(ruleType: "source_mute", scopeKey: "sender:U9", weight: -0.5)
+        XCTAssertFalse(stored)
+        XCTAssertNotNil(vm.addError)
+        XCTAssertNil(vm.errorMessage, "the list's own banner stays for removals")
+        XCTAssertTrue(vm.mutes.isEmpty)
+    }
+
     // MARK: - testAddManualRule
 
     @MainActor

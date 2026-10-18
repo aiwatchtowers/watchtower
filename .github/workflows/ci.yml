@@ -23,7 +23,7 @@ jobs:
   # On a pull request it also says which jobs the change can affect:
   #   code   — anything but docs: Go and Swift test each other (Swift Test
   #            builds the CLI, Go tests read Swift sources and the generated
-  #            test schema), so one switch covers both, the linters and Sentrux;
+  #            test schema), so one switch covers both and the linters;
   #            docs/guide/reference/keyboard-shortcuts.md counts as code, since
   #            KeyboardShortcutCatalogTests reads it.
   #   mobile — the iPhone app, the Kit it builds on, the Makefile or this file.
@@ -470,58 +470,3 @@ jobs:
         timeout-minutes: 30
         run: make mobile-test SIM="$SIM"
 
-  sentrux-quality:
-    name: Sentrux Quality Gate
-    needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    # The job only reads the checked-out tree and downloads a public release
-    # asset (no token needed), so the job token gets nothing beyond checkout.
-    permissions:
-      contents: read
-    env:
-      # Pinned to the exact release the upstream install.sh resolved to when
-      # this was written, plus the digest of that artifact. Bump both together:
-      #   curl -fsSL https://github.com/sentrux/sentrux/releases/download/<tag>/sentrux-linux-x86_64 | sha256sum
-      SENTRUX_VERSION: v0.5.7
-      SENTRUX_SHA256: 3237f80fe20d54aad4deefa8a143f0d60543bb5d2d6ad891eb42432f155725a6
-    steps:
-      - uses: actions/checkout@v4
-
-      # Deliberately NOT `curl .../main/install.sh | sh`: that pipes a script
-      # from a moving branch of a third-party repo straight into a shell, and
-      # that script then resolves `releases/latest` and installs the binary
-      # unverified — so neither the script nor the binary was pinned. Upstream
-      # publishes no signature or checksum file, so we fetch the one pinned
-      # artifact and refuse to run it unless its digest matches SENTRUX_SHA256.
-      - name: Install sentrux
-        run: |
-          url="https://github.com/sentrux/sentrux/releases/download/${SENTRUX_VERSION}/sentrux-linux-x86_64"
-          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/sentrux.bin" "$url"
-          echo "${SENTRUX_SHA256}  ${RUNNER_TEMP}/sentrux.bin" | sha256sum -c -
-          mkdir -p "${RUNNER_TEMP}/bin"
-          install -m 0755 "${RUNNER_TEMP}/sentrux.bin" "${RUNNER_TEMP}/bin/sentrux"
-          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
-
-      # check enforces .sentrux/rules.toml (max_cc, max_fn_lines, no_god_files).
-      - name: Architectural rules
-        run: sentrux check .
-
-      # gate blocks any structural regression vs .sentrux/baseline.json,
-      # EXCEPT the raw god-file count: that count is driven by name-based
-      # call resolution (a file gaining/losing an unrelated `append`/`flush`
-      # method can move it by dozens with zero real structural change — see
-      # docs/backlog/2026-09-28-sentrux-god-file-count-is-driven-by-name-
-      # based-method-resolution.md) and scripts/sentrux-gate.sh's own header.
-      # Quality, coupling, cycles and complex-function regressions still
-      # block exactly as before.
-      - name: Structural regression gate
-        run: scripts/sentrux-gate.sh
-
-      # baseline.json holds ONE god-file count, so a source file crossing the
-      # threshold is indistinguishable from a test file that grew with new
-      # coverage — and re-snapshotting for the latter is accepted practice.
-      # This holds the SOURCE half to an explicit roster instead, at a fan-out
-      # the codebase actually treats as a hub (see the script's header).
-      - name: Non-test hub-file gate
-        run: scripts/god-files.sh

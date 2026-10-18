@@ -218,6 +218,9 @@ func runAutomationsEnable(cmd *cobra.Command, args []string) error {
 	if err := refuseOwnerOnlyAutomationVerb("enable an automation"); err != nil {
 		return err
 	}
+	if err := confirmWithOwner("enable an automation", automationConfirmDetail(args[0])); err != nil {
+		return err
+	}
 	return setAutomationsEnabled(cmd, args[0], true)
 }
 
@@ -251,6 +254,9 @@ func setAutomationsEnabled(cmd *cobra.Command, arg string, on bool) error {
 // agent must not confirm the manifest it may have written.
 func runAutomationsConfirm(cmd *cobra.Command, args []string) error {
 	if err := refuseUnderAgent("confirm an automation"); err != nil {
+		return err
+	}
+	if err := confirmWithOwner("confirm an automation", automationConfirmDetail(args[0])); err != nil {
 		return err
 	}
 	id, err := parseAutomationID("automation id", args[0])
@@ -357,6 +363,9 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	if err := confirmSaveWithOwner(t, data); err != nil {
+		return err
+	}
 	a, err := writeAndIndexRecipe(cmd.Context(), cfg, database, t, data)
 	if err != nil {
 		return err
@@ -449,6 +458,9 @@ func indexedRecipeAt(ctx context.Context, cfg *config.Config, database *db.DB, s
 // ask #293): refused under an agent's markers before anything is read.
 func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 	if err := refuseOwnerOnlyAutomationVerb("delete an automation"); err != nil {
+		return err
+	}
+	if err := confirmWithOwner("delete an automation", automationConfirmDetail(args[0])); err != nil {
 		return err
 	}
 	id, err := parseAutomationID("automation id", args[0])
