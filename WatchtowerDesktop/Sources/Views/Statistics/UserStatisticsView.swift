@@ -23,9 +23,10 @@ struct UserStatisticsView: View {
         .onAppear {
             if let db = appState.databaseManager, viewModel == nil {
                 viewModel = UserStatsViewModel(dbManager: db)
-                viewModel?.startObserving()
             }
+            viewModel?.startObserving()
         }
+        .onDisappear { viewModel?.stopObserving() }
     }
 
     private func userContent(_ vm: UserStatsViewModel) -> some View {

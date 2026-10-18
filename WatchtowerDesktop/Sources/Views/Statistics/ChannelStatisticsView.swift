@@ -23,9 +23,10 @@ struct ChannelStatisticsView: View {
         .onAppear {
             if let db = appState.databaseManager, viewModel == nil {
                 viewModel = ChannelStatsViewModel(dbManager: db)
-                viewModel?.startObserving()
             }
+            viewModel?.startObserving()
         }
+        .onDisappear { viewModel?.stopObserving() }
     }
 
     private func channelContent(_ vm: ChannelStatsViewModel) -> some View {

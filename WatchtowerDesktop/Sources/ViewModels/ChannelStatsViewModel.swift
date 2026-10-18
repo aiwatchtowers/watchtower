@@ -31,7 +31,7 @@ final class ChannelStatsViewModel {
     private(set) var slackLinks: SlackLinkResolver?
 
     private let dbManager: DatabaseManager
-    private var observationTask: Task<Void, Never>?
+    private(set) var observationTask: Task<Void, Never>?
 
     init(dbManager: DatabaseManager) {
         self.dbManager = dbManager
@@ -39,16 +39,20 @@ final class ChannelStatsViewModel {
 
     func startObserving() {
         guard observationTask == nil else { return }
-        load()
+        // No load() here: the observation's first value is the load, so a
+        // write between a load and the registration cannot be missed.
+        isLoading = true
         let dbPool = dbManager.dbPool
         observationTask = Task { [weak self] in
             let observation = ValueObservation.tracking { db in
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM channels") ?? 0
             }
             do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled else { break }
-                    self?.load()
+                for try await _ in observation.values(in: dbPool) {
+                    // A released VM ends the loop, so its observer leaves the pool
+                    // at the next change even if no view called stopObserving().
+                    guard !Task.isCancelled, let self else { break }
+                    self.load()
                 }
             } catch {}
         }

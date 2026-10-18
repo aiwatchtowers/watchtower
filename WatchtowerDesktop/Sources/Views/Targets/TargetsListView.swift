@@ -65,6 +65,7 @@ struct TargetsListView: View {
                 appState.pendingTargetID = nil
             }
         }
+        .onDisappear { viewModel?.stopObserving() }
         .onChange(of: appState.isDBAvailable) { initViewModel() }
         .onChange(of: appState.pendingTargetID) { _, newID in
             if let id = newID {
@@ -140,11 +141,12 @@ struct TargetsListView: View {
         .background(Color.orange.opacity(0.12))
     }
 
+    /// Builds the VM once and (re)starts its observation: onDisappear stops it.
     private func initViewModel() {
-        guard viewModel == nil, let db = appState.databaseManager else { return }
-        let vm = TargetsViewModel(dbManager: db)
-        viewModel = vm
-        vm.startObserving()
+        if viewModel == nil, let db = appState.databaseManager {
+            viewModel = TargetsViewModel(dbManager: db)
+        }
+        viewModel?.startObserving()
     }
 
     // MARK: - List Panel
