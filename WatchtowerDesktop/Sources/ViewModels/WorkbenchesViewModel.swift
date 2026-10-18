@@ -444,6 +444,9 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitWatchedDirs: [GitRootKey: [String]] = [:]
     @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored var gitActivationObserver: NSObjectProtocol?
+    /// Set for good by `stop()` (the view model was replaced): no page
+    /// watching starts or arms again, even one in flight across an await.
+    @ObservationIgnored var isStopped = false
     /// Seams for tests: the refs watcher, the dirty-dot poll's wait, the
     /// notification center, the clipboard.
     @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor (GitRefsChange) -> Void)
