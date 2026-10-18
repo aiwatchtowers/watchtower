@@ -79,8 +79,8 @@ var msgs = map[string][2]string{
 		"Вынеси заметки по фичам из CLAUDE.md в документы, которые агент читает по необходимости; оставь только правила для каждой задачи."},
 
 	"c2.label": {"%s added", "добавил %s"},
-	"c2.finding": {"%s %s added %s to the context over %s, %d%% of its growth",
-		"%s %s добавил в контекст %s за %s — %d%% его роста"},
+	"c2.finding": {"%s added %s to the context over %s, %d%% of its growth: %s",
+		"%s добавил в контекст %s за %s — %d%% его роста: %s"},
 	"c2.action.bash": {"Trim the output: pipe it through head or grep, or add a PostToolUse hook that shortens it.",
 		"Сократи вывод: пропусти его через head или grep или добавь PostToolUse-хук, который его укорачивает."},
 	"c2.action.read": {"Read the file with offset/limit, only the range you need.",
@@ -88,8 +88,9 @@ var msgs = map[string][2]string{
 	"c2.action.other": {"Ask for a smaller result, or move the sweep into a subagent so its output stays out of the main context.",
 		"Запрашивай результат поменьше или вынеси перебор в субагента, чтобы его вывод не попадал в основной контекст."},
 
-	"c3.finding": {"%s was read %s in session %s; the repeats added %s",
-		"%s прочитан %s в сессии %s; повторы добавили %s"},
+	"c3.label": {"%s of repeats", "повторы на %s"},
+	"c3.finding": {"Re-reads of %s (%d+ times in one session) added %s; the most: %s, read %s in session %s",
+		"Повторные чтения %s (%d+ раз в одной сессии) добавили %s; больше всего — %s, прочитан %s в сессии %s"},
 	"c3.action": {"Read the file once and keep notes, or read only the range you need.",
 		"Прочитай файл один раз и запиши заметки или читай только нужный диапазон."},
 }
@@ -119,6 +120,7 @@ var nouns = map[string]struct {
 	"compaction": {[2]string{"compaction", "compactions"}, [3]string{"компакция", "компакции", "компакций"}},
 	"session.in": {[2]string{"session", "sessions"}, [3]string{"сессии", "сессиях", "сессиях"}},
 	"task.in":    {[2]string{"task", "tasks"}, [3]string{"задаче", "задачах", "задачах"}},
+	"file.of":    {[2]string{"file", "files"}, [3]string{"файла", "файлов", "файлов"}},
 	"token":      {[2]string{"token", "tokens"}, [3]string{"токен", "токена", "токенов"}},
 }
 

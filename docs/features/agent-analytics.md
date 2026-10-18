@@ -111,9 +111,9 @@ Every hint has an id, a finding, an action, evidence items (`session` uuid, `tar
 | H5 | one verb fails 3+ times in a row (`FailLoop`) in one agent lane; a success of that verb breaks the streak, other verbs do not | time of the failed runs |
 | H6 | cache read share under 50 % with over $5 spent, or 2+ compactions | the session's cost |
 | H7 | subagents on the top-priced models (all tied at the top output price) cost over 30 % of the period's spend | the same tokens re-priced at the next lower tier, standard speed (an estimate) |
-| C1 | `instructions` (CLAUDE.md and rules) are over 20 % (`InstructionsShareMax`) of the main agent's baseline; the finding also names the subagents' share when it is over 50 % (`SubInstructions`); fix `open_file` `CLAUDE.md` | the instructions' tokens x the main lanes measured |
-| C2 | one tool and target caused over 10 % (`SourceShareMin`) of the period's context growth and over 50,000 tokens (`SourceTokensMin`); the action depends on the tool (Bash: trim with `head`/`grep` or a PostToolUse hook; Read: offset/limit; else a smaller result or a subagent) | that source's tokens |
-| C3 | a file read 3+ times (`RepeatReadsMin`) in one session, one hint per `repeated_reads` row; fix `open_session` of the worst session | the tokens the reads after the first added |
+| C1 | `instructions` (CLAUDE.md and rules) are over 20 % (`InstructionsShareMax`) of the main agent's baseline; the finding also names the subagents' share when it is over 50 % (`SubInstructions`); fix `open_file` `CLAUDE.md` only when the folder has one (`disk.claude_md_bytes` > 0; instructions from the home or nested CLAUDE.md or rules get no fix) | the instructions' tokens x the main lanes measured |
+| C2 | tool + target pairs that each caused over 10 % (`SourceShareMin`) of the period's context growth and over 50,000 tokens (`SourceTokensMin`); one hint per tool, its targets listed in the finding; the action depends on the tool (Bash: trim with `head`/`grep` or a PostToolUse hook; Read: offset/limit; else a smaller result or a subagent) | the tokens of that tool's pairs |
+| C3 | files read 3+ times (`RepeatReadsMin`) in one session with no edit of them in between, whose repeats added over 20,000 tokens in all (`RepeatTokensMin`); one combined hint naming the worst file and session, evidence = the sessions by their repeat tokens; fix `open_session` of the worst session | the tokens the reads after the first added |
 
 ### The context block (`context`)
 
@@ -122,7 +122,7 @@ Built by `agentreport.Context` from the sessions with the v2 facts (every source
 - **Baseline** (`baseline` = the main agent's lanes, `subagent_baseline` = the sub-agents'): a lane's baseline is its first API call's context (`input + cache_read + cache_write_5m + cache_write_1h`); `tokens` is the median over the lanes with parts, `parts` the split by part name (`share` over every lane's part tokens, `tokens` = share x the median), largest first. A lane's tokens per byte is its baseline tokens / its parts' bytes; a lane with parts but no call, or a lane with no parts (for its growth), uses `defaultBytesPerToken` = 2.6 bytes a token.
 - **Growth** (`growth`: `source` a tool name, `model`, `owner` or `reminders`; `tokens`; `share`): per lane, between two calls the context grew by Δ = ctx(n) − ctx(n−1); a Δ ≤ 0 (a compaction, a clear) is skipped. The previous call's output minus its thinking explains up to Δ (`model`); the rest goes to the tool results that came in between, by `result_bytes` x the lane's tokens per byte — in proportion when they explain all of it, else each its own size — and what is left to `owner` when an owner turn came in between, else `reminders` (attachments of unknown size; a gap with no measured bytes).
 - **Top sources** (`top_sources`: `tool`, `target`, `tokens`, `calls`, `sessions`): the 10 tool + target pairs with the most growth.
-- **Repeated reads** (`repeated_reads`: `target`, `reads`, `session_uuid`, `tokens`): files `Read` 3+ times in one session, top 10 by tokens; `reads` and `session_uuid` are the worst session's, `tokens` what the repeats added in every such session.
+- **Repeated reads** (`repeated_reads`: `target`, `reads`, `session_uuid`, `tokens`): files `Read` 3+ times in one session with no `Edit`/`Write`/`MultiEdit`/`NotebookEdit` of the same target in between (a read after an edit checks it and starts a new run), top 10 by tokens; `reads` and `session_uuid` are the worst run's, `tokens` what the repeats added in every such run.
 - **Compactions** (`compactions`: `count`, `median_pre_tokens`, `median_post_tokens` over the measured ones, `sessions` with one).
 - **Disk** (`disk`: `claude_md_bytes`, `claude_md_lines` of `<folder>/CLAUDE.md`, `rules_bytes` of the regular files under `<folder>/.claude/rules`; zero when missing), read when the report runs. The `--session` drill-down computes the block for its hints but does not return it.
 
@@ -155,6 +155,7 @@ Built by `agentreport.Context` from the sessions with the v2 facts (every source
 
 - Tool time includes the time the owner takes to answer a permission prompt; the transcript does not separate it. The pane says so and H2 flags where it likely matters; the exact split needs hooks (#300).
 - Claude Code only; Codex rows are not analysed yet (the views must not break when they arrive). `~/.claude` only.
+- Paged reads of one file (`Read` with offset/limit) count as repeated reads: the parser does not store the read range, so C3 cannot tell them from re-reads (#709).
 - "Waiting for you" is capped at 30 min per wait; everything past it is `away` and outside active time. Parallelism is per session only: several sessions in one folder and machine load are not measured.
 
 ## Contracts

@@ -83,14 +83,22 @@ type SourceRow struct {
 	sessions []string // in the order the period lists them (C2's evidence)
 }
 
-// RepeatRow is a file read RepeatReadsMin+ times in a session: Reads and
-// Session are the worst session's, Tokens what the reads after the first
-// added in every such session.
+// RepeatRow is a file read RepeatReadsMin+ times in a session with no edit
+// of it in between: Reads and Session are the worst run's, Tokens what the
+// reads after the first added in every such run. Paged reads (offset/limit)
+// of one file count as repeats: the read range is not stored.
 type RepeatRow struct {
 	Target  string `json:"target"`
 	Reads   int    `json:"reads"`
 	Session string `json:"session_uuid"`
 	Tokens  int64  `json:"tokens"`
+
+	sessions []sessionTokens // the repeat tokens per session, in period order (C3's evidence)
+}
+
+type sessionTokens struct {
+	sid    string
+	tokens int64
 }
 
 // CompactionStats counts the compactions; the medians cover those whose
@@ -144,6 +152,7 @@ type srcAgg struct {
 	last string // the last session counted
 }
 
+// readAgg is one run of reads of a file: an edit of the file starts a new run.
 type readAgg struct {
 	target string
 	n      int
@@ -161,8 +170,8 @@ type contextAcc struct {
 	growth   map[string]int64
 	srcIdx   map[srcKey]int
 	srcs     []srcAgg
-	readIdx  map[string]int // this session's
-	reads    []readAgg      // this session's
+	readIdx  map[string]int // this session's current run per file
+	reads    []readAgg      // this session's runs
 	repeats  map[string]*RepeatRow
 	main     baseAgg
 	sub      baseAgg
@@ -288,6 +297,11 @@ func (a *contextAcc) session(sid string, evs []agentlogdb.AgentReportEvent) {
 			a.repeats[rd.target] = row
 		}
 		row.Tokens += rd.tokens
+		if n := len(row.sessions); n > 0 && row.sessions[n-1].sid == sid {
+			row.sessions[n-1].tokens += rd.tokens
+		} else {
+			row.sessions = append(row.sessions, sessionTokens{sid, rd.tokens})
+		}
 		if rd.n > row.Reads {
 			row.Reads, row.Session = rd.n, sid
 		}
@@ -306,7 +320,8 @@ func (a *contextAcc) perToken(sid, agent string, first int64) float64 {
 }
 
 // tool counts one tool call in its source and, for a Read, in the session's
-// reads of the file.
+// current run of reads of the file; an edit of the file ends that run (a
+// read after an edit is a check, not a repeat).
 func (a *contextAcc) tool(sid string, e agentlogdb.AgentReportEvent) gapItem {
 	k := srcKey{e.Name, e.Target}
 	i, ok := a.srcIdx[k]
@@ -326,6 +341,9 @@ func (a *contextAcc) tool(sid string, e agentlogdb.AgentReportEvent) gapItem {
 	if e.ResultBytes != nil {
 		it.bytes = max(*e.ResultBytes, 0)
 	}
+	if isFileEdit(e.Name) {
+		delete(a.readIdx, e.Target)
+	}
 	if e.Name == "Read" && e.Target != "" {
 		j, ok := a.readIdx[e.Target]
 		if !ok {
@@ -339,6 +357,14 @@ func (a *contextAcc) tool(sid string, e agentlogdb.AgentReportEvent) gapItem {
 		}
 	}
 	return it
+}
+
+func isFileEdit(tool string) bool {
+	switch tool {
+	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+		return true
+	}
+	return false
 }
 
 // attribute splits one growth delta of a lane (see Context).
@@ -400,7 +426,7 @@ func (a *contextAcc) attribute(ls *laneState, delta, prevOut int64) {
 // add counts one lane's baseline: its parts scaled to total tokens.
 func (b *baseAgg) add(sid string, lp laneParts, total int64) {
 	b.totals = append(b.totals, total)
-	if !slices.Contains(b.sessions, sid) {
+	if n := len(b.sessions); n == 0 || b.sessions[n-1] != sid { // a session's lanes come together
 		b.sessions = append(b.sessions, sid)
 	}
 	if lp.bytes <= 0 {

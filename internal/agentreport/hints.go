@@ -32,6 +32,7 @@ const (
 	SubInstructions      = 0.50            // C1: also names the subagents' instructions share above this
 	SourceShareMin       = 0.10            // C2: a source above this share of the growth ...
 	SourceTokensMin      = 50_000          // C2: ... and above this many tokens
+	RepeatTokensMin      = 20_000          // C3: the repeated reads added more than this many tokens
 	evidenceMax          = 5               // evidence items a hint lists; the rest are counted in MoreEvidence
 )
 
@@ -570,17 +571,19 @@ func instructionsHeavy(in HintInput) []Hint {
 	if sp, ok := partShare(in.Context.SubagentBaseline, "instructions"); ok && sp.Share > SubInstructions {
 		finding += l.f("c1.sub", int(math.Round(sp.Share*100)))
 	}
-	h := Hint{ID: "C1", EstimateTokens: est, Action: l.f("c1.action"), Finding: finding,
-		Fix: &Fix{Kind: FixOpenFile, Ref: "CLAUDE.md"}}
+	h := Hint{ID: "C1", EstimateTokens: est, Action: l.f("c1.action"), Finding: finding}
+	if in.Context.Disk.ClaudeMDBytes > 0 { // else the instructions come from elsewhere (home, nested, rules)
+		h.Fix = &Fix{Kind: FixOpenFile, Ref: "CLAUDE.md"}
+	}
 	for _, sid := range b.sessions {
 		h.Evidence = append(h.Evidence, sessionEv(sid, short(sid)))
 	}
 	return []Hint{h}
 }
 
-// C2: a tool and target that caused over SourceShareMin of the period's
-// context growth and over SourceTokensMin tokens; the action depends on the
-// tool.
+// C2: the tool and target pairs that each caused over SourceShareMin of
+// the period's context growth and over SourceTokensMin tokens, one hint per
+// tool with its targets in the finding; the action depends on the tool.
 func bigSources(in HintInput) []Hint {
 	var total int64
 	for _, g := range in.Context.Growth {
@@ -589,44 +592,84 @@ func bigSources(in HintInput) []Hint {
 	if total <= 0 {
 		return nil
 	}
+	type toolHint struct {
+		Hint
+		tool    string
+		calls   int
+		targets []string
+	}
 	l := in.Lang
-	var out []Hint
-	for _, s := range in.Context.TopSources {
-		share := float64(s.Tokens) / float64(total)
-		if share <= SourceShareMin || s.Tokens <= SourceTokensMin {
+	var hs []toolHint
+	for _, s := range in.Context.TopSources { // largest first
+		if float64(s.Tokens)/float64(total) <= SourceShareMin || s.Tokens <= SourceTokensMin {
 			continue
 		}
-		action := "c2.action.other"
-		switch s.Tool {
-		case "Bash":
-			action = "c2.action.bash"
-		case "Read":
-			action = "c2.action.read"
+		i := slices.IndexFunc(hs, func(h toolHint) bool { return h.tool == s.Tool })
+		if i < 0 {
+			action := "c2.action.other"
+			switch s.Tool {
+			case "Bash":
+				action = "c2.action.bash"
+			case "Read":
+				action = "c2.action.read"
+			}
+			i = len(hs)
+			hs = append(hs, toolHint{Hint: Hint{ID: "C2", Action: l.f(action)}, tool: s.Tool})
 		}
-		v := verb(agentlogdb.AgentReportEvent{Name: s.Tool, Target: s.Target})
-		h := Hint{ID: "C2", EstimateTokens: s.Tokens, Action: l.f(action),
-			Finding:  l.f("c2.finding", s.Tool, s.Target, l.tok(s.Tokens), l.count(s.Calls, "call"), int(math.Round(share*100))),
-			Evidence: []Evidence{{Kind: "command", Ref: v, Label: l.f("c2.label", l.tok(s.Tokens))}}}
+		h := &hs[i]
+		h.EstimateTokens += s.Tokens
+		h.calls += s.Calls
+		h.targets = append(h.targets, s.Target)
+		h.addEvidence(Evidence{Kind: "command", Ref: verb(agentlogdb.AgentReportEvent{Name: s.Tool, Target: s.Target}),
+			Label: l.f("c2.label", l.tok(s.Tokens))})
 		for _, sid := range s.sessions {
-			h.Evidence = append(h.Evidence, sessionEv(sid, short(sid)))
+			h.addEvidence(sessionEv(sid, short(sid)))
 		}
-		out = append(out, h)
+	}
+	out := make([]Hint, 0, len(hs))
+	for _, h := range hs {
+		share := int(math.Round(float64(h.EstimateTokens) * 100 / float64(total)))
+		h.Finding = l.f("c2.finding", h.tool, l.tok(h.EstimateTokens), l.count(h.calls, "call"), share, strings.Join(h.targets, ", "))
+		out = append(out, h.Hint)
 	}
 	return out
 }
 
-// C3: a file read RepeatReadsMin+ times in one session; the estimate is what
-// the reads after the first added.
-func repeatedReads(in HintInput) []Hint {
-	l := in.Lang
-	var out []Hint
-	for _, r := range in.Context.RepeatedReads {
-		out = append(out, Hint{ID: "C3", EstimateTokens: r.Tokens, Action: l.f("c3.action"),
-			Fix:      &Fix{Kind: FixOpenSession, Ref: r.Session},
-			Finding:  l.f("c3.finding", r.Target, l.count(r.Reads, "time"), short(r.Session), l.tok(r.Tokens)),
-			Evidence: []Evidence{sessionEv(r.Session, short(r.Session))}})
+// addEvidence appends e unless an item of its kind and ref is there.
+func (h *Hint) addEvidence(e Evidence) {
+	if !slices.ContainsFunc(h.Evidence, func(o Evidence) bool { return o.Kind == e.Kind && o.Ref == e.Ref }) {
+		h.Evidence = append(h.Evidence, e)
 	}
-	return out
+}
+
+// C3: files read RepeatReadsMin+ times in one session (no edit in between)
+// whose repeats added over RepeatTokensMin in all; one hint naming the worst
+// file, with its sessions ranked by their repeat tokens.
+func repeatedReads(in HintInput) []Hint {
+	rows := slices.DeleteFunc(slices.Clone(in.Context.RepeatedReads), func(r RepeatRow) bool { return r.Tokens <= 0 })
+	var total int64
+	bySession := map[string]int64{}
+	for _, r := range rows {
+		total += r.Tokens
+		for _, st := range r.sessions {
+			bySession[st.sid] += st.tokens
+		}
+	}
+	if total <= RepeatTokensMin {
+		return nil
+	}
+	l := in.Lang
+	worst := rows[0] // rows are ranked by tokens
+	h := Hint{ID: "C3", EstimateTokens: total, Action: l.f("c3.action"),
+		Fix: &Fix{Kind: FixOpenSession, Ref: worst.Session},
+		Finding: l.f("c3.finding", l.count(len(rows), "file.of"), RepeatReadsMin, l.tok(total),
+			worst.Target, l.count(worst.Reads, "time"), short(worst.Session))}
+	for _, sid := range slices.SortedFunc(maps.Keys(bySession), func(a, b string) int {
+		return cmp.Or(cmp.Compare(bySession[b], bySession[a]), cmp.Compare(a, b))
+	}) {
+		h.Evidence = append(h.Evidence, sessionEv(sid, l.f("c3.label", l.tok(bySession[sid]))))
+	}
+	return []Hint{h}
 }
 
 // fmtDur renders ms as "2h 10m", "7m 10s" or "45s".

@@ -157,7 +157,43 @@ func TestContext_RepeatedReads(t *testing.T) {
 	r := Context(factsOf(s), s, nil, "")
 
 	require.Len(t, r.RepeatedReads, 1)
-	assert.Equal(t, RepeatRow{Target: "a.go", Reads: 4, Session: "s2", Tokens: 2000 + 3000}, r.RepeatedReads[0])
+	row := r.RepeatedReads[0]
+	assert.Equal(t, RepeatRow{Target: "a.go", Reads: 4, Session: "s2", Tokens: 2000 + 3000},
+		RepeatRow{Target: row.Target, Reads: row.Reads, Session: row.Session, Tokens: row.Tokens})
+	assert.Equal(t, []sessionTokens{{"s1", 2000}, {"s2", 3000}}, row.sessions)
+}
+
+// A read after an edit of the file checks the edit: it starts a new run.
+func TestContext_ReadAfterEditIsNotARepeat(t *testing.T) {
+	s := evset{}
+	s.add("s1", 0, call("", 1000, 0, 0))
+	s.add("s1", sec, result("", "Read", "a.go", 2600))
+	s.add("s1", 2*sec, result("", "Edit", "a.go", 10))
+	s.add("s1", 3*sec, call("", 2000, 0, 0))
+	s.add("s1", 4*sec, result("", "Read", "a.go", 2600))
+	s.add("s1", 5*sec, call("", 3000, 0, 0))
+	s.add("s1", 6*sec, result("", "Read", "a.go", 2600))
+	s.add("s1", 7*sec, call("", 4000, 0, 0))
+	assert.Empty(t, Context(factsOf(s), s, nil, "").RepeatedReads, "two runs of 1 and 2 reads")
+
+	s.add("s1", 8*sec, result("", "Read", "a.go", 2600)) // the second run reaches 3
+	s.add("s1", 9*sec, call("", 5000, 0, 0))
+	r := Context(factsOf(s), s, nil, "")
+	require.Len(t, r.RepeatedReads, 1)
+	assert.Equal(t, 3, r.RepeatedReads[0].Reads)
+	assert.Equal(t, int64(2000), r.RepeatedReads[0].Tokens)
+}
+
+// An owner turn and a measured result that explains only part of the rest
+// share a gap: the result takes its size, the owner the remainder.
+func TestContext_OwnerTakesTheRemainder(t *testing.T) {
+	s := evset{}
+	s.add("s1", 0, call("", 1000, 0, 0))
+	s.add("s1", sec, result("", "Bash", "ls", 260)) // 100 tokens
+	s.add("s1", 2*sec, ownerTurn())
+	s.add("s1", 3*sec, call("", 2000, 0, 0))
+	r := Context(factsOf(s), s, nil, "")
+	assert.Equal(t, map[string]int64{"Bash": 100, "owner": 900}, growthOf(r))
 }
 
 func TestContext_OldRowsNotMeasured(t *testing.T) {
@@ -200,6 +236,7 @@ func TestContext_DiskSizes(t *testing.T) {
 
 func TestHintC1_InstructionsHeavy(t *testing.T) {
 	in := HintInput{Events: evset{"s1": nil, "s2": nil}}
+	in.Context.Disk.ClaudeMDBytes = 100
 	in.Context.Baseline = BaselineSplit{Tokens: 10000, lanes: 4, sessions: []string{"s2", "s1"},
 		Parts: []PartShare{{Part: "tools", Tokens: 7000, Share: 0.7}, {Part: "instructions", Tokens: 3000, Share: 0.3}}}
 	hs := hintsOf(Hints(in), "C1")
@@ -215,25 +252,33 @@ func TestHintC1_InstructionsHeavy(t *testing.T) {
 	require.Len(t, hs, 1)
 	assert.Contains(t, hs[0].Finding, "60% of a subagent's")
 
+	in.Context.Disk.ClaudeMDBytes = 0 // no CLAUDE.md in the folder: nothing to open
+	hs = hintsOf(Hints(in), "C1")
+	require.Len(t, hs, 1)
+	assert.Nil(t, hs[0].Fix)
+	assert.NotEmpty(t, hs[0].Action)
+
 	in.Context.Baseline.Parts[1].Share = 0.2
 	assert.Empty(t, hintsOf(Hints(in), "C1"), "at the line, not above it")
 }
 
 func TestHintC2_BigSource(t *testing.T) {
-	in := HintInput{Events: evset{"s1": nil}}
+	in := HintInput{Events: evset{"s1": nil, "s2": nil}}
 	in.Context.Growth = []GrowthRow{{Source: "Bash", Tokens: 200000}, {Source: "Read", Tokens: 150000}, {Source: "model", Tokens: 150000}}
 	in.Context.TopSources = []SourceRow{
 		{Tool: "Bash", Target: "go test", Tokens: 120000, Calls: 3, Sessions: 1, sessions: []string{"s1"}},
 		{Tool: "Read", Target: "big.go", Tokens: 60000, Calls: 2, Sessions: 1, sessions: []string{"s1"}},
+		{Tool: "Read", Target: "other.go", Tokens: 55000, Calls: 1, Sessions: 2, sessions: []string{"s1", "s2"}},
 		{Tool: "mcp__srv__q", Target: "x", Tokens: 51000, Calls: 1, Sessions: 1, sessions: []string{"s1"}},
 		{Tool: "Bash", Target: "ls", Tokens: 49000, Calls: 9, Sessions: 1, sessions: []string{"s1"}}, // under SourceTokensMin
 	}
 	hs := hintsOf(Hints(in), "C2")
-	require.Len(t, hs, 3)
-	assert.Equal(t, []int64{120000, 60000, 51000}, []int64{hs[0].EstimateTokens, hs[1].EstimateTokens, hs[2].EstimateTokens}, "ranked by tokens")
+	require.Len(t, hs, 3, "one hint per tool")
+	assert.Equal(t, []int64{120000, 115000, 51000}, []int64{hs[0].EstimateTokens, hs[1].EstimateTokens, hs[2].EstimateTokens}, "ranked by tokens")
 	assert.Equal(t, []string{"go test"}, evidence(hs[0], "command"))
-	assert.Equal(t, []string{"Read"}, evidence(hs[1], "command"))
-	assert.Equal(t, []string{"s1"}, evidence(hs[0], "session"))
+	assert.Equal(t, []string{"Read"}, evidence(hs[1], "command"), "one command item per verb")
+	assert.Equal(t, []string{"s1", "s2"}, evidence(hs[1], "session"))
+	assert.Equal(t, "Read added 115.0k tokens to the context over 3 calls, 23% of its growth: big.go, other.go", hs[1].Finding)
 	assert.Contains(t, hs[0].Action, "head")
 	assert.Contains(t, hs[1].Action, "offset/limit")
 	assert.Equal(t, msgs["c2.action.other"][English], hs[2].Action)
@@ -244,14 +289,21 @@ func TestHintC2_BigSource(t *testing.T) {
 }
 
 func TestHintC3_RepeatedReads(t *testing.T) {
-	in := HintInput{Events: evset{"s2": nil}}
-	in.Context.RepeatedReads = []RepeatRow{{Target: "a.go", Reads: 4, Session: "s2", Tokens: 3000}, {Target: "b.go", Reads: 3, Session: "s2"}}
+	in := HintInput{Events: evset{"s1": nil, "s2": nil}}
+	in.Context.RepeatedReads = []RepeatRow{
+		{Target: "a.go", Reads: 4, Session: "s2", Tokens: 30000, sessions: []sessionTokens{{"s1", 5000}, {"s2", 25000}}},
+		{Target: "b.go", Reads: 3, Session: "s1", Tokens: 8000, sessions: []sessionTokens{{"s1", 8000}}},
+		{Target: "c.go", Reads: 3, Session: "s1", sessions: []sessionTokens{{"s1", 0}}}, // not measured
+	}
 	hs := hintsOf(Hints(in), "C3")
-	require.Len(t, hs, 1, "a repeat with no measured tokens has no estimate")
-	assert.Equal(t, int64(3000), hs[0].EstimateTokens)
+	require.Len(t, hs, 1, "one combined hint")
+	assert.Equal(t, int64(38000), hs[0].EstimateTokens)
 	assert.Equal(t, &Fix{Kind: FixOpenSession, Ref: "s2"}, hs[0].Fix)
-	assert.Equal(t, []string{"s2"}, evidence(hs[0], "session"))
-	assert.Contains(t, hs[0].Finding, "a.go was read 4 times")
+	assert.Equal(t, []string{"s2", "s1"}, evidence(hs[0], "session"), "by repeat tokens: s2 25k, s1 13k")
+	assert.Equal(t, "Re-reads of 2 files (3+ times in one session) added 38.0k tokens; the most: a.go, read 4 times in session s2", hs[0].Finding)
+
+	in.Context.RepeatedReads = in.Context.RepeatedReads[1:] // 8k: under RepeatTokensMin
+	assert.Empty(t, hintsOf(Hints(in), "C3"))
 }
 
 // The context rules cite sessions and commands of the input only (the
@@ -286,8 +338,8 @@ func contextRulesInput() HintInput {
 	s.add("s1", 2*sec, call("", 160000, 0, 0))
 	ctx := int64(160000)
 	for i := range 3 {
-		ctx += 1000
-		s.add("s1", time.Duration(2*i+3)*sec, result("", "Read", "a.go", 2600))
+		ctx += 30000
+		s.add("s1", time.Duration(2*i+3)*sec, result("", "Read", "a.go", 78000))
 		s.add("s1", time.Duration(2*i+4)*sec, call("", ctx, 0, 0))
 	}
 	parts := []agentlogdb.AgentContextPart{part("s1", "", "instructions", 4000), part("s1", "", "tools", 6000)}
