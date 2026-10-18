@@ -243,9 +243,13 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		VALUES ('main', ?, 0, 0)`, fmt.Sprintf("%d:x:1", pid))
 	require.NoError(t, err)
 
-	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
-		Sessions: []AgentLogSession{agentSession("s-proj02", "2026-10-01T00:00:00Z", pid)},
-		Events:   []AgentLogEvent{apiCall("s-proj02", "m-proj02:r1", 3)}})
+	// watchtower.db's agent_log_* tables keep their foreign keys until they
+	// are dropped (agentlog.db took the writes, #849); seeded directly.
+	_, err = d.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, project_id, folder_path, home_cwd, source_path, started_at, ended_at)
+		VALUES ('s-proj02', 'claude', ?, '/w', '/w', '/x/a.jsonl', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, pid)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, src_path, src_offset)
+		VALUES ('s-proj02', 'm-proj02:r1', 'api_call', '2026-10-01T00:00:00Z', '/x/a.jsonl', 0)`)
 	require.NoError(t, err)
 
 	require.NoError(t, d.DeleteWorkbench(pid))

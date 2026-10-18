@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 )
 
@@ -52,26 +53,34 @@ func DefaultClaudeDir() string {
 // reprice old rows. Safe to run concurrently with itself (CAS + idempotent keys).
 // One file that fails to read or store is counted in FailedFiles and the scan
 // goes on; Scan returns an error only for setup and bookkeeping failures.
-func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
+// It only reads main (watchtower.db: workbenches, the worktree ledger,
+// terminal sessions) and writes al (agentlog.db).
+func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Options) (*Result, error) {
 	if o.ClaudeDir == "" {
 		o.ClaudeDir = DefaultClaudeDir()
 	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	wb, err := d.GetWorkbench(id)
+	wb, err := main.GetWorkbench(id)
 	if err != nil {
 		return nil, err
+	}
+	all, err := main.ListWorkbenches()
+	if err != nil {
+		return nil, err
+	}
+	folders := make([]string, 0, len(all))
+	live := make([]int64, 0, len(all))
+	for _, w := range all {
+		folders = append(folders, w.FolderPath)
+		live = append(live, w.ID)
 	}
 	res := &Result{UnknownRecords: map[string]int{}}
-	if res.Adopted, err = d.AdoptAgentLogSessions(id, wb.FolderPath); err != nil {
+	if res.Adopted, err = al.AdoptAgentLogSessions(id, wb.FolderPath, live); err != nil {
 		return nil, fmt.Errorf("adopting sessions: %w", err)
 	}
-	folders, err := allWorkbenchFolders(d)
-	if err != nil {
-		return nil, err
-	}
-	ledger, err := d.WorkbenchSessionWorktrees(ctx, id)
+	ledger, err := main.WorkbenchSessionWorktrees(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -92,24 +101,31 @@ func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
 	for _, tf := range files {
 		present[tf.Path] = true
 	}
-	sessions, err := scanOwnedFiles(ctx, d, files, wb, folders, roots, deadline, o.Now, res)
+	st := store{main: main, al: al}
+	sessions, err := scanOwnedFiles(ctx, st, files, wb, folders, roots, deadline, o.Now, res)
 	if err != nil {
 		return nil, err
 	}
 	res.Sessions = len(sessions)
-	if err := markMissingFiles(d, dirs, present, o.Now(), res); err != nil {
+	if err := markMissingFiles(al, dirs, present, o.Now(), res); err != nil {
 		return nil, err
 	}
-	if res.Repriced, err = d.RepriceAgentLogEvents(PriceVersion, Cost); err != nil {
+	if res.Repriced, err = al.RepriceAgentLogEvents(PriceVersion, Cost); err != nil {
 		return nil, fmt.Errorf("repricing: %w", err)
 	}
 	return res, nil
 }
 
+// store is the scan's two handles: main is only read, al is written.
+type store struct {
+	main *db.DB
+	al   *agentlogdb.DB
+}
+
 // scanOwnedFiles scans every listed transcript this workbench owns until the
 // deadline or ctx ends (then res.Incomplete) and returns the owned session
 // uuids.
-func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *db.Workbench, folders, roots []string,
+func scanOwnedFiles(ctx context.Context, st store, files []TranscriptFile, wb *db.Workbench, folders, roots []string,
 	deadline time.Time, now func() time.Time, res *Result) (map[string]bool, error) {
 	owned := map[string]bool{} // session uuid → owned by this workbench
 	sessions := map[string]bool{}
@@ -119,7 +135,7 @@ func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *d
 			res.Incomplete = true
 			break
 		}
-		mine, err := ownsSession(d, tf, owned, folders, wb.FolderPath, roots)
+		mine, err := ownsSession(st.al, tf, owned, folders, wb.FolderPath, roots)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +143,7 @@ func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *d
 			continue
 		}
 		sessions[tf.SessionUUID] = true
-		if err := scanFile(d, tf, wb, stop, res); err != nil {
+		if err := scanFile(st, tf, wb, stop, res); err != nil {
 			res.FailedFiles++
 			if res.FirstFailure == nil {
 				res.FirstFailure = err
@@ -137,22 +153,9 @@ func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *d
 	return sessions, nil
 }
 
-// allWorkbenchFolders lists every workbench's folder path.
-func allWorkbenchFolders(d *db.DB) ([]string, error) {
-	all, err := d.ListWorkbenches()
-	if err != nil {
-		return nil, err
-	}
-	folders := make([]string, 0, len(all))
-	for _, w := range all {
-		folders = append(folders, w.FolderPath)
-	}
-	return folders, nil
-}
-
 // markMissingFiles marks known ledger files under dirs that no longer exist
 // on disk (not in present) as missing.
-func markMissingFiles(d *db.DB, dirs []string, present map[string]bool, now time.Time, res *Result) error {
+func markMissingFiles(d *agentlogdb.DB, dirs []string, present map[string]bool, now time.Time, res *Result) error {
 	known, err := d.AgentLogFilesUnder(dirs)
 	if err != nil {
 		return err
@@ -196,7 +199,7 @@ func worktreeRoots(folder string, git []string, ledger map[string][]int64) []str
 
 // ownsSession decides once per session: a stored session keeps the folder it
 // was matched to; a new one is matched by the home cwd of its main file.
-func ownsSession(d *db.DB, tf TranscriptFile, owned map[string]bool, folders []string, folder string, roots []string) (bool, error) {
+func ownsSession(d *agentlogdb.DB, tf TranscriptFile, owned map[string]bool, folders []string, folder string, roots []string) (bool, error) {
 	if v, ok := owned[tf.SessionUUID]; ok {
 		return v, nil
 	}
@@ -225,8 +228,8 @@ var batchRows = 1000
 // scanFile reads tf from its stored offset in slices of batchRows, commits
 // each slice, and stops between slices when stop says the scan is out of
 // time (res.Incomplete; the next scan resumes from the last committed slice).
-func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, stop func() bool, res *Result) error {
-	stored, err := d.GetAgentLogFile(tf.Path)
+func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, res *Result) error {
+	stored, err := st.al.GetAgentLogFile(tf.Path)
 	if err != nil {
 		return err
 	}
@@ -256,7 +259,7 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 		if pr.PriorLoaded {
 			o.PriorSkills = nil // already in Skills; otherwise a later slice may still need them
 		}
-		next, applied, err := storeSlice(d, tf, wb, pr, start, expect)
+		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
 		if err != nil {
 			return err
 		}
@@ -276,20 +279,48 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 }
 
 // storeSlice writes one parsed slice of tf with the offset compare-and-set
-// and returns the new offset and whether the slice was applied.
-func storeSlice(d *db.DB, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
-	f := db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
+// and returns the new offset and whether the slice was applied. The
+// sessions' terminal session ids are read from watchtower.db first, outside
+// agentlog.db's write transaction.
+func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
+	f := agentlogdb.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
 		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
 	if pr.More {
 		// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
 		f.Size, f.MTime = f.ReadOffset, ""
 	}
-	applied, err := d.ApplyAgentLogBatch(db.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
-		ToolResults: pr.ToolResults, Sessions: ownedSessions(pr.Sessions, tf, wb)})
+	sessions := ownedSessions(pr.Sessions, tf, wb)
+	if err := resolveTerminalSessions(st.main, sessions); err != nil {
+		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
+	}
+	applied, err := st.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
+		ToolResults: pr.ToolResults, Sessions: sessions})
 	if err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
 	return f.ReadOffset, applied, nil
+}
+
+// resolveTerminalSessions sets each session's TerminalSessionID to the Claude
+// terminal session that recorded it in watchtower.db, if any.
+func resolveTerminalSessions(main *db.DB, sessions []agentlogdb.AgentLogSession) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	uuids := make([]string, len(sessions))
+	for i, s := range sessions {
+		uuids[i] = s.SessionUUID
+	}
+	ids, err := main.ClaudeTerminalSessionIDs(uuids)
+	if err != nil {
+		return err
+	}
+	for i := range sessions {
+		if id, ok := ids[sessions[i].SessionUUID]; ok {
+			sessions[i].TerminalSessionID = &id
+		}
+	}
+	return nil
 }
 
 // addSlice counts one stored slice's records into the scan result.
@@ -307,7 +338,7 @@ func (res *Result) addSlice(pr *ParseResult, applied bool) {
 // when the file only grew under the same parser, else 0; expect is the
 // offset the ledger must still hold (-1 for a new file) and unchanged says
 // the file needs no read at all.
-func resumePoint(stored *db.AgentLogFile, tf TranscriptFile) (start, expect int64, unchanged bool) {
+func resumePoint(stored *agentlogdb.AgentLogFile, tf TranscriptFile) (start, expect int64, unchanged bool) {
 	if stored == nil {
 		return 0, -1, false
 	}
@@ -322,9 +353,9 @@ func resumePoint(stored *db.AgentLogFile, tf TranscriptFile) (start, expect int6
 
 // ownedSessions stamps the parsed sessions with the workbench's project id
 // and folder (and a subagent's parent transcript path).
-func ownedSessions(parsed map[string]*db.AgentLogSession, tf TranscriptFile, wb *db.Workbench) []db.AgentLogSession {
+func ownedSessions(parsed map[string]*agentlogdb.AgentLogSession, tf TranscriptFile, wb *db.Workbench) []agentlogdb.AgentLogSession {
 	pid := wb.ID
-	var out []db.AgentLogSession
+	var out []agentlogdb.AgentLogSession
 	for _, s := range parsed {
 		s.ProjectID, s.FolderPath = &pid, wb.FolderPath
 		if tf.Subagent {

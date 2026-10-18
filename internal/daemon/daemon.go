@@ -15,6 +15,7 @@ import (
 
 	gosync "sync"
 	"sync/atomic"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/automations"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
@@ -124,6 +125,7 @@ type Daemon struct {
 	planUsageDisable    func() error
 	pidPath             string
 	db                  *db.DB
+	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
 	digestPipe          *digest.Pipeline
 	tracksPipe          *tracks.Pipeline
 	peoplePipe          *guide.Pipeline
@@ -213,6 +215,12 @@ func (d *Daemon) SetLogger(l *log.Logger) {
 // SetDB sets the database for post-pipeline operations like auto-marking read status.
 func (d *Daemon) SetDB(database *db.DB) {
 	d.db = database
+}
+
+// SetAgentLogDB sets the agentlog.db handle the agent analytics phase
+// writes to.
+func (d *Daemon) SetAgentLogDB(al *agentlogdb.DB) {
+	d.agentLog = al
 }
 
 // SetDigestPipeline sets the digest pipeline for post-sync digest generation.

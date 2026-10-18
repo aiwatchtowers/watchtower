@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"encoding/json"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -865,6 +866,14 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetOrchestrators(orchestrators)
 	d.SetLogger(logger)
 	d.SetDB(database)
+	// Agent analytics write to their own file (#849). A failed open leaves
+	// the analytics phase off for this run; everything else syncs.
+	if al, err := agentlogdb.Open(agentlogdb.PathFor(cfg.DBPath())); err != nil {
+		logger.Printf("agent analytics: %v; analytics are skipped until the next start", err)
+	} else {
+		defer al.Close()
+		d.SetAgentLogDB(al)
+	}
 	d.SetPIDPath(pidFilePath(cfg))
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 )
 
@@ -63,7 +64,7 @@ type HintInput struct {
 	Sessions map[string]SessionView
 	Tasks    []TaskRow
 	Targets  []db.AgentReportTarget
-	Events   map[string][]db.AgentReportEvent
+	Events   map[string][]agentlogdb.AgentReportEvent
 	Now      time.Time
 }
 
@@ -97,7 +98,7 @@ func Hints(in HintInput) []Hint {
 	return out
 }
 
-func durMS(e db.AgentReportEvent) int64 {
+func durMS(e agentlogdb.AgentReportEvent) int64 {
 	if e.DurationMS == nil {
 		return 0
 	}
@@ -116,7 +117,7 @@ func repeatedHeavy(in HintInput, sessions []string) []Hint {
 	runs := map[runKey][]timedEvent{}
 	inSessions := map[runKey]map[string]bool{}
 	for _, sid := range sessions {
-		evs := sortEvents(in.Events[sid], func(e db.AgentReportEvent) bool { return e.Kind == "tool" })
+		evs := sortEvents(in.Events[sid], func(e agentlogdb.AgentReportEvent) bool { return e.Kind == "tool" })
 		ids := linkedLeaves(evs, wins)
 		for _, e := range evs {
 			if ToolClass(e.Name, e.Target) != ClassBuildTest {
@@ -224,7 +225,7 @@ func repeatedHint(k runKey, rs []timedEvent, inSessions map[string]bool, text ma
 	return h, true
 }
 
-func isCheap(e db.AgentReportEvent) bool {
+func isCheap(e agentlogdb.AgentReportEvent) bool {
 	if e.Name == "Bash" {
 		switch e.Target {
 		case "git status", "git log", "git diff":
@@ -373,7 +374,7 @@ func failingLoops(in HintInput, sessions []string) []Hint {
 			}
 			delete(streak, l)
 		}
-		for _, e := range sortEvents(in.Events[sid], func(e db.AgentReportEvent) bool { return e.Kind == "tool" }) {
+		for _, e := range sortEvents(in.Events[sid], func(e agentlogdb.AgentReportEvent) bool { return e.Kind == "tool" }) {
 			l := lane{e.AgentID, verb(e.AgentReportEvent)}
 			if e.Outcome == "error" {
 				streak[l] = append(streak[l], durMS(e.AgentReportEvent))

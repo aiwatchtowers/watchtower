@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/agentreport"
 	"watchtower/internal/db"
 )
@@ -49,17 +50,38 @@ func init() {
 	rootCmd.AddCommand(agentsCmd)
 }
 
+// openAgentsDBs opens watchtower.db and the agentlog.db beside it. An
+// agentlog.db that fails to open is the command's error: analytics never
+// fall back to watchtower.db.
+func openAgentsDBs() (*db.DB, *agentlogdb.DB, error) {
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return nil, nil, err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	al, err := agentlogdb.Open(agentlogdb.PathFor(cfg.DBPath()))
+	if err != nil {
+		database.Close()
+		return nil, nil, err
+	}
+	return database, al, nil
+}
+
 func runAgentsEnable(cmd *cobra.Command, _ []string) error {
-	database, err := openDBFromConfig()
+	database, al, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	defer al.Close()
 	// FEAT-03 exception (ask #153): enabling loads history at once.
 	if err := database.SetWorkbenchAgentAnalytics(flagAgentsWorkbench, true); err != nil {
 		return err
 	}
-	return printAgentsScan(cmd, database)
+	return printAgentsScan(cmd, database, al)
 }
 
 func runAgentsDisable(cmd *cobra.Command, _ []string) error {
@@ -76,11 +98,12 @@ func runAgentsDisable(cmd *cobra.Command, _ []string) error {
 }
 
 func runAgentsScan(cmd *cobra.Command, _ []string) error {
-	database, err := openDBFromConfig()
+	database, al, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	defer al.Close()
 	on, err := database.WorkbenchAgentAnalytics(flagAgentsWorkbench)
 	if err != nil {
 		return err
@@ -88,11 +111,11 @@ func runAgentsScan(cmd *cobra.Command, _ []string) error {
 	if !on {
 		return errors.New("agent analytics is off for this workbench (watchtower agents enable --workbench N)")
 	}
-	return printAgentsScan(cmd, database)
+	return printAgentsScan(cmd, database, al)
 }
 
-func printAgentsScan(cmd *cobra.Command, database *db.DB) error {
-	res, err := agentlog.Scan(cmd.Context(), database, flagAgentsWorkbench, agentlog.Options{ClaudeDir: agentsClaudeDir()})
+func printAgentsScan(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB) error {
+	res, err := agentlog.Scan(cmd.Context(), database, al, flagAgentsWorkbench, agentlog.Options{ClaudeDir: agentsClaudeDir()})
 	if err != nil {
 		return err
 	}
@@ -114,20 +137,21 @@ func printAgentsScan(cmd *cobra.Command, database *db.DB) error {
 type agentsStatsJSON struct {
 	WorkbenchID int64 `json:"workbench_id"`
 	Enabled     bool  `json:"enabled"`
-	*db.AgentLogStats
+	*agentlogdb.AgentLogStats
 }
 
 func runAgentsStats(cmd *cobra.Command, _ []string) error {
-	database, err := openDBFromConfig()
+	database, al, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	defer al.Close()
 	on, err := database.WorkbenchAgentAnalytics(flagAgentsWorkbench)
 	if err != nil {
 		return err
 	}
-	st, err := database.AgentLogStats(flagAgentsWorkbench)
+	st, err := al.AgentLogStats(flagAgentsWorkbench)
 	if err != nil {
 		return err
 	}
@@ -154,14 +178,15 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	case flagAgentsDays > 0:
 		since = now.AddDate(0, 0, -flagAgentsDays)
 	}
-	database, err := openDBFromConfig()
+	database, al, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	defer al.Close()
 	out := cmd.OutOrStdout()
 	if flagAgentsSession != "" {
-		det, err := agentreport.BuildSession(database, flagAgentsWorkbench, flagAgentsSession, now)
+		det, err := agentreport.BuildSession(database, al, flagAgentsWorkbench, flagAgentsSession, now)
 		if err != nil {
 			return err
 		}
@@ -173,7 +198,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 		printReportHints(out, det.Hints)
 		return nil
 	}
-	ov, err := agentreport.BuildOverview(database, flagAgentsWorkbench, since, now)
+	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now)
 	if err != nil {
 		return err
 	}

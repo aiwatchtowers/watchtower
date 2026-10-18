@@ -1,11 +1,40 @@
-package db
+package agentlogdb
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testWorkbenchID stands for a workbench id; agentlog.db has no projects table.
+const testWorkbenchID int64 = 1
+
+func openTestDB(t *testing.T) *DB {
+	t.Helper()
+	d, err := Open(filepath.Join(t.TempDir(), "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	return d
+}
+
+func explainDetails(t *testing.T, d *DB, query string, args ...any) string {
+	t.Helper()
+	rows, err := d.Query("EXPLAIN QUERY PLAN "+query, args...)
+	require.NoError(t, err)
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		require.NoError(t, rows.Scan(&id, &parent, &notused, &detail))
+		lines = append(lines, detail)
+	}
+	require.NoError(t, rows.Err())
+	return strings.Join(lines, "\n")
+}
 
 func agentSession(uuid, started string, pid int64) AgentLogSession {
 	return AgentLogSession{SessionUUID: uuid, Agent: "claude", ProjectID: &pid, FolderPath: "/w",
@@ -19,7 +48,7 @@ func apiCall(session, key string, out int64) AgentLogEvent {
 
 func TestApplyAgentLogBatch_APICallCountsOnceLaterWins(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	b := AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 100}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)},
 		Events:   []AgentLogEvent{apiCall("s1", "m1:r1", 5), apiCall("s1", "m1:r1", 40)}}
@@ -34,7 +63,7 @@ func TestApplyAgentLogBatch_APICallCountsOnceLaterWins(t *testing.T) {
 
 func TestApplyAgentLogBatch_CompareAndSetOffset(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	b := AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 100}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}}
 	ok, err := d.ApplyAgentLogBatch(b)
@@ -54,7 +83,7 @@ func TestApplyAgentLogBatch_CompareAndSetOffset(t *testing.T) {
 
 func TestApplyAgentLogBatch_ReplayOwnedByEarliestSession(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	// The fork (later session) is scanned first, then the original.
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/fork.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("fork", "2026-10-02T00:00:00Z", pid)},
@@ -71,7 +100,7 @@ func TestApplyAgentLogBatch_ReplayOwnedByEarliestSession(t *testing.T) {
 
 func TestApplyAgentLogBatch_SubagentReplaySkipped(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/p.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("p", "2026-10-01T00:00:00Z", pid)},
 		Events:   []AgentLogEvent{func() AgentLogEvent { e := apiCall("p", "m1:r1", 7); e.MessageID = "m1"; return e }()}})
@@ -99,7 +128,7 @@ func TestApplyAgentLogBatch_ReplayCheckSeeksKey(t *testing.T) {
 
 func TestApplyAgentLogBatch_ToolResultPairsLater(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	use := AgentLogEvent{SessionUUID: "s1", Key: "tool:t1", Kind: "tool", TS: "2026-10-01T10:00:00Z", Name: "Bash", Target: "go test", Outcome: "pending", SrcPath: "/x/a.jsonl"}
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: []AgentLogEvent{use}})
@@ -115,25 +144,47 @@ func TestApplyAgentLogBatch_ToolResultPairsLater(t *testing.T) {
 	assert.Equal(t, int64(2000), dur)
 }
 
+// PROJ-02 exception (spec D3): a deleted workbench's sessions keep their
+// stale project_id (no foreign key reaches watchtower.db) and a workbench
+// later bound to the same folder adopts them; another folder's sessions and
+// a live workbench's sessions stay where they are.
 func TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	deleted, other, live := int64(7), int64(8), int64(10)
+	otherFolder := agentSession("s2", "2026-10-01T00:00:00Z", other)
+	otherFolder.FolderPath = "/elsewhere"
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
-		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T00:00:00Z", pid)}, Events: []AgentLogEvent{apiCall("s1", "m1:r1", 3)}})
+		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T00:00:00Z", deleted), otherFolder,
+			agentSession("s3", "2026-10-01T00:00:00Z", live)},
+		Events: []AgentLogEvent{apiCall("s1", "m1:r1", 3)}})
 	require.NoError(t, err)
-	require.NoError(t, d.DeleteWorkbench(pid))
-	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_sessions WHERE project_id IS NULL`).Scan(&n))
-	assert.Equal(t, 1, n)
-	pid2 := newTestWorkbench(t, d)
-	adopted, err := d.AdoptAgentLogSessions(pid2, "/w")
+
+	adopted, err := d.AdoptAgentLogSessions(9, "/w", []int64{8, 9, 10})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), adopted)
+	owner := func(uuid string) int64 {
+		t.Helper()
+		var pid int64
+		require.NoError(t, d.QueryRow(`SELECT project_id FROM agent_log_sessions WHERE session_uuid = ?`, uuid).Scan(&pid))
+		return pid
+	}
+	assert.Equal(t, int64(9), owner("s1"), "7 is no longer live: adopted")
+	assert.Equal(t, other, owner("s2"), "another folder's session stays")
+	assert.Equal(t, live, owner("s3"), "a live workbench's session is not stolen")
+	var events int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE session_uuid = 's1'`).Scan(&events))
+	assert.Equal(t, 1, events, "the events survive with their session")
+
+	_, err = d.Exec(`UPDATE agent_log_sessions SET project_id = NULL WHERE session_uuid = 's1'`)
+	require.NoError(t, err)
+	adopted, err = d.AdoptAgentLogSessions(9, "/w", []int64{9, 10})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), adopted, "a NULL project_id is adopted too")
 }
 
 func TestAgentLogStats_OwnerTurnsSkipNotifications(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	var evs []AgentLogEvent
 	for i, trig := range []string{"owner", "notification", "hook"} {
 		evs = append(evs, AgentLogEvent{SessionUUID: "s1", Key: "owner_turn:" + trig, Kind: "owner_turn", Trigger: trig,
@@ -149,7 +200,7 @@ func TestAgentLogStats_OwnerTurnsSkipNotifications(t *testing.T) {
 
 func TestApplyAgentLogBatch_ToolResultSetsSpawnedAgent(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	use := AgentLogEvent{SessionUUID: "s1", Key: "tool:t1", Kind: "tool", TS: "2026-10-01T10:00:00Z", Name: "Agent", Outcome: "pending", SrcPath: "/x/a.jsonl"}
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: []AgentLogEvent{use}})
@@ -166,7 +217,7 @@ func TestApplyAgentLogBatch_ToolResultSetsSpawnedAgent(t *testing.T) {
 
 func TestApplyAgentLogBatch_AsyncResultWithoutAgentIDSetsBackground(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	use := AgentLogEvent{SessionUUID: "s1", Key: "tool:t1", Kind: "tool", TS: "2026-10-01T10:00:00Z", Name: "Agent", Outcome: "pending", SrcPath: "/x/a.jsonl"}
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: []AgentLogEvent{use}})
@@ -185,7 +236,7 @@ func TestApplyAgentLogBatch_AsyncResultWithoutAgentIDSetsBackground(t *testing.T
 // session's stored start, and a blank start is filled by a later slice.
 func TestApplyAgentLogBatch_EmptyStartNeverOverwritesSessionStart(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	apply := func(off, expect int64, s AgentLogSession) {
 		t.Helper()
 		ok, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: off},
@@ -218,7 +269,7 @@ func TestRepriceAgentLogEvents_SlicesAndPartialFailure(t *testing.T) {
 	agentLogRepriceSlice = 2
 	t.Cleanup(func() { agentLogRepriceSlice = old })
 	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
+	pid := testWorkbenchID
 	var evs []AgentLogEvent
 	for i := range 5 {
 		evs = append(evs, apiCall("s1", "m"+string(rune('a'+i))+":r", 3))

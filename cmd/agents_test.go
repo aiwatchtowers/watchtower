@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentlogdb"
 )
 
 func runAgentsCmd(t *testing.T, args ...string) string {
@@ -148,4 +149,18 @@ func TestAgentsDisable_KeepsRows(t *testing.T) {
 	out := runAgentsCmd(t, "stats", "--workbench", id, "--json")
 	assert.Contains(t, out, `"sessions": 1`)
 	assert.Contains(t, out, `"enabled": false`)
+}
+
+// Spec "Error handling": an agentlog.db that cannot be opened is report's
+// error; it never answers from watchtower.db.
+func TestAgentsReport_AgentlogOpenFails(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("app", t.TempDir())
+	require.NoError(t, err)
+	var mainPath string
+	require.NoError(t, database.QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&mainPath))
+	require.NoError(t, os.Mkdir(agentlogdb.PathFor(mainPath), 0o700)) // a directory cannot open as a database
+	rootCmd.SetArgs([]string{"agents", "report", "--workbench", strconv.FormatInt(wb, 10), "--json"})
+	t.Cleanup(func() { flagAgentsWorkbench, flagAgentsJSON = 0, false; rootCmd.SetArgs(nil) })
+	assert.ErrorContains(t, rootCmd.Execute(), "agentlog.db")
 }

@@ -15,9 +15,11 @@ const agentAnalyticsBudget = 30 * time.Second
 // agentAnalyticsClaudeDir is a test seam for the Claude config directory.
 var agentAnalyticsClaudeDir = agentlog.DefaultClaudeDir
 
-// phaseAgentAnalytics keeps agent_log_* current for every workbench with
+// phaseAgentAnalytics keeps agentlog.db current for every workbench with
 // agent_analytics = 1. Inert (no pipeline_runs row) when none is enabled —
-// gated by the workbench column, not a config key (FEAT-01 note).
+// gated by the workbench column, not a config key (FEAT-01 note) — and when
+// agentlog.db did not open (logged here every cycle; never a fallback to
+// watchtower.db).
 func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -30,12 +32,16 @@ func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 	if len(ids) == 0 {
 		return
 	}
+	if d.agentLog == nil {
+		d.logger.Printf("agent analytics: agentlog.db is not open; skipped (%d workbench(es) enabled)", len(ids))
+		return
+	}
 	d.trackedPipelineRun("agent-analytics", func() pipelineRunStats {
 		var items int
 		var errs []error
 		per := agentAnalyticsBudget / time.Duration(len(ids))
 		for _, id := range ids {
-			res, err := agentlog.Scan(ctx, d.db, id, agentlog.Options{ClaudeDir: agentAnalyticsClaudeDir(), Budget: per})
+			res, err := agentlog.Scan(ctx, d.db, d.agentLog, id, agentlog.Options{ClaudeDir: agentAnalyticsClaudeDir(), Budget: per})
 			if err != nil {
 				if isBenignShutdownErr(ctx, err) {
 					break

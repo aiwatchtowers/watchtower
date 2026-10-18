@@ -10,13 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 )
 
 // evset builds the events of several sessions.
-type evset map[string][]db.AgentReportEvent
+type evset map[string][]agentlogdb.AgentReportEvent
 
-func (s evset) add(sid string, at time.Duration, e db.AgentReportEvent) {
+func (s evset) add(sid string, at time.Duration, e agentlogdb.AgentReportEvent) {
 	e.SessionUUID = sid
 	e.TS = t0.Add(at).Format(tsLayout)
 	e.SrcPath = "/tmp/x/" + sid + ".jsonl"
@@ -25,8 +26,8 @@ func (s evset) add(sid string, at time.Duration, e db.AgentReportEvent) {
 }
 
 // tl is a tool call; dur < 0 leaves it pending.
-func tl(name, target string, dur time.Duration, outcome string) db.AgentReportEvent {
-	e := db.AgentReportEvent{Kind: "tool", Name: name, Target: target, Outcome: outcome}
+func tl(name, target string, dur time.Duration, outcome string) agentlogdb.AgentReportEvent {
+	e := agentlogdb.AgentReportEvent{Kind: "tool", Name: name, Target: target, Outcome: outcome}
 	if dur >= 0 {
 		v := dur.Milliseconds()
 		e.DurationMS = &v
@@ -286,7 +287,7 @@ func TestHints_CiteEvidence(t *testing.T) {
 	}
 	assert.Equal(t, map[string]bool{"H1": true, "H2": true, "H3": true, "H4": true, "H5": true, "H6": true, "H7": true}, ids)
 
-	var all []db.AgentReportEvent
+	var all []agentlogdb.AgentReportEvent
 	for _, evs := range s {
 		all = append(all, evs...)
 	}
