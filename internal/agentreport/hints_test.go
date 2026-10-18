@@ -258,28 +258,7 @@ func TestHintH7_TopModelOnSubagents(t *testing.T) {
 // AGENTLOG-07 guard: every hint cites at least one evidence item that resolves
 // to a session, target or command of the input; the list is ranked.
 func TestHints_CiteEvidence(t *testing.T) {
-	s := evset{}
-	s.add("s1", 0, tl("mcp__watchtower-workbench__update_target", "#7", sec, "ok"))
-	for i := range 4 {
-		s.add("s1", time.Duration(i+1)*5*mn, tl("Bash", "go test", 3*mn, "error"))
-	}
-	s.add("s1", 30*mn, tl("mcp__watchtower-workbench__update_target", "#7", sec, "ok"))
-	s.add("s1", 31*mn, tl("Read", "/tmp/x/a", 9*sec, "ok"))
-	s.add("s1", 32*mn, tl("Bash", "git log", 9*sec, "ok"))
-	for i := range 3 {
-		id := string(rune('a' + i))
-		s.add("s2", time.Duration(i)*10*mn, apiEv(id, agentlog.ModelTiers()[0], 30, 1e6, 0, 0, 0))
-		s.add("s2", time.Duration(i)*10*mn+5*mn, apiEv(id, agentlog.ModelTiers()[0], 0, 0, 0, 0, 0))
-	}
-	s.add("s2", 40*mn, apiEv("", "claude-opus-5-5", 10, 0, 0, 0, 0))
-	in := eventsInput(s)
-	in.Targets = []db.AgentReportTarget{target(7, nil, sc("in_progress", 2*mn), sc("done", 29*mn))}
-	in.Tasks = []TaskRow{{TargetID: 7, Text: "t", Sessions: []string{"s1"},
-		Time: TimeSplit{OwnerMS: ms(30 * mn), ActiveMS: ms(60 * mn)}}}
-	in.Sessions = map[string]SessionView{
-		"s1": {UUID: "s1", Time: TimeSplit{OwnerMS: ms(30 * mn), ActiveMS: ms(60 * mn)}, Compactions: 3, CostUSD: 2},
-		"s2": {UUID: "s2", Subagents: Subagents{Foreground: 3, AvgParallel: 1}, CostUSD: 100, CacheReadShare: 0.1},
-	}
+	in, s := allRulesInput()
 	hs := Hints(in)
 	ids := map[string]bool{}
 	for _, h := range hs {
@@ -320,4 +299,31 @@ func TestHints_CiteEvidence(t *testing.T) {
 		assert.True(t, a.EstimateMS > b.EstimateMS || a.EstimateMS == b.EstimateMS && a.EstimateUSD >= b.EstimateUSD,
 			"not ranked: %s before %s", a.ID, b.ID)
 	}
+}
+
+// allRulesInput fires every rule H1–H7 once.
+func allRulesInput() (HintInput, evset) {
+	s := evset{}
+	s.add("s1", 0, tl("mcp__watchtower-workbench__update_target", "#7", sec, "ok"))
+	for i := range 4 {
+		s.add("s1", time.Duration(i+1)*5*mn, tl("Bash", "go test", 3*mn, "error"))
+	}
+	s.add("s1", 30*mn, tl("mcp__watchtower-workbench__update_target", "#7", sec, "ok"))
+	s.add("s1", 31*mn, tl("Read", "/tmp/x/a", 9*sec, "ok"))
+	s.add("s1", 32*mn, tl("Bash", "git log", 9*sec, "ok"))
+	for i := range 3 {
+		id := string(rune('a' + i))
+		s.add("s2", time.Duration(i)*10*mn, apiEv(id, agentlog.ModelTiers()[0], 30, 1e6, 0, 0, 0))
+		s.add("s2", time.Duration(i)*10*mn+5*mn, apiEv(id, agentlog.ModelTiers()[0], 0, 0, 0, 0, 0))
+	}
+	s.add("s2", 40*mn, apiEv("", "claude-opus-5-5", 10, 0, 0, 0, 0))
+	in := eventsInput(s)
+	in.Targets = []db.AgentReportTarget{target(7, nil, sc("in_progress", 2*mn), sc("done", 29*mn))}
+	in.Tasks = []TaskRow{{TargetID: 7, Text: "t", Sessions: []string{"s1"},
+		Time: TimeSplit{OwnerMS: ms(30 * mn), ActiveMS: ms(60 * mn)}}}
+	in.Sessions = map[string]SessionView{
+		"s1": {UUID: "s1", Time: TimeSplit{OwnerMS: ms(30 * mn), ActiveMS: ms(60 * mn)}, Compactions: 3, CostUSD: 2},
+		"s2": {UUID: "s2", Subagents: Subagents{Foreground: 3, AvgParallel: 1}, CostUSD: 100, CacheReadShare: 0.1},
+	}
+	return in, s
 }

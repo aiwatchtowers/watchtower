@@ -260,6 +260,11 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	case flagAgentsDays > 0:
 		since = now.AddDate(0, 0, -flagAgentsDays)
 	}
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return err
+	}
+	lang := agentreport.LangOf(cfg.Digest.Language)
 	database, al, _, err := openAgentsDBs()
 	if err != nil {
 		return err
@@ -268,7 +273,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	defer al.Close()
 	out := cmd.OutOrStdout()
 	if flagAgentsSession != "" {
-		det, err := agentreport.BuildSession(database, al, flagAgentsWorkbench, flagAgentsSession, now)
+		det, err := agentreport.BuildSession(database, al, flagAgentsWorkbench, flagAgentsSession, now, lang)
 		if err != nil {
 			return err
 		}
@@ -280,7 +285,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 		printReportHints(out, det.Hints)
 		return nil
 	}
-	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now)
+	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now, lang)
 	if err != nil {
 		return err
 	}
@@ -306,6 +311,6 @@ func printReportTime(w io.Writer, t agentreport.TimeSplit) {
 
 func printReportHints(w io.Writer, hints []agentreport.Hint) {
 	for _, h := range hints[:min(3, len(hints))] {
-		fmt.Fprintf(w, "- %s\n", h.Finding)
+		fmt.Fprintf(w, "- %s\n  → %s\n", h.Finding, h.Action)
 	}
 }

@@ -124,9 +124,9 @@ func seedFixtureDB(t *testing.T) (testDBs, int64) {
 func TestDesktopReportFixtures(t *testing.T) {
 	d, wb := seedFixtureDB(t)
 	now := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), now)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), now, English)
 	require.NoError(t, err)
-	det, err := BuildSession(d.DB, d.al, wb, fixtureSession, now)
+	det, err := BuildSession(d.DB, d.al, wb, fixtureSession, now, English)
 	require.NoError(t, err)
 
 	dir := filepath.Join("..", "..", "WatchtowerDesktop", "Tests", "Core", "Fixtures")

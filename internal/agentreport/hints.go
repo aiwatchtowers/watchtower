@@ -27,7 +27,7 @@ const (
 	CacheCostMin      = 5.0             // H6: ... with more than this spent ($)
 	CompactionsMax    = 2               // H6: or this many compactions
 	TopModelSubShare  = 0.30            // H7: subagents on the top model above this share of the spend
-	evidenceMax       = 5               // command evidence items cited by H2
+	evidenceMax       = 5               // evidence items a hint lists; the rest are counted in MoreEvidence
 )
 
 // Evidence is what a hint rests on: Kind is session, target or command and Ref
@@ -38,13 +38,32 @@ type Evidence struct {
 	Label string `json:"label"`
 }
 
-// Hint is one rule-based finding with its estimated saving in time or money.
+// Fix kinds: what the pane's button for a hint does.
+const (
+	FixCopyAllowRules = "copy_allow_rules" // copy Rules, permissions.allow lines
+	FixOpenAsks       = "open_asks"        // open the Waiting for you stack
+	FixOpenSession    = "open_session"     // open session Ref's analytics
+)
+
+// Fix is the one step the app can take for a hint.
+type Fix struct {
+	Kind  string   `json:"kind"`
+	Ref   string   `json:"ref,omitempty"`
+	Rules []string `json:"rules,omitempty"`
+}
+
+// Hint is one rule-based finding with its estimated saving in time or money,
+// what to change (Action) and, where the app can take it, a Fix. Evidence is
+// the largest evidenceMax items, MoreEvidence counts the rest.
 type Hint struct {
-	ID          string     `json:"id"`
-	Finding     string     `json:"finding"`
-	EstimateMS  int64      `json:"estimate_ms"`
-	EstimateUSD float64    `json:"estimate_usd"`
-	Evidence    []Evidence `json:"evidence"`
+	ID           string     `json:"id"`
+	Finding      string     `json:"finding"`
+	Action       string     `json:"action"`
+	Fix          *Fix       `json:"fix,omitempty"`
+	EstimateMS   int64      `json:"estimate_ms"`
+	EstimateUSD  float64    `json:"estimate_usd"`
+	Evidence     []Evidence `json:"evidence"`
+	MoreEvidence int        `json:"more_evidence"`
 }
 
 // SessionView is what the hints read of one session.
@@ -59,8 +78,9 @@ type SessionView struct {
 
 // HintInput is the period the hints judge; Events are keyed by session uuid.
 // Targets (with their status history) and Now give H1 the targets' windows,
-// as in Tasks.
+// as in Tasks. Lang is the language of the sentences.
 type HintInput struct {
+	Lang     Lang
 	Sessions map[string]SessionView
 	Tasks    []TaskRow
 	Targets  []db.AgentReportTarget
@@ -89,6 +109,11 @@ func Hints(in HintInput) []Hint {
 	all = append(all, topModelOnSubagents(in, sessions)...)
 
 	out := slices.DeleteFunc(all, func(h Hint) bool { return h.EstimateMS <= 0 && h.EstimateUSD <= 0 })
+	for i := range out {
+		if n := len(out[i].Evidence); n > evidenceMax {
+			out[i].Evidence, out[i].MoreEvidence = out[i].Evidence[:evidenceMax], n-evidenceMax
+		}
+	}
 	slices.SortStableFunc(out, func(a, b Hint) int {
 		return cmp.Or(cmp.Compare(b.EstimateMS, a.EstimateMS), cmp.Compare(b.EstimateUSD, a.EstimateUSD))
 	})
@@ -136,7 +161,7 @@ func repeatedHeavy(in HintInput, sessions []string) []Hint {
 	})
 	var out []Hint
 	for _, k := range keys {
-		if h, ok := repeatedHint(k, runs[k], inSessions[k], text); ok {
+		if h, ok := repeatedHint(in.Lang, k, runs[k], inSessions[k], text); ok {
 			out = append(out, h)
 		}
 	}
@@ -196,7 +221,7 @@ func runScope(at time.Time, sid string, ids []int64, wins map[int64][]window) st
 
 // repeatedHint is H1 for one scope and verb, when it ran RepeatRuns+ times
 // for more than RepeatMin in all.
-func repeatedHint(k runKey, rs []timedEvent, inSessions map[string]bool, text map[int64]string) (Hint, bool) {
+func repeatedHint(l Lang, k runKey, rs []timedEvent, inSessions map[string]bool, text map[int64]string) (Hint, bool) {
 	if len(rs) < RepeatRuns {
 		return Hint{}, false
 	}
@@ -209,19 +234,18 @@ func repeatedHint(k runKey, rs []timedEvent, inSessions map[string]bool, text ma
 		return Hint{}, false
 	}
 	est := total - durMS(rs[0].AgentReportEvent)
-	label := fmt.Sprintf("%d runs, %s", len(rs), fmtDur(total))
-	h := Hint{ID: "H1", EstimateMS: est, Evidence: []Evidence{{Kind: "command", Ref: k.verb, Label: label}}}
-	where := "session " + short(k.scope)
+	label := l.f("h1.label", l.count(len(rs), "run"), l.dur(total))
+	h := Hint{ID: "H1", EstimateMS: est, Action: l.f("h1.action"), Evidence: []Evidence{{Kind: "command", Ref: k.verb, Label: label}}}
+	where := l.f("h1.where.session", short(k.scope))
 	if strings.HasPrefix(k.scope, "#") {
-		where = "target " + k.scope
+		where = l.f("h1.where.target", k.scope)
 		id, _ := targetID(k.scope)
 		h.Evidence = append(h.Evidence, Evidence{Kind: "target", Ref: k.scope, Label: text[id]})
 	}
 	for _, sid := range slices.Sorted(maps.Keys(inSessions)) {
 		h.Evidence = append(h.Evidence, sessionEv(sid, short(sid)))
 	}
-	h.Finding = fmt.Sprintf("%s ran %d times in %s, %s in all; the runs after the first took %s",
-		k.verb, len(rs), where, fmtDur(total), fmtDur(est))
+	h.Finding = l.f("h1.finding", k.verb, l.count(len(rs), "time"), where, l.dur(total), l.dur(est))
 	return h, true
 }
 
@@ -268,13 +292,24 @@ func slowCheap(in HintInput) []Hint {
 	verbs := slices.SortedFunc(maps.Keys(count), func(a, b string) int {
 		return cmp.Or(cmp.Compare(count[b], count[a]), cmp.Compare(a, b))
 	})
-	h := Hint{ID: "H2", EstimateMS: (median - cheapBaseline.Milliseconds()) * int64(n)}
-	for _, v := range verbs[:min(len(verbs), evidenceMax)] {
-		h.Evidence = append(h.Evidence, Evidence{Kind: "command", Ref: v, Label: fmt.Sprintf("%d calls, %s", count[v], fmtDur(total[v]))})
+	l := in.Lang
+	h := Hint{ID: "H2", EstimateMS: (median - cheapBaseline.Milliseconds()) * int64(n), Action: l.f("h2.action"),
+		Fix: &Fix{Kind: FixCopyAllowRules}}
+	for _, v := range verbs {
+		h.Evidence = append(h.Evidence, Evidence{Kind: "command", Ref: v, Label: l.f("h2.label", l.count(count[v], "call"), l.dur(total[v]))})
+		h.Fix.Rules = append(h.Fix.Rules, allowRule(v))
 	}
-	h.Finding = fmt.Sprintf("%d read, search and git status/log/diff calls took a median of %s each, likely permission prompts; allow rules would help (/fewer-permission-prompts)",
-		n, fmtSec(median))
+	h.Finding = l.f("h2.finding", l.count(n, "call"), l.sec(median))
 	return []Hint{h}
+}
+
+// allowRule is the permissions.allow line for a verb: a tool (Read,
+// mcp__…) is its own name, a shell verb "Bash(<verb>:*)".
+func allowRule(v string) string {
+	if strings.HasPrefix(v, "mcp__") || (v != "" && v[0] >= 'A' && v[0] <= 'Z') {
+		return v
+	}
+	return "Bash(" + v + ":*)"
 }
 
 // H3: a session with SerialMinFG+ foreground subagents running under
@@ -296,10 +331,10 @@ func serialSubagents(in HintInput, sessions []string) []Hint {
 			longest = max(longest, d)
 		}
 		est := sum - longest
-		out = append(out, Hint{ID: "H3", EstimateMS: est,
-			Finding: fmt.Sprintf("Session %s ran %d foreground subagents one after another (%.1f at once on average); in parallel they could save up to %s",
-				short(sid), sv.Subagents.Foreground, sv.Subagents.AvgParallel, fmtDur(est)),
-			Evidence: []Evidence{sessionEv(sid, fmt.Sprintf("%d subagents, %s", sv.Subagents.Foreground, fmtDur(sum)))}})
+		l := in.Lang
+		out = append(out, Hint{ID: "H3", EstimateMS: est, Action: l.f("h3.action"),
+			Finding:  l.f("h3.finding", short(sid), l.count(sv.Subagents.Foreground, "fgsubagent"), sv.Subagents.AvgParallel, l.dur(est)),
+			Evidence: []Evidence{sessionEv(sid, l.f("h3.label", l.count(sv.Subagents.Foreground, "subagent"), l.dur(sum)))}})
 	}
 	return out
 }
@@ -308,8 +343,8 @@ func ownerOver(t TimeSplit) bool {
 	return t.ActiveMS > 0 && float64(t.OwnerMS) > OwnerShareMax*float64(t.ActiveMS)
 }
 
-func ownerLabel(t TimeSplit) string {
-	return fmt.Sprintf("%s waiting, %d%% of %s active", fmtDur(t.OwnerMS), t.OwnerMS*100/t.ActiveMS, fmtDur(t.ActiveMS))
+func ownerLabel(l Lang, t TimeSplit) string {
+	return l.f("h4.label", l.dur(t.OwnerMS), t.OwnerMS*100/t.ActiveMS, l.dur(t.ActiveMS))
 }
 
 // H4: waiting for you over OwnerShareMax of a session's or task's active
@@ -317,7 +352,13 @@ func ownerLabel(t TimeSplit) string {
 // or, when only tasks are over the line, the largest task's (task time is
 // session time attributed, so the two are never added).
 func ownerShare(in HintInput, sessions []string) []Hint {
-	h := Hint{ID: "H4"}
+	l := in.Lang
+	h := Hint{ID: "H4", Action: l.f("h4.action"), Fix: &Fix{Kind: FixOpenAsks}}
+	type waited struct {
+		ev Evidence
+		ms int64
+	}
+	var all []waited
 	nSessions, nTasks := 0, 0
 	for _, sid := range sessions {
 		sv, ok := in.Sessions[sid]
@@ -326,7 +367,7 @@ func ownerShare(in HintInput, sessions []string) []Hint {
 		}
 		nSessions++
 		h.EstimateMS += sv.Time.OwnerMS
-		h.Evidence = append(h.Evidence, sessionEv(sid, ownerLabel(sv.Time)))
+		all = append(all, waited{sessionEv(sid, ownerLabel(l, sv.Time)), sv.Time.OwnerMS})
 	}
 	var largest int64
 	for _, t := range in.Tasks {
@@ -335,23 +376,27 @@ func ownerShare(in HintInput, sessions []string) []Hint {
 		}
 		nTasks++
 		largest = max(largest, t.Time.OwnerMS)
-		h.Evidence = append(h.Evidence, Evidence{Kind: "target", Ref: fmt.Sprintf("#%d", t.TargetID), Label: t.Text})
+		all = append(all, waited{Evidence{Kind: "target", Ref: fmt.Sprintf("#%d", t.TargetID), Label: t.Text}, t.Time.OwnerMS})
 	}
-	if len(h.Evidence) == 0 {
+	if len(all) == 0 {
 		return nil
+	}
+	// The longest waits first: the list is cut to evidenceMax.
+	slices.SortStableFunc(all, func(a, b waited) int { return cmp.Compare(b.ms, a.ms) })
+	for _, w := range all {
+		h.Evidence = append(h.Evidence, w.ev)
 	}
 	if nSessions == 0 {
 		h.EstimateMS = largest
 	}
 	var where []string
 	if nSessions > 0 {
-		where = append(where, plural(nSessions, "session"))
+		where = append(where, l.count(nSessions, "session.in"))
 	}
 	if nTasks > 0 {
-		where = append(where, plural(nTasks, "task"))
+		where = append(where, l.count(nTasks, "task.in"))
 	}
-	h.Finding = fmt.Sprintf("Waiting for you took over %d%% of active time in %s, %s in all",
-		int(OwnerShareMax*100), strings.Join(where, " and "), fmtDur(h.EstimateMS))
+	h.Finding = l.f("h4.finding", int(OwnerShareMax*100), strings.Join(where, l.f("h4.and")), l.dur(h.EstimateMS))
 	return []Hint{h}
 }
 
@@ -386,12 +431,13 @@ func failingLoops(in HintInput, sessions []string) []Hint {
 			flush(l)
 		}
 		for _, v := range slices.Sorted(maps.Keys(failed)) {
-			out = append(out, Hint{ID: "H5", EstimateMS: lost[v],
-				Finding: fmt.Sprintf("%s failed %d times in a row in session %s, %s spent on the failed runs",
-					v, failed[v], short(sid), fmtDur(lost[v])),
+			l := in.Lang
+			out = append(out, Hint{ID: "H5", EstimateMS: lost[v], Action: l.f("h5.action"),
+				Fix:     &Fix{Kind: FixOpenSession, Ref: sid},
+				Finding: l.f("h5.finding", v, l.count(failed[v], "time"), short(sid), l.dur(lost[v])),
 				Evidence: []Evidence{
 					sessionEv(sid, short(sid)),
-					{Kind: "command", Ref: v, Label: fmt.Sprintf("%d failures in a row", failed[v])},
+					{Kind: "command", Ref: v, Label: l.f("h5.label", l.count(failed[v], "failure"))},
 				}})
 		}
 	}
@@ -407,18 +453,20 @@ func expensiveContext(in HintInput, sessions []string) []Hint {
 		if !ok {
 			continue
 		}
+		l := in.Lang
 		var why []string
 		if sv.CacheReadShare < CacheShareMin && sv.CostUSD > CacheCostMin {
-			why = append(why, fmt.Sprintf("a %d%% cache read share", int(sv.CacheReadShare*100)))
+			why = append(why, l.f("h6.cache", int(sv.CacheReadShare*100)))
 		}
 		if sv.Compactions >= CompactionsMax {
-			why = append(why, fmt.Sprintf("%d compactions", sv.Compactions))
+			why = append(why, l.count(sv.Compactions, "compaction"))
 		}
 		if len(why) == 0 {
 			continue
 		}
-		out = append(out, Hint{ID: "H6", EstimateUSD: sv.CostUSD,
-			Finding:  fmt.Sprintf("Session %s cost %s with %s; its context was expensive", short(sid), fmtUSD(sv.CostUSD), strings.Join(why, " and ")),
+		out = append(out, Hint{ID: "H6", EstimateUSD: sv.CostUSD, Action: l.f("h6.action"),
+			Fix:      &Fix{Kind: FixOpenSession, Ref: sid},
+			Finding:  l.f("h6.finding", short(sid), fmtUSD(sv.CostUSD), strings.Join(why, l.f("h6.and"))),
 			Evidence: []Evidence{sessionEv(sid, fmtUSD(sv.CostUSD))}})
 	}
 	return out
@@ -471,11 +519,15 @@ func topModelOnSubagents(in HintInput, sessions []string) []Hint {
 	if spend <= 0 || subCost <= TopModelSubShare*spend {
 		return nil
 	}
-	h := Hint{ID: "H7", EstimateUSD: subCost - repriced,
-		Finding: fmt.Sprintf("Subagents on %s cost %s, %d%% of the period's %s; on %s they would cost about %s less",
-			strings.Join(slices.Sorted(maps.Keys(models)), ", "), fmtUSD(subCost), int(subCost*100/spend), fmtUSD(spend), next, fmtUSD(subCost-repriced))}
-	for _, sid := range slices.Sorted(maps.Keys(bySession)) {
-		h.Evidence = append(h.Evidence, sessionEv(sid, fmtUSD(bySession[sid])+" on subagents"))
+	l := in.Lang
+	h := Hint{ID: "H7", EstimateUSD: subCost - repriced, Action: l.f("h7.action"),
+		Finding: l.f("h7.finding", strings.Join(slices.Sorted(maps.Keys(models)), ", "), fmtUSD(subCost), int(subCost*100/spend),
+			fmtUSD(spend), next, fmtUSD(subCost-repriced))}
+	// The costliest sessions first: the list is cut to evidenceMax.
+	for _, sid := range slices.SortedFunc(maps.Keys(bySession), func(a, b string) int {
+		return cmp.Or(cmp.Compare(bySession[b], bySession[a]), cmp.Compare(a, b))
+	}) {
+		h.Evidence = append(h.Evidence, sessionEv(sid, l.f("h7.label", fmtUSD(bySession[sid]))))
 	}
 	return []Hint{h}
 }
@@ -499,13 +551,6 @@ func fmtSec(ms int64) string {
 		return fmt.Sprintf("%.1fs", float64(ms)/1000)
 	}
 	return fmtDur(ms)
-}
-
-func plural(n int, noun string) string {
-	if n == 1 {
-		return "1 " + noun
-	}
-	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func fmtUSD(v float64) string { return fmt.Sprintf("$%.2f", v) }

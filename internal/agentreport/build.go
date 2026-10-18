@@ -1,6 +1,7 @@
 package agentreport
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"time"
@@ -178,10 +179,11 @@ func flatten(by map[string][]agentlogdb.AgentReportEvent) []agentlogdb.AgentRepo
 }
 
 // BuildOverview reports a workbench's sessions that started or ended at or
-// after since (zero = all) up to now. It answers whatever the analytics
-// switch: an off workbench shows the rows it has. main (watchtower.db: the
-// switch, the board) and al (agentlog.db) are only read.
-func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now time.Time) (*Overview, error) {
+// after since (zero = all) up to now, with the hints written in lang. It
+// answers whatever the analytics switch: an off workbench shows the rows it
+// has. main (watchtower.db: the switch, the board) and al (agentlog.db) are
+// only read.
+func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now time.Time, lang Lang) (*Overview, error) {
 	enabled, err := main.WorkbenchAgentAnalytics(workbenchID)
 	if err != nil {
 		return nil, err
@@ -243,15 +245,27 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 
 	ov.Models = nonNil(Models(flatten(allEvents)))
 	ov.Commands = nonNil(Commands(flatten(b.events)))
-	ov.Tasks = nonNil(Tasks(targets, b.segments, b.events, now))
-	ov.Hints = nonNil(Hints(HintInput{Sessions: b.views, Tasks: ov.Tasks, Targets: targets, Events: b.events, Now: now}))
+	ov.Tasks = touched(Tasks(targets, b.segments, b.events, now))
+	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Sessions: b.views, Tasks: ov.Tasks, Targets: targets, Events: b.events, Now: now}))
 	ov.Sessions = b.rows
 	return ov, nil
 }
 
-// BuildSession drills into one session of the workbench as of now. Its lanes
-// start with the main agent's (AgentID "") unless the session is old-format.
-func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID string, now time.Time) (*SessionDetail, error) {
+// touched keeps the task rows the period's sessions worked on (agent time,
+// cost or a session naming the target), the costliest first, then by agent
+// time; a board of hundreds of untouched targets would otherwise list them all.
+func touched(rows []TaskRow) []TaskRow {
+	out := slices.DeleteFunc(rows, func(r TaskRow) bool { return r.AgentMS == 0 && r.CostUSD == 0 && len(r.Sessions) == 0 })
+	slices.SortStableFunc(out, func(a, b TaskRow) int {
+		return cmp.Or(cmp.Compare(b.CostUSD, a.CostUSD), cmp.Compare(b.AgentMS, a.AgentMS), cmp.Compare(a.TargetID, b.TargetID))
+	})
+	return nonNil(out)
+}
+
+// BuildSession drills into one session of the workbench as of now, with the
+// hints written in lang. Its lanes start with the main agent's (AgentID "")
+// unless the session is old-format.
+func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID string, now time.Time, lang Lang) (*SessionDetail, error) {
 	all, err := al.AgentReportSessions(workbenchID, "")
 	if err != nil {
 		return nil, err
@@ -277,6 +291,6 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 		det.Lanes = append(det.Lanes, b.lanes[sessionUUID]...)
 	}
 	tasks := Tasks(targets, b.segments, b.events, now)
-	det.Hints = nonNil(Hints(HintInput{Sessions: b.views, Tasks: tasks, Targets: targets, Events: b.events, Now: now}))
+	det.Hints = nonNil(Hints(HintInput{Lang: lang, Sessions: b.views, Tasks: tasks, Targets: targets, Events: b.events, Now: now}))
 	return det, nil
 }

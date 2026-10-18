@@ -92,6 +92,10 @@
     {
       "id": "H4",
       "finding": "Waiting for you took over 30% of active time in 1 session and 2 tasks, 30m 0s in all",
+      "action": "Answer asks sooner: turn on ask notifications on the Mac or the phone, or let agents use Quick asks.",
+      "fix": {
+        "kind": "open_asks"
+      },
       "estimate_ms": 1800000,
       "estimate_usd": 0,
       "evidence": [
@@ -110,11 +114,13 @@
           "ref": "#2",
           "label": "Fix login"
         }
-      ]
+      ],
+      "more_evidence": 0
     },
     {
       "id": "H1",
       "finding": "make test ran 3 times in target #1, 6m 0s in all; the runs after the first took 4m 0s",
+      "action": "Run only the tests of the package you changed; run the full suite once before the PR.",
       "estimate_ms": 240000,
       "estimate_usd": 0,
       "evidence": [
@@ -133,11 +139,17 @@
           "ref": "11111111-aaaa-bbbb-cccc-000000000001",
           "label": "11111111"
         }
-      ]
+      ],
+      "more_evidence": 0
     },
     {
       "id": "H6",
       "finding": "Session 11111111 cost $15.00 with a 28% cache read share; its context was expensive",
+      "action": "Start a new session per task, or /clear between tasks; long sessions re-read their whole context.",
+      "fix": {
+        "kind": "open_session",
+        "ref": "11111111-aaaa-bbbb-cccc-000000000001"
+      },
       "estimate_ms": 0,
       "estimate_usd": 15,
       "evidence": [
@@ -146,7 +158,8 @@
           "ref": "11111111-aaaa-bbbb-cccc-000000000001",
           "label": "$15.00"
         }
-      ]
+      ],
+      "more_evidence": 0
     }
   ],
   "tasks": [

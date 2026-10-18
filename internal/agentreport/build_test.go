@@ -98,7 +98,7 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	putSessionWith(t, d, wb, "new", 40, 2, extra)
 	putSessionWith(t, d, wb, "old", 40, 1, extra)
 
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour))
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ov.OldFormatSessions)
 	assert.Equal(t, 2, ov.Totals.Sessions)
@@ -147,7 +147,7 @@ func TestBuildOverview_ImportState(t *testing.T) {
 			d, wb := buildDB(t)
 			require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
 			require.NoError(t, tc.set(d, wb))
-			ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0)
+			ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, ov.Import)
 		})
@@ -169,13 +169,13 @@ func TestBuildOverview_ImportWaitingForMove(t *testing.T) {
 	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
 	require.NoError(t, al.SetImportProgress(wb, false, 3, t0))
 
-	ov, err := BuildOverview(d, al, wb, time.Time{}, t0)
+	ov, err := BuildOverview(d, al, wb, time.Time{}, t0, English)
 	require.NoError(t, err)
 	assert.Equal(t, ImportState{State: "waiting_for_move"}, ov.Import)
 
 	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(filepath.Join(dir, "agentlog.db")))
 	require.NoError(t, err)
-	ov, err = BuildOverview(d, al, wb, time.Time{}, t0)
+	ov, err = BuildOverview(d, al, wb, time.Time{}, t0, English)
 	require.NoError(t, err)
 	assert.Equal(t, "loading", ov.Import.State)
 }
@@ -183,12 +183,12 @@ func TestBuildOverview_ImportWaitingForMove(t *testing.T) {
 func TestBuildSession_UnknownIsError(t *testing.T) {
 	d, wb := buildDB(t)
 	putSession(t, d, wb, "s1", 8, 2)
-	det, err := BuildSession(d.DB, d.al, wb, "s1", t0)
+	det, err := BuildSession(d.DB, d.al, wb, "s1", t0, English)
 	require.NoError(t, err)
 	assert.Equal(t, "s1", det.Session.UUID)
-	_, err = BuildSession(d.DB, d.al, wb, "nope", t0)
+	_, err = BuildSession(d.DB, d.al, wb, "nope", t0, English)
 	assert.Error(t, err)
-	_, err = BuildSession(d.DB, d.al, wb+1, "s1", t0)
+	_, err = BuildSession(d.DB, d.al, wb+1, "s1", t0, English)
 	assert.Error(t, err)
 }
 
@@ -203,7 +203,7 @@ func TestBuildSession_MainLaneFirst(t *testing.T) {
 	putSessionWith(t, d, wb, "new", 8, 2, extra)
 	putSessionWith(t, d, wb, "old", 8, 1, extra)
 
-	det, err := BuildSession(d.DB, d.al, wb, "new", t0)
+	det, err := BuildSession(d.DB, d.al, wb, "new", t0, English)
 	require.NoError(t, err)
 	require.Len(t, det.Lanes, 2)
 	assert.Empty(t, det.Lanes[0].AgentID, "the main agent's lane comes first")
@@ -214,7 +214,7 @@ func TestBuildSession_MainLaneFirst(t *testing.T) {
 	assert.Equal(t, mainSegs, det.Lanes[0].Segments)
 	assert.Equal(t, "a1", det.Lanes[1].AgentID)
 
-	old, err := BuildSession(d.DB, d.al, wb, "old", t0)
+	old, err := BuildSession(d.DB, d.al, wb, "old", t0, English)
 	require.NoError(t, err)
 	assert.Empty(t, old.Lanes, "an old-format session has no lanes")
 }
@@ -259,7 +259,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 	require.NoError(t, tx.Commit())
 
 	start := time.Now()
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now, English)
 	took := time.Since(start)
 	require.NoError(t, err)
 	assert.Equal(t, 750, ov.Totals.Sessions)
