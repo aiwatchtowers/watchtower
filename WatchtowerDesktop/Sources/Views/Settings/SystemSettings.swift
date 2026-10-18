@@ -544,6 +544,11 @@ struct SystemSettings: View {
         if output.exitCode == 0 && !output.stdout.isEmpty {
             return nil
         }
+        // codex exec reports a refused model or a failed turn in its JSONL
+        // stdout and leaves stderr empty.
+        if isCodex, let reason = ConnectionTest.codexTurnError(stdout: output.stdout, model: model) {
+            return reason
+        }
         return diagnoseError(stderr: output.stderr, exitCode: output.exitCode)
     }
 

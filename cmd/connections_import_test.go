@@ -123,3 +123,42 @@ func TestConnectionsImport_ListAndImport(t *testing.T) {
 		}
 	}
 }
+
+// A server named watchtower_… is offered renamed (ext-…) with a note and
+// imports under that name; the owner's "watchtower" server is Watchtower's
+// own, skipped without the add-flag wording (board #556).
+func TestConnectionsImport_ReservedNames(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	writeImportSources(t,
+		"[mcp_servers.watchtower__notes]\ncommand = \"srv\"\n[mcp_servers.watchtower]\ncommand = \"watchtower\"\nargs = [\"mcp\"]\n",
+		`{"mcpServers":{}}`, nil)
+	stubToolsList(t, []db.ExternalTool{{Name: "list_items", Annotated: true, ReadOnlyHint: true}}, nil)
+
+	stdout, stderr, err := runConnectionsSplit(t, "", "import", "--json")
+	require.NoError(t, err, stderr)
+	var list connectionImportListJSON
+	require.NoError(t, json.Unmarshal([]byte(stdout), &list), stdout)
+	byName := map[string]externalmcp.ImportCandidate{}
+	for _, s := range list.Servers {
+		byName[s.Name] = s
+	}
+	require.Len(t, byName, 2, stdout)
+	renamed := byName["ext-watchtower__notes"]
+	assert.Empty(t, renamed.Skip)
+	assert.Contains(t, renamed.Note, `renamed from "watchtower__notes"`)
+	assert.Contains(t, byName["watchtower"].Skip, "Watchtower's own server")
+	assert.NotContains(t, byName["watchtower"].Skip, "--name")
+
+	stdout, stderr, err = runConnectionsSplit(t, "", "import", "--json", "--", "ext-watchtower__notes")
+	require.NoError(t, err, stderr)
+	var results []connectionImportResultJSON
+	require.NoError(t, json.Unmarshal([]byte(stdout), &results), stdout)
+	require.Len(t, results, 1)
+	assert.Equal(t, "ok", results[0].Status, results[0].Error)
+	d, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	conn, err := d.GetExternalConnection(results[0].ID)
+	require.NoError(t, err)
+	assert.Equal(t, "ext-watchtower__notes", conn.Name)
+}

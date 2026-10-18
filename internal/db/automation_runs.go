@@ -70,7 +70,18 @@ var (
 	ErrCommitOnFailure = errors.New("state and outputs commit only with a succeeded run")
 	// ErrStepFinished refuses a write to a step that is already finished.
 	ErrStepFinished = errors.New("automation run step is already finished")
+	// ErrInvalidRunFinish is wrapped by every FinishAutomationRun refusal
+	// made before anything is written (a zero time, a non-terminal status, a
+	// commit on failure, invalid state JSON): retrying it cannot help.
+	ErrInvalidRunFinish = errors.New("invalid automation run finish")
 )
+
+// invalidRunFinishError wraps a validateRunFinish refusal with
+// ErrInvalidRunFinish, keeping its own message and wrapped errors.
+type invalidRunFinishError struct{ err error }
+
+func (e invalidRunFinishError) Error() string   { return e.err.Error() }
+func (e invalidRunFinishError) Unwrap() []error { return []error{e.err, ErrInvalidRunFinish} }
 
 // terminalRunStatuses are the statuses FinishAutomationRun may write.
 var terminalRunStatuses = map[string]bool{
@@ -709,7 +720,7 @@ type RunCommit struct {
 // the whole finish back (the run stays active, state and outputs unchanged).
 func (db *DB) FinishAutomationRun(runID int64, f RunFinish, c *RunCommit) error {
 	if err := validateRunFinish(runID, f, c); err != nil {
-		return err
+		return invalidRunFinishError{err}
 	}
 	tx, err := db.Begin()
 	if err != nil {

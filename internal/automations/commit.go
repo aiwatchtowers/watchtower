@@ -128,7 +128,7 @@ func (b *CommitBuffer) All() map[string]any {
 }
 
 // AddOutput buffers an output; a body beyond MaxOutputBodyBytes is
-// ResultTooLarge.
+// ResultTooLarge, an output past MaxOutputsPerRun a ValidationError.
 func (b *CommitBuffer) AddOutput(o db.AutomationOutput) error {
 	if len(o.Body) > MaxOutputBodyBytes {
 		return &SDKError{Name: ErrNameResultTooLarge,
@@ -136,6 +136,10 @@ func (b *CommitBuffer) AddOutput(o db.AutomationOutput) error {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if len(b.outputs) >= MaxOutputsPerRun {
+		return &SDKError{Name: ErrNameValidation,
+			Message: fmt.Sprintf("this run already made %d outputs; the limit is %d per run", len(b.outputs), MaxOutputsPerRun)}
+	}
 	b.outputs = append(b.outputs, o)
 	return nil
 }
