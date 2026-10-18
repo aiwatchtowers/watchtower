@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -298,6 +301,10 @@ func runWorkbenchGitCheckout(cmd *cobra.Command, _ []string) error {
 func runWorkbenchGitFetch(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitFetchBudget)
 	defer cancel()
+	// git runs in its own process group: a SIGTERM to this CLI (the app
+	// quitting) must reach it through the context, or it outlives us.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err

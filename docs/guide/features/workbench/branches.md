@@ -20,9 +20,9 @@ The stash is never popped or deleted. The popover names the entry and the comman
 
 ### How fetching works
 
-Opening the menu fetches origin in the background when the last fetch for that repository was over five minutes ago. The list shows at once and updates when the fetch is done, so `↓1` and **upstream gone** match what was pushed or deleted elsewhere. A fetch only updates origin's branches: your files, local branches and stash are never touched, and it never pulls.
+Opening the menu fetches origin in the background when the last fetch attempt for that repository was over five minutes ago. The list shows at once and updates when the fetch is done, so `↓1` and **upstream gone** match what was pushed or deleted elsewhere. A fetch only updates origin's branches: your files, local branches and stash are never touched, and it never pulls.
 
-A fetch never asks for anything: no password, key passphrase, Keychain or system dialog. When origin needs one, or there is no network, a quiet **Couldn't fetch origin: …** note appears and the list keeps working on what is already there.
+A fetch never asks for anything: no password, key passphrase or Keychain access. It uses network remotes only (https, ssh, git), not a folder path, and not a custom `core.sshCommand`. When origin needs a password or an unloaded key, or there is no network, a quiet **Couldn't fetch origin: …** note appears and the list keeps working on what is already there. An ssh agent you set up to approve each use, such as a password manager's, may still ask you itself.
 
 ## Using it
 
@@ -34,8 +34,9 @@ A fetch never asks for anything: no password, key passphrase, Keychain or system
 
 ## When it's empty or wrong
 
-- **"Couldn't fetch origin: … fetch once from a terminal".** Origin wants a password, a key passphrase or a host key confirmation. Run `git fetch` in your own terminal once, or load the key into your ssh agent.
-- **No fetch line.** The repository has no `origin` remote.
+- **"Couldn't fetch origin: … never asks for a password or key".** Origin wants a password, a key passphrase or a host key confirmation. Load the key into your ssh agent, or save credentials Watchtower may use; a terminal fetch still works meanwhile.
+- **"Couldn't fetch origin: … transport 'file' not allowed".** Origin is a folder path. Watchtower fetches network remotes only.
+- **"No origin remote".** The repository has no `origin` remote. Watchtower checks again five minutes later, or when you press ↻.
 - **"Save or discard the edits in <file> first".** A file open in the code viewer has edits that cannot be saved. Resolve them, then switch.
 - **A switch is refused.** The branch is checked out in another worktree, or a merge, rebase or similar is in progress. Finish or abort it first.
 - **The menu says it is unavailable.** The session's worktree is gone or outside the repository.

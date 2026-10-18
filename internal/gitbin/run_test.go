@@ -248,12 +248,12 @@ func TestExecFetch_NoPromptEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "ssh -o BatchMode=yes -o ConnectTimeout=10|||never||file:git:http:https:ssh|0|unset"
+	want := "ssh -o BatchMode=yes -o ConnectTimeout=10|||never||git:http:https:ssh|0|unset"
 	if got := string(out); got != want {
 		t.Fatalf("env = %q, want %q", got, want)
 	}
 	args := FetchArgs("fetch", "origin")
-	if got := strings.Join(args, " "); !strings.Contains(got, "-c credential.helper= ") || !strings.HasSuffix(got, " fetch origin") {
+	if got := strings.Join(args, " "); !strings.Contains(got, "-c credential.helper= ") || !strings.Contains(got, "-c core.alternateRefsCommand=true ") || !strings.HasSuffix(got, " fetch origin") {
 		t.Fatalf("FetchArgs = %q", got)
 	}
 }

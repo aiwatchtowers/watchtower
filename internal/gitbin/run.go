@@ -150,13 +150,19 @@ func Exec(ctx context.Context, dir string, stdin []byte, name string, args ...st
 	return ExecEnv(ctx, dir, nil, stdin, name, args...)
 }
 
-// fetchConfig keeps a background fetch from running a credential helper,
-// on top of readConfig: an empty value clears every helper configured
+// fetchConfig keeps a background fetch from running a command, on top of
+// readConfig: an empty credential.helper clears every helper configured
 // before it — the folder's, the owner's global osxkeychain or gh, which
-// read the Keychain and can raise a system dialog. (A remote's
-// uploadpack, which for a path remote runs here, is not overridable by -c:
-// the caller passes --upload-pack.)
-var fetchConfig = []string{"-c", "credential.helper="}
+// read the Keychain and can raise a system dialog —, the folder's
+// core.alternateRefsCommand (run through the shell while negotiating when
+// the repository has alternates) becomes `true`, and a stalled HTTP
+// transfer gives up on its own. (A remote's uploadpack is not overridable
+// by -c: the caller passes --upload-pack.)
+var fetchConfig = []string{
+	"-c", "credential.helper=",
+	"-c", "core.alternateRefsCommand=true",
+	"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
+}
 
 // FetchArgs is a background `git fetch` argv: ReadArgs plus fetchConfig.
 func FetchArgs(args ...string) []string {
@@ -167,13 +173,15 @@ func FetchArgs(args ...string) []string {
 // ssh in batch mode (a key under a passphrase fails instead of prompting)
 // with a connect timeout, no askpass program from anywhere (an empty
 // GIT_ASKPASS outranks core.askPass and SSH_ASKPASS), no proxy command,
-// and only the plain transports (an `ext::` URL or a remote helper the
-// folder's config allows would run a command).
+// and only the network transports: an `ext::` URL or a remote helper the
+// folder's config allows would run a command, and a path remote would read
+// any folder on the Mac — one macOS guards would raise a privacy prompt
+// attributed to Watchtower.
 var fetchEnv = []string{
 	"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10",
 	"GIT_ASKPASS=", "SSH_ASKPASS=", "SSH_ASKPASS_REQUIRE=never",
 	"GIT_PROXY_COMMAND=",
-	"GIT_ALLOW_PROTOCOL=file:git:http:https:ssh",
+	"GIT_ALLOW_PROTOCOL=git:http:https:ssh",
 }
 
 // ExecFetch runs a background fetch argv (FetchArgs) like Exec, with

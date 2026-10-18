@@ -215,7 +215,7 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
         await openPopover(vm)
         let state = vm.gitFetchState(key)
         XCTAssertEqual(state?.failure, "Couldn't fetch origin: could not read Username for 'https://example.com': "
-            + "terminal prompts disabled — Watchtower never asks for a password or key; fetch once from a terminal")
+            + "terminal prompts disabled — Watchtower's fetch never asks for a password or key and does not use a custom core.sshCommand")
         XCTAssertNil(state?.lastFetchedAt)
         XCTAssertEqual(WorkbenchFetchPresentation.caption(state, now: now), "Not fetched yet")
         XCTAssertEqual(vm.branchListStates[key], .loaded, "the list works on the local refs")
@@ -242,7 +242,7 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
         XCTAssertEqual(vm.gitFetchState(key)?.running, false)
     }
 
-    func testNoOriginHidesTheRowAndStopsBackgroundFetches() async {
+    func testNoOriginIsCheckedAgainOnceDue() async {
         let runner = GitRunner(["status": status, "branches": branches(),
                                 "fetch": Data(#"{"git":true,"remote":"origin","no_remote":true,"fetched":false}"#.utf8)])
         var now = Date()
@@ -250,10 +250,17 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
         await openPopover(vm)
         XCTAssertEqual(vm.gitFetchState(key)?.noRemote, true)
         XCTAssertNil(vm.gitFetchState(key)?.failure)
-        XCTAssertNil(WorkbenchFetchPresentation.caption(vm.gitFetchState(key), now: now))
-        now = now.addingTimeInterval(3600)
+        XCTAssertEqual(WorkbenchFetchPresentation.caption(vm.gitFetchState(key), now: now), "No origin remote")
+        now = now.addingTimeInterval(60)
         await openPopover(vm)
-        XCTAssertEqual(runner.calls("fetch").count, 1)
+        XCTAssertEqual(runner.calls("fetch").count, 1, "not again within five minutes")
+
+        runner.reply("fetch", fetched) // an agent added origin meanwhile
+        now = now.addingTimeInterval(5 * 60)
+        await openPopover(vm)
+        XCTAssertEqual(runner.calls("fetch").count, 2, "checked again once due")
+        XCTAssertEqual(vm.gitFetchState(key)?.noRemote, false)
+        XCTAssertEqual(vm.gitFetchState(key)?.lastFetchedAt, now)
     }
 
     func testNoFetchBeforeAStatusPlacedTheRepository() async {

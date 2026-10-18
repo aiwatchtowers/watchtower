@@ -123,18 +123,17 @@ struct WorkbenchBranchPopover: View {
         }
     }
 
-    /// "Fetched 2m ago" and the Fetch button; a failed fetch is a quiet
-    /// note under it. Nothing without an origin remote, or before a status
-    /// placed the repository.
+    /// "Fetched 2m ago" (or "No origin remote") and the Fetch button; a
+    /// failed fetch is a quiet note under it. Nothing before a status placed
+    /// the repository.
     @ViewBuilder
     private var fetchRow: some View {
         let key = GitRootKey(root)
         if vm.gitFetchRepository(key) != nil {
             let state = vm.gitFetchState(key)
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                if let caption = WorkbenchFetchPresentation.caption(state, now: context.date) {
-                    HStack(spacing: 4) {
-                        Text(caption)
+                HStack(spacing: 4) {
+                        Text(WorkbenchFetchPresentation.caption(state, now: context.date))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 0)
@@ -151,7 +150,6 @@ struct WorkbenchBranchPopover: View {
                             .help("Fetch origin (git fetch --prune origin) — never asks for a password")
                             .accessibilityLabel("Fetch origin")
                         }
-                    }
                 }
             }
             if let failure = state?.failure { caption(failure, color: .secondary) }

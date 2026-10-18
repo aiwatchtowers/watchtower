@@ -13,7 +13,8 @@ package struct GitFetchState: Equatable, Sendable {
     package var lastFetchedAt: Date?
     /// The quiet note of the last failed fetch; nil after a success.
     package var failure: String?
-    /// The repository has no origin remote: nothing to fetch.
+    /// The last try found no origin remote. Not final: the next due try
+    /// checks again (an agent may add origin meanwhile).
     package var noRemote = false
 
     package init(
@@ -39,20 +40,20 @@ package enum WorkbenchFetchPresentation {
     package static let backgroundInterval: TimeInterval = 5 * 60
 
     /// Whether opening the popover starts a background fetch: never while
-    /// one runs or without an origin, otherwise when the last try is older
-    /// than `backgroundInterval` (or there was none).
+    /// one runs, otherwise when the last try — one that found no origin
+    /// included — is older than `backgroundInterval` (or there was none).
     package static func isBackgroundFetchDue(_ state: GitFetchState?, now: Date) -> Bool {
         guard let state else { return true }
-        guard !state.running, !state.noRemote else { return false }
+        guard !state.running else { return false }
         guard let last = state.lastAttemptAt else { return true }
         return now.timeIntervalSince(last) >= backgroundInterval
     }
 
-    /// `Fetching…`, `Fetched just now`, `Fetched 2m ago`, `Not fetched yet`;
-    /// nil without an origin remote.
-    package static func caption(_ state: GitFetchState?, now: Date) -> String? {
-        if state?.noRemote == true { return nil }
+    /// `Fetching origin…`, `No origin remote`, `Fetched just now`,
+    /// `Fetched 2m ago`, `Not fetched yet`.
+    package static func caption(_ state: GitFetchState?, now: Date) -> String {
         if state?.running == true { return "Fetching origin…" }
+        if state?.noRemote == true { return "No origin remote" }
         guard let fetched = state?.lastFetchedAt else { return "Not fetched yet" }
         return "Fetched " + ago(now.timeIntervalSince(fetched))
     }
@@ -79,7 +80,9 @@ package enum WorkbenchFetchPresentation {
             detail = WorkbenchBranchPresentation.refusalText(refused: result.refused, detail: result.refusedDetail)
         } else if !result.error.isEmpty {
             detail = firstLine(result.error)
-                + (needsCredentials(result.error) ? " — Watchtower never asks for a password or key; fetch once from a terminal" : "")
+                + (needsCredentials(result.error)
+                    ? " — Watchtower's fetch never asks for a password or key and does not use a custom core.sshCommand"
+                    : "")
         } else if !result.note.isEmpty {
             detail = result.note
         } else {

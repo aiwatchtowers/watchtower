@@ -3,6 +3,7 @@ package workbenchgit
 import (
 	"context"
 	"net/http"
+	"net/http/cgi" //nolint:gosec // test-only server for git http-backend; Go is far past 1.6.3
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -13,15 +14,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// withOrigin gives newRepo a bare repository as origin, with main and
-// feature pushed and tracked, and returns the origin's path.
+// serveOverHTTP serves the bare repositories under root through git's own
+// smart HTTP backend; a fetch may not use a path remote (no file transport).
+func serveOverHTTP(t *testing.T, root string) string {
+	t.Helper()
+	srv := httptest.NewServer(&cgi.Handler{
+		Path: gitBin(t), Args: []string{"http-backend"}, Dir: root,
+		Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull},
+	})
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// withOrigin gives newRepo a bare repository as origin, served over HTTP,
+// with main and feature pushed (through its path) and tracked, and returns
+// the origin's path.
 func withOrigin(t *testing.T, dir string) string {
 	t.Helper()
-	origin, err := filepath.EvalSymlinks(t.TempDir())
+	root, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
-	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	origin := filepath.Join(root, "origin.git")
+	gitIn(t, root, "init", "-q", "--bare", "-b", "main", origin)
 	gitIn(t, dir, "remote", "add", "origin", origin)
 	gitIn(t, dir, "push", "-q", "-u", "origin", "main", "feature")
+	gitIn(t, dir, "remote", "set-url", "origin", serveOverHTTP(t, root)+"/origin.git")
 	return origin
 }
 
@@ -113,16 +129,13 @@ func TestFetch_OutsideARepositoryRunsNoGit(t *testing.T) {
 	assert.Empty(t, rec.argv())
 }
 
-// An unreachable ssh remote fails fast and quietly: ssh runs in batch mode,
-// and the folder's own ssh and askpass commands never run.
+// An unreachable ssh remote fails fast and quietly, and the folder's own
+// ssh command never runs.
 func TestFetch_UnreachableRemoteRunsNoFolderCommand(t *testing.T) {
 	dir := newRepo(t)
 	gitIn(t, dir, "remote", "add", "origin", "ssh://127.0.0.1:1/repo.git")
 	ssh, sshRan := marker(t, "ssh")
-	askpass, askpassRan := marker(t, "askpass")
 	gitIn(t, dir, "config", "core.sshCommand", ssh)
-	gitIn(t, dir, "config", "core.askPass", askpass)
-	t.Setenv("SSH_ASKPASS", askpass)
 
 	res := Fetch(context.Background(), Options{Folder: dir})
 	assert.False(t, res.Fetched)
@@ -130,7 +143,62 @@ func TestFetch_UnreachableRemoteRunsNoFolderCommand(t *testing.T) {
 	assert.NotEmpty(t, res.Error)
 	assert.Nil(t, res.FetchedAt)
 	assertNotRan(t, sshRan)
+}
+
+// ssh runs in batch mode with no askpass program: a stand-in ssh first on
+// PATH records its argv and runs $SSH_ASKPASS when it is set, as ssh would
+// for a passphrase.
+func TestFetch_SSHRunsInBatchModeWithNoAskpass(t *testing.T) {
+	dir := newRepo(t)
+	gitIn(t, dir, "remote", "add", "origin", "ssh://example.invalid/repo.git")
+	askpass, askpassRan := marker(t, "askpass")
+	gitIn(t, dir, "config", "core.askPass", askpass)
+	t.Setenv("SSH_ASKPASS", askpass)
+	t.Setenv("GIT_ASKPASS", askpass)
+	bin := t.TempDir()
+	argv := filepath.Join(t.TempDir(), "argv")
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "ssh"), []byte("#!/bin/sh\n"+
+		"echo \"$@\" > '"+argv+"'\n"+
+		"for a in \"$GIT_ASKPASS\" \"$SSH_ASKPASS\"; do [ -n \"$a\" ] && \"$a\"; done\n"+
+		"exit 255\n"), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	res := Fetch(context.Background(), Options{Folder: dir})
+	assert.False(t, res.Fetched)
+	assert.NotEmpty(t, res.Error)
+	got, err := os.ReadFile(argv)
+	require.NoError(t, err, "the stand-in ssh ran")
+	assert.Contains(t, string(got), "-o BatchMode=yes")
 	assertNotRan(t, askpassRan)
+}
+
+// A path remote is not a transport the fetch may use: it would read any
+// folder on the Mac. Its upload-pack never runs either.
+func TestFetch_PathRemoteIsRefused(t *testing.T) {
+	dir := newRepo(t)
+	origin := withOrigin(t, dir)
+	gitIn(t, dir, "remote", "set-url", "origin", origin)
+	pack, packRan := marker(t, "upload-pack")
+	gitIn(t, dir, "config", "remote.origin.uploadpack", pack)
+	res := Fetch(context.Background(), Options{Folder: dir})
+	assert.False(t, res.Fetched)
+	assert.Contains(t, res.Error, "transport 'file' not allowed")
+	assertNotRan(t, packRan)
+}
+
+// The folder's core.alternateRefsCommand, which git runs through the shell
+// while negotiating when the repository has alternates, never runs.
+func TestFetch_RunsNoAlternateRefsCommand(t *testing.T) {
+	dir := newRepo(t)
+	withOrigin(t, dir)
+	other := newRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "objects", "info", "alternates"),
+		[]byte(filepath.Join(other, ".git", "objects")+"\n"), 0o644))
+	cmd, cmdRan := marker(t, "alternate-refs")
+	gitIn(t, dir, "config", "core.alternateRefsCommand", cmd)
+	res := Fetch(context.Background(), Options{Folder: dir})
+	assert.True(t, res.Fetched, "%+v", res)
+	assertNotRan(t, cmdRan)
 }
 
 // A remote that asks for credentials gets none: no credential helper — the
@@ -149,9 +217,17 @@ func TestFetch_AuthenticationRunsNoHelperOrPrompt(t *testing.T) {
 	askpass, askpassRan := marker(t, "askpass")
 	gitIn(t, dir, "config", "credential.helper", local)
 	gitIn(t, dir, "config", "core.askPass", askpass)
+	system, systemRan := marker(t, "system-helper")
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(globalConfig, []byte("[credential]\n\thelper = "+global+"\n"), 0o644))
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	// The system config is where Homebrew's and the Command Line Tools'
+	// git name osxkeychain.
+	systemConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(systemConfig, []byte("[credential]\n\thelper = "+system+"\n"), 0o644))
+	t.Setenv("GIT_CONFIG_SYSTEM", systemConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "")
+	require.NoError(t, os.Unsetenv("GIT_CONFIG_NOSYSTEM"))
 	t.Setenv("GIT_ASKPASS", askpass)
 
 	res := Fetch(context.Background(), Options{Folder: dir})
@@ -159,6 +235,7 @@ func TestFetch_AuthenticationRunsNoHelperOrPrompt(t *testing.T) {
 	assert.Contains(t, res.Error, "terminal prompts disabled")
 	assertNotRan(t, localRan)
 	assertNotRan(t, globalRan)
+	assertNotRan(t, systemRan)
 	assertNotRan(t, askpassRan)
 }
 

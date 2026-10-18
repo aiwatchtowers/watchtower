@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/http/cgi" //nolint:gosec // test-only server for git http-backend; Go is far past 1.6.3
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,7 +139,8 @@ func TestWorkbenchGit_EnvelopeKeys(t *testing.T) {
 	assert.Equal(t, "unknown_branch", co["refused"])
 }
 
-// gitOrigin gives the repository a bare origin holding main, and pushes a
+// gitOrigin gives the repository a bare origin holding main, served over
+// git's smart HTTP backend (a fetch may not use a path remote), and pushes a
 // branch "topic" to it from another clone: topic is remote-only once
 // fetched.
 func gitOrigin(t *testing.T, dir string) {
@@ -161,6 +164,12 @@ func gitOrigin(t *testing.T, dir string) {
 	git(other, "add", "topic.txt")
 	git(other, "commit", "-q", "-m", "topic")
 	git(other, "push", "-q", "origin", "topic")
+	srv := httptest.NewServer(&cgi.Handler{
+		Path: bin, Args: []string{"http-backend"}, Dir: parent,
+		Env: []string{"GIT_PROJECT_ROOT=" + parent, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull},
+	})
+	t.Cleanup(srv.Close)
+	git(dir, "remote", "set-url", "origin", srv.URL+"/origin.git")
 }
 
 // PROJ-10 (board #563): fetch updates origin's refs only; a branch only on

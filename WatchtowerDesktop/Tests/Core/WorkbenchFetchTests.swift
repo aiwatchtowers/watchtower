@@ -107,7 +107,7 @@ final class WorkbenchFetchTests: XCTestCase {
         let auth = Pres.failure(WorkbenchGitFetchResult(
             error: "fatal: could not read Username for 'https://example.com': terminal prompts disabled"))
         XCTAssertEqual(auth, "Couldn't fetch origin: could not read Username for 'https://example.com': terminal prompts disabled"
-            + " — Watchtower never asks for a password or key; fetch once from a terminal")
+            + " — Watchtower's fetch never asks for a password or key and does not use a custom core.sshCommand")
         XCTAssertNil(Pres.failure(WorkbenchGitFetchResult(noRemote: true)), "no origin is no failure")
         XCTAssertEqual(Pres.failure(WorkbenchGitFetchResult(refused: "folder_not_a_worktree", refusedDetail: "missing")),
                        "Couldn't fetch origin: " + WorkbenchBranchPresentation.folderNotAWorktreeText)
@@ -135,7 +135,9 @@ final class WorkbenchFetchTests: XCTestCase {
         XCTAssertFalse(Pres.isBackgroundFetchDue(GitFetchState(lastAttemptAt: now.addingTimeInterval(-60), failure: "x"), now: now),
                        "a failed try counts: an offline Mac does not retry on every open")
         XCTAssertFalse(Pres.isBackgroundFetchDue(GitFetchState(running: true), now: now))
-        XCTAssertFalse(Pres.isBackgroundFetchDue(GitFetchState(noRemote: true), now: now))
+        XCTAssertFalse(Pres.isBackgroundFetchDue(GitFetchState(lastAttemptAt: now.addingTimeInterval(-60), noRemote: true), now: now))
+        XCTAssertTrue(Pres.isBackgroundFetchDue(GitFetchState(lastAttemptAt: now.addingTimeInterval(-300), noRemote: true), now: now),
+                      "no origin is checked again once due: one may have been added")
     }
 
     func testCaption() {
@@ -146,7 +148,7 @@ final class WorkbenchFetchTests: XCTestCase {
         XCTAssertEqual(Pres.caption(GitFetchState(lastFetchedAt: now.addingTimeInterval(-150)), now: now), "Fetched 2m ago")
         XCTAssertEqual(Pres.caption(GitFetchState(lastFetchedAt: now.addingTimeInterval(-7300)), now: now), "Fetched 2h ago")
         XCTAssertEqual(Pres.caption(GitFetchState(lastFetchedAt: now.addingTimeInterval(-200_000)), now: now), "Fetched 2d ago")
-        XCTAssertNil(Pres.caption(GitFetchState(noRemote: true), now: now))
+        XCTAssertEqual(Pres.caption(GitFetchState(noRemote: true), now: now), "No origin remote")
     }
 
     func testACheckoutConfirmationNamesTheCheckout() throws {

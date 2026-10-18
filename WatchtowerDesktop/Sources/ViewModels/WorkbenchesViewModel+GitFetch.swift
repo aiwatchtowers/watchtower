@@ -74,8 +74,18 @@ extension WorkbenchesViewModel {
         }
         gitFetchStates[repo] = state
         guard case let .success(result) = outcome, result.fetched else { return }
-        // Only origin's refs moved: the counters and the remote-only list.
-        await refreshGitStatus(root: root)
-        await reloadBranchList(project: project, root: root)
+        // Only origin's refs moved: the counters and the remote-only list of
+        // the workbench's roots on this repository read so far (its main
+        // folder and a session's worktree share them).
+        var roots = [root]
+        for key in gitStatus.keys
+        where key.workbenchID == project.id && key != GitRootKey(root) && gitFetchRepository(key) == repo {
+            roots.append(key.worktreeFolder.map { CodeRoot(workbenchID: project.id, worktree: URL(fileURLWithPath: $0)) }
+                ?? project.mainCodeRoot)
+        }
+        for other in roots {
+            await refreshGitStatus(root: other)
+            if other == root || gitBranches[other] != nil { await reloadBranchList(project: project, root: other) }
+        }
     }
 }
