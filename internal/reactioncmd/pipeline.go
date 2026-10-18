@@ -155,8 +155,10 @@ func (p *Pipeline) Run(ctx context.Context, events EventSink) (int, error) {
 
 // processAccount runs one account's dictionary path (when the dictionary has
 // entries) and, with a sink, its event path, over one shared reactions.list
-// call. The two are independent: a failure in one never skips the other, and
-// the dictionary path's error wins the return.
+// call (an account whose dictionary history is not yet seeded makes a second
+// call once: seedAccount lists on its own). The two are independent: a
+// failure in one never skips the other, and the dictionary path's error wins
+// the return.
 func (p *Pipeline) processAccount(ctx context.Context, acct Account, dict map[string]db.ReactionCommandMapping, budget *dispatchBudget, events EventSink) (int, error) {
 	list := newReactionList(acct)
 	dispatched := 0

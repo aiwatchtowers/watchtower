@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// "Reactions aren't being read" with **Turn on**: the Inbox strip's path
-/// (`featureManager.enableNow` + daemon restart). Renders nothing unless the
+/// (`featureManager.enableNow` + the app-wide daemon start queue). Renders nothing unless the
 /// `reaction-commands` feature is known to be off.
 struct ReactionCommandsOffNote: View {
     let text: String
@@ -37,7 +37,7 @@ struct ReactionCommandsOffNote: View {
         let manager = appState.featureManager
         Task {
             await manager.enableNow(ReactionCheatSheetView.reactionCommandsFeatureID) {
-                try await DaemonManager.restart()
+                try await appState.restartOnChain(appState.daemonControl)
             }
         }
     }

@@ -307,10 +307,18 @@ struct SlackConnectionDetail: View {
     /// is hidden (the `automations` feature is off) it is edited here instead.
     private var reactionDictionarySection: some View {
         Section("Reaction commands") {
-            if SidebarDestination.automations.isVisible(
-                disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
-                connected: appState.featureVisibility.connectedSources
+            if ReactionDictionaryPlacement.showsEditorInSettings(
+                automationsVisible: SidebarDestination.automations.isVisible(
+                    disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
+                    connected: appState.featureVisibility.connectedSources
+                )
             ) {
+                if let vm = appState.reactionDictionaryViewModel {
+                    ReactionDictionaryEditor(vm: vm)
+                } else {
+                    Text("Loading...").font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
                 HStack {
                     Text("Reaction commands moved to Automations → Reactions")
                         .font(.caption)
@@ -318,10 +326,6 @@ struct SlackConnectionDetail: View {
                     Spacer()
                     Button("Open") { appState.navigateToAutomations(section: .reactions) }
                 }
-            } else if let vm = appState.reactionDictionaryViewModel {
-                ReactionDictionaryEditor(vm: vm)
-            } else {
-                Text("Loading...").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
