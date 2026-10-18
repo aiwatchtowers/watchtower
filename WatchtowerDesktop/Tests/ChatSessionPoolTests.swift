@@ -512,6 +512,10 @@ final class ChatSessionPoolTests: XCTestCase {
         fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
         let ended = await waitForCondition { self.pool.runningTurnID(conversationID: 1) == nil }
         XCTAssertTrue(ended, "a finished turn holds nothing")
+        // The next turn starts once the last one's terminal write landed
+        // (board #670): startTurn ignores a busy client.
+        let settled = await waitForCondition { !client.isBusy }
+        XCTAssertTrue(settled)
         client.startTurn(turn("t2", row: try assistantRow()))
         XCTAssertEqual(pool.runningTurnID(conversationID: 1), "t2")
         let row = { (turnID: String) in
