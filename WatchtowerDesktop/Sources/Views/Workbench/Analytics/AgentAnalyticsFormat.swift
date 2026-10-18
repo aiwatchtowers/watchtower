@@ -24,6 +24,13 @@ enum AgentAnalyticsFormat {
         return "Subagents: \(String(format: "%.1f", subagents.avgParallel)) at once on average · peak \(subagents.peak)"
     }
 
+    /// "Loading history — 2,125 files so far" until the import is done; nil then.
+    static func importLine(_ importState: AgentImportState) -> String? {
+        guard importState.state != "done" else { return nil }
+        let files = importState.filesStored.formatted(.number.locale(Locale(identifier: "en_US")))
+        return "Loading history — \(files) files so far"
+    }
+
     /// The period the report covers, from its own `since`/`until`; nil
     /// when it matches none of the picker's.
     static func period(of overview: AgentReportOverview) -> AgentAnalyticsCenter.Period? {
