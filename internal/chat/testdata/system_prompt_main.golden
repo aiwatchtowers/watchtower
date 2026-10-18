@@ -220,6 +220,7 @@ Workbench
 - Updates and quitting (features/workbench/updates-and-quitting.md)
 - Asks (features/workbench/asks.md)
 - Code viewer (features/workbench/code-viewer.md)
+- Branches in the header (features/workbench/branches.md)
 - Worktrees and cleanup (features/workbench/worktrees-and-cleanup.md)
 - Diff review (features/workbench/diff-review.md)
 - Methodology (features/workbench/methodology.md)
