@@ -656,18 +656,7 @@ func runLinearTeams(cmd *cobra.Command, _ []string) error {
 	}
 	out := cmd.OutOrStdout()
 	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
-		type teamJSON struct {
-			Key      string `json:"key"`
-			Name     string `json:"name"`
-			Selected bool   `json:"selected"`
-		}
-		rows := make([]teamJSON, 0, len(teams))
-		for _, t := range teams {
-			rows = append(rows, teamJSON{t.Key, t.Name, t.IsSelected})
-		}
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(rows)
+		return printLinearTeamsJSON(out, teams)
 	}
 	if len(teams) == 0 {
 		fmt.Fprintf(out, "No teams yet for account %d. Run 'watchtower linear sync --account %d' first.\n", account.ID, account.ID)
@@ -682,6 +671,26 @@ func runLinearTeams(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "%-10s %-32s %s\n", t.Key, truncate(t.Name, 32), sel)
 	}
 	return nil
+}
+
+// linearTeamJSON is one row of `linear teams --json`; the Desktop's
+// Settings → Linear decodes these keys (Swift `LinearTeam`).
+type linearTeamJSON struct {
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	Selected bool   `json:"selected"`
+}
+
+// printLinearTeamsJSON writes the teams as a JSON array, `[]` when there are
+// none (never `null`: the Swift decoder expects an array).
+func printLinearTeamsJSON(w io.Writer, teams []db.LinearTeam) error {
+	rows := make([]linearTeamJSON, 0, len(teams))
+	for _, t := range teams {
+		rows = append(rows, linearTeamJSON{t.Key, t.Name, t.IsSelected})
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(rows)
 }
 
 func setLinearTeamsSelected(cmd *cobra.Command, keys []string, selected bool) error {

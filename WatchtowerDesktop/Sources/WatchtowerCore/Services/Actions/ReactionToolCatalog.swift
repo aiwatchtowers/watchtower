@@ -11,6 +11,7 @@ package enum ReactionDictionaryTools {
     package static let all = [
         "create_target",
         "create_jira_issue",
+        "create_linear_issue",
         "create_track",
         "create_idea",
         "remind_me",
@@ -47,7 +48,8 @@ package enum ReactionToolCatalog {
             destination: "Jira",
             alwaysAsks: true
         ),
-        // Exists for approval-card titles, not the reaction dictionary.
+        // On the reaction surface too (Linear plan 2, lane 3): a mapping may
+        // name it to always draft in Linear.
         "create_linear_issue": ReactionToolInfo(
             title: "Create a Linear issue",
             summary: "Drafts a Linear issue",
@@ -178,6 +180,25 @@ package enum ReactionToolCatalog {
     package static func title(for tool: String) -> String {
         entries[tool]?.title ?? tool
     }
+
+    /// What a reaction mapping does, for the dictionary editor and the
+    /// cheat sheet. `create_jira_issue` as a reaction drafts the issue on
+    /// the tracker the channel's keys belong to, Jira or Linear, so it
+    /// reads tracker-neutral there; approval cards keep the proposed
+    /// tool's own title (`title(for:)`).
+    package static func reactionInfo(for tool: String) -> ReactionToolInfo? {
+        guard tool == "create_jira_issue", let info = entries[tool] else { return entries[tool] }
+        return ReactionToolInfo(
+            title: "Create an issue",
+            summary: "Drafts an issue from the message in Jira or Linear, by the channel's issue keys",
+            destination: "Jira or Linear",
+            alwaysAsks: info.alwaysAsks
+        )
+    }
+
+    package static func reactionTitle(for tool: String) -> String {
+        reactionInfo(for: tool)?.title ?? tool
+    }
 }
 
 /// The Inbox Strip's reaction cheat sheet — pure derivations over the live
@@ -203,7 +224,7 @@ package enum ReactionCheatSheet {
     package static func rows(mappings: [ReactionCommandMapping], trustByTool: [String: String]) -> [Row] {
         mappings.compactMap { mapping in
             guard mapping.enabled, !mapping.tool.isEmpty else { return nil }
-            let info = ReactionToolCatalog.info(for: mapping.tool)
+            let info = ReactionToolCatalog.reactionInfo(for: mapping.tool)
             // No tool_trust row is Go's default, "ask" (`Registry.Propose`).
             let trustAsks = trustByTool[mapping.tool] != "execute"
             return Row(

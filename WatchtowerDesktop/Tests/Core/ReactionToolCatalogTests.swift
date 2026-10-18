@@ -27,7 +27,8 @@ final class ReactionToolCatalogTests: XCTestCase {
     }
 
     /// The five Linear writes are named on approval cards, notifications and
-    /// Home, always ask, and stay out of the reaction dictionary.
+    /// Home and always ask; only `create_linear_issue` is a reaction tool
+    /// (the Go reaction surface carries it since Linear plan 2).
     func testLinearWritesHaveTitlesButAreNotReactionTools() {
         let tools = ["create_linear_issue", "add_linear_comment", "transition_linear_issue",
                      "assign_linear_issue", "update_linear_issue"]
@@ -40,8 +41,18 @@ final class ReactionToolCatalogTests: XCTestCase {
             XCTAssertTrue(info.title.contains("Linear"), tool)
             XCTAssertEqual(info.destination, "Linear", tool)
             XCTAssertTrue(info.alwaysAsks, tool)
-            XCTAssertFalse(ReactionDictionaryTools.all.contains(tool), tool)
+            XCTAssertEqual(ReactionDictionaryTools.all.contains(tool), tool == "create_linear_issue", tool)
         }
+    }
+
+    /// `:ticket:` drafts on Jira or Linear by the channel's keys: the
+    /// dictionary and cheat sheet say so; approval cards keep the Jira title.
+    func testCreateJiraIssueReadsTrackerNeutralAsAReaction() {
+        XCTAssertEqual(ReactionToolCatalog.reactionTitle(for: "create_jira_issue"), "Create an issue")
+        XCTAssertEqual(ReactionToolCatalog.reactionInfo(for: "create_jira_issue")?.destination, "Jira or Linear")
+        XCTAssertEqual(ReactionToolCatalog.title(for: "create_jira_issue"), "Create a Jira issue")
+        XCTAssertEqual(ReactionToolCatalog.reactionTitle(for: "create_linear_issue"), "Create a Linear issue")
+        XCTAssertEqual(ReactionToolCatalog.reactionTitle(for: "frobnicate"), "frobnicate")
     }
 
     func testUnknownToolFallsBackToItsID() {

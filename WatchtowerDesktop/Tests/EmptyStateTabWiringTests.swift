@@ -222,6 +222,16 @@ final class EmptyStateTabWiringTests: XCTestCase {
 
         // Jira data present: no blockers is good news, said in the tab's own words.
         XCTAssertNoThrow(try BlockerMapView.emptyState(context: withReadiness(.ready)).inspect().find(text: "No blockers"))
+        // Blockers read Linear too: Linear data alone is enough, and a
+        // Linear-only install is not asked to connect Jira.
+        var linearOnly = EmptyStateContext()
+        linearOnly.readiness = { $0 == .linear ? .ready : .needsSource(.jira) }
+        XCTAssertNoThrow(try BlockerMapView.emptyState(context: linearOnly).inspect().find(text: "No blockers"))
+        var linearSyncing = EmptyStateContext()
+        linearSyncing.readiness = { $0 == .linear ? .scheduled(.nextCycle(minutes: 15)) : .needsSource(.jira) }
+        let syncing = BlockerMapView.emptyState(context: linearSyncing)
+        XCTAssertThrowsError(try syncing.inspect().find(button: "Connect Jira"))
+        XCTAssertNoThrow(try syncing.inspect().find(text: "Within ~15 min"))
         // A search that hides everything keeps its own state.
         let searched = ProjectMapView.emptyState(isFiltered: true, context: context)
         XCTAssertNoThrow(try searched.inspect().find(text: "No matching epics"))

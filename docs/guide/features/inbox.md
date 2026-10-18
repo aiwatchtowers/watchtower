@@ -21,9 +21,13 @@ Reacting to a Slack message with an emoji from your dictionary makes the assista
 | :alarm_clock: | Resurfaces the message later (tomorrow 09:00 unless it names a time) | Inbox | Applies at once |
 | :pushpin: | Summarises the thread: topic, people, decisions, what you're asked | Inbox | Applies at once |
 | :white_check_mark: | Turns the message into a target | Targets | Asks first |
-| :ticket: | Drafts a Jira issue | Jira | Always asks |
+| :ticket: | Drafts an issue in Jira or Linear | Jira or Linear | Always asks |
 
 You edit the dictionary in Automations → Reactions. A recipe can also run on a reaction; see [Reactions and tracks in Automations](automations-rules.md). Reactions you had placed before the first check are recorded as history, never acted on, and removing then re-adding the same emoji on the same message doesn't trigger it again. React on a different message instead.
+
+### Which tracker an issue reaction files in
+
+An issue reaction drafts the issue in the tracker whose issue keys the channel mentions. A channel that talks about `ENG-41` (a Linear team) gets a Linear issue, one that talks about `ABC-9` (a Jira project) gets a Jira issue. With only one tracker connected, that one is used. A channel that mentions both, or neither while both are connected, gets the tracker your dictionary names, so :ticket: means Jira there.
 
 ### Proposals from everywhere
 

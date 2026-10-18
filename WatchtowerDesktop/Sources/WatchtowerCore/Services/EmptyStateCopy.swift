@@ -132,7 +132,9 @@ package enum EmptyStateCopyTable {
             landsHere: "What the assistant remembers about your work.",
             feature: .memory, primaryAction: .turnOn(featureID: "memory")),
         "workload": jira("gauge.with.dots.needle.33percent", "No workload yet", "Jira views: who carries how much work."),
-        "blockers": jira("exclamationmark.triangle", "No blockers yet", "Jira views: what is blocked and by what."),
+        // Blockers read Jira and Linear (`tracker_issues`); its view folds the
+        // two readiness lines into one (`FeatureReadiness.trackerReadiness`).
+        "blockers": jira("exclamationmark.triangle", "No blockers yet", "Jira and Linear views: what is blocked and by what."),
         "projectMap": jira("map", "No project map yet", "Jira views: how the projects and their epics fit together."),
         "releases": jira("shippingbox", "No releases yet", "Jira views: upcoming releases and what is in them."),
         "boards": jira("rectangle.on.rectangle.angled", "No boards yet", "Jira views: your Jira boards and their columns."),
@@ -146,8 +148,8 @@ package enum EmptyStateCopyTable {
 extension EmptyStateCopyTable {
     /// The Getting ready card text per tracked feature. Where a tab's row shows
     /// this feature, `whatItIs` IS that row's `landsHere` (hour filled in); the
-    /// four features with no tab row of their own (slackSync, streamDigests,
-    /// knowledgeIndex, jira) have their own sentence here.
+    /// five features with no tab row of their own (slackSync, streamDigests,
+    /// knowledgeIndex, jira, linear) have their own sentence here.
     package static func featureCard(_ feature: ReadinessFeature, briefingHour: Int, dayPlanHour: Int) -> FeatureCardCopy {
         let title = cardTitle(feature)
         let tab: String
@@ -164,6 +166,8 @@ extension EmptyStateCopyTable {
                 whatItIs: "A search index over your messages, documents and notes for the assistant.")
         case .jira:
             return FeatureCardCopy(title: title, whatItIs: "Your Jira boards, issues and releases.")
+        case .linear:
+            return FeatureCardCopy(title: title, whatItIs: "Your Linear issues, cycles and projects.")
         case .digests: tab = "digests"
         case .tracks: tab = "tracks"
         case .peopleCards: tab = "people"
@@ -194,6 +198,7 @@ extension EmptyStateCopyTable {
         case .knowledgeIndex: "Knowledge search"
         case .calendar: "Calendar"
         case .jira: "Jira"
+        case .linear: "Linear"
         }
     }
 }
