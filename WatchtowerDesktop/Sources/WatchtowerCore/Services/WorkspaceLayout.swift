@@ -16,8 +16,17 @@ package enum WorkspacePane: Codable, Hashable, Sendable {
     case analytics
     /// The diff reviewer of a session's changes (board #328).
     case changes(Int64)
-    /// The chat view of a session's dialog (`watchtower workbench session-feed`).
+    /// The Workchat of a session: its dialog as a chat, the session's second
+    /// mode beside the terminal (#711). The raw name predates Workchat;
+    /// persisted, so kept.
     case sessionChat(Int64)
+}
+
+extension WorkspacePane {
+    /// A session's Workchat (#711).
+    package var isWorkchat: Bool {
+        if case .sessionChat = self { true } else { false }
+    }
 }
 
 /// The project page header's view buttons: a terminal (any session), the
@@ -33,7 +42,7 @@ package enum WorkspaceView: CaseIterable, Sendable {
     case analytics
     /// A session's changes under review (board #328).
     case changes
-    /// A session's dialog as a chat.
+    /// A session's Workchat (#711); the raw name predates it.
     case chat
 
     /// What `pane` shows.
@@ -66,6 +75,9 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
     /// Non-nil = that pane alone; the split is remembered underneath.
     package var expanded: WorkspacePane?
     package var dividerFraction: Double
+    /// The sessions last shown in Workchat (#711); every other session opens
+    /// in its terminal. Absent from a layout saved before Workchat.
+    package var workchatSessions: Set<Int64> = []
 
     package static let `default` = Self(primary: .board, secondary: nil, expanded: nil, dividerFraction: 0.5)
 
@@ -108,7 +120,7 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         defer { follow(pane) }
         if pane == primary || pane == secondary { return }
         if isSplit {
-            if case .session = pane, case .sessionReport? = secondary {
+            if Self.sessionID(of: pane) != nil, case .sessionReport? = secondary {
                 primary = pane
             } else {
                 secondary = pane
@@ -188,14 +200,16 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
     /// hiding a terminal — a split keeps its session and swaps the other
     /// pane; a single pane switches to it (`reveal`).
     package mutating func showWorkbenchView(_ pane: WorkspacePane) {
-        reveal(pane, keeping: sessionIDs.first.map { .session($0) } ?? primary)
+        let session = [primary, secondary].compactMap(\.self).first { Self.sessionID(of: $0) != nil }
+        reveal(pane, keeping: session ?? primary)
     }
 
-    /// The pane the header's session menu puts a session into: the terminal
-    /// on screen, else the last pane on screen — the one the Terminal button
-    /// replaces too (it keeps the first).
+    /// The pane the header's session menu puts a session into: the session
+    /// on screen, in its terminal or its Workchat (#711), else the last pane
+    /// on screen — the one the Terminal button replaces too (it keeps the
+    /// first).
     package var terminalSlot: WorkspacePane {
-        visiblePanes.first(where: WorkspaceView.terminal.matches) ?? visiblePanes.last ?? primary
+        visiblePanes.first { Self.sessionID(of: $0) != nil } ?? visiblePanes.last ?? primary
     }
 
     /// A header view button turned off: in a split on screen, the pane it
@@ -218,11 +232,73 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         }
     }
 
+    // MARK: - Terminal or Workchat (#711)
+
+    /// The sessions in either slot, in their terminal or their Workchat,
+    /// primary first.
+    package var shownSessionIDs: [Int64] {
+        [primary, secondary].compactMap { $0.flatMap(Self.sessionID(of:)) }
+    }
+
+    /// Every session the layout names: one in a slot, or one whose
+    /// Workchat mode it remembers. A session gone from the list leaves all.
+    package var referencedSessionIDs: Set<Int64> {
+        Set(shownSessionIDs).union(workchatSessions)
+    }
+
+    /// The session of a terminal or a Workchat pane; nil for any other pane.
+    package static func sessionID(of pane: WorkspacePane) -> Int64? {
+        switch pane {
+        case let .session(id), let .sessionChat(id): id
+        default: nil
+        }
+    }
+
+    /// Records the mode session `id` opens in next: Workchat (`workchat`)
+    /// or its terminal. A new session records the terminal: a fresh agent
+    /// may stop at a trust or login prompt only the terminal shows.
+    package mutating func setMode(_ workchat: Bool, sessionID id: Int64) {
+        if workchat { workchatSessions.insert(id) } else { workchatSessions.remove(id) }
+    }
+
+    /// The pane session `id` opens in: its Workchat when it was last shown
+    /// there, else its terminal.
+    package func pane(forSession id: Int64) -> WorkspacePane {
+        workchatSessions.contains(id) ? .sessionChat(id) : .session(id)
+    }
+
+    /// ⌃` and the header's twin switch: the slot holding session `id`
+    /// shows its other mode instead — same session, same slot — and that
+    /// mode is recorded. With both modes side by side in a split nothing
+    /// moves; an expansion moves to the other mode. Neither on screen:
+    /// only the mode flips.
+    package mutating func toggleMode(sessionID id: Int64) {
+        let terminal = WorkspacePane.session(id)
+        let chat = WorkspacePane.sessionChat(id)
+        let toChat = !workchatSessions.contains(id)
+        let slots = [primary, secondary].compactMap(\.self)
+        let from: WorkspacePane, to: WorkspacePane
+        if slots.contains(terminal), slots.contains(chat) {
+            setMode(toChat, sessionID: id)
+            if let shown = expanded, shown == terminal || shown == chat { expanded = shown == terminal ? chat : terminal }
+            return
+        } else if slots.contains(chat) {
+            (from, to) = (chat, terminal)
+        } else if slots.contains(terminal) {
+            (from, to) = (terminal, chat)
+        } else {
+            setMode(toChat, sessionID: id)
+            return
+        }
+        replace(from, with: to)
+        setMode(to == chat, sessionID: id)
+    }
+
     /// The Session view tracks the selected session: once `pane`, a
-    /// session, is put on screen, a Session view in either slot shows its
-    /// report.
+    /// session's terminal or Workchat, is put on screen, a Session view in
+    /// either slot shows its report.
     private mutating func follow(_ pane: WorkspacePane) {
-        guard case let .session(id) = pane else { return }
+        guard let id = Self.sessionID(of: pane) else { return }
         let report = WorkspacePane.sessionReport(id)
         if case .sessionReport = primary { primary = report }
         if case .sessionReport? = secondary { secondary = report }
@@ -232,8 +308,10 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
 
     /// A deleted session never stays in the layout; a Session view on its
     /// report stays, with no session to show until another one is picked.
-    /// Its Changes and Chat panes go with it: its round has no session to review.
+    /// Its Changes and Workchat panes go with it — its round has no session
+    /// to review — and so does its remembered mode.
     package mutating func forgetSession(_ id: Int64, fallback: WorkspacePane) {
+        workchatSessions.remove(id)
         for gone in [WorkspacePane.changes(id), .sessionChat(id), .session(id)] {
             if expanded == gone { expanded = nil }
             if secondary == gone { secondary = nil }
@@ -262,5 +340,17 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         }
         layout.setDividerFraction(layout.dividerFraction)
         return layout
+    }
+}
+
+extension WorkspaceLayout {
+    /// `workchatSessions` is optional: a layout saved before Workchat has none.
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        primary = try c.decode(WorkspacePane.self, forKey: .primary)
+        secondary = try c.decodeIfPresent(WorkspacePane.self, forKey: .secondary)
+        expanded = try c.decodeIfPresent(WorkspacePane.self, forKey: .expanded)
+        dividerFraction = try c.decode(Double.self, forKey: .dividerFraction)
+        workchatSessions = try c.decodeIfPresent(Set<Int64>.self, forKey: .workchatSessions) ?? []
     }
 }

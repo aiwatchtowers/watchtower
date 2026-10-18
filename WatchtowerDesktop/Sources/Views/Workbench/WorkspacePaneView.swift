@@ -98,7 +98,7 @@ struct WorkspacePaneView: View {
             Button("Analytics") { show(.analytics) }.disabled(pane == .analytics)
             if let id = currentSessionID {
                 Button("Changes") { show(.changes(id)) }.disabled(pane == .changes(id))
-                Button("Chat") { show(.sessionChat(id)) }.disabled(pane == .sessionChat(id))
+                Button("Workchat") { show(.sessionChat(id)) }.disabled(pane == .sessionChat(id))
             }
             Divider()
             Section("Sessions") {
@@ -120,10 +120,10 @@ struct WorkspacePaneView: View {
         .help("Show something else in this pane")
     }
 
-    /// The session the pane picker's Changes reviews: the one in a slot,
-    /// else the active one.
+    /// The session the pane picker's Changes reviews: the one in a slot (in
+    /// its terminal or its Workchat), else the active one.
     private var currentSessionID: Int64? {
-        vm.layout(projectID: project.id).sessionIDs.first ?? vm.activeSessionID(projectID: project.id)
+        vm.layout(projectID: project.id).shownSessionIDs.first ?? vm.activeSessionID(projectID: project.id)
     }
 
     private func show(_ item: WorkspacePane) {
@@ -278,7 +278,7 @@ extension WorkspaceView {
         case .files: "Files"
         case .analytics: "Analytics"
         case .changes: "Changes"
-        case .chat: "Chat"
+        case .chat: "Workchat"
         }
     }
 

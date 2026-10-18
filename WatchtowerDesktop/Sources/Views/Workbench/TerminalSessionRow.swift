@@ -28,6 +28,9 @@ struct TerminalSessionRow: View {
     var showsDelete = false
     /// The panel has the keyboard and its cursor is on this row.
     var hasCursor = false
+    /// The mode a workbench agent session opens in (#711): `.terminal` or
+    /// `.chat` (Workchat); nil = no glyph (a standalone terminal or a shell).
+    var opensIn: WorkspaceView?
 
     private var session: TerminalSession { row.session }
 
@@ -74,8 +77,9 @@ struct TerminalSessionRow: View {
             if session.projectID != nil, let reviewChanges = actions.reviewChanges {
                 Button("Review Changes") { reviewChanges(session) }
             }
-            if session.projectID != nil, session.kind.isAgent, let showChat = actions.showChat {
-                Button("Show Chat") { showChat(session) }
+            if session.projectID != nil, session.kind.isAgent, let openIn = actions.openIn {
+                Button("Open in Terminal") { openIn(session, false) }
+                Button("Open in Workchat") { openIn(session, true) }
             }
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
@@ -124,6 +128,13 @@ struct TerminalSessionRow: View {
                 if let tag = row.agentTag { AgentTag(text: tag) }
             }
             Spacer(minLength: 0)
+            if let opensIn {
+                Image(systemName: opensIn.icon)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .help("Opens in \(opensIn.title)")
+                    .accessibilityLabel("Opens in \(opensIn.title)")
+            }
         }
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
