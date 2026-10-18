@@ -65,27 +65,51 @@ package enum AutomationCardPresentation {
         if automation.needsConfirmation {
             let scheduleChanged = changes?.contains { $0.field == "trigger" } ?? false
             facts.append(scheduleChanged ? "schedule changed, waiting for you" : "waiting for your confirmation")
-        } else if automation.triggerKind == "event" {
-            // Event triggers arrive in P4.
-            facts.append("coming in a later version")
         } else if let active = item.activeRun {
             facts.append(activeFact(active, now: now))
         } else if let last = item.lastRun, [.red, .orange].contains(last.status.badge) {
             let reason = last.error.isEmpty ? statusText(last.status).lowercased() : firstLine(last.error)
             facts.append("last run: " + reason)
+        } else if automation.triggerKind == "event" {
+            facts = eventFacts(item, now: now)
         } else {
-            if automation.enabled, let next = automation.nextRunAt {
-                let seconds = next.timeIntervalSince(now)
-                facts.append(seconds > 0 ? "next in " + relative(seconds) : "due now")
-            }
-            if item.tokens7d > 0 {
-                facts.append("\(compactTokens(item.tokens7d)) tokens this week")
-            }
-            if facts.isEmpty, let last = item.lastRun, let at = last.finishedAt ?? last.startedAt {
-                facts.append("last run \(relative(now.timeIntervalSince(at))) ago")
-            }
+            facts = idleFacts(item, now: now)
         }
         return ([item.triggerText] + facts).joined(separator: " · ")
+    }
+
+    /// A healthy event recipe has no next run: when it last fired is the fact.
+    private static func eventFacts(_ item: AutomationListItem, now: Date) -> [String] {
+        var facts: [String] = []
+        if let last = lastRunAgo(item, now: now) {
+            facts.append(last)
+        } else if item.automation.enabled {
+            facts.append("no runs yet")
+        }
+        if item.tokens7d > 0 {
+            facts.append("\(compactTokens(item.tokens7d)) tokens this week")
+        }
+        return facts
+    }
+
+    private static func idleFacts(_ item: AutomationListItem, now: Date) -> [String] {
+        var facts: [String] = []
+        if item.automation.enabled, let next = item.automation.nextRunAt {
+            let seconds = next.timeIntervalSince(now)
+            facts.append(seconds > 0 ? "next in " + relative(seconds) : "due now")
+        }
+        if item.tokens7d > 0 {
+            facts.append("\(compactTokens(item.tokens7d)) tokens this week")
+        }
+        if facts.isEmpty, let last = lastRunAgo(item, now: now) {
+            facts.append(last)
+        }
+        return facts
+    }
+
+    private static func lastRunAgo(_ item: AutomationListItem, now: Date) -> String? {
+        guard let last = item.lastRun, let at = last.finishedAt ?? last.startedAt else { return nil }
+        return "last run \(relative(now.timeIntervalSince(at))) ago"
     }
 
     private static func activeFact(_ run: AutomationRun, now: Date) -> String {
