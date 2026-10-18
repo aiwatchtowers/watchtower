@@ -21,7 +21,7 @@ final class SessionChatWiringTests: XCTestCase {
             ticks: {
                 AsyncStream { spy.tick = $0 }
             },
-            send: { sessionID, agentID in spy.sent.append("\(sessionID)/\(agentID ?? "-")") }
+            send: { route in spy.sent.append("\(route.sessionID)/\(route.agentID ?? "-")/\(route.toolUseID ?? "-")") }
         )
     }
 
@@ -37,24 +37,39 @@ final class SessionChatWiringTests: XCTestCase {
         let spy = Spy()
         let model = SessionChatViewModel(sessionID: 11, agentID: nil, store: try TestPhone.replica(), requester: requester(spy))
         model.appeared()
-        try await poll({ spy.sent == ["11/-"] }, "no request on appear")
+        try await poll({ spy.sent == ["11/-/-"] }, "no request on appear")
         spy.tick?.yield()
-        try await poll({ spy.sent == ["11/-", "11/-"] }, "no repeat on the tick")
+        try await poll({ spy.sent == ["11/-/-", "11/-/-"] }, "no repeat on the tick")
         model.disappeared()
     }
 
     func testRequestCarriesTheSubagentAndTheSessionRecord() async throws {
         let store = try makePoolStore()
         let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
-        let requester = SessionChatRequester.sending(through: outbox)
-        requester.start(sessionID: 11, agentID: "demo-1")
+        let requester = SessionChatRequester.sending(through: outbox, store: store)
+        requester.start(sessionID: 11, agentID: "demo-1", toolUseID: "toolu_demo1")
         try await poll({ ((try? store.pendingActions()) ?? []).count == 1 }, "no action queued")
-        requester.stop(sessionID: 11, agentID: "demo-1")
+        requester.stop(sessionID: 11, agentID: "demo-1", toolUseID: "toolu_demo1")
         let action = try XCTUnwrap(store.pendingActions().first)
         XCTAssertEqual(action.action.kind, .sessionChatRequest)
         XCTAssertEqual(action.entityRecordName, "terminal_session-11")
         XCTAssertEqual(action.action.params["session_id"], .integer(11))
         XCTAssertEqual(action.action.params["subagent_id"], .string("demo-1"))
+        XCTAssertEqual(action.action.params["tool_use_id"], .string("toolu_demo1"))
+    }
+
+    func testARequestStillQueuedIsNotQueuedAgain() async throws {
+        let store = try makePoolStore()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        var ticker: AsyncStream<Void>.Continuation?
+        let requester = SessionChatRequester.sending(through: outbox, store: store) { AsyncStream { ticker = $0 } }
+        requester.start(sessionID: 11, agentID: nil)
+        try await poll({ ((try? store.pendingActions()) ?? []).count == 1 }, "no action queued")
+        ticker?.yield()
+        ticker?.yield()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(try store.pendingActions().count, 1, "the repeats found their request still waiting")
+        requester.stop(sessionID: 11, agentID: nil)
     }
 
     func testAStaleStopDoesNotKillTheSuccessor() async throws {
@@ -67,7 +82,7 @@ final class SessionChatWiringTests: XCTestCase {
             requester.stop(sessionID: 11, agentID: first)
             spy.tick?.yield()
             try await poll({ spy.sent.count == 3 }, "the stale stop killed the running loop")
-            XCTAssertEqual(spy.sent.last, "11/\(second ?? "-")")
+            XCTAssertEqual(spy.sent.last, "11/\(second ?? "-")/-")
             requester.stop(sessionID: 11, agentID: second)
         }
     }
@@ -135,10 +150,65 @@ final class SessionChatWiringTests: XCTestCase {
     func testSubagentRowPushesSubagentRoute() throws {
         let chat = try demoChat()
         let subagent = try XCTUnwrap(chat.entries.first { $0.kind == .subagent }?.subagent)
-        let route = SessionChatEntryRow.route(for: subagent, sessionID: chat.sessionID)
-        XCTAssertEqual(route, SessionChatRoute(sessionID: 11, agentID: "demo-1"))
+        let route = try XCTUnwrap(SessionChatEntryRow.route(for: subagent, sessionID: chat.sessionID))
+        XCTAssertEqual(route, SessionChatRoute(sessionID: 11, agentID: "demo-1", toolUseID: "toolu_demo1"))
         XCTAssertEqual(SessionChat.recordName(sessionID: route.sessionID, agentID: route.agentID), "session_chat-11-demo-1")
+        for (agent, tool) in [("", "toolu_demo1"), ("demo-1", ""), ("", "")] {
+            let incomplete = SessionChat.Entry.Subagent(agentID: agent, toolUseID: tool, type: "Explore", description: "d", status: "running")
+            XCTAssertNil(SessionChatEntryRow.route(for: incomplete, sessionID: 11), "no route without both ids")
+        }
         XCTAssertEqual(SessionChatEntryRow.statusText("running"), "Running")
+    }
+
+    func testTheChatGoingAwayStartsThePatienceTimerAgain() async throws {
+        let store = try await demoStore()
+        var releases: [CheckedContinuation<Void, Never>] = []
+        let model = SessionChatViewModel(
+            sessionID: 11, agentID: nil, store: store, requester: requester(Spy()),
+            sleep: { _ in await withCheckedContinuation { releases.append($0) } } // swiftlint:disable:this trailing_closure
+        )
+        model.appeared()
+        try await poll({ model.chat != nil }, "the demo chat never arrived")
+        XCTAssertFalse(model.waitingTooLong)
+        let wireName = try await store.reader.read {
+            try String.fetchOne($0, sql: "SELECT record_name FROM slice_records WHERE plain_name = 'session_chat-11'")
+        }
+        let batch = CloudChangeBatch(changed: [], deletedRecordNames: [try XCTUnwrap(wireName)], newToken: CloudChangeToken(value: Int.max / 2))
+        XCTAssertTrue(try store.apply(batch))
+        try await poll({ model.chat == nil }, "the chat stayed")
+        try await poll({ !releases.isEmpty }, "no patience timer after the chat went away")
+        releases.forEach { $0.resume() }
+        try await poll({ model.waitingTooLong }, "never waited too long")
+        model.disappeared()
+    }
+
+    func testSentLineKeepsItsBubbleUntilTheFeedShowsIt() async throws {
+        let store = try await demoStore()
+        var releases: [CheckedContinuation<Void, Never>] = []
+        let model = SessionChatViewModel(
+            sessionID: 11, agentID: nil, store: store, requester: requester(Spy()),
+            sleep: { _ in await withCheckedContinuation { releases.append($0) } } // swiftlint:disable:this trailing_closure
+        )
+        model.appeared()
+        try await poll({ model.chat != nil }, "the demo chat never arrived")
+        let future = Date().addingTimeInterval(3_600) // after every demo entry
+        let line = SessionChatViewModel.Outgoing(id: "a1", text: "Please also run the linter.", sentAt: future)
+        model.noteOutgoing([line])
+        XCTAssertTrue(model.sentLines.isEmpty, "still in the outbox: the pending bubble shows it")
+        model.noteOutgoing([])
+        XCTAssertEqual(model.sentLines.map(\.text), ["Please also run the linter."], "applied: the bubble stays")
+        let entry = SessionChat.Entry(id: "x", kind: .owner, at: future.addingTimeInterval(5), text: "Please also run the linter.")
+        let old = SessionChat.Entry(id: "y", kind: .owner, at: future.addingTimeInterval(-5), text: "Please also run the linter.")
+        XCTAssertFalse(model.sentLines[0].isShown(in: SessionChat(sessionID: 11, live: true, entries: [old])), "an older identical line is not it")
+        XCTAssertTrue(model.sentLines[0].isShown(in: SessionChat(sessionID: 11, live: true, entries: [entry])))
+        try await poll({ releases.count == 2 }, "no 90 s timer next to the patience timer")
+        releases.forEach { $0.resume() }
+        try await poll({ model.sentLines.isEmpty }, "the bubble outlived 90 s")
+        let failed = SessionChatViewModel.Outgoing(id: "a2", text: "x", sentAt: future, failed: true)
+        model.noteOutgoing([failed])
+        model.noteOutgoing([])
+        XCTAssertTrue(model.sentLines.isEmpty, "a failed line that was dismissed leaves no bubble")
+        model.disappeared()
     }
 
     func testEarlierMessagesLine() {

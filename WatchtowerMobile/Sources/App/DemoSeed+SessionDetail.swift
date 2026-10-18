@@ -28,11 +28,11 @@ extension DemoSeed {
                 "text": "Archive Closed Targets Now", "via": "watchtower"
             ],
             ["id": "e4", "kind": "subagent", "at": ago(600), "text": "", "subagent": [
-                "agent_id": "demo-1", "type": "Explore", "description": "Find the archive view", "status": "finished"
+                "agent_id": "demo-1", "tool_use_id": "toolu_demo1", "type": "Explore", "description": "Find the archive view", "status": "finished"
             ]],
             ["id": "e5", "kind": "agent", "at": ago(120), "text": "The menu item is in. Running the tests now."]
         ]
-        return ["session_id": 11, "updated_at": JSON.stamp(now), "live": true, "entries_more": 0, "entries": entries]
+        return ["session_id": 11, "live": true, "entries_more": 0, "entries": entries]
     }
 
     /// `(kind, session id, payload)` per record. A report carries Go's UTC

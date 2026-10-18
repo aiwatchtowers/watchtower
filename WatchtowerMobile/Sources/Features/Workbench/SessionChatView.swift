@@ -18,7 +18,8 @@ struct SessionChatView: View {
     init(replica: WorkbenchReplicaModel, route: SessionChatRoute, store: ReplicaStore, requester: SessionChatRequester) {
         self.replica = replica
         _viewModel = State(initialValue: SessionChatViewModel(
-            sessionID: route.sessionID, agentID: route.agentID, store: store, requester: requester
+            sessionID: route.sessionID, agentID: route.agentID, toolUseID: route.toolUseID,
+            store: store, requester: requester
         ))
     }
 
@@ -46,8 +47,14 @@ struct SessionChatView: View {
         } message: {
             Text(sendError ?? "")
         }
+        .onChange(of: lines) { _, rows in viewModel.noteOutgoing(rows.compactMap(SessionChatViewModel.Outgoing.init)) }
         .onAppear { viewModel.appeared() }
         .onDisappear { viewModel.disappeared() }
+    }
+
+    /// The outbox rows of this session's lines (the main chat only).
+    private var lines: [SessionInputModel.LineRow] {
+        viewModel.agentID == nil ? (input(now: .now)?.lines ?? []) : []
     }
 
     private var waiting: some View {
@@ -66,18 +73,19 @@ struct SessionChatView: View {
     }
 
     private func feed(_ chat: SessionChat) -> some View {
-        let lines = viewModel.agentID == nil ? (input(now: .now)?.lines ?? []) : []
+        let lines = lines
         return ScrollView {
             LazyVStack(spacing: 10) {
                 if let earlier = viewModel.earlierText {
                     Text(earlier).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
-                if chat.entries.isEmpty, lines.isEmpty {
+                if chat.entries.isEmpty, lines.isEmpty, viewModel.sentLines.isEmpty {
                     Text("No messages yet").foregroundStyle(.secondary).padding(.top, Spacing.page)
                 }
                 ForEach(chat.entries) { entry in
                     SessionChatEntryRow(entry: entry, sessionID: viewModel.sessionID)
                 }
+                ForEach(viewModel.sentLines) { SentLineBubble(text: $0.text) }
                 ForEach(lines) { PendingLineBubble(row: $0, onDismiss: dismissLine) }
             }
             .padding(.horizontal, 14)
@@ -202,31 +210,43 @@ struct SessionChatEntryRow: View {
         }
     }
 
-    private func subagentRow(_ subagent: SessionChat.Entry.Subagent) -> some View {
-        NavigationLink(value: Self.route(for: subagent, sessionID: sessionID)) {
-            HStack(spacing: 8) {
-                Image(systemName: "person.2").foregroundStyle(.secondary).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(subagent.type.isEmpty ? "Subagent" : subagent.type).font(TypeScale.rowEmphasis)
-                    if !subagent.description.isEmpty {
-                        Text(subagent.description).font(TypeScale.meta).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                }
-                Spacer(minLength: 4)
-                Text(Self.statusText(subagent.status)).font(TypeScale.meta).foregroundStyle(.secondary)
-                Image(systemName: "chevron.right").font(TypeScale.meta).foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .frame(minHeight: 44)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .contentShape(Rectangle())
+    @ViewBuilder private func subagentRow(_ subagent: SessionChat.Entry.Subagent) -> some View {
+        if let route = Self.route(for: subagent, sessionID: sessionID) {
+            NavigationLink(value: route) { subagentLabel(subagent, chevron: true) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Subagent \(subagent.type) \(subagent.description)")
+        } else {
+            // A marker without its ids has no chat to open yet.
+            subagentLabel(subagent, chevron: false)
+                .accessibilityLabel("Subagent \(subagent.type) \(subagent.description)")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Subagent \(subagent.type) \(subagent.description)")
     }
 
-    static func route(for subagent: SessionChat.Entry.Subagent, sessionID: Int64) -> SessionChatRoute {
-        SessionChatRoute(sessionID: sessionID, agentID: subagent.agentID)
+    private func subagentLabel(_ subagent: SessionChat.Entry.Subagent, chevron: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "person.2").foregroundStyle(.secondary).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(subagent.type.isEmpty ? "Subagent" : subagent.type).font(TypeScale.rowEmphasis)
+                if !subagent.description.isEmpty {
+                    Text(subagent.description).font(TypeScale.meta).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 4)
+            Text(Self.statusText(subagent.status)).font(TypeScale.meta).foregroundStyle(.secondary)
+            if chevron {
+                Image(systemName: "chevron.right").font(TypeScale.meta).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(10)
+        .frame(minHeight: 44)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(Rectangle())
+    }
+
+    /// nil for a marker without its agent id or tool_use id: nothing to open.
+    static func route(for subagent: SessionChat.Entry.Subagent, sessionID: Int64) -> SessionChatRoute? {
+        guard !subagent.agentID.isEmpty, !subagent.toolUseID.isEmpty else { return nil }
+        return SessionChatRoute(sessionID: sessionID, agentID: subagent.agentID, toolUseID: subagent.toolUseID)
     }
 
     static func statusText(_ status: String) -> String {
@@ -234,6 +254,21 @@ struct SessionChatEntryRow: View {
         case "running": "Running"
         case "finished": "Finished"
         default: ""
+        }
+    }
+}
+
+/// A line the Mac applied that the feed does not show yet.
+private struct SentLineBubble: View {
+    let text: String
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 40)
+            Text(text)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 }

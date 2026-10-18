@@ -435,7 +435,7 @@ final class HubSession {
         let outbox = ActionOutbox(transport: secure, store: store, deviceID: device?.deviceID)
         self.outbox = outbox
         reportRequests = SessionReportRequester.sending(through: outbox)
-        chatRequests = SessionChatRequester.sending(through: outbox)
+        chatRequests = SessionChatRequester.sending(through: outbox, store: store)
         boardWriter = BoardWriter.sending(through: outbox, store: store)
         askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
