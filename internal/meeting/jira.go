@@ -9,29 +9,32 @@ import (
 	"watchtower/internal/db"
 )
 
-// attendeeJira aggregates Jira workload for a single meeting attendee.
+// attendeeJira aggregates issue-tracker workload (Jira and Linear, from
+// tracker_issues) for a single meeting attendee.
 type attendeeJira struct {
 	slackID     string
 	displayName string
-	issues      []db.JiraIssue
+	issues      []db.TrackerIssue
 	totalSP     float64
 	blocked     int
 	overdue     int
 }
 
-// issueRole records how an attendee is involved in a Jira issue (assignee or
+// issueRole records how an attendee is involved in an issue (assignee or
 // reporter), used for shared-issue detection.
 type issueRole struct {
 	slackID string
 	role    string
 }
 
-// gatherJiraMeetingContext builds a Jira context section for the meeting prep prompt.
+// gatherJiraMeetingContext builds the issue-tracker context section for the
+// meeting prep prompt, over both trackers (spec 2026-10-15 §6: assignee load
+// from tracker_issues; the section keeps its JIRA headers).
 // It loads open issues for each attendee, computes workload stats, and finds shared issues.
-// Returns empty string if Jira is disabled or no attendees have Jira data;
+// Returns empty string if no tracker is connected or no attendees have issues;
 // a failed per-attendee read is skipped, never an error.
 func gatherJiraMeetingContext(database *db.DB, cfg *config.Config, attendeeSlackIDs []string) string {
-	if cfg == nil || !cfg.Jira.Enabled || len(attendeeSlackIDs) == 0 {
+	if cfg == nil || (!cfg.Jira.Enabled && !cfg.Linear.Enabled) || len(attendeeSlackIDs) == 0 {
 		return ""
 	}
 	idSet, ids := dedupAttendeeIDs(attendeeSlackIDs)
@@ -77,7 +80,7 @@ func loadAttendeeJira(database *db.DB, ids []string, today time.Time) ([]attende
 	issueParticipants := make(map[string][]issueRole)
 
 	for _, slackID := range ids {
-		issues, err := database.GetJiraIssuesByAssigneeSlackID(slackID)
+		issues, err := database.ListTrackerIssues(db.TrackerIssueFilter{AssigneeSlackID: slackID, OpenOnly: true})
 		if err != nil {
 			continue // non-fatal: skip this attendee
 		}
@@ -89,8 +92,8 @@ func loadAttendeeJira(database *db.DB, ids []string, today time.Time) ([]attende
 			}
 		}
 		for _, iss := range issues {
-			if iss.StoryPoints != nil {
-				aj.totalSP += *iss.StoryPoints
+			if iss.Points != nil {
+				aj.totalSP += *iss.Points
 			}
 			if isBlocked(iss) {
 				aj.blocked++
@@ -105,11 +108,16 @@ func loadAttendeeJira(database *db.DB, ids []string, today time.Time) ([]attende
 	return attendees, issueParticipants
 }
 
-func isBlocked(iss db.JiraIssue) bool {
+// isBlocked keeps the Jira status-name rule and adds Linear's blocking
+// relation (tracker_issues.is_blocked for a Linear row).
+func isBlocked(iss db.TrackerIssue) bool {
+	if iss.Tracker == "linear" && iss.IsBlocked {
+		return true
+	}
 	return strings.EqualFold(iss.Status, "Blocked") || strings.Contains(strings.ToLower(iss.Status), "blocked")
 }
 
-func isOverdue(iss db.JiraIssue, today time.Time) bool {
+func isOverdue(iss db.TrackerIssue, today time.Time) bool {
 	if iss.DueDate == "" || strings.EqualFold(iss.StatusCategory, "done") {
 		return false
 	}
@@ -122,8 +130,8 @@ func isOverdue(iss db.JiraIssue, today time.Time) bool {
 
 // indexIssuesAndReporters builds the issue lookup map and adds reporter roles
 // when the reporter is also an attendee (avoiding duplicates).
-func indexIssuesAndReporters(attendees []attendeeJira, idSet map[string]bool, issueParticipants map[string][]issueRole) map[string]db.JiraIssue {
-	allIssues := make(map[string]db.JiraIssue)
+func indexIssuesAndReporters(attendees []attendeeJira, idSet map[string]bool, issueParticipants map[string][]issueRole) map[string]db.TrackerIssue {
+	allIssues := make(map[string]db.TrackerIssue)
 	for _, aj := range attendees {
 		for _, iss := range aj.issues {
 			allIssues[iss.Key] = iss
@@ -174,7 +182,7 @@ func formatAttendeeSections(sb *strings.Builder, attendees []attendeeJira, today
 			if isOverdue(iss, today) {
 				sb.WriteString(" OVERDUE")
 			}
-			sb.WriteString(fmt.Sprintf("] %s\n", iss.Summary))
+			sb.WriteString(fmt.Sprintf("] %s\n", iss.Title))
 		}
 		if len(aj.issues) > limit {
 			sb.WriteString(fmt.Sprintf("  ... and %d more issues\n", len(aj.issues)-limit))
@@ -185,7 +193,7 @@ func formatAttendeeSections(sb *strings.Builder, attendees []attendeeJira, today
 
 // formatSharedIssues appends the SHARED JIRA ISSUES block listing issues where
 // 2+ attendees are involved (assignee or reporter).
-func formatSharedIssues(sb *strings.Builder, attendees []attendeeJira, allIssues map[string]db.JiraIssue, issueParticipants map[string][]issueRole) {
+func formatSharedIssues(sb *strings.Builder, attendees []attendeeJira, allIssues map[string]db.TrackerIssue, issueParticipants map[string][]issueRole) {
 	var sharedLines []string
 	seen := make(map[string]bool)
 	for key, roles := range issueParticipants {
@@ -202,7 +210,7 @@ func formatSharedIssues(sb *strings.Builder, attendees []attendeeJira, allIssues
 			parts = append(parts, fmt.Sprintf("@%s (%s)", lookupDisplayName(attendees, r.slackID), r.role))
 		}
 		sharedLines = append(sharedLines, fmt.Sprintf("- [%s %s] %s — %s",
-			iss.Key, iss.Status, iss.Summary, strings.Join(parts, ", ")))
+			iss.Key, iss.Status, iss.Title, strings.Join(parts, ", ")))
 	}
 	if len(sharedLines) == 0 {
 		return
