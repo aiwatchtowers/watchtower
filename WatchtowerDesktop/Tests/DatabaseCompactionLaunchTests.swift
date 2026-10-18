@@ -265,7 +265,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         let splash = SplashView(compaction: step)
         let line = DatabaseCompactionStep.progressLine(dbBytes: 2_000_000_000, elapsedSeconds: 0)
         XCTAssertNoThrow(try splash.inspect().find(text: line))
-        XCTAssertNoThrow(try splash.inspect().find(text: "This happens once after an update."))
+        XCTAssertNoThrow(try splash.inspect().find(text: "This happens rarely, usually after an update."))
         XCTAssertThrowsError(try splash.inspect().find(button: "Skip for now"))
 
         for elapsed in 1...15 {
@@ -277,7 +277,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
 
         child.exit(status: 4)
         _ = await launch.value
-        XCTAssertThrowsError(try splash.inspect().find(text: "This happens once after an update."))
+        XCTAssertThrowsError(try splash.inspect().find(text: "This happens rarely, usually after an update."))
     }
 
     func testNoticeDismisses() throws {

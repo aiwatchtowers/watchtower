@@ -17,7 +17,7 @@
 - `--check` never writes and never migrates (opens with `db.OpenExisting`); `db compact` opens with `db.OpenExistingRW`, `SetBusyTimeout(30 * time.Second)`; neither ever calls `db.Open`/`openDBFromConfig`.
 - Exit codes of `db compact`: 0 compacted / not_due, 1 other error, 2 `disk`, 3 `daemon_running`, 4 `interrupted`, 5 `schema_pending`. Flag misuse (e.g. `--check --force`) is exit **1**, never `usageError` (that is exit 2 = disk).
 - JSON keys verbatim from the spec (snake_case). `db_maintenance` keys: `last_compacted_version`, `compacted_at` (RFC 3339 UTC), `compact_failures`, `compact_failures_version`.
-- UI strings in English, exactly: `Optimizing database — <size>, <m:ss>`, `This happens once after an update.`, `Skip for now`, `Watchtower could not optimize its database: it needs <N> free, <M> available.` (sizes via `ByteCountFormatter`, `.file` style).
+- UI strings in English, exactly: `Optimizing database — <size>, <m:ss>`, `This happens rarely, usually after an update.`, `Skip for now`, `Watchtower could not optimize its database: it needs <N> free, <M> available.` (sizes via `ByteCountFormatter`, `.file` style).
 - Skip button appears at 15 s elapsed; SIGKILL 10 s after the SIGTERM if the child is still alive.
 - Public repo: no local absolute paths, no live data (no sizes or row counts read off a live install, in specs either). Repo text in English.
 - Inner loop only per task (`go test ./internal/db -run …`, `go test ./cmd -run …`, `make test-swift FILTER=…`, `make lint-diff`); the full gate (`make test`, `make test-swift`, `make lint-all`) runs once at the end, by the controller.
@@ -276,7 +276,7 @@ Config: `config.Load(flagConfig)`, `--workspace` override, `ValidateWorkspace()`
       package func dismissNotice()
       package static let skipAfterSeconds = 15
       package static let killAfterSkipSeconds = 10
-      package static let subtitle = "This happens once after an update."
+      package static let subtitle = "This happens rarely, usually after an update."
       package static func elapsedText(seconds: Int) -> String
       package static func progressLine(dbBytes: Int64, elapsedSeconds: Int) -> String
       package static func diskNotice(needs: Int64, available: Int64) -> String

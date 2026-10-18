@@ -10,7 +10,7 @@ The fix is SQLite's `VACUUM`, which rewrites the file compactly (several times s
 
 ## What changes for the owner
 
-- **After an update, when the database has space to give back, the first launch shows "Optimizing database…"** on the launch screen, with the size it is working on and the time so far ("Optimizing database — 2.0 GB, 0:42. This happens once after an update."). When it is done the app opens as usual and the daemon starts.
+- **After an update, when the database has space to give back, the first launch shows "Optimizing database…"** on the launch screen, with the size it is working on and the time so far ("Optimizing database — 2.0 GB, 0:42. This happens rarely, usually after an update."). When it is done the app opens as usual and the daemon starts.
 - **It runs only when it pays off:** after a migration known to free a lot of space (00134 is the first one), or when more than a quarter of the file (and at least 256 MB) is free space. Otherwise the launch looks exactly as today.
 - **It never risks data or the disk.** `VACUUM` is all-or-nothing: if it is interrupted (the app is quit, the Mac sleeps or crashes) the database stays as it was and the step comes back at the next launch. If the disk does not have enough free space (twice the database's size), the step is skipped and a small notice says how much space it needs; the app works normally.
 - **No launch loop.** If compaction fails three launches in a row (for example a disk error), it stops trying until the next app version and says so once.

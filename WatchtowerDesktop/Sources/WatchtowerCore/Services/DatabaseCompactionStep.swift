@@ -181,7 +181,7 @@ package final class DatabaseCompactionStep {
     package static let killAfterSkipSeconds = 10
     /// How long a quit waits for the child to exit on SIGTERM before SIGKILL.
     package static let quitGrace: Duration = .seconds(3)
-    package static let subtitle = "This happens once after an update."
+    package static let subtitle = "This happens rarely, usually after an update."
     package static let gaveUpNotice =
         "Watchtower could not optimize its database after 3 attempts. It will try again after the next update."
 

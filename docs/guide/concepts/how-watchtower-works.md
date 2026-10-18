@@ -68,7 +68,7 @@ Catch Up, the chat, meeting notes and Workbench sessions are not scheduled. They
 
 ## Why the app says "Optimizing database" at launch
 
-Some updates free a lot of space inside the database file, and the file only shrinks when Watchtower rewrites it. The first launch after such an update does that before the app opens: the splash shows **Optimizing database —** with the file's size and the time so far, and **This happens once after an update.** The background sync waits until it ends.
+Some updates free a lot of space inside the database file, and the file only shrinks when Watchtower rewrites it. The first launch after such an update does that before the app opens: the splash shows **Optimizing database —** with the file's size and the time so far, and **This happens rarely, usually after an update.** The background sync waits until it ends.
 
 From 15 seconds on, **Skip for now** stops it; nothing is lost, and it tries again at the next launch. Quitting the app stops it the same way.
 
