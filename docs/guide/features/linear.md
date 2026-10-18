@@ -11,6 +11,7 @@ You see what is blocked or stale in Linear beside your Jira work, without openin
 - **Sync:** the background sync pulls the selected teams every 15 minutes (`linear.sync_interval_mins`). The first pass loads every open issue and everything updated in the last 90 days.
 - **Blockers:** a Linear issue counts as *blocked* while another issue that is not done blocks it, and *stale* when it has been in progress for more than 7 days without a status-category change.
 - **Weekly digest:** **Epic & Project Progress** lists Linear projects with 3 or more issues, and **Active Sprints & Cycles** shows the running cycles.
+- **Briefing, day plan and inbox:** your Linear issues feed the briefing (**MY LINEAR ISSUES**, **CYCLE PROGRESS**, stale and overdue, under the same **Jira Features** switches), the day plan, and the inbox (an issue assigned to you, or a comment that mentions you). A target can link a Linear issue.
 - **Identity:** a connected Linear workspace can identify you for the briefing and the day plan when no Slack, Google or Jira account does.
 - **Automations:** a recipe reads or changes Linear with the permissions `linear:read@ENG` or `linear:write@ENG` (team keys). See [Automation recipes](automations-recipes.md).
 - **API key:** a personal key never expires and is never refreshed. It acts with your own Linear permissions.
