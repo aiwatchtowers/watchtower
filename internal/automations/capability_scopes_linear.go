@@ -24,13 +24,20 @@ func linearTeamUnits(d *db.DB, key string) ([]string, error) {
 		return nil, fmt.Errorf("scope lookup: %w", err)
 	}
 	var teams []string
+	live := false
 	for _, i := range issues {
+		if i.IsDeleted {
+			continue
+		}
+		live = true
 		team := strings.ToUpper(i.TeamKey)
-		if !i.IsDeleted && team != "" && !slices.Contains(teams, team) {
+		if team != "" && !slices.Contains(teams, team) {
 			teams = append(teams, team)
 		}
 	}
-	if len(teams) == 0 {
+	// Live rows without any team key: absent scope (only @* / tool:), never
+	// the prefix. The prefix is only for a key the mirror does not hold.
+	if len(teams) == 0 && !live {
 		if p := issueProject(key); p != "" {
 			teams = []string{p}
 		}

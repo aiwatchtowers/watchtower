@@ -60,3 +60,17 @@ func TestLinearScope_TeamArgsAndTeamsList(t *testing.T) {
 	expectDeny(t, d, eng, tools.NewListLinearTeams(), `{}`, "linear:read@*")
 	expectAdmit(t, d, mustManifest(t, []string{"linear:read@*"}), tools.NewListLinearTeams(), `{}`)
 }
+
+func TestLinearScope_RowsWithoutTeamKeyAreAbsentScope(t *testing.T) {
+	d := openManifestTestDB(t)
+	acct, err := d.CreateLinearAccount("acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertLinearIssue(db.LinearIssue{AccountID: acct, ID: "i1", Key: "ENG-1", Title: "no team"}); err != nil {
+		t.Fatal(err)
+	}
+	get := tools.NewGetLinearIssue()
+	expectDeny(t, d, mustManifest(t, []string{"linear:read@ENG"}), get, `{"key":"ENG-1"}`, "linear:read@*")
+	expectAdmit(t, d, mustManifest(t, []string{"linear:read@*"}), get, `{"key":"ENG-1"}`)
+}

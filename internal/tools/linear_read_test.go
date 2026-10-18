@@ -250,3 +250,29 @@ func TestListLinearCycles_DerivedState(t *testing.T) {
 	var ve *ValidationError
 	require.ErrorAs(t, err, &ve)
 }
+
+func TestGetLinearStatusHistory_DBFailureIsNotNotFound(t *testing.T) {
+	d := openDB(t)
+	seedLinearAccount(t, d, "acme", "")
+	reg := linearReadRegistry(t, d)
+
+	var res linearHistoryResult
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, reg, "get_linear_status_history", `{"keys":["ENG-1"]}`)), &res))
+	assert.Equal(t, []string{"ENG-1"}, res.NotFound, "an unknown key is not_found")
+
+	_, err := d.Exec(`DROP TABLE linear_issues`)
+	require.NoError(t, err)
+	_, err = reg.CallRead(context.Background(), "get_linear_status_history", json.RawMessage(`{"keys":["ENG-1"]}`), Binding{})
+	require.Error(t, err, "a database failure must surface, not become not_found")
+	assert.NotErrorIs(t, err, errLinearIssueNotFound)
+}
+
+func TestListLinear_NoAccountIsEmpty(t *testing.T) {
+	reg := linearReadRegistry(t, openDB(t))
+	assert.Equal(t, "[]", callReadString(t, reg, "list_linear_issues", `{}`))
+	assert.JSONEq(t, `{"cycles":[]}`, callReadString(t, reg, "list_linear_cycles", `{"team":"ENG"}`))
+	_, err := reg.CallRead(context.Background(), "get_linear_issue", json.RawMessage(`{"key":"ENG-1"}`), Binding{})
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Contains(t, err.Error(), "watchtower linear add")
+}

@@ -20,6 +20,10 @@ var linearStateTypes = []string{"triage", "backlog", "unstarted", "started", "co
 
 var linearKeyRE = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
 
+// errLinearIssueNotFound is what linearIssuesByKey wraps when no live issue of
+// an enabled account holds the key; every other error is a real failure.
+var errLinearIssueNotFound = errors.New("no linear issue with that key")
+
 const noLinearAccountMsg = "no Linear workspace is connected; the owner must run 'watchtower linear add' first"
 
 // enabledLinearAccount returns the account for an explicit id, refusing a
@@ -39,7 +43,8 @@ func enabledLinearAccount(d *db.DB, id int64) (db.LinearAccount, error) {
 }
 
 // linearReadAccounts is the account set a list read covers: the explicit
-// account, else every enabled one.
+// account, else every enabled one (none connected: an empty set, like the
+// Jira list reads).
 func linearReadAccounts(d *db.DB, accountID int64) ([]db.LinearAccount, error) {
 	if accountID > 0 {
 		a, err := enabledLinearAccount(d, accountID)
@@ -51,9 +56,6 @@ func linearReadAccounts(d *db.DB, accountID int64) ([]db.LinearAccount, error) {
 	accounts, err := d.ListEnabledLinearAccounts()
 	if err != nil {
 		return nil, fmt.Errorf("listing linear accounts: %w", err)
-	}
-	if len(accounts) == 0 {
-		return nil, &ValidationError{Msg: noLinearAccountMsg}
 	}
 	return accounts, nil
 }
@@ -105,7 +107,7 @@ func linearIssuesByKey(d *db.DB, accountID int64, rawKey string) (db.LinearIssue
 	}
 	switch len(order) {
 	case 0:
-		return db.LinearIssue{}, fmt.Errorf("no linear issue with key %s", key)
+		return db.LinearIssue{}, fmt.Errorf("%w: %s", errLinearIssueNotFound, key)
 	case 1:
 		return byAccount[order[0]], nil
 	default:
@@ -306,6 +308,9 @@ func NewListLinearIssues() *Tool {
 			if err != nil {
 				return nil, err
 			}
+			if len(accounts) == 0 {
+				return []linearIssueListItem{}, nil
+			}
 			f := db.LinearIssueFilter{
 				TeamKey: strings.ToUpper(strings.TrimSpace(a.Team)), StateName: strings.TrimSpace(a.State),
 				StateType: a.StateType, CreatedAfter: createdAfter, Limit: listLimit(a.Limit),
@@ -487,13 +492,12 @@ func NewGetLinearStatusHistory() *Tool {
 			res := linearHistoryResult{Issues: []linearIssueHistoryView{}}
 			for _, k := range keys {
 				i, err := linearIssuesByKey(d, a.AccountID, k)
-				if err != nil {
-					var ve *ValidationError
-					if errors.As(err, &ve) {
-						return nil, err
-					}
+				if errors.Is(err, errLinearIssueNotFound) {
 					res.NotFound = append(res.NotFound, k)
 					continue
+				}
+				if err != nil {
+					return nil, err
 				}
 				entries, err := d.ListLinearHistory(i.AccountID, []string{i.ID})
 				if err != nil {
