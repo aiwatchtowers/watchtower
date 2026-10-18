@@ -106,7 +106,8 @@ func failedTurn(model string, output []byte) error {
 // turn's reason from its JSONL output when there is one (codex exec reports
 // it there, not on stderr), else classifyError. The exit error stays a
 // cause (digest.WithCause) so a kill by a signal still classifies as a
-// transport failure, and a non-empty stderr stays in the text.
+// transport failure, and a non-empty stderr stays in the text, except on a
+// model refusal.
 func runError(model string, output []byte, err error, stderr, codexBin string) error {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
@@ -116,7 +117,10 @@ func runError(model string, output []byte, err error, stderr, codexBin string) e
 	if turnErr == nil {
 		return classifyError(err, stderr, codexBin)
 	}
-	if s := strings.TrimSpace(stderr); s != "" {
+	// A refusal keeps its own text: stderr words ("connection reset", …)
+	// would make digest's aiUnavailable call it a transport failure.
+	var refused *ModelUnavailableError
+	if s := strings.TrimSpace(stderr); s != "" && !errors.As(turnErr, &refused) {
 		turnErr = fmt.Errorf("%w (stderr: %s)", turnErr, s)
 	}
 	return digest.WithCause(turnErr, exitErr)

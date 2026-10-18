@@ -63,10 +63,16 @@ func TestFailedTurn_SharedFixture(t *testing.T) {
 // Only the observed phrasings are refusals; a message that merely mentions
 // a model and access stays an ordinary codex error.
 func TestTurnError_RefusalNeedsExactPhrasing(t *testing.T) {
-	err := turnError("m", "model access check failed, please retry")
-	var refused *ModelUnavailableError
-	if errors.As(err, &refused) {
-		t.Fatalf("turnError = %v, want a plain codex error", err)
+	for _, msg := range []string{
+		"model access check failed, please retry",
+		"a newer version of Codex is available",
+		"this feature is not supported when using Codex with a ChatGPT account",
+		"the file does not exist",
+	} {
+		var refused *ModelUnavailableError
+		if err := turnError("m", msg); errors.As(err, &refused) {
+			t.Errorf("turnError(%q) = %v, want a plain codex error", msg, err)
+		}
 	}
 }
 
@@ -140,13 +146,25 @@ func TestRefusedModel_HonestErrorOnEveryPath(t *testing.T) {
 
 // The stderr of a failed run stays in the text next to the turn's reason.
 func TestRunError_KeepsStderr(t *testing.T) {
-	tc := fixtureCase(t, "model not offered")
-	bin := fakeCodexRun(t, tc.JSONL, "warning: config ignored", 1)
+	bin := fakeCodexRun(t, fixtureCase(t, "rate limit").JSONL, "warning: config ignored", 1)
 
-	_, _, _, err := NewCodexGenerator("gpt-5.4", "gpt-5.4", bin).Generate(context.Background(), "sys", "msg", "")
+	_, _, _, err := NewCodexGenerator("gpt-5.6-sol", "gpt-5.6-sol", bin).Generate(context.Background(), "sys", "msg", "")
+	if err == nil || !strings.HasSuffix(err.Error(), "(stderr: warning: config ignored)") {
+		t.Fatalf("Generate error = %v, want the turn error plus the stderr", err)
+	}
+}
+
+// A refusal never picks up stderr: transport words there ("connection
+// reset") would make it an ErrAICall the backfill retries forever.
+func TestRunError_RefusalIgnoresStderr(t *testing.T) {
+	tc := fixtureCase(t, "model not offered")
+	bin := fakeCodexRun(t, tc.JSONL, "error: connection reset by peer", 1)
+
+	_, _, _, err := digest.WithCallTimeout(NewCodexGenerator("gpt-5.4", "gpt-5.4", bin), time.Minute).
+		Generate(context.Background(), "sys", "msg", "")
 	var refused *ModelUnavailableError
-	if !errors.As(err, &refused) || !strings.HasSuffix(err.Error(), "(stderr: warning: config ignored)") {
-		t.Fatalf("Generate error = %v, want the refusal plus the stderr", err)
+	if !errors.As(err, &refused) || err.Error() != tc.Want || errors.Is(err, digest.ErrAICall) {
+		t.Fatalf("Generate error = %v, want exactly %q and no ErrAICall", err, tc.Want)
 	}
 }
 

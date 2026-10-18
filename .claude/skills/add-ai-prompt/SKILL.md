@@ -1,6 +1,6 @@
 ---
 name: add-ai-prompt
-description: Use when adding a new AI/LLM call, prompt template, or model-routing decision in the Watchtower Go backend — wiring a prompt that must work on BOTH the claude and codex providers, choosing a model tier (haiku/luna vs opus/gpt-6-astra), or tagging a call site for routing.
+description: Use when adding a new AI/LLM call, prompt template, or model-routing decision in the Watchtower Go backend — wiring a prompt that must work on BOTH the claude and codex providers, choosing a model tier (haiku/gpt-5.6-luna vs opus/gpt-5.6-sol), or tagging a call site for routing.
 ---
 
 # Add an AI Prompt (Watchtower)
