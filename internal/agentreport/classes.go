@@ -2,8 +2,7 @@ package agentreport
 
 import (
 	"strings"
-
-	"watchtower/internal/db"
+	"watchtower/internal/agentlogdb"
 )
 
 // Tool classes of the time split.
@@ -56,7 +55,7 @@ func ToolClass(name, target string) string {
 func isAgentTool(name string) bool { return name == "Agent" || name == "Task" }
 
 // eventClass is ToolClass with the background flag of an Agent call applied.
-func eventClass(e db.AgentReportEvent) string {
+func eventClass(e agentlogdb.AgentReportEvent) string {
 	c := ToolClass(e.Name, e.Target)
 	if c == ClassSubagentsFG && e.Background {
 		return ClassOther
@@ -65,7 +64,7 @@ func eventClass(e db.AgentReportEvent) string {
 }
 
 // verb is what a tool segment names: the shell verb for Bash, else the tool.
-func verb(e db.AgentReportEvent) string {
+func verb(e agentlogdb.AgentReportEvent) string {
 	if e.Name == "Bash" {
 		return e.Target
 	}

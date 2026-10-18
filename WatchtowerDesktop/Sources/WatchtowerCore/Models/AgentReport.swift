@@ -205,6 +205,19 @@ package struct AgentLane: Decodable, Equatable, Sendable {
     }
 }
 
+/// How far the workbench's history import got (`import` in the overview).
+package struct AgentImportState: Decodable, Equatable, Sendable {
+    /// `waiting_for_move`, `not_started`, `loading` or `done`.
+    package let state: String
+    package let filesStored: Int
+    package let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case filesStored = "files_stored", updatedAt = "updated_at"
+    }
+}
+
 /// `agents report --json`: one workbench over a period.
 package struct AgentReportOverview: Decodable, Equatable, Sendable {
     package let workbenchID: Int64
@@ -220,10 +233,13 @@ package struct AgentReportOverview: Decodable, Equatable, Sendable {
     package let tasks: [AgentTaskRow]
     package let sessions: [AgentSessionRow]
     package let oldFormatSessions: Int
+    /// Absent from a CLI older than #849: no loading line.
+    package let importState: AgentImportState?
 
     enum CodingKeys: String, CodingKey {
         case enabled, since, until, totals, time, subagents, commands, models, hints, tasks, sessions
         case workbenchID = "workbench_id", oldFormatSessions = "old_format_sessions"
+        case importState = "import"
     }
 }
 

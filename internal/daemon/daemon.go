@@ -15,6 +15,7 @@ import (
 
 	gosync "sync"
 	"sync/atomic"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/automations"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
@@ -124,6 +125,8 @@ type Daemon struct {
 	planUsageDisable    func() error
 	pidPath             string
 	db                  *db.DB
+	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
+	agentLogPath        string         // agentLog's file, for the move lock beside it
 	digestPipe          *digest.Pipeline
 	tracksPipe          *tracks.Pipeline
 	peoplePipe          *guide.Pipeline
@@ -184,6 +187,8 @@ type Daemon struct {
 	noOwnerLoggedDay map[string]string
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
+	agentLogSkipLogged atomic.Bool // one-shot latch for the analytics phase's nil-agentlog.db skip line
+	agentLogMoveLogged atomic.Bool // one-shot latch for the analytics phase's failed-move line
 
 	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
 }
@@ -213,6 +218,12 @@ func (d *Daemon) SetLogger(l *log.Logger) {
 // SetDB sets the database for post-pipeline operations like auto-marking read status.
 func (d *Daemon) SetDB(database *db.DB) {
 	d.db = database
+}
+
+// SetAgentLogDB sets the agentlog.db handle the agent analytics phase
+// writes to, and its file's path (the move lock sits beside it).
+func (d *Daemon) SetAgentLogDB(al *agentlogdb.DB, path string) {
+	d.agentLog, d.agentLogPath = al, path
 }
 
 // SetDigestPipeline sets the digest pipeline for post-sync digest generation.

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"log"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 
 	"github.com/stretchr/testify/assert"
@@ -21,17 +23,20 @@ func newAgentAnalyticsTestDaemon(t *testing.T) (*Daemon, *db.DB) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-agent-analytics] ", 0))
 	d.SetDB(database)
+	path := filepath.Join(t.TempDir(), "agentlog.db")
+	al, err := agentlogdb.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	_, err = agentlogdb.MoveFromMain(context.Background(), database, al, agentlogdb.MoveLockPath(path))
+	require.NoError(t, err)
+	d.SetAgentLogDB(al, path)
 	return d, database
 }
 
-func TestPhaseAgentAnalytics_InertWithoutEnabledWorkbench(t *testing.T) {
-	d, database := newAgentAnalyticsTestDaemon(t)
-	d.phaseAgentAnalytics(context.Background())
-	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
-}
-
-func TestPhaseAgentAnalytics_ScansEnabledWorkbench(t *testing.T) {
-	d, database := newAgentAnalyticsTestDaemon(t)
+// enableAgentAnalyticsWorkbench binds an analytics-on workbench to a temp
+// folder holding one transcript with one api_call.
+func enableAgentAnalyticsWorkbench(t *testing.T, database *db.DB) {
+	t.Helper()
 	folder, _ := filepath.EvalSymlinks(t.TempDir())
 	wb, err := database.CreateWorkbench("app", folder)
 	require.NoError(t, err)
@@ -45,11 +50,139 @@ func TestPhaseAgentAnalytics_ScansEnabledWorkbench(t *testing.T) {
 	rec := `{"type":"assistant","sessionId":"s1","uuid":"u1","timestamp":"2026-10-01T10:00:00Z","cwd":"` + folder +
 		`","requestId":"r1","message":{"id":"m1","model":"claude-opus-5-5","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "s1.jsonl"), []byte(rec), 0o600))
+}
+
+func TestPhaseAgentAnalytics_InertWithoutEnabledWorkbench(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	d.phaseAgentAnalytics(context.Background())
+	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
+}
+
+func TestPhaseAgentAnalytics_ScansEnabledWorkbench(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	enableAgentAnalyticsWorkbench(t, database)
 
 	d.phaseAgentAnalytics(context.Background())
 
 	var n int
-	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
+	require.NoError(t, d.agentLog.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
 	assert.Equal(t, 1, n)
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
+	assert.Zero(t, n, "nothing lands in watchtower.db")
+	assert.Equal(t, 1, countPipelineRuns(t, database, "agent-analytics"))
+}
+
+// Spec "Error handling": agentlog.db failed to open → the phase skips with
+// no pipeline_runs row and never falls back to watchtower.db.
+func TestPhaseAgentAnalytics_NilAgentlogSkips(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	d.SetAgentLogDB(nil, "")
+	enableAgentAnalyticsWorkbench(t, database)
+	var logBuf bytes.Buffer
+	d.SetLogger(log.New(&logBuf, "", 0))
+
+	d.phaseAgentAnalytics(context.Background())
+
+	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
+	assert.Zero(t, n)
+	assert.Contains(t, logBuf.String(), "agentlog.db is not open; skipped")
+
+	// Logged once per daemon run, not every cycle.
+	logBuf.Reset()
+	d.phaseAgentAnalytics(context.Background())
+	assert.Empty(t, logBuf.String())
+	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
+}
+
+// A failed import-progress write is the cycle's error, but the scan's work
+// still counts and its failures are still logged.
+func TestPhaseAgentAnalytics_ProgressWriteFailureKeepsResult(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	enableAgentAnalyticsWorkbench(t, database)
+	_, err := d.agentLog.Exec(`CREATE TRIGGER fail_import BEFORE INSERT ON agent_log_import BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	require.NoError(t, err)
+	var logBuf bytes.Buffer
+	d.SetLogger(log.New(&logBuf, "", 0))
+
+	d.phaseAgentAnalytics(context.Background())
+
+	assert.Contains(t, logBuf.String(), "recording import progress for workbench")
+	var items int
+	var errText string
+	require.NoError(t, database.QueryRow(`SELECT items_found, error_msg FROM pipeline_runs WHERE pipeline = 'agent-analytics'`).
+		Scan(&items, &errText))
+	assert.Equal(t, 1, items)
+	assert.Contains(t, errText, "recording import progress")
+}
+
+// unmovedAgentLog gives d a fresh agentlog.db with no move marker, as after
+// a failed upgrade step at the daemon's start.
+func unmovedAgentLog(t *testing.T, d *Daemon) *agentlogdb.DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "agentlog.db")
+	al, err := agentlogdb.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	d.SetAgentLogDB(al, path)
+	return al
+}
+
+// Spec D4: a move the start's upgrade step did not finish is retried by the
+// phase, which then scans in the same cycle.
+func TestPhaseAgentAnalytics_MovesThenScans(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	al := unmovedAgentLog(t, d)
+	enableAgentAnalyticsWorkbench(t, database)
+
+	d.phaseAgentAnalytics(context.Background())
+
+	moved, err := al.Moved()
+	require.NoError(t, err)
+	assert.True(t, moved)
+	var n int
+	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
+	assert.Equal(t, 1, n)
+	assert.Equal(t, 1, countPipelineRuns(t, database, "agent-analytics"))
+}
+
+// A move that fails skips the cycle with no pipeline_runs row and no scan,
+// logged once per daemon run; every cycle tries again.
+func TestPhaseAgentAnalytics_FailedMoveSkipsAndLogsOnce(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	al := unmovedAgentLog(t, d)
+	enableAgentAnalyticsWorkbench(t, database)
+	// A row agentlog.db's CHECK rejects aborts the move before its marker.
+	_, err := database.Exec(`PRAGMA ignore_check_constraints = ON`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO agent_log_files (path, agent, size, mtime, read_offset, parser_version, scanned_at)
+		VALUES ('/gone/x.jsonl', 'not_an_agent', 1, '2026-10-01T10:00:00Z', 1, 2, '2026-10-01T10:00:00Z')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`PRAGMA ignore_check_constraints = OFF`)
+	require.NoError(t, err)
+	var logBuf bytes.Buffer
+	d.SetLogger(log.New(&logBuf, "", 0))
+
+	d.phaseAgentAnalytics(context.Background())
+
+	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
+	var n int
+	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_files`).Scan(&n))
+	assert.Zero(t, n)
+	assert.Contains(t, logBuf.String(), agentlogdb.ErrNotMoved.Error())
+	assert.Contains(t, logBuf.String(), "CHECK constraint failed")
+
+	logBuf.Reset()
+	d.phaseAgentAnalytics(context.Background())
+	assert.Empty(t, logBuf.String(), "logged once per daemon run")
+	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
+
+	_, err = database.Exec(`DELETE FROM agent_log_files`)
+	require.NoError(t, err)
+	d.phaseAgentAnalytics(context.Background())
+	moved, err := al.Moved()
+	require.NoError(t, err)
+	assert.True(t, moved, "the next cycle's retry succeeds")
 	assert.Equal(t, 1, countPipelineRuns(t, database, "agent-analytics"))
 }

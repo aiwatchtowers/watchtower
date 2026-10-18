@@ -5,18 +5,19 @@ import (
 	"slices"
 	"time"
 
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 )
 
 // Totals sums the whole window, old-format sessions included for cost and
 // tokens; ActiveMS and AwayMS cover the sessions with a time model.
 type Totals struct {
-	Sessions           int               `json:"sessions"`
-	ActiveMS           int64             `json:"active_ms"`
-	AwayMS             int64             `json:"away_ms"`
-	CostUSD            float64           `json:"cost_usd"`
-	CostEstimatedCalls int               `json:"cost_estimated_calls"`
-	Tokens             db.AgentLogTokens `json:"tokens"`
+	Sessions           int                       `json:"sessions"`
+	ActiveMS           int64                     `json:"active_ms"`
+	AwayMS             int64                     `json:"away_ms"`
+	CostUSD            float64                   `json:"cost_usd"`
+	CostEstimatedCalls int                       `json:"cost_estimated_calls"`
+	Tokens             agentlogdb.AgentLogTokens `json:"tokens"`
 }
 
 // SessionRow is one session's line in the overview. An old-format session
@@ -49,6 +50,29 @@ type Overview struct {
 	Tasks             []TaskRow    `json:"tasks"`
 	Sessions          []SessionRow `json:"sessions"`
 	OldFormatSessions int          `json:"old_format_sessions"`
+	Import            ImportState  `json:"import"`
+}
+
+// ImportState is how far the workbench's history import got (spec D6):
+// waiting_for_move (agentlog.db has no move marker yet, so no scan runs),
+// not_started (no scan recorded progress yet), loading (the last scan
+// stopped before the end of its listing) or done.
+type ImportState struct {
+	State       string `json:"state"`
+	FilesStored int    `json:"files_stored"`
+	UpdatedAt   string `json:"updated_at,omitempty"` // absent while waiting_for_move or not_started
+}
+
+// ImportStateOf maps a progress row (nil = none yet) to its state.
+func ImportStateOf(p *agentlogdb.ImportProgress) ImportState {
+	switch {
+	case p == nil:
+		return ImportState{State: "not_started"}
+	case p.Complete:
+		return ImportState{State: "done", FilesStored: p.FilesStored, UpdatedAt: p.UpdatedAt}
+	default:
+		return ImportState{State: "loading", FilesStored: p.FilesStored, UpdatedAt: p.UpdatedAt}
+	}
 }
 
 // SessionDetail is one session's drill-down (`agents report --session`).
@@ -65,7 +89,7 @@ type SessionDetail struct {
 type built struct {
 	rows     []SessionRow
 	views    map[string]SessionView
-	events   map[string][]db.AgentReportEvent // sessions with a time model only
+	events   map[string][]agentlogdb.AgentReportEvent // sessions with a time model only
 	segments map[string][]Segment
 	time     map[string]TimeSplit
 	subs     map[string]Subagents
@@ -74,9 +98,9 @@ type built struct {
 }
 
 // assemble models every session of sessions; allEvents are keyed by uuid.
-func assemble(sessions []db.AgentReportSession, allEvents map[string][]db.AgentReportEvent) built {
+func assemble(sessions []agentlogdb.AgentReportSession, allEvents map[string][]agentlogdb.AgentReportEvent) built {
 	b := built{
-		rows: []SessionRow{}, views: map[string]SessionView{}, events: map[string][]db.AgentReportEvent{},
+		rows: []SessionRow{}, views: map[string]SessionView{}, events: map[string][]agentlogdb.AgentReportEvent{},
 		segments: map[string][]Segment{}, time: map[string]TimeSplit{}, subs: map[string]Subagents{}, lanes: map[string][]Lane{},
 	}
 	for _, s := range sessions {
@@ -137,16 +161,16 @@ func nonNil[T any](s []T) []T {
 	return s
 }
 
-func eventsByUUID(events []db.AgentReportEvent) map[string][]db.AgentReportEvent {
-	by := map[string][]db.AgentReportEvent{}
+func eventsByUUID(events []agentlogdb.AgentReportEvent) map[string][]agentlogdb.AgentReportEvent {
+	by := map[string][]agentlogdb.AgentReportEvent{}
 	for _, e := range events {
 		by[e.SessionUUID] = append(by[e.SessionUUID], e)
 	}
 	return by
 }
 
-func flatten(by map[string][]db.AgentReportEvent) []db.AgentReportEvent {
-	var out []db.AgentReportEvent
+func flatten(by map[string][]agentlogdb.AgentReportEvent) []agentlogdb.AgentReportEvent {
+	var out []agentlogdb.AgentReportEvent
 	for _, evs := range by {
 		out = append(out, evs...)
 	}
@@ -155,9 +179,10 @@ func flatten(by map[string][]db.AgentReportEvent) []db.AgentReportEvent {
 
 // BuildOverview reports a workbench's sessions that started or ended at or
 // after since (zero = all) up to now. It answers whatever the analytics
-// switch: an off workbench shows the rows it has.
-func BuildOverview(d *db.DB, workbenchID int64, since, now time.Time) (*Overview, error) {
-	enabled, err := d.WorkbenchAgentAnalytics(workbenchID)
+// switch: an off workbench shows the rows it has. main (watchtower.db: the
+// switch, the board) and al (agentlog.db) are only read.
+func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now time.Time) (*Overview, error) {
+	enabled, err := main.WorkbenchAgentAnalytics(workbenchID)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +192,20 @@ func BuildOverview(d *db.DB, workbenchID int64, since, now time.Time) (*Overview
 		sinceStr = since.UTC().Format(tsLayout)
 		ov.Since = since.UTC().Format(time.RFC3339)
 	}
-	sessions, err := d.AgentReportSessions(workbenchID, sinceStr)
+	moved, err := al.Moved()
+	if err != nil {
+		return nil, err
+	}
+	progress, err := al.ImportProgress(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	ov.Import = ImportStateOf(progress)
+	if !moved {
+		// Durable, unlike a failed Turn On's error: the pane says why nothing loads.
+		ov.Import = ImportState{State: "waiting_for_move"}
+	}
+	sessions, err := al.AgentReportSessions(workbenchID, sinceStr)
 	if err != nil {
 		return nil, err
 	}
@@ -175,11 +213,11 @@ func BuildOverview(d *db.DB, workbenchID int64, since, now time.Time) (*Overview
 	for i, s := range sessions {
 		uuids[i] = s.SessionUUID
 	}
-	events, err := d.AgentReportEvents(uuids)
+	events, err := al.AgentReportEvents(uuids)
 	if err != nil {
 		return nil, err
 	}
-	targets, err := d.AgentReportTargets(workbenchID)
+	targets, err := main.AgentReportTargets(workbenchID)
 	if err != nil {
 		return nil, err
 	}
@@ -213,20 +251,20 @@ func BuildOverview(d *db.DB, workbenchID int64, since, now time.Time) (*Overview
 
 // BuildSession drills into one session of the workbench as of now. Its lanes
 // start with the main agent's (AgentID "") unless the session is old-format.
-func BuildSession(d *db.DB, workbenchID int64, sessionUUID string, now time.Time) (*SessionDetail, error) {
-	all, err := d.AgentReportSessions(workbenchID, "")
+func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID string, now time.Time) (*SessionDetail, error) {
+	all, err := al.AgentReportSessions(workbenchID, "")
 	if err != nil {
 		return nil, err
 	}
-	i := slices.IndexFunc(all, func(s db.AgentReportSession) bool { return s.SessionUUID == sessionUUID })
+	i := slices.IndexFunc(all, func(s agentlogdb.AgentReportSession) bool { return s.SessionUUID == sessionUUID })
 	if i < 0 {
 		return nil, fmt.Errorf("session %s not found in workbench %d", sessionUUID, workbenchID)
 	}
-	events, err := d.AgentReportEvents([]string{sessionUUID})
+	events, err := al.AgentReportEvents([]string{sessionUUID})
 	if err != nil {
 		return nil, err
 	}
-	targets, err := d.AgentReportTargets(workbenchID)
+	targets, err := main.AgentReportTargets(workbenchID)
 	if err != nil {
 		return nil, err
 	}

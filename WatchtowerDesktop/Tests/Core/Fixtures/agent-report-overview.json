@@ -249,5 +249,10 @@
       ]
     }
   ],
-  "old_format_sessions": 1
+  "old_format_sessions": 1,
+  "import": {
+    "state": "loading",
+    "files_stored": 2,
+    "updated_at": "2026-10-01T12:00:00Z"
+  }
 }

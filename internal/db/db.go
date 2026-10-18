@@ -7,6 +7,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -38,6 +39,7 @@ type DB struct {
 // opens a fresh one; a pragma run once with Exec would be lost there for the
 // rest of the process.
 type pragmaConnector struct {
+	drv driver.Driver
 	dsn string
 
 	mu    sync.Mutex
@@ -52,7 +54,7 @@ type connState struct {
 }
 
 func (c *pragmaConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := metricsDriver.Open(c.dsn)
+	conn, err := c.drv.Open(c.dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -83,24 +85,37 @@ func (c *pragmaConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-func (c *pragmaConnector) Driver() driver.Driver { return metricsDriver }
+func (c *pragmaConnector) Driver() driver.Driver { return c.drv }
 
-// metricsDriver is the registered lock-metrics driver every handle opens
-// through (sql.Open never connects; it only resolves the name).
-var metricsDriver = func() driver.Driver {
-	probe, err := sql.Open(lockmetrics.DriverName, "")
+// metricsDriver is the registered lock-metrics driver every watchtower.db
+// handle opens through; plainDriver is the bare SQLite driver a sidecar
+// database opens through (OpenSidecar).
+var (
+	metricsDriver = registeredDriver(lockmetrics.DriverName)
+	plainDriver   = registeredDriver("sqlite")
+)
+
+// registeredDriver resolves a registered database/sql driver by name
+// (sql.Open never connects; it only resolves the name).
+func registeredDriver(name string) driver.Driver {
+	probe, err := sql.Open(name, "")
 	if err != nil {
-		panic("db: lock-metrics driver not registered: " + err.Error())
+		panic("db: driver " + name + " not registered: " + err.Error())
 	}
 	defer probe.Close()
 	return probe.Driver()
-}()
+}
 
-// openPool opens dsn as a one-connection pool through pragmaConnector.
-// One connection: an in-memory database is private to its connection, and
-// SQLite serializes writes anyway.
+// openPool opens dsn as a one-connection pool through pragmaConnector and
+// the lock-metrics driver. One connection: an in-memory database is private
+// to its connection, and SQLite serializes writes anyway.
 func openPool(dsn string) *DB {
-	c := &pragmaConnector{dsn: dsn}
+	return openPoolWith(metricsDriver, dsn)
+}
+
+// openPoolWith is openPool over drv.
+func openPoolWith(drv driver.Driver, dsn string) *DB {
+	c := &pragmaConnector{drv: drv, dsn: dsn}
 	sqlDB := sql.OpenDB(c)
 	sqlDB.SetMaxOpenConns(1)
 	return &DB{DB: sqlDB, connector: c}
@@ -223,6 +238,61 @@ func Open(dbPath string) (*DB, error) {
 	}
 
 	return db, nil
+}
+
+// OpenSidecar opens a database file another package owns beside
+// watchtower.db (agentlog.db), creating it if needed: Open's DSN, pragmas
+// and one-connection pool, and that package's migrations (the SQL files at
+// the root of migrations) run with a goose Provider, which never touches the
+// global goose state Open's migrations use. A file not yet current migrates
+// under <path>.migrate.lock as Open does; the file modes are tightened as
+// Open does. It does not go through the lock-metrics driver: dblock.jsonl
+// events carry no database field, so its holds would read as watchtower.db's.
+func OpenSidecar(path string, migrations fs.FS) (*sql.DB, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("creating database directory: %w", err)
+	}
+	d := openPoolWith(plainDriver, sqliteDSN(path, openDSN))
+	if err := d.setupSidecarSchema(path, migrations); err != nil {
+		d.Close()
+		return nil, err
+	}
+	tightenDBFilePerms(path)
+	return d.DB, nil
+}
+
+// setupSidecarSchema is OpenSidecar's pragmas and migrations: setupSchema's
+// order and lock, with a goose Provider over migrations.
+func (db *DB) setupSidecarSchema(path string, migrations fs.FS) error {
+	ctx := context.Background()
+	p, err := goose.NewProvider(goose.DialectSQLite3, db.DB, migrations, goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		return fmt.Errorf("loading migrations: %w: %w", ErrSchemaSetup, err)
+	}
+	var mode string
+	current := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode) == nil && strings.EqualFold(mode, "wal")
+	if current {
+		// A new file has no version table yet: an error reads not current.
+		pending, err := p.HasPending(ctx)
+		current = err == nil && !pending
+	}
+	if !current {
+		unlock, err := lockMigrations(path)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+	if err := db.setPragmas(); err != nil {
+		return fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
+	}
+	if current {
+		return nil
+	}
+	if _, err := p.Up(ctx); err != nil {
+		return fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
+	}
+	return nil
 }
 
 // OpenExisting opens the database at dbPath for a caller on a hard time
@@ -374,14 +444,9 @@ func (db *DB) setupSchema(dbPath string) error {
 		current = db.schemaCurrent()
 	}
 	if dbPath != ":memory:" && !current {
-		ctx, cancel := context.WithTimeout(context.Background(), migrateLockWait)
-		defer cancel()
-		unlock, err := fsutil.LockFile(ctx, dbPath+".migrate.lock")
-		switch {
-		case errors.Is(err, context.DeadlineExceeded):
-			return fmt.Errorf("%w: %w", ErrMigrationInProgress, err)
-		case err != nil:
-			return fmt.Errorf("taking the migration lock: %w: %w", ErrSchemaSetup, err)
+		unlock, err := lockMigrations(dbPath)
+		if err != nil {
+			return err
 		}
 		defer unlock()
 	}
@@ -406,6 +471,21 @@ func (db *DB) setupSchema(dbPath string) error {
 		return fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
 	}
 	return nil
+}
+
+// lockMigrations takes the exclusive flock on <dbPath>.migrate.lock,
+// waiting at most migrateLockWait (then ErrMigrationInProgress).
+func lockMigrations(dbPath string) (func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), migrateLockWait)
+	defer cancel()
+	unlock, err := fsutil.LockFile(ctx, dbPath+".migrate.lock")
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return nil, fmt.Errorf("%w: %w", ErrMigrationInProgress, err)
+	case err != nil:
+		return nil, fmt.Errorf("taking the migration lock: %w: %w", ErrSchemaSetup, err)
+	}
+	return unlock, nil
 }
 
 // embeddedMigrationVersions is the version of every migration in this
@@ -539,4 +619,14 @@ func (db *DB) setConnPragma(pragma string, change func(*connState)) error {
 		return err
 	}
 	return nil
+}
+
+// HasTable reports whether the database has a table named name.
+func (db *DB) HasTable(name string) (bool, error) {
+	var ok bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)`, name).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("checking table %s: %w", name, err)
+	}
+	return ok, nil
 }

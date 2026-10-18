@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 )
 
@@ -138,7 +139,7 @@ func (a *taskAcc) merge(b *taskAcc) {
 // session has k targets open at once, each gets 1/k of the stretch (integer
 // ms, the remainder to the lowest id) and is marked Shared. Rows come by
 // target id; a group row sums its leaves and has its own calendar time.
-func Tasks(targets []db.AgentReportTarget, sessions map[string][]Segment, events map[string][]db.AgentReportEvent, now time.Time) []TaskRow {
+func Tasks(targets []db.AgentReportTarget, sessions map[string][]Segment, events map[string][]agentlogdb.AgentReportEvent, now time.Time) []TaskRow {
 	b := newTaskBoard(targets, now.UTC())
 	for _, sid := range sessionIDs(sessions, events) {
 		calls, apis := b.scanEvents(sid, events[sid])
@@ -189,7 +190,7 @@ func newTaskBoard(targets []db.AgentReportTarget, now time.Time) *taskBoard {
 func (b *taskBoard) isLeaf(id int64) bool { return len(b.children[id]) == 0 }
 
 // sessionIDs are the sessions with segments or events, sorted.
-func sessionIDs(sessions map[string][]Segment, events map[string][]db.AgentReportEvent) []string {
+func sessionIDs(sessions map[string][]Segment, events map[string][]agentlogdb.AgentReportEvent) []string {
 	ids := make([]string, 0, len(sessions)+len(events))
 	for s := range sessions {
 		ids = append(ids, s)
@@ -205,9 +206,9 @@ func sessionIDs(sessions map[string][]Segment, events map[string][]db.AgentRepor
 
 // scanEvents records which targets the session's tool calls name (and when),
 // and returns its api_call events.
-func (b *taskBoard) scanEvents(sid string, evs []db.AgentReportEvent) (map[int64][]time.Time, []db.AgentReportEvent) {
+func (b *taskBoard) scanEvents(sid string, evs []agentlogdb.AgentReportEvent) (map[int64][]time.Time, []agentlogdb.AgentReportEvent) {
 	calls := map[int64][]time.Time{}
-	var apis []db.AgentReportEvent
+	var apis []agentlogdb.AgentReportEvent
 	for _, e := range evs {
 		switch e.Kind {
 		case "tool":
@@ -253,7 +254,7 @@ func (b *taskBoard) sessionIntervals(sid string, calls map[int64][]time.Time) (m
 
 // attributeSession splits the session's segments at every interval edge and
 // gives each piece, and each api_call's cost, to the leaves open then.
-func (b *taskBoard) attributeSession(ivs map[int64][]window, leaves []int64, segs []Segment, apis []db.AgentReportEvent) {
+func (b *taskBoard) attributeSession(ivs map[int64][]window, leaves []int64, segs []Segment, apis []agentlogdb.AgentReportEvent) {
 	open := func(at time.Time) []int64 {
 		var out []int64
 		for _, id := range leaves {

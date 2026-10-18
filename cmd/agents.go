@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/agentreport"
 	"watchtower/internal/db"
 )
@@ -27,7 +28,7 @@ var (
 
 func init() {
 	for _, c := range []*cobra.Command{
-		{Use: "enable", Short: "Turn analytics on for a workbench and load its history now", RunE: runAgentsEnable},
+		{Use: "enable", Short: "Turn analytics on for a workbench; the daemon loads its history", RunE: runAgentsEnable},
 		{Use: "disable", Short: "Turn analytics off (stored metrics stay)", RunE: runAgentsDisable},
 		{Use: "scan", Short: "Read new transcript lines into the analytics tables", RunE: runAgentsScan},
 		{Use: "stats", Short: "Totals for a workbench's agent sessions", RunE: runAgentsStats},
@@ -49,17 +50,114 @@ func init() {
 	rootCmd.AddCommand(agentsCmd)
 }
 
+// openAgentsDBs opens watchtower.db and the agentlog.db beside it, and
+// returns agentlog.db's path. An agentlog.db that fails to open is the
+// command's error: analytics never fall back to watchtower.db.
+func openAgentsDBs() (*db.DB, *agentlogdb.DB, string, error) {
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return nil, nil, "", err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("opening database: %w", err)
+	}
+	path := agentlogdb.PathFor(cfg.DBPath())
+	al, err := agentlogdb.Open(path)
+	if err != nil {
+		database.Close()
+		return nil, nil, "", err
+	}
+	return database, al, path, nil
+}
+
+// moveAgentLogRows runs the one-time move of the analytics rows out of
+// watchtower.db (#849) for the writing agents commands, so a CLI-only
+// install moves too. report and stats never call it: the Desktop polls
+// report, which must neither start a copy nor write watchtower.db. A move
+// that did something prints its counts on stderr.
+func moveAgentLogRows(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB, path string) error {
+	res, err := agentlogdb.MoveFromMain(cmd.Context(), database, al, agentlogdb.MoveLockPath(path))
+	if err != nil {
+		return fmt.Errorf("moving agent analytics out of watchtower.db: %w", err)
+	}
+	if res != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), res)
+	}
+	return nil
+}
+
+// agentsEnableJSON is `agents enable --json` (keys pinned by
+// TestAgentsEnable_ReturnsWithoutScanning).
+type agentsEnableJSON struct {
+	WorkbenchID  int64                   `json:"workbench_id"`
+	Enabled      bool                    `json:"enabled"`
+	Import       agentreport.ImportState `json:"import"`
+	DaemonNudged bool                    `json:"daemon_nudged"` // false: no daemon running, or the signal failed
+}
+
+// runAgentsEnable turns analytics on and returns at once (#849): the daemon
+// imports the history (FEAT-03 exception, ask #153 as amended in ask #350),
+// nudged here to start a cycle now; without a running daemon the import
+// starts when it does.
 func runAgentsEnable(cmd *cobra.Command, _ []string) error {
-	database, err := openDBFromConfig()
+	database, al, path, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
-	// FEAT-03 exception (ask #153): enabling loads history at once.
+	defer al.Close()
 	if err := database.SetWorkbenchAgentAnalytics(flagAgentsWorkbench, true); err != nil {
 		return err
 	}
-	return printAgentsScan(cmd, database)
+	if err := moveAgentLogRows(cmd, database, al, path); err != nil {
+		return fmt.Errorf("%w; analytics stays on for workbench %d and the move retries on the next daemon start or agents scan",
+			err, flagAgentsWorkbench)
+	}
+	nudged := nudgeDaemon(cmd)
+	progress, err := al.ImportProgress(flagAgentsWorkbench)
+	if err != nil {
+		return err
+	}
+	imp := agentreport.ImportStateOf(progress)
+	if flagAgentsJSON {
+		return writeJSON(cmd.OutOrStdout(), agentsEnableJSON{WorkbenchID: flagAgentsWorkbench, Enabled: true, Import: imp, DaemonNudged: nudged})
+	}
+	next := "the daemon loads its history in the background"
+	if !nudged {
+		next = "start the daemon to load the history"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Agent analytics is on for workbench %d; %s (%s, %d files so far).\n",
+		flagAgentsWorkbench, next, importStateText(imp.State), imp.FilesStored)
+	return nil
+}
+
+// importStateText is an agentreport.ImportState token for the human line.
+func importStateText(state string) string {
+	switch state {
+	case "loading":
+		return "loading history"
+	case "done":
+		return "history loaded"
+	case "not_started":
+		return "not started"
+	}
+	return state
+}
+
+// nudgeDaemon asks a running daemon to start a sync cycle now and reports
+// whether one was signalled. No daemon is fine (it imports when it starts);
+// any other failure is only a warning on stderr: analytics is on either way.
+func nudgeDaemon(cmd *cobra.Command) bool {
+	cfg, err := workspaceConfigFromFlags()
+	var pid int
+	if err == nil {
+		pid, err = signalSyncNow(cfg)
+	}
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the daemon was not asked to start the import now: %v\n", err)
+	}
+	return err == nil && pid != 0
 }
 
 func runAgentsDisable(cmd *cobra.Command, _ []string) error {
@@ -76,11 +174,12 @@ func runAgentsDisable(cmd *cobra.Command, _ []string) error {
 }
 
 func runAgentsScan(cmd *cobra.Command, _ []string) error {
-	database, err := openDBFromConfig()
+	database, al, path, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	defer al.Close()
 	on, err := database.WorkbenchAgentAnalytics(flagAgentsWorkbench)
 	if err != nil {
 		return err
@@ -88,12 +187,18 @@ func runAgentsScan(cmd *cobra.Command, _ []string) error {
 	if !on {
 		return errors.New("agent analytics is off for this workbench (watchtower agents enable --workbench N)")
 	}
-	return printAgentsScan(cmd, database)
+	if err := moveAgentLogRows(cmd, database, al, path); err != nil {
+		return err
+	}
+	return printAgentsScan(cmd, database, al)
 }
 
-func printAgentsScan(cmd *cobra.Command, database *db.DB) error {
-	res, err := agentlog.Scan(cmd.Context(), database, flagAgentsWorkbench, agentlog.Options{ClaudeDir: agentsClaudeDir()})
+func printAgentsScan(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB) error {
+	res, err := agentlog.Scan(cmd.Context(), database, al, flagAgentsWorkbench, agentlog.Options{ClaudeDir: agentsClaudeDir()})
 	if err != nil {
+		if res != nil && res.FailedFiles > 0 { // a failed progress write still returns what the scan did
+			fmt.Fprintf(cmd.ErrOrStderr(), "%d files failed (retried next scan); first: %v\n", res.FailedFiles, res.FirstFailure)
+		}
 		return err
 	}
 	if flagAgentsJSON {
@@ -114,20 +219,21 @@ func printAgentsScan(cmd *cobra.Command, database *db.DB) error {
 type agentsStatsJSON struct {
 	WorkbenchID int64 `json:"workbench_id"`
 	Enabled     bool  `json:"enabled"`
-	*db.AgentLogStats
+	*agentlogdb.AgentLogStats
 }
 
 func runAgentsStats(cmd *cobra.Command, _ []string) error {
-	database, err := openDBFromConfig()
+	database, al, _, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	defer al.Close()
 	on, err := database.WorkbenchAgentAnalytics(flagAgentsWorkbench)
 	if err != nil {
 		return err
 	}
-	st, err := database.AgentLogStats(flagAgentsWorkbench)
+	st, err := al.AgentLogStats(flagAgentsWorkbench)
 	if err != nil {
 		return err
 	}
@@ -154,14 +260,15 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	case flagAgentsDays > 0:
 		since = now.AddDate(0, 0, -flagAgentsDays)
 	}
-	database, err := openDBFromConfig()
+	database, al, _, err := openAgentsDBs()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+	defer al.Close()
 	out := cmd.OutOrStdout()
 	if flagAgentsSession != "" {
-		det, err := agentreport.BuildSession(database, flagAgentsWorkbench, flagAgentsSession, now)
+		det, err := agentreport.BuildSession(database, al, flagAgentsWorkbench, flagAgentsSession, now)
 		if err != nil {
 			return err
 		}
@@ -173,7 +280,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 		printReportHints(out, det.Hints)
 		return nil
 	}
-	ov, err := agentreport.BuildOverview(database, flagAgentsWorkbench, since, now)
+	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now)
 	if err != nil {
 		return err
 	}

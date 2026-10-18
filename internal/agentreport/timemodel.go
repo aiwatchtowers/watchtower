@@ -4,21 +4,20 @@ import (
 	"cmp"
 	"slices"
 	"time"
-
-	"watchtower/internal/db"
+	"watchtower/internal/agentlogdb"
 )
 
 // tsLayout is the stored event ts layout: UTC, RFC 3339, milliseconds.
 const tsLayout = "2006-01-02T15:04:05.000Z"
 
 type timedEvent struct {
-	db.AgentReportEvent
+	agentlogdb.AgentReportEvent
 	at time.Time
 }
 
 // sortEvents keeps the events keep accepts, parses their ts (an unparseable
 // one is dropped) and orders them by (ts, src_path, src_offset).
-func sortEvents(events []db.AgentReportEvent, keep func(db.AgentReportEvent) bool) []timedEvent {
+func sortEvents(events []agentlogdb.AgentReportEvent, keep func(agentlogdb.AgentReportEvent) bool) []timedEvent {
 	var out []timedEvent
 	for _, e := range events {
 		if !keep(e) {
@@ -286,11 +285,11 @@ func segments(pieces []piece) []Segment {
 	return out
 }
 
-func isMain(e db.AgentReportEvent) bool { return e.AgentID == "" }
+func isMain(e agentlogdb.AgentReportEvent) bool { return e.AgentID == "" }
 
 // SessionTime splits one session's wall time (first to last main-agent
 // event) into categories and returns the main agent's lane.
-func SessionTime(events []db.AgentReportEvent) (TimeSplit, []Segment) {
+func SessionTime(events []agentlogdb.AgentReportEvent) (TimeSplit, []Segment) {
 	evs := sortEvents(events, isMain)
 	if len(evs) < 2 {
 		return TimeSplit{}, []Segment{}
@@ -322,8 +321,8 @@ type subagentSpan struct {
 // subagentSpans returns each subagent's span (first to last ts of its
 // agent_id) in start order; background and type come from the Agent/Task call
 // that spawned it (none found = foreground).
-func subagentSpans(events []db.AgentReportEvent) []subagentSpan {
-	spawns := map[string]db.AgentReportEvent{}
+func subagentSpans(events []agentlogdb.AgentReportEvent) []subagentSpan {
+	spawns := map[string]agentlogdb.AgentReportEvent{}
 	for _, e := range events {
 		if e.Kind == "tool" && isAgentTool(e.Name) && e.SpawnedAgentID != "" {
 			if _, seen := spawns[e.SpawnedAgentID]; !seen {
@@ -333,7 +332,7 @@ func subagentSpans(events []db.AgentReportEvent) []subagentSpan {
 	}
 	by := map[string]*subagentSpan{}
 	var out []*subagentSpan
-	for _, e := range sortEvents(events, func(e db.AgentReportEvent) bool { return !isMain(e) }) {
+	for _, e := range sortEvents(events, func(e agentlogdb.AgentReportEvent) bool { return !isMain(e) }) {
 		s := by[e.AgentID]
 		if s == nil {
 			sp := spawns[e.AgentID]
@@ -356,7 +355,7 @@ func subagentSpans(events []db.AgentReportEvent) []subagentSpan {
 
 // SessionSubagents measures one session's subagent overlap and returns a
 // lane per subagent (no waits inside a subagent: its untooled time is model).
-func SessionSubagents(events []db.AgentReportEvent) (Subagents, []Lane) {
+func SessionSubagents(events []agentlogdb.AgentReportEvent) (Subagents, []Lane) {
 	spans := subagentSpans(events)
 	lanes := make([]Lane, 0, len(spans))
 	if len(spans) == 0 {
