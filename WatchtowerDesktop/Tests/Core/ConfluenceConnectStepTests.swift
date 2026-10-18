@@ -43,7 +43,7 @@ final class ConfluenceConnectStepTests: XCTestCase {
         XCTAssertFalse(step.suggestsUntick(askedConfluence: true, connected: false, cancelled: false, timedOut: false),
                        "another failure keeps its own error")
         XCTAssertFalse(step.suggestsUntick(askedConfluence: true, connected: true, cancelled: false, timedOut: false))
-        XCTAssertEqual(step.untickHint, "Atlassian showed an error page? Uncheck Also connect Confluence and try again.")
+        XCTAssertEqual(step.untickHint, "Atlassian showed an error page? Also connect Confluence is now off — press Connect to sign in to Jira only.")
     }
 
     // F13 + F11 dual path with cmd/jira.go's markers.

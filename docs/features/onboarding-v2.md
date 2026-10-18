@@ -112,8 +112,8 @@ page and never redirects back, the connect can only end by **Cancel** or the
 5-minute login timeout; `jira add` exits with code 75 on that timeout
 (`jiraLoginTimedOutExitCode`). An attempt that asked for Confluence and ended
 either way (`ConfluenceConnectStep.suggestsUntick`) unticks the box and shows
-"Atlassian showed an error page? Uncheck Also connect Confluence and try
-again." until the next Connect. The Google card carries no scopes: connecting a
+"Atlassian showed an error page? Also connect Confluence is now off — press
+Connect to sign in to Jira only." until the next Connect. The Google card carries no scopes: connecting a
 Google account means mail and calendar both, whatever the goals (owner
 decision 2026-10-14, #740), so its sheet opens with Calendar and Gmail
 checked like Settings' Add Google sheet, and either can be unchecked there.

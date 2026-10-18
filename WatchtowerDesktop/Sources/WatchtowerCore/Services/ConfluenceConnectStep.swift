@@ -63,7 +63,7 @@ package enum ConfluenceConnectStep {
     /// The sheet's hint after an attempt that asked for Confluence was
     /// cancelled or timed out: an Atlassian error page that never redirects
     /// back ends exactly that way.
-    package static let untickHint = "Atlassian showed an error page? Uncheck Also connect Confluence and try again."
+    package static let untickHint = "Atlassian showed an error page? Also connect Confluence is now off — press Connect to sign in to Jira only."
 
     /// Whether the connect output so far shows the Jira-only retry.
     package static func isRetryingJiraOnly(_ output: String) -> Bool {
