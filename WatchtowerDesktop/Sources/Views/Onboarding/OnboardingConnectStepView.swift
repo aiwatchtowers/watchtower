@@ -23,6 +23,10 @@ struct OnboardingConnectStepView: View {
         AddJiraAccountView(daemonPolicy: daemonPolicy)
     }
 
+    static func linearSheet() -> AddLinearAccountView {
+        AddLinearAccountView(daemonPolicy: daemonPolicy)
+    }
+
     let onBack: () -> Void
     let onContinue: () async -> Void
 
@@ -35,12 +39,14 @@ struct OnboardingConnectStepView: View {
         case slack
         case google
         case jira
+        case linear
 
         var id: String {
             switch self {
             case .slack: "slack"
             case .google: "google"
             case .jira: "jira"
+            case .linear: "linear"
             }
         }
     }
@@ -114,6 +120,7 @@ struct OnboardingConnectStepView: View {
             case .slack: Self.slackSheet()
             case .google: Self.googleSheet()
             case .jira: Self.jiraSheet()
+            case .linear: Self.linearSheet()
             }
         }
         .task {
@@ -171,6 +178,20 @@ struct OnboardingConnectStepView: View {
                 connect: { sheet = .jira },
                 remove: account.map { account in
                     { await appState.jiraAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
+                }
+            )
+        case .linear:
+            // v1: the first workspace, whatever its status.
+            let account = appState.linearAccountsViewModel?.accounts.first
+            sourceRow(
+                letter: "L", title: "Linear",
+                subtitle: "Issues, cycles and projects · for tasks",
+                connected: account?.displayName,
+                available: appState.linearAccountsViewModel != nil,
+                error: appState.linearAccountsViewModel?.error,
+                connect: { sheet = .linear },
+                remove: account.map { account in
+                    { await appState.linearAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
                 }
             )
         }

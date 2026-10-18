@@ -29,6 +29,7 @@ struct ConnectionsSettings: View {
             // outside this window (Calendar tab, Inbox banner, CLI).
             appState.slackAccountsViewModel?.refresh()
             appState.jiraAccountsViewModel?.refresh()
+            appState.linearAccountsViewModel?.refresh()
             appState.emailAccountsViewModel?.refresh()
             appState.calendarAccountsViewModel?.refresh()
             appState.googleAccountsViewModel?.refresh()
@@ -59,6 +60,7 @@ struct ConnectionsSettings: View {
         case .email: EmailConnectionDetail()
         case .calendar: CalendarConnectionDetail()
         case .jira: JiraConnectionDetail()
+        case .linear: LinearConnectionDetail()
         case .quickConnections: QuickConnectionsDetail()
         }
     }
@@ -72,6 +74,7 @@ struct ConnectionsSettings: View {
         case .email: appState.emailAccountsViewModel?.accounts.count ?? 0
         case .calendar: appState.calendarAccountsViewModel?.accounts.count ?? 0
         case .jira: appState.jiraAccountsViewModel?.accounts.count ?? 0
+        case .linear: appState.linearAccountsViewModel?.accounts.count ?? 0
         case .quickConnections: appState.externalConnectionsViewModel?.connections.count ?? 0
         }
     }
@@ -92,6 +95,9 @@ struct ConnectionsSettings: View {
             return ConnectionStatusLogic.status(okFlags: vm.accounts.map(\.isOK))
         case .jira:
             guard let vm = appState.jiraAccountsViewModel else { return .notConfigured }
+            return ConnectionStatusLogic.enabledFilteredStatus(vm.accounts.map { ($0.isOK, $0.enabled) })
+        case .linear:
+            guard let vm = appState.linearAccountsViewModel else { return .notConfigured }
             return ConnectionStatusLogic.enabledFilteredStatus(vm.accounts.map { ($0.isOK, $0.enabled) })
         case .quickConnections:
             guard let vm = appState.externalConnectionsViewModel else { return .notConfigured }

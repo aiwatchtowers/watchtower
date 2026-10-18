@@ -286,6 +286,8 @@ final class AppState {
     /// an in-flight OAuth connect survives navigating away from the Settings
     /// window.
     private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
+    /// Linear Accounts ViewModel — held here so an in-flight consent survives leaving Settings.
+    private(set) var linearAccountsViewModel: LinearAccountsViewModel?
 
     /// Confluence spaces pickers (Settings → Jira), one per Jira account id —
     /// held here so a select/unselect or re-consent still running when the
@@ -1123,6 +1125,7 @@ final class AppState {
         await slackAccountsViewModel?.daemonRestartTask?.value
         await googleAccountsViewModel?.daemonRestartTask?.value
         await jiraAccountsViewModel?.daemonRestartTask?.value
+        await linearAccountsViewModel?.daemonRestartTask?.value
     }
 
     static let featureChangesBusy = "Feature changes are being applied in Settings — try again"
@@ -1226,6 +1229,7 @@ final class AppState {
         (slackAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
             + [-1] + (googleAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
             + [-1] + (jiraAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+            + [-1] + (linearAccountsViewModel?.accounts.map { Int($0.id) } ?? []).sorted()
     }
 
     /// The re-run wrote something the daemon must pick up.
@@ -1536,6 +1540,7 @@ final class AppState {
         initGoogleAccounts(dbPool: manager.dbPool)
         initSlackAccounts(dbPool: manager.dbPool)
         initJiraAccounts(dbPool: manager.dbPool)
+        linearAccountsViewModel = .started { [weak self] in await self?.accountsChanged() }
     }
 
     @ObservationIgnored private var appDatabaseWired = false
