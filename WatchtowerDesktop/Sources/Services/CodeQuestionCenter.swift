@@ -284,7 +284,8 @@ final class CodeQuestionCenter {
         }
         current.isStarting = false
         current.conversationID = created
-        current.draft = ""
+        // Text typed while the row was written stays in the field.
+        if current.draft == session.draft { current.draft = "" }
         current.notice = nil
         sessions[workbenchID] = current
         questionRefs[created] = CodeQuestionRef(
@@ -785,17 +786,22 @@ final class CodeQuestionCenter {
     }
 
     /// The first list load of a workbench in this run deletes its questions
-    /// that never got a message and are older than
+    /// that no surface holds, never got a message and are older than
     /// `CodeQuestionList.emptyQuestionAge` (a cleanup that failed, a crash
     /// between the row and its first message), off the main thread. A failed
     /// cleanup is tried again on the next load.
     private func pruneEmptyQuestions(workbenchID: Int64, dbPool: DatabasePool) {
         guard prunedWorkbenches.insert(workbenchID).inserted else { return }
         let cutoff = clock().addingTimeInterval(-CodeQuestionList.emptyQuestionAge).timeIntervalSince1970
+        // A conversation a surface still holds (a popover's, a reopened
+        // one, an engine whose turn waits for its stream slot) is never
+        // taken, however old.
+        let keeping = Set(questionRefs.keys).union(ownedEngines.keys)
+            .union(sessions.values.compactMap(\.conversationID))
         Task {
             do {
                 _ = try await dbPool.write { db in
-                    try CodeQuestionList.deleteEmpty(db, workbenchID: workbenchID, createdBefore: cutoff)
+                    try CodeQuestionList.deleteEmpty(db, workbenchID: workbenchID, createdBefore: cutoff, keeping: keeping)
                 }
             } catch {
                 NSLog("CodeQuestionCenter: removing empty code questions: %@", error.localizedDescription)

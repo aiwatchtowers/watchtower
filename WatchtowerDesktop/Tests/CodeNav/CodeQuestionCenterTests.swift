@@ -1189,6 +1189,52 @@ final class CodeQuestionCenterTests: XCTestCase {
         let kept = try await pool.read { try String.fetchOne($0, sql: "SELECT context_id FROM chat_conversations") }
         XCTAssertEqual(kept, "\(project.id):b.swift:2")
     }
+
+    /// Text typed into the field while the first question's row is written
+    /// stays there; only the submitted draft is cleared.
+    func testTextTypedWhileTheConversationIsWrittenStays() async throws {
+        let (center, _, buffer) = makeCenter()
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
+        center.setDraft("Why?", workbenchID: project.id)
+        let held = HeldWriter(pool)
+        defer { held.release() }
+        let asking = Task { await center.ask("Why?", workbenchID: project.id) }
+        let starting = await eventually { center.sessions[self.project.id]?.isStarting == true }
+        XCTAssertTrue(starting)
+        center.setDraft("Why? And then", workbenchID: project.id)
+        held.release()
+        let sent = await boundedValue(asking)
+        XCTAssertEqual(sent, true)
+        XCTAssertEqual(center.sessions[project.id]?.draft, "Why? And then")
+        await reply("Because.", after: 1, engine: center.engine(workbenchID: project.id))
+    }
+
+    /// The cleanup never takes a conversation a surface still holds (its
+    /// turn may wait for a stream slot), however old and empty.
+    func testTheCleanupKeepsAConversationTheCenterHolds() async throws {
+        let (center, _, _) = makeCenter()
+        now = Date()
+        let old = now.timeIntervalSince1970 - CodeQuestionList.emptyQuestionAge - 60
+        let contextIDs = ["\(project.id):Sources/App.swift:1", "\(project.id):Sources/App.swift:2"]
+        let ids = try await pool.write { db in
+            try contextIDs.map { contextID in
+                try db.execute(sql: """
+                    INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+                    VALUES ('t', ?, ?, ?, ?)
+                    """, arguments: [CodeQuestionList.contextType, contextID, old, old])
+                return db.lastInsertedRowID
+            }
+        }
+        let held = ids[0]
+        center.openQuestion(CodeQuestionListItem(conversationID: held, path: "Sources/App.swift", line: 1, firstQuestion: nil,
+                                                 createdAt: Date(timeIntervalSince1970: old)),
+                            project: project, root: root)
+        center.reloadQuestionList(workbenchID: project.id)
+        let left = try await waitForConversations(1)
+        XCTAssertEqual(left, 1, "the one no surface holds goes")
+        let kept = try await pool.read { try Int64.fetchOne($0, sql: "SELECT id FROM chat_conversations") }
+        XCTAssertEqual(kept, held)
+    }
 }
 
 private final class NoSearch: CodeSearchCancelling {

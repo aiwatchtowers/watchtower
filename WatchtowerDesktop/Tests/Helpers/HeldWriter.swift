@@ -46,7 +46,7 @@ func boundedValue<T>(_ task: Task<T, Never>, timeout: Duration = .seconds(5)) as
         outcome.done = true
     }
     let start = ContinuousClock.now
-    while !outcome.done, ContinuousClock.now - start < timeout {
+    while !outcome.done, !Task.isCancelled, ContinuousClock.now - start < timeout {
         try? await Task.sleep(for: .milliseconds(5))
     }
     return outcome.value
