@@ -15,6 +15,7 @@ import (
 // Conversation is one Claude Code conversation of a tab, in ledger order.
 type Conversation struct {
 	AgentSessionID, Path string
+	Codex                bool // Path is a Codex rollout
 }
 
 // Cursor marks how far a caller has read: a conversation and a byte offset
@@ -168,6 +169,9 @@ func parseFile(c Conversation, start int64) (*Result, error) {
 	defer func() { _ = f.Close() }()
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("transcript %s: %w", filepath.Base(c.Path), err)
+	}
+	if c.Codex {
+		return ParseCodex(f, start, c.AgentSessionID)
 	}
 	return Parse(f, start, c.AgentSessionID)
 }

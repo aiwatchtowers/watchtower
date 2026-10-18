@@ -11,7 +11,7 @@ const insertReactionEventSQL = `INSERT OR IGNORE INTO reaction_events
 	(account_id, channel_id, message_ts, emoji, seen_at) VALUES (?, ?, ?, ?, ?)`
 
 // InsertReactionEvent records r in the reaction_events ledger (migration
-// 00136). inserted is false when the key was already there, so the caller
+// 00138). inserted is false when the key was already there, so the caller
 // publishes the automation event exactly once per reaction.
 func (db *DB) InsertReactionEvent(r OwnerReaction) (inserted bool, err error) {
 	res, err := db.Exec(insertReactionEventSQL, r.AccountID, r.ChannelID, r.MessageTS, r.Emoji,

@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/doclinks/linkscan"
 	"watchtower/internal/extsync"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/ideas"
@@ -127,29 +128,30 @@ type Daemon struct {
 	// stage-1 drain got to, so its retry starts there (backfillStreams).
 	// In memory only: a restart re-drains the chunk once. Touched only by
 	// the sequential history-backfill phase.
-	backfillResume      map[backfillResumeKey]time.Time
-	backfillCursor      int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
-	nextStepPipe        *targets.Pipeline
-	customTracksPipe    *customtracks.Pipeline
-	reactionCmdPipe     *reactioncmd.Pipeline
-	calendarSyncers     []*calendar.Syncer
-	calDAVSyncers       []*caldav.Syncer
-	gmailSyncers        []mailSyncer
-	imapSyncers         []mailSyncer
-	jiraSyncers         []jiraAccountSyncer
-	externalSync        ExternalSyncRunner
-	dayPlanPipeline     DayPlanRunner
-	lastJira            time.Time
-	linearSyncers       []linearAccountSyncer
-	lastLinear          time.Time
-	lastPeople          time.Time // when people cards last ran (once per day)
-	lastBriefing        time.Time // when briefing last ran (once per day)
-	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
-	lastIdeasLockSkip   time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
-	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
-	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
-	lastReactionCmd     time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
-	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
+	backfillResume             map[backfillResumeKey]time.Time
+	backfillCursor             int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
+	nextStepPipe               *targets.Pipeline
+	customTracksPipe           *customtracks.Pipeline
+	reactionCmdPipe            *reactioncmd.Pipeline
+	calendarSyncers            []*calendar.Syncer
+	calDAVSyncers              []*caldav.Syncer
+	gmailSyncers               []mailSyncer
+	imapSyncers                []mailSyncer
+	jiraSyncers                []jiraAccountSyncer
+	externalSync               ExternalSyncRunner
+	dayPlanPipeline            DayPlanRunner
+	lastJira                   time.Time
+	linearSyncers              []linearAccountSyncer
+	lastLinear                 time.Time
+	lastPeople                 time.Time // when people cards last ran (once per day)
+	lastBriefing               time.Time // when briefing last ran (once per day)
+	lastIdeas                  time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
+	lastInstructionSuggestions time.Time // when the instruction suggestion miner last ran (once per day)
+	lastIdeasLockSkip          time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
+	lastStreams                time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
+	lastStreamsLockSkip        time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
+	lastReactionCmd            time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
+	lastDayPlanDate            string    // YYYY-MM-DD of last generation, for dedup
 
 	// Real-failure attempt budgets for day plan / briefing / daily rollup (max
 	// 3/day, see maxDailyAIAttempts). Loaded from disk at daemon start
@@ -398,12 +400,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadLastPeople()
 	d.loadLastBriefing()
 	d.loadLastIdeas()
+	d.loadLastInstructionSuggestions()
 	d.loadLastStreams()
 	d.loadDayPlanAttempts()
 	d.loadBriefingAttempts()
 	d.loadRollupAttempts()
 	d.loadPeopleAttempts()
 	d.reapStalePipelineRuns()
+	d.sweepStaleSystemPrompts()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -564,6 +568,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
 	d.phaseHistoryBackfill(ctx)
+	d.phaseInstructionSuggestions(ctx)
 }
 
 // sampleLockStats writes this cycle's WAL and connection-pool wait sample to
@@ -654,6 +659,24 @@ const stalePipelineRunAfter = 24 * time.Hour
 
 // stalePipelineRunError is the error_msg a reaped run carries.
 const stalePipelineRunError = "interrupted: the process running it exited before it finished"
+
+// staleSystemPromptAge is how old a system-prompt temp file must be before
+// the startup sweep removes it: a live claude/codex call deletes its own file
+// as soon as the child exits, well within this.
+const staleSystemPromptAge = 10 * time.Minute
+
+// sweepStaleSystemPrompts removes the 0600 system-prompt files a killed
+// process left in the temp dir (they hold the owner's data). Best-effort:
+// a failure is logged and never keeps the daemon from starting.
+func (d *Daemon) sweepStaleSystemPrompts() {
+	n, err := fsutil.SweepStalePrivateTemp(fsutil.SystemPromptTempPrefix, staleSystemPromptAge, time.Now())
+	if n > 0 {
+		d.logger.Printf("removed %d stale system prompt temp file(s)", n)
+	}
+	if err != nil {
+		d.logger.Printf("sweeping system prompt temp files: %v", err)
+	}
+}
 
 // reapStalePipelineRuns fails every pipeline_runs row a killed process left in
 // 'running' (the catchup reapStaleRecaps precedent), so the Pipeline Progress
@@ -1322,7 +1345,9 @@ func isBenignShutdownErr(ctx context.Context, err error) bool {
 // but digest.enabled off there is nothing for it to read — gating on
 // Tracks.Enabled alone would still create an empty pipeline_runs row every
 // cycle instead of skipping outright. The rollups half stays gated on
-// Digest.Enabled alone, unrelated to whether tracks itself is on. now is used
+// Digest.Enabled alone, unrelated to whether tracks itself is on. The Desktop
+// mirrors the tracks gate as readiness "Needs Slack Digests"
+// (ReadinessFeature.runsOnlyWithDigests, #575): keep the two in step. now is used
 // only for the rollup attempt budget's date (rollupBudgetDate) — the
 // runDayPlanPhase/phaseBriefing shape, threaded through so the budget's date
 // is provably the UTC date of the instant the phase actually ran, not a
@@ -1391,7 +1416,8 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 // Compound-gated on Digest.Enabled too: people cards mine people_signals that
 // only phaseChannelDigests produces — starved without them, and gating on
 // People.Enabled alone would still create an empty pipeline_runs row every
-// throttle window instead of skipping outright.
+// throttle window instead of skipping outright. Dual path with the Desktop's
+// readiness "Needs Slack Digests" (ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if !d.config.People.Enabled || !d.config.Digest.Enabled {
 		return
@@ -1842,7 +1868,8 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 // Compound-gated on Digest.Enabled too: the activity it scans
 // (db.GetScanActivity) includes digest-derived events, so with digest off
 // there is materially less for it to find — the same "tracks mine digests"
-// dependency phaseTracksAndRollups's tracks half has.
+// dependency phaseTracksAndRollups's tracks half has (and the same Desktop
+// dual path, ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled {
 		return

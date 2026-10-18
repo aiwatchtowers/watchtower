@@ -282,7 +282,7 @@ struct SidebarView: View {
         case .workbench: appState.workbenchesViewModel?.badgeCount ?? 0
         // Polled by its own view model: the daemon writes these rows from
         // another process, which the counts VM's observation never sees.
-        case .automations: appState.automationsViewModel?.attentionCount ?? 0
+        case .automations: appState.automationsViewModel?.badgeCount ?? 0
         case .digests: digestsBadgeCount
         case .memory: memoryDisputedCount
         case .statistics: recommendationCount

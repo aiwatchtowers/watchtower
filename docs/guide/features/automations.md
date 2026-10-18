@@ -57,7 +57,13 @@ The marking lowers the risk but does not remove it. Suppose such a recipe also h
 2. Unconfirmed or disabled recipes are dimmed, and Return opens their confirmation sheet or card instead of running. A recipe set to **Ask before running** shows a "Run “<name>”?" prompt first.
 3. When a run you started ends, you get a notice: "<name> finished", "<name> failed" or "<name> stopped: ...".
 
-On the card, **Run now** does the same, and **Dry run** works even before you confirm. **History** lists runs and their steps; a failed run offers **Rerun**, an active one **Cancel**.
+On the card, **Run now** starts a run the same way, without the notice; **Dry run** works even before you confirm. **History** lists runs and their steps; a failed run offers **Rerun**, an active one **Cancel**.
+
+### When a run fails
+
+A scheduled or event run that fails brings "<name> failed", at most once per automation a day; several at once share one notice. A run cut short by a restart brings none. A recipe disabled because its script got stuck always brings "<name> was disabled".
+
+The **Automations** badge counts automations whose last run failed, until you open the card or a later run succeeds.
 
 ### Change one
 

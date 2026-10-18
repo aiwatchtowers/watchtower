@@ -29,6 +29,9 @@ type workbenchActivity struct {
 	// openAsks are the titles of the agent's asks still waiting on the owner.
 	openAsks    []string
 	unreadAgent int
+	// openTargets are the ids of the targets still open (not done or
+	// dismissed); only their unread agent comments count (ask #339).
+	openTargets map[int]bool
 }
 
 func (a workbenchActivity) empty() bool {
@@ -95,6 +98,12 @@ func (p *Pipeline) workbenchActivity(workbenchID int64, sinceTS string) (workben
 func (a *workbenchActivity) addTargets(nodes []db.BoardNode, sinceTS string) {
 	for _, n := range nodes {
 		title := firstLine(n.Target.Text)
+		if n.Target.Status != "done" && n.Target.Status != "dismissed" {
+			if a.openTargets == nil {
+				a.openTargets = map[int]bool{}
+			}
+			a.openTargets[n.Target.ID] = true
+		}
 		switch {
 		case n.Target.Status == "in_progress":
 			a.inProgress = append(a.inProgress, title)
@@ -109,9 +118,13 @@ func (a *workbenchActivity) addTargets(nodes []db.BoardNode, sinceTS string) {
 	}
 }
 
+// addComments counts unread agent comments on open targets only, matching
+// the Desktop badges: a closed target's comments — every done summary an
+// agent leaves on closing — would otherwise count forever (ask #339). A
+// reply carries its root's target. Call it after addTargets.
 func (a *workbenchActivity) addComments(comments []db.WorkbenchComment) {
 	for _, c := range comments {
-		if c.Author == "agent" && c.ReadAt == "" {
+		if c.Author == "agent" && c.ReadAt == "" && a.openTargets[int(c.TargetID.Int64)] {
 			a.unreadAgent++
 		}
 	}

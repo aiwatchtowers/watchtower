@@ -1,0 +1,9 @@
+{"timestamp": "2026-10-12T12:00:00.000Z", "type": "session_meta", "payload": {"id": "x"}}
+{"timestamp": "2026-10-12T12:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "injected duplicate"}]}}
+{"timestamp": "2026-10-12T12:00:02.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage", "id": "u1", "content": [{"type": "text", "text": "Watchtower workbench #7 brief: start here"}]}}}
+{"timestamp": "2026-10-12T12:00:03.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage", "id": "u2", "content": [{"type": "text", "text": "please add a flag"}]}}}
+{"timestamp": "2026-10-12T12:00:04.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "id": "m1", "content": [{"type": "Text", "text": "done, flag added"}]}}}
+{"timestamp": "2026-10-12T12:00:05.000Z", "type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage", "id": "u3", "content": [{"type": "text", "text": "Ask #12 answered from the owner: yes"}]}}}
+{"timestamp": "2026-10-12T12:00:06.000Z", "type": "event_msg", "payload": {"type": "user_message", "message": "legacy owner line"}}
+{"timestamp": "2026-10-12T12:00:07.000Z", "type": "event_msg", "payload": {"type": "agent_message", "message": "legacy agent line"}}
+{"timestamp": "2026-10-12T12:00:08.000Z", "type": "event_msg", "payload": {"type": "task_complete"}}

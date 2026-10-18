@@ -122,13 +122,12 @@ func (in hookEvent) agentFailure() *db.AgentFailure {
 	return &db.AgentFailure{Error: briefClip(asks.OneLine(e), agentErrorRunes)}
 }
 
-// agentStateFor maps a hook event to the state it records. onlyFrom is the
-// stored state the write requires; agentStateFor always returns "" for it,
-// and recordHookAgentState sets it to approval for a subagent's PostToolUse.
-// A main-thread PostToolUse means a tool just ran: it clears "needs
-// approval" after a granted permission and "waiting" when a turn started
-// without a prompt (a teammate or background-task message, a wakeup fires
-// no UserPromptSubmit); one stamped before the stop's "waiting", or whose
+// agentStateFor maps a hook event to the state it records, with no stored
+// state required (recordSubagentToolRun requires approval for a subagent's
+// PostToolUse itself). A main-thread PostToolUse means a tool just ran: it
+// clears "needs approval" after a granted permission and "waiting" when a
+// turn started without a prompt (a teammate or background-task message, a
+// wakeup fires no UserPromptSubmit); one stamped before the stop's "waiting", or whose
 // tool call the transcript places before the stop, writes nothing. A
 // SubagentStart or SubagentStop records no state (ok true, state ""):
 // recordHookAgentState routes it to the agent turns and the background count
@@ -136,27 +135,27 @@ func (in hookEvent) agentFailure() *db.AgentFailure {
 // permission_prompt notification (spec 2026-10-12 §6.3). ok is false for an
 // event that records nothing — an unknown event or notification type, or a
 // missing one.
-func agentStateFor(event, notificationType string) (state, onlyFrom string, ok bool) {
+func agentStateFor(event, notificationType string) (state string, ok bool) {
 	switch event {
 	case "UserPromptSubmit":
-		return agentStateWorking, "", true
+		return agentStateWorking, true
 	case "PermissionRequest":
-		return agentStateApproval, "", true
+		return agentStateApproval, true
 	case "Stop", "StopFailure":
-		return agentStateWaiting, "", true
+		return agentStateWaiting, true
 	case "PostToolUse":
-		return agentStateWorking, "", true
+		return agentStateWorking, true
 	case "SubagentStart", "SubagentStop":
-		return "", "", true
+		return "", true
 	case "Notification":
 		switch notificationType {
 		case "permission_prompt", "elicitation_dialog":
-			return agentStateApproval, "", true
+			return agentStateApproval, true
 		case "idle_prompt":
-			return agentStateWaiting, "", true
+			return agentStateWaiting, true
 		}
 	}
-	return "", "", false
+	return "", false
 }
 
 // runSessionStateHook is `workbench session-state`. A UserPromptSubmit
@@ -203,7 +202,7 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 	if err != nil {
 		return fmt.Errorf("reading the hook input: %w", err)
 	}
-	state, onlyFrom, ok := agentStateFor(in.Event, in.NotificationType)
+	state, ok := agentStateFor(in.Event, in.NotificationType)
 	if !ok || in.SessionID == "" || (in.agentTurnEvent() && !in.recordsAgentTurn()) {
 		return nil
 	}
@@ -223,7 +222,7 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 	case subagentToolRun:
 		err = recordSubagentToolRun(database, rowID, workbenchID, in.SessionID, state, at)
 	default:
-		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, in.agentFailure(),
+		err = recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", in.agentFailure(),
 			in.Event == "UserPromptSubmit", at, turn)
 	}
 	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at)
@@ -293,7 +292,7 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 	}
 	defer database.Close()
 	rowID, workbenchID := row.ID, row.WorkbenchID.Int64
-	state, _, _ := agentStateFor(in.Event, "")
+	state, _ := agentStateFor(in.Event, "")
 	turn, subagentToolRun := in.toolRunTurn()
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
 	turn.transcriptPath = ""

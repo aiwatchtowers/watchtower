@@ -21,7 +21,7 @@ var validTeamIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // oneLine collapses s to a single line safe for interpolation into a
 // section-structured prompt: every control character (newlines and tabs
 // included) is treated as whitespace, runs of whitespace collapse to one
-// space, the result is trimmed, and it is capped at maxLen runes.
+// space, the result is trimmed, and it is capped at maxFieldRunes runes.
 //
 // Without this, a value a third party controls — a Slack workspace name, a
 // Jira site name, a skill description read from a file — could embed
@@ -29,7 +29,7 @@ var validTeamIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // (Important I2, task-5-review.md). Free-form owner content the prompt
 // already trusts by design (project instructions) is deliberately NOT run
 // through this — see projectBlock.
-func oneLine(s string, maxLen int) string {
+func oneLine(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if unicode.IsControl(r) {
@@ -39,8 +39,8 @@ func oneLine(s string, maxLen int) string {
 		b.WriteRune(r)
 	}
 	out := strings.Join(strings.Fields(b.String()), " ")
-	if utf8.RuneCountInString(out) > maxLen {
-		out = string([]rune(out)[:maxLen]) + "…"
+	if utf8.RuneCountInString(out) > maxFieldRunes {
+		out = string([]rune(out)[:maxFieldRunes]) + "…"
 	}
 	return out
 }

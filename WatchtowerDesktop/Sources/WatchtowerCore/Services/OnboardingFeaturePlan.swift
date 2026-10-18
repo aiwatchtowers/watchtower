@@ -167,6 +167,14 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
         enabledFeatureIDs.contains(id)
     }
 
+    /// On here while Slack Digests is off: the daemon would skip it
+    /// (`ReadinessFeature.runsOnlyWithDigests`), so the Customize row offers
+    /// to turn Slack Digests on too (#575).
+    package func waitsOnSlackDigests(_ id: String) -> Bool {
+        guard let digests = ReadinessFeature.digests.featureID, isEnabled(id), !isEnabled(digests) else { return false }
+        return ReadinessFeature.allCases.contains { $0.featureID == id && $0.runsOnlyWithDigests }
+    }
+
     /// A manual switch flip. Ignores ids onboarding does not manage, so a
     /// stray id can never reach the apply step.
     package mutating func setFeature(_ id: String, enabled: Bool) {

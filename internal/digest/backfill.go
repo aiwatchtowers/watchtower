@@ -48,7 +48,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
 	}
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	if errors.Is(err, ErrDigestLocked) {
 		p.logger.Printf("digest backfill: skipping — %v", err)
 		return BackfillWindowResult{}, &Usage{}, nil
@@ -213,7 +213,7 @@ func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) err
 		return nil
 	}
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	if err != nil {
 		return fmt.Errorf("digest backfill rollups: %w", err)
 	}

@@ -169,33 +169,33 @@ var errNoCredentials = errors.New("no usable credentials")
 // this command's output on success. Best effort: on a failed listing a
 // never-listed connection stays enabled with no tool allowed (fail closed); a
 // listed one keeps its last good listing.
-func refreshToolsAfterEnable(cmd *cobra.Command, cfg *config.Config, database *db.DB, id int64) {
+func refreshToolsAfterEnable(out, errOut io.Writer, cfg *config.Config, database *db.DB, id int64) {
 	conn, err := database.GetExternalConnection(id)
 	if err == nil {
 		err = listConnectionTools(cfg, database, &conn)
 	}
 	if errors.Is(err, errNoCredentials) || errors.Is(err, errInsecureTransport) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
+		fmt.Fprintf(errOut, "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
 		return
 	}
 	if err != nil && !conn.ToolsListed {
 		reason := fmt.Sprintf("%slisting its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", staleNote(conn), err, id)
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %s\n", id, reason)
+		fmt.Fprintf(errOut, "warning: connection %d: %s\n", id, reason)
 		connectionUnmounted(database, conn, reason)
 		return
 	}
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: listing its tools failed (%v); the listing from %s still applies\n", id, err, conn.ToolsListedAt)
+		fmt.Fprintf(errOut, "warning: connection %d: listing its tools failed (%v); the listing from %s still applies\n", id, err, conn.ToolsListedAt)
 	}
 	allowed, _ := externalmcp.ResolveTools(conn)
 	if len(allowed) == 0 {
 		reason := fmt.Sprintf("none of its tools is known read-only, so none is available to the chat — `watchtower connections tools %d` to review", id)
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %s\n", id, reason)
+		fmt.Fprintf(errOut, "warning: connection %d: %s\n", id, reason)
 		connectionUnmounted(database, conn, reason)
 		return
 	}
 	markConnectionOK(database, conn)
-	fmt.Fprintf(cmd.OutOrStdout(), "%s. `watchtower connections tools %d` to review.\n", toolsSummary(conn, allowed), id)
+	fmt.Fprintf(out, "%s. `watchtower connections tools %d` to review.\n", toolsSummary(conn, allowed), id)
 }
 
 // toolsSummary is the one-line "N tools available" sentence the CLI prints.

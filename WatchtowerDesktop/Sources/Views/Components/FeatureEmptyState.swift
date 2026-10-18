@@ -13,6 +13,9 @@ struct FeatureEmptyState<Extra: View>: View {
     let syncLine: String?
     let turnOnError: String?
     let isTurningOn: Bool
+    /// What Turn on switches on (`FeatureReadiness.turnOnFeatureID`); nil =
+    /// the copy's own feature.
+    let turnOnFeatureID: String?
     let onAction: (EmptyStateAction) -> Void
     /// Tab-specific content kept inside (cheat sheet, `NoOwnerEmptyState`, Generate).
     let extra: Extra
@@ -23,6 +26,7 @@ struct FeatureEmptyState<Extra: View>: View {
         syncLine: String?,
         turnOnError: String?,
         isTurningOn: Bool,
+        turnOnFeatureID: String? = nil,
         onAction: @escaping (EmptyStateAction) -> Void,
         @ViewBuilder extra: () -> Extra
     ) {
@@ -31,6 +35,7 @@ struct FeatureEmptyState<Extra: View>: View {
         self.syncLine = syncLine
         self.turnOnError = turnOnError
         self.isTurningOn = isTurningOn
+        self.turnOnFeatureID = turnOnFeatureID
         self.onAction = onAction
         self.extra = extra()
     }
@@ -55,9 +60,13 @@ struct FeatureEmptyState<Extra: View>: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let action = Self.visibleAction(copy: copy, readiness: readiness, turnOnError: turnOnError) {
+            if let action = Self.visibleAction(
+                copy: copy, readiness: readiness, turnOnError: turnOnError, turnOnFeatureID: turnOnFeatureID
+            ) {
                 HStack(spacing: 8) {
-                    Button(Self.label(for: action, retry: turnOnError != nil)) { onAction(action) }
+                    Button(Self.label(for: action, retry: turnOnError != nil, ownFeatureID: copy.feature?.featureID)) {
+                        onAction(action)
+                    }
                         .buttonStyle(.borderedProminent)
                         .disabled(isTurningOn)
                     if isTurningOn, case .turnOn = action {
@@ -95,35 +104,46 @@ struct FeatureEmptyState<Extra: View>: View {
         }
     }
 
-    /// The one button: Turn on while off (for a feature with a switch),
-    /// Connect while its source is missing, otherwise (daemon down included:
-    /// Start lives in the app-wide banner) the tab's own action —
+    /// The one button: Turn on while off (for a feature with a switch), Turn
+    /// on Slack Digests while the feature waits on it, Connect while its
+    /// source is missing, otherwise (daemon down included: Start lives in
+    /// the app-wide banner) the tab's own action —
     /// never a Turn on or Connect the state doesn't call for. A failed Turn
     /// on keeps its retry: an enable whose restart failed leaves the feature
     /// on (no longer `.off`), and only the retry restarts the daemon.
     static func visibleAction(
-        copy: EmptyStateCopy, readiness: Readiness?, turnOnError: String? = nil
+        copy: EmptyStateCopy, readiness: Readiness?, turnOnError: String? = nil, turnOnFeatureID: String? = nil
     ) -> EmptyStateAction? {
         guard let readiness else {
             return copy.primaryAction.flatMap { isStateGated($0) ? nil : $0 }
         }
+        let turnOnID = turnOnFeatureID ?? copy.feature?.featureID
         switch readiness {
-        case .off:
-            return copy.feature?.featureID.map { .turnOn(featureID: $0) }
+        case .off, .needsDigests:
+            return turnOnID.map { .turnOn(featureID: $0) }
         case .needsSource(let source):
             return .connect(source)
         default:
-            if turnOnError != nil, let featureID = copy.feature?.featureID {
+            if turnOnError != nil, let featureID = turnOnID {
                 return .turnOn(featureID: featureID)
             }
             return copy.primaryAction.flatMap { isStateGated($0) ? nil : $0 }
         }
     }
 
-    static func label(for action: EmptyStateAction, retry: Bool = false) -> String {
+    /// A Turn on of another feature names it: on Tracks or People it starts
+    /// Slack Digests, a heavy one (#575).
+    static func label(for action: EmptyStateAction, retry: Bool = false, ownFeatureID: String? = nil) -> String {
         switch action {
-        case .turnOn: retry ? "Try again" : "Turn on"
-        case .connect(let source): "Connect \(source.displayName)"
+        case .turnOn(let featureID):
+            if retry {
+                "Try again"
+            } else if featureID != ownFeatureID, featureID == ReadinessFeature.digests.featureID {
+                "Turn on Slack Digests"
+            } else {
+                "Turn on"
+            }
+        case .connect(let source): source.actionTitle
         case .openSettings(_, let label): label
         case .tabAction(let label): label
         }

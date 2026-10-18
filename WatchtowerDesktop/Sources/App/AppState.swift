@@ -463,8 +463,11 @@ final class AppState {
         self.openDatabase = openDatabase
         // A daemon that came up after all (a later poll, a Settings start)
         // takes the "did not start" banner with it.
+        wireDaemonStartQueue()
         daemonManager.onRunningChanged = { [weak self] running in
-            if running { self?.daemonStartFailure = nil }
+            guard running else { return }
+            self?.daemonStartFailure = nil
+            self?.clearRestartFailedTurnOnErrors()
         }
     }
 
@@ -1082,7 +1085,9 @@ final class AppState {
 
     /// Every daemon start or restart the app makes runs on this queue
     /// (`enqueueDaemonStart`, AppState+DaemonStart.swift); tests get their own.
-    @ObservationIgnored var daemonStartQueue = DaemonStartQueue.shared
+    @ObservationIgnored var daemonStartQueue = DaemonStartQueue.shared {
+        didSet { wireDaemonStartQueue() }
+    }
     /// How long the banner's Start waits for the daemon to show up, and how
     /// often it looks (a first start after an update runs migrations first).
     @ObservationIgnored var daemonStartWaitBound: Duration = .seconds(60)
@@ -1252,6 +1257,9 @@ final class AppState {
         return error.featureWasOn || !nowOn ? error.message : nil
     }
 
+    /// A later successful start or restart picked the feature up: drop its Try again.
+    func clearRestartFailedTurnOnErrors() { emptyStateTurnOnErrors = emptyStateTurnOnErrors.filter { !$0.value.featureWasOn } }
+
     private func recordTurnOnError(_ featureID: String, _ message: String, featureWasOn: Bool = false) {
         emptyStateTurnOnErrors[featureID] = (message, featureWasOn)
     }
@@ -1297,7 +1305,7 @@ final class AppState {
                 return
             }
         }
-        emptyStateTurnOnErrors[featureID] = nil
+        emptyStateTurnOnErrors = emptyStateTurnOnErrors.filter { $0.key != featureID && !$0.value.featureWasOn }
     }
 
     /// A first run of onboarding opens Home, whatever the goals.
@@ -1353,16 +1361,18 @@ final class AppState {
         guard automationsViewModel == nil else { return }
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
         let cli = AutomationsCLI(runner: runner)
-        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli)
-        // Daemon-written inbox outputs never fire the counts VM's observation.
-        // Resolved at call time: the counts VM may be built after this one.
+        let notifier = AutomationRunNotifier()
+        let watch = AutomationFailureWatch(defaults: .standard, workspace: dbPool.path, notifier: notifier)
+        let looking = { NSApp.isActive && NSApp.keyWindow?.isVisible == true }
+        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli, failureWatch: watch, isOwnerLooking: looking)
+        // Daemon-written inbox outputs never fire the counts VM's observation; resolved at call time.
         vm.onInboxOutputCountChanged = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
         vm.start()
         automationsViewModel = vm
         let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
-                                      notifier: AutomationRunNotifier()) { [weak self] in
+                                      notifier: notifier) { [weak self] in
             self?.isAutomationsFeatureEnabled ?? false
         }
         quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }
@@ -1459,7 +1469,7 @@ final class AppState {
             await Self.stopWipeRestart(daemon: daemon, db: db, workspaceDir: workspaceDir)
         }.value
         if let failure { throw failure }
-        daemonStartFailure = nil
+        daemonStartQueue.succeeded()
     }
 
     private static func stopWipeRestart(
@@ -1506,7 +1516,7 @@ final class AppState {
                 try? await Task.sleep(for: .milliseconds(500))
             }
             if await daemon.startDetached() {
-                self.daemonStartFailure = nil
+                self.daemonStartQueue.succeeded()
             } else if daemon.daemonIsRunning() {
                 // The old daemon is still there (still exiting, or it did not
                 // stop): the new one never came up. Retry restarts it.

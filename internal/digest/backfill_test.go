@@ -454,7 +454,7 @@ func TestRunBackfillWindow_LockContentionIsIncomplete(t *testing.T) {
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	require.NoError(t, err)
 	defer unlock()
 
@@ -494,7 +494,7 @@ func TestRunBackfillRollups_LockErrors(t *testing.T) {
 	p := backfillPipeline(t, database, gen)
 	from, to := backfillRange()
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	require.NoError(t, err)
 	err = p.RunBackfillRollups(context.Background(), from, to)
 	unlock()

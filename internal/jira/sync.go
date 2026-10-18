@@ -282,6 +282,9 @@ func (s *Syncer) SyncBoard(ctx context.Context, boardID int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("getting board %d: %w", boardID, err)
 	}
+	if board == nil { // nil, nil = the board is not stored for this account
+		return 0, fmt.Errorf("board %d not found for this account", boardID)
+	}
 	if board.ProjectKey == "" {
 		return 0, fmt.Errorf("board %d has no project key", boardID)
 	}

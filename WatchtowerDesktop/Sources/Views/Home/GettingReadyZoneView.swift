@@ -7,17 +7,20 @@ import WatchtowerCore
 struct GettingReadyZoneView: View {
     let zone: GettingReadyZone
     let firstSync: FirstSyncLine?
+    let digestsTurnOn: DigestsTurnOnState
     let onLink: (HomeLink) -> Void
     let onHide: () -> Void
 
     init(
         zone: GettingReadyZone,
         firstSync: FirstSyncLine?,
+        digestsTurnOn: DigestsTurnOnState = .idle,
         onLink: @escaping (HomeLink) -> Void,
         onHide: @escaping () -> Void
     ) {
         self.zone = zone
         self.firstSync = firstSync
+        self.digestsTurnOn = digestsTurnOn
         self.onLink = onLink
         self.onHide = onHide
     }
@@ -52,14 +55,25 @@ struct GettingReadyZoneView: View {
                 FirstSyncBanner(line: firstSync)
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12, alignment: .top)], spacing: 12) {
+                let offering = Self.digestsOfferingCards(cards, digestsTurnOn)
                 ForEach(cards, id: \.feature) { card in
-                    GettingReadyCardView(card: card, onLink: onLink)
+                    GettingReadyCardView(
+                        card: card, digestsTurnOn: offering.contains(card.feature) ? digestsTurnOn : nil, onLink: onLink)
                 }
             }
             ForEach(sourceRows, id: \.source) { row in
                 GettingReadySourceRowView(text: Self.connectLine(row), source: row.source, onLink: onLink)
             }
         }
+    }
+
+    /// The cards that may offer the Slack Digests Turn on: each one waiting
+    /// on it, but a failed Turn on's error and Try again only once, on the
+    /// first card it concerns (#575).
+    static func digestsOfferingCards(_ cards: [GettingReadyCard], _ state: DigestsTurnOnState) -> Set<ReadinessFeature> {
+        let concerned = cards.filter { $0.feature.runsOnlyWithDigests && $0.readiness != nil && $0.readiness != .ready }
+        guard state.error != nil else { return Set(concerned.map(\.feature)) }
+        return Set(concerned.prefix(1).map(\.feature))
     }
 
     /// "Connect Jira to get Boards, Workload, Blockers, Project Map and
@@ -71,7 +85,7 @@ struct GettingReadyZoneView: View {
                 titles.append(tab.title)
             }
         }
-        return "Connect \(row.source.displayName) to get \(joinedNames(titles))"
+        return "\(row.source.actionTitle) to get \(joinedNames(titles))"
     }
 
     /// Jira fills five tabs; every other feature its Open's tab.
@@ -114,10 +128,43 @@ private struct FirstSyncBanner: View {
     }
 }
 
+/// The Slack Digests Turn on as a Home card shows it (#575): the same
+/// progress, busy and error the tabs' empty states show.
+struct DigestsTurnOnState: Equatable {
+    /// Some empty-state Turn on is running (one at a time).
+    var busy = false
+    /// The running one is Slack Digests.
+    var isTurningOn = false
+    /// `AppState.emptyStateTurnOnError(for: "slack-digests")`.
+    var error: String?
+
+    static let idle = Self()
+}
+
 /// One feature: its name, what it makes, and its readiness.
 struct GettingReadyCardView: View {
     let card: GettingReadyCard
+    /// nil: this card offers no Slack Digests Turn on (another card carries it).
+    let digestsTurnOn: DigestsTurnOnState?
     let onLink: (HomeLink) -> Void
+
+    init(card: GettingReadyCard, digestsTurnOn: DigestsTurnOnState? = .idle, onLink: @escaping (HomeLink) -> Void) {
+        self.card = card
+        self.digestsTurnOn = digestsTurnOn
+        self.onLink = onLink
+    }
+
+    /// Slack Digests' id when this card offers to turn it on: the feature
+    /// waits on it, or its Turn on failed and only a retry restarts
+    /// (`FeatureReadiness.turnOnFeatureID`, as the tabs do).
+    private var digestsTurnOnID: String? {
+        guard let digestsTurnOn, card.feature.runsOnlyWithDigests, card.readiness != .ready, card.readiness != nil else {
+            return nil
+        }
+        let id = FeatureReadiness.turnOnFeatureID(
+            for: card.feature, readiness: card.readiness, digestsTurnOnFailed: digestsTurnOn.error != nil)
+        return id == ReadinessFeature.digests.featureID ? id : nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -153,12 +200,32 @@ struct GettingReadyCardView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if case .needsSource(let source) = readiness, source.isOwnerIdentity {
+                if let featureID = digestsTurnOnID, let digestsTurnOn {
                     Spacer(minLength: 0)
-                    // No owner yet (OWNER-02): the fix is in Settings → Connections.
-                    Button("Open Connections") { onLink(.connect(source)) }
-                        .buttonStyle(.link)
+                    if digestsTurnOn.isTurningOn {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button(digestsTurnOn.error == nil ? "Turn on Slack Digests" : "Try again") {
+                        onLink(.turnOn(featureID: featureID))
+                    }
+                    .buttonStyle(.link)
+                    .disabled(digestsTurnOn.busy)
                 }
+                if case .needsSource(let source) = readiness, source.isOwnerIdentity || source == .jiraBoards {
+                    Spacer(minLength: 0)
+                    // No owner yet (OWNER-02): the fix is in Settings →
+                    // Connections. No Jira board picked (#572): Boards.
+                    Button(source.isOwnerIdentity ? "Open Connections" : source.actionTitle) {
+                        onLink(.connect(source))
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+            if digestsTurnOnID != nil, let error = digestsTurnOn?.error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -184,7 +251,7 @@ private struct GettingReadySourceRowView: View {
             Text(text)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Connect \(source.displayName)") { onLink(.connect(source)) }
+            Button(source.actionTitle) { onLink(.connect(source)) }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

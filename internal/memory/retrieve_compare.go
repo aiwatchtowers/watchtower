@@ -58,11 +58,7 @@ func CompareRecall(readDB, shadowDB *db.DB, query string, legacyIDs []string, li
 		CoverageOK:        idsSubsetOf(legacyIDs, newIDs),
 		MeanImportanceNew: meanImportance(newRows),
 	}
-	oldRows, err := loadNodesByID(readDB, legacyIDs)
-	if err != nil {
-		return RecallDiff{}, fmt.Errorf("memory: compare recall: loading legacy nodes: %w", err)
-	}
-	diff.MeanImportanceOld = meanImportance(oldRows)
+	diff.MeanImportanceOld = meanImportance(loadNodesByID(readDB, legacyIDs))
 
 	if err := recordShadow(shadowDB, "recall", query, legacyIDs, newIDs, diff); err != nil {
 		return diff, err
@@ -223,7 +219,7 @@ func meanImportance(rows []db.MemoryNodeRow) float64 {
 // stale/deleted legacy id is skipped, never an error, since the legacy
 // caller already resolved it once and this is only needed for the mean-
 // importance metric, not a correctness-critical read).
-func loadNodesByID(readDB *db.DB, ids []string) ([]db.MemoryNodeRow, error) {
+func loadNodesByID(readDB *db.DB, ids []string) []db.MemoryNodeRow {
 	var rows []db.MemoryNodeRow
 	for _, id := range ids {
 		row, err := readDB.GetMemoryNode(id)
@@ -232,5 +228,5 @@ func loadNodesByID(readDB *db.DB, ids []string) ([]db.MemoryNodeRow, error) {
 		}
 		rows = append(rows, row)
 	}
-	return rows, nil
+	return rows
 }

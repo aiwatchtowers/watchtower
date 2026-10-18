@@ -188,7 +188,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 	if err != nil {
 		return nil, fmt.Errorf("upsert plan: %w", err)
 	}
-	if err := p.persistItems(planID, opts.Date, newItems, events); err != nil {
+	if err := p.persistItems(planID, newItems, events); err != nil {
 		// A freshly created plan row that failed half-way would otherwise stick
 		// for the whole day: the next cycle's "plan exists" short-circuit takes
 		// an empty or partial plan as done. Drop it so the next run regenerates.
@@ -238,11 +238,11 @@ func hasTimedEvent(events []db.CalendarEvent) bool {
 
 // persistItems writes a generated plan's items: the AI items, then the
 // calendar timeblocks.
-func (p *Pipeline) persistItems(planID int64, date string, newItems []db.DayPlanItem, events []db.CalendarEvent) error {
+func (p *Pipeline) persistItems(planID int64, newItems []db.DayPlanItem, events []db.CalendarEvent) error {
 	if err := p.db.ReplaceAIItems(planID, newItems); err != nil {
 		return fmt.Errorf("replace AI items: %w", err)
 	}
-	if err := p.syncCalendarItems(planID, date, events); err != nil {
+	if err := p.syncCalendarItems(planID, events); err != nil {
 		return fmt.Errorf("sync calendar items: %w", err)
 	}
 	return nil

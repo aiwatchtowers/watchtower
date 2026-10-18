@@ -140,14 +140,15 @@ func (p TemplateParam) HasDefault() bool {
 
 // ErrNoActiveJiraProject is <PROJECT>'s default finding nothing: the install
 // is refused rather than writing a report on no project. Its text is what the
-// Desktop gallery shows; the CLI's text output adds the --param hint.
+// Desktop gallery shows, next step included; the CLI's text output adds the
+// --param hint.
 // It is a sentence for the owner, not a Go-style error string.
 var ErrNoActiveJiraProject error = noActiveJiraProjectError{}
 
 type noActiveJiraProjectError struct{}
 
 func (noActiveJiraProjectError) Error() string {
-	return "This template needs a Jira project where you are the assignee or reporter of an open issue."
+	return "This template needs a Jira project where you are the assignee or reporter of an open issue. Connect Jira, let it sync, and try again."
 }
 
 // ownerJiraProjects is <PROJECT>'s default: every active Jira project of the

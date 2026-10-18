@@ -21,7 +21,7 @@ The very first briefing on a new install skips the hour and comes in the first c
 
 A briefing has up to five sections, plus today's calendar:
 
-- **Needs Attention**: unanswered mentions, DMs and mail to you, updated tracks, overdue or blocked targets, new red flags. Workbench activity (a blocked target, open asks, unread agent comments) can appear here, labelled *Workbench*.
+- **Needs Attention**: unanswered mentions, DMs and mail to you, updated tracks, overdue or blocked targets, new red flags. Workbench activity (a blocked target, open asks, unread agent comments on targets still open) can appear here, labelled *Workbench*.
 - **Your Day**: your targets and tracks for today.
 - **What Happened**: notable events from recent channel digests. Notes your automations left for the briefing are folded in here, labelled with a gear and the automation's name.
 - **Team Pulse**: people signals such as activity spikes or drops and new red flags.

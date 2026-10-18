@@ -115,7 +115,7 @@ func runAutomationsInstallTemplate(cmd *cobra.Command, args []string) error {
 	defer database.Close()
 	if params, err = automations.FillTemplateParams(database, tpl.Name, params); err != nil {
 		if errors.Is(err, automations.ErrNoActiveJiraProject) && !autoFlags.JSON {
-			return fmt.Errorf("%w Connect Jira and let it sync, or pass --param PROJECT=<KEY>", err)
+			return fmt.Errorf("%w Or pass --param PROJECT=<KEY>.", err) //nolint:staticcheck // sentences for the owner, like the error it wraps
 		}
 		return err
 	}

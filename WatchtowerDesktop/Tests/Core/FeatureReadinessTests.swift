@@ -65,6 +65,94 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.digests, input), .needsSource(.slack))
     }
 
+    /// #575: the daemon runs tracks and people cards only while Slack
+    /// Digests is on (dual path with `phaseTracksAndRollups`,
+    /// `phaseCustomTrackScan` and `phasePeopleCards`), so with Digests off
+    /// they say so instead of promising the next cycle for ever.
+    func testTracksAndPeopleNeedDigestsWhileDigestsOff() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.disabledFeatureIDs = ["slack-digests"]
+        XCTAssertEqual(evaluate(.digests, input), .off)
+        XCTAssertEqual(evaluate(.tracks, input), .needsDigests)
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsDigests)
+        // It beats a run's state: no run comes while Digests is off.
+        input.latestRuns = ["people": RunSnapshot(status: "error", startedAt: now.addingTimeInterval(-60), errorMessage: "x")]
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsDigests)
+        // Content wins: the tab shows it and Home keeps its Open.
+        input.contentPresent = [.tracks]
+        XCTAssertEqual(evaluate(.tracks, input), .ready)
+        // Features that run without Slack Digests are untouched.
+        XCTAssertEqual(evaluate(.ideas, input), .scheduled(.nextCycle(minutes: 15)))
+        XCTAssertEqual(evaluate(.briefing, input), .scheduled(.nextCycle(minutes: 15)))
+        XCTAssertEqual(
+            Set(ReadinessFeature.allCases.filter(\.runsOnlyWithDigests)), [.tracks, .peopleCards],
+            "the daemon's compound Digest.Enabled gates cover exactly these")
+    }
+
+    func testOffAndNeedsSourceBeatNeedsDigests() {
+        var input = inputs(now: today(10))
+        input.disabledFeatureIDs = ["slack-digests", "tracks"]
+        XCTAssertEqual(evaluate(.tracks, input), .off)
+        input.connected = ConnectedSources(slack: false, mail: true)
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsSource(.slack))
+    }
+
+    func testDigestsOnMeansNoDigestsWait() {
+        let input = inputs(now: today(10))
+        XCTAssertEqual(evaluate(.tracks, input), .scheduled(.nextCycle(minutes: 15)))
+        XCTAssertEqual(evaluate(.peopleCards, input), .scheduled(.nextCycle(minutes: 15)))
+        XCTAssertEqual(FeatureReadiness.line(.needsDigests), "Needs Slack Digests")
+    }
+
+    /// A Turn on for tracks or people cards starts Slack Digests while they
+    /// wait on it and while its Turn on failed (the restart retry, #575).
+    func testTurnOnFeatureIDFollowsSlackDigests() {
+        let id = FeatureReadiness.turnOnFeatureID
+        XCTAssertEqual(id(.tracks, .needsDigests, false), "slack-digests")
+        XCTAssertEqual(id(.peopleCards, .scheduled(.inAboutADay), true), "slack-digests")
+        XCTAssertEqual(id(.tracks, .scheduled(.nextCycle(minutes: 15)), false), "tracks")
+        XCTAssertEqual(id(.tracks, .off, true), "tracks", "its own switch first")
+        XCTAssertEqual(id(.ideas, .scheduled(.nextCycle(minutes: 15)), true), "ideas")
+        XCTAssertNil(id(.calendar, nil, true))
+    }
+
+    /// Dual path (#575): the daemon's compound `Digest.Enabled` gates, read
+    /// straight from the Go source (the `OnboardingFeaturePlanTests`
+    /// registry-drift precedent), name exactly the features
+    /// `runsOnlyWithDigests` marks. A new gate fails here until mapped.
+    func testRunsOnlyWithDigestsMatchesTheDaemonGates() throws {
+        let daemonDir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/daemon")
+        let goFiles = try FileManager.default.contentsOfDirectory(atPath: daemonDir.path)
+            .filter { $0.hasSuffix(".go") && !$0.hasSuffix("_test.go") }
+        XCTAssertTrue(goFiles.contains("daemon.go"), "the daemon package moved: \(daemonDir.path)")
+        // A gate is a line joining `Digest.Enabled` with another feature's
+        // `X.Enabled` by && or ||, adjacent or not.
+        let section = try NSRegularExpression(pattern: #"\bd\.config\.(\w+)\.Enabled\b"#)
+        var sections: Set<String> = []
+        for name in goFiles {
+            let source = try String(contentsOf: daemonDir.appendingPathComponent(name), encoding: .utf8)
+            for line in source.split(separator: "\n").map(String.init)
+            where line.contains("d.config.Digest.Enabled") && (line.contains("&&") || line.contains("||")) {
+                let range = NSRange(line.startIndex..., in: line)
+                for match in section.matches(in: line, range: range) {
+                    let sectionName = (line as NSString).substring(with: match.range(at: 1))
+                    if sectionName != "Digest" { sections.insert(sectionName) }
+                }
+            }
+        }
+        let byConfigSection: [String: ReadinessFeature] = ["Tracks": .tracks, "People": .peopleCards]
+        XCTAssertEqual(sections, Set(byConfigSection.keys), "map a new Digest.Enabled gate to its feature")
+        XCTAssertEqual(
+            Set(sections.compactMap { byConfigSection[$0] }),
+            Set(ReadinessFeature.allCases.filter(\.runsOnlyWithDigests)))
+    }
+
     func testContentMeansReadyEvenWhileRunning() {
         let now = today(10)
         var input = inputs(now: now)
@@ -370,5 +458,82 @@ final class FeatureReadinessTests: XCTestCase {
             default: XCTFail("\(feature): \(readiness)")
             }
         }
+    }
+
+    // MARK: - Jira boards (#572)
+
+    func testJiraWithoutSelectedBoardsAsksToChooseThem() {
+        var input = inputs(now: today(10))
+        input.connected = ConnectedSources(jira: true)
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.jiraBoards)), "Choose Jira boards to get this")
+        // Jira is Stream Digests' only source: it waits on boards too.
+        XCTAssertEqual(evaluate(.streamDigests, input), .needsSource(.jiraBoards))
+        // With mail it has something to read.
+        input.connected.mail = true
+        XCTAssertEqual(evaluate(.streamDigests, input), .scheduled(.nextCycle(minutes: 15)))
+        input.connected.mail = false
+
+        input.jiraBoardsSelected = true
+        XCTAssertEqual(evaluate(.jira, input), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    /// The order after `ready`: needsSource(.jiraBoards) and needsDigests
+    /// (#575, disjoint features, so both hold in one evaluation) beat
+    /// daemonStopped; off, needsSource and ready beat them.
+    func testJiraBoardsAndDigestsGapsOrder() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.connected = ConnectedSources(slack: true, jira: true)
+        input.jiraBoardsSelected = false
+        input.disabledFeatureIDs = ["slack-digests"]
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-3600)
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        XCTAssertEqual(evaluate(.tracks, input), .needsDigests)
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsDigests)
+        XCTAssertEqual(evaluate(.ideas, input), .daemonStopped)
+        XCTAssertTrue(ReadinessFeature.allCases.filter(\.runsOnlyWithDigests).allSatisfy { $0.source != .jira })
+
+        input.contentPresent = [.jira, .tracks]
+        XCTAssertEqual(evaluate(.jira, input), .ready)
+        XCTAssertEqual(evaluate(.tracks, input), .ready)
+        input.disabledFeatureIDs = ["slack-digests", "people-cards"]
+        XCTAssertEqual(evaluate(.peopleCards, input), .off)
+        input.connected = ConnectedSources(jira: true)
+        XCTAssertEqual(evaluate(.peopleCards, input), .off)
+        input.disabledFeatureIDs = ["slack-digests"]
+        XCTAssertEqual(evaluate(.peopleCards, input), .needsSource(.slack))
+    }
+
+    func testJiraBoardsGapKeepsNotConnectedAndContentFirst() {
+        var input = inputs(now: today(10))
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jira))
+        input.connected = ConnectedSources(jira: true)
+        input.contentPresent = [.jira]
+        XCTAssertEqual(evaluate(.jira, input), .ready)
+    }
+
+    /// Picking boards is the owner's fix whether or not the daemon runs, so
+    /// it wins over "Watchtower isn't running".
+    func testJiraBoardsGapWinsOverDaemonStopped() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.connected = ConnectedSources(jira: true)
+        input.jiraBoardsSelected = false
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-120)
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        input.jiraBoardsSelected = true
+        XCTAssertEqual(evaluate(.jira, input), .daemonStopped)
+    }
+
+    func testSourceActionTitles() {
+        XCTAssertEqual(ReadinessSource.jira.actionTitle, "Connect Jira")
+        XCTAssertEqual(ReadinessSource.jiraBoards.actionTitle, "Choose Jira boards")
+        XCTAssertTrue(ReadinessSource.jiraBoards.isConnected(in: ConnectedSources(jira: true)))
+        XCTAssertFalse(ReadinessSource.jiraBoards.isOwnerIdentity)
     }
 }

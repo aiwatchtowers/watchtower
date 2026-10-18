@@ -25,7 +25,7 @@ package struct GettingReadyCard: Equatable, Sendable {
         case .ready: .ready
         case .preparing: .preparing
         case .error: .error
-        case .off, .needsSource, .daemonStopped, .waitingForSync, .scheduled, nil: .waiting
+        case .off, .needsSource, .needsDigests, .daemonStopped, .waitingForSync, .scheduled, nil: .waiting
         }
     }
 
@@ -85,7 +85,18 @@ package struct GettingReadyStep: Equatable, Sendable {
 
 /// A Today card, in its fixed order (owner ask #308).
 package enum TodayCardKind: CaseIterable, Sendable {
-    case sinceYouWereAway, nextMeeting, waitingOnYou, briefing, myTargets, agentsWaiting
+    case sinceYouWereAway, nextMeeting, waitingOnYou, briefing, myTargets, agentsWaiting, instructionSuggestion
+}
+
+/// The open instruction suggestion Home offers (`instruction_suggestions`).
+package struct HomeInstructionSuggestion: Equatable, Sendable {
+    package let id: Int64
+    package let text: String
+
+    package init(id: Int64, text: String) {
+        self.id = id
+        self.text = text
+    }
 }
 
 /// Where a click goes. Core has no SidebarDestination; AppState.openHomeLink maps these.
@@ -98,10 +109,14 @@ package enum HomeLink: Equatable, Sendable {
     case workbench(WorkbenchRoute)
     case workbenches
     case catchUp
+    /// Settings → System (the instruction suggestion's More…).
+    case instructionSettings
     /// Getting ready's Open.
     case feature(ReadinessFeature)
     /// Getting ready's Connect row.
     case connect(ReadinessSource)
+    /// A Getting ready card's Turn on (a feature waiting on Slack Digests).
+    case turnOn(featureID: String)
 }
 
 /// A target row's status dot.
@@ -139,6 +154,8 @@ package struct TodayCard: Equatable, Sendable {
     package let items: [TodayItem]
     /// The card's own target (header click).
     package let link: HomeLink
+    /// The suggestion an Add / Dismiss card decides.
+    package let suggestionID: Int64?
 
     package init(
         kind: TodayCardKind,
@@ -146,7 +163,8 @@ package struct TodayCard: Equatable, Sendable {
         title: String? = nil,
         body: String? = nil,
         items: [TodayItem] = [],
-        link: HomeLink
+        link: HomeLink,
+        suggestionID: Int64? = nil
     ) {
         self.kind = kind
         self.eyebrow = eyebrow
@@ -154,6 +172,7 @@ package struct TodayCard: Equatable, Sendable {
         self.body = body
         self.items = items
         self.link = link
+        self.suggestionID = suggestionID
     }
 }
 
@@ -173,6 +192,8 @@ package struct HomeTodayData: Equatable, Sendable {
     package var asks: WorkbenchAskRows
     /// `newestUnacknowledgedReady`: the newest ready recap not yet acknowledged.
     package var pendingRecap: CatchUpRecap?
+    /// The newest open suggestion first seen within 7 days.
+    package var suggestion: HomeInstructionSuggestion?
     /// A card whose read threw (logged).
     package var failed: Set<TodayCardKind>
 
@@ -186,6 +207,7 @@ package struct HomeTodayData: Equatable, Sendable {
         targets: [Target] = [],
         asks: WorkbenchAskRows = WorkbenchAskRows(rows: [], unreadableIDs: []),
         pendingRecap: CatchUpRecap? = nil,
+        suggestion: HomeInstructionSuggestion? = nil,
         failed: Set<TodayCardKind> = []
     ) {
         self.awaitingCount = awaitingCount
@@ -197,6 +219,7 @@ package struct HomeTodayData: Equatable, Sendable {
         self.targets = targets
         self.asks = asks
         self.pendingRecap = pendingRecap
+        self.suggestion = suggestion
         self.failed = failed
     }
 }

@@ -113,6 +113,54 @@ final class HomeViewTests: XCTestCase {
         XCTAssertThrowsError(try other.inspect().find(button: "Open Connections"))
     }
 
+    /// #575: a card waiting on Slack Digests offers Turn on Slack Digests
+    /// (one call to action, no "— Turn on" in the line), with the tabs'
+    /// progress, busy and error.
+    func testNeedsDigestsCardTurnsOnSlackDigests() throws {
+        var tapped: HomeLink?
+        let cards = [Self.card(.tracks, "Tracks", .needsDigests)]
+        let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []))) { tapped = $0 }
+        XCTAssertNoThrow(try view.inspect().find(text: "Needs Slack Digests"))
+        try view.inspect().find(button: "Turn on Slack Digests").tap()
+        XCTAssertEqual(tapped, .turnOn(featureID: "slack-digests"))
+
+        let busy = HomeContent(
+            snapshot: viewSnapshot(.shown(cards: cards, sourceRows: [])), today: Date(),
+            digestsTurnOn: DigestsTurnOnState(busy: true, isTurningOn: true), onLink: { _ in }, onHideGettingReady: {})
+        XCTAssertTrue(try busy.inspect().find(button: "Turn on Slack Digests").isDisabled())
+        XCTAssertNoThrow(try busy.inspect().find(ViewType.ProgressView.self))
+
+        // The restart failed: tracks is scheduled again, the retry stays.
+        let failedCards = [Self.card(.tracks, "Tracks", .scheduled(.nextCycle(minutes: 15)))]
+        let failed = HomeContent(
+            snapshot: viewSnapshot(.shown(cards: failedCards, sourceRows: [])), today: Date(),
+            digestsTurnOn: DigestsTurnOnState(error: "boom"), onLink: { tapped = $0 }, onHideGettingReady: {})
+        XCTAssertNoThrow(try failed.inspect().find(text: "boom"))
+        tapped = nil
+        try failed.inspect().find(button: "Try again").tap()
+        XCTAssertEqual(tapped, .turnOn(featureID: "slack-digests"))
+
+        // R3: two cards with the same error show it, and its retry, once.
+        let both = [
+            Self.card(.tracks, "Tracks", .scheduled(.nextCycle(minutes: 15))),
+            Self.card(.peopleCards, "People cards", .needsDigests)
+        ]
+        let once = HomeContent(
+            snapshot: viewSnapshot(.shown(cards: both, sourceRows: [])), today: Date(),
+            digestsTurnOn: DigestsTurnOnState(error: "boom"), onLink: { _ in }, onHideGettingReady: {})
+        XCTAssertEqual(try once.inspect().findAll(ViewType.Text.self) { try $0.string() == "boom" }.count, 1)
+        XCTAssertEqual(try once.inspect().findAll(ViewType.Button.self) {
+            try $0.labelView().text().string() == "Try again"
+        }.count, 1)
+        XCTAssertThrowsError(try once.inspect().find(button: "Turn on Slack Digests"))
+        XCTAssertEqual(GettingReadyZoneView.digestsOfferingCards(both, DigestsTurnOnState()), [.tracks, .peopleCards])
+        XCTAssertEqual(GettingReadyZoneView.digestsOfferingCards(both, DigestsTurnOnState(error: "boom")), [.tracks])
+
+        // Other cards never offer it.
+        let other = makeContent(viewSnapshot(.shown(cards: [Self.card(.ideas, "Ideas", .scheduled(.inHours(6)))], sourceRows: [])))
+        XCTAssertThrowsError(try other.inspect().find(button: "Turn on Slack Digests"))
+    }
+
     func testFirstSyncLineOnTop() throws {
         let cards = [Self.card(.digests, "Digests", .waitingForSync(detail: nil))]
         let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []), firstSync: Self.firstSync))
