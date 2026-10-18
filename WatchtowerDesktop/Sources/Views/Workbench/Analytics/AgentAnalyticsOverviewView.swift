@@ -40,7 +40,7 @@ struct AgentAnalyticsOverviewView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 420)
             if enabling {
-                ProgressView("Loading the history…").controlSize(.small)
+                ProgressView("Turning on…").controlSize(.small)
             } else {
                 Button("Turn On", action: actions.turnOn).buttonStyle(.borderedProminent)
             }
@@ -53,11 +53,18 @@ struct AgentAnalyticsOverviewView: View {
 
     private func content(_ overview: AgentReportOverview, staleError: String?) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            if let line = overview.importState.flatMap { AgentAnalyticsFormat.importLine($0) } {
-                Label(line, systemImage: "arrow.down.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .help("The daemon imports this folder's session history in the background; the numbers grow as it goes.")
+            if let state = overview.importState, let line = AgentAnalyticsFormat.importLine(state) {
+                if AgentAnalyticsFormat.isImportWarning(state) {
+                    Label(line, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .help("The history import waits for a one-time move of the analytics rows out of watchtower.db.")
+                } else {
+                    Label(line, systemImage: "arrow.down.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("The daemon imports this folder's session history in the background; the numbers grow as it goes.")
+                }
             }
             header(overview)
             if let staleError {

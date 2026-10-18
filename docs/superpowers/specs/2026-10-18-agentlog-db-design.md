@@ -71,7 +71,7 @@ Fresh installs: 00116 still creates empty tables in `watchtower.db` (migration h
 A file total is not knowable cheaply: `CandidateDirs` also lists sibling folders' transcripts (`<slug>-…`) and nested workbenches' files this workbench does not own, and ownership is decided per file only when the scan reaches it. So progress is "complete or not" plus a running count (spec call):
 
 - Each scan of a workbench upserts, in its own short transaction at its end (also after a budget stop), `agent_log_import(project_id, complete, files_stored, updated_at)`: `complete = 1` when the scan finished its listing without a budget stop (`Result.Incomplete == false`), else 0; `files_stored` = the number of transcripts stored for the workbench (builder's choice how to count). A file that keeps failing (`FailedFiles`) does not keep `complete` at 0; it is retried every scan as today.
-- `agents report --json` (overview) gains a pinned key `import`: `{"state": "not_started"|"loading"|"done", "files_stored": N, "updated_at": "..."}`. `not_started`: enabled, no row yet; `loading`: row with `complete = 0`; `done`: `complete = 1`. `TestAgentsReportJSON_PinnedKeys` is amended.
+- `agents report --json` (overview) gains a pinned key `import`: `{"state": "waiting_for_move"|"not_started"|"loading"|"done", "files_stored": N, "updated_at": "..."}`. `waiting_for_move`: no move marker in `agentlog.db` yet (scans refuse); `not_started`: enabled, no row yet; `loading`: row with `complete = 0`; `done`: `complete = 1`. `TestAgentsReportJSON_PinnedKeys` is amended.
 - Desktop: the Analytics pane shows "Loading history — N files so far" above the overview while `state != "done"`; the overview poll (60 s) refreshes it. Strings in English. Swift decodes the new key in `AgentReport.swift`; the Go fixture writer (`TestDesktopReportFixtures`) regenerates the JSON fixtures.
 
 ### D7. What moves out of `internal/db`
@@ -84,7 +84,7 @@ A file total is not knowable cheaply: `CandidateDirs` also lists sibling folders
 ## Error handling
 
 - `agentlog.db` cannot be opened or migrated: the daemon logs it and skips `phaseAgentAnalytics` for the cycle; `agents report` fails with the open error (the Desktop shows it as the pane's error line, existing behavior). Never fall back to `watchtower.db`.
-- The move fails: logged; marker unset; retried next start; scans refuse until it succeeds (`agents report` still answers from whatever `agentlog.db` holds, with `import.state = "not_started"` if nothing).
+- The move fails: logged; marker unset; retried next start; scans refuse until it succeeds (`agents report` still answers from whatever `agentlog.db` holds, with `import.state = "waiting_for_move"`, and the pane shows a warning line for it).
 - `agentlog.db` deleted by the owner: it is recreated empty; the next scans reimport what transcripts still exist. Rows of deleted transcripts are lost — stated in the feature note, not prevented.
 
 ## Tests that must exist

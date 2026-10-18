@@ -8,8 +8,9 @@ import WatchtowerCore
 ///   then every 60 s while the Workbench tab is on screen;
 /// - one session's detail (`--session <uuid>`) on demand (`loadSession`).
 ///
-/// `turnOn` runs `watchtower agents enable`, which loads the history
-/// synchronously and may take tens of seconds, then reloads the overview.
+/// `turnOn` runs `watchtower agents enable` — it switches analytics on, runs
+/// a pending one-time move out of watchtower.db and nudges the daemon, which
+/// loads the history in the background — then reloads the overview.
 ///
 /// Same run discipline as `SessionReportCenter`: at most one run per key in
 /// flight plus one queued rerun, a failed run keeps the last good value

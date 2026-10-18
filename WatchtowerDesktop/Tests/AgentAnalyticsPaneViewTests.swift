@@ -318,6 +318,18 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(try line("loading", 1234), "Loading history — 1,234 files so far")
         XCTAssertEqual(try line("not_started", 0), "Loading history — 0 files so far")
         XCTAssertEqual(try line("loading", 1234, "de_DE"), "Loading history — 1.234 files so far")
+        XCTAssertEqual(try line("waiting_for_move", 0),
+                       "History not moved yet — restart the daemon or run watchtower agents scan")
+    }
+
+    /// Before the move the pane shows a warning, not a loading line that never moves.
+    func testOverviewShowsTheMoveWarning() throws {
+        let all = try texts(overviewView(.overview(Self.importOverview(state: "waiting_for_move"), staleError: nil)))
+        XCTAssertTrue(all.contains("History not moved yet — restart the daemon or run watchtower agents scan"), "\(all)")
+        XCTAssertFalse(all.contains { $0.hasPrefix("Loading history") }, "\(all)")
+        let state = try XCTUnwrap(Self.importOverview(state: "waiting_for_move").importState)
+        XCTAssertTrue(AgentAnalyticsFormat.isImportWarning(state))
+        XCTAssertFalse(AgentAnalyticsFormat.isImportWarning(try XCTUnwrap(Self.importOverview(state: "loading").importState)))
     }
 
     /// The loading line sits above the overview until the import is done;

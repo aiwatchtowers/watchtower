@@ -207,7 +207,7 @@ package struct AgentLane: Decodable, Equatable, Sendable {
 
 /// How far the workbench's history import got (`import` in the overview).
 package struct AgentImportState: Decodable, Equatable, Sendable {
-    /// `not_started`, `loading` or `done`.
+    /// `waiting_for_move`, `not_started`, `loading` or `done`.
     package let state: String
     package let filesStored: Int
     package let updatedAt: String?

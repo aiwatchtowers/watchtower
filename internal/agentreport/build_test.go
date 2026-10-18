@@ -1,6 +1,7 @@
 package agentreport
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -29,6 +30,8 @@ func buildDB(t *testing.T) (testDBs, int64) {
 	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = al.Close() })
+	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(filepath.Join(dir, "agentlog.db")))
+	require.NoError(t, err)
 	wb, err := d.CreateWorkbench("app", t.TempDir())
 	require.NoError(t, err)
 	return testDBs{DB: d, al: al}, wb
@@ -149,6 +152,32 @@ func TestBuildOverview_ImportState(t *testing.T) {
 			assert.Equal(t, tc.want, ov.Import)
 		})
 	}
+}
+
+// Before the one-time move no scan runs, so the overview says so instead of
+// "not started" or a stale progress row.
+func TestBuildOverview_ImportWaitingForMove(t *testing.T) {
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "w.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	wb, err := d.CreateWorkbench("app", t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
+	require.NoError(t, al.SetImportProgress(wb, false, 3, t0))
+
+	ov, err := BuildOverview(d, al, wb, time.Time{}, t0)
+	require.NoError(t, err)
+	assert.Equal(t, ImportState{State: "waiting_for_move"}, ov.Import)
+
+	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(filepath.Join(dir, "agentlog.db")))
+	require.NoError(t, err)
+	ov, err = BuildOverview(d, al, wb, time.Time{}, t0)
+	require.NoError(t, err)
+	assert.Equal(t, "loading", ov.Import.State)
 }
 
 func TestBuildSession_UnknownIsError(t *testing.T) {

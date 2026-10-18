@@ -54,12 +54,13 @@ type Overview struct {
 }
 
 // ImportState is how far the workbench's history import got (spec D6):
+// waiting_for_move (agentlog.db has no move marker yet, so no scan runs),
 // not_started (no scan recorded progress yet), loading (the last scan
 // stopped before the end of its listing) or done.
 type ImportState struct {
 	State       string `json:"state"`
 	FilesStored int    `json:"files_stored"`
-	UpdatedAt   string `json:"updated_at,omitempty"` // absent while not_started
+	UpdatedAt   string `json:"updated_at,omitempty"` // absent while waiting_for_move or not_started
 }
 
 // ImportStateOf maps a progress row (nil = none yet) to its state.
@@ -191,11 +192,19 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 		sinceStr = since.UTC().Format(tsLayout)
 		ov.Since = since.UTC().Format(time.RFC3339)
 	}
+	moved, err := al.Moved()
+	if err != nil {
+		return nil, err
+	}
 	progress, err := al.ImportProgress(workbenchID)
 	if err != nil {
 		return nil, err
 	}
 	ov.Import = ImportStateOf(progress)
+	if !moved {
+		// Durable, unlike a failed Turn On's error: the pane says why nothing loads.
+		ov.Import = ImportState{State: "waiting_for_move"}
+	}
 	sessions, err := al.AgentReportSessions(workbenchID, sinceStr)
 	if err != nil {
 		return nil, err
