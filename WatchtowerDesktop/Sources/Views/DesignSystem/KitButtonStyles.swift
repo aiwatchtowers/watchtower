@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The main action of a popover form: prominent while it can run, the plain
-/// bordered look while disabled. A disabled `.borderedProminent` button
+/// The kit's primary action (popovers and forms): prominent while it can
+/// run, the plain bordered look while disabled. A disabled `.borderedProminent` button
 /// draws its white label at reduced opacity on a pale fill of the accent
 /// color, and under the Graphite accent (or any light accent in the light
 /// theme) that fill is nearly the label's color — the button reads as a
@@ -57,22 +57,26 @@ struct KitDestructiveButtonStyle: ButtonStyle {
             .fixedSize()
     }
 
-    struct Metrics: Equatable {
+    struct Metrics {
         let fontSize: CGFloat
         let height: CGFloat
         let horizontalPadding: CGFloat
         let cornerRadius: CGFloat
     }
 
-    /// The system bordered button's sizes per control size, so the plate
-    /// sits in a row of stock buttons without standing out.
+    /// The shared size table (`KitButtonMetrics`) plus this plate's corner
+    /// radius per control size, so the plate sits in a row of stock buttons
+    /// without standing out.
     static func metrics(for size: ControlSize) -> Metrics {
-        switch size {
-        case .mini: Metrics(fontSize: 9, height: 15, horizontalPadding: 6, cornerRadius: 4)
-        case .small: Metrics(fontSize: 11, height: 20, horizontalPadding: 8, cornerRadius: 5)
-        case .large, .extraLarge: Metrics(fontSize: 13, height: 28, horizontalPadding: 12, cornerRadius: 7)
-        default: Metrics(fontSize: 13, height: 22, horizontalPadding: 10, cornerRadius: 6)
+        let base = KitButtonMetrics.metrics(for: size)
+        let cornerRadius: CGFloat = switch size {
+        case .mini: 4
+        case .small: 5
+        case .large, .extraLarge: 7
+        default: 6
         }
+        return Metrics(fontSize: base.fontSize, height: base.height,
+                       horizontalPadding: base.horizontalPadding, cornerRadius: cornerRadius)
     }
 }
 

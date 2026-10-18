@@ -13,12 +13,13 @@ struct PanelSplitWidth {
 }
 
 /// Main content with a resizable side panel on its trailing edge (style
-/// guide #719), the layout of the Workbench target panel
-/// (`WorkbenchBoardView.panel`) for a detail that would otherwise open in a
-/// sheet or a popup: the panel sits beside the main content rather than over
-/// it, behind a leading hairline, and its leading edge is a
-/// `PanelResizeHandle`. It slides in and out with `Motion.panel`. Not an
-/// `.inspector`, which acts on the window and would squeeze a split pane.
+/// guide #719), for a detail that would otherwise open in a sheet or a
+/// popup: the panel sits beside the main content (side by side, the main
+/// content gives up the width), behind a leading hairline, and its leading
+/// edge is a `PanelResizeHandle`. It slides in and out with `Motion.panel`.
+/// The Workbench target panel (`WorkbenchBoardView.panel`) overlays the board
+/// instead and is not built on this. Not an `.inspector`, which acts on the
+/// window and would squeeze a split pane.
 struct PanelSplit<Main: View, Panel: View>: View {
     let isPanelShown: Bool
     let width: PanelSplitWidth

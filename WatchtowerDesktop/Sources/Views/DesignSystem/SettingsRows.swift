@@ -34,6 +34,8 @@ struct SettingsSection<Content: View>: View {
 
 /// One setting: its title and an optional caption on the left, the control
 /// trailing. The row makes a `Toggle` a small switch (and the control small).
+/// It is one accessibility element labelled by the title (the caption is its
+/// hint), so the control's own label may be empty.
 struct SettingRow<Control: View>: View {
     let title: String
     var caption: String?
@@ -60,5 +62,8 @@ struct SettingRow<Control: View>: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityHint(caption ?? "")
     }
 }

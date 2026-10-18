@@ -39,7 +39,7 @@ final class PopoverSurfaceTests: XCTestCase {
 
     /// The popover forms' main actions use `.kitPrimary`, never a bare
     /// `.borderedProminent` that goes blank while disabled.
-    func testPopoverFormsMainActionsUsePopoverPrimary() throws {
+    func testPopoverFormsMainActionsUseKitPrimary() throws {
         let paths = [
             "Views/Comments/CommentableDocumentText.swift",
             "Views/Workbench/CodeNav/CodeQuestionPopover.swift",

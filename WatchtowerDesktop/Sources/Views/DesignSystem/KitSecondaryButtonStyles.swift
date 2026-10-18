@@ -27,7 +27,7 @@ extension ButtonStyle where Self == KitQuietButtonStyle {
 }
 
 /// The soft buttons' body: a view, so it can track the pointer.
-private struct KitSoftButton: View {
+struct KitSoftButton: View {
     let configuration: ButtonStyleConfiguration
     let restFill: Color
     let label: Color
@@ -39,6 +39,16 @@ private struct KitSoftButton: View {
     @Environment(\.font) private var font
     @State private var isHovered = false
 
+    /// The hover fill shows only while the button can be pressed.
+    static func fill(restFill: Color, isHovered: Bool, isEnabled: Bool, isPressed: Bool) -> Color {
+        (isHovered && isEnabled) || isPressed ? Fill.hover : restFill
+    }
+
+    private var fillColor: Color {
+        Self.fill(restFill: restFill, isHovered: isHovered, isEnabled: isEnabled,
+                  isPressed: configuration.isPressed)
+    }
+
     var body: some View {
         let metrics = KitButtonMetrics.metrics(for: controlSize)
         let plate = RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
@@ -47,7 +57,7 @@ private struct KitSoftButton: View {
             .foregroundStyle(label)
             .padding(.horizontal, metrics.horizontalPadding)
             .frame(minHeight: metrics.height)
-            .background(plate.fill(isHovered || configuration.isPressed ? Fill.hover : restFill))
+            .background(plate.fill(fillColor))
             .contentShape(plate)
             .opacity(isEnabled ? 1 : 0.5)
             .onHover { isHovered = $0 }
@@ -56,11 +66,12 @@ private struct KitSoftButton: View {
     }
 }
 
-/// The system bordered button's sizes per control size (a copy of
-/// `DestructivePrimaryButtonStyle.metrics(for:)`), so a soft button sits in
-/// a row of stock buttons at the same height.
+/// The system bordered button's sizes per control size: the one size table
+/// of the kit's custom buttons (`.kitSecondary`, `.kitQuiet`,
+/// `.kitDestructive`), so each sits in a row of stock buttons at the same
+/// height.
 enum KitButtonMetrics {
-    struct Metrics: Equatable {
+    struct Metrics {
         let fontSize: CGFloat
         let height: CGFloat
         let horizontalPadding: CGFloat

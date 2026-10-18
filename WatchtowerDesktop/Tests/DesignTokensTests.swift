@@ -16,13 +16,21 @@ final class DesignTokensTests: XCTestCase {
                        [4, 6, 8, 10, 16, 18])
     }
 
-    func testFillOpacitiesMatchTheSpec() {
+    func testFillAndStrokeOpacitiesMatchTheSpec() {
         XCTAssertEqual([Fill.restOpacity, Fill.cardOpacity, Fill.hoverOpacity, Fill.selectedOpacity, Fill.onOpacity],
                        [0.04, 0.06, 0.07, 0.12, 0.20])
         XCTAssertEqual(ChipTint.fillOpacity, 0.14)
         XCTAssertEqual(ChipTint.strokeOpacity, 0.3)
         XCTAssertEqual(Stroke.hairline, 0.5)
         XCTAssertEqual(Stroke.selection, 1.5)
+    }
+
+    func testRemainingTokensMatchTheSpec() {
+        XCTAssertEqual(ChipTint.strokeWidth, 0.5)
+        XCTAssertEqual([IconSize.chevron, IconSize.header, IconSize.composer, IconSize.composerLarge],
+                       [8, 14, 16, 24])
+        XCTAssertEqual(FloatingShadow.radius, 3)
+        XCTAssertEqual(FloatingShadow.y, 1)
     }
 
     func testToneKeepsTheTargetsTabMapping() {
