@@ -47,6 +47,9 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "gallery", size: NSSize(width: 900, height: 1400)) {
                 AnyView(DesignSystemGalleryContent().shotFrame().detailBackground())
+            },
+            DesignShot(name: "kit-new-components", size: NSSize(width: 640, height: 760)) {
+                AnyView(GalleryNewComponents().padding(Spacing.page).shotFrame().detailBackground())
             }
         ]
     }

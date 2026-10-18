@@ -17,6 +17,7 @@ struct DesignSystemGalleryContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.wide) {
             GallerySection(title: "Tokens") { GalleryTokens() }
+            GalleryNewComponents()
         }
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .leading)
