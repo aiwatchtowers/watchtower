@@ -50,12 +50,15 @@ for (const p of people.slice(0, maxPeople)) {
     .map((m) => ({ ts: m.ts, channel: m.channel, text: clip(m.text, 240) }));
 }
 
-// llm() takes at most 200 KiB of input. Non-ASCII text takes more bytes
-// than characters (counted as 3 here), so halve the messages per person
-// until the input fits.
-function utf8Bytes(s) {
+// llm() takes at most 200 KiB of input, counted as it sends it: Go's JSON
+// writes <, > and & (and U+2028, U+2029) as 6-byte escapes; other non-ASCII
+// text is counted as 3 bytes. Halve the messages per person until it fits.
+function inputBytes(s) {
   let n = 0;
-  for (let i = 0; i < s.length; i++) n += s.charCodeAt(i) < 0x80 ? 1 : 3;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c === 0x3c || c === 0x3e || c === 0x26 || c === 0x2028 || c === 0x2029 ? 6 : c < 0x80 ? 1 : 3;
+  }
   return n;
 }
 const base = {
@@ -71,7 +74,7 @@ for (let perPerson = 12; ; perPerson = Math.floor(perPerson / 2)) {
   const messages = {};
   for (const user in recent) messages[user] = recent[user].slice(0, perPerson);
   input = { issues: base.issues, time_in_status: base.time_in_status, people: base.people, messages: messages };
-  if (perPerson === 0 || utf8Bytes(JSON.stringify(input)) <= 190 * 1024) break;
+  if (perPerson === 0 || inputBytes(JSON.stringify(input)) <= 190 * 1024) break;
 }
 
 const report = llm(
