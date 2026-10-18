@@ -72,8 +72,9 @@ struct AddJiraAccountView: View {
         // Done, Skip or any other way the sheet closes: one restart for the
         // new site and its boards (nothing under onboarding's `.deferred`).
         .onDisappear {
-            // A site question nobody can answer any more ends the connect.
-            if vm?.siteChoices != nil { vm?.cancelConnect() }
+            // No connect outlives its sheet (#574 review F2): a reopened sheet
+            // must be able to start a new one.
+            vm?.abandonConnect()
             vm?.finishBoardStep()
         }
     }
@@ -213,7 +214,7 @@ struct AddJiraAccountView: View {
                 Button("Cancel") {
                     cancelled = true
                     cancelledAtSiteChoice = true
-                    vm?.cancelConnect()
+                    vm?.declineSiteChoice()
                 }
                 Button("Continue") {
                     if let site = sites.first(where: { $0.url == selection.wrappedValue }) {

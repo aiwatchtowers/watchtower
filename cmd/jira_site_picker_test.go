@@ -2,10 +2,17 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"time"
 
+	"watchtower/internal/config"
 	"watchtower/internal/jira"
 
 	"github.com/spf13/cobra"
@@ -65,6 +72,57 @@ func TestSelectJiraSite_AppPickerSingleSiteAutoPicks(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "cloud-only", site.ID)
 	assert.Empty(t, out.String())
+}
+
+// The sheet went away (stdin never answers): the wait ends after the
+// timeout instead of blocking `jira add` forever.
+func TestReadJiraSiteAnswer_TimesOut(t *testing.T) {
+	r, w := io.Pipe()
+	t.Cleanup(func() { _ = w.Close() })
+	_, err := readJiraSiteAnswer(r, 20*time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no site was chosen")
+}
+
+// A closed stdin is an empty answer; any other read error is reported.
+func TestReadJiraSiteAnswer_EOFIsEmptyOtherErrorsFail(t *testing.T) {
+	line, err := readJiraSiteAnswer(strings.NewReader(""), time.Second)
+	require.NoError(t, err)
+	assert.Empty(t, line)
+
+	_, err = readJiraSiteAnswer(iotest.ErrReader(errors.New("broken pipe")), time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "broken pipe")
+}
+
+// F1 (#574 review): the app cancels its site list by closing stdin. That
+// no-answer path runs before any jira_accounts row exists, so a cancelled
+// connect leaves no row and no token behind.
+func TestRunJiraAdd_NoSiteChosenLeavesNoAccount(t *testing.T) {
+	database := jiraCmdFixture(t)
+	scriptLogin(t, nil)
+	orig := jiraFetchResources
+	jiraFetchResources = func(context.Context, string) ([]jira.CloudResource, error) { return twoJiraSites(), nil }
+	t.Cleanup(func() { jiraFetchResources = orig })
+
+	cmd, out := newAppSiteCmd(t, "")
+	cmd.Flags().String("site", "", "")
+	cmd.Flags().String("label", "", "")
+	cmd.SetContext(context.Background())
+
+	err := runJiraAdd(cmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no site was chosen")
+	assert.Contains(t, out.String(), jiraSitesMarker)
+
+	accounts, err := database.ListJiraAccounts()
+	require.NoError(t, err)
+	assert.Empty(t, accounts, "the choice comes before the row is created")
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	tokens, err := filepath.Glob(filepath.Join(cfg.WorkspaceDir(), "jira_token*.json"))
+	require.NoError(t, err)
+	assert.Empty(t, tokens, "no token is saved for a connect without a site")
 }
 
 // `jira add` takes the flag: the Desktop passes it on every connect.

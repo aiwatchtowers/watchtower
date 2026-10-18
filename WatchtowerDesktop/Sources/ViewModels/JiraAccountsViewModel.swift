@@ -42,6 +42,8 @@ final class JiraAccountsViewModel {
     private(set) var siteChoices: [JiraSiteChoice]?
     /// The running `jira add`'s stdin, where `chooseSite` writes the answer.
     @ObservationIgnored private var siteAnswerPipe: Pipe?
+    /// The running flow's site list was cancelled (`declineSiteChoice`).
+    @ObservationIgnored private var siteChoiceDeclined = false
 
     private let dbPool: DatabasePool
     private let daemon: any DaemonRestarting
@@ -115,7 +117,9 @@ final class JiraAccountsViewModel {
     /// Connects a new Atlassian site via `watchtower jira add`. The OAuth
     /// consent happens in the loopback browser; the detached Process is held in
     /// `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy = .restart) async {
+    /// Returns false when a Cancel ended the flow (`runAuthFlow`).
+    @discardableResult
+    func addAccount(withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy = .restart) async -> Bool {
         await runAuthFlow(
             args: Self.addArgs(withConfluence: withConfluence),
             failurePrefix: "Connect failed",
@@ -133,6 +137,25 @@ final class JiraAccountsViewModel {
         ProcessPipes.feed(pipe, JiraSitePrompt.answer(site))
     }
 
+    /// Cancel on the site list (#574 review F1): closes `jira add`'s stdin
+    /// instead of killing it. The CLI reads end-of-file, chooses no site and
+    /// exits before any account row exists; the flow ends as a Cancel.
+    func declineSiteChoice() {
+        guard siteChoices != nil, let pipe = siteAnswerPipe else { return }
+        siteChoices = nil
+        siteAnswerPipe = nil
+        siteChoiceDeclined = true
+        try? pipe.fileHandleForWriting.close()
+    }
+
+    /// The add sheet went away mid-connect (#574 review F2): a pending site
+    /// question is declined first, then the flow is cancelled, so no
+    /// `jira add` outlives its sheet and a reopened sheet starts afresh.
+    func abandonConnect() {
+        declineSiteChoice()
+        if isConnecting { cancelConnect() }
+    }
+
     /// The add sheet's connect (#572): `addAccount` with the daemon restart
     /// held while the board step is up, so the new site and its chosen
     /// boards are wired in by one restart (`finishBoardStep`), not two
@@ -146,7 +169,9 @@ final class JiraAccountsViewModel {
         boardStepClosed = false
         heldRestart = nil
         let before = try? await dbPool.read { db in Set(try JiraAccountQueries.fetchAll(db).map(\.id)) }
-        await addAccount(withConfluence: withConfluence, daemonPolicy: .deferred)
+        guard await addAccount(withConfluence: withConfluence, daemonPolicy: .deferred) else {
+            return (false, before, true, false)
+        }
         guard error == nil, !lastAuthFlowCancelled else {
             return (false, before, lastAuthFlowCancelled, lastAuthFlowTimedOut)
         }
@@ -231,6 +256,7 @@ final class JiraAccountsViewModel {
         }
         authProcess = nil
         isConnecting = false
+        connectStatus = nil
         siteChoices = nil
     }
 
@@ -291,22 +317,28 @@ final class JiraAccountsViewModel {
     /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
     /// `picksSite` (`jira add` only) wires a stdin pipe for the site question
     /// (#574); a re-login never asks one, and must not wait on a stdin.
+    ///
+    /// Returns false when `cancelConnect` ended this flow. Its state was
+    /// reset by the Cancel, and a newer flow may already own it, so the
+    /// ended one touches nothing after its process exits.
+    @discardableResult
     private func runAuthFlow(
         args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy, picksSite: Bool = false
-    ) async {
+    ) async -> Bool {
         guard !isConnecting else {
             error = "Another connection is already in progress."
-            return
+            return true
         }
         guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
-            return
+            return true
         }
 
         isConnecting = true
         error = nil
         lastAuthFlowCancelled = false
         lastAuthFlowTimedOut = false
+        siteChoiceDeclined = false
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -318,7 +350,7 @@ final class JiraAccountsViewModel {
         // running (Cancel visible); a Cancel or a newer attempt meanwhile
         // drops this launch.
         process.environment = await Constants.resolvedEnvironmentAsync()
-        guard authProcess === process else { return }
+        guard authProcess === process else { return false }
 
         connectStatus = nil
         authOutput = Data()
@@ -329,17 +361,37 @@ final class JiraAccountsViewModel {
         let onStdout: @Sendable (Data) -> Void = { [weak self] chunk in
             Task { @MainActor in self?.noteAuthOutput(chunk, of: process) }
         }
-        let result = await ProcessPipes.run(process, onStdout: onStdout).trimmed
+        // A Cancel that landed while the launch was under way found nothing
+        // running to terminate: stop the child as soon as it exists.
+        let onLaunch: @Sendable (Process) -> Void = { [weak self] launched in
+            Task { @MainActor in
+                if self?.authProcess !== launched { launched.terminate() }
+            }
+        }
+        let result = await ProcessPipes.run(process, onLaunch: onLaunch, onStdout: onStdout).trimmed
+        // Never answered (one site, a failure, a Cancel): release the pipe.
+        if let answerPipe {
+            if siteAnswerPipe === answerPipe { siteAnswerPipe = nil }
+            try? answerPipe.fileHandleForWriting.close()
+        }
+        guard authProcess === process else {
+            // It may still have finished before the Cancel landed.
+            if result.exitCode == 0 { refresh() }
+            return false
+        }
         authProcess = nil
         isConnecting = false
         connectStatus = nil
         siteChoices = nil
-        // Never answered (one site, a failure, a Cancel): release the pipe.
-        if let answerPipe, siteAnswerPipe === answerPipe {
-            siteAnswerPipe = nil
-            try? answerPipe.fileHandleForWriting.close()
+        if siteChoiceDeclined {
+            // The owner cancelled at the site list: the CLI's "no site was
+            // chosen" exit is that Cancel, not an error to show.
+            lastAuthFlowCancelled = true
+            error = nil
+            return true
         }
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+        return true
     }
 
     /// Live stdout of the running consent: the Jira-only retry's marker

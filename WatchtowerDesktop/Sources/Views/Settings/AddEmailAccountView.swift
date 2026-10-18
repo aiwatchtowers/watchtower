@@ -383,6 +383,8 @@ struct AddEmailAccountView: View {
                 dismiss()
             } else {
                 imapError = vm.error
+                // A wrong port, security or folder is a common cause: show them.
+                showIMAPAdvanced = true
                 // With the assistant open, hand it the failure right away so
                 // it can explain the error in plain words (snapshot only —
                 // never the password value).

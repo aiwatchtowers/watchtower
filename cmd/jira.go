@@ -497,7 +497,10 @@ func pickJiraSiteForApp(cmd *cobra.Command, resources []jira.CloudResource) (jir
 		return jira.CloudResource{}, fmt.Errorf("encoding the site list: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", jiraSitesMarker, payload)
-	line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	line, err := readJiraSiteAnswer(cmd.InOrStdin(), jiraSitePickTimeout)
+	if err != nil {
+		return jira.CloudResource{}, err
+	}
 	if chosen := strings.TrimSpace(line); chosen != "" {
 		for _, r := range resources {
 			if r.URL == chosen {
@@ -508,33 +511,67 @@ func pickJiraSiteForApp(cmd *cobra.Command, resources []jira.CloudResource) (jir
 	return jira.CloudResource{}, fmt.Errorf("this Atlassian grant reaches %d sites and no site was chosen", len(resources))
 }
 
-// connectJiraAccount finishes an OAuth flow for accountID: resolves the
-// accessible sites, records the chosen site on the row, saves the token to
-// the account's store, and marks the account ok. On any failure for a newly
-// created row the account is soft-removed so a failed connect never leaves
-// an un-loginable ghost.
-func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, token *jira.OAuthToken, siteFlag, preferCloudID string, isNewRow bool) (jira.CloudResource, error) {
-	rollback := func() {
-		if isNewRow {
-			_ = jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Delete()
-			_ = database.SetJiraAccountRemoved(accountID)
-		}
-	}
+// jiraSitePickTimeout bounds the wait for the app's site answer, so a sheet
+// that went away can never leave `jira add` blocked; a var for tests.
+var jiraSitePickTimeout = 5 * time.Minute
 
-	resources, err := jira.FetchAccessibleResources(cmd.Context(), token.AccessToken)
+// readJiraSiteAnswer reads one line from in within timeout. A closed stdin
+// (EOF) is an empty answer; any other read error, and the timeout, fail.
+func readJiraSiteAnswer(in io.Reader, timeout time.Duration) (string, error) {
+	type answer struct {
+		line string
+		err  error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		line, err := bufio.NewReader(in).ReadString('\n')
+		done <- answer{line, err}
+	}()
+	select {
+	case a := <-done:
+		if a.err != nil && !errors.Is(a.err, io.EOF) {
+			return "", fmt.Errorf("reading the chosen site: %w", a.err)
+		}
+		return a.line, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("no site was chosen within %s", timeout)
+	}
+}
+
+// jiraFetchResources is jira.FetchAccessibleResources; a var so tests can
+// script the grant's sites.
+var jiraFetchResources = jira.FetchAccessibleResources
+
+// chooseJiraSite resolves the sites a fresh grant reaches and picks one
+// (selectJiraSite). It writes nothing, so `jira add` asks before any row
+// exists (#574): a cancelled or failed choice leaves no account behind.
+func chooseJiraSite(cmd *cobra.Command, token *jira.OAuthToken, siteFlag, preferCloudID string) (jira.CloudResource, error) {
+	resources, err := jiraFetchResources(cmd.Context(), token.AccessToken)
 	if err != nil {
-		rollback()
 		return jira.CloudResource{}, fmt.Errorf("fetching accessible resources: %w", err)
 	}
 	if len(resources) == 0 {
-		rollback()
 		return jira.CloudResource{}, fmt.Errorf("no Jira Cloud sites found for this account")
 	}
+	return selectJiraSite(cmd, resources, siteFlag, preferCloudID)
+}
 
-	site, err := selectJiraSite(cmd, resources, siteFlag, preferCloudID)
-	if err != nil {
-		rollback()
-		return jira.CloudResource{}, err
+// rollbackNewJiraAccount soft-removes a row this connect created and drops
+// its token, so a failed connect never leaves an un-loginable ghost.
+func rollbackNewJiraAccount(cfg *config.Config, database *db.DB, accountID int64) {
+	_ = jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Delete()
+	_ = database.SetJiraAccountRemoved(accountID)
+}
+
+// connectJiraAccount finishes an OAuth flow for accountID on the chosen
+// site: records the site on the row, saves the token to the account's
+// store, and marks the account ok. On any failure for a newly created row
+// the account is rolled back (rollbackNewJiraAccount).
+func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, token *jira.OAuthToken, site jira.CloudResource, isNewRow bool) (jira.CloudResource, error) {
+	rollback := func() {
+		if isNewRow {
+			rollbackNewJiraAccount(cfg, database, accountID)
+		}
 	}
 
 	if err := database.UpdateJiraAccountConnection(accountID, site.ID, site.URL, site.Name); err != nil {
@@ -738,11 +775,15 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, jiraConfluenceNotEnabled)
 	}
 
+	chosen, err := chooseJiraSite(cmd, token, siteFlag, "")
+	if err != nil {
+		return err
+	}
 	accountID, err := database.CreateJiraAccount(db.JiraAccount{Label: label})
 	if err != nil {
 		return fmt.Errorf("creating jira account: %w", err)
 	}
-	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, siteFlag, "", true)
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, chosen, true)
 	if err != nil {
 		return err
 	}
@@ -822,7 +863,14 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("jira login: %w", err)
 	}
 
-	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, siteFlag, account.CloudID, isNewRow)
+	chosen, err := chooseJiraSite(cmd, token, siteFlag, account.CloudID)
+	if err != nil {
+		if isNewRow {
+			rollbackNewJiraAccount(cfg, database, accountID)
+		}
+		return err
+	}
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, chosen, isNewRow)
 	if err != nil {
 		return err
 	}

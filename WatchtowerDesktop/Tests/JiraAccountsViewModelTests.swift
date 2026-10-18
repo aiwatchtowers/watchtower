@@ -108,27 +108,103 @@ final class JiraAccountsViewModelTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: answer, encoding: .utf8), "https://beta.example.com\n")
     }
 
-    // A Cancel on the list ends the connect: the CLI is stopped, nothing
-    // stays on screen.
-    func testCancelOnTheSiteListEndsTheConnect() async throws {
+    /// A stand-in `jira add` that offers two sites and records its stdin
+    /// answer (`<eof>` when stdin closes unanswered). Like the CLI, no
+    /// answer exits 1 with "no site was chosen"; with `connectsOnRerun` set,
+    /// a second run connects at once (exit 0).
+    private func sitePickerCLI(connectsOnRerun: Bool = false) throws -> (cli: String, answer: URL) {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let answer = dir.appendingPathComponent("answer")
         let cli = dir.appendingPathComponent("watchtower")
-        let line = #"[jira-sites] {"sites":[{"url":"https://alpha.example.com","name":"Alpha"}]}"#
-        try "#!/bin/sh\necho '\(line)'\nread -r site\n".write(to: cli, atomically: true, encoding: .utf8)
+        let line = #"[jira-sites] {"sites":[{"url":"https://alpha.example.com","name":"Alpha"},"#
+            + #"{"url":"https://beta.example.com","name":"Beta"}]}"#
+        let ran = dir.appendingPathComponent("ran").path
+        let rerun = connectsOnRerun ? "[ -e '\(ran)' ] && exit 0\ntouch '\(ran)'\n" : ""
+        let script = "#!/bin/sh\n\(rerun)echo '\(line)'\n"
+            + "if read -r site; then echo \"$site\" > '\(answer.path)'; exit 0; fi\n"
+            + "echo '<eof>' > '\(answer.path)'\n"
+            + "echo 'this Atlassian grant reaches 2 sites and no site was chosen' >&2\nexit 1\n"
+        try script.write(to: cli, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
-        let (vm, _, _) = try makeVM(cli: cli.path)
+        return (cli.path, answer)
+    }
 
-        let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .deferred) }
+    private func waitForSiteChoices(_ vm: JiraAccountsViewModel) async throws -> [JiraSiteChoice] {
         for _ in 0..<500 where vm.siteChoices == nil { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertNotNil(vm.siteChoices)
-        vm.cancelConnect()
+        return try XCTUnwrap(vm.siteChoices)
+    }
+
+    // F1 (#574 review): Cancel on the list closes the CLI's stdin rather than
+    // killing it, so `jira add` takes its no-site path (which runs before any
+    // account row exists); the sheet sees a Cancel, not an error, and no
+    // account appears.
+    func testCancelOnTheSiteListClosesStdinAndEndsAsACancel() async throws {
+        let stub = try sitePickerCLI()
+        let (vm, daemon, _) = try makeVM(cli: stub.cli)
+
+        let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .restart) }
+        let sites = try await waitForSiteChoices(vm)
+        XCTAssertEqual(sites.count, 2)
+        vm.declineSiteChoice()
         XCTAssertNil(vm.siteChoices)
 
         let result = await connect.value
         XCTAssertFalse(result.connected)
         XCTAssertTrue(result.cancelled)
+        XCTAssertNil(vm.error, "a Cancel at the list is not an error")
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertEqual(try String(contentsOf: stub.answer, encoding: .utf8), "<eof>\n", "the CLI read end-of-file")
+        await vm.refreshAsync()
+        XCTAssertTrue(vm.accounts.isEmpty)
+        vm.finishBoardStep()
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    // F2 (#574 review): the sheet closes while `jira add` waits at the list;
+    // the flow ends with the sheet, and a reopened sheet's connect works.
+    func testClosingTheSheetEndsTheConnectAndANewOneWorks() async throws {
+        let stub = try sitePickerCLI(connectsOnRerun: true)
+        let (vm, _, _) = try makeVM(cli: stub.cli)
+
+        let first = Task { await vm.addAccountHoldingRestart(daemonPolicy: .deferred) }
+        _ = try await waitForSiteChoices(vm)
+        vm.abandonConnect()
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertNil(vm.siteChoices)
+
+        let second = await vm.addAccountHoldingRestart(daemonPolicy: .deferred)
+        XCTAssertTrue(second.connected, "error: \(vm.error ?? "nil")")
+        let firstResult = await first.value
+        XCTAssertFalse(firstResult.connected)
+        XCTAssertTrue(firstResult.cancelled)
+        XCTAssertNil(vm.error)
+        XCTAssertFalse(vm.isConnecting)
+    }
+
+    // F2: closing the sheet while the consent is still in the browser
+    // cancels the flow too.
+    func testClosingTheSheetMidConsentCancels() async throws {
+        // `exec`: the terminate reaches sleep itself, nothing is left behind.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let cli = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\nexec sleep 30\n".write(to: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        let (vm, _, _) = try makeVM(cli: cli.path)
+        let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .deferred) }
+        for _ in 0..<500 where !vm.isConnecting { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(vm.isConnecting)
+        let closed = ContinuousClock.now
+        vm.abandonConnect()
+        XCTAssertFalse(vm.isConnecting)
+        let result = await connect.value
+        XCTAssertFalse(result.connected)
+        XCTAssertTrue(result.cancelled)
+        // Even a Cancel that lands mid-launch stops the child (onLaunch).
+        XCTAssertLessThan(closed.duration(to: .now), .seconds(10), "the CLI must not run on")
     }
 
     // MARK: - removeArgs (pure)
