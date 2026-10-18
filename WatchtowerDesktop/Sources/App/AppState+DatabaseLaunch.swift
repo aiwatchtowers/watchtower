@@ -74,30 +74,39 @@ extension AppState {
         restoreDaemonStoppedForCompaction()
     }
 
-    /// A launch whose compaction step stopped the daemon but which does not
-    /// reach `ensureDaemonRunning` (the database did not open) brings the
-    /// daemon back when onboarding was already complete — a restart deferred
-    /// during the step is applied by this start, which reads the current
-    /// config. Not after a quit. A launch that lands in onboarding with a
-    /// database never had onboarding complete (`reconcileOnboarding` keeps a
-    /// complete step), so it needs no restore.
+    /// A launch that does not reach `ensureDaemonRunning` (the database did
+    /// not open) brings the daemon back when onboarding was already complete
+    /// and either the compaction step stopped it or a restart was refused
+    /// during the steps. A refused restart restarts here, so the daemon reads
+    /// the config saved meanwhile; a stop alone only starts. Not after a quit.
+    /// A launch that lands in onboarding with a database never had onboarding
+    /// complete (`reconcileOnboarding` keeps a complete step), so it needs no
+    /// restore.
     func restoreDaemonStoppedForCompaction() {
-        guard databaseCompaction.stoppedDaemon, !needsOnboarding, !quitDuringCompaction else { return }
-        NSLog("[Watchtower] restarting the daemon the database compaction step stopped")
-        bringUpDaemonInBackground(startOnly: true)
+        let deferredRestart = deferredRestartDuringLaunch
+        deferredRestartDuringLaunch = false
+        guard databaseCompaction.stoppedDaemon || deferredRestart,
+              !needsOnboarding, !quitDuringCompaction else { return }
+        NSLog("[Watchtower] bringing back the daemon the launch's database steps held off")
+        bringUpDaemonInBackground(startOnly: !deferredRestart)
     }
 
     /// While the launch's database steps run — from before the migration to
     /// the open, the compaction step included (#850, spec D5) — every daemon
     /// start, restart and stop-then-start is a no-op: the step may stop the
     /// daemon for `VACUUM`, and the launch's own `ensureDaemonRunning` starts
-    /// it once the steps end. A quit that landed before or during the step
-    /// keeps them off too. Logs the refused `caller`. The account view
-    /// models' `restartLoggingQueued` is exempt: they are built after the
-    /// database opens.
+    /// it once the steps end. A refused restart (`restartOnChain`,
+    /// `bringUpDaemonInBackground`) is remembered for the restore after a
+    /// failed open. A quit that landed before or during the step keeps them
+    /// off too. Logs the refused `caller`. The account view models'
+    /// `restartLoggingQueued` is exempt: they are built after the database
+    /// opens.
     func daemonStartBlocked(_ caller: String) -> Bool {
         guard launchDatabaseStepsRunning || databaseCompactionInProgress || quitDuringCompaction else { return false }
         NSLog("[Watchtower] %@ skipped: the launch's database steps are running", caller)
+        if caller == "restartOnChain" || caller == "bringUpDaemonInBackground" {
+            deferredRestartDuringLaunch = true
+        }
         return true
     }
 

@@ -442,6 +442,8 @@ final class AppState {
     @ObservationIgnored var quitDuringCompaction = false
     /// The launch's migrate → compact → open steps run (`daemonStartBlocked`).
     @ObservationIgnored var launchDatabaseStepsRunning = false
+    /// A restart the launch's database steps refused (`restoreDaemonStoppedForCompaction`).
+    @ObservationIgnored var deferredRestartDuringLaunch = false
 
     /// Test seams for the two steps of finishing onboarding that spawn CLI
     /// children or ask macOS for permissions; nil runs the real thing

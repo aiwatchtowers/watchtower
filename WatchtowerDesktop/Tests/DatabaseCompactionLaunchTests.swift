@@ -173,6 +173,32 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         XCTAssertEqual(made.daemon.starts, 0)
     }
 
+    /// A restart refused while `db migrate` runs, compaction not due (the
+    /// daemon never stopped), and the database then does not open: the
+    /// restore restarts the running daemon so it reads the new config.
+    func testOpenFailureReplaysRestartDeferredDuringMigrate() async throws {
+        let migrateGate = DispatchSemaphore(value: 0)
+        defer { migrateGate.signal() }
+        let made = makeAppState(due: false, migrateGate: migrateGate)
+        made.daemon.running = true
+        made.appState.onboarding.goTo(.complete)
+        let launch = Task { await made.appState.migrateCompactOpen() }
+        await until { self.calls.items.contains("migrate") }
+        try await made.appState.restartOnChain(made.daemon)
+        XCTAssertEqual(made.daemon.restarts, 0)
+
+        migrateGate.signal()
+        guard case .failure(let error) = await launch.value else {
+            return XCTFail("the fake open throws")
+        }
+        await made.appState.handleLaunchDatabaseFailure(error)
+        await made.appState.daemonStartChain?.value
+        XCTAssertFalse(made.appState.databaseCompaction.stoppedDaemon)
+        XCTAssertEqual(made.daemon.restarts, 1)
+        XCTAssertEqual(made.daemon.starts, 0)
+        XCTAssertFalse(made.appState.deferredRestartDuringLaunch, "the flag is cleared once replayed")
+    }
+
     func testDaemonStartsWorkAgainAfterStep() async {
         let made = makeAppState(due: false)
         _ = await made.appState.migrateCompactOpen()
