@@ -15,7 +15,7 @@ import (
 
 // ParserVersion is stamped on agent_log_files; bump it when parsing changes
 // so present files are reparsed from 0 (idempotent keys, AGENTLOG-03).
-const ParserVersion = 2
+const ParserVersion = 3
 
 const maxLineBytes = 8 << 20
 
@@ -35,6 +35,7 @@ type claudeRecord struct {
 	IsMeta             bool            `json:"isMeta"`
 	IsSidechain        bool            `json:"isSidechain"`
 	IsAPIError         bool            `json:"isApiErrorMessage"`
+	APIErrorStatus     json.RawMessage `json:"apiErrorStatus"`
 	IsCompactSummary   bool            `json:"isCompactSummary"`
 	AttributionSkill   string          `json:"attributionSkill"`
 	ToolDenialKind     string          `json:"toolDenialKind"`
@@ -43,7 +44,16 @@ type claudeRecord struct {
 	PRURL              string          `json:"prUrl"`
 	TotalCostUSD       *float64        `json:"totalCostUSD"`
 	Attachment         json.RawMessage `json:"attachment"`
-	Message            claudeMessage   `json:"message"`
+	CompactMetadata    *struct {
+		Trigger    string `json:"trigger"`
+		PreTokens  *int64 `json:"preTokens"`
+		PostTokens *int64 `json:"postTokens"`
+	} `json:"compactMetadata"`
+	Shape *struct {
+		System json.RawMessage `json:"system"`
+		Tools  json.RawMessage `json:"tools"`
+	} `json:"shape"`
+	Message claudeMessage `json:"message"`
 }
 
 type claudeMessage struct {
@@ -55,12 +65,15 @@ type claudeMessage struct {
 }
 
 type claudeUsage struct {
-	Input          int64  `json:"input_tokens"`
-	Output         int64  `json:"output_tokens"`
-	CacheRead      int64  `json:"cache_read_input_tokens"`
-	CacheCreation  int64  `json:"cache_creation_input_tokens"`
-	Speed          string `json:"speed"`
-	ServiceTier    string `json:"service_tier"`
+	Input         int64  `json:"input_tokens"`
+	Output        int64  `json:"output_tokens"`
+	CacheRead     int64  `json:"cache_read_input_tokens"`
+	CacheCreation int64  `json:"cache_creation_input_tokens"`
+	Speed         string `json:"speed"`
+	ServiceTier   string `json:"service_tier"`
+	OutputDetails *struct {
+		Thinking int64 `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 	CacheBreakdown *struct {
 		FiveMin int64 `json:"ephemeral_5m_input_tokens"`
 		OneHour int64 `json:"ephemeral_1h_input_tokens"`
@@ -91,12 +104,16 @@ type ParseResult struct {
 	Sessions    map[string]*agentlogdb.AgentLogSession
 	Events      []agentlogdb.AgentLogEvent
 	ToolResults []agentlogdb.AgentToolResult
-	Unknown     map[string]int
-	LongLines   int
-	Consumed    int64
-	More        bool     // stopped at MaxRows, not at the end of the input
-	Skills      []string // every skill name known at the end of the parse (seed for the next slice)
-	PriorLoaded bool     // PriorSkills was called: Skills includes the listings before the start
+	// ContextParts are the baseline parts of each lane's first API call (a
+	// read from offset 0 only); SkillListing is every listed skill.
+	ContextParts []agentlogdb.AgentContextPart
+	SkillListing []agentlogdb.AgentSkillListed
+	Unknown      map[string]int
+	LongLines    int
+	Consumed     int64
+	More         bool     // stopped at MaxRows, not at the end of the input
+	Skills       []string // every skill name known at the end of the parse (seed for the next slice)
+	PriorLoaded  bool     // PriorSkills was called: Skills includes the listings before the start
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any
@@ -115,7 +132,8 @@ var knownTypes = map[string]bool{
 // next scan; a bad line never fails the file.
 func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, error) {
 	p := &claudeParser{o: o, res: &ParseResult{Sessions: map[string]*agentlogdb.AgentLogSession{}, Unknown: map[string]int{}},
-		callIdx: map[string]int{}, toolIdx: map[string]int{}, skills: map[string]bool{}}
+		callIdx: map[string]int{}, toolIdx: map[string]int{}, skills: map[string]bool{},
+		lanes: map[string]*laneParts{}, fromStart: startOffset == 0}
 	for _, n := range o.KnownSkills {
 		p.skills[n] = true
 	}
@@ -151,6 +169,7 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 	for n := range p.skills {
 		p.res.Skills = append(p.res.Skills, n)
 	}
+	p.emitContextParts()
 	sort.Strings(p.res.Skills)
 	return p.res, nil
 }
@@ -190,6 +209,10 @@ type claudeParser struct {
 	callIdx map[string]int  // api_call key → index in res.Events
 	toolIdx map[string]int  // tool_use_id → index in res.Events
 	skills  map[string]bool // KnownSkills plus every skill_listing attachment seen
+
+	lanes     map[string]*laneParts // session uuid → this file's lane baseline parts
+	laneOrder []string
+	fromStart bool // read from offset 0: the lanes' starts are in this read
 
 	priorErr error // PriorSkills failed: the parse fails, the file is retried next scan
 }
@@ -237,7 +260,11 @@ func (p *claudeParser) handle(raw []byte, off int64) {
 		p.user(rec, off)
 	case "system":
 		if rec.Subtype == "compact_boundary" {
-			p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("compaction", rec, off), Kind: "compaction"})
+			e := agentlogdb.AgentLogEvent{Key: p.recKey("compaction", rec, off), Kind: "compaction"}
+			if m := rec.CompactMetadata; m != nil {
+				e.Trigger, e.PreTokens, e.PostTokens = compactTrigger(m.Trigger), m.PreTokens, m.PostTokens
+			}
+			p.add(rec, off, e)
 		}
 	case "pr-link":
 		if rec.PRURL != "" {
@@ -250,6 +277,11 @@ func (p *claudeParser) handle(raw []byte, off int64) {
 		}
 	case "attachment":
 		p.attachment(rec)
+	case "api-request-shape":
+		if rec.Shape != nil {
+			p.addPart(rec.SessionID, "system", int64(len(rec.Shape.System)))
+			p.addPart(rec.SessionID, "tools", int64(len(rec.Shape.Tools)))
+		}
 	}
 }
 
@@ -296,7 +328,8 @@ func (p *claudeParser) add(rec claudeRecord, off int64, e agentlogdb.AgentLogEve
 
 func (p *claudeParser) assistant(rec claudeRecord, off int64) {
 	if rec.IsAPIError {
-		p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("api_error", rec, off), Kind: "api_error"})
+		p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("api_error", rec, off), Kind: "api_error",
+			ErrorClass: apiErrorStatus(rec.APIErrorStatus)})
 		return
 	}
 	m := rec.Message
@@ -322,6 +355,10 @@ func (p *claudeParser) apiCall(rec claudeRecord, off int64) {
 		CacheWrite5mTokens: cw5, CacheWrite1hTokens: cw1h, Speed: u.Speed, ServiceTier: u.ServiceTier,
 		CostUSD: usd, CostEstimated: !known, PriceVersion: PriceVersion,
 		MessageID: m.ID, SubagentReplayCheck: p.o.Subagent}
+	if u.OutputDetails != nil {
+		e.ThinkingTokens = u.OutputDetails.Thinking
+	}
+	p.closeLane(rec.SessionID)
 	if i, ok := p.callIdx[key]; ok {
 		if u.Output >= p.res.Events[i].OutputTokens {
 			e.SessionUUID, e.TS, e.UUID, e.ParentUUID, e.PromptID = rec.SessionID, p.res.Events[i].TS, p.res.Events[i].UUID, p.res.Events[i].ParentUUID, p.res.Events[i].PromptID
@@ -342,7 +379,7 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 	}
 	var text string
 	if json.Unmarshal(rec.Message.Content, &text) == nil {
-		if strings.HasPrefix(text, "<local-command") || strings.HasPrefix(text, "[Request interrupted by user") {
+		if strings.HasPrefix(text, "<local-command") {
 			return
 		}
 		p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(text)})
@@ -378,6 +415,8 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 func turnTrigger(text string) string {
 	text = strings.TrimLeft(text, " \t\r\n")
 	switch {
+	case strings.HasPrefix(text, "[Request interrupted by user"):
+		return "interrupt"
 	case strings.HasPrefix(text, "<task-notification>"), strings.HasPrefix(text, "<agent-message"):
 		return "notification"
 	case strings.HasPrefix(text, "<system-reminder>"), strings.HasPrefix(text, "Stop hook feedback:"):
@@ -388,12 +427,122 @@ func turnTrigger(text string) string {
 
 func (p *claudeParser) attachment(rec claudeRecord) {
 	var a struct {
-		Type  string   `json:"type"`
-		Names []string `json:"names"`
+		Type     string   `json:"type"`
+		Names    []string `json:"names"`
+		Rendered []struct {
+			Content string `json:"content"`
+		} `json:"rendered"`
 	}
-	if json.Unmarshal(rec.Attachment, &a) == nil && a.Type == "skill_listing" {
-		for _, n := range a.Names { // union: a later listing never drops an earlier name
-			p.skills[n] = true
+	if json.Unmarshal(rec.Attachment, &a) != nil {
+		return
+	}
+	var size int64 // what entered the context; no rendered list = 0, never a guess
+	for _, r := range a.Rendered {
+		size += int64(len(r.Content))
+	}
+	p.addPart(rec.SessionID, attachmentPart(a.Type), size)
+	if a.Type != "skill_listing" {
+		return
+	}
+	for _, n := range a.Names { // union: a later listing never drops an earlier name
+		p.skills[n] = true
+		if rec.SessionID != "" && n != "" {
+			p.res.SkillListing = append(p.res.SkillListing, agentlogdb.AgentSkillListed{SessionUUID: rec.SessionID,
+				Skill: n, Bytes: size / int64(len(a.Names))})
 		}
 	}
+}
+
+// attachmentPart names the context part an attachment type adds to.
+func attachmentPart(typ string) string {
+	switch {
+	case typ == "instructions":
+		return "instructions"
+	case typ == "skill_listing":
+		return "skills"
+	case typ == "agent_listing_delta":
+		return "agents"
+	case typ == "mcp_instructions_delta":
+		return "mcp"
+	case typ == "deferred_tools_record", typ == "deferred_tools_delta":
+		return "deferred_tools"
+	case strings.HasPrefix(typ, "hook_"):
+		return "hooks"
+	}
+	return "other"
+}
+
+// laneParts are the bytes per part a lane's context held before its first
+// API call; closed once that call is seen.
+type laneParts struct {
+	order  []string
+	bytes  map[string]int64
+	closed bool
+}
+
+func (p *claudeParser) lane(sid string) *laneParts {
+	l := p.lanes[sid]
+	if l == nil {
+		l = &laneParts{bytes: map[string]int64{}}
+		p.lanes[sid] = l
+		p.laneOrder = append(p.laneOrder, sid)
+	}
+	return l
+}
+
+// addPart adds n bytes to part of the session's lane in this file, until the
+// lane's first API call. A read not from offset 0 tracks nothing: the read
+// that saw the lane's start stored its parts.
+func (p *claudeParser) addPart(sid, part string, n int64) {
+	if !p.fromStart || sid == "" {
+		return
+	}
+	if l := p.lane(sid); !l.closed {
+		if _, ok := l.bytes[part]; !ok {
+			l.order = append(l.order, part)
+		}
+		l.bytes[part] += n
+	}
+}
+
+func (p *claudeParser) closeLane(sid string) {
+	if p.fromStart && sid != "" {
+		p.lane(sid).closed = true
+	}
+}
+
+// emitContextParts moves every lane's parts into the result. The lane is
+// this file's agent id ("" for the main transcript).
+func (p *claudeParser) emitContextParts() {
+	for _, sid := range p.laneOrder {
+		l := p.lanes[sid]
+		for _, part := range l.order {
+			p.res.ContextParts = append(p.res.ContextParts, agentlogdb.AgentContextPart{SessionUUID: sid,
+				AgentID: p.o.AgentID, Part: part, Bytes: l.bytes[part]})
+		}
+	}
+}
+
+// compactTrigger keeps only the known compaction triggers.
+func compactTrigger(t string) string {
+	if t == "auto" || t == "manual" {
+		return t
+	}
+	return ""
+}
+
+// apiErrorStatus is the HTTP status of an API error record as text ("429"),
+// or "" when absent or not a number.
+func apiErrorStatus(raw json.RawMessage) string {
+	var n int64
+	if json.Unmarshal(raw, &n) == nil && n > 0 {
+		return strconv.FormatInt(n, 10)
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			return strconv.FormatInt(n, 10)
+		}
+	}
+	return ""
 }

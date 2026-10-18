@@ -323,7 +323,7 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
 	applied, err := st.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
-		ToolResults: pr.ToolResults, Sessions: sessions})
+		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions})
 	if err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}

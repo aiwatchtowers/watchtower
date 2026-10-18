@@ -77,11 +77,12 @@ func (p *claudeParser) toolResults(rec claudeRecord) {
 		return
 	}
 	var tur struct {
-		Interrupted     bool   `json:"interrupted"`
-		IsAsync         bool   `json:"isAsync"`
-		Status          string `json:"status"`
-		AgentID         string `json:"agentId"`
-		StructuredPatch []struct {
+		Interrupted         bool   `json:"interrupted"`
+		PersistedOutputSize *int64 `json:"persistedOutputSize"`
+		IsAsync             bool   `json:"isAsync"`
+		Status              string `json:"status"`
+		AgentID             string `json:"agentId"`
+		StructuredPatch     []struct {
 			Lines []string `json:"lines"`
 		} `json:"structuredPatch"`
 	}
@@ -91,13 +92,17 @@ func (p *claudeParser) toolResults(rec claudeRecord) {
 			continue
 		}
 		text := resultText(b.Content)
+		size := int64(len(text))
+		if tur.PersistedOutputSize != nil { // the output spilled to disk; the content is a preview
+			size = *tur.PersistedOutputSize
+		}
 		r := agentlogdb.AgentToolResult{ToolUseID: b.ToolUseID, TS: rec.Timestamp, Outcome: "ok",
-			SpawnedAgentID: tur.AgentID, Background: tur.IsAsync || tur.Status == "async_launched"}
+			SpawnedAgentID: tur.AgentID, Background: tur.IsAsync || tur.Status == "async_launched", ResultBytes: &size}
 		switch {
 		case tur.Interrupted || strings.HasPrefix(text, "[Request interrupted by user"):
 			r.Outcome = "interrupted"
 		case rec.ToolDenialKind != "" || rejected(rec.PermissionDecision) || strings.Contains(text, "doesn't want to proceed with this tool use"):
-			r.Outcome = "denied"
+			r.Outcome, r.ErrorClass = "denied", denialClass(rec.ToolDenialKind)
 		case b.IsError:
 			r.Outcome, r.ErrorClass = "error", errorClass(text)
 		}
@@ -131,18 +136,83 @@ func resultText(raw json.RawMessage) string {
 	return ""
 }
 
+// Error classes of a failed tool result (agent_log_events.error_class),
+// derived from the result text in memory; the text itself is never stored.
+const (
+	ClassExitCode       = "exit_code"
+	ClassNotFound       = "not_found"
+	ClassTimeout        = "timeout"
+	ClassEditNoMatch    = "edit_no_match"
+	ClassEditMultiMatch = "edit_multi_match"
+	ClassStaleRead      = "stale_read"
+	ClassTooLarge       = "too_large"
+	ClassInputInvalid   = "input_invalid"
+	ClassNoSuchTool     = "no_such_tool"
+	ClassUnknownAgent   = "unknown_agent"
+	ClassIsolation      = "isolation_block"
+	ClassSleepBlocked   = "sleep_blocked"
+	ClassAgentLimit     = "agent_limit"
+	ClassOther          = "other"
+)
+
+// errorClass classifies a failed tool result's text; the specific classes are
+// checked before the generic exit_code / not_found / timeout ones.
 func errorClass(text string) string {
 	t := strings.ToLower(text)
-	switch {
-	case strings.Contains(t, "exit code"):
-		return "exit_code"
-	case strings.Contains(t, "does not exist") || strings.Contains(t, "no such file") || strings.Contains(t, "not found"):
-		return "not_found"
-	case strings.Contains(t, "timed out") || strings.Contains(t, "timeout"):
-		return "timeout"
-	default:
-		return "other"
+	has := func(subs ...string) bool {
+		for _, s := range subs {
+			if !strings.Contains(t, s) {
+				return false
+			}
+		}
+		return true
 	}
+	switch {
+	case has("is isolated"):
+		return ClassIsolation
+	case has("inputvalidationerror"):
+		return ClassInputInvalid
+	case has("no such tool"):
+		return ClassNoSuchTool
+	case has("agent type", "not found"):
+		return ClassUnknownAgent
+	case has("exceeds maximum allowed"), has("file content (", "exceeds"), has("too large"):
+		return ClassTooLarge
+	case has("string to replace not found"):
+		return ClassEditNoMatch
+	case has("matches of the string to replace"):
+		return ClassEditMultiMatch
+	case has("modified since read"):
+		return ClassStaleRead
+	case has("sleep", "blocked"):
+		return ClassSleepBlocked
+	case has("concurrent", "limit"):
+		return ClassAgentLimit
+	case has("exit code"):
+		return ClassExitCode
+	case has("does not exist"), has("no such file"), has("not found"):
+		return ClassNotFound
+	case has("timed out"), has("timeout"):
+		return ClassTimeout
+	default:
+		return ClassOther
+	}
+}
+
+// denialKinds are the toolDenialKind values Claude Code writes; any other
+// value is stored as "other", never as given.
+var denialKinds = map[string]bool{"automode-blocked": true, "automode-unavailable": true, "permission-rule": true, "user-rejected": true}
+
+// denialClass is the error_class of a denied tool call: its denial kind, or
+// user-rejected when the record has none (a reject decision or the reject text).
+func denialClass(kind string) string {
+	switch {
+	case kind == "":
+		return "user-rejected"
+	case denialKinds[kind]:
+		return kind
+	}
+	return ClassOther
 }
 
 func isAgentTool(name string) bool { return name == "Agent" || name == "Task" }

@@ -545,11 +545,14 @@ func TestScan_AfterMoveFullyReadFilesStayUnchanged(t *testing.T) {
 	require.Equal(t, 1, f.scan().FilesScanned)
 
 	// watchtower.db as a pre-#849 install left it: the fixture's scan copied
-	// into its agent_log_* tables (same column order as agentlog.db's).
+	// into its agent_log_* tables (watchtower.db's columns only: its tables
+	// predate the agentlog.db v2 facts).
 	_, err := f.d.Exec(`ATTACH DATABASE ? AS src`, filepath.Join(f.dir, "agentlog.db"))
 	require.NoError(t, err)
 	for _, table := range []string{"agent_log_files", "agent_log_sessions", "agent_log_events"} {
-		_, err = f.d.Exec(`INSERT INTO main.` + table + ` SELECT * FROM src.` + table)
+		var list string
+		require.NoError(t, f.d.QueryRow(`SELECT group_concat(name, ', ') FROM main.pragma_table_info(?)`, table).Scan(&list))
+		_, err = f.d.Exec(`INSERT INTO main.` + table + ` (` + list + `) SELECT ` + list + ` FROM src.` + table)
 		require.NoError(t, err)
 	}
 	_, err = f.d.Exec(`DETACH DATABASE src`)
@@ -664,4 +667,25 @@ func TestScan_ImportDoneWithSiblingFolderFiles(t *testing.T) {
 	p := f.importProgress()
 	assert.True(t, p.Complete)
 	assert.Equal(t, 1, p.FilesStored, "the sibling's transcript is not this workbench's")
+}
+
+func TestScan_StoresContextPartsAndSkillListing(t *testing.T) {
+	f := newFixture(t)
+	listing := line(t, map[string]any{"type": "attachment", "sessionId": "s1", "cwd": f.folder, "attachment": map[string]any{
+		"type": "skill_listing", "names": []string{"review", "pdf"}, "rendered": []map[string]any{{"content": "0123456789"}}}})
+	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	require.Equal(t, 1, f.scan().FilesScanned)
+	// A grown file is read from its offset: no parts again, the stored ones stay.
+	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u2", "m2", "r2", 5))
+	f.scan()
+
+	var part string
+	var bytes int64
+	require.NoError(t, f.al.QueryRow(`SELECT part, bytes FROM agent_log_context_parts WHERE session_uuid = 's1' AND agent_id = ''`).Scan(&part, &bytes))
+	assert.Equal(t, "skills", part)
+	assert.Equal(t, int64(10), bytes)
+	var skills, perSkill int64
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*), MAX(bytes) FROM agent_log_skill_listing WHERE session_uuid = 's1'`).Scan(&skills, &perSkill))
+	assert.Equal(t, int64(2), skills)
+	assert.Equal(t, int64(5), perSkill)
 }
