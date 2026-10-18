@@ -69,19 +69,13 @@ On the card, **Run now** does the same, and **Dry run** works even before you co
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 
-### Reactions and tracks in the same tab
+### Reactions and tracks
 
-A row of three choices above the tab switches between **Automations**, **Reactions** and **Tracks**. They gather your three kinds of rules in one place; each keeps working as before.
-
-- **Reactions** holds the **Reaction commands** list: an emoji you put on a Slack message runs a tool on it, such as a reminder or a draft Jira issue (see [Inbox](inbox.md#reaction-commands)). Below the list, **Automations that listen to reactions** shows each recipe that runs on a reaction, with its emoji, and **New reaction automation** opens the New automation sheet, where you pick the Slack reaction event. When reading reactions is off, a banner says so and **Turn on** fixes it; the list stays editable.
-- **Tracks** lists your custom tracks. Click one to open its timeline in the Tracks tab; **New track** creates one. The choice appears only while Tracks is shown in the sidebar.
-
-An emoji can be in the list and also trigger a recipe: both happen, once each.
+The tab also shows your reaction commands and custom tracks next to your recipes: see [Reactions and tracks in Automations](automations-rules.md).
 
 ## When it's empty or wrong
 
 - **Tab missing.** The feature is off (Settings, Features). That also hides **Run Automation…** and the tray submenu.
-- **Reactions banner says reactions aren't being read.** Reaction commands is off. Press **Turn on**; reactions you placed earlier are never acted on.
 - **"No automations yet".** You have none; click **New automation** (or **+ New** in the header).
 - **Needs your confirmation.** Open **Review…**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
 - **Disabled.** Use **⋯**, then **Enable**.
@@ -96,5 +90,6 @@ An emoji can be in the list and also trigger a recipe: both happen, once each.
 ## Related
 
 - [Recipes and templates](automations-recipes.md)
+- [Reactions and tracks in Automations](automations-rules.md)
 
 For developers: [docs/features/automations.md](../../features/automations.md)
