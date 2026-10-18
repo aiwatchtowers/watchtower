@@ -21,9 +21,9 @@ import (
 
 // runLinearDigests is the Linear pre-digest pass: one Generate call per
 // enabled Linear account, per-account errors logged and the loop continued
-// (runJiraDigests' shape). bound is an optional upper bound on the issue
-// window (zero = unbounded, the daemon path).
-func (p *Pipeline) runLinearDigests(ctx context.Context, bound time.Time) error {
+// (runJiraDigests' shape). There is no backfill bound: `ideas mine --from`
+// and the history backfill cover Jira and email only (v1).
+func (p *Pipeline) runLinearDigests(ctx context.Context) error {
 	if p.generator == nil {
 		return nil
 	}
@@ -33,7 +33,7 @@ func (p *Pipeline) runLinearDigests(ctx context.Context, bound time.Time) error 
 	}
 	var firstErr error
 	for _, acct := range accounts {
-		if err := p.runLinearDigestAccount(ctx, acct.ID, bound); err != nil {
+		if err := p.runLinearDigestAccount(ctx, acct.ID); err != nil {
 			p.logf("ideas: linear digest account %d: %v", acct.ID, err)
 			if firstErr == nil {
 				firstErr = err
@@ -46,7 +46,7 @@ func (p *Pipeline) runLinearDigests(ctx context.Context, bound time.Time) error 
 // runLinearDigestAccount runs the Linear pass for one account. An empty floor
 // initializes to now (minus jiraFloorInitBackoff) and mines nothing — no
 // backfill, the Jira precedent. Zero changed issues is a clean no-op.
-func (p *Pipeline) runLinearDigestAccount(ctx context.Context, accountID int64, bound time.Time) error {
+func (p *Pipeline) runLinearDigestAccount(ctx context.Context, accountID int64) error {
 	floor, err := p.db.IdeasLinearFloor(accountID)
 	if err != nil {
 		return fmt.Errorf("getting ideas linear floor: %w", err)
@@ -59,7 +59,7 @@ func (p *Pipeline) runLinearDigestAccount(ctx context.Context, accountID int64, 
 		p.logf("ideas: linear account %d floor initialized at %s, no backfill", accountID, now)
 		return nil
 	}
-	reached, err := p.linearDigestPass(ctx, accountID, floor, bound)
+	reached, err := p.linearDigestPass(ctx, accountID, floor)
 	if err != nil || reached == floor {
 		return err
 	}
@@ -86,8 +86,8 @@ func (p *Pipeline) failingLinearTeamClamp(accountID int64, now time.Time) (time.
 // linearDigestPass mines one window of the account's issues above floor and
 // returns the floor it reached (floor itself when there was nothing to mine).
 // It reads and writes no stored floor.
-func (p *Pipeline) linearDigestPass(ctx context.Context, accountID int64, floor string, bound time.Time) (string, error) {
-	beforeISO, err := p.boundedBeforeISO(linearStream, accountID, bound, p.failingLinearTeamClamp)
+func (p *Pipeline) linearDigestPass(ctx context.Context, accountID int64, floor string) (string, error) {
+	beforeISO, err := p.boundedBeforeISO(linearStream, accountID, time.Time{}, p.failingLinearTeamClamp)
 	if err != nil {
 		return floor, err
 	}

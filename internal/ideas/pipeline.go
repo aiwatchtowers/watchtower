@@ -143,7 +143,7 @@ func (p *Pipeline) RunStreamDigests(ctx context.Context) error {
 	if err := p.runJiraDigests(ctx, time.Time{}); err != nil && firstErr == nil {
 		firstErr = err
 	}
-	if err := p.runLinearDigests(ctx, time.Time{}); err != nil && firstErr == nil {
+	if err := p.runLinearDigests(ctx); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr

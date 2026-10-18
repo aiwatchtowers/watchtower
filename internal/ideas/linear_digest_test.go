@@ -50,7 +50,7 @@ func TestRunLinearDigests_InsertsRowAndAdvancesFloor(t *testing.T) {
 			"decisions":[{"text":"ship v2 this week","author":"Bob","ref":"ENG-2"},{"text":"invented","author":"X","ref":"ENG-99"}]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	require.NoError(t, p.runLinearDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runLinearDigests(context.Background()))
 	require.Equal(t, 1, gen.calls)
 	assert.Contains(t, seen, "=== PROJECT ENG ===")
 	assert.Contains(t, seen, "Bob: Agreed, we decided to ship v2 this week.", "the new comment is rendered")
@@ -78,7 +78,7 @@ func TestIdeas01_LinearGeneratorErrorNoRowFloorUnchanged(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("boom") }}
 	p := New(d, testCfg(), gen, testLogger())
-	require.Error(t, p.runLinearDigests(context.Background(), time.Time{}))
+	require.Error(t, p.runLinearDigests(context.Background()))
 
 	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
@@ -97,13 +97,13 @@ func TestIdeas01_LinearInitAndNoChangedIssuesCleanNoOp(t *testing.T) {
 	gen := &fakeGen{reply: func(string) (string, error) { return `{"topics":[]}`, nil }}
 	p := New(d, testCfg(), gen, testLogger())
 
-	require.NoError(t, p.runLinearDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runLinearDigests(context.Background()))
 	floor, err := d.IdeasLinearFloor(acct)
 	require.NoError(t, err)
 	require.NotEmpty(t, floor, "the first run initializes the floor")
 	assert.Zero(t, gen.calls, "and mines nothing")
 
-	require.NoError(t, p.runLinearDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runLinearDigests(context.Background()))
 	again, err := d.IdeasLinearFloor(acct)
 	require.NoError(t, err)
 	assert.Equal(t, floor, again)
@@ -132,7 +132,7 @@ func TestIdeas01_LinearFloorStopsAtBudgetDroppedIssue(t *testing.T) {
 
 	gen := &fakeGen{reply: jiraTopicsFor("ENG-1", "ENG-2")}
 	p := New(d, testCfgWithBudget(len(engOnly)), gen, testLogger())
-	require.NoError(t, p.runLinearDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runLinearDigests(context.Background()))
 
 	got, err := d.IdeasLinearFloor(acct)
 	require.NoError(t, err)
@@ -157,7 +157,7 @@ func TestIdeas01_LinearFloorHeldBackByFailingTeam(t *testing.T) {
 	seedLinearIssueIdeas(t, d, acct, "a2", "AAA-2", "AAA", "fresh A", "Todo", "x", lt(now.Add(-10*time.Minute)))
 
 	p := New(d, testCfg(), &fakeGen{reply: jiraTopicsFor("AAA-1", "AAA-2")}, testLogger())
-	require.NoError(t, p.runLinearDigests(context.Background(), time.Time{}))
+	require.NoError(t, p.runLinearDigests(context.Background()))
 	floor, err := d.IdeasLinearFloor(acct)
 	require.NoError(t, err)
 	assert.Equal(t, lt(now.Add(-2*time.Hour)), floor, "the floor stops below team B's last successful sync")
