@@ -244,27 +244,49 @@ final class WorkbenchSwitcherTests: XCTestCase {
         XCTAssertTrue(vm.panelVisible)
     }
 
-    func testLiveCountsComeFromTheTerminalCenter() async throws {
+    /// Ask #339: the switcher counts the sessions whose agent works now —
+    /// a turn or background agents — not every live terminal.
+    func testWorkingCountsOnlyLiveSessionsWhoseAgentWorks() async throws {
         let a = try await workbench("alpha")
         let b = try await workbench("beta")
-        let one = try await session(a, "one", lastActiveAt: "2026-09-01T10:00:00Z")
-        let two = try await session(a, "two", lastActiveAt: "2026-09-01T11:00:00Z")
-        _ = try await session(b, "idle", lastActiveAt: "2026-09-01T12:00:00Z")
-        let vm = makeVM()
+        let working = try await session(a, "working", lastActiveAt: "2026-09-01T10:00:00Z")
+        let background = try await session(a, "background", lastActiveAt: "2026-09-01T10:30:00Z")
+        let waiting = try await session(a, "waiting", lastActiveAt: "2026-09-01T11:00:00Z")
+        let other = try await session(b, "other", lastActiveAt: "2026-09-01T12:00:00Z")
+        let stamp = SessionAgentStatus.formatStamp(Date().addingTimeInterval(60))
+        let reportedNow = SessionAgentStatus.formatStamp(Date())
+        func row(_ s: TerminalSession, _ project: Int64, _ state: String, background: Int? = nil) -> SessionAgentStateRow {
+            SessionAgentStateRow(id: s.id, projectID: project, title: s.title, agentState: state, agentStateAt: stamp,
+                                 workbenchName: "x", agentBackground: background,
+                                 agentBackgroundAt: background == nil ? nil : reportedNow)
+        }
+        let rows = [row(working, a, "working"), row(background, a, "waiting", background: 2),
+                    row(waiting, a, "waiting"), row(other, b, "working")]
+        let agentStates = SessionAgentStateCenter(
+            dbPool: pool, terminalCenter: center, interval: .seconds(3600), notifier: RecordingSessionNotifier(),
+            defaults: defaults, notificationCenter: NotificationCenter()
+        ) { _ in rows }
+        defer { agentStates.stop() }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: center, agentStates: agentStates)
+        vm.titleService = { _ in .init(title: "", written: false) }
         await vm.reload()
         vm.drill(into: a)
-        await vm.showSession(id: one.id)
-        await vm.showSession(id: two.id)
-        XCTAssertEqual(vm.liveSessionCount(workbenchID: a), 2)
-        XCTAssertEqual(vm.liveSessionCount(workbenchID: b), 0, "a session in the DB only is not live")
+        for s in [working, background, waiting] { await vm.showSession(id: s.id) }
+        await agentStates.poll()
 
-        processes.first?.exit(0)
-        XCTAssertEqual(vm.liveSessionCount(workbenchID: a), 1, "an exited process no longer counts")
-        XCTAssertEqual(WorkbenchesViewModel(dbPool: pool, cli: nil).liveSessionCount(workbenchID: a), 0,
-                       "no terminal center, nothing live")
+        XCTAssertEqual(vm.workingSessionCount(workbenchID: a), 2, "working and background count, waiting does not")
+        XCTAssertEqual(vm.workingSessionCount(workbenchID: b), 0, "a session not running here is not working")
+        XCTAssertEqual(WorkbenchesViewModel(dbPool: pool, cli: nil).workingSessionCount(workbenchID: a), 0,
+                       "no state center, nothing working")
+
+        vm.pendingDeletes.enqueueSessionDelete(
+            .init(sessionID: working.id, workbenchID: a, title: working.title), now: Date()
+        )
+        XCTAssertEqual(vm.workingSessionCount(workbenchID: a), 1, "a session in the Undo batch is gone from the count")
     }
 
-    func testSwitcherSummariesLoadWithTheSessionCounts() async throws {
+    func testSwitcherSummariesLoadWithTheLastActivity() async throws {
         let a = try await workbench("alpha")
         _ = try await workbench("beta")
         _ = try await session(a, "one", lastActiveAt: "2026-09-01T10:00:00Z")
@@ -273,7 +295,7 @@ final class WorkbenchSwitcherTests: XCTestCase {
         await vm.loadSwitcherSummaries()
 
         XCTAssertEqual(vm.switcherSummaries.map(\.project.name), ["alpha", "beta"])
-        XCTAssertEqual(vm.switcherSummaries.first?.sessionCount, 1)
+        XCTAssertEqual(vm.switcherSummaries.first?.lastSessionActivity, "2026-09-01T10:00:00Z")
         XCTAssertNil(vm.switcherError)
     }
 
@@ -309,26 +331,22 @@ final class WorkbenchSwitcherTests: XCTestCase {
         XCTAssertEqual(taps, 1)
     }
 
-    func testARowChecksTheCurrentWorkbenchAndDrawsTheSegmentsAndTheLiveDot() async throws {
+    func testARowChecksTheCurrentWorkbenchAndDrawsTheNameAndTheSegments() async throws {
         let a = try await workbench("alpha")
         _ = try await session(a, "one", lastActiveAt: "2026-09-01T10:00:00Z")
         let vm = makeVM()
         await vm.loadSwitcherSummaries()
         let row = try XCTUnwrap(vm.switcherSummaries.first)
         let segments = WorkbenchSwitcherPresentation.stateSegments(
-            summary: row, newComments: 2, liveCount: 1, now: Date()
+            summary: row, newComments: 2, workingCount: 1, now: Date()
         )
 
         var picked = 0
-        let current = WorkbenchSwitcherRow(row: row, isCurrent: true, segments: segments, isLive: true) { picked += 1 }
+        let current = WorkbenchSwitcherRow(row: row, isCurrent: true, segments: segments) { picked += 1 }
         XCTAssertNoThrow(try current.inspect().find(text: "alpha"))
         XCTAssertNoThrow(try current.inspect().find(text: "2 new comments"))
-        XCTAssertNoThrow(try current.inspect().find(text: "1 session · 1 running"))
-        XCTAssertNoThrow(try current.inspect().find(viewWithAccessibilityLabel: "Running"))
+        XCTAssertNoThrow(try current.inspect().find(text: "1 working"))
         try current.inspect().find(ViewType.Button.self).tap()
         XCTAssertEqual(picked, 1)
-
-        let other = WorkbenchSwitcherRow(row: row, isCurrent: false, segments: [], isLive: false) {}
-        XCTAssertThrowsError(try other.inspect().find(viewWithAccessibilityLabel: "Running"))
     }
 }
