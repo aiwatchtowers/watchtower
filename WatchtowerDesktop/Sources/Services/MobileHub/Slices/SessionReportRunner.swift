@@ -18,8 +18,9 @@ import WatchtowerCore
 /// State changes come from the fast lane's chain on
 /// `SessionAgentStateCenter` (`sessionStatesChanged()`); there is no second
 /// observation loop. A state change or an accepted phone request wakes the
-/// loop at once; otherwise it sleeps until a deferred state-change run is
-/// due, at most `Timing.idle` (board #842). The next pass resolves the window's states and stores
+/// loop (no sooner than 5 s after its last pass, `HubRunnerWake`); otherwise
+/// it sleeps until a deferred state-change run is due, at most `Timing.idle`
+/// (board #842). The next pass resolves the window's states and stores
 /// a `state` milestone for each session whose state text differs from its
 /// last stored one (the first sighting is stamped with the state's own
 /// time, a transition with the time the fast lane reported it).
@@ -44,7 +45,8 @@ final class SessionReportRunner: HubCompanion, Sendable {
         /// The bound on one CLI run.
         let timeout: Duration
         /// The longest wait between two passes with no state change or phone
-        /// request (board #842); either wakes the loop at once.
+        /// request (board #842); either wakes the loop, at most once per
+        /// `HubRunnerWake.standardMinimumGap`.
         let idle: Duration
 
         static let standard = Self(

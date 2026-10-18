@@ -80,7 +80,9 @@ final class HubRunnerWake: Sendable {
         guard rest > .zero, !Task.isCancelled else { return }
         await sleep(rest)
         // The pass that follows covers every signal sent during the gap (its
-        // caller wrote its state first), so none of them starts another.
+        // caller wrote its state first), so none of them starts another. A
+        // cancelled loop runs no pass, so it leaves them for the next one.
+        guard !Task.isCancelled else { return }
         state.withLock { $0.signalled = false }
     }
 
@@ -99,6 +101,12 @@ final class HubRunnerWake: Sendable {
         let (id, displaced) = state.withLock { state -> (Int?, CheckedContinuation<Bool, Never>?) in
             if state.signalled {
                 state.signalled = false
+                return (nil, nil)
+            }
+            // A wait that a signal ended before it parked: this wait takes
+            // the signal over (that one then ends as timed out).
+            if state.activeID != nil, state.endedEarly == .signalled {
+                state.activeID = nil
                 return (nil, nil)
             }
             // A second waiter (a loop left over from a restart): end the

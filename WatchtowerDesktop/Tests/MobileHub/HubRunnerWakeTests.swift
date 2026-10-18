@@ -127,6 +127,26 @@ final class HubRunnerWakeTests: XCTestCase {
         await second.value
     }
 
+    func testACancelledWaitLeavesALaterSignalForTheNextWait() async {
+        let sleeper = ManualSleeper()
+        let clock = TestInstant()
+        let wake = sleeper.wake(clock)
+        let first = Task { await wake.wait(upTo: .seconds(15)) }
+        await awaitHubCondition("the first wait parked") { sleeper.parkedCount == 1 }
+        wake.signal()
+        await awaitHubCondition("the gap is parked") { sleeper.requested.last == .seconds(5) }
+        wake.signal()
+        first.cancel()
+        await first.value
+
+        // The signal sent during the cancelled loop's gap is still pending.
+        let next = Task { await wake.wait(upTo: .seconds(15)) }
+        await awaitHubCondition("the next wait parked") { sleeper.parkedCount == 1 }
+        XCTAssertEqual(sleeper.requested, [.seconds(15), .seconds(5), .seconds(5)], "the pending signal took no timer, only the gap")
+        sleeper.fireAll()
+        await next.value
+    }
+
     func testTheWaitRunsUntilTheDeferredRequestCappedAtIdle() {
         let now = ContinuousClock.now
         let idle = Duration.seconds(15)

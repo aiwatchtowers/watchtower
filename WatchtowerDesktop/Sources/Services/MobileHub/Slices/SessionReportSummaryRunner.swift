@@ -27,7 +27,8 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
         /// The bound on one CLI run.
         let timeout: Duration
         /// The longest wait between two passes with no state change (board
-        /// #842); a change wakes the loop at once.
+        /// #842); a change wakes the loop, at most once per
+        /// `HubRunnerWake.standardMinimumGap`.
         let idle: Duration
 
         static let standard = Self(every: .seconds(60), minSpacing: .seconds(5), timeout: .seconds(20), idle: .seconds(15))

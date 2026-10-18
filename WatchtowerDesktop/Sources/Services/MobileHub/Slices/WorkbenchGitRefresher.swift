@@ -34,7 +34,8 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         /// The bound on one CLI run.
         let timeout: Duration
         /// The longest wait between two passes with no session change
-        /// (board #842); a change wakes the loop at once.
+        /// (board #842); a change wakes the loop, at most once per
+        /// `HubRunnerWake.standardMinimumGap`.
         let idle: Duration
 
         static let standard = Self(every: .seconds(120), minSpacing: .seconds(30), timeout: .seconds(20), idle: .seconds(15))
