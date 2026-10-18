@@ -3,6 +3,7 @@
 **Date:** 2026-10-19
 **Status:** proposed. The owner's decisions (asks #399, #404, #407, #409) are binding and listed in §1.
 **Board:** target #719.
+**Implementation:** docs/superpowers/plans/2026-10-19-desktop-style-guide.md (in progress). Plan decisions: the four chip recipes (`Chip`, `CountBadge`, `OutlineTag`, `MenuLabel`) are kept apart, because merging would change pixels; reference shots are component-level.
 **Inputs:** a read-only survey of the Workbench, Calendar and AI Chat code (2026-10-18), and counts of stock-control use across `WatchtowerDesktop/Sources` taken the same day. Paths are relative to `WatchtowerDesktop/Sources/`.
 
 ---

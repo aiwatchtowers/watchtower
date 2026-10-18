@@ -110,6 +110,10 @@ tags in brackets.
 - A ViewModel read-modify-write of a whole JSON column must reload the row immediately before writing (the TargetChatViewModel pattern). (2026-07-04) [9]
 - A scan/validation site where "file missing" is a meaningful contract state must treat "file present but undecodable" as a THIRD state, never fold it into the missing branch; a `compactMap` over two chained `try?` where only one of them means "absent" is the tell. (2026-08-03, 5th recurrence of the absent-vs-error class) [9]
 
+### Design kit
+
+- New Desktop UI is built from `Sources/Views/DesignSystem/` per [docs/design/desktop-style-guide.md](../design/desktop-style-guide.md). The reviewer checks layout as well as lint: detail in a panel, not a pop-up or sheet (sheets only for short blocking flows); one prominent action per screen; no dividers between rows; empty, loading and error states present; and the PR carries the `make desktop-shots` PNGs. A new token goes into `DesignSystem/` in the same PR, never an inline number. (2026-10-19, #719) [6]
+
 ### The assistant & chat contracts
 
 Owner decision 2026-08-19 (supersedes the two-persona split of 2026-08-18): the app has ONE AI
