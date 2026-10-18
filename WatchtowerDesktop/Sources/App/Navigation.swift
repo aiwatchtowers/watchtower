@@ -24,7 +24,7 @@ struct NavigationRoot: View {
             needsOnboarding: appState.needsOnboarding
         ) {
         case .splash:
-            SplashView()
+            SplashView(compaction: appState.databaseCompaction)
         case .ambiguousWorkspace:
             AmbiguousWorkspaceView(candidates: appState.ambiguousWorkspaces) {
                 appState.reinitializeAfterOnboarding()
@@ -40,6 +40,9 @@ struct NavigationRoot: View {
 }
 
 struct SplashView: View {
+    /// The launch's compaction step: while it compacts, its progress line,
+    /// subtitle and (from 15 s) Skip sit under the progress view.
+    let compaction: DatabaseCompactionStep
     @State private var opacity: Double = 0
 
     var body: some View {
@@ -52,6 +55,23 @@ struct SplashView: View {
                 .scaleEffect(0.8)
                 .padding(.top, 8)
 
+            if case let .compacting(dbBytes) = compaction.phase {
+                VStack(spacing: 6) {
+                    Text(DatabaseCompactionStep.progressLine(
+                        dbBytes: dbBytes, elapsedSeconds: compaction.elapsedSeconds
+                    ))
+                    .font(.callout)
+                    .monospacedDigit()
+                    Text(DatabaseCompactionStep.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if compaction.canSkip {
+                        Button("Skip for now") { compaction.skip() }
+                            .padding(.top, 4)
+                    }
+                }
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -62,6 +82,29 @@ struct SplashView: View {
                 opacity = 1
             }
         }
+    }
+}
+
+/// The compaction step's notice (disk short, gave up): non-blocking, shown
+/// until dismissed, in the daemon banner's slot when that has nothing to say.
+struct DatabaseCompactionNoticeView: View {
+    let text: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle.fill").foregroundStyle(.secondary)
+            Text(text).font(.callout).lineLimit(2)
+            Spacer()
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.secondary.opacity(0.1))
     }
 }
 
@@ -141,6 +184,10 @@ struct MainNavigationView: View {
                                 onOpenLogs: { openWindow(id: "logs") },
                                 onDismiss: { appState.dismissDaemonBanner() }
                             )
+                        } else if let notice = appState.databaseCompaction.notice {
+                            DatabaseCompactionNoticeView(text: notice) {
+                                appState.databaseCompaction.dismissNotice()
+                            }
                         }
                     }
             }

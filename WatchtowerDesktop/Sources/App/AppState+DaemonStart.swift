@@ -32,6 +32,7 @@ extension AppState {
     /// Starts (or, with `startOnly` false, restarts) the daemon in the
     /// background, on the start queue.
     func bringUpDaemonInBackground(startOnly: Bool) {
+        guard !daemonStartBlocked("bringUpDaemonInBackground") else { return }
         let daemon = daemonControl
         enqueueDaemonStart { [weak self] in
             let up = startOnly && daemon.daemonIsRunning()
@@ -55,7 +56,7 @@ extension AppState {
     /// a daemon still absent then reads "started but stopped again". The
     /// banner says "Starting…" meanwhile, and a second Start is ignored.
     func startDaemonFromBanner() {
-        guard !isStartingDaemon else { return }
+        guard !isStartingDaemon, !daemonStartBlocked("startDaemonFromBanner") else { return }
         isStartingDaemon = true
         let daemon = daemonControl
         let bound = daemonStartWaitBound
@@ -109,13 +110,16 @@ extension AppState {
 
     /// A restart on the start queue (a Turn on, the feature offer, Settings,
     /// the Inbox action strip): never in the middle of a banner Start's
-    /// wait. A success clears the banner's failure.
+    /// wait. A success clears the banner's failure. During the compaction
+    /// step it returns without restarting.
     func restartOnChain(_ daemon: any DaemonControl) async throws {
+        guard !daemonStartBlocked("restartOnChain") else { return }
         try await daemonStartQueue.restart { try await daemon.restartWaiting() }
     }
 
     /// Settings → Slack disconnect as one item: stop, disconnect, start, so
     /// no other start lands between them. Whether the disconnect went through.
+    /// The start is skipped during the compaction step.
     func disconnectSlackOnQueue(
         stop: @escaping @MainActor () async -> Void,
         disconnect: @escaping @MainActor () async -> Bool,
@@ -124,7 +128,7 @@ extension AppState {
         await enqueueDaemonStart { () -> Bool in
             await stop()
             let done = await disconnect()
-            await start()
+            if !self.daemonStartBlocked("Slack disconnect") { await start() }
             return done
         }.value
     }
