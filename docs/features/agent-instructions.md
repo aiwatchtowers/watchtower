@@ -13,7 +13,7 @@ A daily phase reads the owner's lines in recent session feeds and proposes direc
 
 ## Storage
 
-Migration `00136_agent_instructions.sql`, mirrored in `schema.sql`; Go access in `internal/db/instructions.go`.
+Migration `00137_agent_instructions.sql`, mirrored in `schema.sql`; Go access in `internal/db/instructions.go`.
 
 - `owner_instructions(scope 'session'|'procedure' PRIMARY KEY, body, updated_at)` — the global texts.
 - `projects.session_instructions`, `projects.target_procedure` — nullable per-workbench texts.
