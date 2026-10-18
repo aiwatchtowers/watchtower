@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"testing"
 )
 
 // InitTestTemplate migrates a throw-away in-memory database once, snapshots
@@ -23,8 +24,13 @@ import (
 // goose version rows and every migration-seeded data row — with nothing to
 // keep in sync by hand.
 //
-// Safe to call multiple times (second call is a no-op).
+// Safe to call multiple times (second call is a no-op). Outside a test
+// binary it refuses (testing.Testing): the hooks would hand production code
+// throw-away clones of the template.
 func InitTestTemplate() error {
+	if !testing.Testing() {
+		return errors.New("db.InitTestTemplate called outside a test binary")
+	}
 	if openMemoryHook != nil {
 		return nil // already initialised
 	}

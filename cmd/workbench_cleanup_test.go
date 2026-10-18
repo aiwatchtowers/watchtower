@@ -609,6 +609,8 @@ func TestCleanupCmd_SweepApplyItemRemovesTheNamedWorktree(t *testing.T) {
 // placedSession adds a worktree under the repository's .claude/worktrees on
 // wt/<slug>, its branch carrying one pushed commit, then a session row
 // placed in it — the order the Desktop uses (worktree first, row after).
+// The row's created_at is the insert time (placedSessionAt with a zero
+// rowAt), taken once the worktree exists.
 func (f *cleanupFixture) placedSession(slug string) string {
 	f.t.Helper()
 	return f.placedSessionAt(slug, time.Time{})

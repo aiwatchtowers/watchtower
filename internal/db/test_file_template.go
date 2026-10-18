@@ -16,12 +16,16 @@ import (
 //
 // Call it from TestMain in a package whose tests open fresh database files
 // (db.Open(filepath.Join(t.TempDir(), …))). Not for a package that tests
-// migrating an empty file: every new file is seeded. Never call it outside
-// tests.
+// migrating an empty file: every new file is seeded. Outside a test binary
+// it refuses (InitTestTemplate checks testing.Testing), so it never seeds a
+// real database.
 func InitTestFileTemplate() error {
 	if err := InitTestTemplate(); err != nil {
 		return err
 	}
+	// A hook already set is kept: internal/db's own TestMain installs a
+	// wrapper that leaves openMigratingFresh's paths to a real migration and
+	// records what it seeded; replacing it would break those tests.
 	if seedNewFileHook == nil {
 		seedNewFileHook = func(dbPath string) error {
 			_, err := writeTemplateFile(dbPath)
