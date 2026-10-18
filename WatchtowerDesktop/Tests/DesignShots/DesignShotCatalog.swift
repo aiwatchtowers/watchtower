@@ -46,7 +46,7 @@ enum DesignShotCatalog {
                 AnyView(DesignShotFixtures.buttons().padding(12).shotFrame().panelBackground())
             },
             DesignShot(name: "gallery", size: NSSize(width: 900, height: 1400)) {
-                AnyView(DesignSystemGallery())
+                AnyView(DesignSystemGalleryContent().shotFrame().detailBackground())
             }
         ]
     }

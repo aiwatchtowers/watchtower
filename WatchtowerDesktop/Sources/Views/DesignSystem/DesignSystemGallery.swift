@@ -6,14 +6,20 @@ struct DesignSystemGallery: View {
     static let sceneID = "design-gallery"
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.wide) {
-                GallerySection(title: "Tokens") { GalleryTokens() }
-            }
-            .padding(Spacing.page)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollView { DesignSystemGalleryContent() }
+            .detailBackground()
+    }
+}
+
+/// The gallery's sections without the scroll view, which the design shot
+/// renders directly (a scroll view's layer does not render its full width).
+struct DesignSystemGalleryContent: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.wide) {
+            GallerySection(title: "Tokens") { GalleryTokens() }
         }
-        .detailBackground()
+        .padding(Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -85,18 +91,27 @@ private struct GalleryTokens: View {
                 }
             }
             group("Tones") {
-                HStack(spacing: Spacing.regular) {
-                    ForEach(tones, id: \.0) { name, color in
-                        Text(name)
-                            .font(.caption)
-                            .padding(.horizontal, Spacing.regular)
-                            .padding(.vertical, Spacing.small)
-                            .background(color.opacity(ChipTint.fillOpacity), in: Capsule())
-                            .overlay(Capsule().stroke(color.opacity(ChipTint.strokeOpacity), lineWidth: ChipTint.strokeWidth))
-                    }
+                VStack(alignment: .leading, spacing: Spacing.compact) {
+                    toneRow(Array(tones.prefix(6)))
+                    toneRow(Array(tones.suffix(3)))
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func toneRow(_ row: [(String, Color)]) -> some View {
+        HStack(spacing: Spacing.compact) {
+            ForEach(row, id: \.0) { name, color in
+                Text(name)
+                    .font(.caption)
+                    .padding(.horizontal, Spacing.regular)
+                    .padding(.vertical, Spacing.small)
+                    .background(color.opacity(ChipTint.fillOpacity), in: Capsule())
+                    .overlay(Capsule().stroke(color.opacity(ChipTint.strokeOpacity), lineWidth: ChipTint.strokeWidth))
+            }
+        }
+        .padding(.trailing, Spacing.tight)
     }
 
     private func group<Body: View>(_ title: String, @ViewBuilder _ body: () -> Body) -> some View {
