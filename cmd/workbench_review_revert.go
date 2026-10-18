@@ -43,14 +43,8 @@ func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 	if r.Status != "open" {
 		return failReview(cmd, errors.New("the round is not open"))
 	}
-	if r.SessionID.Valid {
-		working, err := database.TerminalAgentWorking(r.SessionID.Int64)
-		if err != nil {
-			return failReview(cmd, err)
-		}
-		if working {
-			return failReview(cmd, errors.New("the agent is working in this session — undo when it stops"))
-		}
+	if err := refuseWhileAgentWorks(database, r); err != nil {
+		return failReview(cmd, err)
 	}
 	done, err := database.ReviewReverts(r.ID)
 	if err != nil {
@@ -69,7 +63,7 @@ func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	rev, err := confirmAndRevertHunk(ctx, repo, d)
+	rev, err := confirmAndRevertHunk(cmd, database, r, repo, d)
 	if err != nil {
 		return failReview(cmd, err)
 	}
@@ -80,11 +74,40 @@ func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 	return writeReview(cmd, reviewEnvelope{OK: true, Revert: &reviewRevertJSON{HunkID: rev.HunkID, Path: rev.Path}})
 }
 
+// refuseWhileAgentWorks is REVIEW-02's "never while the agent works".
+func refuseWhileAgentWorks(database *db.DB, r *db.ReviewRound) error {
+	if !r.SessionID.Valid {
+		return nil
+	}
+	working, err := database.TerminalAgentWorking(r.SessionID.Int64)
+	if err != nil {
+		return err
+	}
+	if working {
+		return errors.New("the agent is working in this session — undo when it stops")
+	}
+	return nil
+}
+
 // confirmAndRevertHunk asks the owner (AGENT-07; the window shows the hunk)
-// and then takes the hunk back out of the work tree.
-func confirmAndRevertHunk(ctx context.Context, repo *reviewdiff.Repo, d reviewdiff.Diff) (reviewdiff.Reverted, error) {
+// and then takes the hunk back out of the work tree. The owner may take up
+// to ownerconfirm.Wait to click, longer than the round's git budget from
+// loadRound: the write gets a budget of its own, started after the click,
+// and the agent-working check runs again, since the agent may have started
+// meanwhile.
+func confirmAndRevertHunk(cmd *cobra.Command, database *db.DB, r *db.ReviewRound, repo *reviewdiff.Repo,
+	d reviewdiff.Diff) (reviewdiff.Reverted, error) {
 	if err := confirmWithOwner("undo a review hunk", hunkConfirmDetail(d, reviewFlagHunk)); err != nil {
 		return reviewdiff.Reverted{}, err
 	}
+	if err := refuseWhileAgentWorks(database, r); err != nil {
+		return reviewdiff.Reverted{}, err
+	}
+	parent := cmd.Context()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, workbenchReviewBudget)
+	defer cancel()
 	return repo.RevertHunk(ctx, d, reviewFlagHunk)
 }

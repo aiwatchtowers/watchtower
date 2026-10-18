@@ -1,14 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/ownerconfirm"
 )
 
 // undoRound: README.md edited, an open round on it; returns the round id and
@@ -118,4 +121,46 @@ func TestWorkbenchReviewRevertHunk_RefusedUnderAgentMarkers(t *testing.T) {
 			assert.Zero(t, revertCount(t, database))
 		})
 	}
+}
+
+// N2: the owner may take longer to confirm an Undo than the round's git
+// budget; the revert gets a budget of its own after the click.
+func TestWorkbenchReviewRevertHunk_SlowConfirmStillReverts(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	original := readmeOf(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	round, hunk := undoRound(t, wb, s, false)
+	budget := workbenchReviewBudget
+	t.Cleanup(func() { workbenchReviewBudget = budget })
+	workbenchReviewBudget = 2 * time.Second
+	withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+	slow := askOwnerDesktop
+	askOwnerDesktop = func(ctx context.Context, path string, req ownerconfirm.Request) (ownerconfirm.Reply, error) {
+		time.Sleep(workbenchReviewBudget + 500*time.Millisecond) // the owner clicks late
+		return slow(ctx, path, req)
+	}
+	out := reviewJSON(t, wb, "revert-hunk", "--round", itoa(round), "--hunk", hunk)
+	require.Equal(t, true, out["ok"], "%v", out)
+	assert.Equal(t, original, readmeOf(t, repo))
+	assert.Equal(t, 1, revertCount(t, database))
+}
+
+// N2: the agent may start working while the owner decides; the Undo checks
+// again after the click.
+func TestWorkbenchReviewRevertHunk_AgentStartedDuringConfirmRefused(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	round, hunk := undoRound(t, wb, s, false)
+	withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+	confirm := askOwnerDesktop
+	askOwnerDesktop = func(ctx context.Context, path string, req ownerconfirm.Request) (ownerconfirm.Reply, error) {
+		_, err := database.Exec(`UPDATE terminal_sessions SET agent_state = 'working' WHERE id = ?`, s)
+		require.NoError(t, err)
+		return confirm(ctx, path, req)
+	}
+	out := reviewJSON(t, wb, "revert-hunk", "--round", itoa(round), "--hunk", hunk)
+	assert.Equal(t, false, out["ok"])
+	assert.Equal(t, "the agent is working in this session — undo when it stops", out["error"])
+	assert.Equal(t, "changed\n", readmeOf(t, repo))
+	assert.Zero(t, revertCount(t, database))
 }

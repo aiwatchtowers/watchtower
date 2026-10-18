@@ -164,7 +164,23 @@ final class OwnerConfirmServerTests: XCTestCase {
         XCTAssertTrue(prompts.isEmpty)
     }
 
-    /// F5: after a Deny the same pid gets no new window for a while.
+    /// F5/N1: after a Deny no new window opens for a while, whoever asks;
+    /// the Desktop's own launch is still confirmed by its grant.
+    func testADenyCoolsWindowsDownButNotGrants() async throws {
+        let grants = OwnerConfirmGrants()
+        try start(grants: grants, cooldown: .seconds(30))
+        let first = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]))
+        try await waitForPrompt()
+        prompts[0].answer(false)
+        _ = await first.value
+        let other = await ask(OwnerConfirmRequest(verb: "b", args: ["automations", "confirm", "2"])).value
+        XCTAssertEqual(other?.reason, OwnerConfirmServer.cooldownReason, "another command waits too")
+        grants.register(["actions", "approve", "3"], pid: getpid())
+        let own = await ask(OwnerConfirmRequest(verb: "c", args: ["actions", "approve", "3"])).value
+        XCTAssertEqual(own?.decision, OwnerConfirmReply.confirmed, "the Desktop's own button is not held back")
+        XCTAssertEqual(prompts.count, 1)
+    }
+
     func testADenyCoolsThePidDown() async throws {
         try start(cooldown: .seconds(30))
         let first = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]))

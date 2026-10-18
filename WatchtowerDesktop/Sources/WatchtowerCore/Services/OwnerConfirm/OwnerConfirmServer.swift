@@ -119,9 +119,11 @@ package final class OwnerConfirmServer {
     /// `sun_path` holds 104 bytes on macOS, the terminating NUL included.
     package nonisolated static let maxPathBytes = 103
     package nonisolated static let fileName = "owner-confirm.sock"
-    /// After a window ends without Confirm (Deny, timeout, hang-up), the
-    /// same pid gets no new window for this long: a raw client cannot keep
-    /// reopening windows and holding the one slot.
+    /// After a window ends without Confirm (Deny, timeout, hang-up), no new
+    /// window opens for this long, whoever asks: a loop of fresh CLI
+    /// processes cannot keep reopening windows and holding the one slot. The
+    /// Desktop's own launches are confirmed by their grant before any window
+    /// and are not held back.
     package nonisolated static let deniedCooldown: Duration = .seconds(3)
     package nonisolated static let cooldownReason = "denied a moment ago — wait a few seconds before asking again"
 
@@ -141,7 +143,7 @@ package final class OwnerConfirmServer {
     private let present: (OwnerConfirmPrompt) -> Void
     private let timeout: Duration
     private let cooldown: Duration
-    private var cooldownUntil: [Int32: ContinuousClock.Instant] = [:]
+    private var cooldownUntil: ContinuousClock.Instant?
     private let io = OwnerConfirmIO()
     private var open: (prompt: OwnerConfirmPrompt, box: OwnerConfirmReplyBox)?
 
@@ -223,15 +225,13 @@ package final class OwnerConfirmServer {
                 }
                 try? await Task.sleep(for: .milliseconds(50))
             } while ContinuousClock.now < deadline && !box.isSet
-            self?.openWindow(request, pid: pid, box: box)
+            self?.openWindow(request, box: box)
         }
     }
 
-    private func openWindow(_ request: OwnerConfirmRequest, pid: Int32?, box: OwnerConfirmReplyBox) {
+    private func openWindow(_ request: OwnerConfirmRequest, box: OwnerConfirmReplyBox) {
         guard !box.isSet else { return } // hung up meanwhile
-        let now = ContinuousClock.now
-        cooldownUntil = cooldownUntil.filter { $0.value > now }
-        if let pid, cooldownUntil[pid] != nil {
+        if let until = cooldownUntil, ContinuousClock.now < until {
             return box.set(OwnerConfirmReply(decision: OwnerConfirmReply.denied, reason: Self.cooldownReason))
         }
         guard open == nil else {
@@ -250,7 +250,7 @@ package final class OwnerConfirmServer {
             box.set(OwnerConfirmReply(decision: confirmed ? OwnerConfirmReply.confirmed : OwnerConfirmReply.denied))
             guard let self else { return }
             if open?.box === box { open = nil }
-            if !confirmed, let pid { cooldownUntil[pid] = ContinuousClock.now + cooldown }
+            if !confirmed { cooldownUntil = ContinuousClock.now + cooldown }
         }
         present(prompt)
     }
