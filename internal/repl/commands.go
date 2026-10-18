@@ -248,6 +248,9 @@ func (r *REPL) runCatchup() {
 	if cfg.Jira.Enabled {
 		systemPrompt += ai.JiraPromptSection()
 	}
+	if cfg.Jira.Enabled || cfg.Linear.Enabled {
+		systemPrompt += ai.TrackerPromptSection()
+	}
 
 	timeHints := ai.FormatTimeHints(pq)
 	question := "What happened since I was last here? Give me a structured catchup summary."
