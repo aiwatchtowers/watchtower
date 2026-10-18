@@ -12,7 +12,7 @@ The mobile POC spec has invariant **I-4 No transcript**: "No session transcript,
 
 > **I-4 (amended 2026-10-18, board #486):** No raw transcript, terminal buffer or screen text is published. The one exception is the session chat feed (FEED-02 entries only: no tool calls, tool output, thinking or hook feedback), published **only while the phone has the Chat screen of that session open** and removed from the zone when it stops asking (§Lifetime).
 
-`PalettedTerminalView.screenRows()` stays private; the terminal itself still never reaches the phone. FEED-01 (nothing stored in SQLite) is unchanged: the hub keeps the payload in its sidecar like `session_report`, never in `watchtower.db`.
+`PalettedTerminalView.screenRows()` stays private; the terminal itself still never reaches the phone. FEED-01 (nothing stored in SQLite) is unchanged: the hub keeps the payload in memory only (ruling in the plan, approved with ask #380), never in `watchtower.db` and not in the sidecar; a restart drops it and the phone's next request rebuilds it.
 
 ## Design
 
@@ -22,14 +22,14 @@ The Mac does **not** publish chats of all recent sessions. A chat is published o
 
 1. Opening Chat on the phone enqueues a relay action `session_chat_request` `{session_id, subagent_id?}`. While the screen stays open the phone repeats it every 60 s (the same throttle as `SessionReportRequester`).
 2. On the Mac, `SessionChatRequestHandler` (idempotent, replies `.applied()` at once, no grant needed — it only reads) tells `SessionChatRunner` to watch that session (or that subagent) for the next **5 minutes** from the last request.
-3. `SessionChatRunner` (a `HubCompanion`, pattern of `SessionReportRunner`) runs `watchtower workbench session-feed --session N --json` (or `--subagent id`) off the main actor, every **10 s** for a watched session whose agent is live and once for a finished one, CLI timeout 30 s. It keeps the clipped result in the hub sidecar.
+3. `SessionChatRunner` (a `HubCompanion`, pattern of `SessionReportRunner`) runs `watchtower workbench session-feed --session N --json` (or `--subagent id`) off the main actor, every **10 s** for a watched session whose agent is live and once for a finished one, CLI timeout 30 s. It keeps the clipped result in memory only.
 4. `SessionChatSlice` (kind `session_chat`, record `session_chat-<session_id>` or `session_chat-<session_id>-<agent_id>`) publishes what the runner keeps, on the normal 30 s full tick. It is not an urgent kind: no fast lane, no extra silent pushes.
 
 So a live chat is at most ~40 s behind on the phone, and nothing about a session is in iCloud unless the owner opened its chat in the last 5 minutes.
 
 ### Lifetime
 
-A watch expires 5 minutes after the last request. The runner then drops the sidecar payload, the record leaves the slice's window, and the publisher deletes it from the zone (the usual missing-from-window rule). Unlinking the phone or turning the hub off removes it like every other record.
+A watch expires 5 minutes after the last request. The runner then drops the in-memory payload, the record leaves the slice's window, and the publisher deletes it from the zone (the usual missing-from-window rule). Unlinking the phone or turning the hub off removes it like every other record.
 
 ### Size
 
