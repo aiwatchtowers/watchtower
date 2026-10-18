@@ -260,8 +260,10 @@ func (db *DB) GmailStoredIDs(accountID int64) (ids []string, oldestUnix float64,
 }
 
 // DeleteGmailMessages removes the given messages of accountID in one
-// transaction and returns how many rows went. The gmail_messages delete
-// trigger marks the affected KB threads.
+// transaction and returns how many rows went. The inbox items made from them
+// stay, but their copies of the mail (snippet, context, raw_text) are
+// blanked, as TombstoneSlackMessages does for Slack. The gmail_messages
+// delete trigger marks the affected KB threads.
 func (db *DB) DeleteGmailMessages(accountID int64, ids []string) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
@@ -275,14 +277,21 @@ func (db *DB) DeleteGmailMessages(accountID int64, ids []string) (int, error) {
 	const chunk = 500
 	for start := 0; start < len(ids); start += chunk {
 		part := ids[start:min(start+chunk, len(ids))]
-		args := make([]any, 0, len(part)+1)
-		args = append(args, accountID)
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")
+		ids := make([]any, 0, len(part))
 		for _, id := range part {
-			args = append(args, id)
+			ids = append(ids, id)
 		}
 		//nolint:gosec // G202: only "?" placeholders are concatenated; every value is a bound arg.
-		res, err := tx.Exec(`DELETE FROM gmail_messages WHERE account_id = ? AND id IN (`+
-			strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")+`)`, args...)
+		if _, err := tx.Exec(`UPDATE inbox_items SET snippet = '', context = '', raw_text = ''
+			WHERE channel_id LIKE ? || ':%' AND message_ts IN (`+marks+`)
+			AND (snippet != '' OR context != '' OR raw_text != '')`,
+			append([]any{GmailChannelPrefix(accountID)}, ids...)...); err != nil {
+			return 0, fmt.Errorf("clearing inbox copies of gmail messages for account %d: %w", accountID, err)
+		}
+		//nolint:gosec // G202: only "?" placeholders are concatenated; every value is a bound arg.
+		res, err := tx.Exec(`DELETE FROM gmail_messages WHERE account_id = ? AND id IN (`+marks+`)`,
+			append([]any{accountID}, ids...)...)
 		if err != nil {
 			return 0, fmt.Errorf("deleting gmail messages for account %d: %w", accountID, err)
 		}

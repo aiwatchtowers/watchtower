@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -188,8 +189,22 @@ func (db *DB) ImapStoredUIDs(accountID, uidValidity int64) ([]int64, error) {
 	return out, rows.Err()
 }
 
+// ImapChannelPrefix returns the inbox channel_id prefix of the IMAP rows of
+// accountID stored under uidValidity: "imap:<account-id>:<uidvalidity>". The
+// detector appends ":<folder>"; with uidValidity < 0 it is the prefix of the
+// account's rows under any epoch, "imap:<account-id>".
+func ImapChannelPrefix(accountID, uidValidity int64) string {
+	p := "imap:" + strconv.FormatInt(accountID, 10)
+	if uidValidity < 0 {
+		return p
+	}
+	return p + ":" + strconv.FormatInt(uidValidity, 10)
+}
+
 // DeleteImapMessages removes the given UIDs of one (account, UIDVALIDITY) in a
 // single transaction, using IN lists of at most 500. Returns the rows deleted.
+// The inbox items made from them stay, but their copies of the mail (snippet,
+// context, raw_text) are blanked, as TombstoneSlackMessages does for Slack.
 func (db *DB) DeleteImapMessages(accountID, uidValidity int64, uids []int64) (int, error) {
 	if len(uids) == 0 {
 		return 0, nil
@@ -204,14 +219,23 @@ func (db *DB) DeleteImapMessages(accountID, uidValidity int64, uids []int64) (in
 	for start := 0; start < len(uids); start += chunk {
 		end := min(start+chunk, len(uids))
 		part := uids[start:end]
-		args := make([]any, 0, len(part)+2)
-		args = append(args, accountID, uidValidity)
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")
+		uidArgs := make([]any, 0, len(part))
+		tsArgs := make([]any, 0, len(part)+1)
+		tsArgs = append(tsArgs, ImapChannelPrefix(accountID, uidValidity))
 		for _, u := range part {
-			args = append(args, u)
+			uidArgs = append(uidArgs, u)
+			tsArgs = append(tsArgs, strconv.FormatInt(u, 10))
 		}
 		//nolint:gosec // G202: the concatenation is only "?" placeholders; every value is a bound arg.
-		res, err := tx.Exec(`DELETE FROM imap_messages WHERE account_id = ? AND uidvalidity = ? AND uid IN (`+
-			strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")+`)`, args...)
+		if _, err := tx.Exec(`UPDATE inbox_items SET snippet = '', context = '', raw_text = ''
+			WHERE channel_id LIKE ? || ':%' AND message_ts IN (`+marks+`)
+			AND (snippet != '' OR context != '' OR raw_text != '')`, tsArgs...); err != nil {
+			return 0, fmt.Errorf("clearing inbox copies of imap messages for account %d: %w", accountID, err)
+		}
+		//nolint:gosec // G202: the concatenation is only "?" placeholders; every value is a bound arg.
+		res, err := tx.Exec(`DELETE FROM imap_messages WHERE account_id = ? AND uidvalidity = ? AND uid IN (`+marks+`)`,
+			append([]any{accountID, uidValidity}, uidArgs...)...)
 		if err != nil {
 			return 0, fmt.Errorf("deleting imap messages for account %d: %w", accountID, err)
 		}
@@ -226,14 +250,29 @@ func (db *DB) DeleteImapMessages(accountID, uidValidity int64, uids []int64) (in
 
 // DeleteImapMessagesOutsideUIDValidity removes the account's rows stored under
 // any UIDVALIDITY other than the current one: after the server recreated the
-// mailbox they name nothing on it.
+// mailbox they name nothing on it. The copies of those mails in inbox items
+// are blanked in the same transaction, as DeleteImapMessages does.
 func (db *DB) DeleteImapMessagesOutsideUIDValidity(accountID, uidValidity int64) (int, error) {
-	res, err := db.Exec(`DELETE FROM imap_messages WHERE account_id = ? AND uidvalidity <> ?`,
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("deleting stale-epoch imap messages for account %d: %w", accountID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`UPDATE inbox_items SET snippet = '', context = '', raw_text = ''
+		WHERE channel_id LIKE ? || ':%' AND channel_id NOT LIKE ? || ':%'
+		AND (snippet != '' OR context != '' OR raw_text != '')`,
+		ImapChannelPrefix(accountID, -1), ImapChannelPrefix(accountID, uidValidity)); err != nil {
+		return 0, fmt.Errorf("clearing inbox copies of stale-epoch imap messages for account %d: %w", accountID, err)
+	}
+	res, err := tx.Exec(`DELETE FROM imap_messages WHERE account_id = ? AND uidvalidity <> ?`,
 		accountID, uidValidity)
 	if err != nil {
 		return 0, fmt.Errorf("deleting stale-epoch imap messages for account %d: %w", accountID, err)
 	}
 	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("deleting stale-epoch imap messages for account %d: %w", accountID, err)
+	}
 	return int(n), nil
 }
 

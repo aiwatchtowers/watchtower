@@ -20,6 +20,8 @@ A deleted Slack message is not removed. `db.TombstoneSlackMessages` sets `is_del
 
 `inbox_items` made from the message stay, but their text copies (`snippet`, `raw_text`, `context`, the message's entry in a channel item's mentions JSON) are blanked with the tombstone. Healing does NOT restore them. Other inbox items' `context` may still hold copies of the text.
 
+Mail is deleted, not tombstoned, and the same rule holds: `DeleteGmailMessages`, `DeleteImapMessages` and `DeleteImapMessagesOutsideUIDValidity` blank `snippet`, `context` and `raw_text` of the inbox items made from the removed mail in the same transaction. Items are matched by channel prefix (`GmailChannelPrefix`, `ImapChannelPrefix`) plus the message id or UID as `message_ts`; an old-UIDVALIDITY cleanup blanks every item of the account outside the current epoch.
+
 ## The shared guard
 
 `internal/sourcediff.Check(stored, listed, missing, floors)` refuses a diff when the listing returned 0 of at least `EmptyMin` stored rows, or when more than half of at least `HalfMin` stored rows would go. `SlackFloors` = {5, 10}; `MailFloors` = {1, 1}. Every diff also needs a complete listing first: no API error, every page fetched, Slack matched >= `Total` (Slack caps `pages` at 100, so reaching the last page does not prove completeness), Jira reporting a complete listing (a missing `total` means incomplete). Every skip is logged with source, account, range and reason. Jira is the exception to `Check`: a complete comment listing may be empty and then removes all of the issue's stored comments.
@@ -36,7 +38,8 @@ Migration 00136 adds `kb_dirty(source, key, gen)` and AFTER triggers: `messages_
 
 - The Slack live diff and the sweep run only after a completed live search; a rate-limited or incomplete search skips both for that cycle.
 - A Slack day whose widened query needs more than 10 pages (about 1000 searchable messages, fewer for the day itself) is skipped by the sweep and logged; the live window is not capped.
-- A message moved out of the synced IMAP folder, or out of a Slack channel the token can no longer search, counts as deleted. Losing access counts as deletion.
+- A mail moved out of the synced IMAP folder counts as deleted.
+- A Slack channel the listing returned nothing from in the range is never judged, so a channel the token can no longer search (left, archived, access lost) keeps its rows: losing access is not deletion (owner ruling F7, ask #363). The same rule means that deleting every message a channel has in a checked range (the live window, or the sweep's widened query of about three days) is not detected.
 - AI-derived text (digests, memory, ideas, briefings) is left as is. Only raw rows, FTS and the KB follow the source.
 - A Slack message that search never indexes keeps its row until a full sync heals it; a Slack bot post is never tombstoned.
 - `BackfillSearch` passes no listing and never tombstones (`TestBackfillSearch_NeverTombstones`).
@@ -47,4 +50,4 @@ Migration 00136 adds `kb_dirty(source, key, gen)` and AFTER triggers: `messages_
 
 ## Tests
 
-`internal/sourcediff/guard_test.go`, `internal/sync/{deletions,deletions_sweep}_test.go`, `internal/db/{kb_dirty,slack_deletions}_test.go`, `internal/kb/dirty_test.go`, `internal/gmail/deletions_test.go`, `internal/imap/sync_test.go`, `internal/jira` (`TestSyncComments_*`).
+`internal/sourcediff/guard_test.go`, `internal/sync/{deletions,deletions_sweep}_test.go`, `internal/db/{kb_dirty,slack_deletions,mail_deletions}_test.go`, `internal/kb/dirty_test.go`, `internal/gmail/deletions_test.go`, `internal/imap/sync_test.go`, `internal/jira` (`TestSyncComments_*`).

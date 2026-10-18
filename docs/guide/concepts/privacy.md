@@ -58,7 +58,7 @@ A message, mail or comment you delete at its source disappears from Watchtower t
 - **IMAP:** mail you delete or move out of the synced folder disappears on the next sync.
 - **Jira:** a deleted comment disappears the next time that issue is synced.
 
-Summaries, memory notes, ideas and briefings already written from the text are kept as they are. A safety check skips a deletion when the source returns an empty or suspiciously short list, so nothing vanishes because of a bad response.
+Inbox items made from a deleted message or mail stay, with their text removed. If you leave a Slack channel or lose access to it, its messages stay in Watchtower: only a deletion counts. Summaries, memory notes, ideas and briefings already written from the text are kept as they are. A safety check skips a deletion when the source returns an empty or suspiciously short list, so nothing vanishes because of a bad response.
 
 ## Related
 
