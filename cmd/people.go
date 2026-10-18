@@ -348,7 +348,7 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 	if peopleFlagWorkers > 0 {
 		cfg.AI.Workers = peopleFlagWorkers
 	}
-	gen, savePool := cliPooledGenerator(cfg, logger)
+	gen, savePool := cliPooledGenerator(cfg)
 	defer savePool()
 	pipe := guide.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))

@@ -1162,7 +1162,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 	}
 
 	// Show ALL existing tracks (including from batch channels) to prevent duplicates.
-	crossChannelSection := p.formatExistingTracks(userID)
+	crossChannelSection := p.formatExistingTracks()
 	profileSection := p.formatProfileContext()
 	roleRules := p.formatRoleRules()
 
@@ -1327,7 +1327,7 @@ func priorityOrder(p string) int {
 // formatExistingTracks formats ALL active tracks for deduplication and merge.
 // Uses cached allActiveTracksRef if available, otherwise loads from DB.
 // Includes tracks from batch channels — this is critical to avoid duplicates.
-func (p *Pipeline) formatExistingTracks(userID string) string {
+func (p *Pipeline) formatExistingTracks() string {
 	p.cacheMu.RLock()
 	allTracks := p.allActiveTracksRef
 	p.cacheMu.RUnlock()

@@ -466,7 +466,7 @@ func loadSourceContext(database *db.DB, sourceType, sourceID string) string {
 			return ""
 		}
 		d, err := database.GetDigestByID(id)
-		if err != nil {
+		if err != nil || d == nil { // nil, nil = no digest with this id
 			return ""
 		}
 		return fmt.Sprintf("Digest #%d: %s", d.ID, d.Summary)

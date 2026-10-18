@@ -225,8 +225,7 @@ func NewAddComment(sessionEnv func() string) *Tool {
 			if (a.TargetID == 0) == (a.ParentID == 0) {
 				return &ValidationError{Msg: "give exactly one of target_id or parent_id"}
 			}
-			_, err := requireText("body", a.Body, 8000)
-			return err
+			return requireText("body", a.Body, 8000)
 		},
 		Scope: func(ctx context.Context, d *db.DB, raw json.RawMessage, b Binding) error {
 			var a addCommentArgs

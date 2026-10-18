@@ -134,7 +134,7 @@ func runBriefingGenerate(cmd *cobra.Command, _ []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen, savePool := cliPooledGenerator(cfg, logger)
+	gen, savePool := cliPooledGenerator(cfg)
 	defer savePool()
 
 	pipe := briefing.New(database, cfg, gen, logger)

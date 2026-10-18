@@ -109,7 +109,7 @@ func validateTargetItems(items []newTargetItem) error {
 }
 
 func validateTargetItem(i int, it newTargetItem, earlier map[string]bool) error {
-	if _, err := requireText(fmt.Sprintf("items[%d].text", i), it.Text, 200); err != nil {
+	if err := requireText(fmt.Sprintf("items[%d].text", i), it.Text, 200); err != nil {
 		return err
 	}
 	switch {

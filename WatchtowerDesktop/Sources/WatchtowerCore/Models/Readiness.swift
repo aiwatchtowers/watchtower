@@ -70,6 +70,9 @@ package enum ReadinessSource: Hashable, Sendable {
     /// once it reports who connected it; Home waits on it instead of asking
     /// to connect something.
     case ownerIdentityPending(String)
+    /// Jira is connected but no board is selected: the daemon's Jira sync
+    /// has nothing to fetch until the owner picks boards (#572).
+    case jiraBoards
 
     /// What a "Connect …" line or button names.
     package var displayName: String {
@@ -77,10 +80,21 @@ package enum ReadinessSource: Hashable, Sendable {
         case .slack: "Slack"
         case .calendar: "a calendar"
         case .jira: "Jira"
+        case .jiraBoards: "Jira boards"
         case .jiraOrMail: "Jira or mail"
         case .ownerIdentity: "Slack, Google, Jira, Linear or an email account"
         case .ownerIdentityPending(let name): "your \(name) identity"
         case .anySource, .none: "a source"
+        }
+    }
+
+    /// The button title and the start of the "… to get" line: "Connect
+    /// Slack", or "Choose Jira boards" when the source is there but its
+    /// boards are not picked.
+    package var actionTitle: String {
+        switch self {
+        case .jiraBoards: "Choose Jira boards"
+        default: "Connect \(displayName)"
         }
     }
 
@@ -98,7 +112,7 @@ package enum ReadinessSource: Hashable, Sendable {
         case .slack: connected.slack
         case .anySource: connected.slack || connected.mail || connected.calendar || connected.jira
         case .calendar: connected.calendar
-        case .jira: connected.jira
+        case .jira, .jiraBoards: connected.jira
         case .jiraOrMail: connected.jira || connected.mail
         }
     }
@@ -196,6 +210,10 @@ package struct ReadinessInputs: Equatable {
     package var memoryHasRun: Bool
     /// `sync.backfill_days <= 0` (the backfill kill switch).
     package var backfillOff: Bool
+    /// At least one Jira board is selected on a connected site. Without one
+    /// the daemon's Jira sync fetches nothing (`internal/jira/sync.go`), so a
+    /// connected Jira with no content reads `.needsSource(.jiraBoards)`.
+    package var jiraBoardsSelected: Bool
 
     package init(
         now: Date,
@@ -213,7 +231,8 @@ package struct ReadinessInputs: Equatable {
         pollIntervalMinutes: Int = 15,
         runningBackfillStarts: [Date] = [],
         memoryHasRun: Bool = false,
-        backfillOff: Bool = false
+        backfillOff: Bool = false,
+        jiraBoardsSelected: Bool = true
     ) {
         self.now = now
         self.disabledFeatureIDs = disabledFeatureIDs
@@ -231,5 +250,6 @@ package struct ReadinessInputs: Equatable {
         self.runningBackfillStarts = runningBackfillStarts
         self.memoryHasRun = memoryHasRun
         self.backfillOff = backfillOff
+        self.jiraBoardsSelected = jiraBoardsSelected
     }
 }

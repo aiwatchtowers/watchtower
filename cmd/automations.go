@@ -256,13 +256,16 @@ type automationJSON struct {
 	MissedPolicy      string   `json:"missed_policy"`
 	PauseTimeoutHours int      `json:"pause_timeout_hours"`
 	Enabled           bool     `json:"enabled"`
-	Runnable          bool     `json:"runnable"`
-	NeedsConfirmation bool     `json:"needs_confirmation"`
-	ParseError        string   `json:"parse_error"`
-	ContentHash       string   `json:"content_hash"`
-	ApprovalHash      string   `json:"approval_hash"`
-	ConfirmedHash     string   `json:"confirmed_hash"`
-	Widening          []string `json:"widening"`
+	// DisabledReason / DisabledAt: the daemon turned it off by itself (#584).
+	DisabledReason    string     `json:"disabled_reason"`
+	DisabledAt        *time.Time `json:"disabled_at"`
+	Runnable          bool       `json:"runnable"`
+	NeedsConfirmation bool       `json:"needs_confirmation"`
+	ParseError        string     `json:"parse_error"`
+	ContentHash       string     `json:"content_hash"`
+	ApprovalHash      string     `json:"approval_hash"`
+	ConfirmedHash     string     `json:"confirmed_hash"`
+	Widening          []string   `json:"widening"`
 	// Grants are the auto grants, inactive ones included (P2, spec §6.4).
 	Grants []automationGrantJSON `json:"grants"`
 	// AutoTools are the write tools the manifest admits, for the edit form's
@@ -369,7 +372,8 @@ func newAutomationJSON(database *db.DB, a *db.Automation, grants []db.Automation
 		RecipeText: a.RecipeText, TriggerKind: a.TriggerKind, TriggerSpec: a.TriggerSpec,
 		Permissions: perms, Outputs: outs, BudgetTokens: a.BudgetTokens, BudgetMinutes: a.BudgetMinutes,
 		Concurrency: a.Concurrency, MissedPolicy: a.MissedPolicy, PauseTimeoutHours: a.PauseTimeoutHours,
-		Enabled: a.Enabled, Runnable: a.Runnable(), NeedsConfirmation: automationNeedsConfirmation(a),
+		Enabled: a.Enabled, DisabledReason: a.DisabledReason, DisabledAt: a.DisabledAt,
+		Runnable: a.Runnable(), NeedsConfirmation: automationNeedsConfirmation(a),
 		ParseError: a.ParseError, ContentHash: a.ContentHash, ApprovalHash: a.ApprovalHash,
 		ConfirmedHash: a.ConfirmedHash, Widening: []string{}, Grants: newAutomationGrantsJSON(grants),
 		AutoTools: []automationAutoToolJSON{}, Changes: []automationChangeJSON{}, LLMAutoWrites: []string{},

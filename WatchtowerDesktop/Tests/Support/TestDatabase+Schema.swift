@@ -1587,7 +1587,7 @@ CREATE TABLE IF NOT EXISTS automations (
     next_run_at         TEXT,                                -- derived by the scheduler, for the list
     removed_at          TEXT,                                -- the file is gone
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), disabled_reason TEXT NOT NULL DEFAULT '', disabled_at TEXT,
     CHECK ((scope = 'workbench') = (project_id IS NOT NULL))
 );
 CREATE TABLE IF NOT EXISTS automation_runs (
