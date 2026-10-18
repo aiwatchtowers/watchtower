@@ -452,7 +452,8 @@ func NewCreateLinearIssue(factory LinearWriteClientFactory) *Tool {
 		InputSchema: mustWriteSchema[createLinearIssueArgs]("create_linear_issue"),
 		Access:      AccessWrite,
 		External:    true,
-		Surfaces:    []string{"main", "target", AutomationSurface},
+		// "reaction": an issue reaction in a Linear channel proposes it (internal/reactioncmd routeIssue).
+		Surfaces: []string{"main", "target", "reaction", AutomationSurface},
 		Validate: func(ctx context.Context, d *db.DB, raw json.RawMessage) error {
 			var a createLinearIssueArgs
 			if err := decodeStrict(raw, &a); err != nil {
