@@ -106,6 +106,14 @@ var ToolCapabilities = map[string]ToolCapability{
 	"assign_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope},
 	"update_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope},
 	"send_slack_message":    {Capability: "slack", Verb: "write", ScopeArg: "account_id", ScopeOf: slackAccountScope},
+
+	// Linear writes, scoped like the reads: the team key, or the issue's
+	// current team.
+	"create_linear_issue":     {Capability: "linear", Verb: "write", ScopeArg: "team", ScopeOf: upperArgScope("team")},
+	"add_linear_comment":      {Capability: "linear", Verb: "write", ScopeArg: "key", ScopeOf: linearIssueScope},
+	"transition_linear_issue": {Capability: "linear", Verb: "write", ScopeArg: "key", ScopeOf: linearIssueScope},
+	"assign_linear_issue":     {Capability: "linear", Verb: "write", ScopeArg: "key", ScopeOf: linearIssueScope},
+	"update_linear_issue":     {Capability: "linear", Verb: "write", ScopeArg: "key", ScopeOf: linearIssueScope},
 }
 
 // ClampListLimit applies the list-tool limit (S9) to a call of a tool whose

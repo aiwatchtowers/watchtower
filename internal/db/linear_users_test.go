@@ -27,3 +27,23 @@ func TestResolveLinearUsersByEmail(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT slack_user_id FROM linear_user_map WHERE linear_user_id='u-4'`).Scan(&slack))
 	assert.Equal(t, "1:U7", slack) // manual mapping kept
 }
+
+func TestFindLinearUsers_ByEmailOrDisplayName(t *testing.T) {
+	d := openTestDB(t)
+	require.NoError(t, d.UpsertLinearUsers([]LinearUser{
+		{ID: "u-1", Email: "ann@example.com", DisplayName: "ann"},
+		{ID: "u-2", Email: "sam1@example.com", DisplayName: "Sam"},
+		{ID: "u-3", Email: "sam2@example.com", DisplayName: "sam"},
+		{ID: "u-4"},
+	}))
+	got, err := d.FindLinearUsers("ANN@example.com")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "u-1", got[0].ID)
+	got, err = d.FindLinearUsers("sam")
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+	got, err = d.FindLinearUsers("ann@")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}

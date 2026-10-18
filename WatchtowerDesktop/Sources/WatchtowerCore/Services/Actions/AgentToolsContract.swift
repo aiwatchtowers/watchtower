@@ -51,6 +51,16 @@ package enum AgentToolsContract {
         "- update_jira_issue — propose changing a Jira issue's summary, priority, labels, or due date."
     ]
 
+    private static let linearWriteTools = [
+        "- create_linear_issue — propose a Linear issue in a team of a connected workspace.",
+        "- add_linear_comment — propose a comment on an existing Linear issue.",
+        "- transition_linear_issue — propose moving a Linear issue to another workflow state; pass the state name "
+            + "or a state_type.",
+        "- assign_linear_issue — propose assigning a Linear issue to \"me\" (the owner), an email, a display name, "
+            + "or \"none\".",
+        "- update_linear_issue — propose changing a Linear issue's title, priority, labels, due date, or estimate."
+    ]
+
     private static let confluenceWriteTools = [
         "- edit_confluence_page — propose edits to a Confluence page: replace_text for a passage, replace_section to "
             + "rewrite a section; the owner approves a word-level diff before anything is written."
@@ -61,7 +71,7 @@ package enum AgentToolsContract {
         "- create_jira_issue — propose a Jira issue on a connected site.",
         "- connect_jira_board — propose watching a Jira board so its issues start syncing; pass board_name when "
             + "the project has several boards, and ask the owner when the project is ambiguous."
-    ] + jiraIssueWriteTools + confluenceWriteTools + [
+    ] + jiraIssueWriteTools + linearWriteTools + confluenceWriteTools + [
         "- create_track — propose a track that follows a topic over time.",
         "- dismiss_tracks — propose dismissing tracks in bulk (soft, reversible): pass ids, or a filter (origin, "
             + "updated_before, created_before, except_ids; {} = every active track); call get_track_counts first. Always "
@@ -97,7 +107,7 @@ package enum AgentToolsContract {
         + "Mention people as <@USER_ID>. The owner sees the text on the card and may edit it before approving."
 
     private static let targetTools = ["- create_jira_issue — propose a Jira issue on a connected site."]
-        + jiraIssueWriteTools + confluenceWriteTools
+        + jiraIssueWriteTools + linearWriteTools + confluenceWriteTools
 
     private static let rules = [
         "Rules:",
@@ -108,6 +118,9 @@ package enum AgentToolsContract {
             + "When the project or type is ambiguous, ask the owner instead of guessing.",
         "- For an existing Jira issue, pass its key (e.g. ABC-123); call get_jira_issue first when you are not sure "
             + "of its current status, assignee, or fields.",
+        "- For Linear, call list_linear_teams FIRST for the team key, its state names and labels; a label that does "
+            + "not exist is refused, never created. For an existing Linear issue, pass its key (e.g. ENG-123); call "
+            + "get_linear_issue first when you are not sure of its current state, assignee, or fields.",
         "- To edit a Confluence page, read it with get_confluence_page first (a live read with every comment) and "
             + "pass its version as base_version. Prefer replace_text for a small edit. Keep every ⟦…⟧ marker you do not "
             + "mean to delete, verbatim. After a \"page changed\" error, read the page again and propose again.",

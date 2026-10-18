@@ -74,3 +74,28 @@ func TestLinearScope_RowsWithoutTeamKeyAreAbsentScope(t *testing.T) {
 	expectDeny(t, d, mustManifest(t, []string{"linear:read@ENG"}), get, `{"key":"ENG-1"}`, "linear:read@*")
 	expectAdmit(t, d, mustManifest(t, []string{"linear:read@*"}), get, `{"key":"ENG-1"}`)
 }
+
+func TestLinearScope_WriteTools(t *testing.T) {
+	d := openManifestTestDB(t)
+	acct, err := d.CreateLinearAccount("acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertLinearIssue(db.LinearIssue{AccountID: acct, ID: "i1", Key: "NEW-4", PreviousKeys: []string{"OLD-1"},
+		TeamID: "t-new", TeamKey: "NEW", Title: "moved"}); err != nil {
+		t.Fatal(err)
+	}
+	write := mustManifest(t, []string{"linear:write@NEW"})
+	read := mustManifest(t, []string{"linear:read@NEW"})
+	byName := map[string]*tools.Tool{}
+	for _, tool := range tools.LinearWriteTools(nil) {
+		byName[tool.Name] = tool
+	}
+	expectAdmit(t, d, write, byName["create_linear_issue"], `{"team":"new"}`)
+	expectDeny(t, d, write, byName["create_linear_issue"], `{"team":"OPS"}`, "linear:write@OPS")
+	expectDeny(t, d, read, byName["create_linear_issue"], `{"team":"NEW"}`, "linear:write@NEW")
+	for _, name := range []string{"add_linear_comment", "transition_linear_issue", "assign_linear_issue", "update_linear_issue"} {
+		expectAdmit(t, d, write, byName[name], `{"key":"OLD-1"}`)
+		expectDeny(t, d, read, byName[name], `{"key":"NEW-4"}`, "linear:write@NEW")
+	}
+}
