@@ -119,7 +119,9 @@ package final class SessionFeedStore: ObservableObject {
     }
 
     /// Runs one CLI read after the one before it has finished. The read
-    /// lives in its own task, so a cancelled caller never overlaps the next.
+    /// lives in its own task, so a cancelled caller never overlaps the next;
+    /// a closed pane's in-flight read also runs to completion (one process
+    /// at a time, never killed).
     private func read(_ args: [String]) async throws -> Data {
         let previous = lastRead
         let runner = runner
