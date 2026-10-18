@@ -95,6 +95,27 @@ func TestListCatchupStreams_ImapTitledEmailWithAddress(t *testing.T) {
 	assert.Contains(t, items[0].Meta, "Email account 2")
 }
 
+// Linear plan 2: a Linear workspace's stream digest is gathered next to the
+// Jira one, named by its stored source like 'jira'.
+func TestListCatchupStreams_LinearNextToJira(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO stream_digests (source, account_id, period_from, period_to, topics_json) VALUES
+		('jira', 1, '1970-01-01T00:20:00Z', '1970-01-01T00:30:00Z', '[{"title":"J","summary":"jira topic"}]'),
+		('linear', 3, '1970-01-01T00:20:00Z', '1970-01-01T00:31:00Z', '[{"title":"L","summary":"linear topic"}]')`)
+	require.NoError(t, err)
+
+	items, err := d.ListCatchupStreams(1000, 2000, 10)
+	require.NoError(t, err)
+	titles := map[string]string{}
+	for _, it := range items {
+		titles[it.Title] = it.Body + " | " + it.Meta
+	}
+	require.Len(t, titles, 2)
+	assert.Contains(t, titles["linear"], "linear topic")
+	assert.Contains(t, titles["linear"], "linear account 3")
+	assert.Contains(t, titles["jira"], "jira topic")
+}
+
 func TestListCatchupMeetings_RecapAndAdHoc(t *testing.T) {
 	d := openTestDB(t)
 	// Recap title fallback chain: calendar event title → linked transcript title

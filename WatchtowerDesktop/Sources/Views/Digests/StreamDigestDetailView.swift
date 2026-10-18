@@ -79,7 +79,7 @@ struct StreamDigestDetailView: View {
     }
 
     private var sourceColor: Color {
-        digest.source == "jira" ? .indigo : .red
+        digest.isTrackerStream ? .indigo : .red
     }
 
     // MARK: - Topics

@@ -109,7 +109,7 @@ func renderCompose(in promptInput, g gathered) string {
 		fmt.Fprintf(&b, "\nOPERATOR CORRECTION: %s\n", c)
 	}
 	renderSection(&b, "SLACK DIGESTS", g.Digests, capDigests)
-	renderSection(&b, "EMAIL / JIRA STREAMS", g.Streams, capStreams)
+	renderSection(&b, "EMAIL / JIRA / LINEAR STREAMS", g.Streams, capStreams)
 	renderSection(&b, "MEETINGS", g.Meetings, capMeetings)
 	renderSection(&b, "DECISIONS", g.Decisions, capDecisions)
 	renderSection(&b, "FOR YOU — INBOX", g.Inbox, capInbox)

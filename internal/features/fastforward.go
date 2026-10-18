@@ -108,8 +108,9 @@ func fastForwardIdeas(database *db.DB) error {
 	return nil
 }
 
-// fastForwardStreamFloors stamps the per-account Gmail/Jira stage-1 floors
-// (google_accounts.ideas_email_floor / jira_accounts.ideas_jira_floor) to
+// fastForwardStreamFloors stamps the per-account Gmail/Jira/Linear stage-1 floors
+// (google_accounts.ideas_email_floor / jira_accounts.ideas_jira_floor /
+// linear_accounts.ideas_floor) to
 // the same value each account's own stage-1 self-init would pick on a fresh
 // connection — see runEmailDigestAccount/runJiraDigestAccount in
 // internal/ideas. It is the Stream Digests hook (streams.enabled) and its
@@ -158,6 +159,18 @@ func fastForwardStreamFloors(database *db.DB, now time.Time) error {
 			return fmt.Errorf("fast-forwarding jira floor for account %d: %w", acct.ID, err)
 		}
 	}
+
+	// Linear mirrors the Jira step (linear_accounts.ideas_floor, the same
+	// fixed-width UTC form), stamped to now for the same reason.
+	linearAccounts, err := database.ListEnabledLinearAccounts()
+	if err != nil {
+		return fmt.Errorf("fast-forwarding stream floors: listing linear accounts: %w", err)
+	}
+	for _, acct := range linearAccounts {
+		if err := database.SetIdeasLinearFloor(acct.ID, nowJira); err != nil {
+			return fmt.Errorf("fast-forwarding linear floor for account %d: %w", acct.ID, err)
+		}
+	}
 	return nil
 }
 
@@ -200,7 +213,7 @@ func fastForwardSlackDigests(database *db.DB, now time.Time) error {
 
 // fastForwardMemory stamps every extraction watermark the memory pipeline
 // owns to now: the core Slack/situations watermark, the per-account
-// Gmail/Jira watermarks, and the workspace-level calendar watermark. Unlike
+// Gmail/Jira/Linear watermarks, and the workspace-level calendar watermark. Unlike
 // the ideas floors, these are ordinary "processed up to this instant"
 // watermarks — memory's own self-init mirrors a source table top too (see
 // runGmailExtractAccount/runJiraIngestAccount), but a re-enabling owner is
@@ -232,6 +245,16 @@ func fastForwardMemory(database *db.DB, now time.Time) error {
 	for _, acct := range jiraAccounts {
 		if err := database.SetMemoryJiraWatermark(acct.ID, ts); err != nil {
 			return fmt.Errorf("fast-forwarding memory jira watermark for account %d: %w", acct.ID, err)
+		}
+	}
+
+	linearAccounts, err := database.ListEnabledLinearAccounts()
+	if err != nil {
+		return fmt.Errorf("fast-forwarding memory watermark: listing linear accounts: %w", err)
+	}
+	for _, acct := range linearAccounts {
+		if err := database.SetMemoryLinearWatermark(acct.ID, ts); err != nil {
+			return fmt.Errorf("fast-forwarding memory linear watermark for account %d: %w", acct.ID, err)
 		}
 	}
 

@@ -309,7 +309,7 @@ struct IdeaDetailPane: View {
     /// A wrong link is worse than no link — only the two sources with a
     /// well-established, easy-to-build URL (Slack's generic archives host, no
     /// workspace domain needed; Jira via the resolved site) get a Link.
-    /// Gmail, IMAP and meeting mentions render a plain source label.
+    /// Gmail, IMAP, Linear and meeting mentions render a plain source label.
     ///
     /// Static so the URL-building rules are testable without a view.
     static func mentionURL(_ mention: IdeaMention, jiraSiteURL: String?) -> URL? {
@@ -321,7 +321,7 @@ struct IdeaDetailPane: View {
         case .jira:
             guard let jiraSiteURL, !jiraSiteURL.isEmpty else { return nil }
             return URL(string: "\(jiraSiteURL)/browse/\(mention.ref)")
-        case .meeting, .gmail, .imap, .owner:
+        case .meeting, .gmail, .imap, .linear, .owner:
             return nil
         }
     }

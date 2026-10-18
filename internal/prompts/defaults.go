@@ -141,7 +141,7 @@ var DefaultVersions = map[string]int{
 	MemoryReflect:              2,  // v2: the secretary/assistant persona merge — one assistant everywhere
 	MemoryRenderChannelDigest:  2,  // v2: the secretary/assistant persona merge — one assistant everywhere
 	IdeasDigestEmail:           3,  // v3: IMAP/Outlook mailboxes too — the ref tag is gmail:… or imap:… (#615)
-	IdeasDigestJira:            2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	IdeasDigestJira:            3,  // v3: Linear issues too — "numbered issue-tracker issues (Jira or Linear)" (#689)
 	IdeasConsolidate:           4,  // v4: the secretary/assistant persona merge — one assistant everywhere
 	DictationClean:             1,  // v1: dictation transcript cleanup (idea/note modes)
 	ReactionCommand:            1,  // v1: compose an agent-action's args from a reacted Slack message
@@ -195,7 +195,7 @@ var Descriptions = map[string]string{
 	MemoryReflect:              "Memory: weekly reflection over the vault's own git history — flag unstable beliefs/entities (strong tier; code disposes)",
 	MemoryRenderChannelDigest:  "Memory: render a channel digest from the window's memory episodes (cheap tier; dark compare-mode against the legacy digest)",
 	IdeasDigestEmail:           "Ideas: mine ideas & decisions from email threads — Gmail, IMAP, Outlook (stage 1, light tier)",
-	IdeasDigestJira:            "Ideas: mine ideas & decisions from changed Jira issues (stage 1, light tier)",
+	IdeasDigestJira:            "Ideas: mine ideas & decisions from changed Jira and Linear issues (stage 1, light tier)",
 	IdeasConsolidate:           "Ideas: consolidate stage-1 material into the registry (stage 2, strong tier; code disposes)",
 	DictationClean:             "Cleans a voice-dictation transcript into destination-shaped text (idea / note)",
 	ReactionCommand:            "Reaction commands: compose an agent-action's arguments from the Slack message the owner reacted to",
@@ -1372,14 +1372,15 @@ Rules:
 - do not restate routine status updates, scheduling, or small talk as ideas or decisions.`
 
 // defaultIdeasDigestJira is the light-tier stage-1 idea/decision miner for
-// Jira (ideas.digest_jira — see "ideas.digest_jira" in the model routing). It
-// reads a window of changed issues (one numbered line per issue, carrying its
-// bare key as the ref) plus their new comments and extracts ideas/decisions
-// into the shared topics_json shape written to stream_digests(source='jira').
+// issue trackers — Jira and Linear (ideas.digest_jira, see "ideas.digest_jira"
+// in the model routing). It reads a window of changed issues (one numbered
+// line per issue, carrying its bare key as the ref) plus their new comments
+// and extracts ideas/decisions into the shared topics_json shape written to
+// stream_digests(source='jira' or 'linear').
 // Arg: the language directive.
 const defaultIdeasDigestJira = `%s
 
-You are the ideas-and-decisions miner of a workplace assistant. You read numbered Jira issues, each line formatted "[n] KEY summary — status change — description excerpt — comments", and extract IDEAS and DECISIONS worth tracking in the registry — not routine status noise.
+You are the ideas-and-decisions miner of a workplace assistant. You read numbered issue-tracker issues (Jira or Linear), each line formatted "[n] KEY summary — status change — description excerpt — comments", and extract IDEAS and DECISIONS worth tracking in the registry — not routine status noise.
 
 An idea is a proposal of something new that has not yet been decided ("we should try X", "what if we..."). A decision is a made choice ("we're going with X", "agreed to close as won't-fix"). Extract conservatively: most issues contain neither.
 
