@@ -503,7 +503,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         let moved = await vm.moveCard(Int(tid), to: codeColumn)
         XCTAssertTrue(moved)
 
-        let placed = try dbManager.dbPool.read { db in
+        let placed = try await dbManager.dbPool.read { db in
             try Row.fetchOne(db, sql: "SELECT status, board_column_id FROM targets WHERE id = ?", arguments: [tid])
         }
         XCTAssertEqual(placed?["status"] as String?, "in_progress")
@@ -519,7 +519,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         let done = try XCTUnwrap(vm.kanban.columns.first { $0.status == "done" })
         let moved3 = await vm.moveCard(Int(tid), to: done)
         XCTAssertTrue(moved3)
-        let closed = try dbManager.dbPool.read { db in
+        let closed = try await dbManager.dbPool.read { db in
             try Row.fetchOne(db, sql: "SELECT status, board_column_id FROM targets WHERE id = ?", arguments: [tid])
         }
         XCTAssertEqual(closed?["status"] as String?, "done")
