@@ -21,13 +21,28 @@ extension WorkbenchesViewModel {
     // MARK: Sweep sheet
 
     /// The sweep sheet opened: plans the whole workbench with every live
-    /// terminal passed. Opening it answers the hint: it goes away and is
-    /// never planned for again. Cancelling the caller leaves the plan
-    /// running.
+    /// terminal passed — unless a plan is already ready (the hint's) or a
+    /// sheet's plan still runs (one closed mid-plan): walking every worktree
+    /// again takes minutes on a big repository (board #704). Opening it
+    /// answers the hint: it goes away and is never planned for again.
+    /// Cancelling the caller leaves the plan running.
     func planSweepForSheet(projectID: Int64) async {
         guard let center = sessionCleanup else { return }
         cleanupHints[projectID] = nil
         cleanupHintShown(projectID: projectID)
+        switch center.cleanupPhase(for: .workbench(projectID)) {
+        case .ready:
+            return
+        case .planning where cleanupHintRunning != projectID:
+            // A hint plan is not waited for: its watchdog or the page
+            // leaving may stop it.
+            if let run = center.runningPlan(for: .workbench(projectID)) {
+                await run.value
+                return
+            }
+        default:
+            break
+        }
         await center.startSweepPlan(workbenchID: projectID).value
     }
 
@@ -84,11 +99,13 @@ extension WorkbenchesViewModel {
     }
 
     /// The sheet's Cancel, Done or Close: forgets its plan or result. An
-    /// apply still running is kept (it forgets when it ends).
+    /// apply still running is kept (it forgets when it ends), and so is a
+    /// plan still running: the next open shows it instead of starting over.
     func closeSweepSheet(projectID: Int64) {
         openSweepSheets.remove(projectID)
-        guard sweepRuns[projectID] == nil else { return }
-        sessionCleanup?.forgetCleanup(.workbench(projectID))
+        guard sweepRuns[projectID] == nil, let center = sessionCleanup,
+              center.cleanupPhase(for: .workbench(projectID)) != .planning else { return }
+        center.forgetCleanup(.workbench(projectID))
     }
 
     // MARK: One-time hint
@@ -165,6 +182,8 @@ extension WorkbenchesViewModel {
             if let hint = SessionCleanupPresentation.sweepHint(plan) {
                 cleanupHints[projectID] = hint
                 cleanupHintShown(projectID: projectID)
+                // Kept for the sheet the hint opens (board #704).
+                return
             } else if SessionCleanupPresentation.sweepSizesKnown(plan) {
                 // An unmeasured worktree leaves it open: not snoozed.
                 defaults.set(cleanupHintNow().timeIntervalSince1970, forKey: Self.cleanupHintCheckedAtKey(projectID))
@@ -187,8 +206,12 @@ extension WorkbenchesViewModel {
         defaults.set(true, forKey: Self.cleanupHintShownKey(projectID))
     }
 
-    /// The hint's ✕.
+    /// The hint's ✕: its plan is forgotten unless a sheet shows it.
     func dismissCleanupHint(projectID: Int64) {
         cleanupHints[projectID] = nil
+        guard !openSweepSheets.contains(projectID), sweepRuns[projectID] == nil,
+              let center = sessionCleanup, case .ready = center.cleanupPhase(for: .workbench(projectID))
+        else { return }
+        center.forgetCleanup(.workbench(projectID))
     }
 }

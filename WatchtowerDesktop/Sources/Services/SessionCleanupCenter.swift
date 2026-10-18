@@ -109,6 +109,11 @@ final class SessionCleanupCenter {
         }
     }
 
+    /// The plan `startPlan`/`startSweepPlan` still runs for the scope.
+    func runningPlan(for scope: SessionCleanupScope) -> Task<Void, Never>? {
+        planRuns[scope]?.task
+    }
+
     private func startOwnedPlan(
         _ scope: SessionCleanupScope, _ body: @escaping @MainActor (SessionCleanupCenter) async -> Void
     ) -> Task<Void, Never> {

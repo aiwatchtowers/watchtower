@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -486,4 +487,50 @@ func TestProj18_ClaudeHomeIsNeverRemoved(t *testing.T) {
 
 	f.home = func() (string, error) { return "", errors.New("no home") }
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonCheckFailed)
+}
+
+// barrierSizer answers a Size call only once `want` calls run at the same
+// time (or after a second, reporting the size unknown).
+type barrierSizer struct {
+	want    int
+	mu      sync.Mutex
+	running int
+	release chan struct{}
+}
+
+func (s *barrierSizer) Size(ctx context.Context, root string, _ time.Duration) (int64, bool) {
+	s.mu.Lock()
+	s.running++
+	if s.running == s.want {
+		close(s.release)
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.release:
+		return int64(len(root)), true
+	case <-time.After(time.Second):
+		return 0, false
+	case <-ctx.Done():
+		return 0, false
+	}
+}
+
+func TestPlan_SweepMeasuresWorktreesConcurrently(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	a := f.pushedWork("wt-a", "feat/a")
+	b := f.pushedWork("wt-b", "feat/b")
+	d := f.deps()
+	d.Sizer = &barrierSizer{want: 2, release: make(chan struct{})}
+
+	res, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{a, b} {
+		it := wantItem(t, res.Plan, "worktree:"+root, ActionRemove, "")
+		if !it.BytesKnown || it.Bytes != int64(len(root)) {
+			t.Fatalf("%s measured %+v: the sizes were not walked at the same time", root, it)
+		}
+	}
 }
