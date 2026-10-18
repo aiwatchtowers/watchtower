@@ -125,61 +125,18 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) er
 	if err != nil {
 		return err
 	}
-	listedIn := make(map[string]int)
-	listed := 0
-	for k := range l.seen {
-		at, err := parseSlackTS(k.TS)
-		if err != nil {
-			continue
-		}
-		if !at.Before(from) && at.Before(to) {
-			listedIn[k.ChannelID]++
-			listed++
-		}
-	}
+	listedIn, listed := l.listedIn(from, to)
+	c := l.candidates(all, listedIn)
 	rangeDesc := from.UTC().Format(time.RFC3339) + ".." + to.UTC().Format(time.RFC3339)
-	var stored, missing []db.SlackMessageKey
-	unlisted := make(map[string]bool)
-	atBoundary, badTS := 0, 0
-	for _, k := range all {
-		if listedIn[k.ChannelID] == 0 {
-			unlisted[k.ChannelID] = true
-			continue
-		}
-		stored = append(stored, k)
-		if _, ok := l.seen[k]; !ok {
-			at, err := parseSlackTS(k.TS)
-			if err != nil {
-				badTS++
-				continue
-			}
-			if l.atPageBoundary(at) {
-				atBoundary++
-				continue
-			}
-			missing = append(missing, k)
-		}
-	}
-	if len(unlisted) > 0 {
-		o.logger.Printf("slack deletions: account %d range %s: skipped %d channels with stored messages but none listed",
-			o.accountID, rangeDesc, len(unlisted))
-	}
-	if badTS > 0 {
-		o.logger.Printf("slack deletions: account %d range %s: skipped %d missing messages with an unparseable ts",
-			o.accountID, rangeDesc, badTS)
-	}
-	if atBoundary > 0 {
-		o.logger.Printf("slack deletions: account %d range %s: skipped %d missing messages at a page boundary",
-			o.accountID, rangeDesc, atBoundary)
-	}
-	ok, reason := sourcediff.Check(len(stored), listed, len(missing), sourcediff.SlackFloors)
+	o.logCandidateSkips(rangeDesc, c)
+	ok, reason := sourcediff.Check(len(c.stored), listed, len(c.missing), sourcediff.SlackFloors)
 	if !ok {
 		if reason != "" {
 			o.logger.Printf("slack deletions: account %d range %s: skipped: %s", o.accountID, rangeDesc, reason)
 		}
 		return nil
 	}
-	n, err := o.db.TombstoneSlackMessages(missing)
+	n, err := o.db.TombstoneSlackMessages(c.missing)
 	if err != nil {
 		if n > 0 {
 			o.logger.Printf("slack deletions: account %d range %s: tombstoned %d messages before failing: %v",
@@ -188,8 +145,79 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) er
 		return err
 	}
 	o.logger.Printf("slack deletions: account %d range %s: tombstoned %d of %d stored messages (%d listed)",
-		o.accountID, rangeDesc, n, len(stored), listed)
+		o.accountID, rangeDesc, n, len(c.stored), listed)
 	return nil
+}
+
+// listedIn counts the listing's messages inside [from, to), per channel and
+// in total.
+func (l *searchListing) listedIn(from, to time.Time) (perChannel map[string]int, total int) {
+	perChannel = make(map[string]int)
+	for k := range l.seen {
+		at, err := parseSlackTS(k.TS)
+		if err != nil {
+			continue
+		}
+		if !at.Before(from) && at.Before(to) {
+			perChannel[k.ChannelID]++
+			total++
+		}
+	}
+	return perChannel, total
+}
+
+// diffCandidates is the stored set of a range split for the diff: the rows
+// judged (stored), those of them to tombstone (missing), and what was not
+// judged and why.
+type diffCandidates struct {
+	stored, missing   []db.SlackMessageKey
+	unlistedChannels  int
+	atBoundary, badTS int
+}
+
+// candidates splits the stored rows of a range: rows of channels the listing
+// returned nothing from are not judged, and a missing row with an
+// unparseable ts or at a page boundary is not tombstoned.
+func (l *searchListing) candidates(all []db.SlackMessageKey, listedIn map[string]int) diffCandidates {
+	var c diffCandidates
+	unlisted := make(map[string]bool)
+	for _, k := range all {
+		if listedIn[k.ChannelID] == 0 {
+			unlisted[k.ChannelID] = true
+			continue
+		}
+		c.stored = append(c.stored, k)
+		if _, ok := l.seen[k]; ok {
+			continue
+		}
+		at, err := parseSlackTS(k.TS)
+		switch {
+		case err != nil:
+			c.badTS++
+		case l.atPageBoundary(at):
+			c.atBoundary++
+		default:
+			c.missing = append(c.missing, k)
+		}
+	}
+	c.unlistedChannels = len(unlisted)
+	return c
+}
+
+// logCandidateSkips logs each kind of row candidates did not judge.
+func (o *Orchestrator) logCandidateSkips(rangeDesc string, c diffCandidates) {
+	if c.unlistedChannels > 0 {
+		o.logger.Printf("slack deletions: account %d range %s: skipped %d channels with stored messages but none listed",
+			o.accountID, rangeDesc, c.unlistedChannels)
+	}
+	if c.badTS > 0 {
+		o.logger.Printf("slack deletions: account %d range %s: skipped %d missing messages with an unparseable ts",
+			o.accountID, rangeDesc, c.badTS)
+	}
+	if c.atBoundary > 0 {
+		o.logger.Printf("slack deletions: account %d range %s: skipped %d missing messages at a page boundary",
+			o.accountID, rangeDesc, c.atBoundary)
+	}
 }
 
 // diffLiveWindow tombstones messages deleted at the source inside the live
@@ -234,36 +262,9 @@ func sweepSearchRange(from, to time.Time) (after, before string) {
 // (badEdge, which a retry would hit again); a rate limit or partial pages
 // leave it, so the day is retried next cycle.
 func (o *Orchestrator) sweepDeletionDay(ctx context.Context) error {
-	now := o.clock().UTC().Add(-liveDiffLag)
-	ceiling := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	cursor, err := o.db.SlackDeletionSweepDay(o.accountID)
-	if err != nil {
+	day, ok, err := o.nextSweepDay()
+	if err != nil || !ok {
 		return err
-	}
-	before := ceiling
-	cursorSet := false
-	if cursor != "" {
-		if at, perr := time.Parse(searchDateFormat, cursor); perr == nil {
-			cursorSet = true
-			if at.Before(ceiling) {
-				before = at
-			}
-		} else {
-			o.logger.Printf("slack deletion sweep: account %d: invalid cursor %q, starting from the newest day", o.accountID, cursor)
-		}
-	}
-	day, ok, err := o.db.NextSlackSweepDay(o.accountID, float64(before.Unix()))
-	if err != nil {
-		return err
-	}
-	if !ok && cursorSet {
-		day, ok, err = o.db.NextSlackSweepDay(o.accountID, float64(ceiling.Unix()))
-		if err != nil {
-			return err
-		}
-	}
-	if !ok {
-		return nil
 	}
 	from, err := time.Parse(searchDateFormat, day)
 	if err != nil {
@@ -293,4 +294,34 @@ func (o *Orchestrator) sweepDeletionDay(ctx context.Context) error {
 		}
 	}
 	return o.db.SetSlackDeletionSweepDay(o.accountID, day)
+}
+
+// nextSweepDay picks the stored day the sweep diffs next: the newest stored
+// day before the cursor (deletion_sweep_day) and before the live window,
+// wrapping to the newest stored day once the cursor passed the oldest. ok is
+// false when no day is stored.
+func (o *Orchestrator) nextSweepDay() (day string, ok bool, err error) {
+	now := o.clock().UTC().Add(-liveDiffLag)
+	ceiling := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	cursor, err := o.db.SlackDeletionSweepDay(o.accountID)
+	if err != nil {
+		return "", false, err
+	}
+	before := ceiling
+	cursorSet := false
+	if cursor != "" {
+		if at, perr := time.Parse(searchDateFormat, cursor); perr == nil {
+			cursorSet = true
+			if at.Before(ceiling) {
+				before = at
+			}
+		} else {
+			o.logger.Printf("slack deletion sweep: account %d: invalid cursor %q, starting from the newest day", o.accountID, cursor)
+		}
+	}
+	day, ok, err = o.db.NextSlackSweepDay(o.accountID, float64(before.Unix()))
+	if err != nil || ok || !cursorSet {
+		return day, ok, err
+	}
+	return o.db.NextSlackSweepDay(o.accountID, float64(ceiling.Unix()))
 }

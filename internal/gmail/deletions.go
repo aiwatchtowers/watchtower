@@ -36,16 +36,7 @@ func (s *Syncer) CheckDeletions(ctx context.Context, now time.Time) (removed int
 	if err != nil {
 		return 0, fmt.Errorf("listing gmail ids for deletions check (account %d): %w", s.accountID, err)
 	}
-	inListing := make(map[string]struct{}, len(listed))
-	for _, id := range listed {
-		inListing[id] = struct{}{}
-	}
-	var missing []string
-	for _, id := range stored {
-		if _, ok := inListing[id]; !ok {
-			missing = append(missing, id)
-		}
-	}
+	missing := missingIDs(stored, listed)
 	// ok == false with an empty reason means nothing is missing.
 	ok, reason := sourcediff.Check(len(stored), len(stored)-len(missing), len(missing), sourcediff.MailFloors)
 	if !ok && reason != "" {
@@ -66,4 +57,19 @@ func (s *Syncer) CheckDeletions(ctx context.Context, now time.Time) (removed int
 		return removed, err
 	}
 	return removed, nil
+}
+
+// missingIDs returns the stored ids the listing does not contain.
+func missingIDs(stored, listed []string) []string {
+	inListing := make(map[string]struct{}, len(listed))
+	for _, id := range listed {
+		inListing[id] = struct{}{}
+	}
+	var missing []string
+	for _, id := range stored {
+		if _, ok := inListing[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing
 }
