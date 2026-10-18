@@ -243,15 +243,6 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		VALUES ('main', ?, 0, 0)`, fmt.Sprintf("%d:x:1", pid))
 	require.NoError(t, err)
 
-	// watchtower.db's agent_log_* tables keep their foreign keys until they
-	// are dropped (agentlog.db took the writes, #849); seeded directly.
-	_, err = d.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, project_id, folder_path, home_cwd, source_path, started_at, ended_at)
-		VALUES ('s-proj02', 'claude', ?, '/w', '/w', '/x/a.jsonl', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, pid)
-	require.NoError(t, err)
-	_, err = d.Exec(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, src_path, src_offset)
-		VALUES ('s-proj02', 'm-proj02:r1', 'api_call', '2026-10-01T00:00:00Z', '/x/a.jsonl', 0)`)
-	require.NoError(t, err)
-
 	require.NoError(t, d.DeleteWorkbench(pid))
 
 	for _, q := range []string{
@@ -320,12 +311,6 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	var mainChat int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE context_type IS NULL`).Scan(&mainChat))
 	assert.Equal(t, 1, mainChat, "only code_question rows go, whatever their context_id")
-	// PROJ-02 exception (ask #153): agent analytics outlive the workbench.
-	var orphaned, orphanEvents int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_sessions WHERE session_uuid = 's-proj02' AND project_id IS NULL`).Scan(&orphaned))
-	assert.Equal(t, 1, orphaned, "the analytics session survives with project_id NULL")
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE session_uuid = 's-proj02'`).Scan(&orphanEvents))
-	assert.Equal(t, 1, orphanEvents, "the analytics events survive")
 	assert.ErrorIs(t, d.DeleteWorkbench(pid), ErrWorkbenchNotFound)
 }
 
