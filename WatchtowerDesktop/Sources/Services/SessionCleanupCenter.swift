@@ -130,7 +130,8 @@ final class SessionCleanupCenter {
     }
 
     private func startOwnedPlan(
-        _ scope: SessionCleanupScope, timeLimit: Duration? = nil,
+        _ scope: SessionCleanupScope,
+        timeLimit: Duration? = nil,
         _ body: @escaping @MainActor (SessionCleanupCenter) async -> Void
     ) -> Task<Void, Never> {
         let token = UUID()
