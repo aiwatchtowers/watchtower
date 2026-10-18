@@ -49,8 +49,8 @@ func (l *searchListing) addPage(matches []slack.SearchMessage) {
 	first, ferr := parseSlackTS(matches[0].Timestamp)
 	last, lerr := parseSlackTS(matches[len(matches)-1].Timestamp)
 	if ferr != nil || lerr != nil {
-		// An unparseable edge leaves no boundary to guard; mark the whole
-		// listing as unprovable instead of guessing.
+		// An unparseable edge leaves no boundary to guard; the listing is
+		// then never diffed (see tombstoneMissing).
 		l.badEdge = true
 		return
 	}
@@ -81,7 +81,7 @@ func newSearchListing(maxPages int) *searchListing {
 
 // complete reports that every match Slack counted was received. A search
 // stops at 100 pages, so page >= pages alone does not prove a full listing.
-func (l *searchListing) complete() bool { return l.matched >= l.total && !l.badEdge }
+func (l *searchListing) complete() bool { return l.matched >= l.total }
 
 // liveDiffWindow is the part of a forward search the diff may judge: UTC
 // today up to now − 2 h, clamped to what the query's after: date provably
@@ -114,9 +114,13 @@ func liveDiffWindow(now time.Time, after string) (from, to time.Time) {
 // listing returned at least one message from inside the range are judged: a
 // channel search does not see (hidden from search, shared from another
 // org) would otherwise lose every row each cycle and never heal. A missing
-// row at a page boundary (atPageBoundary) is not judged either. Every skip
-// is logged. The stored set is read and diffed before the short writes.
+// row at a page boundary (atPageBoundary) or with an unparseable ts is not
+// judged either, and a listing with an unparseable page edge (badEdge) is
+// not diffed at all. Every skip is logged. The stored set is read and diffed before the short writes.
 func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (int, error) {
+	if l.badEdge {
+		return 0, nil // callers log and skip a badEdge listing first
+	}
 	all, err := o.db.LiveSlackMessageKeys(o.accountID, float64(from.Unix()), float64(to.Unix()))
 	if err != nil {
 		return 0, err
@@ -136,7 +140,7 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 	rangeDesc := from.UTC().Format(time.RFC3339) + ".." + to.UTC().Format(time.RFC3339)
 	var stored, missing []db.SlackMessageKey
 	unlisted := make(map[string]bool)
-	atBoundary := 0
+	atBoundary, badTS := 0, 0
 	for _, k := range all {
 		if listedIn[k.ChannelID] == 0 {
 			unlisted[k.ChannelID] = true
@@ -144,7 +148,12 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 		}
 		stored = append(stored, k)
 		if _, ok := l.seen[k]; !ok {
-			if at, err := parseSlackTS(k.TS); err != nil || l.atPageBoundary(at) {
+			at, err := parseSlackTS(k.TS)
+			if err != nil {
+				badTS++
+				continue
+			}
+			if l.atPageBoundary(at) {
 				atBoundary++
 				continue
 			}
@@ -154,6 +163,10 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 	if len(unlisted) > 0 {
 		o.logger.Printf("slack deletions: account %d range %s: skipped %d channels with stored messages but none listed",
 			o.accountID, rangeDesc, len(unlisted))
+	}
+	if badTS > 0 {
+		o.logger.Printf("slack deletions: account %d range %s: skipped %d missing messages with an unparseable ts",
+			o.accountID, rangeDesc, badTS)
 	}
 	if atBoundary > 0 {
 		o.logger.Printf("slack deletions: account %d range %s: skipped %d missing messages at a page boundary",
@@ -193,6 +206,11 @@ func (o *Orchestrator) diffLiveWindow(l *searchListing, after string) {
 			o.accountID, from.Format(time.RFC3339), to.Format(time.RFC3339), l.matched, l.total)
 		return
 	}
+	if l.badEdge {
+		o.logger.Printf("slack deletions: account %d range %s..%s: skipped: a page edge ts did not parse, page boundaries unknown",
+			o.accountID, from.Format(time.RFC3339), to.Format(time.RFC3339))
+		return
+	}
 	if _, err := o.tombstoneMissing(l, from, to); err != nil {
 		o.logger.Printf("slack deletions: account %d: live diff failed: %v", o.accountID, err)
 	}
@@ -211,9 +229,10 @@ func sweepSearchRange(from, to time.Time) (after, before string) {
 // against search.messages per cycle, walking from the newest stored day back
 // to the oldest and then wrapping, so deletions and retention purges older
 // than the live window are caught and edited text is refreshed. The cursor
-// (deletion_sweep_day) advances after a finished day, a guard refusal or a
-// day over sweepMaxPages pages; a rate limit or partial pages leave it, so
-// the day is retried next cycle.
+// (deletion_sweep_day) advances after a finished day, a guard refusal, a
+// day over sweepMaxPages pages or a listing with an unparseable page edge
+// (badEdge, which a retry would hit again); a rate limit or partial pages
+// leave it, so the day is retried next cycle.
 func (o *Orchestrator) sweepDeletionDay(ctx context.Context) error {
 	now := o.clock().UTC().Add(-liveDiffLag)
 	ceiling := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
@@ -265,6 +284,9 @@ func (o *Orchestrator) sweepDeletionDay(ctx context.Context) error {
 		o.logger.Printf("slack deletion sweep: account %d day %s: incomplete listing (received %d of %d matches), retrying next cycle",
 			o.accountID, day, listing.matched, listing.total)
 		return nil
+	case listing.badEdge:
+		o.logger.Printf("slack deletion sweep: account %d day %s: a page edge ts did not parse, page boundaries unknown, skipped",
+			o.accountID, day)
 	default:
 		if _, err := o.tombstoneMissing(listing, from, to); err != nil {
 			return err

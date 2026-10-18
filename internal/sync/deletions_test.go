@@ -355,3 +355,25 @@ func TestLiveDiff_SkipsMessageAtPageBoundary(t *testing.T) {
 	assert.True(t, isTombstone(t, ts.db, ts.ns("C001"), gone), "a message missing inside a page is")
 	assert.Equal(t, 1, countTombstones(t, ts.db))
 }
+
+func TestLiveDiff_BadEdgeTombstonesNothing(t *testing.T) {
+	ts, s := newLiveDiffSetup(t)
+	stored := seedLive(t, ts, 10)
+	s.set(append([]string{badEdgeTS(22, 7)}, stored[:9]...), -1)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	assert.False(t, isTombstone(t, ts.db, ts.ns("C001"), stored[9]))
+	assert.Equal(t, 0, countTombstones(t, ts.db))
+}
+
+func TestLiveDiff_UnparseableStoredTSNeverTombstoned(t *testing.T) {
+	ts, s := newLiveDiffSetup(t)
+	stored := seedLive(t, ts, 10)
+	bad := badEdgeTS(22, 9)
+	require.NoError(t, ts.db.UpsertMessage(db.Message{ChannelID: ts.ns("C001"), TS: bad, UserID: ts.ns("U001"), Text: "msg " + bad}))
+	s.set(append([]string{}, stored...), -1)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	assert.False(t, isTombstone(t, ts.db, ts.ns("C001"), bad))
+	assert.Equal(t, 0, countTombstones(t, ts.db))
+}

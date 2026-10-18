@@ -289,3 +289,44 @@ func TestSweep_CoversTheUTCDayInAnyTimezone(t *testing.T) {
 		})
 	}
 }
+
+// badEdgeTS is a ts parseSlackTS refuses while SQLite still reads its
+// leading seconds (ts_unix), at h:00Z on 2026-09-<day>.
+func badEdgeTS(day, h int) string {
+	return fmt.Sprintf("%dx.000100", time.Date(2026, 9, day, h, 0, 0, 0, time.UTC).Unix())
+}
+
+func TestSweep_BadEdgeAdvancesAndTombstonesNothing(t *testing.T) {
+	ts, s, rows := newSweepSetup(t, 4)
+	s.results[sweepQuery10] = append([]string{badEdgeTS(10, 7)}, rows[10][:3]...)
+	require.NoError(t, ts.orch.sweepDeletionDay(context.Background()))
+
+	assert.Equal(t, 0, countTombstones(t, ts.db), "a listing with unknown page boundaries is never diffed")
+	assert.Equal(t, "2026-09-10", sweepCursor(t, ts), "a badEdge day advances: a retry would hit it again")
+}
+
+func TestSweep_SkipsMessageAtPageBoundary(t *testing.T) {
+	s := &shiftingSearch{pageSize: 5}
+	ts := newTestSetup(t, searchAuditMux(s.handle))
+	require.NoError(t, ts.db.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test", Domain: "test"}))
+	require.NoError(t, ts.db.EnsureUser(ts.ns("U001"), "alice"))
+	require.NoError(t, ts.db.EnsureChannel(ts.ns("C001"), "general", "public", ""))
+	ts.orch.now = func() time.Time { return liveDiffNow }
+
+	m := seedDay(t, ts, 10, 10)
+	gone := fmt.Sprintf("%d.000100", time.Date(2026, 9, 10, 8, 30, 0, 0, time.UTC).Unix()) // inside page 1
+	require.NoError(t, ts.db.UpsertMessage(db.Message{ChannelID: ts.ns("C001"), TS: gone, UserID: ts.ns("U001"), Text: "msg " + gone}))
+	arrival := fmt.Sprintf("%d.000100", time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC).Unix())
+	s.items = append([]string{}, m...)
+	s.onServed = func(items []string) []string {
+		items = append(items[:2], items[3:]...) // m2 deleted after page 1 served it
+		return append(items, arrival)
+	}
+
+	require.NoError(t, ts.orch.sweepDeletionDay(context.Background()))
+
+	assert.False(t, isTombstone(t, ts.db, ts.ns("C001"), m[5]), "a message skipped at a page boundary is not proven gone")
+	assert.True(t, isTombstone(t, ts.db, ts.ns("C001"), gone))
+	assert.Equal(t, 1, countTombstones(t, ts.db))
+	assert.Equal(t, "2026-09-10", sweepCursor(t, ts))
+}
