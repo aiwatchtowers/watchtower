@@ -1,14 +1,13 @@
 import Foundation
 import GRDB
 
-/// The Today read behind Home: every card's source in one pass, each card
-/// read on its own so one failure hides only that card (Review Focus 3).
+/// The Today read behind Home's right-column cards: every card's source in
+/// one pass, each card read on its own so one failure hides only that card
+/// (Review Focus 3). The feed has its own read (`HomeFeedQueries`).
 package enum HomeQueries {
     /// Tables the Today read uses, for HomeCenter's ValueObservation region.
     package static let observedTables: [String] = [
-        "agent_actions", "reminders",
-        "calendar_events", "calendar_calendars", "google_accounts", "meeting_prep_cache",
-        "briefings", "targets", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"
+        "briefings", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"
     ]
 
     /// Every Today source in one read. Each card's read is caught separately:
@@ -17,31 +16,13 @@ package enum HomeQueries {
     /// that card having no content, not as a failure.
     package static func today(_ db: Database, now: Date, calendar: Calendar) -> HomeTodayData {
         var data = HomeTodayData()
-        let nowUTC = ISO8601DateFormatter().string(from: now)
         let day = HomeTodayBuilder.dayString(now, calendar: calendar)
 
-        if let value = readCard(.waitingOnYou, db, tables: ["agent_actions", "reminders"], failed: &data.failed, {
-            (try AgentActionQueries.awaitingOwnerCount(db),
-             try AgentActionQueries.awaitingOwner(db, limit: 3),
-             try ReminderQueries.fetchDue(db, nowUTC: nowUTC))
-        }) {
-            (data.awaitingCount, data.actions, data.reminders) = value
-        }
-        let calendarTables = ["calendar_events", "calendar_calendars", "google_accounts", "meeting_prep_cache"]
-        if let value = readCard(.nextMeeting, db, tables: calendarTables, failed: &data.failed, {
-            let event = try CalendarQueries.fetchNextEvent(db)
-            return (event, try event.map { try CalendarQueries.hasPrep(db, eventID: $0.id) } ?? false)
-        }) {
-            (data.nextEvent, data.nextEventHasPrep) = value
-        }
         if let value = readCard(.briefing, db, tables: ["briefings"], failed: &data.failed, {
             try BriefingQueries.fetchByDate(db, date: day)
         }) {
             data.briefing = value
         }
-        data.targets = readCard(.myTargets, db, tables: ["targets"], failed: &data.failed) {
-            try TargetQueries.homeSummary(db, today: day)
-        } ?? []
         data.asks = readCard(.agentsWaiting, db, tables: ["owner_asks", "projects"], failed: &data.failed) {
             try OwnerAskQueries.openAsksAllWorkbenches(db)
         } ?? WorkbenchAskRows(rows: [], unreadableIDs: [])

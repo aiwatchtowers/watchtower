@@ -34,7 +34,8 @@ final class HomeViewTests: XCTestCase {
         failed: Set<TodayCardKind> = []
     ) -> HomeSnapshot {
         HomeSnapshot(
-            gettingReady: zone, firstSync: firstSync, today: today, todayReadFailed: readFailed, todayFailed: failed)
+            gettingReady: zone, firstSync: firstSync, today: today, todayReadFailed: readFailed, todayFailed: failed,
+            feed: HomeFeedBuilder.feed(HomeFeedData(), now: Date(), calendar: .current, expanded: false, hidden: []))
     }
 
     private func texts(_ view: some View) throws -> [String] {
@@ -211,22 +212,22 @@ final class HomeViewTests: XCTestCase {
 
     // MARK: - Today
 
+    private static let reviewRoute = WorkbenchRoute.forAsk(projectID: 1, sessionID: nil, askID: 12)
+
     private static let todayCards = [
         TodayCard(
-            kind: .waitingOnYou, eyebrow: "WAITING ON YOU · 2",
-            items: [TodayItem(chip: "Proposal", title: "Send the follow-up", detail: nil, tone: nil, link: .inbox)],
-            link: .inbox),
-        TodayCard(
-            kind: .nextMeeting, eyebrow: "NEXT MEETING · IN 25 MIN", title: "Design review",
-            body: "11:30–12:00", link: .calendarEvent(id: "evt-1")),
+            kind: .sinceYouWereAway, eyebrow: "SINCE YOU WERE AWAY · SINCE MON 18:30",
+            body: "Two threads need you", link: .catchUp),
         TodayCard(kind: .briefing, eyebrow: "BRIEFING", body: "A lighter day.", link: .briefing(id: 7)),
         TodayCard(
-            kind: .myTargets, eyebrow: "MY TARGETS",
+            kind: .agentsWaiting, eyebrow: "AGENTS WAITING · 2",
             items: [
-                TodayItem(chip: nil, title: "Draft the plan", detail: "In progress", tone: .inProgress, link: .target(id: 11)),
-                TodayItem(chip: nil, title: "Review feedback", detail: "Due today", tone: .dueToday, link: .target(id: 12))
+                TodayItem(chip: "Check", title: "Check the build", detail: "acme", tone: nil,
+                          link: .workbench(.forAsk(projectID: 1, sessionID: nil, askID: 11))),
+                TodayItem(chip: "Review", title: "Review feedback", detail: "acme", tone: nil,
+                          link: .workbench(reviewRoute))
             ],
-            link: .targets)
+            link: .workbenches)
     ]
 
     func testTodayCardsInSnapshotOrder() throws {
@@ -234,9 +235,9 @@ final class HomeViewTests: XCTestCase {
         let eyebrows = Self.todayCards.map(\.eyebrow)
         XCTAssertEqual(try texts(view).filter(eyebrows.contains), eyebrows)
         XCTAssertNoThrow(try view.inspect().find(text: "Today"))
-        XCTAssertNoThrow(try view.inspect().find(text: "Design review"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Two threads need you"))
         XCTAssertNoThrow(try view.inspect().find(text: "A lighter day."))
-        XCTAssertNoThrow(try view.inspect().find(text: "Proposal"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Check"))
         XCTAssertThrowsError(try view.inspect().find(text: "Nothing needs you right now."))
     }
 
@@ -244,10 +245,10 @@ final class HomeViewTests: XCTestCase {
         var tapped: [HomeLink] = []
         let view = makeContent(viewSnapshot(today: Self.todayCards)) { tapped.append($0) }
         try view.inspect().find(button: "Review feedback").tap()
-        XCTAssertEqual(tapped, [.target(id: 12)])
+        XCTAssertEqual(tapped, [.workbench(Self.reviewRoute)])
         // The card's own header goes to the card's link.
-        try view.inspect().find(button: "Design review").tap()
-        XCTAssertEqual(tapped.last, .calendarEvent(id: "evt-1"))
+        try view.inspect().find(button: "A lighter day.").tap()
+        XCTAssertEqual(tapped.last, .briefing(id: 7))
     }
 
     func testNothingNeedsYouLine() throws {
@@ -260,7 +261,7 @@ final class HomeViewTests: XCTestCase {
     }
 
     func testReadFailedIsNotAllClear() throws {
-        for failed in [viewSnapshot(readFailed: true, failed: [.myTargets]), viewSnapshot(failed: [.briefing])] {
+        for failed in [viewSnapshot(readFailed: true, failed: [.agentsWaiting]), viewSnapshot(failed: [.briefing])] {
             XCTAssertTrue(failed.showsReadError)
             let view = makeContent(failed)
             XCTAssertNoThrow(try view.inspect().find(text: "Couldn't read today's items — see the log."))

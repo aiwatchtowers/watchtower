@@ -73,7 +73,7 @@ struct TodayCardView: View {
             }
             if let body = card.body {
                 Text(body)
-                    .foregroundStyle(card.kind == .nextMeeting ? .secondary : .primary)
+                    .foregroundStyle(.primary)
                     .lineLimit(card.kind == .briefing ? 2 : nil)
                     .fixedSize(horizontal: false, vertical: true)
             }

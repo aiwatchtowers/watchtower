@@ -4,12 +4,13 @@ import WatchtowerCore
 
 extension AppState {
     /// Today cards with no tab of their own to follow.
-    static let homeAlwaysAllowed: Set<TodayCardKind> = [.myTargets, .agentsWaiting, .instructionSuggestion]
+    static let homeAlwaysAllowed: Set<TodayCardKind> = [.agentsWaiting, .instructionSuggestion]
+
+    /// Feed sources with no tab or feature of their own to follow.
+    static let homeFeedAlwaysAllowed: Set<FeedSource> = [.reminders, .proposals, .targets]
 
     /// The Today cards that follow a tab, shown only while that tab is.
     private static let homeCardTabs: [(TodayCardKind, SidebarDestination)] = [
-        (.waitingOnYou, .inbox),
-        (.nextMeeting, .calendar),
         (.briefing, .briefings),
         (.sinceYouWereAway, .catchUp)
     ]
@@ -28,9 +29,9 @@ extension AppState {
         return text.map { FirstSyncLine(title: $0.title, detail: $0.detail) }
     }
 
-    /// The Today cards Home may show: a card that follows a tab (Waiting on
-    /// you → Inbox, Next meeting → Calendar, Briefing → Briefings, Since you
-    /// were away → Catch-Up) only while that tab is visible.
+    /// The Today cards Home may show: a card that follows a tab (Briefing →
+    /// Briefings, Since you were away → Catch-Up) only while that tab is
+    /// visible.
     var homeTodayCardsAllowed: Set<TodayCardKind> {
         let disabled = featureVisibility.disabledFeatureIDs
         let connected = featureVisibility.connectedSources
@@ -38,6 +39,21 @@ extension AppState {
             .filter { $0.1.isVisible(disabledFeatures: disabled, connected: connected) }
             .map(\.0)
         return Self.homeAlwaysAllowed.union(followed)
+    }
+
+    /// The feed sources Home may show: inbox rows only while attention
+    /// detection is on, calendar rows only while the Calendar tab is visible;
+    /// reminders, proposals and targets always.
+    var homeFeedSourcesAllowed: Set<FeedSource> {
+        let disabled = featureVisibility.disabledFeatureIDs
+        var allowed = Self.homeFeedAlwaysAllowed
+        // Attention detection (the inbox feeder) is ReadinessFeature.inbox's feature.
+        if ReadinessFeature.inbox.featureID.map(disabled.contains) != true { allowed.insert(.inbox) }
+        if SidebarDestination.calendar.isVisible(
+            disabledFeatures: disabled, connected: featureVisibility.connectedSources) {
+            allowed.insert(.calendar)
+        }
+        return allowed
     }
 
     /// Open the Automations tab on one of its sections (the Settings pointer).
