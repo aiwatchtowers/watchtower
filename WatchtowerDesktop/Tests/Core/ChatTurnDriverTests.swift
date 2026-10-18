@@ -233,7 +233,7 @@ final class ChatTurnDriverTests: XCTestCase {
     /// step carrying the gate's reason, an approved one a normal step.
     /// Waiting is live only — `chat_turn_steps` sees the usual start/end.
     /// BEHAVIOR CHAT-02 — see docs/inventory/chat.md
-    func testChat02WaitingStepIsVisibleUntilItEnds() throws {
+    func testChat02WaitingStepIsVisibleUntilItEnds() async throws {
         let driver = makeDriver()
         let turn = driver.begin(messageID: messageID, turnID: "t")
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "mcp__claude_ai_Gmail__send", argsJSON: "{}")))
@@ -243,6 +243,7 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertEqual(turn.steps.map(\.state), [.waiting(actionID: 41), .waiting(actionID: 42)])
         XCTAssertEqual(turn.steps.map(\.summary), ["Waiting for your approval", "Waiting for your approval"])
         XCTAssertEqual(turn.waitingActionIDs, [41, 42])
+        await driver.writesSettled()
         XCTAssertEqual(try steps().map(\.state), [.running, .running], "waiting is never persisted")
 
         clock.advance(5)
@@ -254,12 +255,14 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertEqual(turn.steps[0].state, .failed)
         XCTAssertEqual(turn.steps[0].summary, "not approved within 15 minutes")
         XCTAssertEqual(turn.waitingActionIDs, [42], "the other call keeps waiting on its own")
+        await driver.writesSettled()
         XCTAssertEqual(try steps().first?.state, .failed)
         XCTAssertEqual(try steps().first?.summary, "not approved within 15 minutes")
 
         driver.apply(.toolEnd(ChatToolEnd(turnID: "t", id: "b", ok: true, summary: "created", sources: [])))
         XCTAssertEqual(turn.steps[1].state, .succeeded)
         XCTAssertEqual(turn.waitingActionIDs, [])
+        await driver.writesSettled()
         XCTAssertEqual(try steps().map(\.state), [.failed, .succeeded])
     }
 
@@ -283,7 +286,7 @@ final class ChatTurnDriverTests: XCTestCase {
     /// never reopens it), a repeated wait, and one whose start never arrived
     /// (still a visible step). A turn that ends while a call waits leaves no
     /// step claiming it still waits.
-    func testToolWaitDegenerateCases() throws {
+    func testToolWaitDegenerateCases() async throws {
         let driver = makeDriver()
         let turn = driver.begin(messageID: messageID, turnID: "t")
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "x", argsJSON: "{}")))
@@ -299,17 +302,20 @@ final class ChatTurnDriverTests: XCTestCase {
         driver.apply(wait("orphan", action: 2))
         XCTAssertEqual(turn.steps.count, 2, "a wait without its start is one visible step")
         XCTAssertEqual(turn.steps.last?.state, .waiting(actionID: 2))
+        await driver.writesSettled()
         XCTAssertEqual(try steps().map(\.toolID), ["a", "orphan"], "its start is persisted, never its waiting state")
         XCTAssertEqual(try steps().last?.state, .running)
 
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "orphan", name: "late_name", argsJSON: #"{"k":1}"#)))
         XCTAssertEqual(turn.steps.last?.name, "late_name", "a start after its wait names the step")
         XCTAssertEqual(turn.steps.last?.state, .waiting(actionID: 2))
+        await driver.writesSettled()
         XCTAssertEqual(try steps().last?.name, "late_name")
 
         driver.apply(.turnDone(turnID: "t", status: .interrupted, sessionID: nil))
         XCTAssertEqual(turn.steps.last?.state, .running, "an ended turn's unfinished call reads as stopped")
         XCTAssertEqual(turn.waitingActionIDs, [])
+        await driver.writesSettled()
         XCTAssertEqual(try steps().map(\.toolID), ["a", "orphan"], "the held call is still a step after the turn")
     }
 }
