@@ -41,18 +41,21 @@ struct AddJiraAccountView: View {
     @State private var accountIDsBefore: Set<Int>?
     /// Set on the click, before any await, so a double click starts one connect.
     @State private var starting = false
-    /// "Also connect Confluence" (#573): the same consent grants Confluence,
-    /// and the board step selects the spaces the owner works in. On by
-    /// default; unchecking it keeps the connect Jira-only.
-    @State private var withConfluence = true
-    /// What the finished connect asked for (the box can change afterwards).
-    @State private var connectedConfluence = false
+    /// "Also connect Confluence" (#573): the same consent asks for
+    /// Confluence, and the board step selects the spaces the owner works in.
+    /// On by default; unchecking it keeps the connect Jira-only. A refusal
+    /// never costs the Jira connect: `jira add` retries Jira-only, and the
+    /// board step's line says Confluence isn't enabled.
+    @State private var withConfluence = JiraAccountsViewModel.alsoConnectConfluenceByDefault
+    /// The board step's Confluence selection, made when a connect that
+    /// asked for Confluence succeeds.
+    @State private var confluenceSelection: ConfluenceConnectSelection?
 
     var body: some View {
         Group {
             if choosingBoards {
                 JiraBoardChoiceView(
-                    accountIDsBefore: accountIDsBefore, connectConfluence: connectedConfluence
+                    accountIDsBefore: accountIDsBefore, confluence: confluenceSelection
                 ) { dismiss() }
                     .padding(20)
                     .frame(width: 420, height: 420)
@@ -120,34 +123,33 @@ struct AddJiraAccountView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
-                // An Atlassian app without the Confluence API refuses the
-                // wider scope set, so a failed connect names the way out.
-                if connectedConfluence {
-                    Text("Refused by Atlassian? Uncheck Also connect Confluence and try again.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
         }
         .padding(20)
-        .frame(width: 360, height: 300)
+        .frame(width: 360, height: 260)
     }
 
     private func connect() {
         guard let vm, !starting else { return }
         starting = true
         cancelled = false
-        connectedConfluence = withConfluence
+        let askConfluence = withConfluence
         let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
             let result = await vm.addAccountHoldingRestart(
-                site: trimmedSite, withConfluence: connectedConfluence, daemonPolicy: daemonPolicy
+                site: trimmedSite, withConfluence: askConfluence, daemonPolicy: daemonPolicy
             )
             starting = false
             accountIDsBefore = result.accountIDsBefore
             // A user Cancel clears error (SIGTERM/SIGKILL branch) and returns
             // false; `cancelled` also covers a Cancel before the launch.
             if result.connected && !cancelled {
+                if askConfluence, let pool = appState.databaseManager?.dbPool {
+                    let features = appState.featureManager
+                    confluenceSelection = ConfluenceConnectSelection(
+                        dbPool: pool, runner: ProcessCLIRunner.makeDefault()
+                    ) { ConfluenceSpacesSection.isFeatureOff(features) }
+                }
                 choosingBoards = true
             }
         }

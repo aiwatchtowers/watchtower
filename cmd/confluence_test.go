@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -196,6 +197,24 @@ func TestConfluenceSelectRecent_SelectsListedRecentSpaces(t *testing.T) {
 	_, err = runConfluence(t, 0, "select", "--recent")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"OPS"}, selectedSpaceKeys(t, env.db), "a second run adds no duplicate")
+}
+
+// TestConfluenceSelectRecent_CapsAtFive: only the five most recent spaces
+// the listing knows are selected.
+func TestConfluenceSelectRecent_CapsAtFive(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	keys := []string{"S1", "GONE", "S2", "S3", "S4", "S5", "S6"}
+	env.fetcher.containers = nil
+	for i, k := range keys {
+		if k != "GONE" {
+			env.fetcher.containers = append(env.fetcher.containers, extsync.Container{Key: k, Name: k, ExtID: fmt.Sprint(i)})
+		}
+	}
+	env.fetcher.recent = keys
+
+	_, err := runConfluence(t, 0, "select", "--recent")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"S1", "S2", "S3", "S4", "S5"}, selectedSpaceKeys(t, env.db))
 }
 
 func TestConfluenceSelectRecent_NoneSelectsNothing(t *testing.T) {

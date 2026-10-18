@@ -301,7 +301,8 @@ type recentSpaceFinder interface {
 }
 
 // recentContainers is `select --recent`'s choice (#573): the live spaces
-// holding content the owner wrote in or viewed lately, most recent first.
+// holding content the owner wrote in or viewed lately, most recent first,
+// at most recentSelectMax.
 // A key the search names but the space listing lacks is skipped (the
 // listing is the truth, as for named keys).
 func (s *confluenceSession) recentContainers(cmd *cobra.Command, cs []extsync.Container) ([]extsync.Container, error) {
@@ -325,12 +326,16 @@ func (s *confluenceSession) recentContainers(cmd *cobra.Command, cs []extsync.Co
 	}
 	var picked []extsync.Container
 	for _, k := range keys {
-		if c, ok := byKey[k]; ok {
+		if c, ok := byKey[k]; ok && len(picked) < recentSelectMax {
 			picked = append(picked, c)
 		}
 	}
 	return picked, nil
 }
+
+// recentSelectMax caps `select --recent` at the most recent spaces: an
+// automatic choice stays small, and Settings adds more.
+const recentSelectMax = 5
 
 // resolveSpaceKeys maps every key to a live container; any unknown key fails
 // the whole call before anything is written.

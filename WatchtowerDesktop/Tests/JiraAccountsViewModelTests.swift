@@ -195,6 +195,35 @@ extension JiraAccountsViewModelTests {
         XCTAssertEqual(daemon.restartCount, 0)
     }
 
+    // MARK: - Also connect Confluence (#573)
+
+    // The owner's ask: the box starts checked; unticking it is the opt-out.
+    func testAlsoConnectConfluenceIsOnByDefault() {
+        XCTAssertTrue(JiraAccountsViewModel.alsoConnectConfluenceByDefault)
+    }
+
+    /// A stand-in CLI that writes its argv to a file and exits 0.
+    private func argvRecordingCLI() throws -> (cli: String, argv: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let argv = dir.appendingPathComponent("argv")
+        let cli = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\necho \"$@\" > '\(argv.path)'\n".write(to: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        return (cli.path, argv)
+    }
+
+    func testHoldingConnectPassesTheConfluenceFlagThrough() async throws {
+        let stub = try argvRecordingCLI()
+        let (vm, _, _) = try makeVM(cli: stub.cli)
+        _ = await vm.addAccountHoldingRestart(withConfluence: true, daemonPolicy: .deferred)
+        XCTAssertEqual(try String(contentsOf: stub.argv, encoding: .utf8), "jira add --app-return --with-confluence\n")
+
+        _ = await vm.addAccountHoldingRestart(withConfluence: false, daemonPolicy: .deferred)
+        XCTAssertEqual(try String(contentsOf: stub.argv, encoding: .utf8), "jira add --app-return\n")
+    }
+
     // MARK: - Board step (#572)
 
     func testBoardStepRestartsOnceAfterTheStepUnderRestart() async throws {

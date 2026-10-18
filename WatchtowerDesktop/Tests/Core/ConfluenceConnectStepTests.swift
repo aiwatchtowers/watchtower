@@ -19,31 +19,44 @@ final class ConfluenceConnectStepTests: XCTestCase {
         XCTAssertTrue(ConfluenceConnectStep.addedSites(accounts, before: nil).isEmpty)
     }
 
-    func testSelectArgs() {
-        XCTAssertEqual(
-            ConfluenceConnectStep.selectArgs(accountID: 4),
-            ["confluence", "--account", "4", "select", "--recent"]
-        )
+    func testArgs() {
+        XCTAssertEqual(ConfluenceConnectStep.accessArgs(accountID: 4), ["confluence", "--account", "4", "access", "--json"])
+        XCTAssertEqual(ConfluenceConnectStep.selectArgs(accountID: 4), ["confluence", "--account", "4", "select", "--recent"])
     }
 
-    func testSummaryNamesSpacesNoneOrFailure() {
+    func testFailureTextNeverShowsACommand() {
         XCTAssertEqual(
-            ConfluenceConnectStep.summary(spaceNames: ["Engineering", "Operations"], failures: []),
-            "Confluence: syncing the spaces you work in — Engineering, Operations. "
-                + "Change them in Settings → Connections → Jira."
+            ConfluenceConnectStep.failureText("Error: Confluence access not granted — run: watchtower jira login --account 1 --with-confluence"),
+            "Confluence access isn't granted"
+        )
+        XCTAssertEqual(ConfluenceConnectStep.failureText("listing Confluence spaces: timeout"), "listing Confluence spaces: timeout")
+    }
+
+    func testLines() {
+        XCTAssertEqual(
+            ConfluenceConnectStep.line(.selected(["Engineering"])),
+            "Confluence: syncing 1 space you work in — Engineering. Choose more in Settings → Connections → Jira."
         )
         XCTAssertEqual(
-            ConfluenceConnectStep.summary(spaceNames: [], failures: []),
-            "Confluence: no space you wrote in or viewed lately. Choose spaces in Settings → Connections → Jira."
-        )
-        // A failure wins over whatever got selected before it.
-        XCTAssertEqual(
-            ConfluenceConnectStep.summary(spaceNames: ["Engineering"], failures: ["access not granted"]),
-            "Confluence: couldn't choose spaces (access not granted). Choose them in Settings → Connections → Jira."
+            ConfluenceConnectStep.line(.selected(["Engineering", "Operations"])),
+            "Confluence: syncing 2 spaces you work in — Engineering, Operations. Choose more in Settings → Connections → Jira."
         )
         XCTAssertEqual(
-            ConfluenceConnectStep.summary(siteFound: false, spaceNames: [], failures: []),
-            "Confluence: choose spaces in Settings → Connections → Jira."
+            ConfluenceConnectStep.line(.selected([])),
+            "Confluence: no space you wrote in or viewed in the last 90 days. Choose spaces in Settings → Connections → Jira."
         )
+        XCTAssertEqual(
+            ConfluenceConnectStep.line(.failed(["timeout"])),
+            "Confluence: couldn't choose spaces (timeout). Choose them in Settings → Connections → Jira."
+        )
+        XCTAssertEqual(
+            ConfluenceConnectStep.line(.notEnabled),
+            "Jira connected; Confluence isn't enabled for this Atlassian app."
+        )
+        XCTAssertEqual(
+            ConfluenceConnectStep.line(.featureOff),
+            "Turn on Confluence in search (Settings → Features) to sync your spaces."
+        )
+        XCTAssertEqual(ConfluenceConnectStep.line(.noSite), "Confluence: choose spaces in Settings → Connections → Jira.")
     }
 }

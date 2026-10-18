@@ -90,6 +90,10 @@ final class JiraAccountsViewModel {
     /// `withConfluence` adds `--with-confluence` (#573): the same Atlassian
     /// consent also grants Confluence read access, so the site's Confluence
     /// needs no second sign-in.
+    /// The add sheet's "Also connect Confluence" starts checked (#573, the
+    /// owner's ask): unticking it is the opt-out.
+    static let alsoConnectConfluenceByDefault = true
+
     static func addArgs(site: String = "", withConfluence: Bool = false) -> [String] {
         var args = ["jira", "add", "--app-return"]
         if !site.isEmpty {

@@ -28,7 +28,7 @@ Memory is not part of this index; the assistant reads it separately. A deleted s
 
 **Ask across everything.** Open **AI Chat** and ask in plain words. The steps show as "Searched knowledge: ..." so you can see what the assistant looked up. Coding agents in a Workbench and other tools you connect through the **MCP Server** setup use the same index.
 
-**Add Confluence.** When you add a Jira site, **Also connect Confluence** is ticked: the same sign-in grants Confluence, and **Choose Boards** selects the spaces you wrote in or viewed in the last 90 days and names them. To change them, or to add Confluence to a site connected without it:
+**Add Confluence.** When you add a Jira site, **Also connect Confluence** is ticked: the same sign-in grants Confluence, and **Choose Boards** selects up to five spaces you wrote in or viewed in the last 90 days and names them. Nothing is selected while **Confluence in search** is off. To change them, or to add Confluence to a site connected without it:
 
 1. Open **Settings** → **Connections** → **Jira**.
 2. In that site's **Confluence** section, press **Grant Confluence access** if it says Watchtower can't read Confluence yet, and approve in the browser.

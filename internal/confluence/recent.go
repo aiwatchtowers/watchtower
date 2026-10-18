@@ -7,9 +7,11 @@ import (
 
 const (
 	// recentSpacesCQL lists the pages and blog posts the signed-in user
-	// created, edited or viewed in the last 90 days, newest edit first: the
-	// spaces they sit in are the default selection of a new site (#573).
-	recentSpacesCQL = "type IN (page, blogpost) AND (contributor = currentUser() OR id IN recentlyViewedContent(100, 90)) ORDER BY lastmodified DESC"
+	// created or edited in the last 90 days, or viewed in the last 90 days
+	// (the 100 most recent views), newest edit first: the spaces they sit in
+	// are the default selection of a new site (#573).
+	recentSpacesCQL = `type IN (page, blogpost) AND ((contributor = currentUser() AND lastmodified >= now("-90d")) ` +
+		`OR id IN recentlyViewedContent(100, 90)) ORDER BY lastmodified DESC`
 	// recentSpacesMaxPages caps the listing at 300 results: enough to find
 	// the spaces someone works in, and a bounded wait in the connect sheet.
 	recentSpacesMaxPages = 3

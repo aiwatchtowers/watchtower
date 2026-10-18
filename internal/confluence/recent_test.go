@@ -35,6 +35,8 @@ func TestRecentSpaceKeys_DistinctVisibleInOrder(t *testing.T) {
 	q := api.requests()[0].q
 	assert.Equal(t, "space", q.Get("expand"))
 	assert.Contains(t, q.Get("cql"), "recentlyViewedContent(100, 90)")
+	assert.Contains(t, q.Get("cql"), `(contributor = currentUser() AND lastmodified >= now("-90d"))`,
+		"the 90-day window bounds the contributor half too")
 }
 
 // TestRecentSpaceKeys_StopsAtPageCap: a listing that never ends is read for
