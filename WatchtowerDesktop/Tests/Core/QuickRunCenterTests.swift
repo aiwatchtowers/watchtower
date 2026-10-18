@@ -186,11 +186,11 @@ final class QuickRunCenterTests: XCTestCase {
 
     func testCLIRefusalSurfacesStderr() async throws {
         let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
-        let stderr = "automations are turned off in Settings → Features; turn them on to run this\n"
+        let stderr = "cannot run: automation 7 is not confirmed\n"
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
         let (center, _) = make(runner)
         let outcome = await center.activate(try row(center, id), origin: .palette)
-        let text = "automations are turned off in Settings → Features; turn them on to run this"
+        let text = "cannot run: automation 7 is not confirmed"
         XCTAssertEqual(outcome, .refused(text))
         XCTAssertEqual(center.lastError, text)
         XCTAssertFalse(center.hasWatchedRuns)
