@@ -42,7 +42,7 @@ Not a code change. Gives the owner the number for the budget decision (business 
 **Files:** none committed. Results go into a board comment on #849 and an ask.
 
 - [ ] **Step 1:** Build the binary from `fix/agentlog-replay-check-plan` (PR #410) in its worktree: `go build -o <scratch>/wt-410 .`.
-- [ ] **Step 2:** Create a temp workspace whose `watchtower.db` is fresh: a temp config (`--config`) pointing at a temp data dir, `workspace init`-equivalent via `db.Open`, then insert one workbench row with `folder_path` = the repo's main checkout (`/Users/user/PhpstormProjects/watchtower`). Do not touch the live data dir.
+- [ ] **Step 2:** Create a temp workspace whose `watchtower.db` is fresh: a temp config (`--config`) pointing at a temp data dir, `workspace init`-equivalent via `db.Open`, then insert one workbench row with `folder_path` = the repo's main checkout (the workbench folder of the live install). Do not touch the live data dir.
 - [ ] **Step 3:** `/usr/bin/time -l <scratch>/wt-410 --config <tmp> agents enable --workbench 1 --json > <scratch>/measure.json 2> <scratch>/measure.time; echo "exit=$?"`. Reads `~/.claude/projects` read-only (AGENTLOG-05).
 - [ ] **Step 4:** Record: wall time, user+sys CPU, max RSS, files scanned, events written, and `db lockstats` from the temp dir (p50/max hold per batch). Expected: no batch hold above 1 s.
 - [ ] **Step 5:** Post one comment on #849 with the numbers and the derived "cycles to finish at 30 s per 15-min cycle"; file an ask (kind question) with budget options derived from the number. Delete the temp dir.
