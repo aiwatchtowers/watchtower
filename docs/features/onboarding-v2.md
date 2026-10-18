@@ -81,14 +81,18 @@ browser marks the step closed, and the connect then applies its policy itself
 when it succeeds (reset at each connect). No foreground sync: the daemon path syncs and starts
 the backfill. Skip leaves
 Jira with no board, which readiness reports as `needsSource(.jiraBoards)`
-(first-run.md). Nothing is preselected. **Confluence at connect (#573):** the
+(first-run.md). No Jira boards are preselected. **Confluence at connect (#573):** the
 form's **Also connect Confluence** checkbox is checked by default
 (`JiraAccountsViewModel.alsoConnectConfluenceByDefault`); while checked,
 `jira add` gets `--with-confluence` (`addArgs`), so one consent covers both.
 Asking for Confluence never costs the Jira connect: when Atlassian answers
 `invalid_scope` (`jira.ErrScopeRefused` — an app without the Confluence API),
 `jira add` retries once with the Jira scopes alone (`jiraAddLogin`; the
-browser opens a second time) and prints "Jira connected; Confluence isn't
+browser opens a second time). The stdout token `[jira-only-retry]` marks the
+retry, and `runAuthFlow` reads stdout live (`ProcessPipes.run(onStdout:)`) to
+turn it into the sheet's status line (`connectStatus`, "Atlassian refused
+Confluence access — connecting Jira only; a second sign-in tab opens.").
+`jira add` then prints "Jira connected; Confluence isn't
 enabled for this Atlassian app." — as it also does when the grant comes back
 without the Confluence scopes. When a connect that asked for Confluence
 succeeds, the board step runs `ConfluenceConnectSelection` once in the
@@ -103,9 +107,13 @@ caption line (`ConfluenceConnectStep.line`): the count and the names of the
 spaces picked, "no space …", the feature-off line, the "isn't enabled" line,
 or the failure in plain words (never a CLI command). It is a line, not a
 step, and Done/Skip do not wait for it. The daemon picks the new
-`ext_sources` rows up on its next cycle. Known gap: if Atlassian shows its
-own error page and never redirects back, the connect waits for **Cancel**
-or the 5-minute login timeout. The Google card carries no scopes: connecting a
+`ext_sources` rows up on its next cycle. If Atlassian shows its own error
+page and never redirects back, the connect can only end by **Cancel** or the
+5-minute login timeout; `jira add` exits with code 75 on that timeout
+(`jiraLoginTimedOutExitCode`). An attempt that asked for Confluence and ended
+either way (`ConfluenceConnectStep.suggestsUntick`) unticks the box and shows
+"Atlassian showed an error page? Uncheck Also connect Confluence and try
+again." until the next Connect. The Google card carries no scopes: connecting a
 Google account means mail and calendar both, whatever the goals (owner
 decision 2026-10-14, #740), so its sheet opens with Calendar and Gmail
 checked like Settings' Add Google sheet, and either can be unchecked there.

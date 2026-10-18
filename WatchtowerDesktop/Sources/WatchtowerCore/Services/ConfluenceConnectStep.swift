@@ -48,6 +48,37 @@ package enum ConfluenceConnectStep {
         message.contains("--with-confluence") ? "Confluence access isn't granted" : message
     }
 
+    // MARK: - The connect itself (dual path: cmd/jira.go)
+
+    /// `jira add`'s stdout token when Atlassian refused the Confluence scopes
+    /// and it retries Jira-only (`jiraOnlyRetryMarker`).
+    package static let jiraOnlyRetryMarker = "[jira-only-retry]"
+    /// `jira add`'s exit code when nobody completed the consent in time
+    /// (`jiraLoginTimedOutExitCode`).
+    package static let loginTimedOutExitCode: Int32 = 75
+
+    /// The sheet's status while the Jira-only retry runs.
+    package static let retryStatus =
+        "Atlassian refused Confluence access — connecting Jira only; a second sign-in tab opens."
+    /// The sheet's hint after an attempt that asked for Confluence was
+    /// cancelled or timed out: an Atlassian error page that never redirects
+    /// back ends exactly that way.
+    package static let untickHint = "Atlassian showed an error page? Uncheck Also connect Confluence and try again."
+
+    /// Whether the connect output so far shows the Jira-only retry.
+    package static func isRetryingJiraOnly(_ output: String) -> Bool {
+        output.contains(jiraOnlyRetryMarker)
+    }
+
+    /// Whether a finished attempt earns `untickHint` (and unticks the box):
+    /// it asked for Confluence, did not connect, and was cancelled or timed
+    /// out.
+    package static func suggestsUntick(
+        askedConfluence: Bool, connected: Bool, cancelled: Bool, timedOut: Bool
+    ) -> Bool {
+        askedConfluence && !connected && (cancelled || timedOut)
+    }
+
     private static let settings = "Settings → Connections → Jira"
 
     /// The step's Confluence line.

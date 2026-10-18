@@ -50,6 +50,9 @@ struct AddJiraAccountView: View {
     /// The board step's Confluence selection, made when a connect that
     /// asked for Confluence succeeds.
     @State private var confluenceSelection: ConfluenceConnectSelection?
+    /// The last attempt asked for Confluence and was cancelled or timed out
+    /// (`ConfluenceConnectStep.suggestsUntick`); cleared by the next Connect.
+    @State private var showsUntickHint = false
 
     var body: some View {
         Group {
@@ -100,7 +103,7 @@ struct AddJiraAccountView: View {
             HStack {
                 if vm?.isConnecting == true {
                     ProgressView().controlSize(.small)
-                    Text("Connecting...")
+                    Text(vm?.connectStatus ?? "Connecting...")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -124,15 +127,21 @@ struct AddJiraAccountView: View {
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
             }
+            if showsUntickHint {
+                Text(ConfluenceConnectStep.untickHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(20)
-        .frame(width: 360, height: 260)
+        .frame(width: 360, height: 290)
     }
 
     private func connect() {
         guard let vm, !starting else { return }
         starting = true
         cancelled = false
+        showsUntickHint = false
         let askConfluence = withConfluence
         let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
@@ -141,6 +150,17 @@ struct AddJiraAccountView: View {
             )
             starting = false
             accountIDsBefore = result.accountIDsBefore
+            // An Atlassian error page that never redirects back leaves only
+            // Cancel or the login timeout: name the way out, and untick.
+            if ConfluenceConnectStep.suggestsUntick(
+                askedConfluence: askConfluence,
+                connected: result.connected && !cancelled,
+                cancelled: cancelled || result.cancelled,
+                timedOut: result.timedOut
+            ) {
+                showsUntickHint = true
+                withConfluence = false
+            }
             // A user Cancel clears error (SIGTERM/SIGKILL branch) and returns
             // false; `cancelled` also covers a Cancel before the launch.
             if result.connected && !cancelled {

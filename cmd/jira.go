@@ -635,9 +635,28 @@ func jiraAddLogin(ctx context.Context, cfg jira.JiraOAuthConfig, out io.Writer, 
 	if err == nil || !opts.WithConfluence || !errors.Is(err, jira.ErrScopeRefused) {
 		return token, err
 	}
-	fmt.Fprintln(out, "Atlassian refused the Confluence access; connecting Jira only…")
+	fmt.Fprintln(out, jiraOnlyRetryMarker+" Atlassian refused the Confluence access; connecting Jira only…")
 	opts.WithConfluence, opts.WithConfluenceWrite = false, false
 	return jiraLogin(ctx, cfg, out, opts)
+}
+
+// Stable markers the Desktop's connect sheet reads (#573, dual path:
+// WatchtowerCore `ConfluenceConnectStep`): the stdout token of the Jira-only
+// retry, and `jira add`'s exit code when nobody completed the consent in
+// time (an Atlassian error page that never redirects back looks like that).
+const (
+	jiraOnlyRetryMarker       = "[jira-only-retry]"
+	jiraLoginTimedOutExitCode = 75
+)
+
+// jiraAddLoginError wraps a failed consent; a login timeout exits with
+// jiraLoginTimedOutExitCode so the Desktop can tell it from other failures.
+func jiraAddLoginError(err error) error {
+	wrapped := fmt.Errorf("jira login: %w", err)
+	if errors.Is(err, oauthpage.ErrLoginTimedOut) {
+		return &exitCodeError{code: jiraLoginTimedOutExitCode, err: wrapped}
+	}
+	return wrapped
 }
 
 func runJiraAdd(cmd *cobra.Command, _ []string) error {
@@ -662,7 +681,7 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	token, err := jiraAddLogin(cmd.Context(), jiraCfg, out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
-		return fmt.Errorf("jira login: %w", err)
+		return jiraAddLoginError(err)
 	}
 	if opts.WithConfluence && !jira.HasConfluenceScopes(token) {
 		fmt.Fprintln(out, jiraConfluenceNotEnabled)

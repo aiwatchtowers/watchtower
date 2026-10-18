@@ -32,6 +32,32 @@ final class ConfluenceConnectStepTests: XCTestCase {
         XCTAssertEqual(ConfluenceConnectStep.failureText("listing Confluence spaces: timeout"), "listing Confluence spaces: timeout")
     }
 
+    // F11: only an attempt that asked for Confluence and ended by Cancel or
+    // the login timeout (an Atlassian error page never redirects back)
+    // earns the untick hint.
+    func testSuggestsUntickOnlyForAnAbandonedConfluenceAttempt() {
+        let step = ConfluenceConnectStep.self
+        XCTAssertTrue(step.suggestsUntick(askedConfluence: true, connected: false, cancelled: true, timedOut: false))
+        XCTAssertTrue(step.suggestsUntick(askedConfluence: true, connected: false, cancelled: false, timedOut: true))
+        XCTAssertFalse(step.suggestsUntick(askedConfluence: false, connected: false, cancelled: true, timedOut: true))
+        XCTAssertFalse(step.suggestsUntick(askedConfluence: true, connected: false, cancelled: false, timedOut: false),
+                       "another failure keeps its own error")
+        XCTAssertFalse(step.suggestsUntick(askedConfluence: true, connected: true, cancelled: false, timedOut: false))
+        XCTAssertEqual(step.untickHint, "Atlassian showed an error page? Uncheck Also connect Confluence and try again.")
+    }
+
+    // F13 + F11 dual path with cmd/jira.go's markers.
+    func testConnectMarkers() {
+        let step = ConfluenceConnectStep.self
+        XCTAssertEqual(step.loginTimedOutExitCode, 75)
+        XCTAssertTrue(step.isRetryingJiraOnly("Opening browser…\n[jira-only-retry] Atlassian refused…\n"))
+        XCTAssertFalse(step.isRetryingJiraOnly("Opening browser for Jira authorization...\n"))
+        XCTAssertEqual(
+            step.retryStatus,
+            "Atlassian refused Confluence access — connecting Jira only; a second sign-in tab opens."
+        )
+    }
+
     func testLines() {
         XCTAssertEqual(
             ConfluenceConnectStep.line(.selected(["Engineering"])),

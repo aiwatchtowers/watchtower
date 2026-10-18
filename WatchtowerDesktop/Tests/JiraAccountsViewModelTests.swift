@@ -224,6 +224,20 @@ extension JiraAccountsViewModelTests {
         XCTAssertEqual(try String(contentsOf: stub.argv, encoding: .utf8), "jira add --app-return\n")
     }
 
+    // F11: `jira add`'s stable timeout exit code reaches the sheet as timedOut.
+    func testHoldingConnectReportsTheLoginTimeout() async throws {
+        let stub = try argvRecordingCLI()
+        try "#!/bin/sh\necho 'jira login: login timed out after 5m0s' >&2\nexit 75\n"
+            .write(toFile: stub.cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.cli)
+        let (vm, _, _) = try makeVM(cli: stub.cli)
+        let result = await vm.addAccountHoldingRestart(withConfluence: true, daemonPolicy: .deferred)
+        XCTAssertFalse(result.connected)
+        XCTAssertTrue(result.timedOut)
+        XCTAssertFalse(result.cancelled)
+        XCTAssertNil(vm.connectStatus)
+    }
+
     // MARK: - Board step (#572)
 
     func testBoardStepRestartsOnceAfterTheStepUnderRestart() async throws {

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/jira"
+	"watchtower/internal/oauthpage"
 )
 
 // scriptLogin swaps jiraLogin for answers (one per call) and records the
@@ -48,6 +49,21 @@ func TestJiraAddLogin_ScopeRefusalRetriesJiraOnly(t *testing.T) {
 	assert.False(t, (*calls)[1].WithConfluence, "the retry asks for Jira only")
 	assert.True(t, (*calls)[1].AppReturn, "the retry keeps the other options")
 	assert.Contains(t, out.String(), "connecting Jira only")
+	// The Desktop keys its "second sign-in tab" status on this token.
+	assert.Contains(t, out.String(), "[jira-only-retry]")
+}
+
+// A login nobody completes exits with the stable timeout code the Desktop
+// reads; any other failure stays exit 1.
+func TestJiraAddLoginError_TimeoutHasItsOwnExitCode(t *testing.T) {
+	err := jiraAddLoginError(fmt.Errorf("%w after 5m0s", oauthpage.ErrLoginTimedOut))
+	var ec *exitCodeError
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, 75, ec.code)
+	assert.ErrorIs(t, err, oauthpage.ErrLoginTimedOut)
+
+	err = jiraAddLoginError(errors.New("jira authorization denied: access_denied"))
+	assert.False(t, errors.As(err, &ec))
 }
 
 func TestJiraAddLogin_RetriesOnlyOnce(t *testing.T) {

@@ -30,6 +30,13 @@ final class JiraAccountsViewModel {
     @ObservationIgnored private var boardStepClosed = false
     /// The last browser flow ended in a user Cancel (SIGTERM/SIGKILL).
     @ObservationIgnored private var lastAuthFlowCancelled = false
+    /// The last browser flow timed out (`jira add`'s stable exit code).
+    @ObservationIgnored private var lastAuthFlowTimedOut = false
+    /// The running consent's stdout so far (`noteAuthOutput`).
+    @ObservationIgnored private var authOutput = Data()
+    /// A status line for the running consent, e.g. the Jira-only retry
+    /// (#573); nil otherwise.
+    private(set) var connectStatus: String?
 
     private let dbPool: DatabasePool
     private let daemon: any DaemonRestarting
@@ -127,18 +134,20 @@ final class JiraAccountsViewModel {
     /// that read fails).
     func addAccountHoldingRestart(
         site: String = "", withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy
-    ) async -> (connected: Bool, accountIDsBefore: Set<Int>?) {
+    ) async -> (connected: Bool, accountIDsBefore: Set<Int>?, cancelled: Bool, timedOut: Bool) {
         boardStepClosed = false
         heldRestart = nil
         let before = try? await dbPool.read { db in Set(try JiraAccountQueries.fetchAll(db).map(\.id)) }
         await addAccount(site: site, withConfluence: withConfluence, daemonPolicy: .deferred)
-        guard error == nil, !lastAuthFlowCancelled else { return (false, before) }
+        guard error == nil, !lastAuthFlowCancelled else {
+            return (false, before, lastAuthFlowCancelled, lastAuthFlowTimedOut)
+        }
         if boardStepClosed {
             daemonRestartTask = daemonPolicy.apply(using: daemon)
         } else {
             heldRestart = daemonPolicy
         }
-        return (true, before)
+        return (true, before, false, false)
     }
 
     /// The board step closed (Done, Skip or the sheet went away): applies the
@@ -284,6 +293,7 @@ final class JiraAccountsViewModel {
         isConnecting = true
         error = nil
         lastAuthFlowCancelled = false
+        lastAuthFlowTimedOut = false
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -297,10 +307,27 @@ final class JiraAccountsViewModel {
         process.environment = await Constants.resolvedEnvironmentAsync()
         guard authProcess === process else { return }
 
-        let result = await Self.runProcess(process)
+        connectStatus = nil
+        authOutput = Data()
+        let onStdout: @Sendable (Data) -> Void = { [weak self] chunk in
+            Task { @MainActor in self?.noteAuthOutput(chunk, of: process) }
+        }
+        let result = await ProcessPipes.run(process, onStdout: onStdout).trimmed
         authProcess = nil
         isConnecting = false
+        connectStatus = nil
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+    }
+
+    /// Live stdout of the running consent: the Jira-only retry's marker
+    /// (#573) turns into the sheet's status line.
+    /// Chunks are kept as bytes: one may end inside a multi-byte character.
+    private func noteAuthOutput(_ chunk: Data, of process: Process) {
+        guard authProcess === process else { return }
+        authOutput.append(chunk)
+        if ConfluenceConnectStep.isRetryingJiraOnly(String(bytes: authOutput, encoding: .utf8) ?? "") {
+            connectStatus = ConfluenceConnectStep.retryStatus
+        }
     }
 
     /// Non-browser management command (`enable`/`disable`/`remove`) — a plain
@@ -333,6 +360,7 @@ final class JiraAccountsViewModel {
         daemonPolicy: DaemonRestartPolicy
     ) {
         if result.exitCode == 15 || result.exitCode == 9 { lastAuthFlowCancelled = true }
+        lastAuthFlowTimedOut = result.exitCode == ConfluenceConnectStep.loginTimedOutExitCode
         if result.exitCode == 0 {
             error = nil
             refresh()

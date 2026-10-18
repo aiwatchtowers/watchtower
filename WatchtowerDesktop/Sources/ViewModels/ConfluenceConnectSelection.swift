@@ -49,7 +49,11 @@ final class ConfluenceConnectSelection {
         for site in added {
             do {
                 let data = try await runner.run(args: ConfluenceConnectStep.accessArgs(accountID: site.id))
-                guard try JSONDecoder().decode(Access.self, from: data).read else { continue }
+                guard let access = try? JSONDecoder().decode(Access.self, from: data) else {
+                    failures.append("couldn't read Confluence access")
+                    continue
+                }
+                guard access.read else { continue }
                 granted.append(site)
                 _ = try await runner.run(args: ConfluenceConnectStep.selectArgs(accountID: site.id))
             } catch {
@@ -58,9 +62,10 @@ final class ConfluenceConnectSelection {
         }
         if !failures.isEmpty { return .failed(failures) }
         if granted.isEmpty { return .notEnabled }
+        let sites = granted
         do {
             let names = try await dbPool.read { db in
-                try granted.flatMap { try ExtSourceQueries.fetchForJiraAccount(db, accountID: Int64($0.id)) }
+                try sites.flatMap { try ExtSourceQueries.fetchForJiraAccount(db, accountID: Int64($0.id)) }
                     .map(\.containerName)
             }
             return .selected(names)

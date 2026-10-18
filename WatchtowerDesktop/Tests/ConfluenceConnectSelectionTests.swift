@@ -10,6 +10,8 @@ import WatchtowerTestSupport
 private final class ConnectCLI: CLIRunnerProtocol, @unchecked Sendable {
     let pool: DatabasePool
     var read = true
+    /// Replaces `access --json`'s answer when set (an undecodable one).
+    var accessBody: String?
     var selectKeys: [String] = []
     var selectError: String?
     private let lock = NSLock()
@@ -22,7 +24,7 @@ private final class ConnectCLI: CLIRunnerProtocol, @unchecked Sendable {
         lock.withLock { recorded.append(args) }
         switch args.last {
         case "--json":
-            return Data(#"{"read":\#(read),"write":false}"#.utf8)
+            return Data((accessBody ?? #"{"read":\#(read),"write":false}"#).utf8)
         case "--recent":
             if let selectError { throw CLIRunnerError.nonZeroExit(code: 1, stderr: "log line\n\(selectError)") }
             let account = Int64(args[2]) ?? 0
@@ -107,6 +109,17 @@ final class ConfluenceConnectSelectionTests: XCTestCase {
             "Confluence: couldn't choose spaces (Confluence access isn't granted). Choose them in Settings → Connections → Jira."
         )
         XCTAssertFalse(selection.line?.contains("watchtower") ?? true, "no raw CLI command")
+    }
+
+    // F15: undecodable access output is a sentence, not a DecodingError.
+    func testUndecodableAccessIsPlainWords() async {
+        cli.accessBody = "not json"
+        let selection = await run(before: before)
+        XCTAssertEqual(cli.calls.map(\.last), ["--json"])
+        XCTAssertEqual(
+            selection.line,
+            "Confluence: couldn't choose spaces (couldn't read Confluence access). Choose them in Settings → Connections → Jira."
+        )
     }
 
     func testNoAddedSiteSelectsNowhere() async {
