@@ -27,7 +27,7 @@ The data itself is small (about 160 MB for this history) and worth keeping: it i
 
 ## Out of scope
 
-- Shrinking `watchtower.db` (its `messages` table is 94 % empty after migration 00134). That is board #850. Dropping the old analytics tables from `watchtower.db` frees about 120 MB inside the file; the file itself shrinks only with #850.
+- Shrinking `watchtower.db` (its `messages` table is 94 % empty after migration 00134). That is board #850. Emptying the old analytics tables in `watchtower.db` frees about 120 MB inside the file; the file itself shrinks only with #850.
 - Codex transcripts, the skill lab, debug mode (#296 roadmap).
 - Any change to the Analytics pane's numbers, hints or timeline.
 
