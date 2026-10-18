@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"watchtower/internal/db"
+	"watchtower/internal/agentlogdb"
 )
 
 // subcommandPrograms keep their first argument in the target ("git commit")
@@ -33,7 +33,7 @@ func (p *claudeParser) toolUses(rec claudeRecord, off int64) {
 		if _, seen := p.toolIdx[b.ID]; seen {
 			continue
 		}
-		p.toolIdx[b.ID] = p.add(rec, off, db.AgentLogEvent{Key: "tool:" + b.ID, Kind: "tool", Name: b.Name,
+		p.toolIdx[b.ID] = p.add(rec, off, agentlogdb.AgentLogEvent{Key: "tool:" + b.ID, Kind: "tool", Name: b.Name,
 			Target: toolTarget(b.Name, b.Input, p.o.Folder), Outcome: "pending", Skill: rec.AttributionSkill,
 			Background: isAgentTool(b.Name) && runInBackground(b.Input)})
 		switch {
@@ -42,14 +42,14 @@ func (p *claudeParser) toolUses(rec claudeRecord, off int64) {
 				Skill string `json:"skill"`
 			}
 			if json.Unmarshal(b.Input, &in) == nil && in.Skill != "" {
-				p.add(rec, off, db.AgentLogEvent{Key: "skill:" + b.ID, Kind: "skill", Name: in.Skill, Trigger: "proactive"})
+				p.add(rec, off, agentlogdb.AgentLogEvent{Key: "skill:" + b.ID, Kind: "skill", Name: in.Skill, Trigger: "proactive"})
 			}
 		case b.Name == "Read":
 			var in struct {
 				FilePath string `json:"file_path"`
 			}
 			if json.Unmarshal(b.Input, &in) == nil && filepath.Base(in.FilePath) == "SKILL.md" {
-				p.add(rec, off, db.AgentLogEvent{Key: "skill:" + b.ID, Kind: "skill",
+				p.add(rec, off, agentlogdb.AgentLogEvent{Key: "skill:" + b.ID, Kind: "skill",
 					Name: filepath.Base(filepath.Dir(in.FilePath)), Trigger: "read"})
 			}
 		}
@@ -63,7 +63,7 @@ func (p *claudeParser) slashSkill(rec claudeRecord, off int64, text string) {
 	if m == nil || !p.knowsSkill(m[1]) {
 		return
 	}
-	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("skill", rec, off) + ":0", Kind: "skill", Name: m[1], Trigger: "slash"})
+	p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("skill", rec, off) + ":0", Kind: "skill", Name: m[1], Trigger: "slash"})
 }
 
 func (p *claudeParser) toolResults(rec claudeRecord) {
@@ -91,7 +91,7 @@ func (p *claudeParser) toolResults(rec claudeRecord) {
 			continue
 		}
 		text := resultText(b.Content)
-		r := db.AgentToolResult{ToolUseID: b.ToolUseID, TS: rec.Timestamp, Outcome: "ok",
+		r := agentlogdb.AgentToolResult{ToolUseID: b.ToolUseID, TS: rec.Timestamp, Outcome: "ok",
 			SpawnedAgentID: tur.AgentID, Background: tur.IsAsync || tur.Status == "async_launched"}
 		switch {
 		case tur.Interrupted || strings.HasPrefix(text, "[Request interrupted by user"):

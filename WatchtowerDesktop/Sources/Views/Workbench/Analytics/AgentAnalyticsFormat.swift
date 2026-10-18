@@ -24,6 +24,24 @@ enum AgentAnalyticsFormat {
         return "Subagents: \(String(format: "%.1f", subagents.avgParallel)) at once on average · peak \(subagents.peak)"
     }
 
+    /// "Loading history — 1,234 files so far" until the import is done; nil
+    /// then. Before the one-time move no scan runs, so the line says what
+    /// unblocks it instead (`isImportWarning`). The count follows `locale`
+    /// (the owner's, like the pane's other numbers).
+    static func importLine(_ importState: AgentImportState, locale: Locale = .autoupdatingCurrent) -> String? {
+        guard importState.state != "done" else { return nil }
+        if isImportWarning(importState) {
+            return "History not moved yet — restart the daemon or run watchtower agents scan"
+        }
+        let files = importState.filesStored.formatted(.number.locale(locale))
+        return "Loading history — \(files) files so far"
+    }
+
+    /// The import is stuck until the move out of watchtower.db succeeds.
+    static func isImportWarning(_ importState: AgentImportState) -> Bool {
+        importState.state == "waiting_for_move"
+    }
+
     /// The period the report covers, from its own `since`/`until`; nil
     /// when it matches none of the picker's.
     static func period(of overview: AgentReportOverview) -> AgentAnalyticsCenter.Period? {

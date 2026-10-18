@@ -96,6 +96,20 @@ func resolveTarget(database *db.DB, target string) (entityType, entityID, entity
 }
 
 func openDBFromConfig() (*db.DB, error) {
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return nil, err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	return database, nil
+}
+
+// workspaceConfigFromFlags loads the config with the --config, --workspace
+// and provider overrides applied and checks the workspace.
+func workspaceConfigFromFlags() (*config.Config, error) {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
@@ -107,11 +121,7 @@ func openDBFromConfig() (*db.DB, error) {
 	if err := cfg.ValidateWorkspace(); err != nil {
 		return nil, err
 	}
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
-	}
-	return database, nil
+	return cfg, nil
 }
 
 func runWatchAdd(cmd *cobra.Command, args []string) error {

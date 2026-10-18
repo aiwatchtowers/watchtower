@@ -1,6 +1,7 @@
 package agentreport
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -9,35 +10,49 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 )
 
-func buildDB(t *testing.T) (*db.DB, int64) {
+// testDBs is a report's two handles: watchtower.db (embedded: workbenches,
+// targets) and agentlog.db.
+type testDBs struct {
+	*db.DB
+	al *agentlogdb.DB
+}
+
+func buildDB(t *testing.T) (testDBs, int64) {
 	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "w.db"))
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "w.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
+	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(filepath.Join(dir, "agentlog.db")))
+	require.NoError(t, err)
 	wb, err := d.CreateWorkbench("app", t.TempDir())
 	require.NoError(t, err)
-	return d, wb
+	return testDBs{DB: d, al: al}, wb
 }
 
 // putSession stores one session with n events one second apart from t0; the
 // file is parsed at version.
-func putSession(t *testing.T, d *db.DB, wb int64, id string, n, version int) {
+func putSession(t *testing.T, d testDBs, wb int64, id string, n, version int) {
 	t.Helper()
 	putSessionWith(t, d, wb, id, n, version, nil)
 }
 
 // putSessionWith adds extra events (their SrcPath and SrcOffset are set here).
-func putSessionWith(t *testing.T, d *db.DB, wb int64, id string, n, version int, extra []db.AgentLogEvent) {
+func putSessionWith(t *testing.T, d testDBs, wb int64, id string, n, version int, extra []agentlogdb.AgentLogEvent) {
 	t.Helper()
 	path := "/tmp/x/" + id + ".jsonl"
 	start := t0.Format(tsLayout)
 	end := t0.Add(time.Duration(n) * time.Second).Format(tsLayout)
-	evs := make([]db.AgentLogEvent, 0, n)
+	evs := make([]agentlogdb.AgentLogEvent, 0, n)
 	for i := range n {
-		e := db.AgentLogEvent{SessionUUID: id, Key: fmt.Sprintf("%s:%d", id, i), SrcPath: path, SrcOffset: int64(i),
+		e := agentlogdb.AgentLogEvent{SessionUUID: id, Key: fmt.Sprintf("%s:%d", id, i), SrcPath: path, SrcOffset: int64(i),
 			TS: t0.Add(time.Duration(i) * time.Second).Format(tsLayout)}
 		switch i % 4 {
 		case 0:
@@ -54,15 +69,15 @@ func putSessionWith(t *testing.T, d *db.DB, wb int64, id string, n, version int,
 		e.SessionUUID, e.Key, e.SrcPath, e.SrcOffset = id, fmt.Sprintf("%s:x%d", id, i), path, int64(1000+i)
 		evs = append(evs, e)
 	}
-	_, err := d.ApplyAgentLogBatch(db.AgentLogBatch{
-		File: db.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: version}, ExpectOffset: -1,
-		Sessions: []db.AgentLogSession{{SessionUUID: id, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+	_, err := d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: version}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: id, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
 			SourcePath: path, StartedAt: start, EndedAt: end, Model: "claude-opus-5-5"}},
 		Events: evs,
 	})
 	require.NoError(t, err)
 	if version < 2 {
-		require.NoError(t, d.MarkAgentLogFileMissing(path, "2026-10-10T00:00:00Z"))
+		require.NoError(t, d.al.MarkAgentLogFileMissing(path, "2026-10-10T00:00:00Z"))
 	}
 }
 
@@ -74,7 +89,7 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	_, err = d.Exec(`UPDATE target_status_history SET changed_at = ? WHERE target_id = ?`, t0.Add(-time.Hour).Format("2006-01-02T15:04:05Z"), tid)
 	require.NoError(t, err)
 	at := func(s int) string { return t0.Add(time.Duration(s) * time.Second).Format(tsLayout) }
-	extra := []db.AgentLogEvent{
+	extra := []agentlogdb.AgentLogEvent{
 		{Kind: "tool", Name: "Agent", Target: "general", Outcome: "ok", SpawnedAgentID: "a1", TS: at(2)},
 		{Kind: "tool", Name: "mcp__watchtower-workbench__update_target", Target: fmt.Sprintf("#%d", tid), Outcome: "ok", TS: at(3)},
 		{Kind: "api_call", Name: "claude-opus-5-5", AgentID: "a1", TS: at(5)},
@@ -83,7 +98,7 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	putSessionWith(t, d, wb, "new", 40, 2, extra)
 	putSessionWith(t, d, wb, "old", 40, 1, extra)
 
-	ov, err := BuildOverview(d, wb, time.Time{}, t0.Add(time.Hour))
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour))
 	require.NoError(t, err)
 	assert.Equal(t, 1, ov.OldFormatSessions)
 	assert.Equal(t, 2, ov.Totals.Sessions)
@@ -108,22 +123,79 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	}
 }
 
+// #849 D6: the overview's import state follows the workbench's progress row.
+func TestBuildOverview_ImportState(t *testing.T) {
+	stamp := t0.Format(time.RFC3339)
+	for _, tc := range []struct {
+		name string
+		set  func(d testDBs, wb int64) error
+		want ImportState
+	}{
+		{"no row", func(testDBs, int64) error { return nil }, ImportState{State: "not_started"}},
+		{"incomplete", func(d testDBs, wb int64) error { return d.al.SetImportProgress(wb, false, 3, t0) },
+			ImportState{State: "loading", FilesStored: 3, UpdatedAt: stamp}},
+		{"complete", func(d testDBs, wb int64) error { return d.al.SetImportProgress(wb, true, 7, t0) },
+			ImportState{State: "done", FilesStored: 7, UpdatedAt: stamp}},
+		{"complete then incomplete", func(d testDBs, wb int64) error {
+			if err := d.al.SetImportProgress(wb, true, 7, t0.Add(-time.Hour)); err != nil {
+				return err
+			}
+			return d.al.SetImportProgress(wb, false, 8, t0)
+		}, ImportState{State: "loading", FilesStored: 8, UpdatedAt: stamp}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, wb := buildDB(t)
+			require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
+			require.NoError(t, tc.set(d, wb))
+			ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, ov.Import)
+		})
+	}
+}
+
+// Before the one-time move no scan runs, so the overview says so instead of
+// "not started" or a stale progress row.
+func TestBuildOverview_ImportWaitingForMove(t *testing.T) {
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "w.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	al, err := agentlogdb.Open(filepath.Join(dir, "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	wb, err := d.CreateWorkbench("app", t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
+	require.NoError(t, al.SetImportProgress(wb, false, 3, t0))
+
+	ov, err := BuildOverview(d, al, wb, time.Time{}, t0)
+	require.NoError(t, err)
+	assert.Equal(t, ImportState{State: "waiting_for_move"}, ov.Import)
+
+	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(filepath.Join(dir, "agentlog.db")))
+	require.NoError(t, err)
+	ov, err = BuildOverview(d, al, wb, time.Time{}, t0)
+	require.NoError(t, err)
+	assert.Equal(t, "loading", ov.Import.State)
+}
+
 func TestBuildSession_UnknownIsError(t *testing.T) {
 	d, wb := buildDB(t)
 	putSession(t, d, wb, "s1", 8, 2)
-	det, err := BuildSession(d, wb, "s1", t0)
+	det, err := BuildSession(d.DB, d.al, wb, "s1", t0)
 	require.NoError(t, err)
 	assert.Equal(t, "s1", det.Session.UUID)
-	_, err = BuildSession(d, wb, "nope", t0)
+	_, err = BuildSession(d.DB, d.al, wb, "nope", t0)
 	assert.Error(t, err)
-	_, err = BuildSession(d, wb+1, "s1", t0)
+	_, err = BuildSession(d.DB, d.al, wb+1, "s1", t0)
 	assert.Error(t, err)
 }
 
 func TestBuildSession_MainLaneFirst(t *testing.T) {
 	d, wb := buildDB(t)
 	at := func(s int) string { return t0.Add(time.Duration(s) * time.Second).Format(tsLayout) }
-	extra := []db.AgentLogEvent{
+	extra := []agentlogdb.AgentLogEvent{
 		{Kind: "tool", Name: "Agent", Target: "general", Outcome: "ok", SpawnedAgentID: "a1", TS: at(2)},
 		{Kind: "api_call", Name: "claude-opus-5-5", AgentID: "a1", TS: at(3)},
 		{Kind: "api_call", Name: "claude-opus-5-5", AgentID: "a1", TS: at(5)},
@@ -131,18 +203,18 @@ func TestBuildSession_MainLaneFirst(t *testing.T) {
 	putSessionWith(t, d, wb, "new", 8, 2, extra)
 	putSessionWith(t, d, wb, "old", 8, 1, extra)
 
-	det, err := BuildSession(d, wb, "new", t0)
+	det, err := BuildSession(d.DB, d.al, wb, "new", t0)
 	require.NoError(t, err)
 	require.Len(t, det.Lanes, 2)
 	assert.Empty(t, det.Lanes[0].AgentID, "the main agent's lane comes first")
-	evs, err := d.AgentReportEvents([]string{"new"})
+	evs, err := d.al.AgentReportEvents([]string{"new"})
 	require.NoError(t, err)
 	_, mainSegs := SessionTime(evs)
 	require.NotEmpty(t, mainSegs)
 	assert.Equal(t, mainSegs, det.Lanes[0].Segments)
 	assert.Equal(t, "a1", det.Lanes[1].AgentID)
 
-	old, err := BuildSession(d, wb, "old", t0)
+	old, err := BuildSession(d.DB, d.al, wb, "old", t0)
 	require.NoError(t, err)
 	assert.Empty(t, old.Lanes, "an old-format session has no lanes")
 }
@@ -153,7 +225,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 	}
 	d, wb := buildDB(t)
 	now := time.Now().UTC()
-	tx, err := d.Begin()
+	tx, err := d.al.Begin()
 	require.NoError(t, err)
 	ins, err := tx.Prepare(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, name, target, outcome, duration_ms,
 		input_tokens, output_tokens, cost_usd, src_path, src_offset) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
@@ -187,7 +259,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 	require.NoError(t, tx.Commit())
 
 	start := time.Now()
-	ov, err := BuildOverview(d, wb, time.Time{}, now)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now)
 	took := time.Since(start)
 	require.NoError(t, err)
 	assert.Equal(t, 750, ov.Totals.Sessions)

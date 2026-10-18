@@ -4,12 +4,12 @@
 > Modifying or weakening the protecting test requires explicit approval
 > from @Vadym.
 >
-> AI assistant: when working in `internal/agentlog/`, `internal/agentreport/`, `internal/db/agent_log.go`, `internal/db/agent_report.go`,
+> AI assistant: when working in `internal/agentlog/`, `internal/agentreport/`, `internal/agentlogdb/`,
 > `cmd/agents.go` or the daemon's `phaseAgentAnalytics`, read this file first.
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/agentlog/` + `internal/agentreport/` + `internal/db/agent_report.go` + `internal/db/migration_00125.go` + `internal/db/agent_log.go` + `internal/db/migrations/00116_agent_analytics.sql` + `cmd/agents.go` + `internal/daemon/daemon.go` (`phaseAgentAnalytics`) + `internal/daemon/agent_analytics.go`
+**Module:** `internal/agentlog/` + `internal/agentreport/` + `internal/agentlogdb/` (the `<workspace>/agentlog.db` file: its opener, migrations, queries and the one-time move from `watchtower.db`) + `internal/db/agent_report.go` (`AgentReportTargets`) + `internal/db/migration_00125.go` + `internal/db/migrations/00116_agent_analytics.sql` (the emptied `watchtower.db` tables, kept until a later release) + `cmd/agents.go` + `internal/daemon/daemon.go` (`phaseAgentAnalytics`) + `internal/daemon/agent_analytics.go`
 **Last full audit:** 2026-10-16
 
 ## AGENTLOG-01 — No transcript text
@@ -44,8 +44,8 @@
 
 **Test guards:**
 - `internal/agentlog/claude_test.go::TestParseClaude_StreamingChunksFoldIntoOneCall`
-- `internal/db/agent_log_test.go::TestApplyAgentLogBatch_ReplayOwnedByEarliestSession`
-- `internal/db/agent_log_test.go::TestApplyAgentLogBatch_SubagentReplaySkipped`
+- `internal/agentlogdb/agent_log_test.go::TestApplyAgentLogBatch_ReplayOwnedByEarliestSession`
+- `internal/agentlogdb/agent_log_test.go::TestApplyAgentLogBatch_SubagentReplaySkipped`
 - `internal/agentlog/scan_test.go::TestScan_ForkReplayCountsOnceInEitherOrder`
 - `internal/agentlog/scan_test.go::TestScan_SubagentReplayOfParentSkipped`
 - `internal/agentlog/scan_test.go::TestScan_ConcurrentWritersCountOnce`
@@ -68,12 +68,19 @@
 - `internal/agentlog/scan_test.go::TestScan_DeletedFileKeepsRowsAndParserBumpRereadsPresentOnly`
 - `internal/agentlog/scan_test.go::TestScan_ShrunkFileReparsedWithoutDuplicates`
 - `internal/agentlog/scan_test.go::TestScan_BudgetStopDoesNotMarkUnreadFilesMissing`
-- `internal/db/agent_log_test.go::TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted`
+- `internal/agentlogdb/agent_log_test.go::TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted`
+- `internal/agentlogdb/move_test.go::TestMoveFromMain_CopiesAllRows`
+- `internal/agentlogdb/move_test.go::TestMoveFromMain_InterruptedMidCopyResumes`
+- `internal/agentlogdb/move_test.go::TestMoveFromMain_InterruptedBeforeDeleteResumes`
+- `internal/agentlogdb/move_test.go::TestMoveFromMain_TwoMoversOneCopy`
+- `internal/agentlog/scan_test.go::TestScan_RefusesBeforeMove`
 - `cmd/agents_test.go::TestAgentsDisable_KeepsRows`
 - `internal/agentlog/scan_test.go::TestScan_SessionlessRecordDoesNotStopOtherFiles`
 - `internal/agentlog/scan_test.go::TestScan_FailedBatchSkipsFileAndContinues`
 
 **Robustness note:** one bad record or one file whose batch fails to store never stops the scan: the file is counted in `failed_files`, keeps the offset of its last committed slice and is retried from there next scan, and every other file is still read. Since #571 a read is stored in short slices (each with its own offset compare-and-set), so a budget stop or a failure keeps the earlier slices' rows and progress; nothing is removed or counted twice.
+
+**Robustness note (#849):** the rows live in `agentlog.db` next to `watchtower.db`. On the first start of the version that introduced it (and on `agents enable`/`scan`) the rows already in `watchtower.db` are copied once into `agentlog.db` — sessions whose transcript is gone included — and only then deleted from `watchtower.db`; an interrupted move resumes without duplicates, and a scan refuses to run until the move has finished (scanning into an empty `agentlog.db` would reparse every transcript from offset 0). A workbench delete removes nothing in `agentlog.db`; a workbench created later on the same folder adopts the rows. Deleting `agentlog.db` by hand is not covered: it is recreated empty and the rows of transcripts already deleted are lost.
 
 **Locked since:** 2026-10-15
 
@@ -139,3 +146,4 @@
 - 2026-10-16 (board #298): AGENTLOG-06 (time adds up) and AGENTLOG-07 (hints cite evidence) added; AGENTLOG-01 gains the parser v2 shapes (`#<id>` board targets, `bash <script>`, first-real-command shell verb) and the guards `TestShellTarget_FirstRealCommand`, `TestToolUses_AgentCallTargetAndBackground`, `TestToolResults_AgentIDAndAsync`, `TestToolTarget_WorkbenchTargetID`; AGENTLOG-06 also guarded by `TestTimeModel_WaitClosedByTrigger` (a notification closes background work, a hook record is model). Nothing relaxed.
 - 2026-10-17 (board #571): AGENTLOG-03 robustness note — a read is stored in slices; a stop or failure keeps the earlier slices' progress. New tests `TestScan_LongTranscriptCommittedInSlicesAndResumes`, `TestScan_SlashSkillInLaterSliceOfIncrementalRead`, `TestRepriceAgentLogEvents_SlicesAndPartialFailure`. Nothing relaxed.
 - 2026-10-18 (board #667, ask #361): migration 00125 moved from `00125_agent_analytics_history.sql` to the Go migration `internal/db/migration_00125.go` under the same version — it adds `spawned_agent_id`/`background` only when absent (a present column must match the definition, else the open fails with a clear error); same DDL, schema unchanged. 00124 is `CREATE TABLE IF NOT EXISTS` so the drift repair replays it. No guard changed.
+- 2026-10-18 (board #849, ask #350): the analytics tables move from `watchtower.db` to `agentlog.db` (`internal/agentlogdb`); module line updated, the DB-layer guards (`TestApplyAgentLogBatch_*`, `TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted`) move under their names to `internal/agentlogdb/agent_log_test.go`. AGENTLOG-03 gains the robustness note on the one-time move and the guards `TestMoveFromMain_CopiesAllRows`, `TestMoveFromMain_InterruptedMidCopyResumes`, `TestMoveFromMain_InterruptedBeforeDeleteResumes`, `TestMoveFromMain_TwoMoversOneCopy`, `TestScan_RefusesBeforeMove`. The emptied `agent_log_*` tables stay in `watchtower.db` and leave `schema.sql`; dropping them is a follow-up for a later release. Nothing relaxed.

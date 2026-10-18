@@ -35,6 +35,30 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertEqual(ov.sessions.map(\.oldFormat), [true, false])
         XCTAssertEqual(ov.sessions[1].prs, ["https://example.com/acme/app/pull/1"])
         XCTAssertEqual(ov.oldFormatSessions, 1)
+        XCTAssertEqual(ov.importState?.state, "loading")
+        XCTAssertEqual(ov.importState?.filesStored, 2)
+    }
+
+    /// The fixture with `import` set to `value`, or without the key for nil.
+    private func overview(import value: String?) throws -> AgentReportOverview {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        json["import"] = nil
+        if let value {
+            json["import"] = try JSONSerialization.jsonObject(with: Data(value.utf8))
+        }
+        return try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    func testOverviewDecodesTheImportState() throws {
+        let ov = try overview(import: #"{"state": "loading", "files_stored": 1234, "updated_at": "2026-10-18T17:00:00Z"}"#)
+        XCTAssertEqual(ov.importState, AgentImportState(state: "loading", filesStored: 1234, updatedAt: "2026-10-18T17:00:00Z"))
+        let notStarted = try overview(import: #"{"state": "not_started", "files_stored": 0}"#)
+        XCTAssertEqual(notStarted.importState?.state, "not_started")
+        XCTAssertNil(notStarted.importState?.updatedAt)
+    }
+
+    func testOverviewWithoutImportDecodes() throws {
+        XCTAssertNil(try overview(import: nil).importState)
     }
 
     func testSessionDetailDecodes() throws {

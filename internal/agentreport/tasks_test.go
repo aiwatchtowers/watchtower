@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 )
 
@@ -22,13 +23,13 @@ func target(id int64, parent *int64, hist ...db.StatusChange) db.AgentReportTarg
 func sc(to string, off time.Duration) db.StatusChange { return db.StatusChange{To: to, At: at(off)} }
 
 func (f *fixture) apiCost(at time.Duration, cost float64) {
-	f.add(db.AgentReportEvent{Kind: "api_call", Name: "claude-opus-5-5", CostUSD: cost}, at)
+	f.add(agentlogdb.AgentReportEvent{Kind: "api_call", Name: "claude-opus-5-5", CostUSD: cost}, at)
 }
 
 // run feeds one fixture session to Tasks as session "s1".
 func run(f *fixture, targets []db.AgentReportTarget, now time.Time) map[int64]TaskRow {
 	_, segs := SessionTime(f.evs)
-	rows := Tasks(targets, map[string][]Segment{"s1": segs}, map[string][]db.AgentReportEvent{"s1": f.evs}, now)
+	rows := Tasks(targets, map[string][]Segment{"s1": segs}, map[string][]agentlogdb.AgentReportEvent{"s1": f.evs}, now)
 	out := map[int64]TaskRow{}
 	for _, r := range rows {
 		out[r.TargetID] = r
@@ -219,7 +220,7 @@ func TestTasks_SingleCallFallbackIsZero(t *testing.T) {
 }
 
 func TestTasks_CostOnlySplit(t *testing.T) {
-	evs := []db.AgentReportEvent{
+	evs := []agentlogdb.AgentReportEvent{
 		{Kind: "tool", Name: "mcp__wt__update_target", Target: "#1", TS: t0.Add(mn).Format(tsLayout)},
 		{Kind: "tool", Name: "mcp__wt__update_target", Target: "#2", TS: t0.Add(mn).Format(tsLayout)},
 		{Kind: "api_call", CostUSD: 3, TS: t0.Add(2 * mn).Format(tsLayout)},
@@ -227,7 +228,7 @@ func TestTasks_CostOnlySplit(t *testing.T) {
 	rows := Tasks([]db.AgentReportTarget{
 		target(1, nil, sc("in_progress", 0), sc("done", 10*mn)),
 		target(2, nil, sc("in_progress", 0), sc("done", 10*mn)),
-	}, nil, map[string][]db.AgentReportEvent{"s1": evs}, t0.Add(time.Hour))
+	}, nil, map[string][]agentlogdb.AgentReportEvent{"s1": evs}, t0.Add(time.Hour))
 	assert.InDelta(t, 1.5, rows[0].CostUSD, 1e-9)
 	assert.InDelta(t, 1.5, rows[1].CostUSD, 1e-9)
 	assert.True(t, rows[0].Shared && rows[1].Shared)

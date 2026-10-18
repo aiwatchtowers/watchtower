@@ -3,8 +3,7 @@ package agentreport
 import (
 	"cmp"
 	"slices"
-
-	"watchtower/internal/db"
+	"watchtower/internal/agentlogdb"
 )
 
 // ModelRow is one model's spend, main agent vs subagents, as stored.
@@ -38,7 +37,7 @@ func cacheReadShare(in, read, w5m, w1h int64) float64 {
 }
 
 // Models sums the api_call events by model, most expensive first.
-func Models(events []db.AgentReportEvent) []ModelRow {
+func Models(events []agentlogdb.AgentReportEvent) []ModelRow {
 	type acc struct {
 		row                ModelRow
 		in, read, w5m, w1h int64
@@ -76,7 +75,7 @@ func Models(events []db.AgentReportEvent) []ModelRow {
 }
 
 // Commands sums the tool calls by verb, most total time first.
-func Commands(events []db.AgentReportEvent) []CommandRow {
+func Commands(events []agentlogdb.AgentReportEvent) []CommandRow {
 	by := map[string]*CommandRow{}
 	timed := map[string]int64{}
 	for _, e := range events {
