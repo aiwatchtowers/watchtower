@@ -199,6 +199,16 @@
     "rows": [],
     "never_used": []
   },
+  "trouble": {
+    "classes": [],
+    "denials": [],
+    "interrupts": 0,
+    "rejections": 0,
+    "interrupt_sessions": [],
+    "unfinished_subagents": 0,
+    "rate_limited": 0,
+    "facts_sessions": 0
+  },
   "tasks": [
     {
       "target_id": 1,

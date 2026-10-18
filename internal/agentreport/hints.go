@@ -35,6 +35,9 @@ const (
 	RepeatTokensMin      = 20_000          // C3: the repeated reads added more than this many tokens
 	UnusedMinSessions    = 5               // S1: measured sessions in the period ...
 	UnusedMinDays        = 7               // S1: ... covering at least this many days
+	ClassMin             = 5               // T1: failed calls of one error class (estimate: each call to its lane's next event)
+	DenialMin            = 3               // T2: denied calls of one command (estimate as T1's)
+	InterruptMin         = 3               // T3: interrupts and rejections in one session
 	evidenceMax          = 5               // evidence items a hint lists; the rest are counted in MoreEvidence
 )
 
@@ -89,12 +92,13 @@ type SessionView struct {
 
 // HintInput is the period the hints judge; Events are keyed by session uuid.
 // Targets (with their status history) and Now give H1 the targets' windows,
-// as in Tasks. Context feeds C1–C3, Skills S1. Lang is the language of the
-// sentences.
+// as in Tasks. Context feeds C1–C3, Skills S1, Trouble T1–T3. Lang is the
+// language of the sentences.
 type HintInput struct {
 	Lang     Lang
 	Context  ContextReport
 	Skills   SkillsReport
+	Trouble  TroubleReport
 	Sessions map[string]SessionView
 	Tasks    []TaskRow
 	Targets  []db.AgentReportTarget
@@ -102,7 +106,7 @@ type HintInput struct {
 	Now      time.Time
 }
 
-// Hints runs the rules H1–H7, C1–C3 and S1 over the period and ranks what fired
+// Hints runs the rules H1–H7, C1–C3, S1 and T1–T3 over the period and ranks what fired
 // by the estimate: time, then money, then tokens; a hint with no estimate is
 // dropped.
 func Hints(in HintInput) []Hint {
@@ -126,6 +130,9 @@ func Hints(in HintInput) []Hint {
 	all = append(all, bigSources(in)...)
 	all = append(all, repeatedReads(in)...)
 	all = append(all, unusedSkills(in)...)
+	all = append(all, failedClasses(in)...)
+	all = append(all, deniedCalls(in)...)
+	all = append(all, interrupted(in)...)
 
 	out := slices.DeleteFunc(all, func(h Hint) bool { return h.EstimateMS <= 0 && h.EstimateUSD <= 0 && h.EstimateTokens <= 0 })
 	for i := range out {
@@ -422,7 +429,7 @@ func ownerShare(in HintInput, sessions []string) []Hint {
 
 // H5: one verb failing FailLoop+ times in a row in one agent lane of a
 // session: a successful run of that verb breaks the streak, calls of other
-// verbs in between do not.
+// verbs in between do not. Failures of a class T1 has an action for are T1's.
 func failingLoops(in HintInput, sessions []string) []Hint {
 	type lane struct{ agent, verb string }
 	var out []Hint
@@ -440,6 +447,9 @@ func failingLoops(in HintInput, sessions []string) []Hint {
 			delete(streak, l)
 		}
 		for _, e := range sortEvents(in.Events[sid], func(e agentlogdb.AgentReportEvent) bool { return e.Kind == "tool" }) {
+			if _, ok := t1Actions[e.ErrorClass]; ok && e.Outcome == "error" {
+				continue // T1's
+			}
 			l := lane{e.AgentID, verb(e.AgentReportEvent)}
 			if e.Outcome == "error" {
 				streak[l] = append(streak[l], durMS(e.AgentReportEvent))

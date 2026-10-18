@@ -50,6 +50,7 @@ type Overview struct {
 	Hints             []Hint        `json:"hints"`
 	Context           ContextReport `json:"context"`
 	Skills            SkillsReport  `json:"skills"`
+	Trouble           TroubleReport `json:"trouble"`
 	Tasks             []TaskRow     `json:"tasks"`
 	Sessions          []SessionRow  `json:"sessions"`
 	OldFormatSessions int           `json:"old_format_sessions"`
@@ -235,6 +236,10 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	if err != nil {
 		return nil, err
 	}
+	ov.Trouble, err = loadTrouble(al, sessions, allEvents, now)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, r := range b.rows {
 		if r.OldFormat {
@@ -256,7 +261,8 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	ov.Models = nonNil(Models(flatten(allEvents)))
 	ov.Commands = nonNil(Commands(flatten(b.events)))
 	ov.Tasks = touched(Tasks(targets, b.segments, b.events, now))
-	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ov.Context, Skills: ov.Skills, Sessions: b.views, Tasks: ov.Tasks,
+	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ov.Context, Skills: ov.Skills, Trouble: ov.Trouble, Sessions: b.views,
+		Tasks:   ov.Tasks,
 		Targets: targets, Events: b.events, Now: now}))
 	ov.Sessions = b.rows
 	return ov, nil
@@ -285,6 +291,26 @@ func loadBlocks(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, eve
 		}
 	}
 	return Context(sessions, events, parts, folder), Skills(sessions, events, parts, listing), nil
+}
+
+// loadTrouble reads the subagents of the sessions with the v2 facts and
+// measures the trouble block as of now.
+func loadTrouble(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
+	now time.Time) (TroubleReport, error) {
+	var facts []string
+	for _, s := range sessions {
+		if s.Facts {
+			facts = append(facts, s.SessionUUID)
+		}
+	}
+	var subs []agentlogdb.AgentSubagent
+	if len(facts) > 0 {
+		var err error
+		if subs, err = al.AgentReportSubagents(facts); err != nil {
+			return TroubleReport{}, err
+		}
+	}
+	return Trouble(sessions, events, subs, now), nil
 }
 
 // touched keeps the task rows the period's sessions worked on (agent time,
@@ -330,8 +356,12 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 	if err != nil {
 		return nil, err
 	}
+	trouble, err := loadTrouble(al, all[i:i+1], by, now)
+	if err != nil {
+		return nil, err
+	}
 	tasks := Tasks(targets, b.segments, b.events, now)
-	det.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ctx, Skills: skills, Sessions: b.views, Tasks: tasks, Targets: targets,
-		Events: b.events, Now: now}))
+	det.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ctx, Skills: skills, Trouble: trouble, Sessions: b.views, Tasks: tasks,
+		Targets: targets, Events: b.events, Now: now}))
 	return det, nil
 }
