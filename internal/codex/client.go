@@ -294,6 +294,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+		// Top-level "error" events, kept for runError: they explain a run
+		// that exits non-zero without a turn.failed event.
+		var errLines []byte
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
@@ -307,8 +311,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 			if event.Error != nil {
 				_ = cmd.Wait()
-				errCh <- fmt.Errorf("codex error: %s", event.Error.Message)
+				errCh <- turnError(c.model, event.Error.Message)
 				return
+			}
+			if event.Type == "error" {
+				errLines = append(append(errLines, line...), '\n')
 			}
 
 			// A tool call interrupts the turn: signal a boundary so the consumer
@@ -347,7 +354,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 
 		if err := cmd.Wait(); err != nil {
-			errCh <- classifyError(err, stderrBuf.String(), c.codexCmd)
+			errCh <- runError(c.model, errLines, err, stderrBuf.String(), c.codexCmd)
 		}
 
 		// Codex doesn't support session resumption — emit empty session ID.
@@ -384,7 +391,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", nil, classifyError(err, stderrBuf.String(), c.codexCmd)
+		return "", nil, runError(c.model, output, err, stderrBuf.String(), c.codexCmd)
 	}
 
 	result, codexUsage, parseErr := parseJSONLOutput(output)

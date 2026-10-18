@@ -84,7 +84,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", nil, "", classifyError(err, stderrBuf.String(), codexBin)
+		return "", nil, "", runError(model, output, err, stderrBuf.String(), codexBin)
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
