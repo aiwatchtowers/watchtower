@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26 (cobra, `database/sql` + modernc sqlite), Claude Code stream-json control protocol (`control_request`/`control_response`), SwiftUI + GRDB (WatchtowerCore).
 
-**Spec:** `docs/superpowers/specs/2026-10-16-chat-claude-ai-tools-design.md` (approved ask #325; Q1–Q4 decided ask #326). No migration: `agent_actions` and `chat_turn_steps` already carry everything. (Task 6 later added one: migration `00137`, `agent_actions.session_token`.)
+**Spec:** `docs/superpowers/specs/2026-10-16-chat-claude-ai-tools-design.md` (approved ask #325; Q1–Q4 decided ask #326). No migration: `agent_actions` and `chat_turn_steps` already carry everything. (Task 6 later added one: migration `00138`, `agent_actions.session_token`.)
 
 ## Global Constraints
 
