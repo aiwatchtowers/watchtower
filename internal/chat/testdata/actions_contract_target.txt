@@ -21,4 +21,4 @@ Rules:
 - To edit a Confluence page, read it with get_confluence_page first (a live read with every comment) and pass its version as base_version. Prefer replace_text for a small edit. Keep every ⟦…⟧ marker you do not mean to delete, verbatim. After a "page changed" error, read the page again and propose again.
 - get_action <id> answers what happened to a proposal; an ACTIONS SINCE YOUR LAST MESSAGE block at the top of the owner's message reports outcomes since your last turn.
 
-Changes to THIS task and its vertical line still go through `watchtower-action` blocks (TASK ACTIONS above); Jira work goes through the Jira tools. Never create other Watchtower tasks from here — report the finding in prose instead.
+Changes to THIS task and its vertical line still go through `watchtower-action` blocks (TASK ACTIONS above); Jira and Linear work goes through their tools. Never create other Watchtower tasks from here — report the finding in prose instead.

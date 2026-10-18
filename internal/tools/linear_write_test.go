@@ -30,10 +30,23 @@ type fakeLinearWriter struct {
 	updatedIDs   []string
 	comments     []string
 	refreshed    []string
+	// landed holds issues Linear already has, by client id (FetchIssueRef).
+	landed    map[string]linear.IssueRef
+	lookupErr error
+	lookups   []string
 }
 
 func (f *fakeLinearWriter) calls() int {
-	return f.stateFetches + f.userFetches + len(f.creates) + len(f.updates) + len(f.comments) + len(f.refreshed)
+	return f.stateFetches + f.userFetches + len(f.creates) + len(f.updates) + len(f.comments) + len(f.refreshed) + len(f.lookups)
+}
+
+func (f *fakeLinearWriter) FetchIssueRef(_ context.Context, id string) (linear.IssueRef, bool, error) {
+	f.lookups = append(f.lookups, id)
+	if f.lookupErr != nil {
+		return linear.IssueRef{}, false, f.lookupErr
+	}
+	ref, ok := f.landed[id]
+	return ref, ok, nil
 }
 
 func (f *fakeLinearWriter) FetchTeamStates(context.Context, string) ([]linear.WorkflowState, error) {
@@ -188,6 +201,72 @@ func TestCreateLinearIssue_PinsAndCreates(t *testing.T) {
 	verr(t, tool.Validate(ctx, d, json.RawMessage(`{"team":"ENG","title":"x","priority":"blocker","reason":"r"}`)))
 }
 
+func TestCreateLinearIssue_PinsFreshIssueUUID(t *testing.T) {
+	d := openDB(t)
+	seedLinearWorkspace(t, d)
+	tool := NewCreateLinearIssue(linearWriteFactory(&fakeLinearWriter{}))
+	raw := json.RawMessage(`{"team":"ENG","title":"x","reason":"r","issue_uuid":"forged"}`)
+	first := linearNormalizedArgs(t, normalized(t, tool, d, raw))["issue_uuid"]
+	second := linearNormalizedArgs(t, normalized(t, tool, d, raw))["issue_uuid"]
+	require.IsType(t, "", first)
+	assert.NotEqual(t, "forged", first, "a model-supplied id is overwritten")
+	assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, first)
+	assert.NotEqual(t, first, second, "one id per proposal")
+}
+
+func TestCreateLinearIssue_RetryFindsTheLandedIssue(t *testing.T) {
+	d := openDB(t)
+	seedLinearWorkspace(t, d)
+	fake := &fakeLinearWriter{}
+	tool := NewCreateLinearIssue(linearWriteFactory(fake))
+	pinned := normalized(t, tool, d, json.RawMessage(`{"team":"ENG","title":"x","reason":"r"}`))
+	id := linearNormalizedArgs(t, pinned)["issue_uuid"].(string)
+	fake.landed = map[string]linear.IssueRef{id: {ID: id, Identifier: "ENG-42", URL: "https://linear.app/acme/issue/ENG-42"}}
+
+	out, err := tool.Execute(context.Background(), d, Call{Args: pinned, Retry: true})
+	require.NoError(t, err)
+	assert.Empty(t, fake.creates, "the landed issue is reported, never created twice")
+	assert.Equal(t, []string{id}, fake.lookups)
+	res := out.(map[string]any)
+	assert.Equal(t, "ENG-42", res["key"])
+	assert.Equal(t, "https://linear.app/acme/issue/ENG-42", res["url"])
+	assert.Equal(t, true, res["reused"])
+	assert.Equal(t, []string{id}, fake.refreshed)
+}
+
+func TestCreateLinearIssue_RetryCreatesWhenNothingLanded(t *testing.T) {
+	d := openDB(t)
+	seedLinearWorkspace(t, d)
+	fake := &fakeLinearWriter{}
+	tool := NewCreateLinearIssue(linearWriteFactory(fake))
+	pinned := normalized(t, tool, d, json.RawMessage(`{"team":"ENG","title":"x","reason":"r"}`))
+	id := linearNormalizedArgs(t, pinned)["issue_uuid"].(string)
+
+	out, err := tool.Execute(context.Background(), d, Call{Args: pinned, Retry: true})
+	require.NoError(t, err)
+	require.Len(t, fake.creates, 1)
+	assert.Equal(t, id, fake.creates[0].ID, "created under the pinned id")
+	assert.NotContains(t, out.(map[string]any), "reused")
+
+	// A first attempt makes no lookup.
+	fake.lookups = nil
+	_, err = tool.Execute(context.Background(), d, Call{Args: pinned})
+	require.NoError(t, err)
+	assert.Empty(t, fake.lookups)
+	assert.Equal(t, id, fake.creates[1].ID)
+}
+
+func TestCreateLinearIssue_RetryLookupFailureDoesNotCreate(t *testing.T) {
+	d := openDB(t)
+	seedLinearWorkspace(t, d)
+	fake := &fakeLinearWriter{lookupErr: errors.New("linear graphql: boom")}
+	tool := NewCreateLinearIssue(linearWriteFactory(fake))
+	pinned := normalized(t, tool, d, json.RawMessage(`{"team":"ENG","title":"x","reason":"r"}`))
+	_, err := tool.Execute(context.Background(), d, Call{Args: pinned, Retry: true})
+	require.ErrorContains(t, err, "boom")
+	assert.Empty(t, fake.creates, "cannot tell whether it landed: never re-send")
+}
+
 func TestAddLinearComment_BodyRules(t *testing.T) {
 	d := openDB(t)
 	tool := NewAddLinearComment(linearWriteFactory(&fakeLinearWriter{}))
@@ -325,6 +404,31 @@ func TestAssignLinearIssue_MeNoneAmbiguous(t *testing.T) {
 	assert.Contains(t, msg, "sam2@example.com")
 	verr(t, tool.Validate(ctx, d, json.RawMessage(`{"key":"ENG-7","assignee":"nobody-here","reason":"r"}`)))
 	verr(t, tool.Validate(ctx, d, json.RawMessage(`{"key":"ENG-7","assignee":" ","reason":"r"}`)))
+}
+
+// With several Linear workspaces the account-less linear_user_map could name
+// another workspace's user: it is skipped, and the issue's own account's
+// client answers.
+func TestAssignLinearIssue_SeveralAccountsSkipsUserMap(t *testing.T) {
+	d := openDB(t)
+	acct := seedLinearWorkspace(t, d) // the map has ann@example.com → u-ann
+	other := seedLinearAccount(t, d, "beta", "")
+	own := &fakeLinearWriter{users: []linear.User{{ID: "u-ann-acme", DisplayName: "ann", Email: "ann@example.com"}}}
+	foreign := &fakeLinearWriter{users: []linear.User{{ID: "u-ann-beta", DisplayName: "ann", Email: "ann@example.com"}}}
+	factory := func(a db.LinearAccount) (LinearWriteClient, error) {
+		switch a.ID {
+		case acct:
+			return own, nil
+		case other:
+			return foreign, nil
+		}
+		return nil, errors.New("unexpected account")
+	}
+	m := linearNormalizedArgs(t, normalized(t, NewAssignLinearIssue(factory), d,
+		json.RawMessage(`{"key":"ENG-7","assignee":"ann@example.com","reason":"r"}`)))
+	assert.Equal(t, "u-ann-acme", m["assignee_id"], "the live user of the issue's workspace, not the map's u-ann")
+	assert.Equal(t, 1, own.userFetches)
+	assert.Zero(t, foreign.calls())
 }
 
 func TestUpdateLinearIssue_Rules(t *testing.T) {

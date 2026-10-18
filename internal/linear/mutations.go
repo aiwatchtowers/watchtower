@@ -40,8 +40,10 @@ type IssueRef struct {
 }
 
 // IssueCreateInput is what issueCreate takes; empty strings and nil pointers
-// are not sent.
+// are not sent. ID is a client-chosen UUID: Linear creates the issue under it,
+// so a retry can look the issue up instead of creating it twice.
 type IssueCreateInput struct {
+	ID          string
 	TeamID      string
 	Title       string
 	Description string
@@ -163,6 +165,9 @@ var errMutationRejected = errors.New("linear rejected the mutation")
 // CreateIssue creates an issue and returns its id, key and URL.
 func (c *Client) CreateIssue(ctx context.Context, in IssueCreateInput) (IssueRef, error) {
 	input := map[string]any{"teamId": in.TeamID, "title": in.Title}
+	if in.ID != "" {
+		input["id"] = in.ID
+	}
 	if in.Description != "" {
 		input["description"] = in.Description
 	}
@@ -196,6 +201,31 @@ func (c *Client) CreateIssue(ctx context.Context, in IssueCreateInput) (IssueRef
 	}
 	i := out.IssueCreate.Issue
 	return IssueRef{ID: i.ID, Identifier: i.Identifier, URL: i.URL}, nil
+}
+
+const queryIssueRef = `query LinearIssueRef($id: String!) { issue(id: $id) { id identifier url } }`
+
+// FetchIssueRef looks an issue up by id. found is false when Linear has no
+// such issue (its "Entity not found" error or a null issue); any other
+// failure is an error.
+func (c *Client) FetchIssueRef(ctx context.Context, id string) (IssueRef, bool, error) {
+	var out struct {
+		Issue *struct {
+			ID         string `json:"id"`
+			Identifier string `json:"identifier"`
+			URL        string `json:"url"`
+		} `json:"issue"`
+	}
+	err := c.Do(ctx, queryIssueRef, map[string]any{"id": id}, &out)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return IssueRef{}, false, nil
+	case err != nil:
+		return IssueRef{}, false, fmt.Errorf("looking up linear issue %s: %w", id, err)
+	case out.Issue == nil:
+		return IssueRef{}, false, nil
+	}
+	return IssueRef{ID: out.Issue.ID, Identifier: out.Issue.Identifier, URL: out.Issue.URL}, true, nil
 }
 
 // UpdateIssue changes the set fields of one issue.

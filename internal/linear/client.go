@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +20,10 @@ var graphqlEndpoint = "https://api.linear.app/graphql"
 // ErrRateLimited means Linear's request or complexity budget is exhausted and
 // the reset is too far away to wait for. The syncer holds its watermark.
 var ErrRateLimited = errors.New("linear rate limited")
+
+// ErrNotFound wraps Linear's "Entity not found" GraphQL error: the id names
+// nothing the token can see.
+var ErrNotFound = errors.New("linear entity not found")
 
 const (
 	minRequestsRemaining   = 5
@@ -90,6 +95,9 @@ func classifyGraphQLErrors(errs []gqlError) (authFailed bool, err error) {
 		if e.Extensions.Code == "RATELIMITED" {
 			return false, fmt.Errorf("%w: %s", ErrRateLimited, e.Message)
 		}
+	}
+	if strings.HasPrefix(errs[0].Message, "Entity not found") {
+		return false, fmt.Errorf("%w: %s", ErrNotFound, errs[0].Message)
 	}
 	return false, fmt.Errorf("linear graphql: %s", errs[0].Message)
 }

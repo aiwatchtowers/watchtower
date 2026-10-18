@@ -39,16 +39,58 @@ func mutationClient(t *testing.T, respond map[string]any, got *capturedMutation)
 	return c
 }
 
+// rawClient is a Client against a server answering every call with body.
+func rawClient(t *testing.T, body string) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	store := NewTokenStore(t.TempDir(), 1)
+	require.NoError(t, store.Save(&Token{AccessToken: "a0", RefreshToken: "r0",
+		Expiry: time.Now().Add(time.Hour).Format(time.RFC3339)}))
+	c := NewClient(OAuthConfig{ClientID: "cid"}, store)
+	c.endpoint = srv.URL
+	return c
+}
+
+func TestFetchIssueRef_FoundAndNotFound(t *testing.T) {
+	var got capturedMutation
+	c := mutationClient(t, map[string]any{"issue": map[string]any{"id": "u-1", "identifier": "ENG-9",
+		"url": "https://linear.app/acme/issue/ENG-9"}}, &got)
+	ref, found, err := c.FetchIssueRef(context.Background(), "u-1")
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, IssueRef{ID: "u-1", Identifier: "ENG-9", URL: "https://linear.app/acme/issue/ENG-9"}, ref)
+	assert.Equal(t, "u-1", got.Vars["id"])
+
+	c = rawClient(t, `{"data":null,"errors":[{"message":"Entity not found: Issue","extensions":{"code":"INVALID_INPUT"}}]}`)
+	_, found, err = c.FetchIssueRef(context.Background(), "u-2")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	c = mutationClient(t, map[string]any{"issue": nil}, &got)
+	_, found, err = c.FetchIssueRef(context.Background(), "u-3")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	c = rawClient(t, `{"errors":[{"message":"boom","extensions":{"code":"INTERNAL"}}]}`)
+	_, found, err = c.FetchIssueRef(context.Background(), "u-4")
+	require.Error(t, err, "any other failure is an error, never 'not found'")
+	assert.False(t, found)
+}
+
 func TestCreateIssue_SendsInput(t *testing.T) {
 	var got capturedMutation
 	c := mutationClient(t, map[string]any{"issueCreate": map[string]any{"success": true,
 		"issue": map[string]any{"id": "i-9", "identifier": "ENG-9", "url": "https://linear.app/acme/issue/ENG-9"}}}, &got)
 	prio := 2
-	ref, err := c.CreateIssue(context.Background(), IssueCreateInput{TeamID: "t-1", Title: "Fix it",
+	ref, err := c.CreateIssue(context.Background(), IssueCreateInput{ID: "6f1c2a3e-0000-4000-8000-000000000001", TeamID: "t-1", Title: "Fix it",
 		Description: "body", StateID: "s-1", AssigneeID: "u-1", Priority: &prio, LabelIDs: []string{"l-1"}})
 	require.NoError(t, err)
 	assert.Equal(t, IssueRef{ID: "i-9", Identifier: "ENG-9", URL: "https://linear.app/acme/issue/ENG-9"}, ref)
 	in, _ := got.Vars["input"].(map[string]any)
+	assert.Equal(t, "6f1c2a3e-0000-4000-8000-000000000001", in["id"], "the client UUID is the issue's id")
 	assert.Equal(t, "t-1", in["teamId"])
 	assert.Equal(t, "Fix it", in["title"])
 	assert.Equal(t, "body", in["description"])

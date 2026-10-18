@@ -109,7 +109,7 @@ var actionsRules = []string{
 }
 
 const targetCoexistence = "Changes to THIS task and its vertical line still go through `watchtower-action` blocks (TASK ACTIONS above); " +
-	"Jira work goes through the Jira tools. Never create other Watchtower tasks from here — report the finding in prose instead."
+	"Jira and Linear work goes through their tools. Never create other Watchtower tasks from here — report the finding in prose instead."
 
 // automationEditorRules keep the receipt, one-proposal and get_action rules
 // and add the draft-first rule; nothing about Jira, Confluence or Slack.

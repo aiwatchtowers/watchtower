@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,8 +17,8 @@ import (
 )
 
 // LinearWriteClient is what the five Linear write tools need: the name
-// lookups, the three mutations and the syncer's one-issue refresh — a seam
-// so tests inject a fake.
+// lookups, the three mutations, the syncer's one-issue refresh and the
+// lookup by id a create retry makes — a seam so tests inject a fake.
 type LinearWriteClient interface {
 	FetchTeamStates(ctx context.Context, teamID string) ([]linear.WorkflowState, error)
 	FetchLabels(ctx context.Context, teamID string) ([]linear.Label, error)
@@ -26,6 +27,7 @@ type LinearWriteClient interface {
 	UpdateIssue(ctx context.Context, issueID string, in linear.IssueUpdateInput) error
 	CreateComment(ctx context.Context, issueID, body string) (string, error)
 	RefreshIssue(ctx context.Context, issueID string) error
+	FetchIssueRef(ctx context.Context, id string) (linear.IssueRef, bool, error)
 }
 
 // LinearWriteClientFactory builds a write client for one connected account.
@@ -377,6 +379,19 @@ type createLinearIssueArgs struct {
 	PriorityValue *int     `json:"priority_value,omitempty" jsonschema:"do not set; filled in automatically when the proposal is recorded"`
 	AssigneeID    string   `json:"assignee_id,omitempty" jsonschema:"do not set; filled in automatically when the proposal is recorded"`
 	StateID       string   `json:"state_id,omitempty" jsonschema:"do not set; filled in automatically when the proposal is recorded"`
+	IssueUUID     string   `json:"issue_uuid,omitempty" jsonschema:"do not set; filled in automatically when the proposal is recorded"`
+}
+
+// newUUIDv4 is a random RFC 4122 version-4 UUID, the form Linear accepts as
+// a client-chosen issue id.
+func newUUIDv4() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generating an issue id: %w", err)
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 // resolveCreateLinearIssue checks the args and resolves every name to the
@@ -455,6 +470,13 @@ func NewCreateLinearIssue(factory LinearWriteClientFactory) *Tool {
 			if err != nil {
 				return nil, err
 			}
+			// A fresh id per proposal, whatever the model sent: Linear
+			// creates the issue under it, so a retry can find it.
+			id, err := newUUIDv4()
+			if err != nil {
+				return nil, err
+			}
+			pins["issue_uuid"] = id
 			return mergeJSON(raw, pins)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
@@ -462,13 +484,28 @@ func NewCreateLinearIssue(factory LinearWriteClientFactory) *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding create_linear_issue args: %w", err)
 			}
-			account, client, err := pinnedLinearClient(d, factory, "create_linear_issue", a.AccountID, a.TeamID)
+			account, client, err := pinnedLinearClient(d, factory, "create_linear_issue", a.AccountID, a.TeamID, a.IssueUUID)
 			if err != nil {
 				return nil, err
 			}
+			if call.Retry {
+				// The failed attempt may have created the issue anyway (a
+				// timeout or a lost response after Linear stored it). A
+				// lookup that cannot tell fails the retry rather than
+				// risking a duplicate.
+				ref, found, err := client.FetchIssueRef(ctx, a.IssueUUID)
+				if err != nil {
+					return nil, linearWriteFailed(d, account.ID, err)
+				}
+				if found {
+					result := linearIssueResult(ctx, client, ref.ID, ref.Identifier, ref.URL, "Created "+ref.Identifier)
+					result["reused"] = true
+					return result, nil
+				}
+			}
 			ref, err := client.CreateIssue(ctx, linear.IssueCreateInput{
-				TeamID: a.TeamID, Title: strings.TrimSpace(a.Title), Description: a.Description, StateID: a.StateID,
-				AssigneeID: a.AssigneeID, Priority: a.PriorityValue, LabelIDs: a.LabelIDs,
+				ID: a.IssueUUID, TeamID: a.TeamID, Title: strings.TrimSpace(a.Title), Description: a.Description,
+				StateID: a.StateID, AssigneeID: a.AssigneeID, Priority: a.PriorityValue, LabelIDs: a.LabelIDs,
 			})
 			if err != nil {
 				return nil, linearWriteFailed(d, account.ID, err)

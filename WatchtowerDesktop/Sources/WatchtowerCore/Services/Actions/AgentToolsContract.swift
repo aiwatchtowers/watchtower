@@ -129,8 +129,8 @@ package enum AgentToolsContract {
     ]
 
     private static let targetCoexistence = "Changes to THIS task and its vertical line still go through "
-        + "`watchtower-action` blocks (TASK ACTIONS above); Jira work goes through the Jira tools. Never create "
-        + "other Watchtower tasks from here — report the finding in prose instead."
+        + "`watchtower-action` blocks (TASK ACTIONS above); Jira and Linear work goes through their tools. Never "
+        + "create other Watchtower tasks from here — report the finding in prose instead."
 
     /// The honest variant for a provider without tools (Ollama): the TOOLS
     /// section is replaced, nothing promises what the session cannot do.
