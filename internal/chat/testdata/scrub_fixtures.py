@@ -140,65 +140,79 @@ def is_mcp_status(x):
     return x.get("type") == "control_response" and "mcpServers" in x.get("response", {}).get("response", {})
 
 
-def claude_ai(raw_path, out_dir):
-    rows = [json.loads(l) for l in open(raw_path) if l.strip()]
-    if not rows:
-        sys.exit("scrub: %s has no rows: did the probe skip?" % raw_path)
-    if any("non_json" in r["line"] for r in rows):
-        sys.exit("scrub: the raw transcript has a non-JSON CLI line; check the probe log")
-    sc = ClaudeAIScrubber()
-    for r in rows:
-        x = r["line"]
-        if is_mcp_status(x):
-            sc.learn(x["response"]["response"]["mcpServers"])
-        if x.get("type") == "system" and x.get("subtype") == "init":
-            sc.learn(x.get("mcp_servers", []))
+def outbound_bucket(x):
+    """The fixture of a line the host sent: an mcp_status request (kept with
+    its answer) or a control response."""
+    if x.get("type") == "control_request" and x["request"].get("subtype") == "mcp_status":
+        return "status_req"
+    return "control_responses" if x.get("type") == "control_response" else None
 
-    files = {k: [] for k in ("init", "mcp_status", "can_use_tool", "control_responses", "control_other")}
-    seen_init = set()
-    status_req = {}
-    statuses = {}
-    for r in rows:
-        x, sc_name, inbound = r["line"], r["scenario"], r["dir"] == "in"
-        typ, sub = x.get("type"), x.get("subtype")
-        if inbound and typ == "system" and sub == "init" and sc_name not in seen_init:
-            seen_init.add(sc_name)
-            files["init"].append(x)
-        elif not inbound and typ == "control_request" and x["request"].get("subtype") == "mcp_status":
-            status_req[x["request_id"]] = x
-        elif inbound and is_mcp_status(x):
-            statuses.setdefault(sc_name, []).append(x)
-        elif inbound and typ == "control_request" and x["request"].get("subtype") == "can_use_tool":
-            files["can_use_tool"].append(x)
-        elif not inbound and typ == "control_response":
-            files["control_responses"].append(x)
-        elif inbound and (typ == "control_cancel_request"
-                          or (typ == "control_response" and not is_mcp_status(x))
-                          or (typ == "system" and sub == "permission_denied")
-                          or (typ == "result" and x.get("permission_denials"))):
-            files["control_other"].append(x)
-        elif inbound and typ == "user":
-            errs = [c for c in x["message"]["content"] if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error")]
-            if errs:
-                files["control_other"].append(x)
-    # Per scenario: the first answer (often still empty), the first one that
-    # lists servers while some are pending, and the settled last one.
-    for sc_name, resps in statuses.items():
-        keep = [resps[0]]
+
+def has_error_result(x):
+    return any(isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error")
+               for c in x["message"]["content"])
+
+
+def is_control_other(x):
+    typ, sub = x.get("type"), x.get("subtype")
+    return (typ in ("control_cancel_request", "control_response")
+            or (typ == "system" and sub == "permission_denied")
+            or (typ == "result" and bool(x.get("permission_denials")))
+            or (typ == "user" and has_error_result(x)))
+
+
+def inbound_bucket(x):
+    """The fixture of a line the CLI sent: its init (first per scenario), an
+    mcp_status answer, a permission request, or another control line."""
+    if x.get("type") == "system" and x.get("subtype") == "init":
+        return "init"
+    if is_mcp_status(x):
+        return "status"
+    if x.get("type") == "control_request" and x["request"].get("subtype") == "can_use_tool":
+        return "can_use_tool"
+    return "control_other" if is_control_other(x) else None
+
+
+def kept_status_lines(statuses, status_req):
+    """Per scenario: the first mcp_status answer (often still empty), the
+    first one that lists servers while some are pending, and the settled last
+    one, each after its request."""
+    out = []
+    for resps in statuses.values():
         pending = [x for x in resps if any(s.get("status") == "pending" for s in x["response"]["response"]["mcpServers"])]
-        keep += pending[:1] + [resps[-1]]
         done = set()
-        for x in keep:
+        for x in [resps[0]] + pending[:1] + [resps[-1]]:
             rid = x["response"]["request_id"]
-            if rid in done:
-                continue
-            done.add(rid)
-            files["mcp_status"] += [status_req[rid], x]
+            if rid not in done:
+                done.add(rid)
+                out += [status_req[rid], x]
+    return out
 
-    names = {"init": "claude_ai_init.jsonl", "mcp_status": "claude_ai_mcp_status.jsonl",
-             "can_use_tool": "claude_ai_can_use_tool.jsonl",
-             "control_responses": "claude_ai_control_responses.jsonl",
-             "control_other": "claude_ai_control_other.jsonl"}
+
+def route_lines(rows):
+    """Sorts the transcript's lines into the fixture files."""
+    files = {k: [] for k in ("init", "mcp_status", "can_use_tool", "control_responses", "control_other")}
+    seen_init, status_req, statuses = set(), {}, {}
+    for r in rows:
+        x, sc_name = r["line"], r["scenario"]
+        bucket = inbound_bucket(x) if r["dir"] == "in" else outbound_bucket(x)
+        if bucket == "init":
+            if sc_name not in seen_init:
+                seen_init.add(sc_name)
+                files["init"].append(x)
+        elif bucket == "status_req":
+            status_req[x["request_id"]] = x
+        elif bucket == "status":
+            statuses.setdefault(sc_name, []).append(x)
+        elif bucket:
+            files[bucket].append(x)
+    files["mcp_status"] = kept_status_lines(statuses, status_req)
+    return files
+
+
+def write_fixtures(sc, files, names, out_dir):
+    """Writes the fixture files once every one is free of account-specific
+    values; exits without writing anything otherwise."""
     if not any(x["request"].get("mcp_server") for x in files["can_use_tool"]):
         sys.exit("scrub: no connector can_use_tool recorded (Claude Docs not probed); not writing fixtures")
     # Every class of value that must not reach the public repo; hits are
@@ -226,6 +240,30 @@ def claude_ai(raw_path, out_dir):
     for fname, text in texts.items():  # all checked first: no half-updated set
         with open("%s/%s" % (out_dir, fname), "w") as f:
             f.write(text)
+
+
+
+def claude_ai(raw_path, out_dir):
+    rows = [json.loads(l) for l in open(raw_path) if l.strip()]
+    if not rows:
+        sys.exit("scrub: %s has no rows: did the probe skip?" % raw_path)
+    if any("non_json" in r["line"] for r in rows):
+        sys.exit("scrub: the raw transcript has a non-JSON CLI line; check the probe log")
+    sc = ClaudeAIScrubber()
+    for r in rows:
+        x = r["line"]
+        if is_mcp_status(x):
+            sc.learn(x["response"]["response"]["mcpServers"])
+        if x.get("type") == "system" and x.get("subtype") == "init":
+            sc.learn(x.get("mcp_servers", []))
+
+    files = route_lines(rows)
+
+    names = {"init": "claude_ai_init.jsonl", "mcp_status": "claude_ai_mcp_status.jsonl",
+             "can_use_tool": "claude_ai_can_use_tool.jsonl",
+             "control_responses": "claude_ai_control_responses.jsonl",
+             "control_other": "claude_ai_control_other.jsonl"}
+    write_fixtures(sc, files, names, out_dir)
 
 
 if __name__ == "__main__":
