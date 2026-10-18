@@ -30,6 +30,7 @@ final class WorkbenchFetchTests: XCTestCase {
     }
     """#
 
+    // swiftlint:disable line_length
     private static let unreachable = #"""
     {
       "workbench_id": 7,
@@ -46,6 +47,7 @@ final class WorkbenchFetchTests: XCTestCase {
       "refused_detail": ""
     }
     """#
+    // swiftlint:enable line_length
 
     private static let remoteOnly = #"""
     {
