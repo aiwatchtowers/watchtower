@@ -141,7 +141,7 @@ func runWorkbenchMethodology(cmd *cobra.Command, args []string) error {
 	}
 	if hasKey(changes, "ask_guard") || hasKey(changes, "finish_check") {
 		// The checks are the owner's alone (board #558, AGENT-07's refusal).
-		if err := refuseUnderAgent("change the ask guard or the finish check"); err != nil {
+		if err := requireOwner("change the ask guard or the finish check"); err != nil {
 			return err
 		}
 	}
