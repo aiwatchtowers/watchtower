@@ -12,7 +12,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Quick Connections) wit
 
 - **Remove** stops syncing and deletes the sign-in. Slack and Jira keep their synced data; Google, Email and Calendar delete the mail and events synced from that account, although the dialog says they are kept (see [Known issues](../troubleshooting/known-issues.md)). A disabled account (**Enabled** off, Slack and Jira only) stops syncing and keeps its data.
 - After you connect a source, a **Turn on related features?** sheet may offer features that source can feed. Nothing turns on unless you press **Turn on**. See [Features on and off](../concepts/features-on-and-off.md).
-- **Slack** — **Reconnect** also grants a newly needed permission, such as sending messages from chat. The emoji-to-action list used by the [Inbox](../features/inbox.md) action strip is edited in **Automations**, **Reactions** ([Reactions and tracks in Automations](../features/automations-rules.md)); here a pointer opens it, or turns Automations on first when it is off.
+- **Slack** — **Reconnect** also grants a newly needed permission, such as sending messages from chat. The emoji-to-action list used by the [Inbox](../features/inbox.md) action strip is edited in **Automations**, **Reactions** ([Reactions and tracks in Automations](../features/automations-rules.md)); here **Open** takes you there.
 - **Google** — **Add Google Account** grants Calendar and/or Gmail per account. **Sync days ahead** for Calendar: 2, 3, 5, 7 or 14. See [Calendar](../features/calendar-and-meeting-prep.md) and [Mail](../features/mail.md).
 - **Jira** — **Manage Boards** selects boards, shows board profiles and user mapping. See [Jira and Linear](../features/jira-and-linear.md).
 - **Confluence** (under each Jira site) — pick spaces to sync into search. **Grant Confluence access** and **Allow editing** are extra sign-ins; switching a space off removes its synced content. See [Search and knowledge](../features/search-and-knowledge.md).
@@ -30,7 +30,6 @@ A list of services (Slack, Google, Email, Calendar, Jira, Quick Connections) wit
   - One **Notifications** section holds every switch: **Pause notifications**, **Decision notifications**, **Briefing notifications**, **Workbench notifications**, **Claude plan limits**, **Notify about unknown voices** and **Meeting reminders** with **Remind before meeting** (0–60 minutes; 0 is **Off**).
   - **Pause notifications** (off by default) silences every notice, including the "still recording" alert, which no other switch affects. When you turn it off, new decisions and briefings, plan-limit warnings and reminders for meetings still ahead are sent; an update is announced on a later check; the rest are dropped.
   - **Send Test Notification** works even while paused.
-- **Automations** off hides the tab and **Run Automation…**, and the daemon runs no recipe. See [Automations](../features/automations.md).
 
 ## Meetings
 

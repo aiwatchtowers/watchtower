@@ -4,7 +4,7 @@ Every background output has its own switch in **Settings → Features**, and a t
 
 ## What the switches do
 
-Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch.
+Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch. Automations are not in the list: they are always there and spend nothing until you confirm a recipe (see [Automations](../features/automations.md)).
 
 - **Off means no work, not no data.** An off feature makes no AI calls and writes nothing new. What it already produced stays and stays readable.
 - **On resumes from now.** Turning a feature back on does not process the time it was off, so there is a gap. It is the same for a feature you never turned on before.
@@ -30,7 +30,6 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Daily Briefing | Light | Day Plan |
 | Day Plan | Light | |
 | Next Step Suggestions | Medium | |
-| Automations (own switch) | Medium | |
 | Claude plan limits (no AI) | None | |
 
 Tracks and People Cards read what Slack Digests writes, so they run only while Slack Digests is on too. With Slack Digests off, their empty tabs and Home cards say **Needs Slack Digests** with a **Turn on Slack Digests** button, and onboarding's **Customize** screen shows **Needs Slack Digests** with a **Turn on Slack Digests** button under them. Memory has an **Advanced** section with switches for each source and each place memory is used.
